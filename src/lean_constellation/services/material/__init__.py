@@ -1,0 +1,85 @@
+"""Material service and components."""
+
+from lean_constellation.services.material.material_read import (
+    MaterialFileEntry,
+    MaterialFileTreeView,
+    MaterialRangeView,
+    MaterialReadComponent,
+    MaterialRefPreviewView,
+    MaterialSearchHit,
+    MaterialSearchView,
+)
+from lean_constellation.services.material.resource_curation import (
+    ResourceCurationComponent,
+    ResourceCurationDecisionView,
+    ResourceCurationFlowInputView,
+    ResourceCurationResultView,
+)
+from lean_constellation.services.material.resource_library import (
+    ResourceDuplicateView,
+    ResourceLibraryComponent,
+    ResourceMetadata,
+    ResourceMetadataInput,
+    ResourceSummaryView,
+    ResourceTargetView,
+    ResourceView,
+)
+from lean_constellation.services.material.service import MaterialService
+from lean_constellation.services.material.source_corpus import (
+    SourceAcquisitionView,
+    SourceCorpusBlockedSubmitView,
+    SourceCorpusComponent,
+    SourceCorpusDuplicateView,
+    SourceCorpusFileView,
+    SourceCorpusManifestView,
+    SourceCorpusPreparedView,
+    SourceExtractionView,
+    SourceRefValidationView,
+)
+from lean_constellation.services.material.source_index import (
+    SourceBlockView,
+    SourceFileIndexView,
+    SourceIndexComponent,
+    SourceIndexCoverageView,
+    SourceIndexView,
+    SourceLinkView,
+    SubmissionView,
+)
+
+__all__ = [
+    "MaterialFileEntry",
+    "MaterialFileTreeView",
+    "MaterialRangeView",
+    "MaterialReadComponent",
+    "MaterialRefPreviewView",
+    "MaterialSearchHit",
+    "MaterialSearchView",
+    "MaterialService",
+    "ResourceCurationComponent",
+    "ResourceCurationDecisionView",
+    "ResourceCurationFlowInputView",
+    "ResourceCurationResultView",
+    "ResourceDuplicateView",
+    "ResourceLibraryComponent",
+    "ResourceMetadata",
+    "ResourceMetadataInput",
+    "ResourceSummaryView",
+    "ResourceTargetView",
+    "ResourceView",
+    "SourceAcquisitionView",
+    "SourceBlockView",
+    "SourceCorpusBlockedSubmitView",
+    "SourceCorpusComponent",
+    "SourceCorpusDuplicateView",
+    "SourceCorpusFileView",
+    "SourceCorpusManifestView",
+    "SourceCorpusPreparedView",
+    "SourceExtractionView",
+    "SourceFileIndexView",
+    "SourceIndexComponent",
+    "SourceIndexCoverageView",
+    "SourceIndexView",
+    "SourceLinkView",
+    "SourceRefValidationView",
+    "SubmissionView",
+]
