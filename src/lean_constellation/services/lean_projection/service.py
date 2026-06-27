@@ -1,0 +1,111 @@
+"""LeanProjectionService composition and public wrappers."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from lean_constellation.services.external_clients import ExternalClientService
+from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.lean_projection.adapter_facade import AdapterFacadeComponent, AdapterFacadeProvider
+from lean_constellation.services.lean_projection.annotation import AnnotationComponent
+from lean_constellation.services.lean_projection.decl_file import (
+    DeclFileComponent,
+    DeclFileRevisionProvider,
+    FormalCaptureView,
+    LeanFileView,
+)
+from lean_constellation.services.lean_projection.lean_check import LeanCheckComponent
+from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent, ProjectionView
+from lean_constellation.services.lean_projection.repair import (
+    ProjectionRepairView,
+    RepairComponent,
+    RepairDeclProvider,
+)
+
+
+class LeanProjectionService:
+    """Composition root for Lean projection, checking, capture, and repair."""
+
+    def __init__(
+        self,
+        *,
+        foundation: FoundationService | None = None,
+        external: ExternalClientService | None = None,
+        adapter_facade: AdapterFacadeComponent | None = None,
+        adapter_facade_provider: AdapterFacadeProvider | None = None,
+        annotation: AnnotationComponent | None = None,
+        lean_check: LeanCheckComponent | None = None,
+        decl_file: DeclFileComponent | None = None,
+        decl_revision_provider: DeclFileRevisionProvider | None = None,
+        node_projection: NodeProjectionComponent | None = None,
+        repair: RepairComponent | None = None,
+        repair_decl_provider: RepairDeclProvider | None = None,
+    ) -> None:
+        self.foundation = foundation or FoundationService()
+        self.external = external or ExternalClientService()
+        self.adapter_facade = adapter_facade or AdapterFacadeComponent(
+            self.foundation,
+            provider=adapter_facade_provider,
+        )
+        self.annotation = annotation or AnnotationComponent(self.foundation)
+        self.lean_check = lean_check or LeanCheckComponent(self.foundation, self.external)
+        self.decl_file = decl_file or DeclFileComponent(
+            self.foundation,
+            annotation=self.annotation,
+            lean_check=self.lean_check,
+            revision_provider=decl_revision_provider,
+        )
+        self.node_projection = node_projection or NodeProjectionComponent(self.foundation)
+        self.repair = repair or RepairComponent(
+            self.foundation,
+            node_projection=self.node_projection,
+            adapter_facade=self.adapter_facade,
+            decl_file=self.decl_file,
+            decl_provider=repair_decl_provider,
+        )
+
+    def prepare_statement_formal_stage_file(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+    ) -> ServiceResult[LeanFileView]:
+        return self.decl_file.prepare_statement_formal_file(repo_root, node_path=node_path, decl_name=decl_name)
+
+    def capture_statement_formal(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+    ) -> ServiceResult[FormalCaptureView]:
+        return self.decl_file.capture_statement_formal_file(repo_root, node_path=node_path, decl_name=decl_name)
+
+    def prepare_proof_formal_stage_file(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+    ) -> ServiceResult[LeanFileView]:
+        return self.decl_file.prepare_proof_formal_file(repo_root, node_path=node_path, decl_name=decl_name)
+
+    def capture_proof_formal(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+    ) -> ServiceResult[FormalCaptureView]:
+        return self.decl_file.capture_proof_formal_file(repo_root, node_path=node_path, decl_name=decl_name)
+
+    def refresh_node_projection(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionRepairView]:
+        return self.repair.repair_node_projection(repo_root, node_path=node_path)
+
+    def refresh_adapter_projection(self, repo_root: Path) -> ServiceResult[ProjectionView]:
+        return self.adapter_facade.refresh_adapter_interfaces(repo_root)
+
+    def restore_projection_to_active_graph(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionRepairView]:
+        return self.repair.restore_working_projection_to_active_graph(repo_root, node_path=node_path)
+

@@ -1,0 +1,200 @@
+from pathlib import Path
+
+from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
+from lean_constellation.services.lean_projection import LeanCheckComponent
+
+
+class FakeToolkit:
+    def __init__(self, diagnostics: LeanDiagnosticsResult) -> None:
+        self.diagnostics = diagnostics
+        self.calls: list[tuple[Path, Path]] = []
+
+    def run_file_diagnostics(self, repo_root: Path, file_path: Path) -> LeanDiagnosticsResult:
+        self.calls.append((Path(repo_root), Path(file_path)))
+        return self.diagnostics
+
+
+class FakeLake:
+    def __init__(self, result: ExternalCommandResult | None = None) -> None:
+        self.result = result or ExternalCommandResult(
+            ok=True,
+            command=["lake", "env", "lean", "--json", "Main.lean"],
+            cwd=".",
+            exit_code=0,
+            summary="lake diagnostics ok",
+        )
+        self.calls: list[tuple[Path, str]] = []
+
+    def run_lake_env_lean(self, *, repo_root: Path, rel_file: str, json: bool = True, timeout_seconds: int | None = None) -> ExternalCommandResult:
+        del json, timeout_seconds
+        self.calls.append((Path(repo_root), rel_file))
+        return self.result
+
+
+class FakeExternal:
+    def __init__(self, toolkit: FakeToolkit, lake: FakeLake | None = None) -> None:
+        self.lean_mcp_toolkit = toolkit
+        self.lean_toolkit = toolkit
+        self.lake = lake or FakeLake()
+
+
+def _component(tmp_path: Path, diagnostics: list[dict] | None = None, ok: bool = True) -> LeanCheckComponent:
+    toolkit = FakeToolkit(
+        LeanDiagnosticsResult(
+            ok=ok,
+            repo_root=str(tmp_path),
+            file_path=str(tmp_path / "Main.lean"),
+            diagnostics=diagnostics or [],
+            summary="toolkit diagnostics",
+            issue_code=None if ok else "toolkit_unavailable",
+        )
+    )
+    return LeanCheckComponent(external=FakeExternal(toolkit))  # type: ignore[arg-type]
+
+
+def test_run_file_diagnostics_uses_toolkit_and_reports_errors(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text("example : True := by trivial\n", encoding="utf-8")
+    component = _component(tmp_path, diagnostics=[{"severity": "error", "message": "type mismatch", "line": 1, "column": 10}])
+
+    result = component.run_file_diagnostics(tmp_path, file_path=lean_file)
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.passed is False
+    assert result.value.diagnostics[0].message == "type mismatch"
+
+
+def test_run_file_diagnostics_falls_back_to_lake_when_toolkit_unavailable(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text("example : True := by trivial\n", encoding="utf-8")
+    toolkit = FakeToolkit(LeanDiagnosticsResult(ok=False, repo_root=str(tmp_path), file_path=str(lean_file), summary="no toolkit", issue_code="toolkit_unavailable"))
+    lake = FakeLake(
+        ExternalCommandResult(
+            ok=False,
+            command=["lake", "env", "lean", "--json", "Main.lean"],
+            cwd=str(tmp_path),
+            exit_code=1,
+            stdout_excerpt='{"severity":"error","message":"unknown identifier","pos":{"line":1,"column":5}}\n',
+            summary="lake failed",
+            issue_code="command_failed",
+        )
+    )
+    component = LeanCheckComponent(external=FakeExternal(toolkit, lake))  # type: ignore[arg-type]
+
+    result = component.run_file_diagnostics(tmp_path, file_path=Path("Main.lean"))
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.passed is False
+    assert result.value.diagnostics[0].line == 1
+    assert lake.calls == [(tmp_path, "Main.lean")]
+
+
+def test_run_file_diagnostics_fallback_uses_plain_stderr_excerpt(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text("example : True := by trivial\n", encoding="utf-8")
+    toolkit = FakeToolkit(LeanDiagnosticsResult(ok=False, repo_root=str(tmp_path), file_path=str(lean_file), summary="no toolkit", issue_code="toolkit_unavailable"))
+    lake = FakeLake(
+        ExternalCommandResult(
+            ok=False,
+            command=["lake", "env", "lean", "--json", "Main.lean"],
+            cwd=str(tmp_path),
+            exit_code=1,
+            stderr_excerpt="Main.lean:1:10: error: type mismatch",
+            summary="lake failed",
+            issue_code="command_failed",
+        )
+    )
+    component = LeanCheckComponent(external=FakeExternal(toolkit, lake))  # type: ignore[arg-type]
+
+    result = component.run_file_diagnostics(tmp_path, file_path=lean_file)
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.passed is False
+    assert result.value.diagnostics[0].severity == "error"
+    assert result.value.diagnostics[0].message == "Main.lean:1:10: error: type mismatch"
+    assert result.value.raw_excerpt == "Main.lean:1:10: error: type mismatch"
+
+
+def test_detect_sorry_axiom_ignores_comments_and_strings(tmp_path: Path) -> None:
+    component = _component(tmp_path)
+    text = '-- sorry in comment\n#eval "axiom in string"\naxiom bad : False\nexample : True := by admit\nopaque hidden : Nat\nunsafe def x := 1\n'
+
+    result = component.detect_sorry_axiom(text)
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.sorry_count == 0
+    assert result.value.admit_count == 1
+    assert result.value.axiom_count == 1
+    assert result.value.opaque_count == 1
+    assert result.value.unsafe_count == 1
+
+
+def test_detect_sorry_axiom_handles_nested_comments_strings_and_identifier_boundaries(tmp_path: Path) -> None:
+    component = _component(tmp_path)
+    text = (
+        "/- outer sorry /- nested axiom -/ admit -/\n"
+        "#eval \"unsafe axiom sorry\"\n"
+        "def sorryful := 1\n"
+        "def my_sorry := 1\n"
+        "example : True := by\n"
+        "  sorry\n"
+    )
+
+    result = component.detect_sorry_axiom(text)
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.sorry_count == 1
+    assert result.value.admit_count == 0
+    assert result.value.axiom_count == 0
+    assert result.value.unsafe_count == 0
+    assert result.value.occurrences[0].line == 6
+
+
+def test_statement_policy_allows_theorem_sorry_but_not_def_sorry(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text("theorem foo : True := by\n  sorry\n", encoding="utf-8")
+    component = _component(tmp_path)
+
+    theorem_check = component.build_statement_lean_check(tmp_path, file_path=lean_file, decl_kind="theorem")
+    assert theorem_check.ok
+    assert theorem_check.value is not None
+    assert theorem_check.value.status == "passed"
+    assert theorem_check.value.allow_sorry is True
+
+    def_check = component.build_statement_lean_check(tmp_path, file_path=lean_file, decl_kind="def")
+    assert def_check.ok
+    assert def_check.value is not None
+    assert def_check.value.status == "failed"
+    assert "contains_sorry" in def_check.value.message
+
+
+def test_proof_policy_and_adapter_trusted_check_are_strict(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text("theorem foo : True := by\n  sorry\n", encoding="utf-8")
+    component = _component(tmp_path)
+
+    proof = component.build_proof_lean_check(tmp_path, file_path=lean_file)
+    assert proof.ok
+    assert proof.value is not None
+    assert proof.value.status == "failed"
+
+    adapter_pass = component.build_trusted_adapter_check(tmp_path, module="Upstream.Basic", code="theorem foo : True := by trivial", theorem_like=True)
+    assert adapter_pass.ok
+    assert adapter_pass.value is not None
+    assert adapter_pass.value.status == "passed"
+
+    adapter_fail = component.build_trusted_adapter_check(tmp_path, module="Upstream.Basic", code="theorem foo : True := by sorry", theorem_like=True)
+    assert adapter_fail.ok
+    assert adapter_fail.value is not None
+    assert adapter_fail.value.status == "failed"
+
+    adapter_non_theorem_fail = component.build_trusted_adapter_check(tmp_path, module="Upstream.Basic", code="def foo : Nat := by\n  sorry", theorem_like=False)
+    assert adapter_non_theorem_fail.ok
+    assert adapter_non_theorem_fail.value is not None
+    assert adapter_non_theorem_fail.value.status == "failed"
+    assert adapter_non_theorem_fail.value.allow_sorry is False

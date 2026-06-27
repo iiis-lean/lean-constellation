@@ -1,0 +1,69 @@
+"""Lean projection service components."""
+
+from lean_constellation.services.lean_projection.adapter_facade import (
+    AdapterFacadeComponent,
+    AdapterFacadeProvider,
+    AdapterModuleListView,
+)
+from lean_constellation.services.lean_projection.annotation import (
+    AnnotationComponent,
+    LeanDeclarationLocationView,
+    TargetMarkerView,
+)
+from lean_constellation.services.lean_projection.decl_file import (
+    DeclFileComponent,
+    DeclFileRevisionProvider,
+    DeclFileSnapshotView,
+    FormalCaptureView,
+    LeanFileView,
+    LeanPathView,
+)
+from lean_constellation.services.lean_projection.lean_check import (
+    LeanCheckComponent,
+    LeanCheckView,
+    LeanDiagnosticItemView,
+    LeanDiagnosticsView,
+    SorryAxiomOccurrenceView,
+    SorryAxiomScanView,
+)
+from lean_constellation.services.lean_projection.node_projection import (
+    NodeProjectionComponent,
+    ProjectionView,
+)
+from lean_constellation.services.lean_projection.repair import (
+    ProjectionAuditView,
+    ProjectionRepairAction,
+    ProjectionRepairView,
+    RepairComponent,
+    RepairDeclProvider,
+)
+from lean_constellation.services.lean_projection.service import LeanProjectionService
+
+__all__ = [
+    "AdapterFacadeComponent",
+    "AdapterFacadeProvider",
+    "AdapterModuleListView",
+    "AnnotationComponent",
+    "DeclFileComponent",
+    "DeclFileRevisionProvider",
+    "DeclFileSnapshotView",
+    "FormalCaptureView",
+    "LeanFileView",
+    "LeanPathView",
+    "LeanCheckComponent",
+    "LeanCheckView",
+    "LeanDeclarationLocationView",
+    "LeanDiagnosticItemView",
+    "LeanDiagnosticsView",
+    "LeanProjectionService",
+    "NodeProjectionComponent",
+    "ProjectionView",
+    "ProjectionAuditView",
+    "ProjectionRepairAction",
+    "ProjectionRepairView",
+    "RepairComponent",
+    "RepairDeclProvider",
+    "SorryAxiomOccurrenceView",
+    "SorryAxiomScanView",
+    "TargetMarkerView",
+]
