@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lean-constellation"
+version = "0.1.0"
+description = "Multi-repository coordination runtime for Lean formalization workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+lean_constellation = ["py.typed"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+  "real: tests that require external local services or real CLI/runtime configuration",
+  "real_codex: tests that require the Codex provider base configuration",
+  "real_toolkit: tests that require a running lean-mcp-toolkit HTTP server",
+  "slow: tests that may take longer than regular unit or integration tests",
+]
+

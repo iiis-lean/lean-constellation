@@ -1,0 +1,43 @@
+# Python cache / build
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE / local tools
+.vscode/
+.claude/
+
+# Local docs (do not upload by default)
+dev_docs/
+
+# Data artifacts
+data/
+
+# Local config (keep only examples)
+configs/*.yaml
+configs/*.yml
+!configs/*example*.yaml
+!configs/*example*.yml
+configs/*.toml
+!configs/*example*.toml
+
+# AGENTS files are local guidance by default
+AGENTS.md
+**/AGENTS.md
+
