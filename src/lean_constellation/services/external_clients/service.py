@@ -15,6 +15,7 @@ from lean_constellation.services.external_clients.lean_mcp_toolkit import (
     LeanMcpToolkitClientConfig,
     ToolkitToolView,
 )
+from lean_constellation.services.external_clients.lean_toolchain import LeanToolchainClient, LeanToolchainClientConfig
 from lean_constellation.services.external_clients.material_acquisition import (
     MaterialAcquisitionConfig,
     MaterialAcquisitionExtractionClient,
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 class ExternalClientConfig(StrictModel):
     lake: LakeCommandClientConfig = Field(default_factory=LakeCommandClientConfig)
     lean_toolkit: LeanMcpToolkitClientConfig = Field(default_factory=LeanMcpToolkitClientConfig)
+    lean_toolchain: LeanToolchainClientConfig = Field(default_factory=LeanToolchainClientConfig)
     material: MaterialAcquisitionConfig = Field(default_factory=MaterialAcquisitionConfig)
     github_repo: GitHubRepoClientConfig = Field(default_factory=GitHubRepoClientConfig)
 
@@ -52,6 +54,7 @@ class ExternalClientService:
         github_repo: GitHubRepoClient | None = None,
         lake: LakeCommandClient | None = None,
         lean_mcp_toolkit: LeanMcpToolkitClient | None = None,
+        lean_toolchain: LeanToolchainClient | None = None,
         material_acquisition: MaterialAcquisitionExtractionClient | None = None,
     ) -> None:
         self.runtime = runtime
@@ -60,6 +63,11 @@ class ExternalClientService:
         self.lake = lake or LakeCommandClient(self.config.lake)
         self.lean_mcp_toolkit = lean_mcp_toolkit or LeanMcpToolkitClient.from_config(self.config.lean_toolkit)
         self.lean_toolkit = self.lean_mcp_toolkit
+        self.lean_toolchain = lean_toolchain or LeanToolchainClient(
+            lake=self.lake,
+            toolkit=self.lean_mcp_toolkit,
+            config=self.config.lean_toolchain,
+        )
         self.material_acquisition = material_acquisition or MaterialAcquisitionExtractionClient(self.config.material)
 
     @property

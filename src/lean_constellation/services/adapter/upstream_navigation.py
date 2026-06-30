@@ -115,17 +115,14 @@ class UpstreamNavigationComponent:
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
         limit = self._normalize_limit(limit)
-        result = self.runtime.external.lean_mcp_toolkit.call_tool(
-            "repo_nav.local_decl.find",
-            {
-                "repo_root": str(gate.value["upstream_root"]),
-                "query": query.strip(),
-                "match_mode": "contains",
-                "decl_kinds": [kind_filter] if kind_filter else None,
-                "module_filter": module_filter,
-                "include_deps": False,
-                "limit": limit,
-            },
+        result = self.runtime.external.lean_toolchain.find_repo_declarations(
+            gate.value["upstream_root"],
+            query=query.strip(),
+            match_mode="contains",
+            decl_kinds=[kind_filter] if kind_filter else None,
+            module_filter=module_filter,
+            include_deps=False,
+            limit=limit,
         )
         if not result.ok:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(result.issue_code or "upstream_declaration_search_failed", result.summary or "Upstream declaration search failed."))
@@ -141,9 +138,11 @@ class UpstreamNavigationComponent:
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
         limit = self._normalize_limit(limit)
-        result = self.runtime.external.lean_mcp_toolkit.call_tool(
-            "repo_nav.tree",
-            {"repo_root": str(gate.value["upstream_root"]), "name_filter": query.strip(), "depth": 8, "limit": limit},
+        result = self.runtime.external.lean_toolchain.list_repo_tree(
+            gate.value["upstream_root"],
+            name_filter=query.strip(),
+            depth=8,
+            limit=limit,
         )
         if not result.ok:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(result.issue_code or "upstream_module_search_failed", result.summary or "Upstream module search failed."))
@@ -216,7 +215,7 @@ class UpstreamNavigationComponent:
             return self.runtime.foundation.fail(outline.issues)
         outline_value = outline.value or {}
         outline_item = self._find_decl_item(outline_value, decl_name.strip()) or {}
-        extracted = self.runtime.external.lean_mcp_toolkit.extract_declaration(gate.value["upstream_root"], module_result.value, decl_name.strip())
+        extracted = self.runtime.external.lean_toolchain.extract_declaration(gate.value["upstream_root"], module_result.value, decl_name.strip())
         if not extracted.ok:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(extracted.issue_code or "upstream_decl_inspect_failed", extracted.summary, object_ref=decl_name))
         code = extracted.code or extracted.raw_excerpt or ""
@@ -264,16 +263,13 @@ class UpstreamNavigationComponent:
                 except (TypeError, ValueError):
                     start_line = None
                     end_line = None
-        result = self.runtime.external.lean_mcp_toolkit.call_tool(
-            "repo_nav.read",
-            {
-                "repo_root": str(gate.value["upstream_root"]),
-                "target": module_result.value,
-                "start_line": start_line,
-                "end_line": end_line,
-                "max_lines": line_window if start_line is None else None,
-                "with_line_numbers": True,
-            },
+        result = self.runtime.external.lean_toolchain.read_repo_source_window(
+            gate.value["upstream_root"],
+            module_result.value,
+            start_line=start_line,
+            end_line=end_line,
+            max_lines=line_window if start_line is None else None,
+            with_line_numbers=True,
         )
         if not result.ok:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(result.issue_code or "upstream_source_context_failed", result.summary or "Upstream source context read failed."))
@@ -305,7 +301,7 @@ class UpstreamNavigationComponent:
         gate = self._metadata_available(repo_root)
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
-        extracted = self.runtime.external.lean_mcp_toolkit.extract_declaration(gate.value["upstream_root"], module_result.value, decl_name.strip())
+        extracted = self.runtime.external.lean_toolchain.extract_declaration(gate.value["upstream_root"], module_result.value, decl_name.strip())
         if not extracted.ok or not extracted.code:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(extracted.issue_code or "upstream_decl_capture_failed", extracted.summary, object_ref=decl_name))
         code = extracted.code if capture_mode == "full_declaration" else self._statement_only(extracted.code)
@@ -388,18 +384,15 @@ class UpstreamNavigationComponent:
         )
 
     def _repo_module_outline(self, upstream_root: Path, module: str) -> ServiceResult[dict[str, Any]]:
-        result = self.runtime.external.lean_mcp_toolkit.call_tool(
-            "repo_nav.file_outline",
-            {
-                "repo_root": str(upstream_root),
-                "target": module,
-                "include_imports": True,
-                "include_module_doc": True,
-                "include_section_doc": True,
-                "include_decl_headers": True,
-                "include_scope_cmds": True,
-                "limit_decls": 300,
-            },
+        result = self.runtime.external.lean_toolchain.outline_repo_file(
+            upstream_root,
+            module,
+            include_imports=True,
+            include_module_doc=True,
+            include_section_doc=True,
+            include_decl_headers=True,
+            include_scope_cmds=True,
+            limit_decls=300,
         )
         if not result.ok:
             return self.runtime.foundation.fail(

@@ -85,71 +85,43 @@ class LeanCheckComponent:
             return self.runtime.foundation.fail(resolved.issues)
         repo, target, rel_file = resolved.value
 
-        toolkit_result = self.runtime.external.lean_mcp_toolkit.run_file_diagnostics(repo, target)
-        if toolkit_result.ok:
-            return self.runtime.foundation.ok(
-                self._diagnostics_view(
-                    repo_root=repo,
-                    file_path=target,
-                    diagnostics=toolkit_result.diagnostics,
-                    raw_excerpt=toolkit_result.raw_excerpt,
-                    summary=toolkit_result.summary,
+        result = self.runtime.external.lean_toolchain.run_file_diagnostics(repo, target, rel_file=rel_file)
+        if not result.ok:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    result.issue_code or "lean_diagnostics_failed",
+                    result.summary,
+                    object_ref=str(target),
+                    details={"provider": result.provider, "fallback_reason": result.fallback_reason or ""},
                 )
             )
-
-        fallback = self.runtime.external.lake.run_lake_env_lean(repo_root=repo, rel_file=rel_file, json=True)
-        diagnostics = self._diagnostics_from_command_output(fallback.stdout_excerpt, fallback.stderr_excerpt)
-        if not diagnostics and not fallback.ok:
-            diagnostics = [
-                LeanDiagnosticItemView(
-                    severity="error",
-                    message=fallback.summary or "Lean diagnostics command failed.",
-                )
-            ]
+        diagnostics = result.diagnostics
         view = self._diagnostics_view(
             repo_root=repo,
             file_path=target,
-            diagnostics=[item.model_dump(mode="python") for item in diagnostics],
-            raw_excerpt=fallback.stderr_excerpt or fallback.stdout_excerpt,
-            summary=fallback.summary or ("Lean diagnostics passed." if fallback.ok else "Lean diagnostics failed."),
+            diagnostics=diagnostics,
+            raw_excerpt=result.raw_excerpt,
+            summary=result.summary,
         )
-        if not fallback.ok:
-            view.passed = False
         return self.runtime.foundation.ok(view)
 
     def detect_sorry_axiom(self, file_text: str) -> ServiceResult[SorryAxiomScanView]:
-        sanitized = self._strip_comments_and_strings(file_text)
-        occurrences: list[SorryAxiomOccurrenceView] = []
-        lines = file_text.splitlines() or [""]
-        for match in self._FORBIDDEN_WORD_RE.finditer(sanitized):
-            kind = match.group(1)
-            line, column = self._line_col(sanitized, match.start())
-            source_line = lines[line - 1] if line - 1 < len(lines) else ""
-            occurrences.append(
-                SorryAxiomOccurrenceView(
-                    kind=kind,  # type: ignore[arg-type]
-                    line=line,
-                    column=column,
-                    excerpt=source_line.strip()[:240],
-                )
-            )
-        counts = {kind: sum(1 for occurrence in occurrences if occurrence.kind == kind) for kind in ["sorry", "admit", "axiom", "opaque", "unsafe"]}
-        summary = ", ".join(f"{kind}={counts[kind]}" for kind in ["sorry", "admit", "axiom", "opaque", "unsafe"])
+        scan = self.runtime.external.lean_toolchain.scan_sorry_axiom(file_text)
         return self.runtime.foundation.ok(
             SorryAxiomScanView(
-                contains_sorry=counts["sorry"] > 0,
-                contains_admit=counts["admit"] > 0,
-                contains_axiom=counts["axiom"] > 0,
-                contains_opaque=counts["opaque"] > 0,
-                contains_unsafe=counts["unsafe"] > 0,
-                sorry_count=counts["sorry"],
-                admit_count=counts["admit"],
-                axiom_count=counts["axiom"],
-                opaque_count=counts["opaque"],
-                unsafe_count=counts["unsafe"],
-                occurrences=occurrences,
-                summary=summary,
-                limitation="Text scan ignores Lean comments and string literals with a conservative first-round lexer; it is not a full Lean parser.",
+                contains_sorry=scan.contains_sorry,
+                contains_admit=scan.contains_admit,
+                contains_axiom=scan.contains_axiom,
+                contains_opaque=scan.contains_opaque,
+                contains_unsafe=scan.contains_unsafe,
+                sorry_count=scan.sorry_count,
+                admit_count=scan.admit_count,
+                axiom_count=scan.axiom_count,
+                opaque_count=scan.opaque_count,
+                unsafe_count=scan.unsafe_count,
+                occurrences=[SorryAxiomOccurrenceView(**occurrence.model_dump(mode="python")) for occurrence in scan.occurrences],
+                summary=scan.summary,
+                limitation=scan.limitation,
             )
         )
 

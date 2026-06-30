@@ -71,6 +71,7 @@ def create_lean_runtime_services(
         github_repo=overrides.get("github_repo"),
         lake=overrides.get("lake"),
         lean_mcp_toolkit=overrides.get("lean_mcp_toolkit"),
+        lean_toolchain=overrides.get("lean_toolchain"),
         material_acquisition=overrides.get("material_acquisition"),
     )
     app.repo_workspace = RepoWorkspaceService(runtime)

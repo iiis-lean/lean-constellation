@@ -11,7 +11,7 @@ from pydantic import Field
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
-from lean_constellation.services.external_clients.lake_command import LakeCommandSummaryView, LeanCheckSummaryView
+from lean_constellation.services.external_clients.lean_toolchain import ToolchainCommandView, ToolchainLeanCheckView
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
 
@@ -271,10 +271,9 @@ class LakeDependencyComponent:
             self.runtime.foundation.gate_passed("native_repo_skeleton", summary="Native repo skeleton is present.")
         )
 
-    def run_lake_update(self, repo_root: Path) -> ServiceResult[LakeCommandSummaryView]:
-        result = self.runtime.external.lake.run_lake_update(Path(repo_root))
-        summary = self.runtime.external.lake.summarize_command_result(result)
-        if not result.ok:
+    def run_lake_update(self, repo_root: Path) -> ServiceResult[ToolchainCommandView]:
+        summary = self.runtime.external.lean_toolchain.run_lake_update(Path(repo_root))
+        if not summary.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "lake_update_failed",
@@ -285,10 +284,9 @@ class LakeDependencyComponent:
             )
         return self.runtime.foundation.ok(summary)
 
-    def run_lake_build(self, repo_root: Path, *, target: str | None = None) -> ServiceResult[LakeCommandSummaryView]:
-        result = self.runtime.external.lake.run_lake_build(Path(repo_root), target=target)
-        summary = self.runtime.external.lake.summarize_command_result(result)
-        if not result.ok:
+    def run_lake_build(self, repo_root: Path, *, target: str | None = None) -> ServiceResult[ToolchainCommandView]:
+        summary = self.runtime.external.lean_toolchain.run_lake_build(Path(repo_root), target=target)
+        if not summary.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "lake_build_failed",
@@ -299,8 +297,8 @@ class LakeDependencyComponent:
             )
         return self.runtime.foundation.ok(summary)
 
-    def run_minimal_import_check(self, repo_root: Path, *, module: str) -> ServiceResult[LeanCheckSummaryView]:
-        result = self.runtime.external.lake.run_minimal_import_check(Path(repo_root), module)
+    def run_minimal_import_check(self, repo_root: Path, *, module: str) -> ServiceResult[ToolchainLeanCheckView]:
+        result = self.runtime.external.lean_toolchain.run_minimal_import_check(Path(repo_root), module)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(

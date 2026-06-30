@@ -140,7 +140,7 @@ class ToolkitIngestionComponent:
                 self.runtime.foundation.issue("mathlib_external_limit_invalid", "External Mathlib search limit must be >= 1.", field="limit")
             )
         kinds = [kind.strip() for kind in search_kinds if kind.strip()]
-        result = self.runtime.external.lean_mcp_toolkit.search_mathlib(normalized_query, kinds, limit)
+        result = self.runtime.external.lean_toolchain.search_mathlib_declarations(normalized_query, kinds=kinds, limit=limit)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -237,7 +237,7 @@ class ToolkitIngestionComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("mathlib_decl_name_empty", "Mathlib declaration name must be non-empty.", field="decl_name")
             )
-        result = self.runtime.external.lean_mcp_toolkit.inspect_mathlib_decl(normalized_name)
+        result = self.runtime.external.lean_toolchain.inspect_mathlib_declaration(normalized_name)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -266,7 +266,7 @@ class ToolkitIngestionComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("mathlib_module_name_empty", "Mathlib module name must be non-empty.", field="module")
             )
-        result = self.runtime.external.lean_mcp_toolkit.inspect_mathlib_module(normalized_module)
+        result = self.runtime.external.lean_toolchain.inspect_mathlib_module(normalized_module)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -309,41 +309,31 @@ class ToolkitIngestionComponent:
                 self.runtime.foundation.issue("mathlib_decl_name_empty", "Mathlib declaration name must be non-empty.", field="decl_name")
             )
         code = self._check_code(normalized_module, normalized_decl)
-        failures: list[ServiceIssue] = []
-        for tool_name in _CHECK_TOOL_NAMES:
-            payload = self._check_payload(tool_name, repo_root, normalized_module, normalized_decl, code)
-            result = self.runtime.external.lean_mcp_toolkit.call_tool(tool_name, payload)
-            if not result.ok:
-                failures.append(
-                    self.runtime.foundation.issue(
-                        result.issue_code or "mathlib_check_tool_failed",
-                        result.summary or f"Toolkit check tool failed: {tool_name}",
-                        severity=IssueSeverity.WARNING,
-                        details={"tool": tool_name},
-                    )
-                )
-                continue
-            passed, diagnostics = self._check_passed_from_value(result.value)
-            return self.runtime.foundation.ok(
-                MathlibCheckView(
-                    module=normalized_module,
-                    decl_name=normalized_decl,
-                    passed=passed,
-                    diagnostics=diagnostics,
-                    checked_code=code,
-                    toolkit_tool=tool_name,
-                    summary=(
-                        f"Mathlib name check passed for {normalized_decl}."
-                        if passed
-                        else f"Mathlib name check failed for {normalized_decl}."
-                    ),
+        result = self.runtime.external.lean_toolchain.check_mathlib_name(repo_root, module=normalized_module, decl_name=normalized_decl)
+        if not result.ok:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    result.issue_code or "mathlib_check_unavailable",
+                    result.summary,
+                    object_ref=normalized_decl,
+                    details={"provider": result.provider, "fallback_reason": result.fallback_reason or ""},
                 )
             )
-        return self.runtime.foundation.fail(
-            self.runtime.foundation.issue(
-                "mathlib_check_unavailable",
-                f"No usable toolkit check tool was available for {normalized_decl}.",
-                details={"attempted_tools": ", ".join(_CHECK_TOOL_NAMES), "failures": "; ".join(issue.message for issue in failures)},
+        passed = bool(result.passed if result.passed is not None else result.ok)
+        diagnostics = self._diagnostics_from_excerpt(result.diagnostics_excerpt)
+        return self.runtime.foundation.ok(
+            MathlibCheckView(
+                module=normalized_module,
+                decl_name=normalized_decl,
+                passed=passed,
+                diagnostics=diagnostics,
+                checked_code=code,
+                toolkit_tool=result.toolkit_tool or result.provider,
+                summary=(
+                    f"Mathlib name check passed for {normalized_decl}."
+                    if passed
+                    else f"Mathlib name check failed for {normalized_decl}."
+                ),
             )
         )
 
@@ -386,44 +376,31 @@ class ToolkitIngestionComponent:
                 )
             )
         code = f"import {normalized_target}\n#check True\n"
-        failures: list[ServiceIssue] = []
-        for tool_name in ("lsp.run_snippet", "run_snippet"):
-            result = self.runtime.external.lean_mcp_toolkit.call_tool(
-                tool_name,
-                {"repo_root": str(repo_root), "code": code, "include_diagnostics": True},
-            )
-            if not result.ok:
-                failures.append(
-                    self.runtime.foundation.issue(
-                        result.issue_code or "mathlib_module_check_tool_failed",
-                        result.summary or f"Toolkit module check tool failed: {tool_name}",
-                        severity=IssueSeverity.WARNING,
-                        details={"tool": tool_name},
-                    )
-                )
-                continue
-            passed, diagnostics = self._check_passed_from_value(result.value)
-            return self.runtime.foundation.ok(
-                MathlibAccessCheckView(
-                    target=normalized_target,
-                    target_kind="module",
-                    module=normalized_target,
-                    passed=passed,
-                    diagnostics=diagnostics,
-                    checked_code=code,
-                    toolkit_tool=tool_name,
-                    summary=(
-                        f"Mathlib module access check passed for {normalized_target}."
-                        if passed
-                        else f"Mathlib module access check failed for {normalized_target}."
-                    ),
+        result = self.runtime.external.lean_toolchain.check_mathlib_module(repo_root, module=normalized_target)
+        if not result.ok:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    result.issue_code or "mathlib_module_check_unavailable",
+                    result.summary,
+                    object_ref=normalized_target,
+                    details={"provider": result.provider, "fallback_reason": result.fallback_reason or ""},
                 )
             )
-        return self.runtime.foundation.fail(
-            self.runtime.foundation.issue(
-                "mathlib_module_check_unavailable",
-                f"No usable toolkit module check tool was available for {normalized_target}.",
-                details={"attempted_tools": "lsp.run_snippet, run_snippet", "failures": "; ".join(issue.message for issue in failures)},
+        passed = bool(result.passed if result.passed is not None else result.ok)
+        return self.runtime.foundation.ok(
+            MathlibAccessCheckView(
+                target=normalized_target,
+                target_kind="module",
+                module=normalized_target,
+                passed=passed,
+                diagnostics=self._diagnostics_from_excerpt(result.diagnostics_excerpt),
+                checked_code=code,
+                toolkit_tool=result.toolkit_tool or result.provider,
+                summary=(
+                    f"Mathlib module access check passed for {normalized_target}."
+                    if passed
+                    else f"Mathlib module access check failed for {normalized_target}."
+                ),
             )
         )
 
@@ -702,6 +679,11 @@ class ToolkitIngestionComponent:
         if tool_name == "check_mathlib_name":
             return {"repo_root": str(repo_root), "module": module, "decl_name": decl_name, "code": code}
         return {"repo_root": str(repo_root), "code": code, "include_diagnostics": True}
+
+    def _diagnostics_from_excerpt(self, excerpt: str | None) -> list[str]:
+        if not excerpt:
+            return []
+        return [line.strip() for line in excerpt.splitlines() if line.strip()]
 
     def _check_passed_from_value(self, value: dict[str, Any] | list[Any] | str | None) -> tuple[bool, list[str]]:
         if not isinstance(value, dict):
