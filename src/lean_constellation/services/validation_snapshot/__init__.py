@@ -22,7 +22,10 @@ from lean_constellation.services.validation_snapshot.consistency_check import (
 )
 from lean_constellation.services.validation_snapshot.readiness_gate import (
     ContentReadinessProvider,
+    ContentReadyGateView,
     ReadinessGateComponent,
+    RepoReadyGateView,
+    ScopeReadyGateView,
 )
 from lean_constellation.services.validation_snapshot.service import ValidationSnapshotService
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
@@ -48,6 +51,7 @@ __all__ = [
     "ConsistencyCheckComponent",
     "ConsistencyCheckScope",
     "ContentReadinessProvider",
+    "ContentReadyGateView",
     "DeclGraphAuditProvider",
     "FormalStageConsistencyProvider",
     "GateGapRecord",
@@ -55,6 +59,7 @@ __all__ = [
     "PreparationInputRepairView",
     "ProjectionSyncSummaryView",
     "ReadinessGateComponent",
+    "RepoReadyGateView",
     "RepoCheckpointKind",
     "RepoCheckpointPolicy",
     "RepoCheckpointSnapshotManifest",
@@ -65,5 +70,6 @@ __all__ = [
     "SnapshotFilesManifest",
     "SnapshotRestoreComponent",
     "SnapshotRestoreView",
+    "ScopeReadyGateView",
     "ValidationSnapshotService",
 ]

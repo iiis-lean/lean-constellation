@@ -5,6 +5,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -56,7 +58,7 @@ class RealSnapshotArkProvider:
             self.foundation.mutation_view(
                 object_ref=f"ark:{snapshot_id}",
                 changed=True,
-                summary="Restored fake ARK runtime snapshot for real filesystem test.",
+                summary="Restored runtime snapshot through a snapshot provider test double.",
             )
         )
 
@@ -109,7 +111,7 @@ def _write_real_preparation_input(foundation: FoundationService, repo_root: Path
 def test_snapshot_restore_real_filesystem_checkpoint_roundtrip(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_real_preparation_input(foundation, repo_root)
     source_root = repo_root / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
@@ -127,7 +129,7 @@ def test_snapshot_restore_real_filesystem_checkpoint_roundtrip(tmp_path: Path) -
 
     ark = RealSnapshotArkProvider(foundation)
     service = ValidationSnapshotService(
-        foundation=foundation,
+        foundation.runtime,
         runtime_stability_provider=RealSnapshotRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=ark,
     )

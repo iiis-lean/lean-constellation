@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 import json
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,7 @@ from lean_constellation.services.validation_snapshot import (
 class FakeRuntimeStabilityProvider:
     def __init__(self, foundation: FoundationService) -> None:
         self.foundation = foundation
+        self.calls: list[tuple[RepoCheckpointKind, list[str]]] = []
 
     def check_repo_stable_point(
         self,
@@ -41,7 +44,8 @@ class FakeRuntimeStabilityProvider:
         checkpoint_kind: RepoCheckpointKind,
         node_paths: list[str] | None = None,
     ):
-        del repo_root, node_paths
+        del repo_root
+        self.calls.append((checkpoint_kind, list(node_paths or [])))
         return self.foundation.ok(
             self.foundation.gate_passed(
                 "runtime_stability",
@@ -93,7 +97,7 @@ class FakeArkSnapshotProvider:
             self.foundation.mutation_view(
                 object_ref=f"ark:{snapshot_id}",
                 changed=True,
-                summary="Restored fake ARK runtime snapshot.",
+                summary="Restored runtime snapshot through a snapshot provider test double.",
             )
         )
 
@@ -290,12 +294,37 @@ class FakeLeanProjectionForConsistency:
         repo_projection_passed: bool = True,
         prelude_passed: bool = True,
         interfaces_passed: bool = True,
+        formal_snapshot_passed: bool = True,
     ) -> None:
+        self.foundation = foundation
+        self.formal_snapshot_passed = formal_snapshot_passed
         self.repair = FakeRepairForConsistency(foundation, passed=repo_projection_passed)
         self.node_projection = FakeNodeProjectionForConsistency(
             foundation,
             prelude_passed=prelude_passed,
             interfaces_passed=interfaces_passed,
+        )
+
+    def check_decl_file_snapshot_sync(self, repo_root: Path, *, node_path: str, decl_name: str, stage: str):
+        del repo_root
+        if self.formal_snapshot_passed:
+            return self.foundation.ok(
+                self.foundation.gate_passed(
+                    "decl_file_snapshot_sync",
+                    summary=f"{stage} formal snapshot is synchronized for {node_path}:{decl_name}.",
+                )
+            )
+        return self.foundation.ok(
+            self.foundation.gate_failed(
+                "decl_file_snapshot_sync",
+                self.foundation.issue(
+                    "decl_file_snapshot_stale",
+                    "Fake formal snapshot is stale.",
+                    object_ref=f"{node_path}:{decl_name}",
+                    field=stage,
+                ),
+                summary="Fake formal snapshot is stale.",
+            )
         )
 
 
@@ -483,7 +512,7 @@ class FakeRepoReadyGateForAudit:
 
 
 def _write_preparation_input(tmp_path: Path, *, mode: SourceCorpusMode = SourceCorpusMode.PREPARE) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     prep = RepoPreparationInput(
         goal="Formalize the requested source material.",
         source_corpus_mode=mode,
@@ -544,7 +573,7 @@ def _read_gate_gap_records(repo_root: Path) -> list[dict[str, Any]]:
 
 def test_missing_runtime_provider_blocks_stable_point(tmp_path: Path) -> None:
     _write_preparation_input(tmp_path)
-    service = ValidationSnapshotService()
+    service = make_runtime().validation_snapshot
 
     gate = service.check_repo_stable_point(tmp_path, checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL)
 
@@ -555,11 +584,10 @@ def test_missing_runtime_provider_blocks_stable_point(tmp_path: Path) -> None:
 
 
 def test_runtime_gate_failure_blocks_snapshot_before_ark_provider(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
-        foundation=foundation,
+    service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=BlockingRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=ark,
     )
@@ -576,10 +604,9 @@ def test_runtime_gate_failure_blocks_snapshot_before_ark_provider(tmp_path: Path
 
 
 def test_missing_ark_provider_blocks_snapshot_creation(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    service = ValidationSnapshotService(
-        foundation=foundation,
+    service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
     )
 
@@ -594,7 +621,7 @@ def test_missing_ark_provider_blocks_snapshot_creation(tmp_path: Path) -> None:
 
 
 def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     assert foundation.store.write_json_atomic(tmp_path / ".lean_constellation" / "repo.json", {"main_node": "Main"}).ok
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
@@ -605,8 +632,7 @@ def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> N
     (tmp_path / ".agent_runtime").mkdir()
     (tmp_path / ".agent_runtime" / "state.json").write_text("do not snapshot", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
-        foundation=foundation,
+    service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=ark,
     )
@@ -649,11 +675,10 @@ def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> N
 
 
 def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
-        foundation=foundation,
+    service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=ark,
     )
@@ -667,6 +692,8 @@ def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) 
 
     assert created.ok
     assert created.value is not None
+    assert created.value.refreshed_scope_ids == ["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"]
+    assert created.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
     assert ark.created == [(["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"], "content batch finished")]
     manifest = foundation.store.read_json(
         Path(created.value.root) / "snapshot.json",
@@ -674,15 +701,55 @@ def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) 
     )
     assert manifest.ok
     assert manifest.value is not None
+    assert manifest.value.refreshed_scope_ids == ["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"]
     assert manifest.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
 
 
+def test_content_task_checkpoint_normalizes_node_paths(tmp_path: Path) -> None:
+    foundation = make_runtime().foundation
+    (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    ark = FakeArkSnapshotProvider(foundation)
+    runtime = FakeRuntimeStabilityProvider(foundation)
+    service = ValidationSnapshotService(
+        foundation.runtime,
+        runtime_stability_provider=runtime,
+        ark_snapshot_provider=ark,
+    )
+
+    created = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
+        label="before dispatch",
+        node_paths=[" Main.Topic.Core ", "Main.Topic.Core", "Main.Topic.Consumer"],
+    )
+
+    assert created.ok
+    assert created.value is not None
+    assert created.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
+    assert created.value.refreshed_scope_ids == ["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"]
+    assert runtime.calls == [
+        (
+            RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
+            ["Main.Topic.Core", "Main.Topic.Consumer"],
+        )
+    ]
+    assert ark.created == [(["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"], "before dispatch")]
+
+    invalid = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
+        node_paths=["Main.Topic.Core", " "],
+    )
+
+    assert not invalid.ok
+    assert invalid.issues[0].kind == "checkpoint_node_path_required"
+
+
 def test_restore_missing_ark_provider_fails_without_touching_files(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
-    creator = ValidationSnapshotService(
-        foundation=foundation,
+    creator = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
     )
@@ -693,7 +760,7 @@ def test_restore_missing_ark_provider_fails_without_touching_files(tmp_path: Pat
     assert created.ok
     assert created.value is not None
     (tmp_path / "Main.lean").write_text("-- modified after snapshot\n", encoding="utf-8")
-    restorer = ValidationSnapshotService(foundation=foundation)
+    restorer = ValidationSnapshotService(foundation.runtime)
 
     restored = restorer.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
 
@@ -703,30 +770,25 @@ def test_restore_missing_ark_provider_fails_without_touching_files(tmp_path: Pat
 
 
 def test_snapshot_stable_point_kind_branches(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    node_service = ValidationSnapshotService(foundation=foundation).node
+    node_service = ValidationSnapshotService(foundation.runtime).node
     assert node_service.ensure_native_root_main_contract(tmp_path).ok
     runtime = FakeRuntimeStabilityProvider(foundation)
 
-    requirement_component = ValidationSnapshotService(
-        foundation=foundation,
+    requirement_component = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=runtime,
         ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
     ).snapshot_restore
-    adapter_pass_component = ValidationSnapshotService(
-        foundation=foundation,
-        readiness_gate=ReadinessGateComponent(
-            foundation=foundation,
+    adapter_pass_component = ValidationSnapshotService(foundation.runtime,
+        readiness_gate=ReadinessGateComponent(foundation.runtime,
             adapter=FakeAdapterReadyForReadiness(foundation, passed=True),
         ),
         runtime_stability_provider=runtime,
         ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
     ).snapshot_restore
-    adapter_fail_component = ValidationSnapshotService(
-        foundation=foundation,
-        readiness_gate=ReadinessGateComponent(
-            foundation=foundation,
+    adapter_fail_component = ValidationSnapshotService(foundation.runtime,
+        readiness_gate=ReadinessGateComponent(foundation.runtime,
             adapter=FakeAdapterReadyForReadiness(foundation, passed=False),
         ),
         runtime_stability_provider=runtime,
@@ -771,12 +833,11 @@ def test_snapshot_stable_point_kind_branches(tmp_path: Path) -> None:
 
 
 def test_snapshot_create_copy_failure_cleans_manifest_without_ark_rollback(tmp_path: Path, monkeypatch) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
-        foundation=foundation,
+    service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=ark,
     )
@@ -799,12 +860,11 @@ def test_snapshot_create_copy_failure_cleans_manifest_without_ark_rollback(tmp_p
 
 
 def test_restore_preflights_missing_archive_before_ark_restore(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
-        foundation=foundation,
+    service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=ark,
     )
@@ -828,7 +888,7 @@ def test_restore_preflights_missing_archive_before_ark_restore(tmp_path: Path) -
 
 
 def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
     builder = SnapshotRestoreIndexBuilder(foundation)
@@ -836,8 +896,7 @@ def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
     ctx = FoundationContext(repo_root=tmp_path, caller="unit-test")
     first_index = foundation.ensure_index(ctx, builder.index_name)
     assert first_index.ok and first_index.value is not None
-    service = ValidationSnapshotService(
-        foundation=foundation,
+    service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
     )
@@ -866,11 +925,10 @@ def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
 
 
 def test_snapshot_list_filters_sorts_and_skips_malformed_manifests(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
-    service = ValidationSnapshotService(
-        foundation=foundation,
+    service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
     )
@@ -911,14 +969,14 @@ def test_snapshot_list_filters_sorts_and_skips_malformed_manifests(tmp_path: Pat
 
 
 def test_native_handoff_gate_aggregates_source_index_and_main_contract(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    material = MaterialService(foundation=foundation)
-    workspace = RepoWorkspaceService(foundation=foundation)
+    foundation = make_runtime().foundation
+    material = foundation.runtime.material
+    workspace = foundation.runtime.repo_workspace
     _write_preparation_input(tmp_path)
     assert workspace.metadata.ensure_repo_model(tmp_path).ok
     assert workspace.metadata.set_repo_format(tmp_path, repo_format=RepoFormat.NATIVE, reason="unit test").ok
     _prepare_source_and_index(material, tmp_path)
-    service = ValidationSnapshotService(foundation=foundation, repo_workspace=workspace, material=material)
+    service = ValidationSnapshotService(foundation.runtime)
     assert service.node.ensure_native_root_main_contract(tmp_path).ok
 
     gate = service.readiness_gate.check_native_handoff_gate(tmp_path)
@@ -929,7 +987,7 @@ def test_native_handoff_gate_aggregates_source_index_and_main_contract(tmp_path:
 
 
 def test_consistency_source_corpus_and_index_direct_failures(tmp_path: Path) -> None:
-    service = ValidationSnapshotService()
+    service = make_runtime().validation_snapshot
 
     corpus = service.consistency.check_source_corpus_consistency(tmp_path)
     index = service.consistency.check_source_index_consistency(tmp_path)
@@ -943,9 +1001,9 @@ def test_consistency_source_corpus_and_index_direct_failures(tmp_path: Path) -> 
 
 
 def test_consistency_contract_directly_reports_bad_dep_and_warning(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    service = ValidationSnapshotService(foundation=foundation)
+    service = ValidationSnapshotService(foundation.runtime)
     assert service.node.ensure_native_root_main_contract(tmp_path).ok
     assert service.node.create_scope_node(
         tmp_path,
@@ -990,16 +1048,17 @@ def test_consistency_contract_directly_reports_bad_dep_and_warning(tmp_path: Pat
 
 
 def test_consistency_formal_stage_default_and_injected_provider(tmp_path: Path) -> None:
-    default_service = ValidationSnapshotService()
-    missing = default_service.consistency.check_formal_stage_consistency(
+    default_service = make_runtime().validation_snapshot
+    missing = ConsistencyCheckComponent(default_service.runtime).check_formal_stage_consistency(
         tmp_path,
         node_path="Main.Topic.Core",
         decl_name="core_result",
         stage="statement",
     )
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     passing = ConsistencyCheckComponent(
-        foundation=foundation,
+        foundation.runtime,
+        lean_projection=FakeLeanProjectionForConsistency(foundation),
         formal_stage_provider=FakeFormalStageConsistencyProvider(foundation, passed=True),
     ).check_formal_stage_consistency(
         tmp_path,
@@ -1008,7 +1067,8 @@ def test_consistency_formal_stage_default_and_injected_provider(tmp_path: Path) 
         stage="proof",
     )
     failing = ConsistencyCheckComponent(
-        foundation=foundation,
+        foundation.runtime,
+        lean_projection=FakeLeanProjectionForConsistency(foundation),
         formal_stage_provider=FakeFormalStageConsistencyProvider(foundation, passed=False),
     ).check_formal_stage_consistency(
         tmp_path,
@@ -1031,17 +1091,14 @@ def test_consistency_formal_stage_default_and_injected_provider(tmp_path: Path) 
 
 
 def test_consistency_adapter_decl_direct_branches(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    missing_module = ConsistencyCheckComponent(
-        foundation=foundation,
+    foundation = make_runtime().foundation
+    missing_module = ConsistencyCheckComponent(foundation.runtime,
         adapter=FakeAdapterForConsistency(foundation, complete=True, module_count=0, projection_passed=True),
     ).check_adapter_decl_consistency(tmp_path, decl_name="main_result")
-    incomplete = ConsistencyCheckComponent(
-        foundation=foundation,
+    incomplete = ConsistencyCheckComponent(foundation.runtime,
         adapter=FakeAdapterForConsistency(foundation, complete=False, module_count=1, projection_passed=True),
     ).check_adapter_decl_consistency(tmp_path, decl_name="main_result")
-    stale_projection = ConsistencyCheckComponent(
-        foundation=foundation,
+    stale_projection = ConsistencyCheckComponent(foundation.runtime,
         adapter=FakeAdapterForConsistency(foundation, complete=True, module_count=1, projection_passed=False),
     ).check_adapter_decl_consistency(tmp_path, decl_name="main_result")
 
@@ -1060,12 +1117,11 @@ def test_consistency_adapter_decl_direct_branches(tmp_path: Path) -> None:
 
 
 def test_consistency_projection_sync_dispatches_by_scope(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    node_service = ValidationSnapshotService(foundation=foundation).node
+    node_service = ValidationSnapshotService(foundation.runtime).node
     assert node_service.ensure_native_root_main_contract(tmp_path).ok
-    component = ConsistencyCheckComponent(
-        foundation=foundation,
+    component = ConsistencyCheckComponent(foundation.runtime,
         node=node_service,
         adapter=FakeAdapterForConsistency(foundation, complete=True, module_count=1, projection_passed=False),
         lean_projection=FakeLeanProjectionForConsistency(
@@ -1096,12 +1152,12 @@ def test_consistency_projection_sync_dispatches_by_scope(tmp_path: Path) -> None
 
 
 def test_readiness_native_handoff_reports_missing_source_index(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    workspace = RepoWorkspaceService(foundation=foundation)
+    foundation = make_runtime().foundation
+    workspace = foundation.runtime.repo_workspace
     _write_preparation_input(tmp_path)
     assert workspace.metadata.ensure_repo_model(tmp_path).ok
     assert workspace.metadata.set_repo_format(tmp_path, repo_format=RepoFormat.NATIVE, reason="unit test").ok
-    service = ValidationSnapshotService(foundation=foundation, repo_workspace=workspace)
+    service = ValidationSnapshotService(foundation.runtime)
     assert service.node.ensure_native_root_main_contract(tmp_path).ok
 
     gate = service.readiness_gate.check_native_handoff_gate(tmp_path)
@@ -1111,10 +1167,9 @@ def test_readiness_native_handoff_reports_missing_source_index(tmp_path: Path) -
 
 
 def test_readiness_content_task_admission_reports_stale_prelude(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    node_service = ValidationSnapshotService(foundation=foundation).node
-    gate_component = ReadinessGateComponent(
-        foundation=foundation,
+    foundation = make_runtime().foundation
+    node_service = ValidationSnapshotService(foundation.runtime).node
+    gate_component = ReadinessGateComponent(foundation.runtime,
         node=node_service,
         adapter=FakeAdapterReadyForReadiness(foundation, passed=True),
         lean_projection=FakeLeanProjectionForConsistency(foundation, prelude_passed=False),
@@ -1140,9 +1195,9 @@ def test_readiness_content_task_admission_reports_stale_prelude(tmp_path: Path) 
 
 
 def test_readiness_content_node_ready_provider_and_interface_branches(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    node_service = ValidationSnapshotService(foundation=foundation).node
+    node_service = ValidationSnapshotService(foundation.runtime).node
     assert node_service.ensure_native_root_main_contract(tmp_path).ok
     assert node_service.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary.").ok
     assert node_service.create_content_node(
@@ -1161,16 +1216,14 @@ def test_readiness_content_node_ready_provider_and_interface_branches(tmp_path: 
         summary="Expose the core result.",
         actor="coordinator",
     ).ok
-    ready_gate = ReadinessGateComponent(
-        foundation=foundation,
+    ready_gate = ReadinessGateComponent(foundation.runtime,
         node=node_service,
         adapter=FakeAdapterReadyForReadiness(foundation, passed=True),
         lean_projection=FakeLeanProjectionForConsistency(foundation),
         consistency=FakeConsistencyForReadiness(foundation, projection_passed=True),
         content_readiness_provider=FakeContentReadinessProvider(foundation, passed=True),
     )
-    graph_fail_gate = ReadinessGateComponent(
-        foundation=foundation,
+    graph_fail_gate = ReadinessGateComponent(foundation.runtime,
         node=node_service,
         adapter=FakeAdapterReadyForReadiness(foundation, passed=True),
         lean_projection=FakeLeanProjectionForConsistency(foundation),
@@ -1192,9 +1245,9 @@ def test_readiness_content_node_ready_provider_and_interface_branches(tmp_path: 
 
 
 def test_readiness_content_blocked_submit_reason_and_kind(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    service = ValidationSnapshotService(foundation=foundation)
+    service = ValidationSnapshotService(foundation.runtime)
     assert service.node.ensure_native_root_main_contract(tmp_path).ok
 
     missing_reason = service.readiness_gate.check_content_node_blocked_submit(tmp_path, node_path="Main", reason=" ")
@@ -1211,12 +1264,11 @@ def test_readiness_content_blocked_submit_reason_and_kind(tmp_path: Path) -> Non
 
 
 def test_readiness_scope_commit_base_and_projection_branches(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    node_service = ValidationSnapshotService(foundation=foundation).node
+    node_service = ValidationSnapshotService(foundation.runtime).node
     assert node_service.ensure_native_root_main_contract(tmp_path).ok
-    stale_projection = ReadinessGateComponent(
-        foundation=foundation,
+    stale_projection = ReadinessGateComponent(foundation.runtime,
         node=node_service,
         adapter=FakeAdapterReadyForReadiness(foundation, passed=True),
         lean_projection=FakeLeanProjectionForConsistency(foundation, interfaces_passed=False),
@@ -1239,17 +1291,15 @@ def test_readiness_scope_commit_base_and_projection_branches(tmp_path: Path) -> 
 
 
 def test_readiness_repo_ready_base_and_consistency_branches(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    node_service = ValidationSnapshotService(foundation=foundation).node
+    node_service = ValidationSnapshotService(foundation.runtime).node
     assert node_service.ensure_native_root_main_contract(tmp_path).ok
-    gate = ReadinessGateComponent(
-        foundation=foundation,
+    gate = ReadinessGateComponent(foundation.runtime,
         node=node_service,
         consistency=FakeConsistencyForReadiness(foundation, source_passed=True, index_passed=True, projection_passed=True),
     )
-    projection_fail_gate = ReadinessGateComponent(
-        foundation=foundation,
+    projection_fail_gate = ReadinessGateComponent(foundation.runtime,
         node=node_service,
         consistency=FakeConsistencyForReadiness(foundation, source_passed=True, index_passed=True, projection_passed=False),
     )
@@ -1271,13 +1321,11 @@ def test_readiness_repo_ready_base_and_consistency_branches(tmp_path: Path) -> N
 
 
 def test_readiness_adapter_ready_delegates_adapter_gate(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    passed = ReadinessGateComponent(
-        foundation=foundation,
+    foundation = make_runtime().foundation
+    passed = ReadinessGateComponent(foundation.runtime,
         adapter=FakeAdapterReadyForReadiness(foundation, passed=True),
     ).check_adapter_ready(tmp_path)
-    failed = ReadinessGateComponent(
-        foundation=foundation,
+    failed = ReadinessGateComponent(foundation.runtime,
         adapter=FakeAdapterReadyForReadiness(foundation, passed=False),
     ).check_adapter_ready(tmp_path)
 
@@ -1291,7 +1339,7 @@ def test_readiness_adapter_ready_delegates_adapter_gate(tmp_path: Path) -> None:
 
 
 def test_audit_missing_decl_graph_provider_is_explicit(tmp_path: Path) -> None:
-    service = ValidationSnapshotService()
+    service = AuditComponent(make_runtime().validation_snapshot.runtime)
 
     audit = service.run_round_local_audit(tmp_path, node_path="Main.Core", round_id="round_1", stage="proof")
 
@@ -1302,13 +1350,11 @@ def test_audit_missing_decl_graph_provider_is_explicit(tmp_path: Path) -> None:
 
 
 def test_audit_round_provider_pass_and_blocking(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    passing = AuditComponent(
-        foundation=foundation,
+    foundation = make_runtime().foundation
+    passing = AuditComponent(foundation.runtime,
         decl_graph_provider=FakeDeclGraphAuditProvider(foundation, round_passed=True),
     )
-    blocking = AuditComponent(
-        foundation=foundation,
+    blocking = AuditComponent(foundation.runtime,
         decl_graph_provider=FakeDeclGraphAuditProvider(foundation, round_passed=False),
     )
 
@@ -1326,13 +1372,11 @@ def test_audit_round_provider_pass_and_blocking(tmp_path: Path) -> None:
 
 
 def test_audit_delete_sanity_provider_pass_and_closure_failure(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    passing = AuditComponent(
-        foundation=foundation,
+    foundation = make_runtime().foundation
+    passing = AuditComponent(foundation.runtime,
         decl_graph_provider=FakeDeclGraphAuditProvider(foundation, delete_passed=True),
     )
-    blocking = AuditComponent(
-        foundation=foundation,
+    blocking = AuditComponent(foundation.runtime,
         decl_graph_provider=FakeDeclGraphAuditProvider(foundation, delete_passed=False),
     )
 
@@ -1350,7 +1394,7 @@ def test_audit_delete_sanity_provider_pass_and_closure_failure(tmp_path: Path) -
 
 
 def test_audit_record_gate_gap_validates_and_appends_jsonl(tmp_path: Path) -> None:
-    service = ValidationSnapshotService()
+    service = make_runtime().validation_snapshot
 
     missing_source = service.audit.record_gate_gap(
         tmp_path,
@@ -1392,14 +1436,12 @@ def test_audit_record_gate_gap_validates_and_appends_jsonl(tmp_path: Path) -> No
 
 
 def test_audit_repo_ready_aggregates_gate_issues_into_findings(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    passing = AuditComponent(
-        foundation=foundation,
+    foundation = make_runtime().foundation
+    passing = AuditComponent(foundation.runtime,
         consistency=FakeConsistencyForReadiness(foundation, source_passed=True, index_passed=True, projection_passed=True),
         readiness_gate=FakeRepoReadyGateForAudit(foundation, passed=True),
     )
-    failing = AuditComponent(
-        foundation=foundation,
+    failing = AuditComponent(foundation.runtime,
         consistency=FakeConsistencyForReadiness(foundation, source_passed=False, index_passed=True, projection_passed=False),
         readiness_gate=FakeRepoReadyGateForAudit(foundation, passed=False),
     )
@@ -1419,8 +1461,8 @@ def test_audit_repo_ready_aggregates_gate_issues_into_findings(tmp_path: Path) -
 
 
 def test_admin_repair_requirement_obsolete_marks_requirement_and_records_audit_note(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    service = ValidationSnapshotService(foundation=foundation)
+    foundation = make_runtime().foundation
+    service = ValidationSnapshotService(foundation.runtime)
     created = service.repo_workspace.requirement.create_requirement(
         tmp_path,
         name="need_topology",
@@ -1458,9 +1500,9 @@ def test_admin_repair_requirement_obsolete_marks_requirement_and_records_audit_n
 
 
 def test_admin_repair_projection_requires_note_and_records_scope_repair(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    service = ValidationSnapshotService(foundation=foundation)
+    service = ValidationSnapshotService(foundation.runtime)
     assert service.node.ensure_native_root_main_contract(tmp_path).ok
 
     missing_note = service.admin_repair.repair_projection(tmp_path, scope="Main", note=" ")
@@ -1478,13 +1520,13 @@ def test_admin_repair_projection_requires_note_and_records_scope_repair(tmp_path
 
 
 def test_admin_repair_rebuild_all_indexes_requires_note_and_records_audit_note(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
     builder = SnapshotRestoreIndexBuilder(foundation)
     assert foundation.register_index_builder(builder).ok
     ctx = FoundationContext(repo_root=tmp_path, caller="unit-test")
     assert foundation.ensure_index(ctx, builder.index_name).ok
-    service = ValidationSnapshotService(foundation=foundation)
+    service = ValidationSnapshotService(foundation.runtime)
 
     missing_note = service.admin_repair.rebuild_all_indexes(tmp_path, note=" ")
     rebuilt = service.admin_repair.rebuild_all_indexes(tmp_path, note="Rebuild after manual repair.")
@@ -1501,13 +1543,12 @@ def test_admin_repair_rebuild_all_indexes_requires_note_and_records_audit_note(t
 
 
 def test_admin_repair_run_full_audit_delegates_audit_component(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    audit = AuditComponent(
-        foundation=foundation,
+    foundation = make_runtime().foundation
+    audit = AuditComponent(foundation.runtime,
         consistency=FakeConsistencyForReadiness(foundation, source_passed=False, index_passed=True, projection_passed=True),
         readiness_gate=FakeRepoReadyGateForAudit(foundation, passed=False),
     )
-    admin = ValidationSnapshotService(foundation=foundation, audit=audit).admin_repair
+    admin = ValidationSnapshotService(foundation.runtime, audit=audit).admin_repair
 
     report = admin.run_full_audit(tmp_path)
 
@@ -1519,7 +1560,7 @@ def test_admin_repair_run_full_audit_delegates_audit_component(tmp_path: Path) -
 
 def test_admin_repair_preparation_input_patch_is_whitelisted_and_noted(tmp_path: Path) -> None:
     _write_preparation_input(tmp_path)
-    service = ValidationSnapshotService()
+    service = make_runtime().validation_snapshot
 
     missing_note = service.admin_repair.repair_preparation_input(
         tmp_path,

@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoPreparationInput
-from lean_constellation.services.foundation import FoundationContext, FoundationService, MutationSummaryView, ServiceResult, WriteMode
+from lean_constellation.services.foundation import FoundationContext, MutationSummaryView, ServiceResult, WriteMode
 from lean_constellation.services.lean_projection import LeanProjectionService
 from lean_constellation.services.lean_projection.repair import ProjectionRepairView
 from lean_constellation.services.node import NodeService
 from lean_constellation.services.repo_workspace import RepoWorkspaceService
 from lean_constellation.services.validation_snapshot.audit import AuditComponent, AuditReport
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class RequirementRepairHintView(StrictModel):
@@ -50,18 +53,30 @@ class AdminRepairComponent:
 
     def __init__(
         self,
+        runtime: LeanRuntimeServices,
         *,
-        foundation: FoundationService | None = None,
         repo_workspace: RepoWorkspaceService | None = None,
         node: NodeService | None = None,
         lean_projection: LeanProjectionService | None = None,
         audit: AuditComponent | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.repo_workspace = repo_workspace or RepoWorkspaceService(foundation=self.foundation)
-        self.node = node or NodeService(foundation=self.foundation, repo_workspace=self.repo_workspace)
-        self.lean_projection = lean_projection or LeanProjectionService(foundation=self.foundation)
-        self.audit = audit or AuditComponent(foundation=self.foundation)
+        self.runtime = runtime
+        self._repo_workspace_override = repo_workspace
+        self._node_override = node
+        self._lean_projection_override = lean_projection
+        self.audit = audit or AuditComponent(runtime)
+
+    @property
+    def repo_workspace(self) -> RepoWorkspaceService:
+        return self._repo_workspace_override or self.runtime.repo_workspace
+
+    @property
+    def node(self) -> NodeService:
+        return self._node_override or self.runtime.node
+
+    @property
+    def lean_projection(self) -> LeanProjectionService:
+        return self._lean_projection_override or self.runtime.lean_projection
 
     def mark_requirement_obsolete_and_recreate_hint(
         self,
@@ -72,22 +87,22 @@ class AdminRepairComponent:
         target_repo: str | None = None,
     ) -> ServiceResult[RequirementRepairHintView]:
         if not note or not note.strip():
-            return self.foundation.fail(self.foundation.issue("repair_note_required", "Repair note is required.", field="note"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("repair_note_required", "Repair note is required.", field="note"))
         obsolete = self.repo_workspace.requirement.mark_requirement_obsolete(
             Path(repo_root),
             requirement_name=requirement_name,
             note=note,
         )
         if not obsolete.ok or obsolete.value is None:
-            return self.foundation.fail(obsolete.issues)
+            return self.runtime.foundation.fail(obsolete.issues)
         audit_note = self.mutation_view_for_audit_note(
             repo_root,
             note=f"Marked requirement {requirement_name} obsolete: {note.strip()}",
         )
         if not audit_note.ok:
-            return self.foundation.fail(audit_note.issues)
+            return self.runtime.foundation.fail(audit_note.issues)
         target = target_repo or obsolete.value.requirement.target_repo
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             RequirementRepairHintView(
                 requirement_name=requirement_name,
                 target_repo=target,
@@ -99,26 +114,26 @@ class AdminRepairComponent:
 
     def repair_projection(self, repo_root: Path, *, scope: str = "repo", note: str) -> ServiceResult[ProjectionRepairView]:
         if not note or not note.strip():
-            return self.foundation.fail(self.foundation.issue("repair_note_required", "Projection repair requires a note.", field="note"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("repair_note_required", "Projection repair requires a note.", field="note"))
         repo_root = Path(repo_root)
         if scope != "repo":
             repaired = self.lean_projection.refresh_node_projection(repo_root, node_path=scope)
             if not repaired.ok or repaired.value is None:
-                return self.foundation.fail(repaired.issues)
+                return self.runtime.foundation.fail(repaired.issues)
             audit_note = self.mutation_view_for_audit_note(repo_root, note=f"Projection repair for {scope}: {note.strip()}")
             if not audit_note.ok:
-                return self.foundation.fail(audit_note.issues)
+                return self.runtime.foundation.fail(audit_note.issues)
             return repaired
         tree = self.node.node_tree.get_node_tree(repo_root)
         if not tree.ok or tree.value is None:
-            return self.foundation.fail(tree.issues)
+            return self.runtime.foundation.fail(tree.issues)
         actions = []
         changed_files: list[str] = []
         changed = False
         for node in tree.value.nodes:
             repaired = self.lean_projection.refresh_node_projection(repo_root, node_path=node.path)
             if not repaired.ok or repaired.value is None:
-                return self.foundation.fail(repaired.issues)
+                return self.runtime.foundation.fail(repaired.issues)
             actions.extend(repaired.value.actions)
             changed_files.extend(repaired.value.changed_files)
             changed = changed or repaired.value.changed
@@ -127,11 +142,11 @@ class AdminRepairComponent:
             changed = True
             changed_files.append(adapter.value.path)
         elif not adapter.ok and not self._only_adapter_provider_missing(adapter.issues):
-            return self.foundation.fail(adapter.issues)
+            return self.runtime.foundation.fail(adapter.issues)
         audit_note = self.mutation_view_for_audit_note(repo_root, note=f"Projection repair for repo: {note.strip()}")
         if not audit_note.ok:
-            return self.foundation.fail(audit_note.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(audit_note.issues)
+        return self.runtime.foundation.ok(
             ProjectionRepairView(
                 scope="repo",
                 changed=changed,
@@ -143,21 +158,21 @@ class AdminRepairComponent:
 
     def rebuild_all_indexes(self, repo_root: Path, *, note: str) -> ServiceResult[IndexRebuildSummaryView]:
         if not note or not note.strip():
-            return self.foundation.fail(self.foundation.issue("repair_note_required", "Index rebuild repair requires a note.", field="note"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("repair_note_required", "Index rebuild repair requires a note.", field="note"))
         ctx = FoundationContext(repo_root=Path(repo_root), caller="validation_snapshot.admin_repair")
-        metadata = self.foundation.index.list_index_metadata(ctx)
+        metadata = self.runtime.foundation.index.list_index_metadata(ctx)
         if not metadata.ok or metadata.value is None:
-            return self.foundation.fail(metadata.issues)
+            return self.runtime.foundation.fail(metadata.issues)
         rebuilt: list[str] = []
         for item in metadata.value:
-            result = self.foundation.index.rebuild_index(ctx, item.index_name, reason="admin_repair")
+            result = self.runtime.foundation.index.rebuild_index(ctx, item.index_name, reason="admin_repair")
             if not result.ok:
-                return self.foundation.fail(result.issues)
+                return self.runtime.foundation.fail(result.issues)
             rebuilt.append(item.index_name)
         audit_note = self.mutation_view_for_audit_note(Path(repo_root), note=f"Rebuilt indexes: {note.strip()}")
         if not audit_note.ok:
-            return self.foundation.fail(audit_note.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(audit_note.issues)
+        return self.runtime.foundation.ok(
             IndexRebuildSummaryView(
                 rebuilt_indexes=rebuilt,
                 summary=f"Rebuilt {len(rebuilt)} indexes.",
@@ -175,11 +190,11 @@ class AdminRepairComponent:
         note: str,
     ) -> ServiceResult[PreparationInputRepairView]:
         if not note or not note.strip():
-            return self.foundation.fail(self.foundation.issue("repair_note_required", "Preparation input repair requires a note.", field="note"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("repair_note_required", "Preparation input repair requires a note.", field="note"))
         unknown = sorted(set(patch) - self._PREPARATION_INPUT_PATCH_FIELDS)
         if unknown:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "preparation_input_patch_field_forbidden",
                     "Preparation input patch contains fields that are not allowed through generic admin repair.",
                     field=", ".join(unknown),
@@ -188,7 +203,7 @@ class AdminRepairComponent:
             )
         current = self.repo_workspace.preparation.get_preparation_input(Path(repo_root))
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
         value = current.value.input
         old_dump = value.model_dump(mode="json")
         new_notes = patch.get("notes", value.notes)
@@ -198,22 +213,22 @@ class AdminRepairComponent:
         try:
             updated = RepoPreparationInput.model_validate({**old_dump, **patch})
         except Exception as exc:  # noqa: BLE001 - normalized as ServiceResult.
-            return self.foundation.fail(
-                self.foundation.issue("preparation_input_patch_invalid", f"Preparation input patch is invalid: {exc}")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("preparation_input_patch_invalid", f"Preparation input patch is invalid: {exc}")
             )
         changed_fields = [
             field
             for field in sorted(self._PREPARATION_INPUT_PATCH_FIELDS)
             if old_dump.get(field) != updated.model_dump(mode="json").get(field)
         ]
-        path = self.foundation.layout.preparation_input_path(FoundationContext(repo_root=Path(repo_root)))
-        saved = self.foundation.store.write_json_atomic(path, updated, mode=WriteMode.UPDATE_EXISTING)
+        path = self.runtime.foundation.layout.preparation_input_path(FoundationContext(repo_root=Path(repo_root)))
+        saved = self.runtime.foundation.store.write_json_atomic(path, updated, mode=WriteMode.UPDATE_EXISTING)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
+            return self.runtime.foundation.fail(saved.issues)
         audit_note = self.mutation_view_for_audit_note(Path(repo_root), note=f"Preparation input repair: {note.strip()}")
         if not audit_note.ok:
-            return self.foundation.fail(audit_note.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(audit_note.issues)
+        return self.runtime.foundation.ok(
             PreparationInputRepairView(
                 changed=bool(changed_fields),
                 allowed_fields=sorted(self._PREPARATION_INPUT_PATCH_FIELDS),
