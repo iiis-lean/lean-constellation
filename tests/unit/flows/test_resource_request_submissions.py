@@ -1,0 +1,10 @@
+from __future__ import annotations
+
+from lean_constellation.flows.content_node_task.preparation.resource_recon.submissions import ResourceReconRequestResourceSubmission
+from lean_constellation.flows.content_node_task.submissions import ContentResourceRequestSubmission
+from lean_constellation.flows.coordinator.submissions import CoordinatorResourceRequestSubmission
+from tests.unit.flows._submission_family_helpers import assert_roundtrip
+
+
+def test_resource_request_dispatch_submissions_roundtrip() -> None:
+    assert_roundtrip(CoordinatorResourceRequestSubmission, ContentResourceRequestSubmission, ResourceReconRequestResourceSubmission)
