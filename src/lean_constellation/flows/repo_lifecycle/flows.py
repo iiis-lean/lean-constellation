@@ -1135,6 +1135,7 @@ def _record_stable_repo_snapshot(
         checkpoint_kind=checkpoint_kind,
         label=label,
         node_paths=node_paths,
+        scope_ids=[ctx.flow.scope_id],
     )
     if not snapshot.ok or snapshot.value is None:
         _mark_flow_failed_from_stable_snapshot(ctx, failure_type, snapshot.issues)

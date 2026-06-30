@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ class FakeAgent:
     agent_type: str
     cli_type: str
     home_id: str | None = None
+    thread_id: str | None = None
 
 
 @dataclass
@@ -38,6 +40,7 @@ class FakeAgentStartRecord:
     variables: dict[str, Any]
     prompt: str | None
     env: dict[str, str]
+    developer_instructions_template_override: str | None = None
     workdir: str | None = None
 
 
@@ -71,12 +74,30 @@ class FakeAgentService:
         self.agents[agent.agent_id] = agent
         return agent
 
+    def get_agent(self, agent_id: str) -> FakeAgent:
+        return self.agents[agent_id]
+
+    def fork_agent(self, source_agent_id: str, *, target_scope_id: str | None = None) -> FakeAgent:
+        source = self.get_agent(source_agent_id)
+        self._agent_seq += 1
+        agent = FakeAgent(
+            agent_id=f"agent_{self._agent_seq}",
+            scope_id=target_scope_id or source.scope_id,
+            agent_type=source.agent_type,
+            cli_type=source.cli_type,
+            home_id=source.home_id,
+            thread_id=source.thread_id or f"thread_{source.agent_id}",
+        )
+        self.agents[agent.agent_id] = agent
+        return agent
+
     def start_agent(
         self,
         agent_id: str,
         *,
         variables: dict[str, Any] | None = None,
         prompt: str | None = None,
+        developer_instructions_template_override: str | None = None,
         env: dict[str, str] | None = None,
         workdir: str | None = None,
     ) -> None:
@@ -88,6 +109,7 @@ class FakeAgentService:
                 variables=dict(variables or {}),
                 prompt=prompt,
                 env=dict(env or {}),
+                developer_instructions_template_override=developer_instructions_template_override,
                 workdir=workdir,
             )
         )
@@ -174,10 +196,15 @@ def create_fake_lean_flow_runtime(
     *,
     ark_services: ARKServices | None = None,
     app_services: AppServices | None = None,
+    step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
 ) -> FakeLeanFlowRuntime:
     flow_registry = FlowTypeRegistry()
     step_registry = StepTypeRegistry()
-    register_lean_flow_step_types(flow_registry=flow_registry, step_registry=step_registry)
+    register_lean_flow_step_types(
+        flow_registry=flow_registry,
+        step_registry=step_registry,
+        step_type_overrides=step_type_overrides,
+    )
 
     ark = ark_services or ARKServices()
     app = app_services or AppServices()

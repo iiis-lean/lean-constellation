@@ -171,12 +171,14 @@ class ValidationSnapshotService:
         checkpoint_kind: RepoCheckpointKind | str,
         label: str | None = None,
         node_paths: list[str] | None = None,
+        scope_ids: list[str] | None = None,
     ) -> ServiceResult[RepoCheckpointSnapshotView]:
         return self.snapshot_restore.create_repo_stable_point_snapshot(
             repo_root,
             checkpoint_kind=checkpoint_kind,
             label=label,
             node_paths=node_paths,
+            scope_ids=scope_ids,
         )
 
     def restore_repo_checkpoint_snapshot(
@@ -186,12 +188,14 @@ class ValidationSnapshotService:
         snapshot_id: str,
         dry_run: bool = False,
         leave_runtime_paused: bool = True,
+        prune_extra_files: bool = False,
     ) -> ServiceResult[SnapshotRestoreView]:
         return self.snapshot_restore.restore_repo_checkpoint_snapshot(
             repo_root,
             snapshot_id=snapshot_id,
             dry_run=dry_run,
             leave_runtime_paused=leave_runtime_paused,
+            prune_extra_files=prune_extra_files,
         )
 
     def list_repo_checkpoint_snapshots(

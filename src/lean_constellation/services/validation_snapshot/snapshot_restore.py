@@ -29,6 +29,7 @@ class RepoCheckpointKind(StrEnum):
     BEFORE_NATIVE_COORDINATOR_DISPATCH = "before_native_coordinator_dispatch"
     BEFORE_CONTENT_TASK_DISPATCH = "before_content_task_dispatch"
     AFTER_CONTENT_TASK_BATCH_TERMINAL = "after_content_task_batch_terminal"
+    MANUAL_TEST_STABLE_POINT = "manual_test_stable_point"
 
 
 class RepoCheckpointPolicy(StrictModel):
@@ -82,6 +83,7 @@ class SnapshotRestoreView(StrictModel):
     dry_run: bool
     restored_files: list[str] = Field(default_factory=list)
     would_restore_files: list[str] = Field(default_factory=list)
+    pruned_files: list[str] = Field(default_factory=list)
     ark_runtime_snapshot_id: str
     leave_runtime_paused: bool = True
     summary: str
@@ -235,6 +237,11 @@ class SnapshotRestoreComponent:
                 summary="A content task batch has reached terminal flow states.",
                 include_node_scopes=True,
             ),
+            RepoCheckpointKind.MANUAL_TEST_STABLE_POINT: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
+                gate_name="manual_test_stable_point",
+                summary="Admin test control requested a manual stable-point checkpoint.",
+            ),
         }
 
     def check_repo_stable_point(
@@ -289,12 +296,16 @@ class SnapshotRestoreComponent:
         checkpoint_kind: RepoCheckpointKind | str,
         label: str | None = None,
         node_paths: list[str] | None = None,
+        scope_ids: list[str] | None = None,
     ) -> ServiceResult[RepoCheckpointSnapshotView]:
         repo_root = Path(repo_root)
         kind = RepoCheckpointKind(checkpoint_kind)
         normalized_node_paths = self._normalize_checkpoint_node_paths(kind, node_paths or [])
         if not normalized_node_paths.ok or normalized_node_paths.value is None:
             return self.runtime.foundation.fail(normalized_node_paths.issues)
+        normalized_scope_ids = self._normalize_checkpoint_scope_ids(scope_ids)
+        if not normalized_scope_ids.ok:
+            return self.runtime.foundation.fail(normalized_scope_ids.issues)
         gate = self.check_repo_stable_point(repo_root, checkpoint_kind=kind, node_paths=normalized_node_paths.value)
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
@@ -313,8 +324,8 @@ class SnapshotRestoreComponent:
         lc_archive = files_root / "lean_constellation"
         project_archive = files_root / "project"
 
-        scope_ids = self._scope_ids_for(kind, normalized_node_paths.value)
-        ark = self.ark_snapshot_provider.create_runtime_snapshot(repo_root, scope_ids=scope_ids, label=label)
+        effective_scope_ids = normalized_scope_ids.value or self._scope_ids_for(kind, normalized_node_paths.value)
+        ark = self.ark_snapshot_provider.create_runtime_snapshot(repo_root, scope_ids=effective_scope_ids, label=label)
         if not ark.ok or ark.value is None:
             return self.runtime.foundation.fail(ark.issues)
 
@@ -345,7 +356,7 @@ class SnapshotRestoreComponent:
             created_at=utc_now_iso(),
             repo_root=str(repo_root),
             ark_runtime_snapshot_id=ark.value,
-            refreshed_scope_ids=scope_ids,
+            refreshed_scope_ids=effective_scope_ids,
             node_paths=normalized_node_paths.value,
             files_manifest_relpath="files_manifest.json",
             summary=gate.value.summary or f"Created repo checkpoint snapshot {snapshot_id}.",
@@ -365,7 +376,7 @@ class SnapshotRestoreComponent:
                 label=manifest.label,
                 root=str(snapshot_root),
                 ark_runtime_snapshot_id=ark.value,
-                refreshed_scope_ids=scope_ids,
+                refreshed_scope_ids=effective_scope_ids,
                 node_paths=normalized_node_paths.value,
                 file_count=len(entries),
                 summary=f"Created {kind.value} checkpoint snapshot with {len(entries)} files.",
@@ -379,6 +390,7 @@ class SnapshotRestoreComponent:
         snapshot_id: str,
         dry_run: bool = False,
         leave_runtime_paused: bool = True,
+        prune_extra_files: bool = False,
     ) -> ServiceResult[SnapshotRestoreView]:
         repo_root = Path(repo_root)
         manifest = self._load_manifest(repo_root, snapshot_id)
@@ -411,7 +423,10 @@ class SnapshotRestoreComponent:
         if not ark.ok:
             return self.runtime.foundation.fail(ark.issues)
         restored: list[str] = []
+        pruned: list[str] = []
         try:
+            if prune_extra_files:
+                pruned = self._prune_extra_files_for_restore(repo_root, files.value)
             for entry in files.value.entries:
                 source_archive = self._snapshot_dir(repo_root, snapshot_id) / "files" / entry.archive_relpath
                 target = repo_root / entry.source_relpath
@@ -434,9 +449,14 @@ class SnapshotRestoreComponent:
                 snapshot_id=snapshot_id,
                 dry_run=False,
                 restored_files=restored,
+                pruned_files=pruned,
                 ark_runtime_snapshot_id=manifest.value.ark_runtime_snapshot_id,
                 leave_runtime_paused=leave_runtime_paused,
-                summary=f"Restored {len(restored)} files from repo checkpoint snapshot; {rebuilt.value.summary if rebuilt.value else 'rebuilt derived indexes after restore.'}",
+                summary=(
+                    f"Restored {len(restored)} files from repo checkpoint snapshot"
+                    f"{f' and pruned {len(pruned)} extra files' if prune_extra_files else ''}; "
+                    f"{rebuilt.value.summary if rebuilt.value else 'rebuilt derived indexes after restore.'}"
+                ),
             )
         )
 
@@ -527,6 +547,35 @@ class SnapshotRestoreComponent:
             scope_ids.extend(f"node:{path}" for path in node_paths)
         return scope_ids
 
+    def _normalize_checkpoint_scope_ids(self, scope_ids: list[str] | None) -> ServiceResult[list[str] | None]:
+        if scope_ids is None:
+            return self.runtime.foundation.ok(None)
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for index, raw_scope_id in enumerate(scope_ids):
+            scope_id = str(raw_scope_id).strip()
+            if not scope_id:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "checkpoint_scope_id_required",
+                        "Checkpoint scope_ids cannot contain an empty scope id.",
+                        field=f"scope_ids[{index}]",
+                        suggested_action="Remove the empty entry or provide a valid ARK scope id.",
+                    )
+                )
+            if scope_id not in seen:
+                normalized.append(scope_id)
+                seen.add(scope_id)
+        if not normalized:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "checkpoint_scope_ids_required",
+                    "Checkpoint scope_ids must contain at least one scope id when provided.",
+                    suggested_action="Omit scope_ids to use the checkpoint policy default or provide a real ARK scope id.",
+                )
+            )
+        return self.runtime.foundation.ok(normalized)
+
     def _normalize_checkpoint_node_paths(
         self,
         checkpoint_kind: RepoCheckpointKind,
@@ -571,6 +620,70 @@ class SnapshotRestoreComponent:
                 continue
             entries.extend(self._copy_path(child, archive_root / child.name, source_prefix=repo_root, archive_prefix=archive_root.parent))
         return entries
+
+    def _prune_extra_files_for_restore(self, repo_root: Path, files_manifest: SnapshotFilesManifest) -> list[str]:
+        expected = {entry.source_relpath for entry in files_manifest.entries}
+        current = sorted(self._current_snapshot_managed_files(repo_root))
+        pruned: list[str] = []
+        for relpath in current:
+            if relpath in expected:
+                continue
+            target = repo_root / relpath
+            if not target.is_file():
+                continue
+            target.unlink()
+            pruned.append(relpath)
+        self._remove_empty_snapshot_managed_dirs(repo_root)
+        return pruned
+
+    def _current_snapshot_managed_files(self, repo_root: Path) -> list[str]:
+        managed: list[str] = []
+        constellation_root = self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root))
+        if constellation_root.exists():
+            for child in constellation_root.iterdir():
+                if child.name in self._EXCLUDED_CONSTELLATION_CHILDREN:
+                    continue
+                managed.extend(self._list_files(child, repo_root))
+        for child in repo_root.iterdir():
+            if child.name in self._EXCLUDED_TOP_LEVEL or child.name == ".lean_constellation":
+                continue
+            managed.extend(self._list_files(child, repo_root))
+        return managed
+
+    def _list_files(self, path: Path, repo_root: Path) -> list[str]:
+        if path.is_file():
+            return [path.relative_to(repo_root).as_posix()]
+        if not path.is_dir():
+            return []
+        files: list[str] = []
+        for child in path.iterdir():
+            if child.name in self._EXCLUDED_TOP_LEVEL:
+                continue
+            files.extend(self._list_files(child, repo_root))
+        return files
+
+    def _remove_empty_snapshot_managed_dirs(self, repo_root: Path) -> None:
+        roots: list[Path] = []
+        constellation_root = self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root))
+        if constellation_root.exists():
+            roots.extend(child for child in constellation_root.iterdir() if child.name not in self._EXCLUDED_CONSTELLATION_CHILDREN)
+        roots.extend(
+            child
+            for child in repo_root.iterdir()
+            if child.name not in self._EXCLUDED_TOP_LEVEL and child.name != ".lean_constellation"
+        )
+        for root in roots:
+            self._remove_empty_dirs(root, stop_at=repo_root)
+
+    def _remove_empty_dirs(self, path: Path, *, stop_at: Path) -> None:
+        if not path.is_dir() or path == stop_at:
+            return
+        for child in list(path.iterdir()):
+            self._remove_empty_dirs(child, stop_at=stop_at)
+        try:
+            path.rmdir()
+        except OSError:
+            return
 
     def _copy_path(self, source: Path, target: Path, *, source_prefix: Path, archive_prefix: Path) -> list[SnapshotFileEntry]:
         entries: list[SnapshotFileEntry] = []

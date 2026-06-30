@@ -6,7 +6,7 @@ from typing import Literal
 
 from agent_runtime_kit.agent.homes import HomeCreateSpec, McpServerSpec
 from agent_runtime_kit.agent.skills import SkillSpec
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.tool_facade.context_resolver import ActorRole
@@ -38,6 +38,7 @@ class AgentTypeSpec(StrictModel):
     application_tool_view_key: str
     submit_tool_view_key: str
     tool_view_agent_aliases: list[str] = Field(default_factory=list)
+    extends_agent_type: str | None = None
     stage: str | None = None
 
     @field_validator(
@@ -68,6 +69,20 @@ class AgentTypeSpec(StrictModel):
             seen.add(value)
             result.append(value)
         return result
+
+    @field_validator("extends_agent_type")
+    @classmethod
+    def _optional_non_empty(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @model_validator(mode="after")
+    def _validate_inheritance(self) -> "AgentTypeSpec":
+        if self.extends_agent_type == self.agent_type:
+            raise ValueError("extends_agent_type must not point to the same AgentType")
+        return self
 
     def agent_type_aliases(self) -> list[str]:
         """Return this AgentType plus configured aliases for ToolView checks."""

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lean_constellation.services.runtime import ARKServices, LeanConstellationServices, LeanRuntimeServices
+
+if TYPE_CHECKING:
+    from lean_constellation.agents.models import AgentTypeSpec
 
 
 @dataclass
@@ -30,7 +34,9 @@ def create_lean_runtime_services(
     external_config: object | None = None,
     external_overrides: dict[str, object] | None = None,
     providers: LeanProviderOverrides | None = None,
+    agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     register_application_tools: bool = False,
+    test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
     """Create a fully wired Lean Constellation service graph."""
 
@@ -45,12 +51,14 @@ def create_lean_runtime_services(
     from lean_constellation.services.repo_workspace import RepoWorkspaceService
     from lean_constellation.services.tool_facade import ToolFacadeService
     from lean_constellation.services.validation_snapshot import ValidationSnapshotService
+    from lean_constellation.agents.registry import agent_skill_keys, agent_type_permission_names, build_agent_type_specs
 
     providers = providers or LeanProviderOverrides()
     overrides = external_overrides or {}
+    resolved_agent_type_specs = list(agent_type_specs) if agent_type_specs is not None else build_agent_type_specs()
     ark = ark_services or ARKServices()
     app = LeanConstellationServices()
-    runtime = LeanRuntimeServices(ark=ark, app=app)
+    runtime = LeanRuntimeServices(ark=ark, app=app, test_control_enabled=test_control_enabled)
 
     config = external_config
     if config is not None and not isinstance(config, ExternalClientConfig):
@@ -92,6 +100,11 @@ def create_lean_runtime_services(
         runtime,
         runtime_gateway=providers.runtime_gateway,
         submission_gateway=providers.submission_gateway,
+        agent_skill_keys=agent_skill_keys(specs=resolved_agent_type_specs),
+        agent_type_permission_names=lambda agent_type: agent_type_permission_names(
+            agent_type,
+            specs=resolved_agent_type_specs,
+        ),
     )
     app.validate()
     if register_application_tools:
@@ -110,7 +123,9 @@ def create_test_runtime_services(
     external_config: object | None = None,
     external_overrides: dict[str, object] | None = None,
     providers: LeanProviderOverrides | None = None,
+    agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     register_application_tools: bool = False,
+    test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
     """Alias with test-oriented naming for unit tests."""
 
@@ -119,5 +134,7 @@ def create_test_runtime_services(
         external_config=external_config,
         external_overrides=external_overrides,
         providers=providers,
+        agent_type_specs=agent_type_specs,
         register_application_tools=register_application_tools,
+        test_control_enabled=test_control_enabled,
     )

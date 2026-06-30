@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
+from agent_runtime_kit.flow.models import BaseStep
 from agent_runtime_kit.flow.standard_steps import DispatchStep
 
 from lean_constellation.flows.common.agent_steps import BUSINESS_AGENT_STEP_TYPES
@@ -39,6 +41,7 @@ def register_lean_flow_step_types(
     flow_registry: Any | None = None,
     step_registry: Any | None = None,
     runtime: Any | None = None,
+    step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
 ) -> list[str]:
     """Register Lean business Flow / Step types with ARK registries.
 
@@ -63,7 +66,11 @@ def register_lean_flow_step_types(
             registered.append(flow_type)
 
     if step_registry is not None:
-        for step_cls in (*STANDARD_STEP_TYPES, *BUSINESS_LOGIC_STEP_TYPES, *BUSINESS_AGENT_STEP_TYPES):
+        step_classes = _apply_step_type_overrides(
+            (*STANDARD_STEP_TYPES, *BUSINESS_LOGIC_STEP_TYPES, *BUSINESS_AGENT_STEP_TYPES),
+            step_type_overrides or {},
+        )
+        for step_cls in step_classes:
             step_type = step_cls.step_type
             if step_type in getattr(step_registry, "types", {}):
                 continue
@@ -71,6 +78,34 @@ def register_lean_flow_step_types(
             registered.append(step_type)
 
     return registered
+
+
+def _apply_step_type_overrides(
+    step_classes: tuple[type[BaseStep], ...],
+    overrides: Mapping[str, type[BaseStep]],
+) -> tuple[type[BaseStep], ...]:
+    if not overrides:
+        return step_classes
+
+    known_step_types = {step_cls.step_type for step_cls in step_classes}
+    unknown = sorted(set(overrides) - known_step_types)
+    if unknown:
+        raise ValueError(f"unknown step_type override: {','.join(unknown)}")
+
+    resolved: list[type[BaseStep]] = []
+    for step_cls in step_classes:
+        override_cls = overrides.get(step_cls.step_type)
+        if override_cls is None:
+            resolved.append(step_cls)
+            continue
+        if not issubclass(override_cls, BaseStep):
+            raise TypeError(f"step_type override must inherit BaseStep: {step_cls.step_type}")
+        if override_cls.step_type != step_cls.step_type:
+            raise ValueError(
+                f"step_type override for {step_cls.step_type} declares {override_cls.step_type}"
+            )
+        resolved.append(override_cls)
+    return tuple(resolved)
 
 
 def _resolve_registry(runtime: Any | None, attr_name: str) -> Any | None:

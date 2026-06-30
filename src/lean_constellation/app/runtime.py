@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 from agent_runtime_kit.agent.snapshots import AgentSnapshotService
 from agent_runtime_kit.agent.service import AgentService
+from agent_runtime_kit.flow.models import BaseStep
 from agent_runtime_kit.flow.registry import FlowTypeRegistry, StepTypeRegistry
 from agent_runtime_kit.flow.scheduler import RuntimeScheduleService
 from agent_runtime_kit.flow.services import FlowService, StepService
@@ -20,7 +22,12 @@ from agent_runtime_kit.runtime.services import RuntimePauseController
 
 from lean_constellation.app.config import LeanAppConfig
 from lean_constellation.agents.ark import build_ark_agent_type_registry
+from lean_constellation.agents.models import AgentTypeSpec
+from lean_constellation.agents.registry import build_agent_type_specs
+from lean_constellation.agents.testing import build_controlled_test_agent_type_specs
+from lean_constellation.app.external_takeover import build_external_takeover_agent_providers
 from lean_constellation.flows.registry import register_lean_flow_step_types
+from lean_constellation.flows.testing import CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES
 from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_lean_runtime_services
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
@@ -36,24 +43,41 @@ def create_app_runtime_services(
     providers: LeanProviderOverrides | None = None,
     register_application_tools: bool = True,
     register_submit_tools: bool = True,
+    agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    extra_agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
+    agent_providers: dict[str, object] | None = None,
     max_concurrent_flow_advances: int = 1,
     max_concurrent_steps: int = 1,
     start_paused: bool = False,
+    test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
     """Create a runtime with ARK Flow/Step/Agent services and Lean app services."""
 
     root = Path(runtime_root).expanduser()
     root.mkdir(parents=True, exist_ok=True)
+    effective_agent_type_specs = (
+        list(agent_type_specs)
+        if agent_type_specs is not None
+        else build_agent_type_specs(extra_specs=extra_agent_type_specs)
+    )
 
     flow_registry = FlowTypeRegistry()
     step_registry = StepTypeRegistry()
-    register_lean_flow_step_types(flow_registry=flow_registry, step_registry=step_registry)
+    register_lean_flow_step_types(
+        flow_registry=flow_registry,
+        step_registry=step_registry,
+        step_type_overrides=step_type_overrides,
+    )
     store = FlowStepStore(root, flow_registry=flow_registry, step_registry=step_registry)
 
     ark = ARKServices()
     pause_controller = RuntimePauseController(global_paused=start_paused)
     ark.pause_controller = pause_controller
-    runtime_gateway = LeanRuntimeMcpGatewayAdapter(RuntimeMcpToolGateway(ark_services=ark))
+    runtime_gateway = LeanRuntimeMcpGatewayAdapter(
+        RuntimeMcpToolGateway(ark_services=ark),
+        agent_type_specs=effective_agent_type_specs,
+    )
     effective_providers = _with_runtime_gateway(providers, runtime_gateway)
 
     runtime = create_lean_runtime_services(
@@ -61,13 +85,16 @@ def create_app_runtime_services(
         external_config=external_config,
         external_overrides=external_overrides,
         providers=effective_providers,
+        agent_type_specs=effective_agent_type_specs,
         register_application_tools=register_application_tools,
+        test_control_enabled=test_control_enabled,
     )
     runtime_gateway.delegate.app = runtime.app
 
     ark.agent_service = AgentService(
         root,
-        agent_types=build_ark_agent_type_registry(),
+        agent_types=build_ark_agent_type_registry(specs=effective_agent_type_specs),
+        providers=agent_providers,
         ark_services=ark,
         app_services=runtime.app,
         start_paused=start_paused,
@@ -118,7 +145,12 @@ def create_app_runtime_from_config(
     external_config: object | None = None,
     external_overrides: dict[str, object] | None = None,
     providers: LeanProviderOverrides | None = None,
+    agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    extra_agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
+    agent_providers: dict[str, object] | None = None,
     start_paused: bool = False,
+    test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
     runtime_root = config.runtime_root or (config.workspace_root / ".agent_runtime")
     return create_app_runtime_services(
@@ -126,9 +158,74 @@ def create_app_runtime_from_config(
         external_config=external_config,
         external_overrides=external_overrides,
         providers=providers,
+        agent_type_specs=agent_type_specs,
+        extra_agent_type_specs=extra_agent_type_specs,
+        step_type_overrides=step_type_overrides,
+        agent_providers=agent_providers,
         max_concurrent_flow_advances=config.max_concurrent_flow_advances,
         max_concurrent_steps=config.max_concurrent_steps,
         start_paused=start_paused,
+        test_control_enabled=test_control_enabled,
+    )
+
+
+def create_test_control_runtime_services(
+    *,
+    runtime_root: Path | str,
+    external_config: object | None = None,
+    external_overrides: dict[str, object] | None = None,
+    providers: LeanProviderOverrides | None = None,
+    register_application_tools: bool = True,
+    register_submit_tools: bool = True,
+    agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    extra_agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    controlled_base_agent_types: Sequence[str] | None = None,
+    step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
+    agent_providers: dict[str, object] | None = None,
+    external_takeover_cli_type: str = "external_takeover",
+    register_external_takeover_provider: bool = True,
+    max_concurrent_flow_advances: int = 1,
+    max_concurrent_steps: int = 1,
+    start_paused: bool = True,
+) -> LeanRuntimeServices:
+    """Create a runtime profile for paused, externally controlled scheduler tests."""
+
+    base_specs = (
+        list(agent_type_specs)
+        if agent_type_specs is not None
+        else build_agent_type_specs(extra_specs=extra_agent_type_specs)
+    )
+    controlled_specs = build_controlled_test_agent_type_specs(
+        specs=base_specs,
+        base_agent_types=controlled_base_agent_types,
+    )
+    effective_agent_type_specs = [*base_specs, *controlled_specs]
+    effective_step_overrides = {
+        **CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES,
+        **dict(step_type_overrides or {}),
+    }
+    effective_agent_providers = dict(agent_providers or {})
+    if register_external_takeover_provider and external_takeover_cli_type not in effective_agent_providers:
+        effective_agent_providers.update(
+            build_external_takeover_agent_providers(
+                runtime_root,
+                cli_type=external_takeover_cli_type,
+            )
+        )
+    return create_app_runtime_services(
+        runtime_root=runtime_root,
+        external_config=external_config,
+        external_overrides=external_overrides,
+        providers=providers,
+        register_application_tools=register_application_tools,
+        register_submit_tools=register_submit_tools,
+        agent_type_specs=effective_agent_type_specs,
+        step_type_overrides=effective_step_overrides,
+        agent_providers=effective_agent_providers,
+        max_concurrent_flow_advances=max_concurrent_flow_advances,
+        max_concurrent_steps=max_concurrent_steps,
+        start_paused=start_paused,
+        test_control_enabled=True,
     )
 
 
@@ -280,8 +377,14 @@ class ArkRuntimeSnapshotProviderAdapter:
 class LeanRuntimeMcpGatewayAdapter:
     """Adapt ARK's runtime MCP gateway to Lean ToolFacade context shape."""
 
-    def __init__(self, delegate: RuntimeMcpToolGateway) -> None:
+    def __init__(
+        self,
+        delegate: RuntimeMcpToolGateway,
+        *,
+        agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    ) -> None:
         self.delegate = delegate
+        self.agent_type_specs = list(agent_type_specs or build_agent_type_specs())
 
     @property
     def resolver(self):
@@ -305,6 +408,11 @@ class LeanRuntimeMcpGatewayAdapter:
         env = dict(getattr(state, "env_overrides", {}) or {})
         variables = dict(getattr(state, "variables", {}) or {})
         flow_input = getattr(flow, "input", None)
+        agent_type = (
+            _first_value(env, "LEAN_CONSTELLATION_AGENT_TYPE")
+            or getattr(agent, "agent_type", None)
+            or getattr(state, "agent_type", None)
+        )
 
         expected_view_key = (
             endpoint_view_key
@@ -334,8 +442,8 @@ class LeanRuntimeMcpGatewayAdapter:
             step_id=ark_ctx.identity.step_id,
             agent_id=ark_ctx.identity.agent_id,
             scope_id=ark_ctx.scope_id,
-            agent_type=getattr(agent, "agent_type", None) or getattr(state, "agent_type", None),
-            agent_role=_actor_role(getattr(agent, "agent_type", None) or getattr(state, "agent_type", None), variables),
+            agent_type=agent_type,
+            agent_role=_actor_role(agent_type, variables, env, specs=self.agent_type_specs),
             expected_view_key=expected_view_key,
             workspace_root=workspace_root,
             repo_root=repo_root,
@@ -390,15 +498,21 @@ def _first_int(value: object | None) -> int | None:
     return int(value)
 
 
-def _actor_role(agent_type: object | None, variables: dict[str, object]):
-    role = _first_value(variables, "agent_role")
+def _actor_role(
+    agent_type: object | None,
+    variables: dict[str, object],
+    env: dict[str, object] | None = None,
+    *,
+    specs: Sequence[AgentTypeSpec] | None = None,
+):
+    role = _first_value(variables, "agent_role") or _first_value(env or {}, "LEAN_CONSTELLATION_AGENT_ROLE")
     if role in {"coordinator", "plan", "worker", "reviewer", "admin", "system"}:
         return role
     if agent_type:
         try:
             from lean_constellation.agents.registry import get_agent_type_spec
 
-            return get_agent_type_spec(str(agent_type)).role
+            return get_agent_type_spec(str(agent_type), specs=specs).role
         except Exception:  # noqa: BLE001 - fallback to ToolFacade role inference.
             return None
     return None

@@ -65,6 +65,7 @@ class LeanRuntimeServices:
 
     ark: ARKServices
     app: LeanConstellationServices
+    test_control_enabled: bool = False
 
     @property
     def foundation(self) -> "FoundationService":

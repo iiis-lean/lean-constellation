@@ -129,6 +129,7 @@ class ToolViewComponent:
         runtime: LeanRuntimeServices,
         *,
         agent_skill_keys: Mapping[str, Sequence[str]] | None = None,
+        agent_type_permission_names: Callable[[str], set[str]] | None = None,
     ) -> None:
         self.runtime = runtime
         self._tools: dict[str, ToolSpec] = {}
@@ -138,6 +139,7 @@ class ToolViewComponent:
             str(agent): {str(skill) for skill in skills}
             for agent, skills in (agent_skill_keys or {}).items()
         }
+        self._agent_type_permission_names = agent_type_permission_names or (lambda agent_type: {agent_type})
 
     def register_tool(self, tool_spec: ToolSpec) -> ServiceResult[MutationSummaryView]:
         if tool_spec.name in self._tools:
@@ -251,9 +253,20 @@ class ToolViewComponent:
         flow_kind: str | None = None,
         stage: str | None = None,
     ) -> ServiceResult[ToolViewSpec]:
+        try:
+            permission_names = self._resolve_agent_type_permission_names(agent_type)
+        except Exception as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "agent_type_permission_resolution_failed",
+                    "AgentType permission names could not be resolved.",
+                    object_ref=agent_type,
+                    details={"error": str(exc)},
+                )
+            )
         candidates = [
             view for view in self._views.values()
-            if agent_type in view.allowed_agent_types
+            if not permission_names.isdisjoint(view.allowed_agent_types)
             and (flow_kind is None or view.flow_kind in {None, flow_kind})
             and (stage is None or view.stage in {None, stage})
         ]
@@ -335,12 +348,26 @@ class ToolViewComponent:
         if not view.ok or view.value is None:
             return self.runtime.foundation.fail(view.issues)
         if ctx.actor.agent_type and ctx.actor.agent_type not in view.value.allowed_agent_types:
+            try:
+                permission_names = self._resolve_agent_type_permission_names(ctx.actor.agent_type)
+            except Exception as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "agent_type_permission_resolution_failed",
+                        "AgentType permission names could not be resolved.",
+                        object_ref=ctx.actor.agent_type,
+                        details={"error": str(exc)},
+                    )
+                )
+        else:
+            permission_names = {ctx.actor.agent_type} if ctx.actor.agent_type else set()
+        if ctx.actor.agent_type and permission_names.isdisjoint(view.value.allowed_agent_types):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "agent_type_not_allowed_for_view",
                     "Current agent type is not allowed to use this tool view.",
                     object_ref=ctx.actor.agent_type,
-                    current=ctx.actor.agent_type,
+                    current=",".join(sorted(permission_names)),
                     expected=",".join(view.value.allowed_agent_types),
                 )
             )
@@ -401,6 +428,10 @@ class ToolViewComponent:
                 duplicates.add(value)
             seen.add(value)
         return sorted(duplicates)
+
+    def _resolve_agent_type_permission_names(self, agent_type: str) -> set[str]:
+        names = {str(name).strip() for name in self._agent_type_permission_names(agent_type)}
+        return {name for name in names if name}
 
     def _tool_view(self, spec: ToolSpec) -> ToolSpecView:
         schema: dict[str, Any]

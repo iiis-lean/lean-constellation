@@ -5,11 +5,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from agent_runtime_kit.flow.models import FlowRequest
+from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus
+from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import Field, field_validator
 
+from lean_constellation.app.external_takeover import (
+    ExternalTakeoverCompleteInput,
+    ExternalTakeoverHandoffView,
+    ExternalTakeoverToolCallInput,
+    ExternalTakeoverToolListInput,
+    call_external_takeover_tool,
+    complete_external_takeover_handoff,
+    list_external_takeover_handoffs,
+    list_external_takeover_tools,
+)
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import SourceCorpusMode
+from lean_constellation.flows.testing import (
+    CONTROLLED_AGENT_OVERRIDE_KEY,
+    CONTROLLED_AGENT_RECORD_KEY,
+    ControlledAgentOverrideSpec,
+)
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.runtime import LeanRuntimeServices
 
@@ -27,6 +43,97 @@ class RuntimePauseView(StrictModel):
     paused: bool
     scope_id: str | None = None
     summary: str
+
+
+class TestControlCandidateQueueView(StrictModel):
+    flow_candidate_queue: list[str] = Field(default_factory=list)
+    step_candidate_queue: list[str] = Field(default_factory=list)
+    queued_flow_ids: list[str] = Field(default_factory=list)
+    queued_step_ids: list[str] = Field(default_factory=list)
+    active_flow_advances: list[str] = Field(default_factory=list)
+    running_step_ids: list[str] = Field(default_factory=list)
+    created_step_ids: list[str] = Field(default_factory=list)
+
+
+class TestControlRuntimeView(StrictModel):
+    test_control_enabled: bool
+    paused: bool
+    candidate_queues: TestControlCandidateQueueView
+    pending_external_handoffs: list[ExternalTakeoverHandoffView] = Field(default_factory=list)
+    summary: str
+
+
+class AdminFlowAdvanceInput(StrictModel):
+    flow_id: str
+
+
+class AdminFlowAdvanceView(StrictModel):
+    flow_id: str
+    scope_id: str
+    flow_status: str
+    created_step_id: str | None = None
+    summary: str
+
+
+class AdminStepStartInput(StrictModel):
+    step_id: str
+    wait: bool = True
+    timeout_s: float | None = None
+
+
+class AdminStepRunView(StrictModel):
+    step_id: str
+    flow_id: str
+    scope_id: str
+    step_type: str
+    status: str
+    waited: bool
+    summary: str
+
+
+class AdminRunUntilStepCreatedInput(StrictModel):
+    flow_id: str
+    step_type: str | None = None
+    max_advances: int = 20
+
+
+class AgentStepControlView(StrictModel):
+    step_id: str
+    flow_id: str
+    scope_id: str
+    step_type: str
+    status: str
+    agent_role: str
+    agent_type: str | None = None
+    cli_type: str
+    home_id: str | None = None
+    tool_view_key: str | None = None
+    step_bound_agent_id: str | None = None
+    flow_bound_agent_id: str | None = None
+    override: dict[str, Any] | None = None
+    controlled_record: dict[str, Any] | None = None
+    summary: str
+
+
+class SetAgentStepOverrideInput(StrictModel):
+    step_id: str
+    override: ControlledAgentOverrideSpec
+
+
+class ClearAgentStepOverrideInput(StrictModel):
+    step_id: str
+
+
+class ManualCheckpointInput(StrictModel):
+    repo_root: Path
+    scope_ids: list[str]
+    label: str | None = None
+    node_paths: list[str] = Field(default_factory=list)
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
 
 
 class RequirementResumeView(StrictModel):
@@ -77,6 +184,7 @@ class SnapshotCreateInput(StrictModel):
     checkpoint_kind: str = "requirement_bootstrap_terminal"
     label: str | None = None
     node_paths: list[str] = Field(default_factory=list)
+    scope_ids: list[str] | None = None
 
     @field_validator("repo_root", mode="before")
     @classmethod
@@ -89,6 +197,17 @@ class SnapshotRestoreInput(StrictModel):
     snapshot_id: str
     dry_run: bool = False
     leave_runtime_paused: bool = True
+    prune_extra_files: bool = False
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class SnapshotListInput(StrictModel):
+    repo_root: Path
+    checkpoint_kind: str | None = None
 
     @field_validator("repo_root", mode="before")
     @classmethod
@@ -237,12 +356,246 @@ class LeanAdminApi:
             RuntimePauseView(paused=False, scope_id=scope_id, summary="Resumed runtime scheduling.")
         )
 
+    def get_test_control_runtime_view(
+        self,
+        *,
+        handoff_dirname: str = "external_turns",
+    ) -> ServiceResult[TestControlRuntimeView]:
+        paused = False
+        controller = self.runtime.ark.pause_controller
+        if controller is not None and hasattr(controller, "is_paused"):
+            paused = bool(controller.is_paused())
+        pending = self.list_external_takeovers(handoff_dirname=handoff_dirname, status="pending")
+        handoffs = pending.value if pending.ok and pending.value is not None else []
+        return self.runtime.foundation.ok(
+            TestControlRuntimeView(
+                test_control_enabled=self.runtime.test_control_enabled,
+                paused=paused,
+                candidate_queues=self._candidate_queue_view(),
+                pending_external_handoffs=handoffs,
+                summary="Loaded test-control runtime view.",
+            )
+        )
+
+    def rebuild_candidate_queues(self, *, scope_id: str | None = None) -> ServiceResult[TestControlCandidateQueueView]:
+        guarded = self._require_test_control()
+        if guarded is not None:
+            return guarded
+        schedule_service = self.runtime.ark.schedule_service
+        if schedule_service is None or not hasattr(schedule_service, "rebuild_candidate_queues"):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("schedule_service_missing", "ARK schedule service is not configured.")
+            )
+        try:
+            schedule_service.rebuild_candidate_queues(scope_id=scope_id)
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("candidate_queue_rebuild_failed", f"Failed to rebuild candidate queues: {exc}")
+            )
+        return self.runtime.foundation.ok(self._candidate_queue_view())
+
+    def advance_flow_once(self, input_model: AdminFlowAdvanceInput) -> ServiceResult[AdminFlowAdvanceView]:
+        guarded = self._require_test_control()
+        if guarded is not None:
+            return guarded
+        controller = self.runtime.ark.pause_controller
+        flow_service = self.runtime.ark.flow_service
+        if controller is None or not hasattr(controller, "bypass_current_thread"):
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("pause_controller_missing", "ARK pause controller is not configured."))
+        if flow_service is None or not hasattr(flow_service, "advance_flow"):
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("flow_service_missing", "ARK flow service is not configured."))
+        try:
+            with controller.bypass_current_thread():
+                created_step_id = flow_service.advance_flow(input_model.flow_id)
+            flow = flow_service.get_flow(input_model.flow_id)
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("advance_flow_once_failed", f"Failed to advance flow once: {exc}")
+            )
+        return self.runtime.foundation.ok(
+            AdminFlowAdvanceView(
+                flow_id=input_model.flow_id,
+                scope_id=str(flow.scope_id),
+                flow_status=str(flow.status),
+                created_step_id=created_step_id,
+                summary="Advanced flow once.",
+            )
+        )
+
+    def start_step_once(self, input_model: AdminStepStartInput) -> ServiceResult[AdminStepRunView]:
+        guarded = self._require_test_control()
+        if guarded is not None:
+            return guarded
+        step_service = self.runtime.ark.step_service
+        if step_service is None:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("step_service_missing", "ARK step service is not configured."))
+        try:
+            if input_model.wait:
+                step_service.run_step(input_model.step_id, bypass_pause=True)
+                step = step_service.wait_step(input_model.step_id, timeout_s=input_model.timeout_s)
+            else:
+                step_service.start_step(input_model.step_id, bypass_pause=True)
+                step = step_service.store.get_step(input_model.step_id)
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("start_step_once_failed", f"Failed to start step once: {exc}")
+            )
+        return self.runtime.foundation.ok(
+            AdminStepRunView(
+                step_id=step.step_id,
+                flow_id=step.flow_id,
+                scope_id=step.scope_id,
+                step_type=step.step_type,
+                status=str(step.status),
+                waited=input_model.wait,
+                summary="Started step once." if not input_model.wait else "Started and waited for step.",
+            )
+        )
+
+    def wait_step(self, input_model: AdminStepStartInput) -> ServiceResult[AdminStepRunView]:
+        step_service = self.runtime.ark.step_service
+        if step_service is None:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("step_service_missing", "ARK step service is not configured."))
+        try:
+            step = step_service.wait_step(input_model.step_id, timeout_s=input_model.timeout_s)
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("wait_step_failed", f"Failed to wait for step: {exc}")
+            )
+        return self.runtime.foundation.ok(
+            AdminStepRunView(
+                step_id=step.step_id,
+                flow_id=step.flow_id,
+                scope_id=step.scope_id,
+                step_type=step.step_type,
+                status=str(step.status),
+                waited=True,
+                summary="Waited for step.",
+            )
+        )
+
+    def run_until_step_created(self, input_model: AdminRunUntilStepCreatedInput) -> ServiceResult[AdminFlowAdvanceView]:
+        guarded = self._require_test_control()
+        if guarded is not None:
+            return guarded
+        latest_view: AdminFlowAdvanceView | None = None
+        for _ in range(input_model.max_advances):
+            advanced = self.advance_flow_once(AdminFlowAdvanceInput(flow_id=input_model.flow_id))
+            if not advanced.ok or advanced.value is None:
+                return advanced
+            latest_view = advanced.value
+            if advanced.value.created_step_id is None:
+                flow = self.runtime.ark.flow_service.get_flow(input_model.flow_id)
+                if flow.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}:
+                    return advanced
+                continue
+            step = self.runtime.ark.step_service.store.get_step(advanced.value.created_step_id)
+            if input_model.step_type is None or step.step_type == input_model.step_type:
+                return advanced
+        if latest_view is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "run_until_step_created_exhausted",
+                    "Reached max_advances before creating the requested step.",
+                    details={"flow_id": input_model.flow_id, "max_advances": input_model.max_advances},
+                )
+            )
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue("run_until_step_created_failed", "No flow advance was attempted.")
+        )
+
+    def get_agent_step_control_view(self, step_id: str) -> ServiceResult[AgentStepControlView]:
+        try:
+            return self.runtime.foundation.ok(self._agent_step_control_view(step_id))
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_step_control_view_failed", f"Failed to load AgentStep control view: {exc}")
+            )
+
+    def set_agent_step_override(self, input_model: SetAgentStepOverrideInput) -> ServiceResult[AgentStepControlView]:
+        guarded = self._require_test_control()
+        if guarded is not None:
+            return guarded
+        step_service = self.runtime.ark.step_service
+        if step_service is None:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("step_service_missing", "ARK step service is not configured."))
+        try:
+            step = step_service.store.get_step(input_model.step_id)
+            self._validate_agent_step_override_target(step, input_model.override)
+
+            def update(target_step) -> None:
+                state = target_step.state
+                if not isinstance(state, AgentStepState):
+                    raise TypeError("step state is not AgentStepState")
+                state.variables[CONTROLLED_AGENT_OVERRIDE_KEY] = input_model.override.model_dump()
+
+            step_service.store.update_step_record(input_model.step_id, update)
+            return self.runtime.foundation.ok(self._agent_step_control_view(input_model.step_id))
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("set_agent_step_override_failed", f"Failed to set AgentStep override: {exc}")
+            )
+
+    def clear_agent_step_override(self, input_model: ClearAgentStepOverrideInput) -> ServiceResult[AgentStepControlView]:
+        guarded = self._require_test_control()
+        if guarded is not None:
+            return guarded
+        step_service = self.runtime.ark.step_service
+        if step_service is None:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("step_service_missing", "ARK step service is not configured."))
+        try:
+            step = step_service.store.get_step(input_model.step_id)
+            if step.status is not StepStatus.CREATED:
+                raise ValueError("override can only be cleared before Step starts")
+            if not isinstance(step.state, AgentStepState):
+                raise TypeError("step is not an AgentStep")
+
+            def update(target_step) -> None:
+                state = target_step.state
+                if isinstance(state, AgentStepState):
+                    state.variables.pop(CONTROLLED_AGENT_OVERRIDE_KEY, None)
+                    state.variables.pop("controlled_agent_override", None)
+
+            step_service.store.update_step_record(input_model.step_id, update)
+            return self.runtime.foundation.ok(self._agent_step_control_view(input_model.step_id))
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("clear_agent_step_override_failed", f"Failed to clear AgentStep override: {exc}")
+            )
+
+    def create_manual_test_checkpoint(self, input_model: ManualCheckpointInput):
+        guarded = self._require_test_control()
+        if guarded is not None:
+            return guarded
+        if not input_model.scope_ids:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "manual_checkpoint_scope_ids_required",
+                    "Manual test checkpoint requires explicit scope_ids.",
+                    field="scope_ids",
+                )
+            )
+        return self.runtime.validation_snapshot.create_repo_stable_point_snapshot(
+            input_model.repo_root,
+            checkpoint_kind="manual_test_stable_point",
+            label=input_model.label,
+            node_paths=input_model.node_paths,
+            scope_ids=input_model.scope_ids,
+        )
+
+    def list_snapshots(self, input_model: SnapshotListInput):
+        return self.runtime.validation_snapshot.list_repo_checkpoint_snapshots(
+            input_model.repo_root,
+            checkpoint_kind=input_model.checkpoint_kind,
+        )
+
     def create_snapshot(self, input_model: SnapshotCreateInput):
         return self.runtime.validation_snapshot.create_repo_stable_point_snapshot(
             input_model.repo_root,
             checkpoint_kind=input_model.checkpoint_kind,
             label=input_model.label,
             node_paths=input_model.node_paths,
+            scope_ids=input_model.scope_ids,
         )
 
     def restore_snapshot(self, input_model: SnapshotRestoreInput):
@@ -251,6 +604,7 @@ class LeanAdminApi:
             snapshot_id=input_model.snapshot_id,
             dry_run=input_model.dry_run,
             leave_runtime_paused=input_model.leave_runtime_paused,
+            prune_extra_files=input_model.prune_extra_files,
         )
 
     def resume_requirement(self, input_model: RequirementResumeInput) -> ServiceResult[RequirementResumeView]:
@@ -289,3 +643,168 @@ class LeanAdminApi:
                 summary=f"Marked requirement {input_model.requirement_name} observed and started coordinator resume flow.",
             )
         )
+
+    def complete_external_takeover(
+        self,
+        input_model: ExternalTakeoverCompleteInput,
+    ) -> ServiceResult[ExternalTakeoverHandoffView]:
+        runtime_root = self._agent_runtime_root()
+        if runtime_root is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
+            )
+        try:
+            view = complete_external_takeover_handoff(runtime_root, input_model)
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("external_takeover_complete_failed", f"Failed to complete external handoff: {exc}")
+            )
+        return self.runtime.foundation.ok(view)
+
+    def list_external_takeovers(
+        self,
+        *,
+        handoff_dirname: str = "external_turns",
+        status: str | None = None,
+    ) -> ServiceResult[list[ExternalTakeoverHandoffView]]:
+        runtime_root = self._agent_runtime_root()
+        if runtime_root is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
+            )
+        try:
+            return self.runtime.foundation.ok(
+                list_external_takeover_handoffs(runtime_root, handoff_dirname=handoff_dirname, status=status)
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("external_takeover_list_failed", f"Failed to list external handoffs: {exc}")
+            )
+
+    def list_external_takeover_tools(
+        self,
+        input_model: ExternalTakeoverToolListInput,
+    ):
+        runtime_root = self._agent_runtime_root()
+        if runtime_root is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
+            )
+        try:
+            return self.runtime.foundation.ok(
+                list_external_takeover_tools(self.runtime, runtime_root, input_model)
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("external_takeover_tools_failed", f"Failed to list external handoff tools: {exc}")
+            )
+
+    def call_external_takeover_tool(
+        self,
+        input_model: ExternalTakeoverToolCallInput,
+    ):
+        runtime_root = self._agent_runtime_root()
+        if runtime_root is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
+            )
+        try:
+            return self.runtime.foundation.ok(
+                call_external_takeover_tool(self.runtime, runtime_root, input_model)
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("external_takeover_call_failed", f"Failed to call external handoff tool: {exc}")
+            )
+
+    def _require_test_control(self):
+        if self.runtime.test_control_enabled:
+            return None
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "test_control_disabled",
+                "This admin operation is only available on a test-control runtime.",
+            )
+        )
+
+    def _candidate_queue_view(self) -> TestControlCandidateQueueView:
+        schedule_service = self.runtime.ark.schedule_service
+        step_service = self.runtime.ark.step_service
+        if schedule_service is None:
+            return TestControlCandidateQueueView()
+        running_step_ids = []
+        created_step_ids = []
+        if step_service is not None:
+            if hasattr(step_service, "list_running_steps"):
+                running_step_ids = list(step_service.list_running_steps())
+            if hasattr(step_service, "list_created_steps"):
+                created_step_ids = list(step_service.list_created_steps())
+        return TestControlCandidateQueueView(
+            flow_candidate_queue=list(getattr(schedule_service, "flow_candidate_queue", [])),
+            step_candidate_queue=list(getattr(schedule_service, "step_candidate_queue", [])),
+            queued_flow_ids=sorted(getattr(schedule_service, "queued_flow_ids", set())),
+            queued_step_ids=sorted(getattr(schedule_service, "queued_step_ids", set())),
+            active_flow_advances=sorted(getattr(schedule_service, "active_flow_advances", set())),
+            running_step_ids=running_step_ids,
+            created_step_ids=created_step_ids,
+        )
+
+    def _agent_step_control_view(self, step_id: str) -> AgentStepControlView:
+        step_service = self.runtime.ark.step_service
+        flow_service = self.runtime.ark.flow_service
+        if step_service is None or flow_service is None:
+            raise RuntimeError("ARK flow/step services are not configured")
+        step = step_service.store.get_step(step_id)
+        if not isinstance(step.state, AgentStepState):
+            raise TypeError(f"step is not an AgentStep: {step_id}")
+        flow = flow_service.get_flow(step.flow_id)
+        agent_type = step.state.agent_type
+        tool_view_key = None
+        if agent_type:
+            tool_view = self.runtime.tool_facade.build_tool_view(agent_type)
+            if tool_view.ok and tool_view.value is not None:
+                tool_view_key = tool_view.value.key
+        override = step.state.variables.get(CONTROLLED_AGENT_OVERRIDE_KEY)
+        if override is None:
+            override = step.state.variables.get("controlled_agent_override")
+        if isinstance(override, ControlledAgentOverrideSpec):
+            override = override.model_dump()
+        record = step.state.variables.get(CONTROLLED_AGENT_RECORD_KEY)
+        return AgentStepControlView(
+            step_id=step.step_id,
+            flow_id=step.flow_id,
+            scope_id=step.scope_id,
+            step_type=step.step_type,
+            status=str(step.status),
+            agent_role=step.state.agent_role,
+            agent_type=agent_type,
+            cli_type=step.state.cli_type,
+            home_id=step.state.home_id,
+            tool_view_key=tool_view_key,
+            step_bound_agent_id=step.agent_bindings.get(step.state.agent_role),
+            flow_bound_agent_id=flow.agent_bindings.get(step.state.agent_role),
+            override=override if isinstance(override, dict) else None,
+            controlled_record=record if isinstance(record, dict) else None,
+            summary="Loaded AgentStep control view.",
+        )
+
+    def _validate_agent_step_override_target(self, step, override: ControlledAgentOverrideSpec) -> None:
+        if step.status is not StepStatus.CREATED:
+            raise ValueError("override can only be set before Step starts")
+        if not isinstance(step.state, AgentStepState):
+            raise TypeError("step is not an AgentStep")
+        agent_service = self.runtime.ark.agent_service
+        if agent_service is None:
+            raise RuntimeError("ARK agent service is not configured")
+        if override.agent_type_override:
+            agent_service.agent_types.get(override.agent_type_override)
+        if override.cli_type_override:
+            providers = getattr(agent_service, "providers", {})
+            if override.cli_type_override not in providers:
+                raise ValueError(f"unknown Agent provider cli_type: {override.cli_type_override}")
+
+    def _agent_runtime_root(self) -> Path | None:
+        agent_service = self.runtime.ark.agent_service
+        if agent_service is None:
+            return None
+        return Path(agent_service.runtime_root)

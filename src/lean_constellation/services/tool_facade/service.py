@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from lean_constellation.services.foundation import MutationSummaryView, ServiceResult, ToolResultView
@@ -34,9 +35,15 @@ class ToolFacadeService:
         runtime_gateway: RuntimeMcpToolGateway | None = None,
         submission_gateway: RuntimeSubmissionGateway | None = None,
         backing_services: dict[str, Any] | None = None,
+        agent_skill_keys: Mapping[str, Sequence[str]] | None = None,
+        agent_type_permission_names: Callable[[str], set[str]] | None = None,
     ) -> None:
         self.runtime = runtime
-        self.tool_view = tool_view or ToolViewComponent(runtime)
+        self.tool_view = tool_view or ToolViewComponent(
+            runtime,
+            agent_skill_keys=agent_skill_keys,
+            agent_type_permission_names=agent_type_permission_names,
+        )
         repo_workspace = self.runtime.repo_workspace
         node = self.runtime.node
         self.context_resolver = context_resolver or ContextResolverComponent(

@@ -31,20 +31,75 @@ REVIEWER_FRAGMENTS = [*COMMON_FRAGMENTS, "common.worker_reviewer_boundary"]
 WORKER_FRAGMENTS = [*BLOCKED_FRAGMENTS, "common.worker_reviewer_boundary"]
 
 
-def build_agent_type_specs() -> list[AgentTypeSpec]:
-    return list(AGENT_TYPE_SPECS)
+def build_agent_type_specs(
+    *,
+    extra_specs: Iterable[AgentTypeSpec] | None = None,
+) -> list[AgentTypeSpec]:
+    return _resolve_agent_type_specs(extra_specs=extra_specs)
 
 
-def get_agent_type_spec(agent_type: str) -> AgentTypeSpec:
+def get_agent_type_spec(
+    agent_type: str,
+    *,
+    specs: Iterable[AgentTypeSpec] | None = None,
+) -> AgentTypeSpec:
     key = agent_type.strip()
-    for spec in AGENT_TYPE_SPECS:
+    for spec in _coerce_agent_type_specs(specs):
         if spec.agent_type == key:
             return spec
     raise KeyError(f"unknown AgentType: {key}")
 
 
-def agent_skill_keys() -> dict[str, list[str]]:
-    return {spec.agent_type: list(spec.skill_keys) for spec in AGENT_TYPE_SPECS}
+def agent_skill_keys(
+    *,
+    specs: Iterable[AgentTypeSpec] | None = None,
+) -> dict[str, list[str]]:
+    return {spec.agent_type: list(spec.skill_keys) for spec in _coerce_agent_type_specs(specs)}
+
+
+def derive_agent_type_spec(
+    *,
+    base_agent_type: str,
+    agent_type: str,
+    specs: Iterable[AgentTypeSpec] | None = None,
+    **overrides: object,
+) -> AgentTypeSpec:
+    """Create a derived AgentTypeSpec that inherits ToolView permissions from a base type."""
+
+    base = get_agent_type_spec(base_agent_type, specs=specs)
+    data = base.model_dump()
+    data.update(
+        {
+            "agent_type": agent_type,
+            "extends_agent_type": base.agent_type,
+        }
+    )
+    data.update(overrides)
+    return AgentTypeSpec(**data)
+
+
+def agent_type_permission_names(
+    agent_type: str,
+    *,
+    specs: Iterable[AgentTypeSpec] | None = None,
+) -> set[str]:
+    """Return this AgentType, aliases, and inherited base AgentType names."""
+
+    key = agent_type.strip()
+    by_type = {spec.agent_type: spec for spec in _coerce_agent_type_specs(specs)}
+    names: set[str] = set()
+    visiting: set[str] = set()
+    current = key
+    while current:
+        if current in visiting:
+            raise ValueError(f"AgentType inheritance cycle includes {current}")
+        visiting.add(current)
+        spec = by_type.get(current)
+        if spec is None:
+            raise KeyError(f"unknown AgentType: {current}")
+        names.update(spec.agent_type_aliases())
+        current = spec.extends_agent_type or ""
+    return names
 
 
 def validate_agent_resources(
@@ -72,6 +127,7 @@ def validate_agent_resources(
 
     issues: list[AgentResourceIssue] = []
     seen_agent_types: set[str] = set()
+    agent_types = {spec.agent_type for spec in resolved_specs}
     for spec in resolved_specs:
         if spec.agent_type in seen_agent_types:
             issues.append(
@@ -84,6 +140,43 @@ def validate_agent_resources(
                 )
             )
         seen_agent_types.add(spec.agent_type)
+        if spec.extends_agent_type and spec.extends_agent_type not in agent_types:
+            issues.append(
+                AgentResourceIssue(
+                    code="agent_type_extends_unknown",
+                    message="AgentType extends an unknown base AgentType.",
+                    agent_type=spec.agent_type,
+                    resource_type="agent_type",
+                    resource_key=spec.extends_agent_type,
+                )
+            )
+
+        try:
+            permission_names = agent_type_permission_names(spec.agent_type, specs=resolved_specs)
+        except ValueError as exc:
+            permission_names = set(spec.agent_type_aliases())
+            issues.append(
+                AgentResourceIssue(
+                    code="agent_type_inheritance_cycle",
+                    message="AgentType inheritance contains a cycle.",
+                    agent_type=spec.agent_type,
+                    resource_type="agent_type",
+                    resource_key=spec.agent_type,
+                    details={"error": str(exc)},
+                )
+            )
+        except KeyError as exc:
+            permission_names = set(spec.agent_type_aliases())
+            issues.append(
+                AgentResourceIssue(
+                    code="agent_type_extends_unknown",
+                    message="AgentType extends an unknown base AgentType.",
+                    agent_type=spec.agent_type,
+                    resource_type="agent_type",
+                    resource_key=spec.extends_agent_type or spec.agent_type,
+                    details={"error": str(exc)},
+                )
+            )
 
         for skill_key in spec.skill_keys:
             if skill_key not in known_skills:
@@ -103,6 +196,7 @@ def validate_agent_resources(
             view_by_key=app_view_by_key,
             group_keys=app_group_keys,
             view_kind="application_tool_view",
+            permission_names=permission_names,
             issues=issues,
         )
         _validate_view(
@@ -111,6 +205,7 @@ def validate_agent_resources(
             view_by_key=submit_view_by_key,
             group_keys=submit_group_keys,
             view_kind="submit_tool_view",
+            permission_names=permission_names,
             issues=issues,
         )
 
@@ -124,6 +219,7 @@ def _validate_view(
     view_by_key: dict[str, ToolViewSpec],
     group_keys: set[str],
     view_kind: str,
+    permission_names: set[str],
     issues: list[AgentResourceIssue],
 ) -> None:
     view = view_by_key.get(view_key)
@@ -139,17 +235,16 @@ def _validate_view(
         )
         return
 
-    aliases = set(spec.agent_type_aliases())
-    if aliases.isdisjoint(view.allowed_agent_types):
+    if permission_names.isdisjoint(view.allowed_agent_types):
         issues.append(
             AgentResourceIssue(
                 code="agent_type_not_allowed_for_tool_view",
-                message="ToolView does not list this AgentType or one of its configured aliases.",
+                message="ToolView does not list this AgentType, aliases, or inherited base AgentType.",
                 agent_type=spec.agent_type,
                 resource_type=view_kind,
                 resource_key=view_key,
                 details={
-                    "aliases": ",".join(sorted(aliases)),
+                    "permission_names": ",".join(sorted(permission_names)),
                     "allowed_agent_types": ",".join(sorted(view.allowed_agent_types)),
                 },
             )
@@ -197,6 +292,36 @@ def _spec(
         tool_view_agent_aliases=aliases or [],
         stage=stage,
     )
+
+
+def _coerce_agent_type_specs(specs: Iterable[AgentTypeSpec] | None) -> list[AgentTypeSpec]:
+    return list(specs) if specs is not None else build_agent_type_specs()
+
+
+def _resolve_agent_type_specs(
+    *,
+    extra_specs: Iterable[AgentTypeSpec] | None = None,
+) -> list[AgentTypeSpec]:
+    specs = [*AGENT_TYPE_SPECS, *list(extra_specs or ())]
+    seen: set[str] = set()
+    for spec in specs:
+        if spec.agent_type in seen:
+            raise ValueError(f"duplicate AgentType: {spec.agent_type}")
+        seen.add(spec.agent_type)
+
+    by_type = {spec.agent_type: spec for spec in specs}
+    for spec in specs:
+        current = spec.agent_type
+        visiting: set[str] = set()
+        while current:
+            if current in visiting:
+                raise ValueError(f"AgentType inheritance cycle includes {current}")
+            visiting.add(current)
+            current_spec = by_type.get(current)
+            if current_spec is None:
+                raise ValueError(f"unknown AgentType referenced by inheritance: {current}")
+            current = current_spec.extends_agent_type or ""
+    return specs
 
 
 AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
@@ -647,7 +772,9 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
 __all__ = [
     "AGENT_TYPE_SPECS",
     "agent_skill_keys",
+    "agent_type_permission_names",
     "build_agent_type_specs",
+    "derive_agent_type_spec",
     "get_agent_type_spec",
     "validate_agent_resources",
 ]

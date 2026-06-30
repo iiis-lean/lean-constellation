@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from agent_runtime_kit.agent.homes import HomeCreateSpec, McpServerSpec
 
 from lean_constellation.agents.instructions import assert_instruction_is_runtime_english, render_agent_instruction
-from lean_constellation.agents.models import AgentHomeBootstrapSpec, AgentToolViewConfig
+from lean_constellation.agents.models import AgentHomeBootstrapSpec, AgentToolViewConfig, AgentTypeSpec
 from lean_constellation.agents.registry import build_agent_type_specs, get_agent_type_spec, validate_agent_resources
 from lean_constellation.agents.skills import build_skill_specs
 from lean_constellation.mcp.context import RUNTIME_ENV_KEYS
@@ -24,13 +24,15 @@ def build_agent_home_bootstrap_spec(
     mcp_server_name: str = "lean-constellation-tools",
     fixed_env: dict[str, str] | None = None,
     required_env: Iterable[str] | None = None,
+    specs: Sequence[AgentTypeSpec] | None = None,
     validate_resources: bool = True,
 ) -> AgentHomeBootstrapSpec:
     """Build Lean-side and ARK home creation data for one AgentType."""
 
-    spec = get_agent_type_spec(agent_type)
+    resolved_specs = list(specs) if specs is not None else build_agent_type_specs()
+    spec = get_agent_type_spec(agent_type, specs=resolved_specs)
     if validate_resources:
-        report = validate_agent_resources([spec])
+        report = validate_agent_resources(resolved_specs)
         if not report.ok:
             issue_summary = "; ".join(f"{issue.code}:{issue.resource_key}" for issue in report.issues)
             raise ValueError(f"invalid AgentType resources for {agent_type}: {issue_summary}")
@@ -129,15 +131,18 @@ def build_agent_home_bootstrap_spec(
 def build_all_agent_home_bootstrap_specs(
     *,
     mcp_server_url: str | None = None,
+    specs: Sequence[AgentTypeSpec] | None = None,
     validate_resources: bool = True,
 ) -> dict[str, AgentHomeBootstrapSpec]:
+    resolved_specs = list(specs) if specs is not None else build_agent_type_specs()
     return {
         spec.agent_type: build_agent_home_bootstrap_spec(
             spec.agent_type,
             mcp_server_url=mcp_server_url,
+            specs=resolved_specs,
             validate_resources=validate_resources,
         )
-        for spec in build_agent_type_specs()
+        for spec in resolved_specs
     }
 
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -14,6 +16,9 @@ from lean_constellation.domain.preparation import RepoRuntimeBootstrapView
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
 from lean_constellation.services.repo_workspace.repo_preparation import DefaultProviderRepoRuntimeBootstrap
 from lean_constellation.services.runtime import LeanRuntimeServices
+
+if TYPE_CHECKING:
+    from lean_constellation.agents import AgentTypeSpec
 
 
 class RepoRuntimeInitView(StrictModel):
@@ -90,6 +95,7 @@ def materialize_agent_home(
     auth_json_path: Path | str | None = None,
     fixed_env: dict[str, str] | None = None,
     required_env: set[str] | None = None,
+    agent_type_specs: Sequence["AgentTypeSpec"] | None = None,
 ) -> ServiceResult[AgentHomeMaterializationView]:
     """Materialize one AgentType home through ARK HomeService."""
 
@@ -103,6 +109,7 @@ def materialize_agent_home(
             mcp_server_env=mcp_server_env,
             fixed_env=fixed_env,
             required_env=required_env,
+            specs=agent_type_specs,
         )
         ark_spec = replace(
             spec.ark_home_create_spec,
