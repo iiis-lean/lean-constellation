@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, ServiceResult
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class MaterialFileEntry(StrictModel):
@@ -27,8 +30,9 @@ class MaterialFileTreeView(StrictModel):
 
 
 class MaterialRangeView(StrictModel):
-    ref_kind: str
-    locator: str
+    material_kind: Literal["source", "resource"]
+    path: str | None = None
+    resource_key: str | None = None
     start_line: int
     end_line: int
     text_with_line_numbers: str
@@ -38,8 +42,9 @@ class MaterialRangeView(StrictModel):
 
 
 class MaterialSearchHit(StrictModel):
-    ref_kind: str
-    locator: str
+    material_kind: Literal["source", "resource"]
+    path: str | None = None
+    resource_key: str | None = None
     line_number: int
     line_text: str
     reusable_ref_fields: dict[str, str | int] = Field(default_factory=dict)
@@ -55,8 +60,9 @@ class MaterialSearchView(StrictModel):
 
 
 class MaterialRefPreviewView(StrictModel):
-    ref_kind: str
-    locator: str
+    material_kind: Literal["source", "resource"]
+    path: str | None = None
+    resource_key: str | None = None
     preview: MaterialRangeView
     summary: str
 
@@ -64,15 +70,15 @@ class MaterialRefPreviewView(StrictModel):
 class MaterialReadComponent:
     """Read line ranges and search source/resource text files."""
 
-    def __init__(self, foundation: FoundationService, source_corpus: Any = None, resource_library: Any = None) -> None:
-        self.foundation = foundation
+    def __init__(self, runtime: LeanRuntimeServices, source_corpus: Any = None, resource_library: Any = None) -> None:
+        self.runtime = runtime
         self.source_corpus = source_corpus
         self.resource_library = resource_library
 
     def list_material_files(self, repo_root: Path, *, material_kind: str) -> ServiceResult[MaterialFileTreeView]:
         material_kind = material_kind.lower()
         if material_kind not in {"source", "resource", "all"}:
-            return self.foundation.fail(self.foundation.issue("invalid_material_kind", "material_kind must be source, resource, or all."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_kind", "material_kind must be source, resource, or all."))
         files: list[MaterialFileEntry] = []
         if material_kind in {"source", "all"}:
             source_root = self._source_root(repo_root)
@@ -89,7 +95,7 @@ class MaterialReadComponent:
                             )
                         )
         if material_kind in {"resource", "all"}:
-            resource_root = self.foundation.layout.resources_root(FoundationContext(repo_root=Path(repo_root))) / "items"
+            resource_root = self.runtime.foundation.layout.resources_root(FoundationContext(repo_root=Path(repo_root))) / "items"
             if resource_root.exists():
                 for path in sorted(resource_root.glob("*/normalized/**/*")):
                     if path.is_file():
@@ -97,7 +103,7 @@ class MaterialReadComponent:
                         key = path.relative_to(resource_root).parts[0]
                         locator = f"{key}:{path.relative_to(resource_root / key).as_posix()}"
                         files.append(MaterialFileEntry(kind="resource", locator=locator, line_count=line_count, readable=readable))
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             MaterialFileTreeView(
                 repo_root=str(Path(repo_root)),
                 material_kind=material_kind,
@@ -119,11 +125,12 @@ class MaterialReadComponent:
         try:
             target = self._resolve_inside(root, path)
         except ValueError as exc:
-            return self.foundation.fail(self.foundation.issue("source_material_path_invalid", str(exc), object_ref=path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_material_path_invalid", str(exc), object_ref=path))
         return self._read_range(
             target,
-            ref_kind="source",
-            locator=target.relative_to(root).as_posix(),
+            material_kind="source",
+            source_path=target.relative_to(root).as_posix(),
+            resource_key=None,
             start_line=start_line,
             end_line=end_line,
             context_lines=context_lines,
@@ -140,19 +147,20 @@ class MaterialReadComponent:
         context_lines: int = 2,
     ) -> ServiceResult[MaterialRangeView]:
         if self.resource_library is None:
-            return self.foundation.fail(self.foundation.issue("resource_library_unavailable", "ResourceLibraryComponent is not configured."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_library_unavailable", "ResourceLibraryComponent is not configured."))
         if not isinstance(resource_key, str) or not resource_key.strip():
-            return self.foundation.fail(self.foundation.issue("invalid_resource_key", "resource_key must be non-empty."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_resource_key", "resource_key must be non-empty."))
         try:
             entry = self.resource_library.normalized_entry_path(repo_root, resource_key)
         except ValueError as exc:
-            return self.foundation.fail(self.foundation.issue("invalid_resource_key", str(exc), object_ref=str(resource_key)))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_resource_key", str(exc), object_ref=str(resource_key)))
         if not entry.ok or entry.value is None:
-            return self.foundation.fail(entry.issues)
+            return self.runtime.foundation.fail(entry.issues)
         return self._read_range(
             entry.value,
-            ref_kind="resource",
-            locator=resource_key,
+            material_kind="resource",
+            source_path=None,
+            resource_key=resource_key,
             start_line=start_line,
             end_line=end_line,
             context_lines=context_lines,
@@ -170,16 +178,16 @@ class MaterialReadComponent:
     ) -> ServiceResult[MaterialSearchView]:
         query = query.strip()
         if not query:
-            return self.foundation.fail(self.foundation.issue("empty_query", "Search query must be non-empty."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("empty_query", "Search query must be non-empty."))
         if limit < 1:
-            return self.foundation.fail(self.foundation.issue("invalid_search_limit", "Search limit must be >= 1."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_search_limit", "Search limit must be >= 1."))
         files = self.list_material_files(repo_root, material_kind=scope)
         if not files.ok or files.value is None:
-            return self.foundation.fail(files.issues)
+            return self.runtime.foundation.fail(files.issues)
         try:
             pattern = re.compile(query) if regex else None
         except re.error as exc:
-            return self.foundation.fail(self.foundation.issue("invalid_search_regex", str(exc)))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_search_regex", str(exc)))
         hits: list[MaterialSearchHit] = []
         for item in files.value.files:
             if not item.readable:
@@ -202,22 +210,50 @@ class MaterialReadComponent:
                     if matched:
                         hits.append(
                             MaterialSearchHit(
-                                ref_kind=item.kind,
-                                locator=item.locator,
+                                material_kind=item.kind,  # type: ignore[arg-type]
+                                path=item.locator if item.kind == "source" else None,
+                                resource_key=resource_key if item.kind == "resource" else None,
                                 line_number=line_number,
                                 line_text=line,
                                 reusable_ref_fields={**reusable_key, "start_line": line_number, "end_line": line_number},
                             )
                         )
                         if len(hits) >= limit:
-                            return self.foundation.ok(
+                            return self.runtime.foundation.ok(
                                 MaterialSearchView(query=query, scope=scope, regex=regex, hits=hits, truncated=True, summary=f"Found at least {len(hits)} hits.")
                             )
             except (UnicodeDecodeError, OSError):
                 continue
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             MaterialSearchView(query=query, scope=scope, regex=regex, hits=hits, summary=f"Found {len(hits)} hits.")
         )
+
+    def validate_source_range(
+        self,
+        repo_root: Path,
+        *,
+        path: str,
+        start_line: int,
+        end_line: int,
+    ) -> ServiceResult[Any]:
+        if self.source_corpus is None:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_corpus_unavailable", "SourceCorpusComponent is not configured."))
+        return self.source_corpus.validate_source_ref(repo_root, path=path, start_line=start_line, end_line=end_line)
+
+    def validate_resource_range(
+        self,
+        repo_root: Path,
+        *,
+        resource_key: str,
+        start_line: int,
+        end_line: int,
+    ) -> ServiceResult[Any]:
+        if self.resource_library is None:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_library_unavailable", "ResourceLibraryComponent is not configured."))
+        try:
+            return self.resource_library.validate_resource_ref(repo_root, resource_key=resource_key, start_line=start_line, end_line=end_line)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_resource_key", str(exc), object_ref=resource_key))
 
     def validate_material_ref(
         self,
@@ -229,17 +265,52 @@ class MaterialReadComponent:
         end_line: int,
     ) -> ServiceResult[Any]:
         if ref_kind == "source":
-            if self.source_corpus is None:
-                return self.foundation.fail(self.foundation.issue("source_corpus_unavailable", "SourceCorpusComponent is not configured."))
-            return self.source_corpus.validate_source_ref(repo_root, path=locator, start_line=start_line, end_line=end_line)
+            return self.validate_source_range(repo_root, path=locator, start_line=start_line, end_line=end_line)
         if ref_kind == "resource":
-            if self.resource_library is None:
-                return self.foundation.fail(self.foundation.issue("resource_library_unavailable", "ResourceLibraryComponent is not configured."))
-            try:
-                return self.resource_library.validate_resource_ref(repo_root, resource_key=locator, start_line=start_line, end_line=end_line)
-            except ValueError as exc:
-                return self.foundation.fail(self.foundation.issue("invalid_resource_key", str(exc), object_ref=locator))
-        return self.foundation.fail(self.foundation.issue("invalid_ref_kind", "ref_kind must be source or resource."))
+            return self.validate_resource_range(repo_root, resource_key=locator, start_line=start_line, end_line=end_line)
+        return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_ref_kind", "ref_kind must be source or resource."))
+
+    def preview_source_ref(
+        self,
+        repo_root: Path,
+        *,
+        path: str,
+        start_line: int,
+        end_line: int,
+        context_lines: int = 2,
+    ) -> ServiceResult[MaterialRefPreviewView]:
+        preview = self.read_source_range(repo_root, path=path, start_line=start_line, end_line=end_line, context_lines=context_lines)
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        return self.runtime.foundation.ok(
+            MaterialRefPreviewView(
+                material_kind="source",
+                path=path,
+                preview=preview.value,
+                summary="Previewed source material ref.",
+            )
+        )
+
+    def preview_resource_ref(
+        self,
+        repo_root: Path,
+        *,
+        resource_key: str,
+        start_line: int,
+        end_line: int,
+        context_lines: int = 2,
+    ) -> ServiceResult[MaterialRefPreviewView]:
+        preview = self.read_resource_range(repo_root, resource_key=resource_key, start_line=start_line, end_line=end_line, context_lines=context_lines)
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        return self.runtime.foundation.ok(
+            MaterialRefPreviewView(
+                material_kind="resource",
+                resource_key=resource_key,
+                preview=preview.value,
+                summary="Previewed resource material ref.",
+            )
+        )
 
     def preview_material_ref(self, repo_root: Path, *, ref: Any) -> ServiceResult[MaterialRefPreviewView]:
         if isinstance(ref, dict):
@@ -247,59 +318,50 @@ class MaterialReadComponent:
         elif hasattr(ref, "model_dump"):
             data = ref.model_dump()
         else:
-            return self.foundation.fail(self.foundation.issue("invalid_material_ref", "Material ref must be a mapping or pydantic model."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_ref", "Material ref must be a mapping or pydantic model."))
         kind = data.get("kind") or data.get("ref_kind")
         nested = data.get("ref") if isinstance(data.get("ref"), dict) else {}
         try:
             start_line = int(data.get("start_line") or nested.get("start_line") or 1)
             end_line = int(data.get("end_line") or nested.get("end_line") or start_line)
         except (TypeError, ValueError) as exc:
-            return self.foundation.fail(self.foundation.issue("invalid_material_ref_range", str(exc)))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_ref_range", str(exc)))
         if kind == "source":
             locator = data.get("path") or data.get("locator") or nested.get("path")
             if not isinstance(locator, str) or not locator.strip():
-                return self.foundation.fail(self.foundation.issue("invalid_material_ref", "Source material ref requires path or locator."))
-            preview = self.read_source_range(repo_root, path=locator, start_line=start_line, end_line=end_line)
+                return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_ref", "Source material ref requires path or locator."))
+            return self.preview_source_ref(repo_root, path=locator, start_line=start_line, end_line=end_line)
         elif kind == "resource":
             locator = data.get("resource_key") or data.get("locator") or nested.get("resource_key")
             if not isinstance(locator, str) or not locator.strip():
-                return self.foundation.fail(self.foundation.issue("invalid_material_ref", "Resource material ref requires resource_key or locator."))
-            preview = self.read_resource_range(repo_root, resource_key=locator, start_line=start_line, end_line=end_line)
+                return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_ref", "Resource material ref requires resource_key or locator."))
+            return self.preview_resource_ref(repo_root, resource_key=locator, start_line=start_line, end_line=end_line)
         else:
-            return self.foundation.fail(self.foundation.issue("invalid_material_ref", "Material ref kind must be source or resource."))
-        if not preview.ok or preview.value is None:
-            return self.foundation.fail(preview.issues)
-        return self.foundation.ok(
-            MaterialRefPreviewView(
-                ref_kind=kind,
-                locator=locator,
-                preview=preview.value,
-                summary=f"Previewed {kind} material ref.",
-            )
-        )
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_ref", "Material ref kind must be source or resource."))
 
     def _read_range(
         self,
-        path: Path,
+        file_path: Path,
         *,
-        ref_kind: str,
-        locator: str,
+        material_kind: Literal["source", "resource"],
+        source_path: str | None,
+        resource_key: str | None,
         start_line: int,
         end_line: int,
         context_lines: int,
         reusable: dict[str, str],
     ) -> ServiceResult[MaterialRangeView]:
         if context_lines < 0:
-            return self.foundation.fail(self.foundation.issue("invalid_context_lines", "context_lines must be >= 0."))
-        if not path.exists() or not path.is_file():
-            return self.foundation.fail(self.foundation.issue("material_not_found", f"Material file not found: {path}"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_context_lines", "context_lines must be >= 0."))
+        if not file_path.exists() or not file_path.is_file():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("material_not_found", f"Material file not found: {file_path}"))
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = file_path.read_text(encoding="utf-8").splitlines()
         except UnicodeDecodeError:
-            return self.foundation.fail(self.foundation.issue("material_not_readable", f"Material file is not UTF-8 text: {path}"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("material_not_readable", f"Material file is not UTF-8 text: {file_path}"))
         if not (1 <= start_line <= end_line <= len(lines)):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "material_range_invalid",
                     "Line range is invalid.",
                     current=f"{start_line}-{end_line}",
@@ -311,10 +373,11 @@ class MaterialReadComponent:
         before = self._format_lines(lines, before_start, start_line - 1) if before_start < start_line else None
         after_end = min(len(lines), end_line + context_lines)
         after = self._format_lines(lines, end_line + 1, after_end) if after_end > end_line else None
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             MaterialRangeView(
-                ref_kind=ref_kind,
-                locator=locator,
+                material_kind=material_kind,
+                path=source_path,
+                resource_key=resource_key,
                 start_line=start_line,
                 end_line=end_line,
                 text_with_line_numbers=selected,
@@ -325,12 +388,12 @@ class MaterialReadComponent:
         )
 
     def _source_root(self, repo_root: Path) -> Path:
-        return self.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)))
+        return self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)))
 
     def _resolve_inside(self, root: Path, path: str) -> Path:
-        relative = self.foundation.layout.ensure_relative_path(path)
+        relative = self.runtime.foundation.layout.ensure_relative_path(path)
         target = root / relative
-        self.foundation.layout.assert_within(root, target)
+        self.runtime.foundation.layout.assert_within(root, target)
         return target
 
     @staticmethod

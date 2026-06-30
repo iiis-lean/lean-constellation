@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -16,7 +18,7 @@ from lean_constellation.services.node import (
 
 
 def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface] | None = None) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     input_value = RepoPreparationInput(
         goal="Formalize the requested source material.",
         source_corpus_mode=SourceCorpusMode.PREPARE,
@@ -30,7 +32,7 @@ def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface] 
 
 
 def _create_topic_content(tmp_path: Path) -> None:
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert tree.create_content_node(
@@ -44,19 +46,19 @@ def _create_topic_content(tmp_path: Path) -> None:
 
 
 def _contract_path(tmp_path: Path, node_path: str, version: int = 1) -> Path:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     return foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), node_path, version)
 
 
 def _load_contract(tmp_path: Path, node_path: str, version: int = 1) -> NodeContractSnapshot:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     loaded = foundation.store.read_json(_contract_path(tmp_path, node_path, version), NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     return loaded.value
 
 
 def _write_contract(tmp_path: Path, node_path: str, contract: NodeContractSnapshot) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     saved = foundation.store.write_json_atomic(
         _contract_path(tmp_path, node_path, contract.version),
         contract,
@@ -66,7 +68,7 @@ def _write_contract(tmp_path: Path, node_path: str, contract: NodeContractSnapsh
 
 
 def _write_node_without_contract(tmp_path: Path, node_path: str) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path)
     node_dir = foundation.layout.node_metadata_dir(ctx, node_path)
     metadata = NodeMetadata(
@@ -82,7 +84,7 @@ def _write_node_without_contract(tmp_path: Path, node_path: str) -> None:
 
 def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     current = component.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert current.ok
@@ -110,7 +112,7 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
 
 
 def test_get_current_contract_reports_missing_node_and_missing_contract_versions(tmp_path: Path) -> None:
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     missing_node = component.get_current_contract(tmp_path, node_path="Main.Missing")
     assert not missing_node.ok
@@ -123,7 +125,7 @@ def test_get_current_contract_reports_missing_node_and_missing_contract_versions
 
 def test_ensure_open_contract_reuses_existing_open_and_reports_missing_contract(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     opened = component.ensure_open_contract(tmp_path, node_path="Main.Topic.Core")
     assert opened.ok
@@ -138,9 +140,9 @@ def test_ensure_open_contract_reuses_existing_open_and_reports_missing_contract(
 
 
 def test_ensure_scope_contract_repairs_missing_exports_list(tmp_path: Path) -> None:
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     contract_path = _contract_path(tmp_path, "Main", 1)
     raw = contract_path.read_text(encoding="utf-8").replace('"exports": []', '"exports": null')
@@ -155,7 +157,7 @@ def test_ensure_scope_contract_repairs_missing_exports_list(tmp_path: Path) -> N
 
 def test_update_contract_text_fields_creates_open_version_and_protects_main_goal(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
     assert component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary="Committed.").ok
 
     updated = component.update_contract_text_fields(
@@ -178,7 +180,7 @@ def test_update_contract_text_fields_creates_open_version_and_protects_main_goal
 
 def test_update_contract_text_fields_rejects_empty_required_fields_and_preserves_contract(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     empty_objective = component.update_contract_text_fields(tmp_path, node_path="Main.Topic.Core", objective=" ")
     assert not empty_objective.ok
@@ -197,7 +199,7 @@ def test_update_contract_text_fields_rejects_empty_required_fields_and_preserves
 def test_initialize_main_contract_from_preparation_input_syncs_goal_boundary_objective_and_interfaces(tmp_path: Path) -> None:
     interface = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the main theorem.")
     _write_preparation_input(tmp_path, interfaces=[interface])
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     initialized = component.initialize_main_contract_from_preparation_input(
         tmp_path,
@@ -215,7 +217,7 @@ def test_initialize_main_contract_from_preparation_input_syncs_goal_boundary_obj
 
 
 def test_initialize_main_contract_from_preparation_input_rejects_missing_input_required_fields_and_goal_conflict(tmp_path: Path) -> None:
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     missing_input = component.initialize_main_contract_from_preparation_input(
         tmp_path,
@@ -263,7 +265,7 @@ def test_initialize_main_contract_from_preparation_input_rejects_missing_input_r
 def test_initialize_main_contract_from_preparation_input_is_idempotent_and_rejects_interface_conflict(tmp_path: Path) -> None:
     interface = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the main theorem.")
     _write_preparation_input(tmp_path, interfaces=[interface])
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     first = component.initialize_main_contract_from_preparation_input(
         tmp_path,
@@ -294,7 +296,7 @@ def test_initialize_main_contract_from_preparation_input_is_idempotent_and_rejec
 def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path: Path) -> None:
     interface = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the main theorem.")
     _write_preparation_input(tmp_path, interfaces=[interface])
-    component = ContractComponent()
+    component = make_runtime().node.contract
     initialized = component.initialize_main_contract_from_preparation_input(
         tmp_path,
         boundary="Main boundary.",
@@ -306,7 +308,7 @@ def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path
     assert not unbound.ok
     assert unbound.issues[0].kind == "interface_unbound"
 
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
@@ -323,7 +325,7 @@ def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path
 
 def test_commit_content_contract_rejects_summary_scope_node_and_committed_contract(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     missing_summary = component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary=" ")
     assert not missing_summary.ok
@@ -342,7 +344,7 @@ def test_commit_content_contract_rejects_summary_scope_node_and_committed_contra
 
 def test_commit_scope_contract_rejects_summary_content_node_and_committed_contract(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     missing_summary = component.commit_scope_contract(tmp_path, scope_path="Main.Topic", summary="")
     assert not missing_summary.ok
@@ -361,8 +363,8 @@ def test_commit_scope_contract_rejects_summary_content_node_and_committed_contra
 
 def test_content_task_admission_reports_missing_local_dependency(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
-    foundation = FoundationService()
+    component = make_runtime().node.contract
+    foundation = make_runtime().foundation
     path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
@@ -379,7 +381,7 @@ def test_content_task_admission_reports_missing_local_dependency(tmp_path: Path)
 
 def test_content_task_admission_reports_invalid_dep_shapes(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
     contract = _load_contract(tmp_path, "Main.Topic.Core")
     contract.deps.extend(
         [
@@ -404,7 +406,7 @@ def test_content_task_admission_reports_invalid_dep_shapes(tmp_path: Path) -> No
 
 def test_content_task_admission_reports_wrong_kind_missing_required_fields_and_committed_contract(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     scope_admission = component.check_content_task_admission(tmp_path, node_path="Main.Topic")
     assert scope_admission.ok
@@ -440,7 +442,7 @@ def test_content_task_admission_reports_wrong_kind_missing_required_fields_and_c
 
 def test_ensure_scope_contract_rejects_content_node(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = ContractComponent()
+    component = make_runtime().node.contract
 
     result = component.ensure_scope_contract(tmp_path, scope_path="Main.Topic.Core")
 

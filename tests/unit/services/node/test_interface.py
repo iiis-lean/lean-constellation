@@ -1,8 +1,11 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
 from lean_constellation.services.node import ContractComponent, DeclPublicView, ExportComponent, InterfaceComponent, NodeContractSnapshot, NodeTreeComponent
 
@@ -17,7 +20,7 @@ class FakePublicDeclProvider:
 
 
 def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface]) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     input_value = RepoPreparationInput(
         goal="Formalize the repo goal.",
         source_corpus_mode=SourceCorpusMode.PREPARE,
@@ -31,7 +34,7 @@ def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface])
 
 def _init_main(tmp_path: Path, *, interfaces: list[DeclInterface]) -> None:
     _write_preparation_input(tmp_path, interfaces=interfaces)
-    contract = ContractComponent()
+    contract = make_runtime().node.contract
     result = contract.initialize_main_contract_from_preparation_input(
         tmp_path,
         boundary="Main boundary.",
@@ -41,7 +44,7 @@ def _init_main(tmp_path: Path, *, interfaces: list[DeclInterface]) -> None:
 
 
 def _create_content_node(tmp_path: Path, path: str) -> None:
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     if "." in path:
         parent = path.rsplit(".", 1)[0]
         if parent != "Main":
@@ -57,19 +60,19 @@ def _create_content_node(tmp_path: Path, path: str) -> None:
 
 
 def _contract_path(tmp_path: Path, node_path: str, version: int = 1) -> Path:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     return foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), node_path, version)
 
 
 def _load_contract(tmp_path: Path, node_path: str, version: int = 1) -> NodeContractSnapshot:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     loaded = foundation.store.read_json(_contract_path(tmp_path, node_path, version), NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     return loaded.value
 
 
 def _write_contract(tmp_path: Path, node_path: str, contract: NodeContractSnapshot) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     saved = foundation.store.write_json_atomic(
         _contract_path(tmp_path, node_path, contract.version),
         contract,
@@ -79,16 +82,17 @@ def _write_contract(tmp_path: Path, node_path: str, contract: NodeContractSnapsh
 
 
 def _component_with_public_decls(tmp_path: Path, decls: dict[str, list[DeclPublicView]]) -> tuple[InterfaceComponent, ExportComponent]:
-    foundation = FoundationService()
+    base_runtime = make_runtime()
+    foundation = base_runtime.foundation
     provider = FakePublicDeclProvider(foundation, decls)
-    export = ExportComponent(foundation=foundation, public_decl_provider=provider)
-    return InterfaceComponent(foundation=foundation, export=export), export
+    runtime = make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=provider))
+    return runtime.node.interface, runtime.node.export
 
 
 def test_add_update_remove_supplement_interface(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _init_main(tmp_path, interfaces=[protected])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
 
     added = component.add_interface(
         tmp_path,
@@ -133,7 +137,7 @@ def test_add_update_remove_supplement_interface(tmp_path: Path) -> None:
 
 def test_add_interface_rejects_invalid_inputs(tmp_path: Path) -> None:
     _init_main(tmp_path, interfaces=[])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
 
     missing_name = component.add_interface(
         tmp_path,
@@ -172,7 +176,7 @@ def test_add_interface_rejects_invalid_inputs(tmp_path: Path) -> None:
 def test_protected_interface_cannot_be_added_updated_or_removed_manually(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _init_main(tmp_path, interfaces=[protected])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
 
     manual_add = component.add_interface(
         tmp_path,
@@ -202,7 +206,7 @@ def test_protected_interface_cannot_be_added_updated_or_removed_manually(tmp_pat
 
 def test_update_interface_reports_missing_empty_summary_and_statement_hint_changes(tmp_path: Path) -> None:
     _init_main(tmp_path, interfaces=[])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
     assert component.add_interface(
         tmp_path,
         node_path="Main",
@@ -259,9 +263,9 @@ def test_update_interface_reports_missing_empty_summary_and_statement_hint_chang
 def test_sync_and_check_protected_root_interfaces(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _write_preparation_input(tmp_path, interfaces=[protected])
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
 
     missing_gate = component.check_protected_root_interfaces(tmp_path)
     assert missing_gate.ok
@@ -283,9 +287,9 @@ def test_sync_and_check_protected_root_interfaces(tmp_path: Path) -> None:
 def test_sync_protected_root_interfaces_rejects_conflict(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _write_preparation_input(tmp_path, interfaces=[protected])
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
     contract = _load_contract(tmp_path, "Main")
     contract.interfaces.append(DeclInterface(name="main_result", kind=DeclKind.DEFINITION, summary="Conflicting supplement."))
     _write_contract(tmp_path, "Main", contract)
@@ -299,13 +303,13 @@ def test_sync_protected_root_interfaces_rejects_conflict(tmp_path: Path) -> None
 def test_protected_root_interface_modified_gate_fails(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _init_main(tmp_path, interfaces=[protected])
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     loaded.value.interfaces[0].summary = "Modified summary."
     assert foundation.store.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
 
     gate = component.check_protected_root_interfaces(tmp_path)
 
@@ -321,7 +325,7 @@ def test_protected_root_interface_gate_reports_duplicate_names(tmp_path: Path) -
     contract = _load_contract(tmp_path, "Main")
     contract.interfaces.append(DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem."))
     _write_contract(tmp_path, "Main", contract)
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
 
     gate = component.check_protected_root_interfaces(tmp_path)
 
@@ -333,7 +337,7 @@ def test_protected_root_interface_gate_reports_duplicate_names(tmp_path: Path) -
 
 def test_remove_bound_interface_requires_unbind_first(tmp_path: Path) -> None:
     _init_main(tmp_path, interfaces=[])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
     added = component.add_interface(
         tmp_path,
         node_path="Main",
@@ -343,7 +347,7 @@ def test_remove_bound_interface_requires_unbind_first(tmp_path: Path) -> None:
         actor="coordinator",
     )
     assert added.ok
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
@@ -358,7 +362,7 @@ def test_remove_bound_interface_requires_unbind_first(tmp_path: Path) -> None:
 
 def test_remove_and_unbind_report_missing_and_unbind_is_idempotent(tmp_path: Path) -> None:
     _init_main(tmp_path, interfaces=[])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
     assert component.add_interface(
         tmp_path,
         node_path="Main",
@@ -385,7 +389,7 @@ def test_remove_and_unbind_report_missing_and_unbind_is_idempotent(tmp_path: Pat
 def test_list_interfaces_returns_sorted_bound_views(tmp_path: Path) -> None:
     protected = DeclInterface(name="z_protected", kind=DeclKind.THEOREM, summary="Protected theorem.")
     _init_main(tmp_path, interfaces=[protected])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
     assert component.add_interface(
         tmp_path,
         node_path="Main",
@@ -623,7 +627,7 @@ def test_bind_scope_interface_requires_current_scope_export(tmp_path: Path) -> N
     assert not missing_export.ok
     assert missing_export.issues[0].kind == "interface_binding_decl_not_exported"
 
-    assert export.add_scope_export(tmp_path, scope_path="Main.Topic", decl_ref="Main.Topic.Core:main_result").ok
+    assert export.add_scope_export(tmp_path, scope_path="Main.Topic", decl_node="Main.Topic.Core", decl_name="main_result").ok
     bound = component.bind_interface_to_decl(
         tmp_path,
         node_path="Main.Topic",
@@ -639,7 +643,7 @@ def test_bind_scope_interface_requires_current_scope_export(tmp_path: Path) -> N
 
 def test_bind_scope_interface_reports_ambiguous_export_and_missing_candidate(tmp_path: Path) -> None:
     _init_main(tmp_path, interfaces=[])
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     component, _export = _component_with_public_decls(tmp_path, {})
     assert component.add_interface(
@@ -693,7 +697,7 @@ def test_protected_root_gate_ignores_bound_decl_result(tmp_path: Path) -> None:
             ]
         },
     )
-    assert export.add_scope_export(tmp_path, scope_path="Main", decl_ref="Main.Core:main_result").ok
+    assert export.add_scope_export(tmp_path, scope_path="Main", decl_node="Main.Core", decl_name="main_result").ok
     bound = component.bind_interface_to_decl(
         tmp_path,
         node_path="Main",
@@ -713,7 +717,7 @@ def test_protected_root_gate_ignores_bound_decl_result(tmp_path: Path) -> None:
 def test_submit_root_interface_prepare_ready_returns_counts_after_gate(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _init_main(tmp_path, interfaces=[protected])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
     assert component.add_interface(
         tmp_path,
         node_path="Main",
@@ -736,7 +740,7 @@ def test_submit_root_interface_prepare_ready_returns_counts_after_gate(tmp_path:
 def test_submit_root_interface_prepare_ready_reports_summary_gate_and_supplement_failures(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _init_main(tmp_path, interfaces=[protected])
-    component = InterfaceComponent()
+    component = make_runtime().node.interface
 
     missing_summary = component.submit_root_interface_prepare_ready(tmp_path, summary=" ")
     assert not missing_summary.ok

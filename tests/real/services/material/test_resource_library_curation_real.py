@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.services.material import MaterialService, ResourceMetadataInput
 
 
@@ -23,7 +25,7 @@ def test_material_resource_library_curation_real_local_file(tmp_path: Path) -> N
         + "\n",
         encoding="utf-8",
     )
-    service = MaterialService()
+    service = make_runtime().material
 
     flow_input = service.submit_resource_request(
         {"repo_root": repo_root, "current_node": "Main.Topic"},
@@ -74,10 +76,11 @@ def test_material_resource_library_curation_real_local_file(tmp_path: Path) -> N
     listed = service.resource_library.list_resources(repo_root, query="fixture")
     duplicate_after = service.find_duplicate_resource(repo_root, target=flow_input.value.normalized_target)
     preview = service.resource_library.preview_resource(repo_root, resource_key=resource_key)
+    structured_preview = service.preview_resource_ref(repo_root, resource_key=resource_key, start_line=2, end_line=3)
     read = service.read_resource_range(repo_root, resource_key=resource_key, start_line=2, end_line=3, context_lines=1)
     search = service.search_material_text(repo_root, query="auxiliary theorem", scope="resource")
-    valid = service.resource_library.validate_resource_ref(repo_root, resource_key=resource_key, start_line=2, end_line=3)
-    invalid = service.resource_library.validate_resource_ref(repo_root, resource_key=resource_key, start_line=99, end_line=100)
+    valid = service.validate_resource_range(repo_root, resource_key=resource_key, start_line=2, end_line=3)
+    invalid = service.validate_resource_range(repo_root, resource_key=resource_key, start_line=99, end_line=100)
 
     assert loaded.ok and loaded.value is not None
     assert loaded.value.resource.title == "Local resource fixture"
@@ -88,10 +91,14 @@ def test_material_resource_library_curation_real_local_file(tmp_path: Path) -> N
     assert duplicate_after.value.resource_key == resource_key
     assert preview.ok and preview.value is not None
     assert "2: This resource states a useful auxiliary theorem." in preview.value.text_with_line_numbers
+    assert structured_preview.ok and structured_preview.value is not None
+    assert structured_preview.value.resource_key == resource_key
+    assert "3: The theorem is used by a later node." in structured_preview.value.preview.text_with_line_numbers
     assert read.ok and read.value is not None
     assert "3: The theorem is used by a later node." in read.value.text_with_line_numbers
     assert search.ok and search.value is not None
     assert len(search.value.hits) == 1
+    assert search.value.hits[0].material_kind == "resource"
     assert search.value.hits[0].reusable_ref_fields["resource_key"] == resource_key
     assert valid.ok and valid.value is not None and valid.value["valid"] is True
     assert invalid.ok and invalid.value is not None
@@ -106,7 +113,7 @@ def test_material_resource_curation_real_external_repo_and_rejection_decisions(t
     local_dir = tmp_path / "large-resource-dir"
     local_dir.mkdir()
     (local_dir / "README.md").write_text("Directory-shaped resource.\n", encoding="utf-8")
-    service = MaterialService()
+    service = make_runtime().material
 
     dir_target = service.normalize_resource_target(str(local_dir))
     assert dir_target.ok

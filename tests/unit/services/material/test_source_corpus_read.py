@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.services.external_clients import (
@@ -114,7 +116,8 @@ class FakeMaterialClient:
 
 def _fake_material_service() -> tuple[MaterialService, FakeMaterialClient]:
     fake = FakeMaterialClient()
-    return MaterialService(external=ExternalClientService(material_acquisition=fake)), fake
+    runtime = make_runtime(external_overrides={"material_acquisition": fake})
+    return runtime.material, fake
 
 
 def _write_source(repo_root: Path) -> None:
@@ -128,7 +131,7 @@ def _write_source(repo_root: Path) -> None:
 
 def test_source_corpus_prepare_manifest_and_read_search(tmp_path: Path) -> None:
     _write_source(tmp_path)
-    service = MaterialService()
+    service = make_runtime().material
 
     draft = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
     assert draft.ok
@@ -164,10 +167,9 @@ def test_source_corpus_prepare_manifest_and_read_search(tmp_path: Path) -> None:
     assert len(search.value.hits) == 1
     assert search.value.hits[0].reusable_ref_fields["path"] == "notes/section.md"
 
-    valid = service.material_read.validate_material_ref(
+    valid = service.material_read.validate_source_range(
         tmp_path,
-        ref_kind="source",
-        locator="notes/section.md",
+        path="notes/section.md",
         start_line=1,
         end_line=2,
     )
@@ -188,7 +190,7 @@ def test_source_corpus_gate_rejects_missing_entry(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "notes.md").write_text("content\n", encoding="utf-8")
-    service = MaterialService()
+    service = make_runtime().material
 
     gate = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
     assert gate.ok
@@ -272,7 +274,7 @@ def test_extract_source_artifact_fake_provider_branches_and_invalid_ref(tmp_path
 
 
 def test_import_source_material_success_missing_and_safe_filename(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     local = tmp_path / "paper draft.md"
     local.write_text("paper\n", encoding="utf-8")
 
@@ -309,7 +311,7 @@ def test_normalize_source_text_material_success_missing_and_invalid_ref(tmp_path
 
 
 def test_source_corpus_gate_missing_empty_unreadable_and_binary_entry(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
 
     missing = service.check_source_corpus_draft(tmp_path)
     assert missing.ok
@@ -335,7 +337,7 @@ def test_source_corpus_gate_missing_empty_unreadable_and_binary_entry(tmp_path: 
 
 def test_source_corpus_submit_prepared_and_blocked_gates(tmp_path: Path) -> None:
     _write_source(tmp_path)
-    service = MaterialService()
+    service = make_runtime().material
 
     missing_summary = service.submit_source_corpus_prepared(
         tmp_path,
@@ -373,7 +375,7 @@ def test_source_corpus_submit_prepared_and_blocked_gates(tmp_path: Path) -> None
 
 def test_get_manifest_falls_back_to_scan_and_validate_source_ref_errors(tmp_path: Path) -> None:
     _write_source(tmp_path)
-    service = MaterialService()
+    service = make_runtime().material
 
     fallback = service.source_corpus.get_source_corpus_manifest(tmp_path)
     outside = service.source_corpus.validate_source_ref(tmp_path, path="../outside.md", start_line=1, end_line=1)
@@ -393,7 +395,7 @@ def test_get_manifest_falls_back_to_scan_and_validate_source_ref_errors(tmp_path
 
 def test_check_target_in_source_corpus_matches_path_and_sha(tmp_path: Path) -> None:
     _write_source(tmp_path)
-    service = MaterialService()
+    service = make_runtime().material
     manifest = service.source_corpus.get_source_corpus_manifest(tmp_path)
     assert manifest.ok
     assert manifest.value is not None

@@ -3,19 +3,30 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
-from lean_constellation.services.external_clients import ExternalClientService
-from lean_constellation.services.foundation import FoundationService, GateReport, ServiceResult
-from lean_constellation.services.material.material_read import MaterialRangeView, MaterialReadComponent, MaterialSearchView
+from pydantic import Field
+
+from lean_constellation.domain.common import StrictModel
+from lean_constellation.services.foundation import GateReport, ServiceResult
+from lean_constellation.services.material.material_read import (
+    MaterialFileEntry,
+    MaterialRangeView,
+    MaterialReadComponent,
+    MaterialSearchHit,
+    MaterialSearchView,
+)
 from lean_constellation.services.material.resource_curation import (
     ResourceCurationComponent,
     ResourceCurationFlowInputView,
+    ResourceCurationResultView,
 )
 from lean_constellation.services.material.resource_library import (
+    ResourceDraftView,
     ResourceDuplicateView,
     ResourceLibraryComponent,
     ResourceMetadataInput,
+    ResourceSummaryView,
     ResourceTargetView,
     ResourceView,
 )
@@ -37,34 +48,74 @@ from lean_constellation.services.material.source_index import (
     SubmissionView,
 )
 
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
+
+
+class MaterialContextCitationView(StrictModel):
+    ref_scope: Literal["source_index", "node_owned", "node_context"]
+    material_kind: Literal["source", "resource"]
+    path: str | None = None
+    resource_key: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    role: str | None = None
+    reason: str | None = None
+    added_by: str | None = None
+    valid: bool | None = None
+    preview_summary: str | None = None
+    reusable_ref_fields: dict[str, str | int] = Field(default_factory=dict)
+
+
+class MaterialContextSourceBlockView(StrictModel):
+    kind: str
+    subtype: str | None = None
+    title: str
+    summary: str
+    lifecycle_status: str
+    refs: list[MaterialContextCitationView] = Field(default_factory=list)
+
+
+class MaterialContextView(StrictModel):
+    repo_root: str
+    node_path: str | None = None
+    query: str | None = None
+    include_source: bool
+    include_resources: bool
+    source_files: list[MaterialFileEntry] = Field(default_factory=list)
+    source_index_overview: str | None = None
+    source_blocks: list[MaterialContextSourceBlockView] = Field(default_factory=list)
+    resources: list[ResourceSummaryView] = Field(default_factory=list)
+    node_owned_refs: list[MaterialContextCitationView] = Field(default_factory=list)
+    node_context_refs: list[MaterialContextCitationView] = Field(default_factory=list)
+    search_hits: list[MaterialSearchHit] = Field(default_factory=list)
+    summary: str
+
 
 class MaterialService:
     """Composition root for source corpus, source index, and resource services."""
 
     def __init__(
         self,
+        runtime: LeanRuntimeServices,
         *,
-        foundation: FoundationService | None = None,
-        external: ExternalClientService | None = None,
         source_corpus: SourceCorpusComponent | None = None,
         resource_library: ResourceLibraryComponent | None = None,
         material_read: MaterialReadComponent | None = None,
         source_index: SourceIndexComponent | None = None,
         resource_curation: ResourceCurationComponent | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.external = external or ExternalClientService()
-        self.source_corpus = source_corpus or SourceCorpusComponent(self.foundation, self.external)
-        self.resource_library = resource_library or ResourceLibraryComponent(self.foundation, self.external)
+        self.runtime = runtime
+        self.source_corpus = source_corpus or SourceCorpusComponent(runtime)
+        self.resource_library = resource_library or ResourceLibraryComponent(runtime)
         self.material_read = material_read or MaterialReadComponent(
-            self.foundation,
+            runtime,
             source_corpus=self.source_corpus,
             resource_library=self.resource_library,
         )
-        self.source_index = source_index or SourceIndexComponent(self.foundation, self.source_corpus)
+        self.source_index = source_index or SourceIndexComponent(runtime, self.source_corpus)
         self.resource_curation = resource_curation or ResourceCurationComponent(
-            self.foundation,
-            self.external,
+            runtime,
             self.resource_library,
             self.source_corpus,
         )
@@ -77,9 +128,9 @@ class MaterialService:
     ) -> ServiceResult[SourceCorpusManifestView]:
         gate = self.source_corpus.check_source_corpus_draft(repo_root, relpath=relpath)
         if not gate.ok or gate.value is None:
-            return self.foundation.fail(gate.issues)
+            return self.runtime.foundation.fail(gate.issues)
         if not gate.value.passed:
-            return self.foundation.fail(gate.value.issues)
+            return self.runtime.foundation.fail(gate.value.issues)
         return self.source_corpus.scan_source_corpus(repo_root, relpath=relpath, created_from_mode="existing")
 
     def scan_source_corpus(
@@ -190,6 +241,201 @@ class MaterialService:
     def find_duplicate_resource(self, repo_root: Path, *, target: ResourceTargetView) -> ServiceResult[ResourceDuplicateView]:
         return self.resource_library.find_duplicate_resource(repo_root, target=target)
 
+    def get_material_context_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str | None = None,
+        query: str | None = None,
+        include_source: bool = True,
+        include_resources: bool = True,
+        regex: bool = False,
+        limit: int = 20,
+    ) -> ServiceResult[MaterialContextView]:
+        if not include_source and not include_resources:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("material_context_empty_scope", "include_source and include_resources cannot both be false.")
+            )
+
+        source_files: list[MaterialFileEntry] = []
+        source_blocks: list[MaterialContextSourceBlockView] = []
+        source_index_overview: str | None = None
+        resources: list[ResourceSummaryView] = []
+        search_hits: list[MaterialSearchHit] = []
+        node_owned_refs: list[MaterialContextCitationView] = []
+        node_context_refs: list[MaterialContextCitationView] = []
+
+        if include_source:
+            listed_source = self.material_read.list_material_files(repo_root, material_kind="source")
+            if not listed_source.ok or listed_source.value is None:
+                return self.runtime.foundation.fail(listed_source.issues)
+            source_files = listed_source.value.files
+            source_index = self.source_index.get_source_index(repo_root)
+            if source_index.ok and source_index.value is not None:
+                source_index_overview = source_index.value.overview
+                source_blocks = [
+                    self._source_block_context(block)
+                    for block in source_index.value.blocks.values()
+                    if block.active and block.block_id != source_index.value.root_block_id
+                ]
+                source_blocks.sort(key=lambda item: (item.kind, item.title))
+            elif not any(issue.kind == "source_index_missing" for issue in source_index.issues):
+                return self.runtime.foundation.fail(source_index.issues)
+
+        if include_resources:
+            listed_resources = self.resource_library.list_resources(repo_root, query=query if query and query.strip() else None)
+            if not listed_resources.ok or listed_resources.value is None:
+                return self.runtime.foundation.fail(listed_resources.issues)
+            resources = listed_resources.value
+
+        if query and query.strip():
+            if include_source and include_resources:
+                scope = "all"
+            elif include_source:
+                scope = "source"
+            else:
+                scope = "resource"
+            search = self.material_read.search_material_text(repo_root, query=query, scope=scope, regex=regex, limit=limit)
+            if not search.ok or search.value is None:
+                return self.runtime.foundation.fail(search.issues)
+            search_hits = search.value.hits
+
+        if node_path:
+            node_service = self.runtime.app.node
+            if node_service is None:
+                return self.runtime.foundation.fail(self.runtime.foundation.issue("node_service_unavailable", "NodeService is not initialized."))
+            node_refs = node_service.material_ref.list_node_material_refs(repo_root, node_path=node_path)
+            if not node_refs.ok or node_refs.value is None:
+                return self.runtime.foundation.fail(node_refs.issues)
+            node_owned_refs = [self._node_ref_context("node_owned", item) for item in node_refs.value.owned_refs]
+            node_context_refs = [self._node_ref_context("node_context", item) for item in node_refs.value.context_refs]
+            invalid_refs = [item for item in [*node_owned_refs, *node_context_refs] if item.valid is False]
+            if invalid_refs:
+                return self.runtime.foundation.fail(
+                    [
+                        self.runtime.foundation.issue(
+                            "node_material_ref_invalid",
+                            item.preview_summary or "Node material ref is invalid.",
+                            object_ref=node_path,
+                            details=item.model_dump(mode="json"),
+                        )
+                        for item in invalid_refs
+                    ]
+                )
+
+        return self.runtime.foundation.ok(
+            MaterialContextView(
+                repo_root=str(Path(repo_root)),
+                node_path=node_path,
+                query=query.strip() if query and query.strip() else None,
+                include_source=include_source,
+                include_resources=include_resources,
+                source_files=source_files,
+                source_index_overview=source_index_overview,
+                source_blocks=source_blocks,
+                resources=resources,
+                node_owned_refs=node_owned_refs,
+                node_context_refs=node_context_refs,
+                search_hits=search_hits,
+                summary=(
+                    f"Material context: {len(source_files)} source files, {len(source_blocks)} source blocks, "
+                    f"{len(resources)} resources, {len(node_owned_refs)} owned refs, "
+                    f"{len(node_context_refs)} context refs, {len(search_hits)} search hits."
+                ),
+            )
+        )
+
+    def allocate_resource_draft(
+        self,
+        repo_root: Path,
+        *,
+        target: str | ResourceTargetView,
+        resource_kind: str | None = None,
+        title_hint: str | None = None,
+    ) -> ServiceResult[ResourceDraftView]:
+        return self.resource_library.allocate_resource_draft(
+            repo_root,
+            target=target,
+            resource_kind=resource_kind,
+            title_hint=title_hint,
+        )
+
+    def check_resource_draft(self, repo_root: Path, *, draft_id: str) -> ServiceResult[GateReport]:
+        return self.resource_library.check_resource_draft(repo_root, draft_id=draft_id)
+
+    def get_resource_draft(self, repo_root: Path, *, draft_id: str) -> ServiceResult[ResourceDraftView]:
+        return self.resource_library.get_resource_draft(repo_root, draft_id=draft_id)
+
+    def finalize_resource_draft(self, repo_root: Path, *, draft_id: str, summary: str) -> ServiceResult[ResourceView]:
+        return self.resource_library.finalize_resource_draft(repo_root, draft_id=draft_id, summary=summary)
+
+    def abandon_resource_draft(self, repo_root: Path, *, draft_id: str, reason: str) -> ServiceResult[ResourceDraftView]:
+        return self.resource_library.abandon_resource_draft(repo_root, draft_id=draft_id, reason=reason)
+
+    def submit_resource_duplicate(
+        self,
+        repo_root: Path,
+        *,
+        flow_input: ResourceCurationFlowInputView,
+        existing_kind: Literal["resource", "source"],
+        duplicate_reason: str,
+        existing_resource_key: str | None = None,
+        existing_source_path: str | None = None,
+        preview: str | None = None,
+    ) -> ServiceResult[ResourceCurationResultView]:
+        return self.resource_curation.submit_resource_duplicate(
+            repo_root,
+            flow_input=flow_input,
+            existing_kind=existing_kind,
+            duplicate_reason=duplicate_reason,
+            existing_resource_key=existing_resource_key,
+            existing_source_path=existing_source_path,
+            preview=preview,
+        )
+
+    def submit_local_resource_created(
+        self,
+        repo_root: Path,
+        *,
+        flow_input: ResourceCurationFlowInputView,
+        draft_id: str,
+        summary: str,
+    ) -> ServiceResult[ResourceCurationResultView]:
+        return self.resource_curation.submit_local_resource_created(
+            repo_root,
+            flow_input=flow_input,
+            draft_id=draft_id,
+            summary=summary,
+        )
+
+    def submit_external_repo_required(
+        self,
+        repo_root: Path,
+        *,
+        flow_input: ResourceCurationFlowInputView,
+        reason: str,
+        source_description: str,
+        suggested_repo_name: str | None = None,
+        required_interfaces_hint: str | None = None,
+    ) -> ServiceResult[ResourceCurationResultView]:
+        return self.resource_curation.submit_external_repo_required(
+            repo_root,
+            flow_input=flow_input,
+            reason=reason,
+            source_description=source_description,
+            suggested_repo_name=suggested_repo_name,
+            required_interfaces_hint=required_interfaces_hint,
+        )
+
+    def submit_resource_rejected(
+        self,
+        repo_root: Path,
+        *,
+        flow_input: ResourceCurationFlowInputView,
+        reason: str,
+    ) -> ServiceResult[ResourceCurationResultView]:
+        return self.resource_curation.submit_resource_rejected(repo_root, flow_input=flow_input, reason=reason)
+
     def register_local_resource(
         self,
         repo_root: Path,
@@ -206,8 +452,48 @@ class MaterialService:
     def read_material_ref(self, repo_root: Path, *, ref: Any) -> ServiceResult[MaterialRangeView]:
         preview = self.material_read.preview_material_ref(repo_root, ref=ref)
         if not preview.ok or preview.value is None:
-            return self.foundation.fail(preview.issues)
-        return self.foundation.ok(preview.value.preview)
+            return self.runtime.foundation.fail(preview.issues)
+        return self.runtime.foundation.ok(preview.value.preview)
+
+    def validate_source_range(self, repo_root: Path, *, path: str, start_line: int, end_line: int) -> ServiceResult[object]:
+        return self.material_read.validate_source_range(repo_root, path=path, start_line=start_line, end_line=end_line)
+
+    def validate_resource_range(self, repo_root: Path, *, resource_key: str, start_line: int, end_line: int) -> ServiceResult[object]:
+        return self.material_read.validate_resource_range(repo_root, resource_key=resource_key, start_line=start_line, end_line=end_line)
+
+    def preview_source_ref(
+        self,
+        repo_root: Path,
+        *,
+        path: str,
+        start_line: int,
+        end_line: int,
+        context_lines: int = 2,
+    ):
+        return self.material_read.preview_source_ref(
+            repo_root,
+            path=path,
+            start_line=start_line,
+            end_line=end_line,
+            context_lines=context_lines,
+        )
+
+    def preview_resource_ref(
+        self,
+        repo_root: Path,
+        *,
+        resource_key: str,
+        start_line: int,
+        end_line: int,
+        context_lines: int = 2,
+    ):
+        return self.material_read.preview_resource_ref(
+            repo_root,
+            resource_key=resource_key,
+            start_line=start_line,
+            end_line=end_line,
+            context_lines=context_lines,
+        )
 
     def read_source_range(
         self,
@@ -270,8 +556,76 @@ class MaterialService:
             summary=summary,
         )
 
-    def update_source_block(self, repo_root: Path, *, block_id: str, **kwargs: Any) -> ServiceResult[SourceBlockView]:
-        return self.source_index.update_source_block(repo_root, block_id=block_id, **kwargs)
+    def update_source_block(
+        self,
+        repo_root: Path,
+        *,
+        block_id: str,
+        title: str | None = None,
+        summary: str | None = None,
+        kind: str | None = None,
+        subtype: str | None = None,
+    ) -> ServiceResult[SourceBlockView]:
+        return self.source_index.update_source_block(
+            repo_root,
+            block_id=block_id,
+            title=title,
+            summary=summary,
+            kind=kind,
+            subtype=subtype,
+        )
+
+    def _source_block_context(self, block: SourceBlockView) -> MaterialContextSourceBlockView:
+        refs = [
+            MaterialContextCitationView(
+                ref_scope="source_index",
+                material_kind="source",
+                path=ref.path,
+                start_line=ref.start_line,
+                end_line=ref.end_line,
+                role=ref.role,
+                reusable_ref_fields={"path": ref.path, "start_line": ref.start_line, "end_line": ref.end_line},
+            )
+            for ref in block.refs
+        ]
+        return MaterialContextSourceBlockView(
+            kind=block.kind,
+            subtype=block.subtype,
+            title=block.title,
+            summary=block.summary,
+            lifecycle_status=block.lifecycle_status,
+            refs=refs,
+        )
+
+    @staticmethod
+    def _node_ref_context(ref_scope: Literal["node_owned", "node_context"], item: object) -> MaterialContextCitationView:
+        path = getattr(item, "path", None)
+        resource_key = getattr(item, "resource_key", None)
+        start_line = getattr(item, "start_line", None)
+        end_line = getattr(item, "end_line", None)
+        reusable: dict[str, str | int] = {}
+        if path:
+            reusable["path"] = path
+        if resource_key:
+            reusable["resource_key"] = resource_key
+        if start_line is not None:
+            reusable["start_line"] = start_line
+        if end_line is not None:
+            reusable["end_line"] = end_line
+        added_by = getattr(getattr(item, "added_by", None), "value", getattr(item, "added_by", None))
+        return MaterialContextCitationView(
+            ref_scope=ref_scope,
+            material_kind=getattr(item, "material_kind"),
+            path=path,
+            resource_key=resource_key,
+            start_line=start_line,
+            end_line=end_line,
+            reason=getattr(item, "reason", None),
+            added_by=added_by,
+            valid=getattr(item, "valid", None),
+            preview_summary=getattr(item, "preview_summary", None),
+            reusable_ref_fields=reusable,
+        )
 
     def add_source_block_ref(
         self,

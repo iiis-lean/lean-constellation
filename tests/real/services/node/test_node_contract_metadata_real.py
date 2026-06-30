@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef
@@ -59,7 +61,8 @@ def _write_source_corpus_file(repo_root: Path, foundation: FoundationService) ->
 def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    foundation = FoundationService()
+    runtime = make_runtime()
+    foundation = runtime.foundation
     core_ref = DeclRef(repo=None, node="Main.Topic.Core", name="core_result", revision=1)
     provider = FakePublicDeclProvider(
         foundation,
@@ -77,7 +80,10 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
             ]
         },
     )
-    service = NodeService(foundation=foundation, public_decl_provider=provider)
+    service = NodeService(runtime, public_decl_provider=provider)
+    runtime.app.node = service
+    runtime.lean_projection.node_projection.contract = service.contract
+    runtime.lean_projection.node_projection.export = service.export
     _write_preparation_input(repo_root, foundation)
     _write_source_corpus_file(repo_root, foundation)
 
@@ -153,12 +159,15 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
         actor="worker",
     )
     assert add_worker_dep.ok, add_worker_dep.issues
-    dep_id = add_worker_dep.value.contract.deps[0]["dep_id"]  # type: ignore[union-attr]
+    listed_worker_deps = service.dependency.list_node_deps(repo_root, node_path="Main.Topic.Consumer")
+    assert listed_worker_deps.ok
+    assert listed_worker_deps.value is not None
+    worker_dep_index = listed_worker_deps.value.deps[0].index
 
     removed_worker_dep = service.dependency.remove_node_dep(
         repo_root,
         node_path="Main.Topic.Consumer",
-        dep_id=dep_id,
+        index=worker_dep_index,
         actor="worker",
     )
     assert removed_worker_dep.ok, removed_worker_dep.issues
@@ -172,7 +181,10 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
         actor="coordinator",
     )
     assert add_coordinator_dep.ok, add_coordinator_dep.issues
-    coordinator_dep_id = add_coordinator_dep.value.contract.deps[0]["dep_id"]  # type: ignore[union-attr]
+    listed_coordinator_deps = service.dependency.list_node_deps(repo_root, node_path="Main.Topic.Consumer")
+    assert listed_coordinator_deps.ok
+    assert listed_coordinator_deps.value is not None
+    coordinator_dep_index = listed_coordinator_deps.value.deps[0].index
     dep_gate = service.dependency.validate_node_deps(repo_root, node_path="Main.Topic.Consumer")
     assert dep_gate.ok
     assert dep_gate.value is not None
@@ -180,27 +192,25 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
     denied_dep_remove = service.dependency.remove_node_dep(
         repo_root,
         node_path="Main.Topic.Consumer",
-        dep_id=coordinator_dep_id,
+        index=coordinator_dep_index,
         actor="worker",
     )
     assert not denied_dep_remove.ok
     assert denied_dep_remove.issues[0].kind == "node_dep_permission_denied"
 
-    assert service.material_ref.add_owned_ref(
+    assert service.material_ref.add_owned_source_ref(
         repo_root,
         node_path="Main.Topic.Consumer",
-        ref_kind="source",
-        locator="notes.md",
+        path="notes.md",
         start_line=1,
         end_line=2,
         reason="Coordinator supplied source context.",
         actor="coordinator",
     ).ok
-    assert service.material_ref.add_context_ref(
+    assert service.material_ref.add_context_source_ref(
         repo_root,
         node_path="Main.Topic.Consumer",
-        ref_kind="source",
-        locator="notes.md",
+        path="notes.md",
         start_line=2,
         end_line=3,
         reason="Worker found useful context.",
@@ -209,13 +219,13 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
     refs = service.material_ref.list_node_material_refs(repo_root, node_path="Main.Topic.Consumer")
     assert refs.ok
     assert refs.value is not None
-    owned_id = refs.value.owned_refs[0].ref_id
-    worker_context_id = refs.value.context_refs[0].ref_id
+    owned_index = refs.value.owned_refs[0].index
+    worker_context_index = refs.value.context_refs[0].index
 
     denied_ref_remove = service.material_ref.remove_owned_ref(
         repo_root,
         node_path="Main.Topic.Consumer",
-        ref_id=owned_id,
+        index=owned_index,
         actor="worker",
     )
     assert not denied_ref_remove.ok
@@ -223,7 +233,7 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
     removed_worker_ref = service.material_ref.remove_context_ref(
         repo_root,
         node_path="Main.Topic.Consumer",
-        ref_id=worker_context_id,
+        index=worker_context_index,
         actor="worker",
     )
     assert removed_worker_ref.ok, removed_worker_ref.issues
@@ -244,7 +254,8 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
     exported = service.export.add_scope_export(
         repo_root,
         scope_path="Main.Topic",
-        decl_ref="Main.Topic.Core:core_result",
+        decl_node="Main.Topic.Core",
+        decl_name="core_result",
         bind_interface_name="topic_result",
     )
     assert exported.ok, exported.issues

@@ -12,6 +12,8 @@ from lean_constellation.services.node.dependency import (
     DependencyComponent,
     NodeDep,
     NodeDepActor,
+    NodeDepsView,
+    NodeDepView,
     VisibleBoundaryView,
     VisibleNodeBoundaryItem,
 )
@@ -50,10 +52,28 @@ from lean_constellation.services.node.node_tree import (
     NodeView,
     RunnableContentNodeView,
 )
-from lean_constellation.services.node.service import NodeBoundaryView, NodeService
+from lean_constellation.services.node.service import (
+    ContentTaskFinalizeInput,
+    ContentTaskFinalizeView,
+    ContentTaskOutcome,
+    ContentTaskReadyGateProvider,
+    ContentTaskResultView,
+    CurrentNodeContractView,
+    NodeBoundaryView,
+    NodeService,
+    RepoReadyNodeView,
+    ScopeChildCloseView,
+    ScopeCloseView,
+)
 
 __all__ = [
     "ContentNodeContract",
+    "ContentTaskFinalizeInput",
+    "ContentTaskFinalizeView",
+    "ContentTaskOutcome",
+    "ContentTaskReadyGateProvider",
+    "ContentTaskResultView",
+    "CurrentNodeContractView",
     "ContractComponent",
     "ContractVersionStatus",
     "ContractMaterialRef",
@@ -72,6 +92,8 @@ __all__ = [
     "MaterialRefComponent",
     "NodeDep",
     "NodeDepActor",
+    "NodeDepsView",
+    "NodeDepView",
     "NodeContractSnapshot",
     "NodeContractView",
     "NodeBoundaryView",
@@ -90,6 +112,9 @@ __all__ = [
     "ScopeExportCandidate",
     "ScopeExportCandidateView",
     "ScopeExportView",
+    "RepoReadyNodeView",
+    "ScopeChildCloseView",
+    "ScopeCloseView",
     "ScopeNodeContract",
     "VisibleBoundaryView",
     "VisibleNodeBoundaryItem",

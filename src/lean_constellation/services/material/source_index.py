@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
-from lean_constellation.services.foundation import FoundationContext, FoundationService, GateReport, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.material.source_corpus import SourceCorpusComponent
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 BlockLifecycleStatus = Literal["draft", "refs_done", "links_done", "completed"]
@@ -106,8 +109,8 @@ class SubmissionView(StrictModel):
 class SourceIndexComponent:
     """Manage `.lean_constellation/source_index/index.json`."""
 
-    def __init__(self, foundation: FoundationService, source_corpus: SourceCorpusComponent) -> None:
-        self.foundation = foundation
+    def __init__(self, runtime: LeanRuntimeServices, source_corpus: SourceCorpusComponent) -> None:
+        self.runtime = runtime
         self.source_corpus = source_corpus
 
     def create_draft_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
@@ -116,7 +119,7 @@ class SourceIndexComponent:
             return self.get_source_index(repo_root)
         manifest = self.source_corpus.get_source_corpus_manifest(repo_root)
         if not manifest.ok or manifest.value is None:
-            return self.foundation.fail(manifest.issues)
+            return self.runtime.foundation.fail(manifest.issues)
         root_block = SourceBlockView(
             block_id="root",
             kind="root",
@@ -139,26 +142,26 @@ class SourceIndexComponent:
             files=files,
             summary="Created draft source index from source corpus manifest.",
         )
-        write = self.foundation.store.write_json_atomic(path, index)
+        write = self.runtime.foundation.store.write_json_atomic(path, index)
         if not write.ok:
-            return self.foundation.fail(write.issues)
-        return self.foundation.ok(index)
+            return self.runtime.foundation.fail(write.issues)
+        return self.runtime.foundation.ok(index)
 
     def get_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         path = self._index_path(repo_root)
         if not path.exists():
-            return self.foundation.fail(
-                self.foundation.issue("source_index_missing", f"Source index does not exist: {path}")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("source_index_missing", f"Source index does not exist: {path}")
             )
-        return self.foundation.store.read_json(path, SourceIndexView)
+        return self.runtime.foundation.store.read_json(path, SourceIndexView)
 
     def set_source_index_overview(self, repo_root: Path, *, overview: str) -> ServiceResult[SourceIndexView]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         overview = overview.strip()
         if not overview:
-            return self.foundation.fail(self.foundation.issue("source_index_overview_empty", "SourceIndex overview must be non-empty."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_overview_empty", "SourceIndex overview must be non-empty."))
         index.value.overview = overview
         index.value.updated_at = utc_now_iso()
         index.value.summary = "Updated source index overview."
@@ -176,9 +179,9 @@ class SourceIndexComponent:
     ) -> ServiceResult[SourceBlockView]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         if parent_id not in index.value.blocks:
-            return self.foundation.fail(self.foundation.issue("source_block_parent_missing", f"Parent block not found: {parent_id}"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_block_parent_missing", f"Parent block not found: {parent_id}"))
         kind = kind.strip()
         title = title.strip()
         summary = summary.strip()
@@ -190,7 +193,7 @@ class SourceIndexComponent:
             ]
         )
         if field_issue is not None:
-            return self.foundation.fail(field_issue)
+            return self.runtime.foundation.fail(field_issue)
         block_id = self._next_id("b", index.value.blocks)
         block = SourceBlockView(
             block_id=block_id,
@@ -208,8 +211,8 @@ class SourceIndexComponent:
         self._touch(index.value, "Created source block.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(block)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(block)
 
     def update_source_block(
         self,
@@ -223,25 +226,25 @@ class SourceIndexComponent:
     ) -> ServiceResult[SourceBlockView]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
         if not block.ok or block.value is None:
-            return self.foundation.fail(block.issues)
+            return self.runtime.foundation.fail(block.issues)
         current = block.value
         if title is not None:
             title = title.strip()
             if not title:
-                return self.foundation.fail(self.foundation.issue("source_block_field_empty", "Source block title must be non-empty.", object_ref=block_id, field="title"))
+                return self.runtime.foundation.fail(self.runtime.foundation.issue("source_block_field_empty", "Source block title must be non-empty.", object_ref=block_id, field="title"))
             current.title = title
         if summary is not None:
             summary = summary.strip()
             if not summary:
-                return self.foundation.fail(self.foundation.issue("source_block_field_empty", "Source block summary must be non-empty.", object_ref=block_id, field="summary"))
+                return self.runtime.foundation.fail(self.runtime.foundation.issue("source_block_field_empty", "Source block summary must be non-empty.", object_ref=block_id, field="summary"))
             current.summary = summary
         if kind is not None:
             kind = kind.strip()
             if not kind:
-                return self.foundation.fail(self.foundation.issue("source_block_field_empty", "Source block kind must be non-empty.", object_ref=block_id, field="kind"))
+                return self.runtime.foundation.fail(self.runtime.foundation.issue("source_block_field_empty", "Source block kind must be non-empty.", object_ref=block_id, field="kind"))
             current.kind = kind
         if subtype is not None:
             current.subtype = subtype.strip() or None
@@ -250,8 +253,8 @@ class SourceIndexComponent:
         self._touch(index.value, "Updated source block.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(current)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(current)
 
     def add_source_block_ref(
         self,
@@ -265,10 +268,10 @@ class SourceIndexComponent:
     ) -> ServiceResult[SourceBlockView]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
         if not block.ok or block.value is None:
-            return self.foundation.fail(block.issues)
+            return self.runtime.foundation.fail(block.issues)
         validation = self.source_corpus.validate_source_ref(
             repo_root,
             path=path,
@@ -276,10 +279,10 @@ class SourceIndexComponent:
             end_line=end_line,
         )
         if not validation.ok or validation.value is None:
-            return self.foundation.fail(validation.issues)
+            return self.runtime.foundation.fail(validation.issues)
         if not validation.value.valid:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     validation.value.issue_code or "source_ref_invalid",
                     validation.value.summary,
                     object_ref=path,
@@ -287,7 +290,7 @@ class SourceIndexComponent:
             )
         role = role.strip()
         if not role:
-            return self.foundation.fail(self.foundation.issue("source_ref_role_empty", "Source ref role must be non-empty.", object_ref=block_id, field="role"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_ref_role_empty", "Source ref role must be non-empty.", object_ref=block_id, field="role"))
         ref = SourceBlockRefView(
             ref_id=self._next_ref_id(index.value),
             path=validation.value.path,
@@ -301,20 +304,20 @@ class SourceIndexComponent:
         self._touch(index.value, "Added source block ref.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(block.value)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(block.value)
 
     def remove_source_block_ref(self, repo_root: Path, *, block_id: str, ref_id: str) -> ServiceResult[SourceBlockView]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
         if not block.ok or block.value is None:
-            return self.foundation.fail(block.issues)
+            return self.runtime.foundation.fail(block.issues)
         original = len(block.value.refs)
         block.value.refs = [ref for ref in block.value.refs if ref.ref_id != ref_id]
         if len(block.value.refs) == original:
-            return self.foundation.fail(self.foundation.issue("source_ref_missing", f"Source ref not found: {ref_id}"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_ref_missing", f"Source ref not found: {ref_id}"))
         for link in index.value.links.values():
             link.evidence_ref_ids = [item for item in link.evidence_ref_ids if item != ref_id]
         block.value.lifecycle_status = "draft"
@@ -322,20 +325,20 @@ class SourceIndexComponent:
         self._touch(index.value, "Removed source block ref.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(block.value)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(block.value)
 
     def mark_block_refs_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
         if not block.ok or block.value is None:
-            return self.foundation.fail(block.issues)
+            return self.runtime.foundation.fail(block.issues)
         issues = []
         if block_id != index.value.root_block_id and not block.value.refs and not self._allows_no_direct_refs(block.value.summary):
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "source_block_refs_missing",
                     "Non-root source block needs at least one source ref or an explicit no-direct-ref summary.",
                     object_ref=block_id,
@@ -352,21 +355,21 @@ class SourceIndexComponent:
                 issues.extend(valid.issues)
             elif not valid.value.valid:
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         valid.value.issue_code or "source_ref_invalid",
                         valid.value.summary,
                         object_ref=ref.ref_id,
                     )
                 )
         if issues:
-            return self.foundation.ok(self.foundation.gate_failed("source_block_refs_done", issues, summary="Source block refs are not ready."))
+            return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("source_block_refs_done", issues, summary="Source block refs are not ready."))
         block.value.lifecycle_status = "refs_done"
         block.value.updated_at = utc_now_iso()
         self._touch(index.value, "Marked source block refs done.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self.foundation.gate_passed("source_block_refs_done", summary="Source block refs are ready."))
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("source_block_refs_done", summary="Source block refs are ready."))
 
     def create_source_link(
         self,
@@ -380,22 +383,22 @@ class SourceIndexComponent:
     ) -> ServiceResult[SourceLinkView]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         source = self._block_or_issue(index.value, source_block_id)
         if not source.ok or source.value is None:
-            return self.foundation.fail(source.issues)
+            return self.runtime.foundation.fail(source.issues)
         if target_block_id and target_block_id not in index.value.blocks:
-            return self.foundation.fail(self.foundation.issue("source_link_target_missing", f"Target block not found: {target_block_id}"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_link_target_missing", f"Target block not found: {target_block_id}"))
         link_kind = link_kind.strip()
         if not link_kind:
-            return self.foundation.fail(self.foundation.issue("source_link_kind_empty", "Source link kind must be non-empty.", object_ref=source_block_id, field="link_kind"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_link_kind_empty", "Source link kind must be non-empty.", object_ref=source_block_id, field="link_kind"))
         if not evidence_ref_ids:
-            return self.foundation.fail(self.foundation.issue("source_link_evidence_empty", "Source link needs at least one evidence ref.", object_ref=source_block_id))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_link_evidence_empty", "Source link needs at least one evidence ref.", object_ref=source_block_id))
         source_ref_ids = {ref.ref_id for ref in source.value.refs}
         missing_refs = [ref_id for ref_id in evidence_ref_ids if ref_id not in source_ref_ids]
         if missing_refs:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "source_link_evidence_missing",
                     "Evidence refs must belong to the source block.",
                     current=", ".join(missing_refs),
@@ -412,7 +415,7 @@ class SourceIndexComponent:
                 evidence_ref_ids=list(evidence_ref_ids),
             )
         except Exception as exc:  # noqa: BLE001 - normalize pydantic validation into ServiceResult.
-            return self.foundation.fail(self.foundation.issue("source_link_invalid", str(exc)))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_link_invalid", str(exc)))
         index.value.links[link_id] = link
         source.value.link_ids.append(link_id)
         source.value.lifecycle_status = "refs_done"
@@ -420,21 +423,21 @@ class SourceIndexComponent:
         self._touch(index.value, "Created source link.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(link)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(link)
 
     def mark_block_links_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
         if not block.ok or block.value is None:
-            return self.foundation.fail(block.issues)
+            return self.runtime.foundation.fail(block.issues)
         if block.value.lifecycle_status not in {"refs_done", "links_done", "completed"}:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "source_block_links_done",
-                    self.foundation.issue("source_block_refs_not_done", "Refs must be marked done before links.", object_ref=block_id),
+                    self.runtime.foundation.issue("source_block_refs_not_done", "Refs must be marked done before links.", object_ref=block_id),
                     summary="Source block links are not ready.",
                 )
             )
@@ -442,38 +445,38 @@ class SourceIndexComponent:
         for link_id in block.value.link_ids:
             link = index.value.links.get(link_id)
             if link is None:
-                issues.append(self.foundation.issue("source_link_missing", f"Link missing: {link_id}", object_ref=block_id))
+                issues.append(self.runtime.foundation.issue("source_link_missing", f"Link missing: {link_id}", object_ref=block_id))
             elif not link.target_block_id and not (link.target_hint and link.target_hint.strip()):
-                issues.append(self.foundation.issue("source_link_target_missing", "Unresolved link needs target_hint.", object_ref=link_id))
+                issues.append(self.runtime.foundation.issue("source_link_target_missing", "Unresolved link needs target_hint.", object_ref=link_id))
             elif not link.evidence_ref_ids:
-                issues.append(self.foundation.issue("source_link_evidence_empty", "Source link needs at least one evidence ref.", object_ref=link_id))
+                issues.append(self.runtime.foundation.issue("source_link_evidence_empty", "Source link needs at least one evidence ref.", object_ref=link_id))
             else:
                 ref_ids = {ref.ref_id for ref in block.value.refs}
                 missing_refs = [ref_id for ref_id in link.evidence_ref_ids if ref_id not in ref_ids]
                 if missing_refs:
-                    issues.append(self.foundation.issue("source_link_evidence_missing", "Link evidence refs do not belong to source block.", object_ref=link_id, current=", ".join(missing_refs)))
+                    issues.append(self.runtime.foundation.issue("source_link_evidence_missing", "Link evidence refs do not belong to source block.", object_ref=link_id, current=", ".join(missing_refs)))
         if issues:
-            return self.foundation.ok(self.foundation.gate_failed("source_block_links_done", issues, summary="Source block links are not ready."))
+            return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("source_block_links_done", issues, summary="Source block links are not ready."))
         block.value.lifecycle_status = "links_done"
         block.value.updated_at = utc_now_iso()
         self._touch(index.value, "Marked source block links done.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self.foundation.gate_passed("source_block_links_done", summary="Source block links are ready."))
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("source_block_links_done", summary="Source block links are ready."))
 
     def mark_block_completed(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
         if not block.ok or block.value is None:
-            return self.foundation.fail(block.issues)
+            return self.runtime.foundation.fail(block.issues)
         if block.value.lifecycle_status not in {"links_done", "completed"}:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "source_block_completed",
-                    self.foundation.issue("source_block_links_not_done", "Links must be marked done before completion.", object_ref=block_id),
+                    self.runtime.foundation.issue("source_block_links_not_done", "Links must be marked done before completion.", object_ref=block_id),
                     summary="Source block is not complete.",
                 )
             )
@@ -483,10 +486,10 @@ class SourceIndexComponent:
             if index.value.blocks[child_id].active and index.value.blocks[child_id].lifecycle_status != "completed"
         ]
         if child_incomplete:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "source_block_completed",
-                    self.foundation.issue("source_block_children_incomplete", "Child blocks must be completed first.", current=", ".join(child_incomplete)),
+                    self.runtime.foundation.issue("source_block_children_incomplete", "Child blocks must be completed first.", current=", ".join(child_incomplete)),
                     summary="Source block has incomplete children.",
                 )
             )
@@ -495,8 +498,8 @@ class SourceIndexComponent:
         self._touch(index.value, "Marked source block completed.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self.foundation.gate_passed("source_block_completed", summary="Source block is complete."))
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("source_block_completed", summary="Source block is complete."))
 
     def set_file_survey_status(
         self,
@@ -508,19 +511,19 @@ class SourceIndexComponent:
     ) -> ServiceResult[SourceFileIndexView]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         file = self._file_or_issue(index.value, path)
         if not file.ok or file.value is None:
-            return self.foundation.fail(file.issues)
+            return self.runtime.foundation.fail(file.issues)
         if status not in {"pending", "surveyed", "skipped"}:
-            return self.foundation.fail(self.foundation.issue("invalid_source_file_survey_status", f"Invalid survey status: {status}", object_ref=path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_source_file_survey_status", f"Invalid survey status: {status}", object_ref=path))
         file.value.survey_status = status
         file.value.summary = summary
         self._touch(index.value, "Updated source file survey status.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(file.value)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(file.value)
 
     def set_file_indexing_status(
         self,
@@ -531,32 +534,32 @@ class SourceIndexComponent:
     ) -> ServiceResult[SourceFileIndexView]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         file = self._file_or_issue(index.value, path)
         if not file.ok or file.value is None:
-            return self.foundation.fail(file.issues)
+            return self.runtime.foundation.fail(file.issues)
         if status not in {"pending", "indexed", "skipped"}:
-            return self.foundation.fail(self.foundation.issue("invalid_source_file_indexing_status", f"Invalid indexing status: {status}", object_ref=path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_source_file_indexing_status", f"Invalid indexing status: {status}", object_ref=path))
         file.value.indexing_status = status
         self._touch(index.value, "Updated source file indexing status.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(file.value)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(file.value)
 
     def validate_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
         index = self.get_source_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         issues = self._validate_index(repo_root, index.value, require_completed=True)
         if issues:
-            return self.foundation.ok(self.foundation.gate_failed("source_index", issues, summary=f"{len(issues)} source index checks failed."))
-        return self.foundation.ok(self.foundation.gate_passed("source_index", summary="Source index is valid."))
+            return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("source_index", issues, summary=f"{len(issues)} source index checks failed."))
+        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("source_index", summary="Source index is valid."))
 
     def get_source_index_coverage(self, repo_root: Path) -> ServiceResult[SourceIndexCoverageView]:
         index = self.get_source_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         blocks = [block for block in index.value.blocks.values() if block.active and block.block_id != index.value.root_block_id]
         files = list(index.value.files.values())
         unfinished = [block.block_id for block in blocks if block.lifecycle_status != "completed"]
@@ -577,26 +580,26 @@ class SourceIndexComponent:
             pending_file_paths=pending,
             summary=f"{len(blocks) - len(unfinished)}/{len(blocks)} blocks completed; {len(files) - len(pending)}/{len(files)} files non-pending.",
         )
-        return self.foundation.ok(coverage)
+        return self.runtime.foundation.ok(coverage)
 
     def submit_source_index_builder_round(self, repo_root: Path, *, summary: str, ctx: object | None = None) -> ServiceResult[SubmissionView]:
         del ctx
         if not summary.strip():
-            return self.foundation.fail(self.foundation.issue("missing_submission_summary", "Builder submission requires a summary."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_submission_summary", "Builder submission requires a summary."))
         index = self.get_source_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         if index.value.status != "draft":
-            return self.foundation.fail(self.foundation.issue("source_index_not_draft", "Builder can only submit a draft SourceIndex."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_not_draft", "Builder can only submit a draft SourceIndex."))
         validation = self.validate_source_index(repo_root)
         if not validation.ok or validation.value is None:
-            return self.foundation.fail(validation.issues)
+            return self.runtime.foundation.fail(validation.issues)
         coverage = self.get_source_index_coverage(repo_root)
         if not coverage.ok or coverage.value is None:
-            return self.foundation.fail(coverage.issues)
+            return self.runtime.foundation.fail(coverage.issues)
         if not validation.value.passed:
-            return self.foundation.fail(validation.value.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(validation.value.issues)
+        return self.runtime.foundation.ok(
             SubmissionView(
                 submission_kind="source_index_builder_round",
                 accepted=True,
@@ -617,15 +620,15 @@ class SourceIndexComponent:
     ) -> ServiceResult[SubmissionView]:
         del ctx
         if not summary.strip():
-            return self.foundation.fail(self.foundation.issue("missing_review_summary", "Reviewer submission requires a summary."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_review_summary", "Reviewer submission requires a summary."))
         if not approved and not (feedback and feedback.strip()):
-            return self.foundation.fail(self.foundation.issue("missing_review_feedback", "Rejected review requires feedback."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_review_feedback", "Rejected review requires feedback."))
         index = self.get_source_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         if index.value.status != "draft":
-            return self.foundation.fail(self.foundation.issue("source_index_not_draft", "Reviewer can only submit a draft SourceIndex."))
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_not_draft", "Reviewer can only submit a draft SourceIndex."))
+        return self.runtime.foundation.ok(
             SubmissionView(
                 submission_kind="source_index_review_round",
                 accepted=True,
@@ -638,93 +641,93 @@ class SourceIndexComponent:
     def commit_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         validation = self.validate_source_index(repo_root)
         if not validation.ok or validation.value is None:
-            return self.foundation.fail(validation.issues)
+            return self.runtime.foundation.fail(validation.issues)
         if not validation.value.passed:
-            return self.foundation.ok(validation.value)
+            return self.runtime.foundation.ok(validation.value)
         index.value.status = "committed"
         index.value.committed_at = utc_now_iso()
         self._touch(index.value, "Committed source index.")
         saved = self._save(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self.foundation.gate_passed("source_index_commit", summary="Source index committed."))
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("source_index_commit", summary="Source index committed."))
 
     def _index_path(self, repo_root: Path) -> Path:
         ctx = FoundationContext(repo_root=Path(repo_root))
-        return self.foundation.layout.constellation_root(ctx) / "source_index" / "index.json"
+        return self.runtime.foundation.layout.constellation_root(ctx) / "source_index" / "index.json"
 
     def _load_mutable(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         index = self.get_source_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         if index.value.status == "committed":
-            return self.foundation.fail(self.foundation.issue("source_index_committed", "Committed SourceIndex is read-only."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_committed", "Committed SourceIndex is read-only."))
         return index
 
     def _save(self, repo_root: Path, index: SourceIndexView) -> ServiceResult[SourceIndexView]:
-        write = self.foundation.store.write_json_atomic(self._index_path(repo_root), index)
+        write = self.runtime.foundation.store.write_json_atomic(self._index_path(repo_root), index)
         if not write.ok:
-            return self.foundation.fail(write.issues)
-        return self.foundation.ok(index)
+            return self.runtime.foundation.fail(write.issues)
+        return self.runtime.foundation.ok(index)
 
     def _block_or_issue(self, index: SourceIndexView, block_id: str) -> ServiceResult[SourceBlockView]:
         block = index.blocks.get(block_id)
         if block is None:
-            return self.foundation.fail(self.foundation.issue("source_block_missing", f"Source block not found: {block_id}"))
-        return self.foundation.ok(block)
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_block_missing", f"Source block not found: {block_id}"))
+        return self.runtime.foundation.ok(block)
 
     def _file_or_issue(self, index: SourceIndexView, path: str) -> ServiceResult[SourceFileIndexView]:
         file = index.files.get(path)
         if file is None:
-            return self.foundation.fail(self.foundation.issue("source_file_missing", f"Source file not indexed: {path}"))
-        return self.foundation.ok(file)
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("source_file_missing", f"Source file not indexed: {path}"))
+        return self.runtime.foundation.ok(file)
 
     def _validate_index(self, repo_root: Path, index: SourceIndexView, *, require_completed: bool) -> list[object]:
         issues = []
         if index.root_block_id not in index.blocks:
-            issues.append(self.foundation.issue("source_index_root_missing", "Root source block is missing."))
+            issues.append(self.runtime.foundation.issue("source_index_root_missing", "Root source block is missing."))
         non_root_blocks = [block for block in index.blocks.values() if block.active and block.block_id != index.root_block_id]
         if not non_root_blocks:
-            issues.append(self.foundation.issue("source_index_no_blocks", "SourceIndex needs at least one non-root source block."))
+            issues.append(self.runtime.foundation.issue("source_index_no_blocks", "SourceIndex needs at least one non-root source block."))
         for block in index.blocks.values():
             if block.parent_id and block.parent_id not in index.blocks:
-                issues.append(self.foundation.issue("source_block_parent_missing", f"Parent block not found: {block.parent_id}", object_ref=block.block_id))
+                issues.append(self.runtime.foundation.issue("source_block_parent_missing", f"Parent block not found: {block.parent_id}", object_ref=block.block_id))
             for child_id in block.child_ids:
                 child = index.blocks.get(child_id)
                 if child is None:
-                    issues.append(self.foundation.issue("source_block_child_missing", f"Child block not found: {child_id}", object_ref=block.block_id))
+                    issues.append(self.runtime.foundation.issue("source_block_child_missing", f"Child block not found: {child_id}", object_ref=block.block_id))
                 elif child.parent_id != block.block_id:
-                    issues.append(self.foundation.issue("source_block_parent_mismatch", "Child parent_id does not match parent child_ids.", object_ref=child_id))
+                    issues.append(self.runtime.foundation.issue("source_block_parent_mismatch", "Child parent_id does not match parent child_ids.", object_ref=child_id))
             if require_completed and block.block_id != index.root_block_id and block.active and block.lifecycle_status != "completed":
-                issues.append(self.foundation.issue("source_block_incomplete", "Active source block is not completed.", object_ref=block.block_id))
+                issues.append(self.runtime.foundation.issue("source_block_incomplete", "Active source block is not completed.", object_ref=block.block_id))
             for ref in block.refs:
                 valid = self.source_corpus.validate_source_ref(repo_root, path=ref.path, start_line=ref.start_line, end_line=ref.end_line)
                 if not valid.ok or valid.value is None:
                     issues.extend(valid.issues)
                 elif not valid.value.valid:
-                    issues.append(self.foundation.issue(valid.value.issue_code or "source_ref_invalid", valid.value.summary, object_ref=ref.ref_id))
+                    issues.append(self.runtime.foundation.issue(valid.value.issue_code or "source_ref_invalid", valid.value.summary, object_ref=ref.ref_id))
         for link_id, link in index.links.items():
             source = index.blocks.get(link.source_block_id)
             if source is None:
-                issues.append(self.foundation.issue("source_link_source_missing", "Source block missing for link.", object_ref=link_id))
+                issues.append(self.runtime.foundation.issue("source_link_source_missing", "Source block missing for link.", object_ref=link_id))
                 continue
             if link_id not in source.link_ids:
-                issues.append(self.foundation.issue("source_link_not_bound", "Link is not listed on source block.", object_ref=link_id))
+                issues.append(self.runtime.foundation.issue("source_link_not_bound", "Link is not listed on source block.", object_ref=link_id))
             if link.target_block_id and link.target_block_id not in index.blocks:
-                issues.append(self.foundation.issue("source_link_target_missing", "Target block missing for link.", object_ref=link_id))
+                issues.append(self.runtime.foundation.issue("source_link_target_missing", "Target block missing for link.", object_ref=link_id))
             if not link.evidence_ref_ids:
-                issues.append(self.foundation.issue("source_link_evidence_empty", "Source link needs at least one evidence ref.", object_ref=link_id))
+                issues.append(self.runtime.foundation.issue("source_link_evidence_empty", "Source link needs at least one evidence ref.", object_ref=link_id))
             source_ref_ids = {ref.ref_id for ref in source.refs}
             missing = [ref_id for ref_id in link.evidence_ref_ids if ref_id not in source_ref_ids]
             if missing:
-                issues.append(self.foundation.issue("source_link_evidence_missing", "Link evidence refs do not belong to source block.", object_ref=link_id, current=", ".join(missing)))
+                issues.append(self.runtime.foundation.issue("source_link_evidence_missing", "Link evidence refs do not belong to source block.", object_ref=link_id, current=", ".join(missing)))
         for file in index.files.values():
             if file.readable_text and (file.survey_status == "pending" or file.indexing_status == "pending"):
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "source_file_pending",
                         "Readable source file must have survey and indexing status resolved.",
                         object_ref=file.path,
@@ -733,7 +736,7 @@ class SourceIndexComponent:
                     )
                 )
         if self._has_cycle(index):
-            issues.append(self.foundation.issue("source_block_cycle", "Source block tree contains a cycle."))
+            issues.append(self.runtime.foundation.issue("source_block_cycle", "Source block tree contains a cycle."))
         return issues
 
     def _has_cycle(self, index: SourceIndexView) -> bool:
@@ -782,7 +785,7 @@ class SourceIndexComponent:
     def _required_field_issue(self, fields: list[tuple[str, str]]) -> object | None:
         for field, value in fields:
             if not value:
-                return self.foundation.issue("source_block_field_empty", f"Source block {field} must be non-empty.", field=field)
+                return self.runtime.foundation.issue("source_block_field_empty", f"Source block {field} must be non-empty.", field=field)
         return None
 
     @staticmethod

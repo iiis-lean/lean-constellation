@@ -1,6 +1,17 @@
+from tests.unit_services_helpers import make_runtime
+
+import inspect
 from pathlib import Path
 
+import pytest
+
 from lean_constellation.services.material import MaterialService
+
+
+def test_material_service_source_index_wrappers_have_explicit_signatures() -> None:
+    signature = inspect.signature(MaterialService.update_source_block)
+    assert all(parameter.kind is not inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+    assert set(signature.parameters) == {"self", "repo_root", "block_id", "title", "summary", "kind", "subtype"}
 
 
 def _prepare_source(service: MaterialService, repo_root: Path) -> None:
@@ -42,7 +53,7 @@ def _create_block_with_ref(service: MaterialService, repo_root: Path, *, title: 
 
 
 def test_source_index_lifecycle_submit_and_commit(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(service, tmp_path)
 
     created = service.create_draft_source_index(tmp_path)
@@ -136,7 +147,7 @@ def test_source_index_lifecycle_submit_and_commit(tmp_path: Path) -> None:
 
 
 def test_source_index_ref_and_review_gates(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
     block = service.create_source_block(
@@ -171,7 +182,7 @@ def test_source_index_ref_and_review_gates(tmp_path: Path) -> None:
 
 
 def test_source_index_create_get_and_overview_boundaries(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
 
     missing = service.get_source_index(tmp_path)
     assert not missing.ok
@@ -193,7 +204,7 @@ def test_source_index_create_get_and_overview_boundaries(tmp_path: Path) -> None
 
 
 def test_source_index_block_create_update_and_ref_gates(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
 
@@ -223,6 +234,8 @@ def test_source_index_block_create_update_and_ref_gates(tmp_path: Path) -> None:
     )
     missing_update = service.update_source_block(tmp_path, block_id="missing", title="Title")
     empty_update = service.update_source_block(tmp_path, block_id=block.block_id, summary=" ")
+    with pytest.raises(TypeError):
+        service.update_source_block(tmp_path, block_id=block.block_id, parent_id="root")  # type: ignore[call-arg]
     empty_role = service.add_source_block_ref(
         tmp_path,
         block_id=block.block_id,
@@ -251,7 +264,7 @@ def test_source_index_block_create_update_and_ref_gates(tmp_path: Path) -> None:
 
 
 def test_source_index_lifecycle_order_and_file_status_gates(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
     block = service.create_source_block(
@@ -289,7 +302,7 @@ def test_source_index_lifecycle_order_and_file_status_gates(tmp_path: Path) -> N
 
 
 def test_source_index_link_gates_and_validation_after_ref_removal(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
     source = _create_block_with_ref(service, tmp_path, title="Source block")
@@ -363,7 +376,7 @@ def test_source_index_link_gates_and_validation_after_ref_removal(tmp_path: Path
 
 
 def test_source_index_builder_review_commit_failure_and_repeat_commit(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
     block = _create_block_with_ref(service, tmp_path)

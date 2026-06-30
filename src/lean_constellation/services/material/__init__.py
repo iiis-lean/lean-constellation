@@ -16,6 +16,9 @@ from lean_constellation.services.material.resource_curation import (
     ResourceCurationResultView,
 )
 from lean_constellation.services.material.resource_library import (
+    ResourceDraft,
+    ResourceDraftStatus,
+    ResourceDraftView,
     ResourceDuplicateView,
     ResourceLibraryComponent,
     ResourceMetadata,
@@ -24,7 +27,12 @@ from lean_constellation.services.material.resource_library import (
     ResourceTargetView,
     ResourceView,
 )
-from lean_constellation.services.material.service import MaterialService
+from lean_constellation.services.material.service import (
+    MaterialContextCitationView,
+    MaterialContextSourceBlockView,
+    MaterialContextView,
+    MaterialService,
+)
 from lean_constellation.services.material.source_corpus import (
     SourceAcquisitionView,
     SourceCorpusBlockedSubmitView,
@@ -49,6 +57,9 @@ from lean_constellation.services.material.source_index import (
 __all__ = [
     "MaterialFileEntry",
     "MaterialFileTreeView",
+    "MaterialContextCitationView",
+    "MaterialContextSourceBlockView",
+    "MaterialContextView",
     "MaterialRangeView",
     "MaterialReadComponent",
     "MaterialRefPreviewView",
@@ -59,6 +70,9 @@ __all__ = [
     "ResourceCurationDecisionView",
     "ResourceCurationFlowInputView",
     "ResourceCurationResultView",
+    "ResourceDraft",
+    "ResourceDraftStatus",
+    "ResourceDraftView",
     "ResourceDuplicateView",
     "ResourceLibraryComponent",
     "ResourceMetadata",

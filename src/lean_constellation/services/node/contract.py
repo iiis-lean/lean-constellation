@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
@@ -15,13 +15,15 @@ from lean_constellation.domain.preparation import RepoPreparationInput
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.foundation import (
     FoundationContext,
-    FoundationService,
     GateReport,
     OpenVersionResult,
     ServiceResult,
     WriteMode,
 )
 from lean_constellation.services.node.node_tree import NodeContractSnapshot, NodeKind, NodeLifecycle, NodeMetadata, NodeTreeComponent
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class ContractVersionStatus(StrEnum):
@@ -63,64 +65,64 @@ class ContractComponent:
 
     _ROOT_BOOTSTRAP_GOAL = "Organize and complete the full repository formalization goal."
 
-    def __init__(self, foundation: FoundationService | None = None, node_tree: NodeTreeComponent | None = None) -> None:
-        self.foundation = foundation or FoundationService()
-        self.node_tree = node_tree or NodeTreeComponent(self.foundation)
+    def __init__(self, runtime: LeanRuntimeServices, node_tree: NodeTreeComponent | None = None) -> None:
+        self.runtime = runtime
+        self.node_tree = node_tree or NodeTreeComponent(runtime)
 
     def get_current_contract(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeContractView]:
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         contract = self._select_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
-            return self.foundation.fail(contract.issues)
-        return self.foundation.ok(self._contract_view(node.value, contract.value))
+            return self.runtime.foundation.fail(contract.issues)
+        return self.runtime.foundation.ok(self._contract_view(node.value, contract.value))
 
     def ensure_open_contract(self, repo_root: Path, *, node_path: str) -> ServiceResult[OpenContractView]:
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         latest = self._select_current_contract(repo_root, node.value)
         if not latest.ok or latest.value is None:
-            return self.foundation.fail(latest.issues)
-        ensured = self.foundation.store.ensure_open_version(
+            return self.runtime.foundation.fail(latest.issues)
+        ensured = self.runtime.foundation.store.ensure_open_version(
             load_latest=lambda: latest.value,
             copy_committed=self._copy_committed_contract,
             path_for_version=lambda version: self._contract_file(repo_root, node.value.path, version),
         )
         if not ensured.ok or ensured.value is None:
-            return self.foundation.fail(ensured.issues)
+            return self.runtime.foundation.fail(ensured.issues)
         if ensured.value.created_new_open:
             node.value.current_contract_version = ensured.value.version
-            saved = self.foundation.store.write_json_atomic(
+            saved = self.runtime.foundation.store.write_json_atomic(
                 self._node_file(repo_root, node.value.path),
                 node.value,
                 mode=WriteMode.UPDATE_EXISTING,
             )
             if not saved.ok:
-                return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self._open_view(node.value, ensured.value))
+                return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._open_view(node.value, ensured.value))
 
     def ensure_scope_contract(self, repo_root: Path, *, scope_path: str) -> ServiceResult[OpenContractView]:
         node = self._load_active_node(repo_root, scope_path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         if node.value.kind != NodeKind.SCOPE:
-            return self.foundation.fail(
-                self.foundation.issue("node_not_scope", "ensure_scope_contract requires a Scope node.", object_ref=scope_path)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("node_not_scope", "ensure_scope_contract requires a Scope node.", object_ref=scope_path)
             )
         opened = self.ensure_open_contract(repo_root, node_path=scope_path)
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         if opened.value.contract.exports is None:
             opened.value.contract.exports = []
-            saved = self.foundation.store.write_json_atomic(
+            saved = self.runtime.foundation.store.write_json_atomic(
                 self._contract_file(repo_root, scope_path, opened.value.version),
                 opened.value.contract,
                 mode=WriteMode.UPDATE_EXISTING,
             )
             if not saved.ok:
-                return self.foundation.fail(saved.issues)
+                return self.runtime.foundation.fail(saved.issues)
         return opened
 
     def initialize_main_contract_from_preparation_input(
@@ -131,23 +133,23 @@ class ContractComponent:
         objective: str,
     ) -> ServiceResult[NodeContractView]:
         if not boundary or not boundary.strip():
-            return self.foundation.fail(self.foundation.issue("contract_boundary_required", "Main boundary is required.", field="boundary"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("contract_boundary_required", "Main boundary is required.", field="boundary"))
         if not objective or not objective.strip():
-            return self.foundation.fail(self.foundation.issue("contract_objective_required", "Main objective is required.", field="objective"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("contract_objective_required", "Main objective is required.", field="objective"))
         input_result = self._load_preparation_input(repo_root)
         if not input_result.ok or input_result.value is None:
-            return self.foundation.fail(input_result.issues)
+            return self.runtime.foundation.fail(input_result.issues)
         ensured_root = self.node_tree.ensure_root_scope_node(repo_root)
         if not ensured_root.ok:
-            return self.foundation.fail(ensured_root.issues)
+            return self.runtime.foundation.fail(ensured_root.issues)
         opened = self.ensure_scope_contract(repo_root, scope_path="Main")
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         contract = opened.value.contract
         prep = input_result.value
         if contract.goal not in {self._ROOT_BOOTSTRAP_GOAL, prep.goal}:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "main_goal_conflict",
                     "Existing Main contract goal conflicts with preparation input.",
                     object_ref="Main",
@@ -156,8 +158,8 @@ class ContractComponent:
                 )
             )
         if contract.interfaces and self._interface_dump(contract.interfaces) != self._interface_dump(prep.interface_inputs):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "main_interfaces_conflict",
                     "Existing Main interfaces conflict with preparation input interfaces.",
                     object_ref="Main",
@@ -169,17 +171,17 @@ class ContractComponent:
         contract.interfaces = list(prep.interface_inputs)
         if contract.success_criteria is None:
             contract.success_criteria = "The Main scope exposes the required repository interfaces and can be handed to the repository Coordinator."
-        saved = self.foundation.store.write_json_atomic(
+        saved = self.runtime.foundation.store.write_json_atomic(
             self._contract_file(repo_root, "Main", contract.version),
             contract,
             mode=WriteMode.UPDATE_EXISTING,
         )
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
+            return self.runtime.foundation.fail(saved.issues)
         node = self._load_active_node(repo_root, "Main")
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
-        return self.foundation.ok(self._contract_view(node.value, contract))
+            return self.runtime.foundation.fail(node.issues)
+        return self.runtime.foundation.ok(self._contract_view(node.value, contract))
 
     def update_contract_text_fields(
         self,
@@ -194,11 +196,11 @@ class ContractComponent:
     ) -> ServiceResult[NodeContractView]:
         opened = self.ensure_open_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         contract = opened.value.contract
         if node_path == "Main" and goal is not None and goal.strip() != contract.goal:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "main_goal_protected",
                     "Main contract goal is protected after preparation input initialization.",
                     object_ref="Main",
@@ -217,72 +219,105 @@ class ContractComponent:
                 continue
             stripped = value.strip()
             if field_name in {"goal", "boundary", "objective", "success_criteria"} and not stripped:
-                return self.foundation.fail(
-                    self.foundation.issue(f"contract_{field_name}_required", f"Contract {field_name} cannot be empty.", field=field_name)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(f"contract_{field_name}_required", f"Contract {field_name} cannot be empty.", field=field_name)
                 )
             if getattr(contract, field_name) != stripped:
                 setattr(contract, field_name, stripped)
                 changed = True
         if changed:
-            saved = self.foundation.store.write_json_atomic(
+            saved = self.runtime.foundation.store.write_json_atomic(
                 self._contract_file(repo_root, node_path, contract.version),
                 contract,
                 mode=WriteMode.UPDATE_EXISTING,
             )
             if not saved.ok:
-                return self.foundation.fail(saved.issues)
+                return self.runtime.foundation.fail(saved.issues)
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
-        return self.foundation.ok(self._contract_view(node.value, contract))
+            return self.runtime.foundation.fail(node.issues)
+        return self.runtime.foundation.ok(self._contract_view(node.value, contract))
 
     def commit_content_contract(self, repo_root: Path, *, node_path: str, summary: str) -> ServiceResult[NodeContractView]:
         summary_issue = self._validate_summary(summary)
         if not summary_issue.ok:
-            return self.foundation.fail(summary_issue.issues)
+            return self.runtime.foundation.fail(summary_issue.issues)
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         if node.value.kind != NodeKind.CONTENT:
-            return self.foundation.fail(self.foundation.issue("node_not_content", "Content contract commit requires a Content node.", object_ref=node_path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_not_content", "Content contract commit requires a Content node.", object_ref=node_path))
         contract = self._load_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
-            return self.foundation.fail(contract.issues)
+            return self.runtime.foundation.fail(contract.issues)
         if contract.value.version_status != ContractVersionStatus.OPEN.value:
-            return self.foundation.fail(
-                self.foundation.issue("contract_not_open", "Only an open contract can be committed.", object_ref=node_path)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("contract_not_open", "Only an open contract can be committed.", object_ref=node_path)
             )
         return self._commit_contract(repo_root, node.value, contract.value, summary=summary)
+
+    def record_content_contract_summary(self, repo_root: Path, *, node_path: str, summary: str) -> ServiceResult[NodeContractView]:
+        """Write a task summary to the current open Content contract without committing it."""
+
+        summary_issue = self._validate_summary(summary)
+        if not summary_issue.ok:
+            return self.runtime.foundation.fail(summary_issue.issues)
+        node = self._load_active_node(repo_root, node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        if node.value.kind != NodeKind.CONTENT:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("node_not_content", "Content contract summary recording requires a Content node.", object_ref=node_path)
+            )
+        contract = self._load_current_contract(repo_root, node.value)
+        if not contract.ok or contract.value is None:
+            return self.runtime.foundation.fail(contract.issues)
+        if contract.value.version_status != ContractVersionStatus.OPEN.value:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("contract_not_open", "Only an open contract can record a task summary.", object_ref=node_path)
+            )
+        contract.value.summary = summary.strip()
+        saved = self.runtime.foundation.store.write_json_atomic(
+            self._contract_file(repo_root, node.value.path, contract.value.version),
+            contract.value,
+            mode=WriteMode.UPDATE_EXISTING,
+        )
+        if not saved.ok:
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._contract_view(node.value, contract.value))
 
     def commit_scope_contract(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[NodeContractView]:
         gate = self._check_scope_commit(repo_root, scope_path=scope_path, summary=summary)
         if not gate.ok or gate.value is None:
-            return self.foundation.fail(gate.issues)
+            return self.runtime.foundation.fail(gate.issues)
         if not gate.value.passed:
-            return self.foundation.fail(gate.value.issues)
+            return self.runtime.foundation.fail(gate.value.issues)
         node = self._load_active_node(repo_root, scope_path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         contract = self._load_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
-            return self.foundation.fail(contract.issues)
+            return self.runtime.foundation.fail(contract.issues)
         return self._commit_contract(repo_root, node.value, contract.value, summary=summary)
+
+    def check_scope_contract_commit(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[GateReport]:
+        return self._check_scope_commit(repo_root, scope_path=scope_path, summary=summary)
 
     def check_content_task_admission(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         issues = []
         warnings = []
         if node.value.kind != NodeKind.CONTENT:
-            issues.append(self.foundation.issue("node_not_content", "Content task admission requires a Content node.", object_ref=node_path))
+            issues.append(self.runtime.foundation.issue("node_not_content", "Content task admission requires a Content node.", object_ref=node_path))
         contract = self._load_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
-            return self.foundation.fail(contract.issues)
+            return self.runtime.foundation.fail(contract.issues)
         self._collect_contract_required_field_issues(contract.value, issues)
         if contract.value.version_status != ContractVersionStatus.OPEN.value:
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "contract_not_open",
                     "Content node task admission requires an open contract.",
                     object_ref=node_path,
@@ -292,7 +327,7 @@ class ContractComponent:
             )
         self._collect_dep_issues(repo_root, contract.value, issues)
         warnings.append(
-            self.foundation.issue(
+            self.runtime.foundation.issue(
                 "content_admission_deferred_checks",
                 "Material ref validation, dependency readiness, and prelude projection sync are deferred until their components are implemented.",
                 severity="warning",
@@ -300,15 +335,15 @@ class ContractComponent:
             )
         )
         if issues:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "content_task_admission",
                     issues,
                     summary=f"{len(issues)} content task admission checks failed.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "content_task_admission",
                 summary="Content task admission base checks passed.",
                 warnings=warnings,
@@ -318,20 +353,20 @@ class ContractComponent:
     def _check_scope_commit(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[GateReport]:
         summary_issue = self._validate_summary(summary)
         if not summary_issue.ok:
-            return self.foundation.ok(self.foundation.gate_failed("scope_commit", summary_issue.issues, summary="Scope commit summary is invalid."))
+            return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("scope_commit", summary_issue.issues, summary="Scope commit summary is invalid."))
         node = self._load_active_node(repo_root, scope_path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         issues = []
         warnings = []
         if node.value.kind != NodeKind.SCOPE:
-            issues.append(self.foundation.issue("node_not_scope", "Scope commit requires a Scope node.", object_ref=scope_path))
+            issues.append(self.runtime.foundation.issue("node_not_scope", "Scope commit requires a Scope node.", object_ref=scope_path))
         contract = self._load_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
-            return self.foundation.fail(contract.issues)
+            return self.runtime.foundation.fail(contract.issues)
         if contract.value.version_status != ContractVersionStatus.OPEN.value:
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "contract_not_open",
                     "Only an open Scope contract can be committed.",
                     object_ref=scope_path,
@@ -343,7 +378,7 @@ class ContractComponent:
         for interface in contract.value.interfaces:
             if interface.bound_decl is None:
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "interface_unbound",
                         f"Scope interface is not bound: {interface.name}",
                         object_ref=scope_path,
@@ -353,7 +388,7 @@ class ContractComponent:
                 continue
             if self._decl_ref_key(interface.bound_decl) not in export_keys:
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "interface_binding_not_exported",
                         f"Scope interface binding is not present in exports: {interface.name}",
                         object_ref=scope_path,
@@ -361,7 +396,7 @@ class ContractComponent:
                     )
                 )
         warnings.append(
-            self.foundation.issue(
+            self.runtime.foundation.issue(
                 "scope_commit_deferred_checks",
                 "Export descendant validation, Decl revision readiness, generated Interfaces.lean sync, and dependency closure checks are deferred until their components are implemented.",
                 severity="warning",
@@ -369,8 +404,8 @@ class ContractComponent:
             )
         )
         if issues:
-            return self.foundation.ok(self.foundation.gate_failed("scope_commit", issues, summary=f"{len(issues)} scope commit checks failed."))
-        return self.foundation.ok(self.foundation.gate_passed("scope_commit", summary="Scope commit base checks passed.", warnings=warnings))
+            return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("scope_commit", issues, summary=f"{len(issues)} scope commit checks failed."))
+        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("scope_commit", summary="Scope commit base checks passed.", warnings=warnings))
 
     def _commit_contract(
         self,
@@ -383,19 +418,19 @@ class ContractComponent:
         contract.summary = summary.strip()
         contract.version_status = ContractVersionStatus.COMMITTED.value
         contract.committed_at = utc_now_iso()
-        saved = self.foundation.store.write_json_atomic(
+        saved = self.runtime.foundation.store.write_json_atomic(
             self._contract_file(repo_root, node.path, contract.version),
             contract,
             mode=WriteMode.UPDATE_EXISTING,
         )
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self._contract_view(node, contract))
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._contract_view(node, contract))
 
     def _validate_summary(self, summary: str) -> ServiceResult[None]:
         if not summary or not summary.strip():
-            return self.foundation.fail(self.foundation.issue("contract_summary_required", "Contract summary is required.", field="summary"))
-        return self.foundation.ok(None)
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("contract_summary_required", "Contract summary is required.", field="summary"))
+        return self.runtime.foundation.ok(None)
 
     def _copy_committed_contract(self, latest: NodeContractSnapshot) -> NodeContractSnapshot:
         new_contract = deepcopy(latest)
@@ -411,7 +446,7 @@ class ContractComponent:
             value = getattr(contract, field_name)
             if not isinstance(value, str) or not value.strip():
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         f"contract_{field_name}_missing",
                         f"Contract field is required for content admission: {field_name}",
                         field=field_name,
@@ -421,12 +456,12 @@ class ContractComponent:
     def _collect_dep_issues(self, repo_root: Path, contract: NodeContractSnapshot, issues: list[object]) -> None:
         for index, dep in enumerate(contract.deps):
             if not isinstance(dep, dict):
-                issues.append(self.foundation.issue("contract_dep_invalid", "Contract dependency entry must be an object.", field=f"deps.{index}"))
+                issues.append(self.runtime.foundation.issue("contract_dep_invalid", "Contract dependency entry must be an object.", field=f"deps.{index}"))
                 continue
             target = dep.get("target")
             if not isinstance(target, dict):
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "contract_dep_target_invalid",
                         "Contract dependency target must be an object.",
                         field=f"deps.{index}.target",
@@ -437,7 +472,7 @@ class ContractComponent:
             node_path = target.get("node")
             if repo is None and (not isinstance(node_path, str) or not node_path.strip()):
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "contract_dep_target_invalid",
                         "Local contract dependency target must include a node path.",
                         field=f"deps.{index}.target.node",
@@ -448,7 +483,7 @@ class ContractComponent:
                 target_node = self._load_active_node(repo_root, node_path)
                 if not target_node.ok or target_node.value is None:
                     issues.append(
-                        self.foundation.issue(
+                        self.runtime.foundation.issue(
                             "contract_dep_node_missing",
                             f"Contract dependency target node is missing or inactive: {node_path}",
                             field=f"deps.{index}.target.node",
@@ -457,62 +492,62 @@ class ContractComponent:
                     )
 
     def _load_preparation_input(self, repo_root: Path) -> ServiceResult[RepoPreparationInput]:
-        path = self.foundation.layout.preparation_input_path(FoundationContext(repo_root=Path(repo_root)))
-        loaded = self.foundation.store.read_json(path, RepoPreparationInput)
+        path = self.runtime.foundation.layout.preparation_input_path(FoundationContext(repo_root=Path(repo_root)))
+        loaded = self.runtime.foundation.store.read_json(path, RepoPreparationInput)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(
-                self.foundation.issue("preparation_input_missing", "Preparation input is missing or invalid.", object_ref=str(path))
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("preparation_input_missing", "Preparation input is missing or invalid.", object_ref=str(path))
             )
         return loaded
 
     def _select_current_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContractSnapshot]:
         contracts = self._list_contracts(repo_root, node.path)
         if not contracts.ok or contracts.value is None:
-            return self.foundation.fail(contracts.issues)
+            return self.runtime.foundation.fail(contracts.issues)
         if not contracts.value:
-            return self.foundation.fail(self.foundation.issue("node_contract_missing", "Node has no contract versions.", object_ref=node.path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_contract_missing", "Node has no contract versions.", object_ref=node.path))
         open_contracts = [contract for contract in contracts.value if contract.version_status == ContractVersionStatus.OPEN.value]
         if open_contracts:
-            return self.foundation.ok(max(open_contracts, key=lambda item: item.version))
+            return self.runtime.foundation.ok(max(open_contracts, key=lambda item: item.version))
         if node.current_contract_version is not None:
             for contract in contracts.value:
                 if contract.version == node.current_contract_version:
-                    return self.foundation.ok(contract)
-        return self.foundation.ok(max(contracts.value, key=lambda item: item.version))
+                    return self.runtime.foundation.ok(contract)
+        return self.runtime.foundation.ok(max(contracts.value, key=lambda item: item.version))
 
     def _list_contracts(self, repo_root: Path, node_path: str) -> ServiceResult[list[NodeContractSnapshot]]:
         contracts_dir = self._contract_file(repo_root, node_path, 1).parent
         if not contracts_dir.exists():
-            return self.foundation.ok([])
+            return self.runtime.foundation.ok([])
         contracts: list[NodeContractSnapshot] = []
         issues = []
         for path in sorted(contracts_dir.glob("*.json")):
-            loaded = self.foundation.store.read_json(path, NodeContractSnapshot)
+            loaded = self.runtime.foundation.store.read_json(path, NodeContractSnapshot)
             if loaded.ok and loaded.value is not None:
                 contracts.append(loaded.value)
             else:
                 issues.extend(loaded.issues)
         if issues:
-            return self.foundation.fail(issues)
+            return self.runtime.foundation.fail(issues)
         contracts.sort(key=lambda item: item.version)
-        return self.foundation.ok(contracts)
+        return self.runtime.foundation.ok(contracts)
 
     def _load_current_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContractSnapshot]:
         return self._select_current_contract(repo_root, node)
 
     def _load_active_node(self, repo_root: Path, node_path: str) -> ServiceResult[NodeMetadata]:
-        loaded = self.foundation.store.read_json(self._node_file(repo_root, node_path), NodeMetadata)
+        loaded = self.runtime.foundation.store.read_json(self._node_file(repo_root, node_path), NodeMetadata)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         if loaded.value.lifecycle != NodeLifecycle.ACTIVE:
-            return self.foundation.fail(self.foundation.issue("node_not_active", "Node is not active.", object_ref=node_path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_not_active", "Node is not active.", object_ref=node_path))
         return loaded
 
     def _node_file(self, repo_root: Path, node_path: str) -> Path:
-        return self.foundation.layout.node_metadata_dir(FoundationContext(repo_root=Path(repo_root)), node_path) / "node.json"
+        return self.runtime.foundation.layout.node_metadata_dir(FoundationContext(repo_root=Path(repo_root)), node_path) / "node.json"
 
     def _contract_file(self, repo_root: Path, node_path: str, version: int) -> Path:
-        return self.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), node_path, version)
+        return self.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), node_path, version)
 
     def _contract_view(self, node: NodeMetadata, contract: NodeContractSnapshot) -> NodeContractView:
         return NodeContractView(

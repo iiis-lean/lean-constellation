@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -14,11 +14,13 @@ from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.foundation import (
     FoundationContext,
-    FoundationService,
     MutationSummaryView,
     ServiceResult,
     WriteMode,
 )
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class NodeKind(StrEnum):
@@ -115,8 +117,8 @@ class RunnableContentNodeView(StrictModel):
 class NodeTreeComponent:
     """Create, inspect, soft-delete, and list runnable node metadata."""
 
-    def __init__(self, foundation: FoundationService | None = None) -> None:
-        self.foundation = foundation or FoundationService()
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
 
     def create_scope_node(
         self,
@@ -152,10 +154,10 @@ class NodeTreeComponent:
         constraints: str | None = None,
     ) -> ServiceResult[NodeView]:
         if not objective or not objective.strip():
-            return self.foundation.fail(self.foundation.issue("node_objective_required", "Content node objective is required.", field="objective"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_objective_required", "Content node objective is required.", field="objective"))
         if not success_criteria or not success_criteria.strip():
-            return self.foundation.fail(
-                self.foundation.issue("node_success_criteria_required", "Content node success_criteria is required.", field="success_criteria")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("node_success_criteria_required", "Content node success_criteria is required.", field="success_criteria")
             )
         return self._create_node(
             repo_root,
@@ -171,18 +173,18 @@ class NodeTreeComponent:
     def ensure_root_scope_node(self, repo_root: Path, *, path: str = "Main") -> ServiceResult[NodeView]:
         valid = self._validate_dot_path(path)
         if not valid.ok:
-            return self.foundation.fail(valid.issues)
+            return self.runtime.foundation.fail(valid.issues)
         if path != "Main":
-            return self.foundation.fail(self.foundation.issue("root_scope_path_invalid", "Root scope path must be Main.", current=path, expected="Main"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("root_scope_path_invalid", "Root scope path must be Main.", current=path, expected="Main"))
         existing = self._load_node(repo_root, path)
         if existing.ok and existing.value is not None:
             node = existing.value
             if node.kind != NodeKind.SCOPE:
-                return self.foundation.fail(
-                    self.foundation.issue("root_node_wrong_kind", "Existing Main node is not a Scope node.", current=node.kind.value, expected="scope")
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("root_node_wrong_kind", "Existing Main node is not a Scope node.", current=node.kind.value, expected="scope")
                 )
             if node.lifecycle != NodeLifecycle.ACTIVE:
-                return self.foundation.fail(self.foundation.issue("root_node_deleted", "Existing Main node is obsolete.", object_ref=path))
+                return self.runtime.foundation.fail(self.runtime.foundation.issue("root_node_deleted", "Existing Main node is obsolete.", object_ref=path))
             return self.get_node(repo_root, path=path)
         return self.create_scope_node(
             repo_root,
@@ -196,21 +198,21 @@ class NodeTreeComponent:
     def get_node(self, repo_root: Path, *, path: str) -> ServiceResult[NodeView]:
         node = self._load_node(repo_root, path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         nodes = self._load_all_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
-            return self.foundation.fail(nodes.issues)
-        return self.foundation.ok(self._node_view(repo_root, node.value, nodes.value))
+            return self.runtime.foundation.fail(nodes.issues)
+        return self.runtime.foundation.ok(self._node_view(repo_root, node.value, nodes.value))
 
     def get_node_tree(self, repo_root: Path) -> ServiceResult[NodeTreeView]:
         nodes = self._load_all_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
-            return self.foundation.fail(nodes.issues)
+            return self.runtime.foundation.fail(nodes.issues)
         active = [node for node in nodes.value if node.lifecycle == NodeLifecycle.ACTIVE]
         active.sort(key=lambda item: (item.path.count("."), item.path))
         views = [self._node_view(repo_root, node, active) for node in active]
         root_path = "Main" if any(node.path == "Main" for node in active) else None
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             NodeTreeView(
                 root_path=root_path,
                 nodes=views,
@@ -222,27 +224,27 @@ class NodeTreeComponent:
     def list_children(self, repo_root: Path, *, scope_path: str) -> ServiceResult[list[NodeView]]:
         scope = self._load_active_node(repo_root, scope_path)
         if not scope.ok or scope.value is None:
-            return self.foundation.fail(scope.issues)
+            return self.runtime.foundation.fail(scope.issues)
         if scope.value.kind != NodeKind.SCOPE:
-            return self.foundation.fail(self.foundation.issue("node_not_scope", "Only Scope nodes can have children.", object_ref=scope_path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_not_scope", "Only Scope nodes can have children.", object_ref=scope_path))
         nodes = self._load_all_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
-            return self.foundation.fail(nodes.issues)
+            return self.runtime.foundation.fail(nodes.issues)
         children = [
             node
             for node in nodes.value
             if node.lifecycle == NodeLifecycle.ACTIVE and self._parent_path(node.path) == scope_path
         ]
         children.sort(key=lambda item: item.path)
-        return self.foundation.ok([self._node_view(repo_root, node, nodes.value) for node in children])
+        return self.runtime.foundation.ok([self._node_view(repo_root, node, nodes.value) for node in children])
 
     def preview_delete_node(self, repo_root: Path, *, path: str) -> ServiceResult[DeleteImpactView]:
         node = self._load_active_node(repo_root, path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         nodes = self._load_all_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
-            return self.foundation.fail(nodes.issues)
+            return self.runtime.foundation.fail(nodes.issues)
         affected_children = sorted(
             node_item.path
             for node_item in nodes.value
@@ -255,7 +257,7 @@ class NodeTreeComponent:
         if inbound_refs:
             blocking_reasons.append("inbound_refs")
         deletable = not blocking_reasons
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             DeleteImpactView(
                 path=path,
                 deletable=deletable,
@@ -268,13 +270,13 @@ class NodeTreeComponent:
 
     def mark_node_deleted(self, repo_root: Path, *, path: str, reason: str) -> ServiceResult[MutationSummaryView]:
         if not reason or not reason.strip():
-            return self.foundation.fail(self.foundation.issue("delete_reason_required", "Node deletion requires a reason.", field="reason"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("delete_reason_required", "Node deletion requires a reason.", field="reason"))
         preview = self.preview_delete_node(repo_root, path=path)
         if not preview.ok or preview.value is None:
-            return self.foundation.fail(preview.issues)
+            return self.runtime.foundation.fail(preview.issues)
         if not preview.value.deletable:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "node_delete_blocked",
                     "Node deletion is blocked by active impacts.",
                     object_ref=path,
@@ -283,13 +285,13 @@ class NodeTreeComponent:
             )
         node = self._load_active_node(repo_root, path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         node.value.lifecycle = NodeLifecycle.OBSOLETE
-        saved = self.foundation.store.write_json_atomic(self._node_file(repo_root, path), node.value, mode=WriteMode.UPDATE_EXISTING)
+        saved = self.runtime.foundation.store.write_json_atomic(self._node_file(repo_root, path), node.value, mode=WriteMode.UPDATE_EXISTING)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(
-            self.foundation.mutation_view(
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.mutation_view(
                 object_ref=path,
                 changed=True,
                 summary=f"Marked node obsolete: {reason.strip()}",
@@ -299,10 +301,10 @@ class NodeTreeComponent:
 
     def list_runnable_content_candidates(self, repo_root: Path, *, max_count: int) -> ServiceResult[RunnableContentNodeView]:
         if max_count < 1:
-            return self.foundation.fail(self.foundation.issue("max_count_invalid", "max_count must be >= 1.", field="max_count"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("max_count_invalid", "max_count must be >= 1.", field="max_count"))
         nodes = self._load_all_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
-            return self.foundation.fail(nodes.issues)
+            return self.runtime.foundation.fail(nodes.issues)
         active = sorted(
             [node for node in nodes.value if node.lifecycle == NodeLifecycle.ACTIVE],
             key=lambda item: (item.path.count("."), item.path),
@@ -324,7 +326,7 @@ class NodeTreeComponent:
             candidates.append(self._node_view(repo_root, node, active))
         truncated = len(candidates) > max_count
         shown = candidates[:max_count]
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             RunnableContentNodeView(
                 candidates=shown,
                 max_count=max_count,
@@ -348,33 +350,33 @@ class NodeTreeComponent:
     ) -> ServiceResult[NodeView]:
         valid = self._validate_dot_path(path)
         if not valid.ok:
-            return self.foundation.fail(valid.issues)
+            return self.runtime.foundation.fail(valid.issues)
         if not goal or not goal.strip():
-            return self.foundation.fail(self.foundation.issue("node_goal_required", "Node goal is required.", field="goal"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_goal_required", "Node goal is required.", field="goal"))
         if not boundary or not boundary.strip():
-            return self.foundation.fail(self.foundation.issue("node_boundary_required", "Node boundary is required.", field="boundary"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_boundary_required", "Node boundary is required.", field="boundary"))
         existing = self._load_node(repo_root, path)
         if existing.ok and existing.value is not None:
             issue_kind = "node_already_exists" if existing.value.lifecycle == NodeLifecycle.ACTIVE else "node_path_obsolete"
-            return self.foundation.fail(self.foundation.issue(issue_kind, f"Node path already has metadata: {path}", object_ref=path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(issue_kind, f"Node path already has metadata: {path}", object_ref=path))
         if path != "Main":
             parent_path = self._parent_path(path)
             if parent_path is None:
-                return self.foundation.fail(self.foundation.issue("node_parent_missing", "Non-root node must have a parent Scope.", object_ref=path))
+                return self.runtime.foundation.fail(self.runtime.foundation.issue("node_parent_missing", "Non-root node must have a parent Scope.", object_ref=path))
             parent = self._load_active_node(repo_root, parent_path)
             if not parent.ok or parent.value is None:
-                return self.foundation.fail(
-                    self.foundation.issue("node_parent_missing", f"Parent Scope node does not exist: {parent_path}", object_ref=path)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("node_parent_missing", f"Parent Scope node does not exist: {parent_path}", object_ref=path)
                 )
             if parent.value.kind != NodeKind.SCOPE:
-                return self.foundation.fail(
-                    self.foundation.issue("node_parent_not_scope", "Parent node must be a Scope node.", object_ref=parent_path, current=parent.value.kind.value)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("node_parent_not_scope", "Parent node must be a Scope node.", object_ref=parent_path, current=parent.value.kind.value)
                 )
         if kind == NodeKind.CONTENT:
             descendants = self._active_descendant_paths(repo_root, path)
             if descendants:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "content_node_has_children",
                         "Content node path cannot have active descendants.",
                         object_ref=path,
@@ -382,9 +384,9 @@ class NodeTreeComponent:
                     )
                 )
         node_ids = self._all_node_ids(repo_root)
-        allocated = self.foundation.store.allocate_uuid(lambda candidate: candidate in node_ids, prefix="node")
+        allocated = self.runtime.foundation.store.allocate_uuid(lambda candidate: candidate in node_ids, prefix="node")
         if not allocated.ok or allocated.value is None:
-            return self.foundation.fail(allocated.issues)
+            return self.runtime.foundation.fail(allocated.issues)
         node = NodeMetadata(
             node_id=allocated.value,
             path=path,
@@ -402,20 +404,20 @@ class NodeTreeComponent:
             success_criteria=success_criteria.strip() if success_criteria else None,
             constraints=constraints.strip() if constraints else None,
         )
-        projection_dir = self.foundation.layout.node_projection_dir(FoundationContext(repo_root=Path(repo_root)), path)
-        ensured = self.foundation.store.ensure_dir(projection_dir)
+        projection_dir = self.runtime.foundation.layout.node_projection_dir(FoundationContext(repo_root=Path(repo_root)), path)
+        ensured = self.runtime.foundation.store.ensure_dir(projection_dir)
         if not ensured.ok:
-            return self.foundation.fail(ensured.issues)
-        with self.foundation.store.mutation("create_node") as mutation:
+            return self.runtime.foundation.fail(ensured.issues)
+        with self.runtime.foundation.store.mutation("create_node") as mutation:
             mutation.stage_json(self._node_file(repo_root, path), node, mode=WriteMode.CREATE_ONLY)
             mutation.stage_json(self._contract_file(repo_root, path, 1), contract, mode=WriteMode.CREATE_ONLY)
             committed = mutation.commit()
         if not committed.ok:
-            return self.foundation.fail(committed.issues)
+            return self.runtime.foundation.fail(committed.issues)
         nodes = self._load_all_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
-            return self.foundation.fail(nodes.issues)
-        return self.foundation.ok(self._node_view(repo_root, node, nodes.value))
+            return self.runtime.foundation.fail(nodes.issues)
+        return self.runtime.foundation.ok(self._node_view(repo_root, node, nodes.value))
 
     def _content_admission_issue(self, contract: NodeContractSnapshot, active_paths: set[str]) -> str | None:
         if contract.version_status != "open":
@@ -449,43 +451,43 @@ class NodeTreeComponent:
         )
 
     def _load_node(self, repo_root: Path, path: str) -> ServiceResult[NodeMetadata]:
-        return self.foundation.store.read_json(self._node_file(repo_root, path), NodeMetadata)
+        return self.runtime.foundation.store.read_json(self._node_file(repo_root, path), NodeMetadata)
 
     def _load_active_node(self, repo_root: Path, path: str) -> ServiceResult[NodeMetadata]:
         node = self._load_node(repo_root, path)
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
+            return self.runtime.foundation.fail(node.issues)
         if node.value.lifecycle != NodeLifecycle.ACTIVE:
-            return self.foundation.fail(self.foundation.issue("node_not_active", "Node is not active.", object_ref=path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_not_active", "Node is not active.", object_ref=path))
         return node
 
     def _load_all_nodes(self, repo_root: Path) -> ServiceResult[list[NodeMetadata]]:
         ctx = FoundationContext(repo_root=Path(repo_root))
-        root = self.foundation.layout.nodes_root(ctx)
+        root = self.runtime.foundation.layout.nodes_root(ctx)
         if not root.exists():
-            return self.foundation.ok([])
+            return self.runtime.foundation.ok([])
         nodes: list[NodeMetadata] = []
         issues = []
         for node_json in sorted(root.glob("*/node.json")):
-            result = self.foundation.store.read_json(node_json, NodeMetadata)
+            result = self.runtime.foundation.store.read_json(node_json, NodeMetadata)
             if result.ok and result.value is not None:
                 nodes.append(result.value)
             else:
                 issues.extend(result.issues)
         if issues:
-            return self.foundation.fail(issues)
-        return self.foundation.ok(nodes)
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(nodes)
 
     def _load_current_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContractSnapshot]:
         if node.current_contract_version is None:
-            return self.foundation.fail(self.foundation.issue("node_contract_missing", "Node has no current contract version.", object_ref=node.path))
-        return self.foundation.store.read_json(self._contract_file(repo_root, node.path, node.current_contract_version), NodeContractSnapshot)
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_contract_missing", "Node has no current contract version.", object_ref=node.path))
+        return self.runtime.foundation.store.read_json(self._contract_file(repo_root, node.path, node.current_contract_version), NodeContractSnapshot)
 
     def _node_file(self, repo_root: Path, path: str) -> Path:
-        return self.foundation.layout.node_metadata_dir(FoundationContext(repo_root=Path(repo_root)), path) / "node.json"
+        return self.runtime.foundation.layout.node_metadata_dir(FoundationContext(repo_root=Path(repo_root)), path) / "node.json"
 
     def _contract_file(self, repo_root: Path, path: str, version: int) -> Path:
-        return self.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), path, version)
+        return self.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), path, version)
 
     def _all_node_ids(self, repo_root: Path) -> set[str]:
         nodes = self._load_all_nodes(repo_root)
@@ -501,7 +503,7 @@ class NodeTreeComponent:
 
     def _scan_inbound_refs(self, repo_root: Path, path: str) -> list[str]:
         ctx = FoundationContext(repo_root=Path(repo_root))
-        root = self.foundation.layout.nodes_root(ctx)
+        root = self.runtime.foundation.layout.nodes_root(ctx)
         refs: list[str] = []
         if not root.exists():
             return refs
@@ -541,18 +543,18 @@ class NodeTreeComponent:
 
     def _validate_dot_path(self, path: str) -> ServiceResult[None]:
         if not path or not path.strip():
-            return self.foundation.fail(self.foundation.issue("node_path_empty", "Node path must be non-empty.", field="path"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_path_empty", "Node path must be non-empty.", field="path"))
         parts = [part.strip() for part in path.split(".")]
         if any(not part for part in parts):
-            return self.foundation.fail(self.foundation.issue("node_path_invalid", f"Invalid node path: {path}", field="path"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_path_invalid", f"Invalid node path: {path}", field="path"))
         if parts[0] != "Main":
-            return self.foundation.fail(self.foundation.issue("node_path_root_invalid", "Node path must start with Main.", field="path", current=parts[0]))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_path_root_invalid", "Node path must start with Main.", field="path", current=parts[0]))
         try:
             for part in parts:
-                self.foundation.layout.ensure_safe_key(part)
+                self.runtime.foundation.layout.ensure_safe_key(part)
         except ValueError as exc:
-            return self.foundation.fail(self.foundation.issue("node_path_invalid", str(exc), field="path"))
-        return self.foundation.ok(None)
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_path_invalid", str(exc), field="path"))
+        return self.runtime.foundation.ok(None)
 
     def _parent_path(self, path: str) -> str | None:
         parts = path.split(".")

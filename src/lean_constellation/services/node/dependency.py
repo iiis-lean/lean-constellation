@@ -14,7 +14,6 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef, NodeRef
 from lean_constellation.services.foundation import (
     FoundationContext,
-    FoundationService,
     GateReport,
     IssueSeverity,
     ServiceIssue,
@@ -23,10 +22,10 @@ from lean_constellation.services.foundation import (
 )
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent
-from lean_constellation.services.repo_workspace import RepoWorkspaceService
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class NodeDepActor(StrEnum):
@@ -42,7 +41,25 @@ class NodeDep(StrictModel):
     added_by: NodeDepActor = NodeDepActor.COORDINATOR
 
 
+class NodeDepView(StrictModel):
+    index: int
+    target_repo: str | None = None
+    target_node: str
+    expected_decl_refs: list[DeclRef] = Field(default_factory=list)
+    expected_decl_names: list[str] = Field(default_factory=list)
+    reason: str | None = None
+    added_by: NodeDepActor = NodeDepActor.COORDINATOR
+    summary: str
+
+
+class NodeDepsView(StrictModel):
+    node_path: str
+    deps: list[NodeDepView] = Field(default_factory=list)
+    summary: str
+
+
 class VisibleNodeBoundaryItem(StrictModel):
+    index: int = -1
     repo: str | None = None
     node_path: str
     node_kind: str
@@ -64,30 +81,24 @@ class DependencyComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
+        *,
         node_tree: NodeTreeComponent | None = None,
         contract: ContractComponent | None = None,
         node_projection: "NodeProjectionComponent | None" = None,
-        repo_workspace: RepoWorkspaceService | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.node_tree = node_tree or NodeTreeComponent(self.foundation)
-        self.contract = contract or ContractComponent(self.foundation, self.node_tree)
-        if node_projection is None:
-            from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
-
-            self.node_projection = NodeProjectionComponent(self.foundation, self.contract)
-        else:
-            self.node_projection = node_projection
-        self.repo_workspace = repo_workspace
+        self.runtime = runtime
+        self.node_tree = node_tree or NodeTreeComponent(runtime)
+        self.contract = contract or ContractComponent(runtime, self.node_tree)
+        self.node_projection = node_projection
 
     def list_visible_node_boundaries(self, repo_root: Path, *, node_path: str) -> ServiceResult[VisibleBoundaryView]:
         current = self.node_tree.get_node(repo_root, path=node_path)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
         tree = self.node_tree.get_node_tree(repo_root)
         if not tree.ok or tree.value is None:
-            return self.foundation.fail(tree.issues)
+            return self.runtime.foundation.fail(tree.issues)
 
         boundaries: list[VisibleNodeBoundaryItem] = []
         for node in tree.value.nodes:
@@ -95,7 +106,7 @@ class DependencyComponent:
                 continue
             contract = self.contract.get_current_contract(repo_root, node_path=node.path)
             if not contract.ok or contract.value is None:
-                return self.foundation.fail(contract.issues)
+                return self.runtime.foundation.fail(contract.issues)
             ready = contract.value.version_status == ContractVersionStatus.COMMITTED
             if not ready:
                 continue
@@ -114,14 +125,31 @@ class DependencyComponent:
 
         external = self._external_lake_boundaries(repo_root)
         if not external.ok or external.value is None:
-            return self.foundation.fail(external.issues)
+            return self.runtime.foundation.fail(external.issues)
         boundaries.extend(external.value)
         boundaries.sort(key=lambda item: (item.repo or "", item.node_path))
-        return self.foundation.ok(
+        boundaries = [item.model_copy(update={"index": index}) for index, item in enumerate(boundaries)]
+        return self.runtime.foundation.ok(
             VisibleBoundaryView(
                 node_path=node_path,
                 boundaries=boundaries,
                 summary=f"Loaded {len(boundaries)} visible ready node boundaries for {node_path}.",
+            )
+        )
+
+    def list_node_deps(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeDepsView]:
+        current = self.contract.get_current_contract(repo_root, node_path=node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        deps = self._normalize_deps(current.value.contract.deps)
+        if not deps.ok or deps.value is None:
+            return self.runtime.foundation.fail(deps.issues)
+        views = [self._dep_view(index, dep) for index, dep in enumerate(deps.value)]
+        return self.runtime.foundation.ok(
+            NodeDepsView(
+                node_path=node_path,
+                deps=views,
+                summary=f"Loaded {len(views)} node dependencies for {node_path}.",
             )
         )
 
@@ -131,47 +159,105 @@ class DependencyComponent:
         *,
         node_path: str,
         target_node: str,
-        expected_decl_names: list[str] | None,
         reason: str,
         actor: str | NodeDepActor,
+        expected_decl_names: list[str] | None = None,
+        target_repo: str | None = None,
     ) -> ServiceResult[NodeContractView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
-            return self.foundation.fail(normalized_actor.issues)
+            return self.runtime.foundation.fail(normalized_actor.issues)
         if not reason or not reason.strip():
-            return self.foundation.fail(self.foundation.issue("node_dep_reason_required", "Node dependency reason is required.", field="reason"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_dep_reason_required", "Node dependency reason is required.", field="reason"))
+        repo = target_repo.strip() if isinstance(target_repo, str) and target_repo.strip() else None
         target = self._normalize_node_path(target_node, field="target_node")
         if not target.ok or target.value is None:
-            return self.foundation.fail(target.issues)
-        if target.value == node_path:
-            return self.foundation.fail(
-                self.foundation.issue("node_dep_self_dependency", "A node cannot depend on itself.", object_ref=node_path, field="target_node")
+            return self.runtime.foundation.fail(target.issues)
+        if repo is None and target.value == node_path:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("node_dep_self_dependency", "A node cannot depend on itself.", object_ref=node_path, field="target_node")
             )
         visible = self.list_visible_node_boundaries(repo_root, node_path=node_path)
         if not visible.ok or visible.value is None:
-            return self.foundation.fail(visible.issues)
-        boundary = next((item for item in visible.value.boundaries if item.repo is None and item.node_path == target.value), None)
+            return self.runtime.foundation.fail(visible.issues)
+        boundary = next((item for item in visible.value.boundaries if item.repo == repo and item.node_path == target.value), None)
         if boundary is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            target_label = f"{repo}:{target.value}" if repo else target.value
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "node_dep_target_not_visible",
-                    f"Target node is not a visible ready boundary: {target.value}",
+                    f"Target node is not a visible ready boundary: {target_label}",
                     object_ref=node_path,
                     field="target_node",
                 )
             )
-        expected_refs = self._resolve_expected_decl_names(boundary, expected_decl_names or [])
+        return self._add_node_dep_from_boundary(
+            repo_root,
+            node_path=node_path,
+            boundary=boundary,
+            expected_decl_names=expected_decl_names or [],
+            reason=reason,
+            actor=normalized_actor.value,
+        )
+
+    def add_node_dep_from_visible_candidate(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        candidate_index: int,
+        reason: str,
+        actor: str | NodeDepActor,
+        expected_decl_names: list[str] | None = None,
+    ) -> ServiceResult[NodeContractView]:
+        normalized_actor = self._normalize_actor(actor)
+        if not normalized_actor.ok or normalized_actor.value is None:
+            return self.runtime.foundation.fail(normalized_actor.issues)
+        if not reason or not reason.strip():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_dep_reason_required", "Node dependency reason is required.", field="reason"))
+        visible = self.list_visible_node_boundaries(repo_root, node_path=node_path)
+        if not visible.ok or visible.value is None:
+            return self.runtime.foundation.fail(visible.issues)
+        if candidate_index < 0 or candidate_index >= len(visible.value.boundaries):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "node_dep_candidate_index_out_of_range",
+                    f"Visible node boundary candidate index is out of range: {candidate_index}",
+                    object_ref=node_path,
+                    field="candidate_index",
+                )
+            )
+        return self._add_node_dep_from_boundary(
+            repo_root,
+            node_path=node_path,
+            boundary=visible.value.boundaries[candidate_index],
+            expected_decl_names=expected_decl_names or [],
+            reason=reason,
+            actor=normalized_actor.value,
+        )
+
+    def _add_node_dep_from_boundary(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        boundary: VisibleNodeBoundaryItem,
+        expected_decl_names: list[str],
+        reason: str,
+        actor: NodeDepActor,
+    ) -> ServiceResult[NodeContractView]:
+        expected_refs = self._resolve_expected_decl_names(boundary, expected_decl_names)
         if not expected_refs.ok or expected_refs.value is None:
-            return self.foundation.fail(expected_refs.issues)
+            return self.runtime.foundation.fail(expected_refs.issues)
 
         opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_deps(opened.value.contract.deps)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
 
-        target_ref = NodeRef(repo=None, node=target.value)
+        target_ref = NodeRef(repo=boundary.repo, node=boundary.node_path)
         dep_id = self._stable_dep_id(target_ref)
         existing = next((item for item in current.value if item.dep_id == dep_id or self._same_target(item.target, target_ref)), None)
         if existing is not None:
@@ -183,7 +269,7 @@ class DependencyComponent:
                 existing=existing,
                 expected_refs=expected_refs.value,
                 reason=reason,
-                actor=normalized_actor.value,
+                actor=actor,
             )
 
         current.value.append(
@@ -192,16 +278,16 @@ class DependencyComponent:
                 target=target_ref,
                 expected_decl_refs=expected_refs.value,
                 reason=reason.strip(),
-                added_by=normalized_actor.value,
+                added_by=actor,
             )
         )
         opened.value.contract.deps = [item.model_dump(mode="json") for item in current.value]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        refreshed = self.node_projection.refresh_prelude(repo_root, node_path=node_path)
+            return self.runtime.foundation.fail(saved.issues)
+        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
         if not refreshed.ok:
-            return self.foundation.fail(refreshed.issues)
+            return self.runtime.foundation.fail(refreshed.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def remove_node_dep(
@@ -209,90 +295,94 @@ class DependencyComponent:
         repo_root: Path,
         *,
         node_path: str,
-        dep_id: str,
+        index: int,
         actor: str | NodeDepActor,
     ) -> ServiceResult[NodeContractView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
-            return self.foundation.fail(normalized_actor.issues)
-        if not dep_id or not dep_id.strip():
-            return self.foundation.fail(self.foundation.issue("node_dep_id_required", "dep_id is required.", field="dep_id"))
+            return self.runtime.foundation.fail(normalized_actor.issues)
         opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_deps(opened.value.contract.deps)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
-        target = next((item for item in current.value if item.dep_id == dep_id.strip()), None)
-        if target is None:
-            return self.foundation.fail(
-                self.foundation.issue("node_dep_missing", f"Node dependency not found: {dep_id}", object_ref=node_path, field="dep_id")
+            return self.runtime.foundation.fail(current.issues)
+        if index < 0 or index >= len(current.value):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "node_dep_index_out_of_range",
+                    f"Node dependency index is out of range: {index}",
+                    object_ref=node_path,
+                    field="index",
+                )
             )
+        target = current.value[index]
         permission = self._check_remove_permission(node_path, target.added_by, normalized_actor.value)
         if not permission.ok:
-            return self.foundation.fail(permission.issues)
-        opened.value.contract.deps = [item.model_dump(mode="json") for item in current.value if item.dep_id != target.dep_id]
+            return self.runtime.foundation.fail(permission.issues)
+        opened.value.contract.deps = [item.model_dump(mode="json") for item_index, item in enumerate(current.value) if item_index != index]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        refreshed = self.node_projection.refresh_prelude(repo_root, node_path=node_path)
+            return self.runtime.foundation.fail(saved.issues)
+        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
         if not refreshed.ok:
-            return self.foundation.fail(refreshed.issues)
+            return self.runtime.foundation.fail(refreshed.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def validate_node_deps(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         current = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
         deps = self._normalize_deps(current.value.contract.deps)
         if not deps.ok or deps.value is None:
-            return self.foundation.ok(self.foundation.gate_failed("node_deps", deps.issues, summary="Node dependency entries are invalid."))
+            return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("node_deps", deps.issues, summary="Node dependency entries are invalid."))
 
         issues: list[ServiceIssue] = []
         warnings: list[ServiceIssue] = []
         target_keys = [self._target_key(dep.target) for dep in deps.value]
         for key in sorted({item for item in target_keys if target_keys.count(item) > 1}):
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "node_dep_duplicate",
                     f"Duplicate node dependency target: {key}",
                     object_ref=node_path,
                     field="deps",
                 )
             )
-        for dep in deps.value:
+        for index, dep in enumerate(deps.value):
+            dep_field = f"deps.{index}"
             if dep.target.repo is not None:
                 warnings.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "node_dep_external_validation_deferred",
                         f"External dependency validation is deferred: {dep.target.repo}:{dep.target.node}",
                         severity=IssueSeverity.WARNING,
                         object_ref=node_path,
-                        field=dep.dep_id,
+                        field=dep_field,
                     )
                 )
                 continue
             if dep.target.node == node_path:
-                issues.append(self.foundation.issue("node_dep_self_dependency", "A node cannot depend on itself.", object_ref=node_path, field=dep.dep_id))
+                issues.append(self.runtime.foundation.issue("node_dep_self_dependency", "A node cannot depend on itself.", object_ref=node_path, field=dep_field))
                 continue
             target_contract = self.contract.get_current_contract(repo_root, node_path=dep.target.node)
             if not target_contract.ok or target_contract.value is None:
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "node_dep_target_missing",
                         f"Node dependency target is missing or inactive: {dep.target.node}",
                         object_ref=node_path,
-                        field=dep.dep_id,
+                        field=dep_field,
                     )
                 )
                 continue
             if target_contract.value.version_status != ContractVersionStatus.COMMITTED:
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "node_dep_target_not_ready",
                         f"Node dependency target is not a committed ready boundary: {dep.target.node}",
                         object_ref=node_path,
-                        field=dep.dep_id,
+                        field=dep_field,
                         current=target_contract.value.version_status.value,
                         expected=ContractVersionStatus.COMMITTED.value,
                     )
@@ -301,27 +391,27 @@ class DependencyComponent:
             for ref in dep.expected_decl_refs:
                 if self._decl_ref_key(ref) not in public_refs:
                     issues.append(
-                        self.foundation.issue(
+                        self.runtime.foundation.issue(
                             "node_dep_expected_decl_not_public",
                             f"Expected declaration is not public on provider boundary: {ref.name}",
                             object_ref=node_path,
-                            field=dep.dep_id,
+                            field=dep_field,
                         )
                     )
             if self._has_local_dep_path(repo_root, start=dep.target.node, target=node_path):
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "node_dep_cycle",
                         f"Node dependency introduces a cycle through {dep.target.node}.",
                         object_ref=node_path,
-                        field=dep.dep_id,
+                        field=dep_field,
                     )
                 )
 
         if issues:
-            return self.foundation.ok(self.foundation.gate_failed("node_deps", issues, summary=f"{len(issues)} node dependency checks failed."))
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+            return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("node_deps", issues, summary=f"{len(issues)} node dependency checks failed."))
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "node_deps",
                 summary=f"Checked {len(deps.value)} node dependencies.",
                 warnings=warnings,
@@ -331,20 +421,20 @@ class DependencyComponent:
     def check_content_batch_independent(self, repo_root: Path, *, node_paths: list[str]) -> ServiceResult[GateReport]:
         normalized_paths = [path.strip() for path in node_paths if path and path.strip()]
         if not normalized_paths:
-            return self.foundation.fail(self.foundation.issue("content_batch_empty", "node_paths must be non-empty.", field="node_paths"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("content_batch_empty", "node_paths must be non-empty.", field="node_paths"))
         issues: list[ServiceIssue] = []
         duplicates = sorted({path for path in normalized_paths if normalized_paths.count(path) > 1})
         for duplicate in duplicates:
-            issues.append(self.foundation.issue("content_batch_duplicate", f"Duplicate content node in batch: {duplicate}", field="node_paths"))
+            issues.append(self.runtime.foundation.issue("content_batch_duplicate", f"Duplicate content node in batch: {duplicate}", field="node_paths"))
         batch = set(normalized_paths)
         for path in normalized_paths:
             node = self.node_tree.get_node(repo_root, path=path)
             if not node.ok or node.value is None:
-                issues.append(self.foundation.issue("content_batch_node_missing", f"Content node is missing: {path}", object_ref=path))
+                issues.append(self.runtime.foundation.issue("content_batch_node_missing", f"Content node is missing: {path}", object_ref=path))
                 continue
             if node.value.kind != NodeKind.CONTENT:
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "content_batch_node_not_content",
                         f"Batch item is not a Content node: {path}",
                         object_ref=path,
@@ -356,7 +446,7 @@ class DependencyComponent:
             for target in sorted(batch - {path}):
                 if self._has_local_dep_path(repo_root, start=path, target=target):
                     issues.append(
-                        self.foundation.issue(
+                        self.runtime.foundation.issue(
                             "content_batch_dependency_present",
                             f"Content batch is not independent: {path} depends on {target}.",
                             object_ref=path,
@@ -364,9 +454,9 @@ class DependencyComponent:
                         )
                     )
         if issues:
-            return self.foundation.ok(self.foundation.gate_failed("content_batch_independent", issues, summary=f"{len(issues)} batch checks failed."))
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+            return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("content_batch_independent", issues, summary=f"{len(issues)} batch checks failed."))
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "content_batch_independent",
                 summary=f"{len(normalized_paths)} content nodes are independent.",
             )
@@ -390,12 +480,12 @@ class DependencyComponent:
         new_refs = [ref for ref in expected_refs if self._decl_ref_key(ref) not in existing_keys]
         reason_change = bool(reason.strip()) and existing.reason != reason.strip()
         if actor == NodeDepActor.WORKER and existing.added_by != NodeDepActor.WORKER and (new_refs or reason_change):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "node_dep_permission_denied",
                     "Worker cannot modify a node dependency that was added by the coordinator.",
                     object_ref=node_path,
-                    field=existing.dep_id,
+                    field="deps",
                     current=existing.added_by.value,
                     expected=NodeDepActor.WORKER.value,
                 )
@@ -410,25 +500,25 @@ class DependencyComponent:
             changed = True
         if not changed:
             warnings.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "node_dep_duplicate",
                     f"Node dependency already exists: {existing.target.node}",
                     severity=IssueSeverity.WARNING,
                     object_ref=node_path,
-                    field=existing.dep_id,
+                    field="deps",
                 )
             )
             view = self.contract.get_current_contract(repo_root, node_path=node_path)
             if not view.ok:
-                return self.foundation.fail(view.issues)
-            return self.foundation.ok(view.value, warnings=warnings)
+                return self.runtime.foundation.fail(view.issues)
+            return self.runtime.foundation.ok(view.value, warnings=warnings)
         setattr(contract, "deps", [item.model_dump(mode="json") for item in deps])
         saved = self._save_contract(repo_root, node_path, contract)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        refreshed = self.node_projection.refresh_prelude(repo_root, node_path=node_path)
+            return self.runtime.foundation.fail(saved.issues)
+        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
         if not refreshed.ok:
-            return self.foundation.fail(refreshed.issues)
+            return self.runtime.foundation.fail(refreshed.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def _resolve_expected_decl_names(
@@ -442,12 +532,12 @@ class DependencyComponent:
         for name in expected_decl_names:
             normalized = name.strip() if name else ""
             if not normalized:
-                issues.append(self.foundation.issue("node_dep_expected_decl_name_empty", "Expected declaration name is empty.", field="expected_decl_names"))
+                issues.append(self.runtime.foundation.issue("node_dep_expected_decl_name_empty", "Expected declaration name is empty.", field="expected_decl_names"))
                 continue
             ref = refs_by_name.get(normalized)
             if ref is None:
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "node_dep_expected_decl_missing",
                         f"Expected declaration is not public on target boundary: {normalized}",
                         object_ref=boundary.node_path,
@@ -457,8 +547,8 @@ class DependencyComponent:
                 continue
             resolved.append(ref)
         if issues:
-            return self.foundation.fail(issues)
-        return self.foundation.ok(resolved)
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(resolved)
 
     def _normalize_deps(self, values: list[dict[str, Any]]) -> ServiceResult[list[NodeDep]]:
         adapter = TypeAdapter(NodeDep)
@@ -468,7 +558,7 @@ class DependencyComponent:
             try:
                 item = adapter.validate_python(self._upgrade_dep(value))
             except Exception as exc:  # noqa: BLE001 - validation details are returned to caller.
-                issues.append(self.foundation.issue("node_dep_invalid", f"Node dependency entry is invalid: {exc}", field=f"deps.{index}"))
+                issues.append(self.runtime.foundation.issue("node_dep_invalid", f"Node dependency entry is invalid: {exc}", field=f"deps.{index}"))
                 continue
             target = self._normalize_node_ref(item.target, field=f"deps.{index}.target")
             if not target.ok or target.value is None:
@@ -477,8 +567,8 @@ class DependencyComponent:
             item = item.model_copy(update={"target": target.value, "dep_id": item.dep_id or self._stable_dep_id(target.value)})
             normalized.append(item)
         if issues:
-            return self.foundation.fail(issues)
-        return self.foundation.ok(normalized)
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(normalized)
 
     def _upgrade_dep(self, value: Any) -> dict[str, Any]:
         if not isinstance(value, dict):
@@ -500,19 +590,35 @@ class DependencyComponent:
         repo = ref.repo.strip() if isinstance(ref.repo, str) and ref.repo.strip() else None
         node = self._normalize_node_path(ref.node, field=f"{field}.node")
         if not node.ok or node.value is None:
-            return self.foundation.fail(node.issues)
-        return self.foundation.ok(NodeRef(repo=repo, node=node.value))
+            return self.runtime.foundation.fail(node.issues)
+        return self.runtime.foundation.ok(NodeRef(repo=repo, node=node.value))
 
     def _normalize_node_path(self, value: str, *, field: str) -> ServiceResult[str]:
         normalized = value.strip() if isinstance(value, str) else ""
         if not normalized:
-            return self.foundation.fail(self.foundation.issue("node_dep_target_required", "Node dependency target is required.", field=field))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_dep_target_required", "Node dependency target is required.", field=field))
         parts = normalized.split(".")
         if parts[0] != "Main" or any(not part for part in parts):
-            return self.foundation.fail(
-                self.foundation.issue("node_dep_target_invalid", "Node dependency target must be a dot path rooted at Main.", field=field, current=value)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("node_dep_target_invalid", "Node dependency target must be a dot path rooted at Main.", field=field, current=value)
             )
-        return self.foundation.ok(normalized)
+        return self.runtime.foundation.ok(normalized)
+
+    def _dep_view(self, index: int, dep: NodeDep) -> NodeDepView:
+        target_label = f"{dep.target.repo}:{dep.target.node}" if dep.target.repo else dep.target.node
+        expected_names = [ref.name for ref in dep.expected_decl_refs]
+        return NodeDepView(
+            index=index,
+            target_repo=dep.target.repo,
+            target_node=dep.target.node,
+            expected_decl_refs=dep.expected_decl_refs,
+            expected_decl_names=expected_names,
+            reason=dep.reason,
+            added_by=dep.added_by,
+            summary=f"{index}: {target_label}"
+            + (f" expecting {', '.join(expected_names)}" if expected_names else "")
+            + f" ({dep.added_by.value}).",
+        )
 
     def _public_decl_refs(self, contract: object) -> list[DeclRef]:
         refs: list[DeclRef] = []
@@ -533,11 +639,12 @@ class DependencyComponent:
         return refs
 
     def _external_lake_boundaries(self, repo_root: Path) -> ServiceResult[list[VisibleNodeBoundaryItem]]:
-        if self.repo_workspace is None:
-            return self.foundation.ok([])
-        deps = self.repo_workspace.workspace_catalog.list_current_lake_dependency_repos(repo_root)
+        repo_workspace = self.runtime.app.repo_workspace
+        if repo_workspace is None:
+            return self.runtime.foundation.ok([])
+        deps = repo_workspace.workspace_catalog.list_current_lake_dependency_repos(repo_root)
         if not deps.ok or deps.value is None:
-            return self.foundation.fail(deps.issues)
+            return self.runtime.foundation.fail(deps.issues)
         boundaries = [
             VisibleNodeBoundaryItem(
                 repo=dep.name,
@@ -551,7 +658,16 @@ class DependencyComponent:
             )
             for dep in deps.value
         ]
-        return self.foundation.ok(boundaries)
+        return self.runtime.foundation.ok(boundaries)
+
+    def _refresh_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[object]:
+        node_projection = self.node_projection
+        if node_projection is None:
+            lean_projection = self.runtime.app.lean_projection
+            if lean_projection is None:
+                return self.runtime.foundation.ok(None)
+            node_projection = lean_projection.node_projection
+        return node_projection.refresh_prelude(repo_root, node_path=node_path)
 
     def _has_local_dep_path(self, repo_root: Path, *, start: str, target: str) -> bool:
         graph = self._local_dep_graph(repo_root)
@@ -584,8 +700,8 @@ class DependencyComponent:
 
     def _check_remove_permission(self, node_path: str, target_actor: NodeDepActor, actor: NodeDepActor) -> ServiceResult[None]:
         if actor == NodeDepActor.WORKER and target_actor != NodeDepActor.WORKER:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "node_dep_permission_denied",
                     "Worker can only remove node dependencies that were added by a worker.",
                     object_ref=node_path,
@@ -593,17 +709,17 @@ class DependencyComponent:
                     expected=NodeDepActor.WORKER.value,
                 )
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)
 
     def _normalize_actor(self, actor: str | NodeDepActor) -> ServiceResult[NodeDepActor]:
         try:
-            return self.foundation.ok(NodeDepActor(actor))
+            return self.runtime.foundation.ok(NodeDepActor(actor))
         except ValueError:
-            return self.foundation.fail(self.foundation.issue("node_dep_actor_invalid", "actor must be coordinator or worker.", field="actor"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_dep_actor_invalid", "actor must be coordinator or worker.", field="actor"))
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        path = self.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), node_path, getattr(contract, "version"))
-        return self.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
+        path = self.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), node_path, getattr(contract, "version"))
+        return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
 
     def _stable_dep_id(self, target: NodeRef) -> str:
         payload = json.dumps(target.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)

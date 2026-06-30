@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.services.material import MaterialService, ResourceMetadataInput, ResourceTargetView
@@ -19,7 +21,7 @@ def _resource_temp(root: Path, text: str = "first\nsecond theorem\nthird\n") -> 
 
 
 def test_resource_library_register_duplicate_preview_and_validate(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     target = service.normalize_resource_target("https://Example.com/math/page/")
     assert target.ok
     assert target.value is not None
@@ -66,7 +68,7 @@ def test_resource_library_register_duplicate_preview_and_validate(tmp_path: Path
 
 
 def test_resource_target_normalization_arxiv_url_and_local(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     local_file = tmp_path / "note.txt"
     local_file.write_text("note\n", encoding="utf-8")
 
@@ -88,7 +90,7 @@ def test_resource_target_normalization_arxiv_url_and_local(tmp_path: Path) -> No
 
 
 def test_resource_duplicate_uses_canonical_locator_and_metadata_source_url(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     local_file = tmp_path / "downloaded.md"
     local_file.write_text("downloaded\n", encoding="utf-8")
     local_target = service.normalize_resource_target(str(local_file))
@@ -119,7 +121,7 @@ def test_resource_duplicate_uses_canonical_locator_and_metadata_source_url(tmp_p
 
 
 def test_resource_register_get_list_preview_and_validation_failures(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     target = service.normalize_resource_target("https://example.com/a")
     assert target.ok and target.value is not None
 
@@ -188,7 +190,7 @@ def test_resource_register_get_list_preview_and_validation_failures(tmp_path: Pa
 
 
 def test_resource_curation_local_file_and_external_decisions(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     local_file = tmp_path / "note.txt"
     local_file.write_text("important resource\n", encoding="utf-8")
     flow_input = service.submit_resource_request(
@@ -240,7 +242,7 @@ def test_resource_curation_local_file_and_external_decisions(tmp_path: Path) -> 
 
 
 def test_resource_curation_input_validation_and_context(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     local_file = tmp_path / "note.txt"
     local_file.write_text("note\n", encoding="utf-8")
 
@@ -262,7 +264,7 @@ def test_resource_curation_input_validation_and_context(tmp_path: Path) -> None:
 
 
 def test_resource_curation_acquire_extract_and_failure_branches(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     local_file = tmp_path / "note.txt"
     local_file.write_text("curated text\n", encoding="utf-8")
     target = service.normalize_resource_target(str(local_file))
@@ -302,7 +304,7 @@ def test_resource_curation_acquire_extract_and_failure_branches(tmp_path: Path) 
 
 
 def test_resource_curation_decision_duplicate_source_duplicate_and_rejected(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     target = service.normalize_resource_target("https://example.com/dup")
     assert target.ok and target.value is not None
     registered = service.register_local_resource(
@@ -357,7 +359,7 @@ def test_resource_curation_decision_duplicate_source_duplicate_and_rejected(tmp_
 
 
 def test_resource_curation_result_branches_and_curate_failure(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     target = service.normalize_resource_target("https://example.com/result")
     assert target.ok and target.value is not None
 

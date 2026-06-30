@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -18,7 +20,8 @@ class FakePublicDeclProvider:
 
 
 def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface] | None = None) -> None:
-    foundation = FoundationService()
+    runtime = make_runtime()
+    foundation = runtime.foundation
     prep = RepoPreparationInput(
         goal="Formalize the requested source material.",
         source_corpus_mode=SourceCorpusMode.PREPARE,
@@ -34,7 +37,7 @@ def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface] 
 def test_node_service_ensure_native_root_contract_syncs_protected_interfaces(tmp_path: Path) -> None:
     interface = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the main theorem.")
     _write_preparation_input(tmp_path, interfaces=[interface])
-    service = NodeService()
+    service = make_runtime().node
 
     root = service.ensure_native_root_main_contract(tmp_path)
 
@@ -53,7 +56,7 @@ def test_node_service_ensure_native_root_contract_syncs_protected_interfaces(tmp
 
 def test_node_service_ensure_adapter_root_contract_uses_adapter_defaults(tmp_path: Path) -> None:
     _write_preparation_input(tmp_path)
-    service = NodeService()
+    service = make_runtime().node
 
     root = service.ensure_adapter_root_main_contract(tmp_path)
 
@@ -65,7 +68,7 @@ def test_node_service_ensure_adapter_root_contract_uses_adapter_defaults(tmp_pat
 
 def test_node_service_content_admission_batch_and_commit_wrappers(tmp_path: Path) -> None:
     _write_preparation_input(tmp_path)
-    service = NodeService()
+    service = make_runtime().node
     assert service.ensure_native_root_main_contract(tmp_path).ok
     assert service.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     content = service.create_content_node(
@@ -96,7 +99,8 @@ def test_node_service_content_admission_batch_and_commit_wrappers(tmp_path: Path
 
 def test_node_service_get_public_boundary_for_content_and_scope(tmp_path: Path) -> None:
     _write_preparation_input(tmp_path)
-    foundation = FoundationService()
+    runtime = make_runtime()
+    foundation = runtime.foundation
     provider = FakePublicDeclProvider(
         foundation,
         {
@@ -109,7 +113,7 @@ def test_node_service_get_public_boundary_for_content_and_scope(tmp_path: Path) 
             ]
         },
     )
-    service = NodeService(foundation=foundation, public_decl_provider=provider)
+    service = NodeService(runtime, public_decl_provider=provider)
     assert service.ensure_native_root_main_contract(tmp_path).ok
     assert service.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert service.create_content_node(
@@ -136,4 +140,3 @@ def test_node_service_get_public_boundary_for_content_and_scope(tmp_path: Path) 
     assert scope.ok
     assert scope.value is not None
     assert [item.ref.name for item in scope.value.exports] == ["main_result"]
-

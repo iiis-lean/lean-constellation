@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.refs import DeclRef
@@ -6,12 +8,12 @@ from lean_constellation.services.node import NodeContractSnapshot, NodeKind, Nod
 
 
 def _contract_path(tmp_path: Path, node_path: str, version: int = 1) -> Path:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     return foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), node_path, version)
 
 
 def _load_contract(tmp_path: Path, node_path: str, version: int = 1) -> NodeContractSnapshot:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     loaded = foundation.store.read_json(_contract_path(tmp_path, node_path, version), NodeContractSnapshot)
     assert loaded.ok
     assert loaded.value is not None
@@ -19,7 +21,7 @@ def _load_contract(tmp_path: Path, node_path: str, version: int = 1) -> NodeCont
 
 
 def _write_contract(tmp_path: Path, node_path: str, contract: NodeContractSnapshot, version: int = 1) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     written = foundation.store.write_json_atomic(
         _contract_path(tmp_path, node_path, version),
         contract,
@@ -29,7 +31,7 @@ def _write_contract(tmp_path: Path, node_path: str, contract: NodeContractSnapsh
 
 
 def test_ensure_root_scope_node_is_idempotent(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
 
     created = component.ensure_root_scope_node(tmp_path)
     again = component.ensure_root_scope_node(tmp_path)
@@ -43,7 +45,7 @@ def test_ensure_root_scope_node_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_create_scope_and_content_requires_scope_parent(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
 
     missing_parent = component.create_scope_node(tmp_path, path="Main.Topic", goal="g", boundary="b")
     assert not missing_parent.ok
@@ -68,7 +70,7 @@ def test_create_scope_and_content_requires_scope_parent(tmp_path: Path) -> None:
 
 
 def test_create_content_node_requires_objective_and_success_criteria(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
     assert component.ensure_root_scope_node(tmp_path).ok
     assert component.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
 
@@ -96,7 +98,7 @@ def test_create_content_node_requires_objective_and_success_criteria(tmp_path: P
 
 
 def test_node_tree_children_delete_preview_and_soft_delete(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
     component.ensure_root_scope_node(tmp_path)
     component.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary")
     component.create_content_node(
@@ -137,7 +139,7 @@ def test_node_tree_children_delete_preview_and_soft_delete(tmp_path: Path) -> No
 
 
 def test_get_node_missing_and_tree_hides_obsolete_nodes(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
     assert component.ensure_root_scope_node(tmp_path).ok
     assert component.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert component.create_content_node(
@@ -164,7 +166,7 @@ def test_get_node_missing_and_tree_hides_obsolete_nodes(tmp_path: Path) -> None:
 
 
 def test_list_children_rejects_missing_and_content_nodes(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
     assert component.ensure_root_scope_node(tmp_path).ok
     assert component.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert component.create_content_node(
@@ -186,7 +188,7 @@ def test_list_children_rejects_missing_and_content_nodes(tmp_path: Path) -> None
 
 
 def test_preview_delete_detects_contract_inbound_refs(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
     assert component.ensure_root_scope_node(tmp_path).ok
     assert component.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert component.create_content_node(
@@ -227,7 +229,7 @@ def test_preview_delete_detects_contract_inbound_refs(tmp_path: Path) -> None:
 
 
 def test_runnable_content_candidates_filter_contract_and_max_count(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
     component.ensure_root_scope_node(tmp_path)
     component.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary")
     component.create_content_node(
@@ -255,7 +257,7 @@ def test_runnable_content_candidates_filter_contract_and_max_count(tmp_path: Pat
 
 
 def test_runnable_content_candidates_reports_invalid_and_skipped_reasons(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
     assert component.ensure_root_scope_node(tmp_path).ok
     assert component.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert component.create_content_node(
@@ -314,7 +316,7 @@ def test_runnable_content_candidates_reports_invalid_and_skipped_reasons(tmp_pat
 
 
 def test_ensure_root_rejects_existing_wrong_kind(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path)
     node_dir = foundation.layout.node_metadata_dir(ctx, "Main")
     node_dir.mkdir(parents=True)
@@ -322,7 +324,7 @@ def test_ensure_root_rejects_existing_wrong_kind(tmp_path: Path) -> None:
         node_dir / "node.json",
         NodeMetadata(node_id="node_bad", path="Main", kind=NodeKind.CONTENT, lifecycle=NodeLifecycle.ACTIVE, current_contract_version=None),
     )
-    component = NodeTreeComponent(foundation)
+    component = make_runtime().node.node_tree
 
     result = component.ensure_root_scope_node(tmp_path)
 
@@ -331,7 +333,7 @@ def test_ensure_root_rejects_existing_wrong_kind(tmp_path: Path) -> None:
 
 
 def test_ensure_root_rejects_invalid_path_and_obsolete_root(tmp_path: Path) -> None:
-    component = NodeTreeComponent()
+    component = make_runtime().node.node_tree
 
     wrong_path = component.ensure_root_scope_node(tmp_path, path="Main.Other")
     assert not wrong_path.ok

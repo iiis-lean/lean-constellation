@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.services.material import MaterialService
 
 
@@ -45,7 +47,7 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     _write_real_source_corpus(repo_root)
-    service = MaterialService()
+    service = make_runtime().material
 
     scan = service.scan_source_corpus(repo_root)
     assert scan.ok
@@ -79,7 +81,14 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
     assert search.ok
     assert search.value is not None
     assert len(search.value.hits) >= 1
-    assert any(hit.locator == "chapter1.md" for hit in search.value.hits)
+    assert any(hit.path == "chapter1.md" for hit in search.value.hits)
+    source_preview = service.preview_source_ref(repo_root, path="chapter1.md", start_line=3, end_line=3)
+    source_valid = service.validate_source_range(repo_root, path="chapter1.md", start_line=3, end_line=4)
+    assert source_preview.ok and source_preview.value is not None
+    assert source_preview.value.path == "chapter1.md"
+    assert "3: Theorem: a complete metric space has a fixed point for each contraction." in source_preview.value.preview.text_with_line_numbers
+    assert source_valid.ok and source_valid.value is not None
+    assert source_valid.value.valid
 
     created = service.create_draft_source_index(repo_root)
     assert created.ok

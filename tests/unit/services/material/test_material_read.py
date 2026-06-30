@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.services.material import MaterialService, ResourceMetadataInput
@@ -28,7 +30,7 @@ def _register_resource(service: MaterialService, repo_root: Path) -> str:
 
 
 def test_list_material_files_source_resource_all_and_invalid_kind(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(tmp_path)
     resource_key = _register_resource(service, tmp_path)
 
@@ -49,7 +51,7 @@ def test_list_material_files_source_resource_all_and_invalid_kind(tmp_path: Path
 
 
 def test_read_source_and_resource_range_boundaries(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(tmp_path)
     resource_key = _register_resource(service, tmp_path)
 
@@ -76,7 +78,7 @@ def test_read_source_and_resource_range_boundaries(tmp_path: Path) -> None:
 
 
 def test_search_material_text_literal_regex_limit_and_errors(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(tmp_path)
     _register_resource(service, tmp_path)
 
@@ -92,7 +94,8 @@ def test_search_material_text_literal_regex_limit_and_errors(tmp_path: Path) -> 
     assert literal.value.truncated
     assert regex.ok and regex.value is not None
     assert len(regex.value.hits) == 1
-    assert regex.value.hits[0].ref_kind == "resource"
+    assert regex.value.hits[0].material_kind == "resource"
+    assert regex.value.hits[0].resource_key is not None
     assert not empty.ok
     assert empty.issues[0].kind == "empty_query"
     assert not bad_regex.ok
@@ -104,21 +107,19 @@ def test_search_material_text_literal_regex_limit_and_errors(tmp_path: Path) -> 
 
 
 def test_validate_and_preview_material_ref_source_resource_and_malformed(tmp_path: Path) -> None:
-    service = MaterialService()
+    service = make_runtime().material
     _prepare_source(tmp_path)
     resource_key = _register_resource(service, tmp_path)
 
-    source_valid = service.material_read.validate_material_ref(
+    source_valid = service.material_read.validate_source_range(
         tmp_path,
-        ref_kind="source",
-        locator="chapter.md",
+        path="chapter.md",
         start_line=1,
         end_line=2,
     )
-    resource_valid = service.material_read.validate_material_ref(
+    resource_valid = service.material_read.validate_resource_range(
         tmp_path,
-        ref_kind="resource",
-        locator=resource_key,
+        resource_key=resource_key,
         start_line=1,
         end_line=2,
     )
@@ -129,19 +130,26 @@ def test_validate_and_preview_material_ref_source_resource_and_malformed(tmp_pat
         start_line=1,
         end_line=1,
     )
-    invalid_resource_key = service.material_read.validate_material_ref(
+    invalid_resource_key = service.material_read.validate_resource_range(
         tmp_path,
-        ref_kind="resource",
-        locator="../bad",
+        resource_key="../bad",
         start_line=1,
         end_line=1,
     )
 
-    source_preview = service.material_read.preview_material_ref(
+    source_preview = service.material_read.preview_source_ref(
         tmp_path,
-        ref={"kind": "source", "ref": {"path": "chapter.md", "start_line": 2, "end_line": 2}},
+        path="chapter.md",
+        start_line=2,
+        end_line=2,
     )
-    resource_preview = service.read_material_ref(
+    resource_preview = service.preview_resource_ref(
+        tmp_path,
+        resource_key=resource_key,
+        start_line=2,
+        end_line=2,
+    )
+    compatibility_preview = service.read_material_ref(
         tmp_path,
         ref={"kind": "resource", "resource_key": resource_key, "start_line": 2, "end_line": 2},
     )
@@ -161,9 +169,15 @@ def test_validate_and_preview_material_ref_source_resource_and_malformed(tmp_pat
     assert not invalid_resource_key.ok
     assert invalid_resource_key.issues[0].kind == "invalid_resource_key"
     assert source_preview.ok and source_preview.value is not None
+    assert source_preview.value.material_kind == "source"
+    assert source_preview.value.path == "chapter.md"
     assert "2: beta theorem" in source_preview.value.preview.text_with_line_numbers
     assert resource_preview.ok and resource_preview.value is not None
-    assert "2: resource theorem" in resource_preview.value.text_with_line_numbers
+    assert resource_preview.value.material_kind == "resource"
+    assert resource_preview.value.resource_key == resource_key
+    assert "2: resource theorem" in resource_preview.value.preview.text_with_line_numbers
+    assert compatibility_preview.ok and compatibility_preview.value is not None
+    assert "2: resource theorem" in compatibility_preview.value.text_with_line_numbers
     assert not malformed_object.ok
     assert malformed_object.issues[0].kind == "invalid_material_ref"
     assert not missing_locator.ok

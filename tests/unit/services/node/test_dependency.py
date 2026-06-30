@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.refs import DeclRef
@@ -7,7 +9,7 @@ from lean_constellation.services.repo_workspace import RepoWorkspaceService
 
 
 def _create_base_tree(tmp_path: Path) -> None:
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic.Provider", goal="Provider goal", boundary="Provider boundary").ok
@@ -38,7 +40,7 @@ def _create_base_tree(tmp_path: Path) -> None:
 
 
 def _write_provider_export(tmp_path: Path) -> DeclRef:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Provider", 1)
     loaded = foundation.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
@@ -51,7 +53,7 @@ def _write_provider_export(tmp_path: Path) -> DeclRef:
 
 def _commit_provider_scope(tmp_path: Path) -> DeclRef:
     ref = _write_provider_export(tmp_path)
-    committed = ContractComponent().commit_scope_contract(
+    committed = make_runtime().node.contract.commit_scope_contract(
         tmp_path,
         scope_path="Main.Topic.Provider",
         summary="Provider exposes helper.",
@@ -61,7 +63,7 @@ def _commit_provider_scope(tmp_path: Path) -> DeclRef:
 
 
 def _prelude_text(tmp_path: Path, node_path: str) -> str:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     path = foundation.prelude_path(FoundationContext(repo_root=tmp_path), node_path)
     return path.read_text(encoding="utf-8")
 
@@ -69,13 +71,14 @@ def _prelude_text(tmp_path: Path, node_path: str) -> str:
 def test_list_visible_node_boundaries_only_shows_committed_boundaries(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     _commit_provider_scope(tmp_path)
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
 
     visible = component.list_visible_node_boundaries(tmp_path, node_path="Main.Topic.Consumer")
 
     assert visible.ok
     assert visible.value is not None
     assert [item.node_path for item in visible.value.boundaries] == ["Main.Topic.Provider"]
+    assert visible.value.boundaries[0].index == 0
     assert visible.value.boundaries[0].exported_decl_refs[0].name == "helper"
 
 
@@ -86,7 +89,7 @@ def test_list_visible_node_boundaries_includes_lake_dependency_boundaries(tmp_pa
         '[[require]]\nname = "ProviderRepo"\npath = "../ProviderRepo"\n',
         encoding="utf-8",
     )
-    component = DependencyComponent(repo_workspace=RepoWorkspaceService())
+    component = make_runtime().node.dependency
 
     visible = component.list_visible_node_boundaries(tmp_path, node_path="Main.Topic.Consumer")
 
@@ -100,7 +103,7 @@ def test_list_visible_node_boundaries_includes_lake_dependency_boundaries(tmp_pa
 def test_add_node_dep_resolves_expected_decl_and_refreshes_prelude(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     ref = _commit_provider_scope(tmp_path)
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
 
     added = component.add_node_dep(
         tmp_path,
@@ -118,12 +121,51 @@ def test_add_node_dep_resolves_expected_decl_and_refreshes_prelude(tmp_path: Pat
     assert dep["target"] == {"repo": None, "node": "Main.Topic.Provider"}
     assert dep["expected_decl_refs"] == [ref.model_dump(mode="json")]
     assert dep["added_by"] == "coordinator"
+    listed = component.list_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert listed.ok
+    assert listed.value is not None
+    assert listed.value.deps[0].index == 0
+    assert listed.value.deps[0].target_node == "Main.Topic.Provider"
+    assert listed.value.deps[0].expected_decl_names == ["helper"]
     assert "import Main.Topic.Provider.Interfaces" in _prelude_text(tmp_path, "Main.Topic.Consumer")
+
+
+def test_add_node_dep_from_visible_candidate_uses_display_index(tmp_path: Path) -> None:
+    _create_base_tree(tmp_path)
+    _commit_provider_scope(tmp_path)
+    component = make_runtime().node.dependency
+
+    visible = component.list_visible_node_boundaries(tmp_path, node_path="Main.Topic.Consumer")
+    assert visible.ok
+    assert visible.value is not None
+    assert visible.value.boundaries[0].index == 0
+
+    added = component.add_node_dep_from_visible_candidate(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        candidate_index=0,
+        expected_decl_names=["helper"],
+        reason="Use provider from visible boundary list.",
+        actor="coordinator",
+    )
+    assert added.ok, added.issues
+    assert added.value is not None
+    assert added.value.contract.deps[0]["target"] == {"repo": None, "node": "Main.Topic.Provider"}
+
+    missing = component.add_node_dep_from_visible_candidate(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        candidate_index=99,
+        reason="Use missing candidate.",
+        actor="coordinator",
+    )
+    assert not missing.ok
+    assert missing.issues[0].kind == "node_dep_candidate_index_out_of_range"
 
 
 def test_add_node_dep_rejects_unready_target_and_missing_expected_decl(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
 
     unready = component.add_node_dep(
         tmp_path,
@@ -152,7 +194,7 @@ def test_add_node_dep_rejects_unready_target_and_missing_expected_decl(tmp_path:
 def test_add_node_dep_rejects_invalid_inputs_and_self_dependency(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     _commit_provider_scope(tmp_path)
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
 
     invalid_actor = component.add_node_dep(
         tmp_path,
@@ -202,7 +244,7 @@ def test_add_node_dep_rejects_invalid_inputs_and_self_dependency(tmp_path: Path)
 def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator_dep(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     _commit_provider_scope(tmp_path)
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
 
     first = component.add_node_dep(
         tmp_path,
@@ -254,8 +296,8 @@ def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator
 def test_worker_can_only_remove_worker_added_node_dep(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     _commit_provider_scope(tmp_path)
-    assert ContractComponent().commit_content_contract(tmp_path, node_path="Main.Topic.B", summary="B ready.").ok
-    component = DependencyComponent()
+    assert make_runtime().node.contract.commit_content_contract(tmp_path, node_path="Main.Topic.B", summary="B ready.").ok
+    component = make_runtime().node.dependency
 
     coordinator_added = component.add_node_dep(
         tmp_path,
@@ -266,9 +308,11 @@ def test_worker_can_only_remove_worker_added_node_dep(tmp_path: Path) -> None:
         actor="coordinator",
     )
     assert coordinator_added.ok and coordinator_added.value is not None
-    dep_id = coordinator_added.value.contract.deps[0]["dep_id"]
+    listed = component.list_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert listed.ok and listed.value is not None
+    coordinator_index = listed.value.deps[0].index
 
-    denied = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", dep_id=dep_id, actor="worker")
+    denied = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=coordinator_index, actor="worker")
     assert not denied.ok
     assert denied.issues[0].kind == "node_dep_permission_denied"
 
@@ -281,8 +325,10 @@ def test_worker_can_only_remove_worker_added_node_dep(tmp_path: Path) -> None:
         actor="worker",
     )
     assert worker_added.ok and worker_added.value is not None
-    worker_dep_id = next(dep["dep_id"] for dep in worker_added.value.contract.deps if dep["target"]["node"] == "Main.Topic.B")
-    removed = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", dep_id=worker_dep_id, actor="worker")
+    listed = component.list_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert listed.ok and listed.value is not None
+    worker_index = next(dep.index for dep in listed.value.deps if dep.target_node == "Main.Topic.B")
+    removed = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=worker_index, actor="worker")
     assert removed.ok
     assert removed.value is not None
     assert all(dep["target"]["node"] != "Main.Topic.B" for dep in removed.value.contract.deps)
@@ -291,15 +337,11 @@ def test_worker_can_only_remove_worker_added_node_dep(tmp_path: Path) -> None:
 def test_remove_node_dep_reports_missing_dep_and_allows_coordinator_remove(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     _commit_provider_scope(tmp_path)
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
 
-    missing_id = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", dep_id=" ", actor="coordinator")
-    assert not missing_id.ok
-    assert missing_id.issues[0].kind == "node_dep_id_required"
-
-    missing = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", dep_id="dep_missing", actor="coordinator")
+    missing = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=0, actor="coordinator")
     assert not missing.ok
-    assert missing.issues[0].kind == "node_dep_missing"
+    assert missing.issues[0].kind == "node_dep_index_out_of_range"
 
     added = component.add_node_dep(
         tmp_path,
@@ -310,19 +352,24 @@ def test_remove_node_dep_reports_missing_dep_and_allows_coordinator_remove(tmp_p
         actor="coordinator",
     )
     assert added.ok and added.value is not None
-    dep_id = added.value.contract.deps[0]["dep_id"]
 
-    removed = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", dep_id=dep_id, actor="coordinator")
+    listed = component.list_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert listed.ok and listed.value is not None
+    removed = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=listed.value.deps[0].index, actor="coordinator")
     assert removed.ok
     assert removed.value is not None
     assert removed.value.contract.deps == []
 
+    negative = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=-1, actor="coordinator")
+    assert not negative.ok
+    assert negative.issues[0].kind == "node_dep_index_out_of_range"
+
 
 def test_validate_node_deps_reports_cycle_and_batch_dependency(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
-    contract = ContractComponent()
+    contract = make_runtime().node.contract
     assert contract.commit_content_contract(tmp_path, node_path="Main.Topic.B", summary="B ready.").ok
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
     assert component.add_node_dep(
         tmp_path,
         node_path="Main.Topic.A",
@@ -332,7 +379,7 @@ def test_validate_node_deps_reports_cycle_and_batch_dependency(tmp_path: Path) -
         actor="coordinator",
     ).ok
 
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.B", 1)
     loaded = foundation.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
@@ -355,7 +402,7 @@ def test_validate_node_deps_reports_cycle_and_batch_dependency(tmp_path: Path) -
 def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_external_warning(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     ref = _commit_provider_scope(tmp_path)
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
     assert component.add_node_dep(
         tmp_path,
         node_path="Main.Topic.Consumer",
@@ -365,7 +412,7 @@ def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_
         actor="coordinator",
     ).ok
 
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     consumer_path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Consumer", 1)
     consumer = foundation.read_json(consumer_path, NodeContractSnapshot)
     assert consumer.ok and consumer.value is not None
@@ -434,7 +481,7 @@ def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_
 
 def test_check_content_batch_independent_reports_pass_duplicates_missing_noncontent_and_transitive_dependency(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.create_content_node(
         tmp_path,
         path="Main.Topic.C",
@@ -443,10 +490,10 @@ def test_check_content_batch_independent_reports_pass_duplicates_missing_noncont
         objective="Build C.",
         success_criteria="C ready.",
     ).ok
-    contract = ContractComponent()
+    contract = make_runtime().node.contract
     assert contract.commit_content_contract(tmp_path, node_path="Main.Topic.B", summary="B ready.").ok
     assert contract.commit_content_contract(tmp_path, node_path="Main.Topic.C", summary="C ready.").ok
-    component = DependencyComponent()
+    component = make_runtime().node.dependency
 
     independent = component.check_content_batch_independent(tmp_path, node_paths=["Main.Topic.A", "Main.Topic.B"])
     assert independent.ok
