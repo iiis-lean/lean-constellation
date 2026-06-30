@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 from typing import Any
 
@@ -149,7 +151,7 @@ class FailingRepairDeclProvider:
 
 
 def _create_nodes(tmp_path: Path) -> None:
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert tree.create_content_node(
@@ -182,15 +184,16 @@ def _repair_component(
     visible_adapter_modules: list[str] | None = None,
 ) -> RepairComponent:
     del tmp_path
-    foundation = FoundationService()
-    export = ExportComponent(foundation=foundation, public_decl_provider=FakePublicDeclProvider(foundation, public_decls or {}))
-    node_projection = NodeProjectionComponent(foundation=foundation, export=export)
-    lean_check = LeanCheckComponent(foundation=foundation, external=FakeExternal())  # type: ignore[arg-type]
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    foundation = runtime.foundation
+    export = ExportComponent(runtime, public_decl_provider=FakePublicDeclProvider(foundation, public_decls or {}))
+    node_projection = NodeProjectionComponent(runtime, export=export)
+    lean_check = runtime.lean_projection.lean_check
     revision_provider = FakeRevisionProvider(foundation, revisions or {})
-    decl_file = DeclFileComponent(foundation=foundation, lean_check=lean_check, revision_provider=revision_provider)
+    decl_file = DeclFileComponent(runtime, lean_check=lean_check, revision_provider=revision_provider)
     adapter_facade = (
         AdapterFacadeComponent(
-            foundation=foundation,
+            runtime,
             provider=FakeAdapterProvider(foundation, active_adapter_modules or [], visible_adapter_modules or []),
         )
         if active_adapter_modules is not None or visible_adapter_modules is not None
@@ -204,11 +207,11 @@ def _repair_component(
         },
     )
     return RepairComponent(
-        foundation=foundation,
+        runtime,
         node_projection=node_projection,
         adapter_facade=adapter_facade,
         decl_file=decl_file,
-        node_tree=NodeTreeComponent(foundation),
+        node_tree=runtime.node.node_tree,
         decl_provider=decl_provider,
     )
 
@@ -279,14 +282,14 @@ def test_repair_decl_files_handles_empty_duplicate_and_provider_failure(tmp_path
 
     revisions = {("Main.Topic.Core", "main_result"): _revision()}
     duplicate = _repair_component(tmp_path, revisions=revisions)
-    duplicate.decl_provider = FakeRepairDeclProvider(duplicate.foundation, {"Main.Topic.Core": ["main_result", "main_result"]})
+    duplicate.decl_provider = FakeRepairDeclProvider(duplicate.runtime.foundation, {"Main.Topic.Core": ["main_result", "main_result"]})
     restored = duplicate.repair_decl_files_from_active_graph(tmp_path, node_path="Main.Topic.Core")
     assert restored.ok
     assert restored.value is not None
     assert [action.target for action in restored.value.actions] == ["Main.Topic.Core:main_result"]
 
     failing = _repair_component(tmp_path, revisions=revisions)
-    failing.decl_provider = FailingRepairDeclProvider(failing.foundation)
+    failing.decl_provider = FailingRepairDeclProvider(failing.runtime.foundation)
     failed = failing.repair_decl_files_from_active_graph(tmp_path, node_path="Main.Topic.Core")
     assert not failed.ok
     assert failed.issues[0].kind == "active_decl_provider_failed"
@@ -340,10 +343,11 @@ def test_full_projection_audit_includes_adapter_facade_when_provider_configured(
 
 
 def test_full_projection_audit_propagates_configured_adapter_provider_failure(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    runtime = make_runtime()
+    foundation = runtime.foundation
     component = RepairComponent(
-        foundation=foundation,
-        adapter_facade=AdapterFacadeComponent(foundation=foundation, provider=FailingAdapterProvider(foundation)),
+        runtime,
+        adapter_facade=AdapterFacadeComponent(runtime, provider=FailingAdapterProvider(foundation)),
     )
 
     audit = component.full_projection_audit(tmp_path)
@@ -354,7 +358,7 @@ def test_full_projection_audit_propagates_configured_adapter_provider_failure(tm
 
 def test_missing_decl_provider_is_explicit_failure(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
-    component = RepairComponent()
+    component = RepairComponent(make_runtime())
 
     result = component.repair_decl_files_from_active_graph(tmp_path, node_path="Main.Topic.Core")
 

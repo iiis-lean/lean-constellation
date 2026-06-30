@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.mathlib import MathlibIndex
@@ -5,7 +7,7 @@ from lean_constellation.services.mathlib import MathlibService
 
 
 def test_upsert_module_create_update_and_persist(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
 
     created = service.upsert_mathlib_module_entry(
         tmp_path,
@@ -29,14 +31,14 @@ def test_upsert_module_create_update_and_persist(tmp_path: Path) -> None:
     assert updated.value.note == "Updated note."
 
     path = tmp_path / ".lean_constellation" / "indexes" / "mathlib.json"
-    stored = service.foundation.read_json(path, MathlibIndex)
+    stored = service.runtime.foundation.read_json(path, MathlibIndex)
     assert stored.ok
     assert stored.value is not None
     assert set(stored.value.modules) == {"Mathlib.Data.Finset.Basic"}
 
 
 def test_upsert_module_empty_strings_clear_optional_fields(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     assert service.upsert_mathlib_module_entry(
         tmp_path,
         module="Mathlib.Data.Finset.Basic",
@@ -58,7 +60,7 @@ def test_upsert_module_empty_strings_clear_optional_fields(tmp_path: Path) -> No
 
 
 def test_add_important_decl_autocreates_module_with_warning_and_dedupes(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
 
     added = service.add_module_important_decl(
         tmp_path,
@@ -82,7 +84,7 @@ def test_add_important_decl_autocreates_module_with_warning_and_dedupes(tmp_path
 
 
 def test_add_important_decl_rejects_invalid_module_and_decl_names(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
 
     bad_module = service.add_module_important_decl(
         tmp_path,
@@ -102,7 +104,7 @@ def test_add_important_decl_rejects_invalid_module_and_decl_names(tmp_path: Path
 
 
 def test_upsert_decl_missing_module_warning_update_and_snippet_truncation(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
 
     long_snippet = "x" * 2100
     created = service.upsert_mathlib_decl_entry(
@@ -144,7 +146,7 @@ def test_upsert_decl_missing_module_warning_update_and_snippet_truncation(tmp_pa
 
 
 def test_upsert_decl_accepts_free_kind_and_empty_strings_clear_optional_fields(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
     created = service.upsert_mathlib_decl_entry(
         tmp_path,
@@ -182,7 +184,7 @@ def test_upsert_decl_accepts_free_kind_and_empty_strings_clear_optional_fields(t
 
 
 def test_search_literal_regex_kind_filter_and_limit(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     service.upsert_mathlib_module_entry(
         tmp_path,
         module="Mathlib.Data.Finset.Basic",
@@ -243,7 +245,7 @@ def test_search_literal_regex_kind_filter_and_limit(tmp_path: Path) -> None:
 
 
 def test_search_rejects_empty_query_and_invalid_limit_and_accepts_kind_aliases(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
     assert service.upsert_mathlib_decl_entry(
         tmp_path,
@@ -276,7 +278,7 @@ def test_search_rejects_empty_query_and_invalid_limit_and_accepts_kind_aliases(t
 
 
 def test_get_missing_invalid_regex_and_invalid_inputs(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
 
     missing_module = service.get_mathlib_module_entry(tmp_path, module="Mathlib.Missing")
     assert not missing_module.ok
@@ -300,7 +302,7 @@ def test_get_missing_invalid_regex_and_invalid_inputs(tmp_path: Path) -> None:
 
 
 def test_get_rejects_invalid_module_and_decl_names(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
 
     empty_module = service.get_mathlib_module_entry(tmp_path, module=" ")
     assert not empty_module.ok

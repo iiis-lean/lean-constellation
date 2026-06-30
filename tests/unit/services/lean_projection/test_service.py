@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 from typing import Any
 
@@ -122,7 +124,7 @@ def _revision() -> dict[str, Any]:
 
 
 def _create_content_node(repo_root: Path) -> None:
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(repo_root).ok
     assert tree.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert tree.create_content_node(
@@ -136,11 +138,11 @@ def _create_content_node(repo_root: Path) -> None:
 
 
 def test_lean_projection_service_composes_components_and_stage_wrappers(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    foundation = runtime.foundation
     revisions = {("Main.Topic.Core", "main_result"): _revision()}
     service = LeanProjectionService(
-        foundation=foundation,
-        external=FakeExternal(),  # type: ignore[arg-type]
+        runtime,
         decl_revision_provider=FakeRevisionProvider(foundation, revisions),
         repair_decl_provider=FakeRepairDeclProvider(foundation, {"Main.Topic.Core": ["main_result"]}),
     )
@@ -169,11 +171,11 @@ def test_lean_projection_service_composes_components_and_stage_wrappers(tmp_path
 
 
 def test_lean_projection_service_refresh_wrappers(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    foundation = runtime.foundation
     _create_content_node(tmp_path)
     service = LeanProjectionService(
-        foundation=foundation,
-        external=FakeExternal(),  # type: ignore[arg-type]
+        runtime,
         adapter_facade_provider=FakeAdapterProvider(foundation),
     )
 
@@ -191,9 +193,10 @@ def test_lean_projection_service_refresh_wrappers(tmp_path: Path) -> None:
 
 
 def test_lean_projection_service_refresh_node_projection_is_repair_wrapper(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    foundation = runtime.foundation
     repair = FakeRepairComponent(foundation)
-    service = LeanProjectionService(foundation=foundation, external=FakeExternal(), repair=repair)  # type: ignore[arg-type]
+    service = LeanProjectionService(runtime, repair=repair)  # type: ignore[arg-type]
 
     result = service.refresh_node_projection(tmp_path, node_path="Main.Topic.Core")
 
@@ -204,7 +207,8 @@ def test_lean_projection_service_refresh_node_projection_is_repair_wrapper(tmp_p
 
 
 def test_lean_projection_service_missing_adapter_provider_fails_without_fake_projection(tmp_path: Path) -> None:
-    service = LeanProjectionService(external=FakeExternal())  # type: ignore[arg-type]
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    service = LeanProjectionService(runtime)
 
     result = service.refresh_adapter_projection(tmp_path)
 
@@ -214,7 +218,8 @@ def test_lean_projection_service_missing_adapter_provider_fails_without_fake_pro
 
 
 def test_lean_projection_service_restore_projection_wrapper(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    foundation = runtime.foundation
     _create_content_node(tmp_path)
     revision = _revision()
     revision["statement"]["formal"] = {
@@ -222,8 +227,7 @@ def test_lean_projection_service_restore_projection_wrapper(tmp_path: Path) -> N
     }
     revision["proof"]["formal"] = {"code": revision["statement"]["formal"]["code"].replace("stage: statement", "stage: proof").replace("sorry", "trivial")}
     service = LeanProjectionService(
-        foundation=foundation,
-        external=FakeExternal(),  # type: ignore[arg-type]
+        runtime,
         decl_revision_provider=FakeRevisionProvider(foundation, {("Main.Topic.Core", "main_result"): revision}),
         repair_decl_provider=FakeRepairDeclProvider(foundation, {"Main.Topic.Core": ["main_result"]}),
     )

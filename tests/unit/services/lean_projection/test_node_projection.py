@@ -1,6 +1,9 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.foundation import FoundationContext, FoundationService, WriteMode
 from lean_constellation.services.lean_projection import NodeProjectionComponent
@@ -32,7 +35,7 @@ class FailingPublicDeclProvider:
 
 
 def _create_nodes(tmp_path: Path) -> None:
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic.Provider", goal="Provider goal", boundary="Provider boundary").ok
@@ -47,7 +50,7 @@ def _create_nodes(tmp_path: Path) -> None:
 
 
 def _update_core_contract(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path)
     path = foundation.node_contract_path(ctx, "Main.Topic.Core", 1)
     loaded = foundation.read_json(path, NodeContractSnapshot)
@@ -71,7 +74,7 @@ def _update_core_contract(tmp_path: Path) -> None:
 
 
 def _core_contract(tmp_path: Path) -> NodeContractSnapshot:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     loaded = foundation.read_json(
         foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1),
         NodeContractSnapshot,
@@ -81,7 +84,7 @@ def _core_contract(tmp_path: Path) -> NodeContractSnapshot:
 
 
 def _save_core_contract(tmp_path: Path, snapshot: NodeContractSnapshot) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     saved = foundation.write_json_atomic(
         foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1),
         snapshot,
@@ -93,7 +96,7 @@ def _save_core_contract(tmp_path: Path, snapshot: NodeContractSnapshot) -> None:
 def test_render_prelude_from_node_deps_and_mathlib_modules(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
     _update_core_contract(tmp_path)
-    component = NodeProjectionComponent()
+    component = make_runtime().lean_projection.node_projection
 
     rendered = component.render_prelude(tmp_path, node_path="Main.Topic.Core")
 
@@ -114,7 +117,7 @@ def test_render_prelude_rejects_invalid_import_module(tmp_path: Path) -> None:
     snapshot = _core_contract(tmp_path)
     snapshot.mathlib_modules.append({"module": "Bad Module", "reason": "Invalid import."})
     _save_core_contract(tmp_path, snapshot)
-    component = NodeProjectionComponent()
+    component = make_runtime().lean_projection.node_projection
 
     rendered = component.render_prelude(tmp_path, node_path="Main.Topic.Core")
 
@@ -125,7 +128,7 @@ def test_render_prelude_rejects_invalid_import_module(tmp_path: Path) -> None:
 def test_refresh_prelude_changed_and_no_changed(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
     _update_core_contract(tmp_path)
-    component = NodeProjectionComponent()
+    component = make_runtime().lean_projection.node_projection
 
     first = component.refresh_prelude(tmp_path, node_path="Main.Topic.Core")
     assert first.ok
@@ -141,7 +144,7 @@ def test_refresh_prelude_changed_and_no_changed(tmp_path: Path) -> None:
 
 def test_refresh_and_check_prelude_report_filesystem_errors(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
-    component = NodeProjectionComponent()
+    component = make_runtime().lean_projection.node_projection
     path = tmp_path / "Main" / "Topic" / "Core" / "Prelude.lean"
     path.mkdir(parents=True)
 
@@ -157,7 +160,7 @@ def test_refresh_and_check_prelude_report_filesystem_errors(tmp_path: Path) -> N
 def test_check_prelude_sync_missing_synced_and_stale(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
     _update_core_contract(tmp_path)
-    component = NodeProjectionComponent()
+    component = make_runtime().lean_projection.node_projection
 
     missing = component.check_prelude_sync(tmp_path, node_path="Main.Topic.Core")
     assert missing.ok
@@ -183,7 +186,7 @@ def test_check_prelude_sync_missing_synced_and_stale(tmp_path: Path) -> None:
 
 def test_render_content_interfaces_from_public_decl_modules(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     provider = FakePublicDeclProvider(
         foundation,
         {
@@ -201,8 +204,8 @@ def test_render_content_interfaces_from_public_decl_modules(tmp_path: Path) -> N
             ]
         },
     )
-    export = ExportComponent(foundation=foundation, public_decl_provider=provider)
-    component = NodeProjectionComponent(foundation=foundation, export=export)
+    runtime = make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=provider))
+    component = runtime.lean_projection.node_projection
 
     rendered = component.render_interfaces(tmp_path, node_path="Main.Topic.Core")
 
@@ -215,9 +218,9 @@ def test_render_content_interfaces_from_public_decl_modules(tmp_path: Path) -> N
 
 def test_render_content_interfaces_rejects_provider_failure_cross_repo_and_not_ready(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
-    foundation = FoundationService()
-    failing_export = ExportComponent(foundation=foundation, public_decl_provider=FailingPublicDeclProvider(foundation))
-    failing = NodeProjectionComponent(foundation=foundation, export=failing_export)
+    foundation = make_runtime().foundation
+    failing_runtime = make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=FailingPublicDeclProvider(foundation)))
+    failing = failing_runtime.lean_projection.node_projection
 
     provider_failed = failing.render_interfaces(tmp_path, node_path="Main.Topic.Core")
     assert not provider_failed.ok
@@ -235,10 +238,9 @@ def test_render_content_interfaces_rejects_provider_failure_cross_repo_and_not_r
             ]
         },
     )
-    cross_repo = NodeProjectionComponent(
-        foundation=foundation,
-        export=ExportComponent(foundation=foundation, public_decl_provider=cross_repo_provider),
-    ).render_interfaces(tmp_path, node_path="Main.Topic.Core")
+    cross_repo = make_runtime(
+        providers=LeanProviderOverrides(content_public_decl_provider=cross_repo_provider)
+    ).lean_projection.node_projection.render_interfaces(tmp_path, node_path="Main.Topic.Core")
     assert not cross_repo.ok
     assert cross_repo.issues[0].kind == "interfaces_decl_cross_repo_unsupported"
 
@@ -261,17 +263,16 @@ def test_render_content_interfaces_rejects_provider_failure_cross_repo_and_not_r
             ]
         },
     )
-    not_ready = NodeProjectionComponent(
-        foundation=foundation,
-        export=ExportComponent(foundation=foundation, public_decl_provider=not_ready_provider),
-    ).render_interfaces(tmp_path, node_path="Main.Topic.Core")
+    not_ready = make_runtime(
+        providers=LeanProviderOverrides(content_public_decl_provider=not_ready_provider)
+    ).lean_projection.node_projection.render_interfaces(tmp_path, node_path="Main.Topic.Core")
     assert not not_ready.ok
     assert not_ready.issues[0].kind == "interfaces_decl_not_ready"
 
 
 def test_refresh_and_check_interfaces_report_filesystem_errors(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
-    component = NodeProjectionComponent()
+    component = make_runtime().lean_projection.node_projection
     path = tmp_path / "Main" / "Topic" / "Core" / "Interfaces.lean"
     path.mkdir(parents=True)
 
@@ -286,7 +287,7 @@ def test_refresh_and_check_interfaces_report_filesystem_errors(tmp_path: Path) -
 
 def test_refresh_and_check_scope_interfaces_from_exports(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     provider = FakePublicDeclProvider(
         foundation,
         {
@@ -299,8 +300,9 @@ def test_refresh_and_check_scope_interfaces_from_exports(tmp_path: Path) -> None
             ]
         },
     )
-    export = ExportComponent(foundation=foundation, public_decl_provider=provider)
-    component = NodeProjectionComponent(foundation=foundation, export=export)
+    runtime = make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=provider))
+    export = runtime.node.export
+    component = runtime.lean_projection.node_projection
 
     missing = component.check_interfaces_sync(tmp_path, node_path="Main.Topic")
     assert missing.ok
@@ -308,7 +310,7 @@ def test_refresh_and_check_scope_interfaces_from_exports(tmp_path: Path) -> None
     assert missing.value.passed is False
     assert missing.value.issues[0].kind == "interfaces_projection_missing"
 
-    added = export.add_scope_export(tmp_path, scope_path="Main.Topic", decl_ref="Main.Topic.Core:main_result")
+    added = export.add_scope_export(tmp_path, scope_path="Main.Topic", decl_node="Main.Topic.Core", decl_name="main_result")
     assert added.ok
 
     synced = component.check_interfaces_sync(tmp_path, node_path="Main.Topic")

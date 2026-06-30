@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
 from lean_constellation.services.lean_projection import LeanCheckComponent
 
@@ -49,7 +51,8 @@ def _component(tmp_path: Path, diagnostics: list[dict] | None = None, ok: bool =
             issue_code=None if ok else "toolkit_unavailable",
         )
     )
-    return LeanCheckComponent(external=FakeExternal(toolkit))  # type: ignore[arg-type]
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": toolkit, "lake": FakeLake()})
+    return runtime.lean_projection.lean_check
 
 
 def test_run_file_diagnostics_uses_toolkit_and_reports_errors(tmp_path: Path) -> None:
@@ -80,7 +83,7 @@ def test_run_file_diagnostics_falls_back_to_lake_when_toolkit_unavailable(tmp_pa
             issue_code="command_failed",
         )
     )
-    component = LeanCheckComponent(external=FakeExternal(toolkit, lake))  # type: ignore[arg-type]
+    component = make_runtime(external_overrides={"lean_mcp_toolkit": toolkit, "lake": lake}).lean_projection.lean_check
 
     result = component.run_file_diagnostics(tmp_path, file_path=Path("Main.lean"))
 
@@ -106,7 +109,7 @@ def test_run_file_diagnostics_fallback_uses_plain_stderr_excerpt(tmp_path: Path)
             issue_code="command_failed",
         )
     )
-    component = LeanCheckComponent(external=FakeExternal(toolkit, lake))  # type: ignore[arg-type]
+    component = make_runtime(external_overrides={"lean_mcp_toolkit": toolkit, "lake": lake}).lean_projection.lean_check
 
     result = component.run_file_diagnostics(tmp_path, file_path=lean_file)
 

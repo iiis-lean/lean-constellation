@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, field_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.mathlib import MathlibDeclEntry, MathlibIndex, MathlibModuleEntry
-from lean_constellation.services.foundation import FoundationContext, FoundationService, IssueSeverity, ServiceIssue, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, IssueSeverity, ServiceIssue, ServiceResult
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 EntryKind = Literal["all", "module", "declaration"]
 
@@ -67,8 +70,8 @@ class MathlibModuleEntryMutationView(StrictModel):
 class MathlibIndexComponent:
     """Maintain `.lean_constellation/indexes/mathlib.json`."""
 
-    def __init__(self, foundation: FoundationService) -> None:
-        self.foundation = foundation
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
 
     def search_mathlib_index(
         self,
@@ -81,13 +84,13 @@ class MathlibIndexComponent:
     ) -> ServiceResult[MathlibSearchView]:
         normalized_query = query.strip()
         if not normalized_query:
-            return self.foundation.fail(
-                self.foundation.issue("mathlib_index_query_empty", "Mathlib index search query must be non-empty.", field="query")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("mathlib_index_query_empty", "Mathlib index search query must be non-empty.", field="query")
             )
         normalized_kind = self._normalize_entry_kind(entry_kind)
         if normalized_kind is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_index_entry_kind_invalid",
                     f"Unsupported Mathlib index entry kind: {entry_kind}",
                     field="entry_kind",
@@ -95,16 +98,16 @@ class MathlibIndexComponent:
                 )
             )
         if limit < 1:
-            return self.foundation.fail(
-                self.foundation.issue("mathlib_index_limit_invalid", "Mathlib index search limit must be >= 1.", field="limit")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("mathlib_index_limit_invalid", "Mathlib index search limit must be >= 1.", field="limit")
             )
         matcher_result = self._build_matcher(normalized_query, regex)
         if not matcher_result.ok or matcher_result.value is None:
-            return self.foundation.fail(matcher_result.issues)
+            return self.runtime.foundation.fail(matcher_result.issues)
         matcher = matcher_result.value
         index_result = self._load_index(repo_root)
         if not index_result.ok or index_result.value is None:
-            return self.foundation.fail(index_result.issues)
+            return self.runtime.foundation.fail(index_result.issues)
 
         hits: list[MathlibSearchHit] = []
         matched_count = 0
@@ -145,7 +148,7 @@ class MathlibIndexComponent:
                                 snippet=entry.snippet,
                             )
                         )
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             MathlibSearchView(
                 query=normalized_query,
                 regex=regex,
@@ -160,20 +163,20 @@ class MathlibIndexComponent:
     def get_mathlib_module_entry(self, repo_root: Path, *, module: str) -> ServiceResult[MathlibModuleEntryView]:
         normalized = self._normalize_module_or_fail(module)
         if not normalized.ok or normalized.value is None:
-            return self.foundation.fail(normalized.issues)
+            return self.runtime.foundation.fail(normalized.issues)
         index = self._load_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         entry = index.value.modules.get(normalized.value)
         if entry is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_module_entry_missing",
                     f"Mathlib module entry is not recorded: {normalized.value}",
                     object_ref=normalized.value,
                 )
             )
-        return self.foundation.ok(self._module_view(entry))
+        return self.runtime.foundation.ok(self._module_view(entry))
 
     def upsert_mathlib_module_entry(
         self,
@@ -185,10 +188,10 @@ class MathlibIndexComponent:
     ) -> ServiceResult[MathlibModuleEntryView]:
         normalized = self._normalize_module_or_fail(module)
         if not normalized.ok or normalized.value is None:
-            return self.foundation.fail(normalized.issues)
+            return self.runtime.foundation.fail(normalized.issues)
         index = self._load_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         entry = index.value.modules.get(normalized.value) or MathlibModuleEntry(module=normalized.value)
         if summary is not None:
             entry.summary = self._optional_text(summary)
@@ -197,8 +200,8 @@ class MathlibIndexComponent:
         index.value.modules[normalized.value] = entry
         saved = self._save_index(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self._module_view(entry))
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._module_view(entry))
 
     def add_module_important_decl(
         self,
@@ -209,20 +212,20 @@ class MathlibIndexComponent:
     ) -> ServiceResult[MathlibModuleEntryView]:
         normalized_module = self._normalize_module_or_fail(module)
         if not normalized_module.ok or normalized_module.value is None:
-            return self.foundation.fail(normalized_module.issues)
+            return self.runtime.foundation.fail(normalized_module.issues)
         normalized_decl = self._normalize_decl_or_fail(decl_name)
         if not normalized_decl.ok or normalized_decl.value is None:
-            return self.foundation.fail(normalized_decl.issues)
+            return self.runtime.foundation.fail(normalized_decl.issues)
         warnings: list[ServiceIssue] = []
         index = self._load_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         entry = index.value.modules.get(normalized_module.value)
         if entry is None:
             entry = MathlibModuleEntry(module=normalized_module.value)
             index.value.modules[normalized_module.value] = entry
             warnings.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "mathlib_module_entry_auto_created",
                     f"Created missing Mathlib module entry before adding important declaration: {normalized_module.value}",
                     severity=IssueSeverity.WARNING,
@@ -231,7 +234,7 @@ class MathlibIndexComponent:
             )
         if normalized_decl.value in entry.important_decl_names:
             warnings.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "mathlib_module_important_decl_duplicate",
                     f"Important declaration is already recorded for module {normalized_module.value}: {normalized_decl.value}",
                     severity=IssueSeverity.WARNING,
@@ -242,26 +245,26 @@ class MathlibIndexComponent:
             entry.important_decl_names.append(normalized_decl.value)
         saved = self._save_index(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self._module_view(entry), warnings=warnings)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._module_view(entry), warnings=warnings)
 
     def get_mathlib_decl_entry(self, repo_root: Path, *, name: str) -> ServiceResult[MathlibDeclEntryView]:
         normalized = self._normalize_decl_or_fail(name)
         if not normalized.ok or normalized.value is None:
-            return self.foundation.fail(normalized.issues)
+            return self.runtime.foundation.fail(normalized.issues)
         index = self._load_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         entry = index.value.declarations.get(normalized.value)
         if entry is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_decl_entry_missing",
                     f"Mathlib declaration entry is not recorded: {normalized.value}",
                     object_ref=normalized.value,
                 )
             )
-        return self.foundation.ok(self._decl_view(entry))
+        return self.runtime.foundation.ok(self._decl_view(entry))
 
     def upsert_mathlib_decl_entry(
         self,
@@ -277,21 +280,21 @@ class MathlibIndexComponent:
     ) -> ServiceResult[MathlibDeclEntryView]:
         normalized_name = self._normalize_decl_or_fail(name)
         if not normalized_name.ok or normalized_name.value is None:
-            return self.foundation.fail(normalized_name.issues)
+            return self.runtime.foundation.fail(normalized_name.issues)
         warnings: list[ServiceIssue] = []
         normalized_module: str | None = None
         if module is not None:
             module_result = self._normalize_module_or_fail(module)
             if not module_result.ok:
-                return self.foundation.fail(module_result.issues)
+                return self.runtime.foundation.fail(module_result.issues)
             normalized_module = module_result.value
 
         index = self._load_index(repo_root)
         if not index.ok or index.value is None:
-            return self.foundation.fail(index.issues)
+            return self.runtime.foundation.fail(index.issues)
         if normalized_module is not None and normalized_module not in index.value.modules:
             warnings.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "mathlib_decl_module_not_indexed",
                     f"Declaration references a Mathlib module that is not recorded in the index: {normalized_module}",
                     severity=IssueSeverity.WARNING,
@@ -315,7 +318,7 @@ class MathlibIndexComponent:
             if normalized_snippet is not None and len(normalized_snippet) > _MAX_SNIPPET_CHARS:
                 normalized_snippet = normalized_snippet[:_MAX_SNIPPET_CHARS]
                 warnings.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "mathlib_decl_snippet_truncated",
                         f"Mathlib declaration snippet was truncated to {_MAX_SNIPPET_CHARS} characters.",
                         severity=IssueSeverity.WARNING,
@@ -327,24 +330,24 @@ class MathlibIndexComponent:
         index.value.declarations[normalized_name.value] = entry
         saved = self._save_index(repo_root, index.value)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self._decl_view(entry), warnings=warnings)
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._decl_view(entry), warnings=warnings)
 
     def _index_path(self, repo_root: Path) -> Path:
-        return self.foundation.index_cache_path(FoundationContext(repo_root=Path(repo_root)), "mathlib")
+        return self.runtime.foundation.index_cache_path(FoundationContext(repo_root=Path(repo_root)), "mathlib")
 
     def _load_index(self, repo_root: Path) -> ServiceResult[MathlibIndex]:
         path = self._index_path(repo_root)
         if not path.exists():
-            return self.foundation.ok(MathlibIndex())
-        return self.foundation.read_json(path, MathlibIndex)
+            return self.runtime.foundation.ok(MathlibIndex())
+        return self.runtime.foundation.read_json(path, MathlibIndex)
 
     def _save_index(self, repo_root: Path, index: MathlibIndex) -> ServiceResult[MathlibIndex]:
         normalized = self._normalize_index(index)
-        write = self.foundation.write_json_atomic(self._index_path(repo_root), normalized)
+        write = self.runtime.foundation.write_json_atomic(self._index_path(repo_root), normalized)
         if not write.ok:
-            return self.foundation.fail(write.issues)
-        return self.foundation.ok(normalized)
+            return self.runtime.foundation.fail(write.issues)
+        return self.runtime.foundation.ok(normalized)
 
     def _normalize_index(self, index: MathlibIndex) -> MathlibIndex:
         modules = {entry.module: entry for _, entry in sorted(index.modules.items(), key=lambda item: item[0])}
@@ -375,36 +378,36 @@ class MathlibIndexComponent:
     def _normalize_module_or_fail(self, module: str) -> ServiceResult[str]:
         normalized = self._normalize_ref_text(module)
         if not normalized:
-            return self.foundation.fail(
-                self.foundation.issue("mathlib_module_name_empty", "Mathlib module name must be non-empty.", field="module")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("mathlib_module_name_empty", "Mathlib module name must be non-empty.", field="module")
             )
         if not self._is_safe_dotted_name(normalized):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_module_name_invalid",
                     f"Invalid Mathlib module name: {module}",
                     field="module",
                     expected="a non-empty dotted Lean module name without whitespace or path separators",
                 )
             )
-        return self.foundation.ok(normalized)
+        return self.runtime.foundation.ok(normalized)
 
     def _normalize_decl_or_fail(self, name: str) -> ServiceResult[str]:
         normalized = self._normalize_ref_text(name)
         if not normalized:
-            return self.foundation.fail(
-                self.foundation.issue("mathlib_decl_name_empty", "Mathlib declaration name must be non-empty.", field="name")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("mathlib_decl_name_empty", "Mathlib declaration name must be non-empty.", field="name")
             )
         if not self._is_safe_dotted_name(normalized):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_decl_name_invalid",
                     f"Invalid Mathlib declaration name: {name}",
                     field="name",
                     expected="a non-empty dotted Lean declaration name without whitespace or path separators",
                 )
             )
-        return self.foundation.ok(normalized)
+        return self.runtime.foundation.ok(normalized)
 
     def _normalize_ref_text(self, value: str) -> str:
         return value.strip()
@@ -435,12 +438,12 @@ class MathlibIndexComponent:
 
     def _build_matcher(self, query: str, regex: bool) -> ServiceResult[re.Pattern[str] | str]:
         if not regex:
-            return self.foundation.ok(query.lower())
+            return self.runtime.foundation.ok(query.lower())
         try:
-            return self.foundation.ok(re.compile(query, flags=re.IGNORECASE))
+            return self.runtime.foundation.ok(re.compile(query, flags=re.IGNORECASE))
         except re.error as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_index_regex_invalid",
                     f"Invalid Mathlib index regex: {exc}",
                     field="query",

@@ -1,9 +1,11 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 from typing import Any
 
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
 from lean_constellation.services.foundation import FoundationService, ServiceResult
-from lean_constellation.services.lean_projection import DeclFileComponent, LeanCheckComponent, LeanCheckView
+from lean_constellation.services.lean_projection import DeclFileComponent, LeanCheckView
 
 
 class FakeToolkit:
@@ -173,14 +175,14 @@ def _revision(kind: str = "theorem") -> dict[str, Any]:
 
 
 def _component(tmp_path: Path, revisions: dict[tuple[str, str], dict[str, Any]], diagnostics: list[dict[str, Any]] | None = None) -> DeclFileComponent:
-    foundation = FoundationService()
-    provider = FakeRevisionProvider(foundation, revisions)
-    lean_check = LeanCheckComponent(foundation=foundation, external=FakeExternal(diagnostics=diagnostics))  # type: ignore[arg-type]
-    return DeclFileComponent(foundation=foundation, lean_check=lean_check, revision_provider=provider)
+    del tmp_path
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(diagnostics=diagnostics), "lake": FakeLake()})
+    provider = FakeRevisionProvider(runtime.foundation, revisions)
+    return DeclFileComponent(runtime, lean_check=runtime.lean_projection.lean_check, revision_provider=provider)
 
 
 def test_derive_decl_file_path_maps_kind_and_blocks_unsafe_name(tmp_path: Path) -> None:
-    component = DeclFileComponent()
+    component = make_runtime().lean_projection.decl_file
 
     result = component.derive_decl_file_path(tmp_path, node_path="Main.Topic.Core", decl_name="main_result", kind="theorem")
 
@@ -224,7 +226,8 @@ def test_prepare_statement_formal_file_requires_statement_nl(tmp_path: Path) -> 
 
 
 def test_default_missing_revision_provider_fails_without_writing_decl_file(tmp_path: Path) -> None:
-    component = DeclFileComponent()
+    runtime = make_runtime()
+    component = DeclFileComponent(runtime, lean_check=runtime.lean_projection.lean_check)
 
     result = component.prepare_statement_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result")
 
@@ -250,10 +253,9 @@ def test_capture_statement_validates_docstring_runs_check_and_saves_snapshot(tmp
 
 def test_capture_statement_propagates_revision_provider_save_failure(tmp_path: Path) -> None:
     revisions = {("Main.Topic.Core", "main_result"): _revision()}
-    foundation = FoundationService()
-    provider = FailingSaveRevisionProvider(foundation, revisions, fail_statement=True)
-    lean_check = LeanCheckComponent(foundation=foundation, external=FakeExternal())  # type: ignore[arg-type]
-    component = DeclFileComponent(foundation=foundation, lean_check=lean_check, revision_provider=provider)
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    provider = FailingSaveRevisionProvider(runtime.foundation, revisions, fail_statement=True)
+    component = DeclFileComponent(runtime, lean_check=runtime.lean_projection.lean_check, revision_provider=provider)
     assert component.prepare_statement_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result").ok
 
     result = component.capture_statement_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result")
@@ -348,10 +350,9 @@ def test_capture_proof_accepts_multiline_equivalent_header_and_save_failure(tmp_
     assert "theorem main_result\n    : True := by" in revisions[("Main.Topic.Core", "main_result")]["proof"]["formal"]["code"]
 
     revisions_failed = {("Main.Topic.Core", "main_result"): _revision()}
-    failing_foundation = FoundationService()
-    failing_provider = FailingSaveRevisionProvider(failing_foundation, revisions_failed, fail_proof=True)
-    failing_check = LeanCheckComponent(foundation=failing_foundation, external=FakeExternal())  # type: ignore[arg-type]
-    failing = DeclFileComponent(foundation=failing_foundation, lean_check=failing_check, revision_provider=failing_provider)
+    failing_runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    failing_provider = FailingSaveRevisionProvider(failing_runtime.foundation, revisions_failed, fail_proof=True)
+    failing = DeclFileComponent(failing_runtime, lean_check=failing_runtime.lean_projection.lean_check, revision_provider=failing_provider)
     assert failing.prepare_statement_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result").ok
     assert failing.capture_statement_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result").ok
     failing_prepared = failing.prepare_proof_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result")

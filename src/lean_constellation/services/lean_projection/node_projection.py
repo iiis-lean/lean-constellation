@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.foundation import FoundationContext, FoundationService, GateReport, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
 from lean_constellation.services.node.export import ExportComponent, ScopeExportCandidate
 from lean_constellation.services.node.node_tree import NodeKind
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class ProjectionView(StrictModel):
@@ -31,23 +34,24 @@ class NodeProjectionComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
+        *,
         contract: ContractComponent | None = None,
         export: ExportComponent | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.contract = contract or ContractComponent(self.foundation)
-        self.export = export or ExportComponent(self.foundation, contract=self.contract)
+        self.runtime = runtime
+        self.contract = contract or ContractComponent(runtime)
+        self.export = export or ExportComponent(runtime, contract=self.contract)
 
     def render_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[str]:
         contract = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:
-            return self.foundation.fail(contract.issues)
+            return self.runtime.foundation.fail(contract.issues)
         imports = self._prelude_imports(node_path, contract.value.contract.deps, contract.value.contract.mathlib_modules)
         invalid = [module for module in imports if not self._is_safe_import_module(module)]
         if invalid:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "prelude_import_invalid",
                     "Generated Prelude would contain invalid import modules.",
                     object_ref=node_path,
@@ -56,12 +60,12 @@ class NodeProjectionComponent:
             )
         lines = [self._HEADER.format(node_path=node_path).rstrip(), ""]
         lines.extend(f"import {module}" for module in imports)
-        return self.foundation.ok("\n".join(lines).rstrip() + "\n")
+        return self.runtime.foundation.ok("\n".join(lines).rstrip() + "\n")
 
     def refresh_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionView]:
         rendered = self.render_prelude(repo_root, node_path=node_path)
         if not rendered.ok or rendered.value is None:
-            return self.foundation.fail(rendered.issues)
+            return self.runtime.foundation.fail(rendered.issues)
         path = self._prelude_path(repo_root, node_path)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,15 +74,15 @@ class NodeProjectionComponent:
             if changed:
                 path.write_text(rendered.value, encoding="utf-8")
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "prelude_projection_write_failed",
                     f"Failed to write generated Prelude.lean: {exc}",
                     object_ref=node_path,
                     details={"path": str(path)},
                 )
             )
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             ProjectionView(
                 node_path=node_path,
                 projection_kind="prelude",
@@ -92,13 +96,13 @@ class NodeProjectionComponent:
     def check_prelude_sync(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         rendered = self.render_prelude(repo_root, node_path=node_path)
         if not rendered.ok or rendered.value is None:
-            return self.foundation.fail(rendered.issues)
+            return self.runtime.foundation.fail(rendered.issues)
         path = self._prelude_path(repo_root, node_path)
         if not path.exists():
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "prelude_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "prelude_projection_missing",
                         "Generated Prelude.lean is missing.",
                         object_ref=node_path,
@@ -110,8 +114,8 @@ class NodeProjectionComponent:
         try:
             actual = path.read_text(encoding="utf-8")
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "prelude_projection_read_failed",
                     f"Failed to read generated Prelude.lean: {exc}",
                     object_ref=node_path,
@@ -119,10 +123,10 @@ class NodeProjectionComponent:
                 )
             )
         if actual != rendered.value:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "prelude_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "prelude_projection_stale",
                         "Generated Prelude.lean does not match current NodeContract deps/mathlib_modules.",
                         object_ref=node_path,
@@ -131,8 +135,8 @@ class NodeProjectionComponent:
                     summary="Generated Prelude.lean is stale.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "prelude_sync",
                 summary="Generated Prelude.lean is synchronized.",
             )
@@ -141,14 +145,14 @@ class NodeProjectionComponent:
     def render_interfaces(self, repo_root: Path, *, node_path: str) -> ServiceResult[str]:
         contract = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:
-            return self.foundation.fail(contract.issues)
+            return self.runtime.foundation.fail(contract.issues)
         if contract.value.node_kind == NodeKind.CONTENT:
             imports_result = self._content_interface_imports(repo_root, node_path=node_path)
         elif contract.value.node_kind == NodeKind.SCOPE:
             imports_result = self._scope_interface_imports(repo_root, scope_path=node_path)
         else:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "interfaces_projection_node_kind_unsupported",
                     "Generated Interfaces.lean only supports Scope and Content nodes.",
                     object_ref=node_path,
@@ -156,11 +160,11 @@ class NodeProjectionComponent:
                 )
             )
         if not imports_result.ok or imports_result.value is None:
-            return self.foundation.fail(imports_result.issues)
+            return self.runtime.foundation.fail(imports_result.issues)
         invalid = [module for module in imports_result.value if not self._is_safe_import_module(module)]
         if invalid:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "interfaces_import_invalid",
                     "Generated Interfaces.lean would contain invalid import modules.",
                     object_ref=node_path,
@@ -169,12 +173,12 @@ class NodeProjectionComponent:
             )
         lines = [self._HEADER.format(node_path=node_path).rstrip(), ""]
         lines.extend(f"import {module}" for module in imports_result.value)
-        return self.foundation.ok("\n".join(lines).rstrip() + "\n", warnings=imports_result.issues)
+        return self.runtime.foundation.ok("\n".join(lines).rstrip() + "\n", warnings=imports_result.issues)
 
     def refresh_interfaces(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionView]:
         rendered = self.render_interfaces(repo_root, node_path=node_path)
         if not rendered.ok or rendered.value is None:
-            return self.foundation.fail(rendered.issues)
+            return self.runtime.foundation.fail(rendered.issues)
         path = self._interfaces_path(repo_root, node_path)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,15 +187,15 @@ class NodeProjectionComponent:
             if changed:
                 path.write_text(rendered.value, encoding="utf-8")
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "interfaces_projection_write_failed",
                     f"Failed to write generated Interfaces.lean: {exc}",
                     object_ref=node_path,
                     details={"path": str(path)},
                 )
             )
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             ProjectionView(
                 node_path=node_path,
                 projection_kind="interfaces",
@@ -206,13 +210,13 @@ class NodeProjectionComponent:
     def check_interfaces_sync(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         rendered = self.render_interfaces(repo_root, node_path=node_path)
         if not rendered.ok or rendered.value is None:
-            return self.foundation.fail(rendered.issues)
+            return self.runtime.foundation.fail(rendered.issues)
         path = self._interfaces_path(repo_root, node_path)
         if not path.exists():
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "interfaces_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "interfaces_projection_missing",
                         "Generated Interfaces.lean is missing.",
                         object_ref=node_path,
@@ -224,8 +228,8 @@ class NodeProjectionComponent:
         try:
             actual = path.read_text(encoding="utf-8")
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "interfaces_projection_read_failed",
                     f"Failed to read generated Interfaces.lean: {exc}",
                     object_ref=node_path,
@@ -233,10 +237,10 @@ class NodeProjectionComponent:
                 )
             )
         if actual != rendered.value:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "interfaces_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "interfaces_projection_stale",
                         "Generated Interfaces.lean does not match current public exports.",
                         object_ref=node_path,
@@ -245,8 +249,8 @@ class NodeProjectionComponent:
                     summary="Generated Interfaces.lean is stale.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "interfaces_sync",
                 summary="Generated Interfaces.lean is synchronized.",
                 warnings=rendered.issues,
@@ -254,22 +258,22 @@ class NodeProjectionComponent:
         )
 
     def _prelude_path(self, repo_root: Path, node_path: str) -> Path:
-        return self.foundation.prelude_path(FoundationContext(repo_root=Path(repo_root)), node_path)
+        return self.runtime.foundation.prelude_path(FoundationContext(repo_root=Path(repo_root)), node_path)
 
     def _interfaces_path(self, repo_root: Path, node_path: str) -> Path:
-        return self.foundation.interfaces_path(FoundationContext(repo_root=Path(repo_root)), node_path)
+        return self.runtime.foundation.interfaces_path(FoundationContext(repo_root=Path(repo_root)), node_path)
 
     def _content_interface_imports(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[str]]:
         public = self.export.list_content_public_decls(repo_root, node_path=node_path)
         if not public.ok or public.value is None:
-            return self.foundation.fail(public.issues)
+            return self.runtime.foundation.fail(public.issues)
         imports: set[str] = set()
         for decl in public.value:
             if not decl.public:
                 continue
             if decl.ref.repo is not None:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "interfaces_decl_cross_repo_unsupported",
                         "Native Content Interfaces.lean cannot project cross-repo DeclRef entries.",
                         object_ref=node_path,
@@ -277,8 +281,8 @@ class NodeProjectionComponent:
                     )
                 )
             if not decl.ready or decl.stale:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "interfaces_decl_not_ready",
                         f"Public declaration is not ready for Interfaces.lean projection: {decl.ref.name}",
                         object_ref=node_path,
@@ -287,27 +291,27 @@ class NodeProjectionComponent:
                     )
                 )
             imports.add(self._decl_owned_module(decl.ref, decl.kind))
-        return self.foundation.ok(sorted(imports), warnings=public.issues)
+        return self.runtime.foundation.ok(sorted(imports), warnings=public.issues)
 
     def _scope_interface_imports(self, repo_root: Path, *, scope_path: str) -> ServiceResult[list[str]]:
         gate = self.export.validate_scope_exports(repo_root, scope_path=scope_path)
         if not gate.ok or gate.value is None:
-            return self.foundation.fail(gate.issues)
+            return self.runtime.foundation.fail(gate.issues)
         if not gate.value.passed:
-            return self.foundation.fail(gate.value.issues)
+            return self.runtime.foundation.fail(gate.value.issues)
         contract = self.contract.get_current_contract(repo_root, node_path=scope_path)
         if not contract.ok or contract.value is None:
-            return self.foundation.fail(contract.issues)
+            return self.runtime.foundation.fail(contract.issues)
         candidates = self.export.list_scope_export_candidates(repo_root, scope_path=scope_path)
         if not candidates.ok or candidates.value is None:
-            return self.foundation.fail(candidates.issues)
+            return self.runtime.foundation.fail(candidates.issues)
         by_key = {self._decl_ref_key(candidate.ref): candidate for candidate in candidates.value.candidates}
         imports: set[str] = set()
         for ref in contract.value.contract.exports:
             candidate = by_key.get(self._decl_ref_key(ref))
             if candidate is None:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "interfaces_export_candidate_missing",
                         f"Scope export has no visible projection candidate: {ref.name}",
                         object_ref=scope_path,
@@ -317,7 +321,7 @@ class NodeProjectionComponent:
                 imports.add(f"{candidate.source_child}.Interfaces")
             else:
                 imports.add(self._decl_owned_module(ref, candidate.kind))
-        return self.foundation.ok(sorted(imports), warnings=candidates.issues)
+        return self.runtime.foundation.ok(sorted(imports), warnings=candidates.issues)
 
     def _prelude_imports(self, node_path: str, deps: list[dict[str, Any]], mathlib_modules: list[dict[str, Any]]) -> list[str]:
         imports: set[str] = set()

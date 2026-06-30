@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from lean_constellation.services.external_clients import ExternalClientService
-from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
 from lean_constellation.services.lean_projection.adapter_facade import AdapterFacadeComponent, AdapterFacadeProvider
 from lean_constellation.services.lean_projection.annotation import AnnotationComponent
 from lean_constellation.services.lean_projection.decl_file import (
@@ -22,15 +22,17 @@ from lean_constellation.services.lean_projection.repair import (
     RepairDeclProvider,
 )
 
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
+
 
 class LeanProjectionService:
     """Composition root for Lean projection, checking, capture, and repair."""
 
     def __init__(
         self,
+        runtime: LeanRuntimeServices,
         *,
-        foundation: FoundationService | None = None,
-        external: ExternalClientService | None = None,
         adapter_facade: AdapterFacadeComponent | None = None,
         adapter_facade_provider: AdapterFacadeProvider | None = None,
         annotation: AnnotationComponent | None = None,
@@ -41,23 +43,22 @@ class LeanProjectionService:
         repair: RepairComponent | None = None,
         repair_decl_provider: RepairDeclProvider | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.external = external or ExternalClientService()
+        self.runtime = runtime
         self.adapter_facade = adapter_facade or AdapterFacadeComponent(
-            self.foundation,
+            runtime,
             provider=adapter_facade_provider,
         )
-        self.annotation = annotation or AnnotationComponent(self.foundation)
-        self.lean_check = lean_check or LeanCheckComponent(self.foundation, self.external)
+        self.annotation = annotation or AnnotationComponent(runtime)
+        self.lean_check = lean_check or LeanCheckComponent(runtime)
         self.decl_file = decl_file or DeclFileComponent(
-            self.foundation,
+            runtime,
             annotation=self.annotation,
             lean_check=self.lean_check,
             revision_provider=decl_revision_provider,
         )
-        self.node_projection = node_projection or NodeProjectionComponent(self.foundation)
+        self.node_projection = node_projection or NodeProjectionComponent(runtime)
         self.repair = repair or RepairComponent(
-            self.foundation,
+            runtime,
             node_projection=self.node_projection,
             adapter_facade=self.adapter_facade,
             decl_file=self.decl_file,
@@ -100,6 +101,47 @@ class LeanProjectionService:
     ) -> ServiceResult[FormalCaptureView]:
         return self.decl_file.capture_proof_formal_file(repo_root, node_path=node_path, decl_name=decl_name)
 
+    def check_decl_file_snapshot_sync(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        stage: str,
+    ) -> ServiceResult[GateReport]:
+        return self.decl_file.check_decl_file_snapshot_sync(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            stage=stage,
+        )
+
+    def sync_decl_file_after_revision_reset(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+    ) -> ServiceResult[MutationSummaryView]:
+        return self.decl_file.sync_decl_file_after_revision_reset(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+
+    def remove_decl_file_for_delete(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+    ) -> ServiceResult[MutationSummaryView]:
+        return self.decl_file.remove_decl_file_for_delete(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+
     def refresh_node_projection(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionRepairView]:
         return self.repair.repair_node_projection(repo_root, node_path=node_path)
 
@@ -108,4 +150,3 @@ class LeanProjectionService:
 
     def restore_projection_to_active_graph(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionRepairView]:
         return self.repair.restore_working_projection_to_active_graph(repo_root, node_path=node_path)
-

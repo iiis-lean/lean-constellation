@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.external_clients import ExternalClientService
-from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.foundation import ServiceResult
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class LeanDiagnosticItemView(StrictModel):
@@ -73,21 +75,19 @@ class LeanCheckComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
-        external: ExternalClientService | None = None,
+        runtime: LeanRuntimeServices,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.external = external or ExternalClientService()
+        self.runtime = runtime
 
     def run_file_diagnostics(self, repo_root: Path, *, file_path: Path) -> ServiceResult[LeanDiagnosticsView]:
         resolved = self._resolve_file(repo_root, file_path)
         if not resolved.ok or resolved.value is None:
-            return self.foundation.fail(resolved.issues)
+            return self.runtime.foundation.fail(resolved.issues)
         repo, target, rel_file = resolved.value
 
-        toolkit_result = self.external.lean_mcp_toolkit.run_file_diagnostics(repo, target)
+        toolkit_result = self.runtime.external.lean_mcp_toolkit.run_file_diagnostics(repo, target)
         if toolkit_result.ok:
-            return self.foundation.ok(
+            return self.runtime.foundation.ok(
                 self._diagnostics_view(
                     repo_root=repo,
                     file_path=target,
@@ -97,7 +97,7 @@ class LeanCheckComponent:
                 )
             )
 
-        fallback = self.external.lake.run_lake_env_lean(repo_root=repo, rel_file=rel_file, json=True)
+        fallback = self.runtime.external.lake.run_lake_env_lean(repo_root=repo, rel_file=rel_file, json=True)
         diagnostics = self._diagnostics_from_command_output(fallback.stdout_excerpt, fallback.stderr_excerpt)
         if not diagnostics and not fallback.ok:
             diagnostics = [
@@ -115,7 +115,7 @@ class LeanCheckComponent:
         )
         if not fallback.ok:
             view.passed = False
-        return self.foundation.ok(view)
+        return self.runtime.foundation.ok(view)
 
     def detect_sorry_axiom(self, file_text: str) -> ServiceResult[SorryAxiomScanView]:
         sanitized = self._strip_comments_and_strings(file_text)
@@ -135,7 +135,7 @@ class LeanCheckComponent:
             )
         counts = {kind: sum(1 for occurrence in occurrences if occurrence.kind == kind) for kind in ["sorry", "admit", "axiom", "opaque", "unsafe"]}
         summary = ", ".join(f"{kind}={counts[kind]}" for kind in ["sorry", "admit", "axiom", "opaque", "unsafe"])
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             SorryAxiomScanView(
                 contains_sorry=counts["sorry"] > 0,
                 contains_admit=counts["admit"] > 0,
@@ -156,15 +156,15 @@ class LeanCheckComponent:
     def build_statement_lean_check(self, repo_root: Path, *, file_path: Path, decl_kind: str) -> ServiceResult[LeanCheckView]:
         diagnostics = self.run_file_diagnostics(repo_root, file_path=file_path)
         if not diagnostics.ok or diagnostics.value is None:
-            return self.foundation.fail(diagnostics.issues)
+            return self.runtime.foundation.fail(diagnostics.issues)
         text = self._read_file(repo_root, file_path)
         if not text.ok or text.value is None:
-            return self.foundation.fail(text.issues)
+            return self.runtime.foundation.fail(text.issues)
         scan = self.detect_sorry_axiom(text.value)
         if not scan.ok or scan.value is None:
-            return self.foundation.fail(scan.issues)
+            return self.runtime.foundation.fail(scan.issues)
         theorem_like = decl_kind.strip().lower() in self._THEOREM_LIKE
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             self._build_check_view(
                 policy="statement_formal",
                 diagnostics=diagnostics.value,
@@ -176,14 +176,14 @@ class LeanCheckComponent:
     def build_proof_lean_check(self, repo_root: Path, *, file_path: Path) -> ServiceResult[LeanCheckView]:
         diagnostics = self.run_file_diagnostics(repo_root, file_path=file_path)
         if not diagnostics.ok or diagnostics.value is None:
-            return self.foundation.fail(diagnostics.issues)
+            return self.runtime.foundation.fail(diagnostics.issues)
         text = self._read_file(repo_root, file_path)
         if not text.ok or text.value is None:
-            return self.foundation.fail(text.issues)
+            return self.runtime.foundation.fail(text.issues)
         scan = self.detect_sorry_axiom(text.value)
         if not scan.ok or scan.value is None:
-            return self.foundation.fail(scan.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(scan.issues)
+        return self.runtime.foundation.ok(
             self._build_check_view(
                 policy="proof_formal",
                 diagnostics=diagnostics.value,
@@ -202,12 +202,12 @@ class LeanCheckComponent:
     ) -> ServiceResult[LeanCheckView]:
         del theorem_like
         if not module or not module.strip():
-            return self.foundation.fail(self.foundation.issue("adapter_module_missing", "Adapter trusted check requires module.", field="module"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_module_missing", "Adapter trusted check requires module.", field="module"))
         if not code or not code.strip():
-            return self.foundation.fail(self.foundation.issue("adapter_code_missing", "Adapter trusted check requires code.", field="code"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_code_missing", "Adapter trusted check requires code.", field="code"))
         scan = self.detect_sorry_axiom(code)
         if not scan.ok or scan.value is None:
-            return self.foundation.fail(scan.issues)
+            return self.runtime.foundation.fail(scan.issues)
         diagnostics = LeanDiagnosticsView(
             repo_root=str(Path(repo_root)),
             file_path=None,
@@ -215,7 +215,7 @@ class LeanCheckComponent:
             diagnostics=[],
             summary=f"Trusted upstream build for module {module}; diagnostics are not re-run in adapter check.",
         )
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             self._build_check_view(
                 policy="adapter_trusted_upstream",
                 diagnostics=diagnostics,
@@ -261,29 +261,29 @@ class LeanCheckComponent:
     def _resolve_file(self, repo_root: Path, file_path: Path) -> ServiceResult[tuple[Path, Path, str]]:
         repo = Path(repo_root).expanduser().resolve(strict=False)
         if not repo.exists() or not repo.is_dir():
-            return self.foundation.fail(self.foundation.issue("repo_root_missing", f"Repo root does not exist: {repo}", field="repo_root"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("repo_root_missing", f"Repo root does not exist: {repo}", field="repo_root"))
         raw_file = Path(file_path).expanduser()
         target = raw_file.resolve(strict=False) if raw_file.is_absolute() else (repo / raw_file).resolve(strict=False)
         try:
-            self.foundation.layout.assert_within(repo, target)
+            self.runtime.foundation.layout.assert_within(repo, target)
         except ValueError as exc:
-            return self.foundation.fail(self.foundation.issue("lean_file_outside_repo", str(exc), field="file_path"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("lean_file_outside_repo", str(exc), field="file_path"))
         if not target.exists() or not target.is_file():
-            return self.foundation.fail(self.foundation.issue("lean_file_missing", f"Lean file does not exist: {target}", field="file_path"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("lean_file_missing", f"Lean file does not exist: {target}", field="file_path"))
         rel_file = target.relative_to(repo).as_posix()
-        return self.foundation.ok((repo, target, rel_file))
+        return self.runtime.foundation.ok((repo, target, rel_file))
 
     def _read_file(self, repo_root: Path, file_path: Path) -> ServiceResult[str]:
         resolved = self._resolve_file(repo_root, file_path)
         if not resolved.ok or resolved.value is None:
-            return self.foundation.fail(resolved.issues)
+            return self.runtime.foundation.fail(resolved.issues)
         _, target, _ = resolved.value
         try:
-            return self.foundation.ok(target.read_text(encoding="utf-8"))
+            return self.runtime.foundation.ok(target.read_text(encoding="utf-8"))
         except UnicodeDecodeError as exc:
-            return self.foundation.fail(self.foundation.issue("lean_file_not_utf8", str(exc), field="file_path"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("lean_file_not_utf8", str(exc), field="file_path"))
         except OSError as exc:
-            return self.foundation.fail(self.foundation.issue("lean_file_read_failed", str(exc), field="file_path"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("lean_file_read_failed", str(exc), field="file_path"))
 
     def _diagnostics_view(
         self,

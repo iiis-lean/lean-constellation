@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.services.lean_projection import AnnotationComponent
 
 
@@ -19,7 +21,7 @@ def _revision() -> dict:
 
 
 def test_render_statement_and_proof_docstrings_include_marker_and_refs() -> None:
-    component = AnnotationComponent()
+    component = make_runtime().lean_projection.annotation
 
     statement = component.render_statement_docstring(_revision())
     assert statement.ok
@@ -39,7 +41,7 @@ def test_render_statement_and_proof_docstrings_include_marker_and_refs() -> None
 
 
 def test_parse_target_marker_missing_duplicate_and_found() -> None:
-    component = AnnotationComponent()
+    component = make_runtime().lean_projection.annotation
     assert not component.parse_target_marker("theorem foo : True := by trivial").ok
 
     one = component.parse_target_marker("/--\nlean-constellation target: foo\n-/\ntheorem foo : True := by trivial\n")
@@ -56,7 +58,7 @@ def test_parse_target_marker_missing_duplicate_and_found() -> None:
 
 
 def test_validate_docstring_detects_changed_docstring() -> None:
-    component = AnnotationComponent()
+    component = make_runtime().lean_projection.annotation
     expected = component.render_statement_docstring(_revision()).value
     assert expected is not None
     valid = component.validate_docstring(expected + "\ntheorem foo_bar : True := by trivial\n", decl_name="foo_bar", stage="statement", expected_docstring=expected)
@@ -73,7 +75,7 @@ def test_validate_docstring_detects_changed_docstring() -> None:
 
 
 def test_validate_docstring_invalid_stage_missing_marker_and_decl_mismatch() -> None:
-    component = AnnotationComponent()
+    component = make_runtime().lean_projection.annotation
     expected = component.render_statement_docstring(_revision()).value
     assert expected is not None
 
@@ -106,7 +108,7 @@ def test_validate_docstring_invalid_stage_missing_marker_and_decl_mismatch() -> 
 
 
 def test_locate_target_declaration_found_and_missing() -> None:
-    component = AnnotationComponent()
+    component = make_runtime().lean_projection.annotation
     file_text = "import Mathlib\n\n/-- doc -/\ntheorem foo_bar (n : Nat) : n = n := by\n  rfl\n"
     found = component.locate_target_declaration(file_text, decl_name="foo_bar")
     assert found.ok
@@ -120,7 +122,7 @@ def test_locate_target_declaration_found_and_missing() -> None:
 
 
 def test_locate_target_declaration_duplicate_and_modifier_quoted_name() -> None:
-    component = AnnotationComponent()
+    component = make_runtime().lean_projection.annotation
     duplicate_text = "theorem foo_bar : True := by trivial\n\ntheorem foo_bar : True := by trivial\n"
     duplicate = component.locate_target_declaration(duplicate_text, decl_name="foo_bar")
     assert not duplicate.ok
@@ -135,7 +137,7 @@ def test_locate_target_declaration_duplicate_and_modifier_quoted_name() -> None:
 
 
 def test_compare_theorem_header_passes_and_detects_changes() -> None:
-    component = AnnotationComponent()
+    component = make_runtime().lean_projection.annotation
     statement_code = "theorem foo_bar\n    (n : Nat) :\n    n = n := by\n  sorry\n"
     proof_code = "theorem foo_bar (n : Nat) : n = n := by\n  rfl\n"
     same = component.compare_theorem_header(statement_code, proof_code, decl_name="foo_bar")
@@ -152,7 +154,7 @@ def test_compare_theorem_header_passes_and_detects_changes() -> None:
 
 
 def test_compare_theorem_header_non_theorem_and_multiline_by_terminator() -> None:
-    component = AnnotationComponent()
+    component = make_runtime().lean_projection.annotation
     non_theorem = component.compare_theorem_header("def foo_bar : Nat := 0", "def foo_bar : Nat := 1", decl_name="foo_bar")
     assert non_theorem.ok
     assert non_theorem.value is not None

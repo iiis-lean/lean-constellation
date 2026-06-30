@@ -9,15 +9,13 @@ from pydantic import Field, field_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.interface import DeclKind
-from lean_constellation.services.foundation import (
-    FoundationContext,
-    FoundationService,
-    IssueSeverity,
-    ServiceIssue,
-    ServiceResult,
-    WriteMode,
-)
+from lean_constellation.services.foundation import FoundationContext, IssueSeverity, ServiceIssue, ServiceResult, WriteMode
 from lean_constellation.services.lean_projection.lean_check import LeanCheckComponent, LeanCheckView
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 _THEOREM_LIKE = {DeclKind.THEOREM, DeclKind.LEMMA}
@@ -163,22 +161,23 @@ class AdapterDeclCatalogComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
+        *,
         lean_check: LeanCheckComponent | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.lean_check = lean_check or LeanCheckComponent(self.foundation)
+        self.runtime = runtime
+        self.lean_check = lean_check or self.runtime.require_app_service("lean_projection").lean_check
 
     def ensure_flat_main_catalog(self, repo_root: Path) -> ServiceResult[AdapterCatalogInitView]:
         root = self._decls_root(repo_root)
-        ensured = self.foundation.store.ensure_dir(root)
+        ensured = self.runtime.foundation.store.ensure_dir(root)
         if not ensured.ok:
-            return self.foundation.fail(ensured.issues)
+            return self.runtime.foundation.fail(ensured.issues)
         decls = self._load_all(repo_root)
         if not decls.ok or decls.value is None:
-            return self.foundation.fail(decls.issues)
+            return self.runtime.foundation.fail(decls.issues)
         active = [decl for decl in decls.value if decl.active]
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             AdapterCatalogInitView(
                 main_catalog_ready=True,
                 active_decl_count=len(active),
@@ -197,26 +196,26 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         normalized_name = self._safe_decl_name(name)
         if not normalized_name.ok or normalized_name.value is None:
-            return self.foundation.fail(normalized_name.issues)
+            return self.runtime.foundation.fail(normalized_name.issues)
         normalized_module = self._normalize_module(module)
         if normalized_module is None:
-            return self.foundation.fail(
-                self.foundation.issue("adapter_module_invalid", "Adapter decl module must be a valid Lean module name.", field="module")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("adapter_module_invalid", "Adapter decl module must be a valid Lean module name.", field="module")
             )
         try:
             decl_kind = DeclKind(kind)
         except ValueError:
-            return self.foundation.fail(
-                self.foundation.issue("adapter_decl_kind_invalid", "Adapter decl kind is invalid.", field="kind", current=str(kind))
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("adapter_decl_kind_invalid", "Adapter decl kind is invalid.", field="kind", current=str(kind))
             )
         if not plan_summary or not plan_summary.strip():
-            return self.foundation.fail(
-                self.foundation.issue("adapter_decl_plan_summary_required", "Adapter decl plan_summary is required.", field="plan_summary")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("adapter_decl_plan_summary_required", "Adapter decl plan_summary is required.", field="plan_summary")
             )
         path = self._decl_path(repo_root, normalized_name.value)
         if path.exists():
-            return self.foundation.fail(
-                self.foundation.issue("adapter_decl_duplicate", f"Adapter decl already exists: {normalized_name.value}", object_ref=normalized_name.value)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("adapter_decl_duplicate", f"Adapter decl already exists: {normalized_name.value}", object_ref=normalized_name.value)
             )
         record = AdapterDeclRecord(
             name=normalized_name.value,
@@ -225,10 +224,10 @@ class AdapterDeclCatalogComponent:
             plan_summary=plan_summary.strip(),
             proof=AdapterProofRecord() if decl_kind in _THEOREM_LIKE else None,
         )
-        saved = self.foundation.store.write_json_atomic(path, record, mode=WriteMode.CREATE_ONLY)
+        saved = self.runtime.foundation.store.write_json_atomic(path, record, mode=WriteMode.CREATE_ONLY)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self._view(record, summary=f"Created adapter decl {record.name}."))
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._view(record, summary=f"Created adapter decl {record.name}."))
 
     def set_adapter_statement_formal(
         self,
@@ -240,15 +239,15 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         if not code or not code.strip():
-            return self.foundation.fail(self.foundation.issue("adapter_statement_code_required", "Statement formal code is required.", field="code"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_statement_code_required", "Statement formal code is required.", field="code"))
         scan = self._scan(code)
         if not scan.ok or scan.value is None:
-            return self.foundation.fail(scan.issues)
+            return self.runtime.foundation.fail(scan.issues)
         forbidden = self._forbidden_statement_occurrences(loaded.value, scan.value)
         if forbidden:
-            return self.foundation.fail(forbidden)
+            return self.runtime.foundation.fail(forbidden)
         loaded.value.statement.formal = AdapterFormalContent(code=code, upstream_decl_name=self._strip(upstream_decl_name))
         return self._save_and_view(repo_root, loaded.value, f"Updated statement formal code for {loaded.value.name}.")
 
@@ -262,11 +261,11 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         try:
             loaded.value.statement.nl = AdapterNaturalLanguageContent(summary=summary, detail=self._strip(detail))
         except Exception as exc:  # noqa: BLE001
-            return self.foundation.fail(self.foundation.issue("adapter_statement_nl_invalid", f"Statement NL is invalid: {exc}"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_statement_nl_invalid", f"Statement NL is invalid: {exc}"))
         return self._save_and_view(repo_root, loaded.value, f"Updated statement natural language summary for {loaded.value.name}.")
 
     def add_adapter_statement_origin(
@@ -279,7 +278,7 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         return self._add_origin(repo_root, loaded.value, loaded.value.statement.origins, origin_text, source_hint, "statement")
 
     def add_adapter_statement_dep(
@@ -292,13 +291,13 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         return self._add_dep(repo_root, loaded.value, loaded.value.statement.deps, dep_name, reason, "statement")
 
     def remove_adapter_statement_dep(self, repo_root: Path, *, name: str, dep_name: str) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         return self._remove_dep(repo_root, loaded.value, loaded.value.statement.deps, dep_name, "statement")
 
     def set_adapter_proof_formal(
@@ -311,19 +310,19 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         if loaded.value.kind not in _THEOREM_LIKE:
-            return self.foundation.fail(
-                self.foundation.issue("adapter_proof_not_applicable", "Proof formal code is only valid for theorem-like adapter declarations.", object_ref=name)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("adapter_proof_not_applicable", "Proof formal code is only valid for theorem-like adapter declarations.", object_ref=name)
             )
         if not code or not code.strip():
-            return self.foundation.fail(self.foundation.issue("adapter_proof_code_required", "Proof formal code is required.", field="code"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_proof_code_required", "Proof formal code is required.", field="code"))
         scan = self._scan(code)
         if not scan.ok or scan.value is None:
-            return self.foundation.fail(scan.issues)
+            return self.runtime.foundation.fail(scan.issues)
         forbidden = self._forbidden_proof_occurrences(scan.value)
         if forbidden:
-            return self.foundation.fail(forbidden)
+            return self.runtime.foundation.fail(forbidden)
         loaded.value.proof = loaded.value.proof or AdapterProofRecord()
         loaded.value.proof.formal = AdapterFormalContent(code=code, upstream_decl_name=self._strip(upstream_decl_name))
         return self._save_and_view(repo_root, loaded.value, f"Updated proof formal code for {loaded.value.name}.")
@@ -338,16 +337,16 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         if loaded.value.kind not in _THEOREM_LIKE:
-            return self.foundation.fail(
-                self.foundation.issue("adapter_proof_not_applicable", "Proof NL is only valid for theorem-like adapter declarations.", object_ref=name)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("adapter_proof_not_applicable", "Proof NL is only valid for theorem-like adapter declarations.", object_ref=name)
             )
         try:
             loaded.value.proof = loaded.value.proof or AdapterProofRecord()
             loaded.value.proof.nl = AdapterNaturalLanguageContent(summary=summary, detail=self._strip(detail))
         except Exception as exc:  # noqa: BLE001
-            return self.foundation.fail(self.foundation.issue("adapter_proof_nl_invalid", f"Proof NL is invalid: {exc}"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_proof_nl_invalid", f"Proof NL is invalid: {exc}"))
         return self._save_and_view(repo_root, loaded.value, f"Updated proof natural language summary for {loaded.value.name}.")
 
     def add_adapter_proof_origin(
@@ -360,9 +359,9 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         if loaded.value.kind not in _THEOREM_LIKE:
-            return self.foundation.fail(self.foundation.issue("adapter_proof_not_applicable", "Proof origin is only valid for theorem-like declarations.", object_ref=name))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_proof_not_applicable", "Proof origin is only valid for theorem-like declarations.", object_ref=name))
         loaded.value.proof = loaded.value.proof or AdapterProofRecord()
         return self._add_origin(repo_root, loaded.value, loaded.value.proof.origins, origin_text, source_hint, "proof")
 
@@ -376,29 +375,29 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         if loaded.value.kind not in _THEOREM_LIKE:
-            return self.foundation.fail(self.foundation.issue("adapter_proof_not_applicable", "Proof dep is only valid for theorem-like declarations.", object_ref=name))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_proof_not_applicable", "Proof dep is only valid for theorem-like declarations.", object_ref=name))
         loaded.value.proof = loaded.value.proof or AdapterProofRecord()
         return self._add_dep(repo_root, loaded.value, loaded.value.proof.deps, dep_name, reason, "proof")
 
     def remove_adapter_proof_dep(self, repo_root: Path, *, name: str, dep_name: str) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         if loaded.value.proof is None:
-            return self.foundation.fail(self.foundation.issue("adapter_proof_dep_missing", "Proof deps are not initialized.", object_ref=name))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_proof_dep_missing", "Proof deps are not initialized.", object_ref=name))
         return self._remove_dep(repo_root, loaded.value, loaded.value.proof.deps, dep_name, "proof")
 
     def finalize_adapter_decl(self, repo_root: Path, *, name: str) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         completeness = self.check_adapter_decl_completeness(repo_root, name=loaded.value.name)
         if not completeness.ok or completeness.value is None:
-            return self.foundation.fail(completeness.issues)
+            return self.runtime.foundation.fail(completeness.issues)
         if not completeness.value.complete:
-            return self.foundation.fail(completeness.value.issues)
+            return self.runtime.foundation.fail(completeness.value.issues)
         code = loaded.value.proof.formal.code if loaded.value.kind in _THEOREM_LIKE and loaded.value.proof and loaded.value.proof.formal else loaded.value.statement.formal.code  # type: ignore[union-attr]
         lean_check = self.lean_check.build_trusted_adapter_check(
             repo_root,
@@ -407,10 +406,10 @@ class AdapterDeclCatalogComponent:
             theorem_like=loaded.value.kind in _THEOREM_LIKE,
         )
         if not lean_check.ok or lean_check.value is None:
-            return self.foundation.fail(lean_check.issues)
+            return self.runtime.foundation.fail(lean_check.issues)
         if lean_check.value.status != "passed":
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_trusted_check_failed",
                     lean_check.value.message,
                     object_ref=loaded.value.name,
@@ -431,12 +430,12 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[list[AdapterDeclSummaryView]]:
         loaded = self._load_all(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         try:
             kind = DeclKind(kind_filter) if kind_filter else None
         except ValueError:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_decl_kind_filter_invalid",
                     "Adapter decl kind_filter is invalid.",
                     field="kind_filter",
@@ -455,18 +454,18 @@ class AdapterDeclCatalogComponent:
                 continue
             items.append(self._summary(record))
         items.sort(key=lambda item: (item.module, item.name))
-        return self.foundation.ok(items)
+        return self.runtime.foundation.ok(items)
 
     def inspect_adapter_decl(self, repo_root: Path, *, name: str) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
-        return self.foundation.ok(self._view(loaded.value, summary=f"Loaded adapter decl {loaded.value.name}."))
+            return self.runtime.foundation.fail(loaded.issues)
+        return self.runtime.foundation.ok(self._view(loaded.value, summary=f"Loaded adapter decl {loaded.value.name}."))
 
     def list_registered_adapter_modules(self, repo_root: Path) -> ServiceResult[AdapterModuleSummaryView]:
         loaded = self._load_all(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         by_module: dict[str, list[AdapterDeclRecord]] = {}
         for record in loaded.value:
             if record.active and record.finalized:
@@ -480,7 +479,7 @@ class AdapterDeclCatalogComponent:
             )
             for module, records in sorted(by_module.items())
         ]
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             AdapterModuleSummaryView(
                 modules=modules,
                 module_count=len(modules),
@@ -492,17 +491,17 @@ class AdapterDeclCatalogComponent:
         if name is not None:
             loaded_one = self._load(repo_root, name)
             if not loaded_one.ok or loaded_one.value is None:
-                return self.foundation.fail(loaded_one.issues)
+                return self.runtime.foundation.fail(loaded_one.issues)
             records = [loaded_one.value]
         else:
             loaded = self._load_all(repo_root)
             if not loaded.ok or loaded.value is None:
-                return self.foundation.fail(loaded.issues)
+                return self.runtime.foundation.fail(loaded.issues)
             records = [record for record in loaded.value if record.active]
         issues: list[ServiceIssue] = []
         for record in records:
             issues.extend(self._record_issues(record))
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             AdapterDeclCompletenessView(
                 checked_names=[record.name for record in records],
                 complete=not issues,
@@ -521,10 +520,10 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclMatchView]:
         normalized_module = self._normalize_module(module)
         if normalized_module is None:
-            return self.foundation.fail(self.foundation.issue("adapter_module_invalid", "Adapter module is invalid.", field="module"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_module_invalid", "Adapter module is invalid.", field="module"))
         loaded = self._load_all(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         upstream = self._strip(upstream_decl_name)
         query = self._strip(adapter_name_query)
         matches = []
@@ -544,7 +543,7 @@ class AdapterDeclCatalogComponent:
                 continue
             if query and query.lower() in record.name.lower():
                 matches.append(self._summary(record))
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             AdapterDeclMatchView(
                 matches=sorted(matches, key=lambda item: item.name),
                 summary=f"Found {len(matches)} adapter decl matches.",
@@ -563,15 +562,15 @@ class AdapterDeclCatalogComponent:
         try:
             origin = AdapterOrigin(origin_text=origin_text, source_hint=self._strip(source_hint))
         except Exception as exc:  # noqa: BLE001
-            return self.foundation.fail(self.foundation.issue("adapter_origin_invalid", f"Adapter origin is invalid: {exc}"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_origin_invalid", f"Adapter origin is invalid: {exc}"))
         if any(item.model_dump() == origin.model_dump() for item in target):
-            warning = self.foundation.issue(
+            warning = self.runtime.foundation.issue(
                 "adapter_origin_duplicate",
                 "Adapter origin is already recorded.",
                 severity=IssueSeverity.WARNING,
                 object_ref=record.name,
             )
-            return self.foundation.ok(self._view(record, summary=f"{stage.title()} origin already recorded."), warnings=[warning])
+            return self.runtime.foundation.ok(self._view(record, summary=f"{stage.title()} origin already recorded."), warnings=[warning])
         target.append(origin)
         return self._save_and_view(repo_root, record, f"Added {stage} origin for {record.name}.")
 
@@ -586,19 +585,19 @@ class AdapterDeclCatalogComponent:
     ) -> ServiceResult[AdapterDeclView]:
         dep_key = self._safe_decl_name(dep_name)
         if not dep_key.ok or dep_key.value is None:
-            return self.foundation.fail(dep_key.issues)
+            return self.runtime.foundation.fail(dep_key.issues)
         dep = self._load(repo_root, dep_key.value)
         if not dep.ok or dep.value is None:
-            return self.foundation.fail(
-                self.foundation.issue("adapter_dep_missing", f"Adapter dependency does not exist: {dep_key.value}", object_ref=record.name)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("adapter_dep_missing", f"Adapter dependency does not exist: {dep_key.value}", object_ref=record.name)
             )
         if dep_key.value == record.name:
-            return self.foundation.fail(self.foundation.issue("adapter_dep_self", "Adapter declaration cannot depend on itself.", object_ref=record.name))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_dep_self", "Adapter declaration cannot depend on itself.", object_ref=record.name))
         if not reason or not reason.strip():
-            return self.foundation.fail(self.foundation.issue("adapter_dep_reason_required", "Adapter dependency reason is required.", field="reason"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_dep_reason_required", "Adapter dependency reason is required.", field="reason"))
         if any(item.dep_name == dep_key.value for item in target):
-            warning = self.foundation.issue("adapter_dep_duplicate", "Adapter dependency is already recorded.", severity=IssueSeverity.WARNING, object_ref=record.name)
-            return self.foundation.ok(self._view(record, summary=f"{stage.title()} dependency already recorded."), warnings=[warning])
+            warning = self.runtime.foundation.issue("adapter_dep_duplicate", "Adapter dependency is already recorded.", severity=IssueSeverity.WARNING, object_ref=record.name)
+            return self.runtime.foundation.ok(self._view(record, summary=f"{stage.title()} dependency already recorded."), warnings=[warning])
         target.append(AdapterDeclDep(dep_name=dep_key.value, reason=reason))
         return self._save_and_view(repo_root, record, f"Added {stage} dependency for {record.name}.")
 
@@ -613,7 +612,7 @@ class AdapterDeclCatalogComponent:
         before = len(target)
         target[:] = [item for item in target if item.dep_name != dep_name]
         if len(target) == before:
-            return self.foundation.fail(self.foundation.issue("adapter_dep_not_found", f"{stage.title()} dependency was not found.", object_ref=record.name, field=dep_name))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_dep_not_found", f"{stage.title()} dependency was not found.", object_ref=record.name, field=dep_name))
         return self._save_and_view(repo_root, record, f"Removed {stage} dependency for {record.name}.")
 
     def _record_issues(self, record: AdapterDeclRecord) -> list[ServiceIssue]:
@@ -660,7 +659,7 @@ class AdapterDeclCatalogComponent:
         if not forbidden:
             return []
         return [
-            self.foundation.issue(
+            self.runtime.foundation.issue(
                 "adapter_proof_forbidden_construct",
                 "Proof formal code contains sorry/admit/axiom/opaque/unsafe.",
                 object_ref=record.name if record is not None else None,
@@ -672,45 +671,45 @@ class AdapterDeclCatalogComponent:
         return self.lean_check.detect_sorry_axiom(code)
 
     def _issue(self, record: AdapterDeclRecord, kind: str, field: str, message: str) -> ServiceIssue:
-        return self.foundation.issue(kind, message, object_ref=record.name, field=field)
+        return self.runtime.foundation.issue(kind, message, object_ref=record.name, field=field)
 
     def _load(self, repo_root: Path, name: str) -> ServiceResult[AdapterDeclRecord]:
         safe = self._safe_decl_name(name)
         if not safe.ok or safe.value is None:
-            return self.foundation.fail(safe.issues)
+            return self.runtime.foundation.fail(safe.issues)
         path = self._decl_path(repo_root, safe.value)
-        loaded = self.foundation.store.read_json(path, AdapterDeclRecord)
+        loaded = self.runtime.foundation.store.read_json(path, AdapterDeclRecord)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(
-                self.foundation.issue("adapter_decl_missing", f"Adapter decl is missing: {safe.value}", object_ref=safe.value)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("adapter_decl_missing", f"Adapter decl is missing: {safe.value}", object_ref=safe.value)
             )
         return loaded
 
     def _load_all(self, repo_root: Path) -> ServiceResult[list[AdapterDeclRecord]]:
         root = self._decls_root(repo_root)
         if not root.exists():
-            return self.foundation.ok([])
-        return self.foundation.store.list_json(root, AdapterDeclRecord)
+            return self.runtime.foundation.ok([])
+        return self.runtime.foundation.store.list_json(root, AdapterDeclRecord)
 
     def _save_and_view(self, repo_root: Path, record: AdapterDeclRecord, summary: str) -> ServiceResult[AdapterDeclView]:
         record.updated_at = utc_now_iso()
-        saved = self.foundation.store.write_json_atomic(self._decl_path(repo_root, record.name), record, mode=WriteMode.OVERWRITE)
+        saved = self.runtime.foundation.store.write_json_atomic(self._decl_path(repo_root, record.name), record, mode=WriteMode.OVERWRITE)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(self._view(record, summary=summary))
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._view(record, summary=summary))
 
     def _decls_root(self, repo_root: Path) -> Path:
         ctx = FoundationContext(repo_root=Path(repo_root))
-        return self.foundation.layout.node_metadata_dir(ctx, "Main") / "decls"
+        return self.runtime.foundation.layout.node_metadata_dir(ctx, "Main") / "decls"
 
     def _decl_path(self, repo_root: Path, name: str) -> Path:
-        return self._decls_root(repo_root) / f"{self.foundation.layout.ensure_safe_key(name)}.json"
+        return self._decls_root(repo_root) / f"{self.runtime.foundation.layout.ensure_safe_key(name)}.json"
 
     def _safe_decl_name(self, name: str) -> ServiceResult[str]:
         try:
-            return self.foundation.ok(self.foundation.layout.ensure_safe_key(name.strip()))
+            return self.runtime.foundation.ok(self.runtime.foundation.layout.ensure_safe_key(name.strip()))
         except Exception as exc:  # noqa: BLE001
-            return self.foundation.fail(self.foundation.issue("adapter_decl_name_invalid", f"Adapter decl name is invalid: {exc}", field="name"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_decl_name_invalid", f"Adapter decl name is invalid: {exc}", field="name"))
 
     def _normalize_module(self, module: str) -> str | None:
         value = module.strip()

@@ -7,17 +7,16 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import RepoFormat
-from lean_constellation.services.adapter import AdapterService
 from lean_constellation.services.external_clients import (
-    ExternalClientService,
     LeanMcpToolkitClient,
     LeanMcpToolkitClientConfig,
 )
-from lean_constellation.services.foundation import FoundationContext, FoundationService
-from lean_constellation.services.repo_workspace import RepoWorkspaceService
+from lean_constellation.services.foundation import FoundationContext
 
 
 def _env(name: str) -> str | None:
@@ -87,16 +86,18 @@ def test_adapter_upstream_projection_real(tmp_path: Path) -> None:
     repo_root = tmp_path / "adapter"
     repo_root.mkdir()
 
-    foundation = FoundationService()
-    external = ExternalClientService(
-        lean_mcp_toolkit=LeanMcpToolkitClient.from_config(
-            LeanMcpToolkitClientConfig(
-                base_url=toolkit_base_url,
-                api_prefix=_env("LEAN_CONSTELLATION_REAL_TOOLKIT_API_PREFIX") or "/api/v1",
+    runtime = make_runtime(
+        external_overrides={
+            "lean_mcp_toolkit": LeanMcpToolkitClient.from_config(
+                LeanMcpToolkitClientConfig(
+                    base_url=toolkit_base_url,
+                    api_prefix=_env("LEAN_CONSTELLATION_REAL_TOOLKIT_API_PREFIX") or "/api/v1",
+                )
             )
-        )
+        }
     )
-    repo_workspace = RepoWorkspaceService(foundation=foundation, external=external)
+    foundation = runtime.foundation
+    repo_workspace = runtime.repo_workspace
     assert repo_workspace.metadata.ensure_repo_model(repo_root).ok
     assert repo_workspace.metadata.set_repo_format(
         repo_root,
@@ -119,7 +120,7 @@ def test_adapter_upstream_projection_real(tmp_path: Path) -> None:
     prep_path = foundation.layout.preparation_input_path(FoundationContext(repo_root=repo_root))
     assert foundation.store.write_json_atomic(prep_path, prep).ok
 
-    service = AdapterService(foundation=foundation, external=external, repo_workspace=repo_workspace)
+    service = runtime.adapter
     assert service.write_adapter_upstream_metadata(
         repo_root,
         source_kind="local_path",

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import (
-    FoundationService,
     GateReport,
     IssueSeverity,
     MutationSummaryView,
@@ -20,6 +19,9 @@ from lean_constellation.services.lean_projection.adapter_facade import AdapterFa
 from lean_constellation.services.lean_projection.decl_file import DeclFileComponent
 from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent, ProjectionView
 from lean_constellation.services.node.node_tree import NodeTreeComponent
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 ProjectionRepairStatus = Literal["passed", "repaired", "skipped", "failed"]
@@ -63,13 +65,13 @@ class RepairDeclProvider(Protocol):
 
 
 class _MissingRepairDeclProvider:
-    def __init__(self, foundation: FoundationService) -> None:
-        self.foundation = foundation
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
 
     def list_active_decl_names(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[str]]:
         del repo_root
-        return self.foundation.fail(
-            self.foundation.issue(
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
                 "repair_decl_provider_missing",
                 "No active DeclGraph provider is configured for projection repair.",
                 object_ref=node_path,
@@ -82,7 +84,7 @@ class RepairComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
         *,
         node_projection: NodeProjectionComponent | None = None,
         adapter_facade: AdapterFacadeComponent | None = None,
@@ -90,19 +92,19 @@ class RepairComponent:
         node_tree: NodeTreeComponent | None = None,
         decl_provider: RepairDeclProvider | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.node_projection = node_projection or NodeProjectionComponent(self.foundation)
-        self.adapter_facade = adapter_facade or AdapterFacadeComponent(self.foundation)
-        self.decl_file = decl_file or DeclFileComponent(self.foundation)
-        self.node_tree = node_tree or NodeTreeComponent(self.foundation)
-        self.decl_provider = decl_provider or _MissingRepairDeclProvider(self.foundation)
+        self.runtime = runtime
+        self.node_projection = node_projection or NodeProjectionComponent(runtime)
+        self.adapter_facade = adapter_facade or AdapterFacadeComponent(runtime)
+        self.decl_file = decl_file or DeclFileComponent(runtime)
+        self.node_tree = node_tree or NodeTreeComponent(runtime)
+        self.decl_provider = decl_provider or _MissingRepairDeclProvider(runtime)
 
     def repair_node_projection(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionRepairView]:
         actions: list[ProjectionRepairAction] = []
         for projection_kind in ("prelude", "interfaces"):
             check = self._check_node_projection(repo_root, node_path=node_path, projection_kind=projection_kind)
             if not check.ok or check.value is None:
-                return self.foundation.fail(check.issues)
+                return self.runtime.foundation.fail(check.issues)
             if check.value.passed:
                 actions.append(
                     ProjectionRepairAction(
@@ -116,19 +118,19 @@ class RepairComponent:
                 continue
             refresh = self._refresh_node_projection(repo_root, node_path=node_path, projection_kind=projection_kind)
             if not refresh.ok or refresh.value is None:
-                return self.foundation.fail([*check.value.issues, *refresh.issues])
+                return self.runtime.foundation.fail([*check.value.issues, *refresh.issues])
             actions.append(self._projection_action(projection_kind, node_path, refresh.value, original_issues=check.value.issues))
-        return self.foundation.ok(self._repair_view(scope=node_path, actions=actions))
+        return self.runtime.foundation.ok(self._repair_view(scope=node_path, actions=actions))
 
     def repair_decl_files_from_active_graph(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionRepairView]:
         decls = self.decl_provider.list_active_decl_names(Path(repo_root), node_path=node_path)
         if not decls.ok or decls.value is None:
-            return self.foundation.fail(decls.issues)
+            return self.runtime.foundation.fail(decls.issues)
         actions: list[ProjectionRepairAction] = []
         for decl_name in sorted(set(decls.value)):
             sync = self.decl_file.sync_decl_file_after_revision_reset(Path(repo_root), node_path=node_path, decl_name=decl_name)
             if not sync.ok or sync.value is None:
-                return self.foundation.fail(sync.issues)
+                return self.runtime.foundation.fail(sync.issues)
             actions.append(self._mutation_action("sync_decl_file", f"{node_path}:{decl_name}", sync.value))
         if not actions:
             actions.append(
@@ -139,16 +141,16 @@ class RepairComponent:
                     summary="No active Decl-owned files were reported for this node.",
                 )
             )
-        return self.foundation.ok(self._repair_view(scope=node_path, actions=actions))
+        return self.runtime.foundation.ok(self._repair_view(scope=node_path, actions=actions))
 
     def restore_working_projection_to_active_graph(self, repo_root: Path, *, node_path: str) -> ServiceResult[ProjectionRepairView]:
         generated = self.repair_node_projection(Path(repo_root), node_path=node_path)
         if not generated.ok or generated.value is None:
-            return self.foundation.fail(generated.issues)
+            return self.runtime.foundation.fail(generated.issues)
         decls = self.repair_decl_files_from_active_graph(Path(repo_root), node_path=node_path)
         if not decls.ok or decls.value is None:
-            return self.foundation.fail(decls.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(decls.issues)
+        return self.runtime.foundation.ok(
             self._repair_view(
                 scope=node_path,
                 actions=[*generated.value.actions, *decls.value.actions],
@@ -160,23 +162,23 @@ class RepairComponent:
         reports: list[GateReport] = []
         tree = self.node_tree.get_node_tree(Path(repo_root))
         if not tree.ok or tree.value is None:
-            return self.foundation.fail(tree.issues)
+            return self.runtime.foundation.fail(tree.issues)
         for node in tree.value.nodes:
             for projection_kind in ("prelude", "interfaces"):
                 check = self._check_node_projection(Path(repo_root), node_path=node.path, projection_kind=projection_kind)
                 if not check.ok or check.value is None:
-                    return self.foundation.fail(check.issues)
+                    return self.runtime.foundation.fail(check.issues)
                 reports.append(check.value)
         adapter = self.adapter_facade.check_adapter_interfaces_sync(Path(repo_root))
         if adapter.ok and adapter.value is not None:
             reports.append(adapter.value)
         elif self._only_adapter_provider_missing(adapter.issues):
             reports.append(
-                self.foundation.gate_passed(
+                self.runtime.foundation.gate_passed(
                     "adapter_interfaces_sync",
                     summary="Adapter facade audit skipped because no adapter provider is configured.",
                     warnings=[
-                        self.foundation.issue(
+                        self.runtime.foundation.issue(
                             "adapter_facade_audit_skipped",
                             "Adapter facade audit skipped because no adapter provider is configured.",
                             severity=IssueSeverity.WARNING,
@@ -185,15 +187,15 @@ class RepairComponent:
                 )
             )
         else:
-            return self.foundation.fail(adapter.issues)
+            return self.runtime.foundation.fail(adapter.issues)
         if not reports:
             reports.append(
-                self.foundation.gate_passed(
+                self.runtime.foundation.gate_passed(
                     "projection_audit_empty",
                     summary="No projection targets were found.",
                 )
             )
-        return self.foundation.ok(self.foundation.merge_gate_reports("full_projection_audit", reports))
+        return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports("full_projection_audit", reports))
 
     def _check_node_projection(
         self,
@@ -206,8 +208,8 @@ class RepairComponent:
             return self.node_projection.check_prelude_sync(Path(repo_root), node_path=node_path)
         if projection_kind == "interfaces":
             return self.node_projection.check_interfaces_sync(Path(repo_root), node_path=node_path)
-        return self.foundation.fail(
-            self.foundation.issue(
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
                 "projection_kind_invalid",
                 "Projection repair kind must be prelude or interfaces.",
                 object_ref=node_path,
@@ -226,8 +228,8 @@ class RepairComponent:
             return self.node_projection.refresh_prelude(Path(repo_root), node_path=node_path)
         if projection_kind == "interfaces":
             return self.node_projection.refresh_interfaces(Path(repo_root), node_path=node_path)
-        return self.foundation.fail(
-            self.foundation.issue(
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
                 "projection_kind_invalid",
                 "Projection repair kind must be prelude or interfaces.",
                 object_ref=node_path,
@@ -287,4 +289,3 @@ class RepairComponent:
 
     def _only_adapter_provider_missing(self, issues: list[ServiceIssue]) -> bool:
         return bool(issues) and all(issue.kind == "adapter_facade_provider_missing" for issue in issues)
-

@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import (
     FoundationContext,
-    FoundationService,
     GateReport,
     ServiceResult,
     WriteMode,
 )
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class AdapterUpstreamMetadata(StrictModel):
@@ -82,8 +84,8 @@ class AdapterUpstreamStatusView(StrictModel):
 class UpstreamMetadataComponent:
     """Read, write, and validate adapter upstream metadata."""
 
-    def __init__(self, foundation: FoundationService | None = None) -> None:
-        self.foundation = foundation or FoundationService()
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
 
     def write_adapter_upstream_metadata(
         self,
@@ -115,31 +117,31 @@ class UpstreamMetadataComponent:
                 visible_modules=visible_modules or [],
             )
         except Exception as exc:  # noqa: BLE001 - normalized as ServiceResult.
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_upstream_invalid",
                     f"Adapter upstream metadata is invalid: {exc}",
                 )
             )
         path = self._metadata_path(repo_root)
-        self.foundation.store.ensure_dir(path.parent)
-        written = self.foundation.store.write_json_atomic(path, metadata, mode=WriteMode.OVERWRITE)
+        self.runtime.foundation.store.ensure_dir(path.parent)
+        written = self.runtime.foundation.store.write_json_atomic(path, metadata, mode=WriteMode.OVERWRITE)
         if not written.ok:
-            return self.foundation.fail(written.issues)
-        return self.foundation.ok(self._view(metadata))
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(self._view(metadata))
 
     def get_adapter_upstream_metadata(self, repo_root: Path) -> ServiceResult[AdapterUpstreamView]:
         loaded = self._load_metadata(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
-        return self.foundation.ok(self._view(loaded.value))
+            return self.runtime.foundation.fail(loaded.issues)
+        return self.runtime.foundation.ok(self._view(loaded.value))
 
     def get_adapter_upstream_status(self, repo_root: Path) -> ServiceResult[AdapterUpstreamStatusView]:
         loaded = self._load_metadata(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         metadata = loaded.value
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             AdapterUpstreamStatusView(
                 source_summary=self._source_summary(metadata),
                 package_name=metadata.package_name or "",
@@ -153,8 +155,8 @@ class UpstreamMetadataComponent:
 
     def mark_upstream_build_trusted(self, repo_root: Path, *, summary: str) -> ServiceResult[AdapterUpstreamView]:
         if not summary or not summary.strip():
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_upstream_trust_summary_required",
                     "mark_upstream_build_trusted requires a non-empty summary.",
                     field="summary",
@@ -162,18 +164,18 @@ class UpstreamMetadataComponent:
             )
         loaded = self._load_metadata(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         metadata = loaded.value
         metadata.trusted_build = True
         metadata.setup_summary = summary.strip()
-        written = self.foundation.store.write_json_atomic(
+        written = self.runtime.foundation.store.write_json_atomic(
             self._metadata_path(repo_root),
             metadata,
             mode=WriteMode.UPDATE_EXISTING,
         )
         if not written.ok:
-            return self.foundation.fail(written.issues)
-        return self.foundation.ok(self._view(metadata))
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(self._view(metadata))
 
     def record_visible_upstream_modules(
         self,
@@ -184,7 +186,7 @@ class UpstreamMetadataComponent:
     ) -> ServiceResult[AdapterUpstreamView]:
         loaded = self._load_metadata(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         normalized: list[str] = []
         invalid: list[str] = []
         for module in modules:
@@ -194,8 +196,8 @@ class UpstreamMetadataComponent:
             else:
                 normalized.append(value)
         if invalid:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_visible_module_invalid",
                     "Visible upstream modules contain invalid Lean module names.",
                     field="modules",
@@ -206,34 +208,34 @@ class UpstreamMetadataComponent:
         metadata.visible_modules = sorted(set(normalized))
         if summary and summary.strip():
             metadata.setup_summary = summary.strip()
-        written = self.foundation.store.write_json_atomic(
+        written = self.runtime.foundation.store.write_json_atomic(
             self._metadata_path(repo_root),
             metadata,
             mode=WriteMode.UPDATE_EXISTING,
         )
         if not written.ok:
-            return self.foundation.fail(written.issues)
-        return self.foundation.ok(self._view(metadata))
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(self._view(metadata))
 
     def list_visible_upstream_modules(self, repo_root: Path) -> ServiceResult[list[str]]:
         loaded = self._load_metadata(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         if not loaded.value.visible_modules:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_visible_modules_missing",
                     "Adapter upstream visible module set is missing.",
                     suggested_action="Record visible upstream modules from upstream navigation before projection checks.",
                 )
             )
-        return self.foundation.ok(list(loaded.value.visible_modules))
+        return self.runtime.foundation.ok(list(loaded.value.visible_modules))
 
     def validate_upstream_metadata(self, repo_root: Path) -> ServiceResult[GateReport]:
         loaded = self._load_metadata(repo_root)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "adapter_upstream_metadata",
                     loaded.issues,
                     summary="Adapter upstream metadata is missing or invalid.",
@@ -243,7 +245,7 @@ class UpstreamMetadataComponent:
         issues = []
         if not metadata.trusted_build:
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "adapter_upstream_not_trusted",
                     "Adapter upstream build has not been marked trusted.",
                     object_ref=metadata.dependency_name,
@@ -251,7 +253,7 @@ class UpstreamMetadataComponent:
             )
         if not metadata.setup_summary:
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "adapter_upstream_setup_summary_missing",
                     "Adapter upstream setup summary is missing.",
                     object_ref=metadata.dependency_name,
@@ -259,15 +261,15 @@ class UpstreamMetadataComponent:
                 )
             )
         if issues:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "adapter_upstream_metadata",
                     issues,
                     summary=f"{len(issues)} upstream metadata checks failed.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "adapter_upstream_metadata",
                 summary=f"Adapter upstream metadata is trusted for dependency {metadata.dependency_name}.",
             )
@@ -275,24 +277,24 @@ class UpstreamMetadataComponent:
 
     def _metadata_path(self, repo_root: Path) -> Path:
         ctx = FoundationContext(repo_root=Path(repo_root))
-        return self.foundation.layout.constellation_root(ctx) / "adapter_upstream.json"
+        return self.runtime.foundation.layout.constellation_root(ctx) / "adapter_upstream.json"
 
     def _load_metadata(self, repo_root: Path) -> ServiceResult[AdapterUpstreamMetadata]:
         path = self._metadata_path(repo_root)
-        loaded = self.foundation.store.read_json(path, AdapterUpstreamMetadata)
+        loaded = self.runtime.foundation.store.read_json(path, AdapterUpstreamMetadata)
         if loaded.ok and loaded.value is not None:
             return loaded
         if loaded.issues and loaded.issues[0].kind == "missing_file":
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_upstream_missing",
                     "Adapter upstream metadata is missing.",
                     object_ref=str(path),
                 )
             )
         original = loaded.issues[0] if loaded.issues else None
-        return self.foundation.fail(
-            self.foundation.issue(
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
                 "adapter_upstream_invalid",
                 "Adapter upstream metadata is invalid.",
                 object_ref=str(path),

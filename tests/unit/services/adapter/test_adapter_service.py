@@ -1,13 +1,60 @@
+from tests.unit_services_helpers import make_runtime
+
+import inspect
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.adapter import AdapterService, UpstreamMetadataComponent
-from lean_constellation.services.external_clients import ExternalClientService, LeanMcpToolkitClient
+from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.foundation import FoundationContext, FoundationService
-from lean_constellation.services.repo_workspace import RepoWorkspaceService
+
+
+def test_adapter_service_public_wrappers_have_explicit_signatures() -> None:
+    wrapper_names = [
+        "write_adapter_upstream_metadata",
+        "search_upstream_declarations",
+        "search_upstream_modules",
+        "list_upstream_module_declarations",
+        "inspect_upstream_declaration",
+        "read_upstream_source_context",
+        "capture_upstream_declaration_code",
+        "inspect_upstream_module_imports",
+        "create_adapter_decl",
+        "set_adapter_statement_formal",
+        "set_adapter_statement_nl",
+        "add_adapter_statement_origin",
+        "add_adapter_statement_dep",
+        "remove_adapter_statement_dep",
+        "set_adapter_proof_formal",
+        "set_adapter_proof_nl",
+        "add_adapter_proof_origin",
+        "add_adapter_proof_dep",
+        "remove_adapter_proof_dep",
+        "list_adapter_decls",
+        "inspect_adapter_decl",
+        "check_adapter_decl_completeness",
+        "find_adapter_decl_by_upstream",
+        "finalize_adapter_decl",
+        "bind_adapter_interface",
+        "unbind_adapter_interface",
+    ]
+
+    for name in wrapper_names:
+        signature = inspect.signature(getattr(AdapterService, name))
+        assert all(
+            parameter.kind is not inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        ), name
+
+    dep_signature = inspect.signature(AdapterService.add_adapter_statement_dep)
+    assert set(dep_signature.parameters) == {"self", "repo_root", "name", "dep_name", "reason"}
+    origin_signature = inspect.signature(AdapterService.add_adapter_statement_origin)
+    assert set(origin_signature.parameters) == {"self", "repo_root", "name", "origin_text", "source_hint"}
 
 
 class FakeToolkitDispatcher:
@@ -82,11 +129,16 @@ class FakeToolkitDispatcher:
 
 
 def _foundation() -> FoundationService:
-    return FoundationService()
+    return make_runtime().foundation
 
 
-def _write_adapter_preparation(tmp_path: Path, interfaces: list[DeclInterface] | None = None) -> None:
-    foundation = _foundation()
+def _write_adapter_preparation(
+    tmp_path: Path,
+    interfaces: list[DeclInterface] | None = None,
+    *,
+    foundation: FoundationService | None = None,
+) -> None:
+    foundation = foundation or _foundation()
     prep = RepoPreparationInput(
         goal="Expose an upstream theorem through an adapter repo.",
         source_corpus_mode=SourceCorpusMode.NONE,
@@ -105,11 +157,11 @@ def _service(
     dispatcher: FakeToolkitDispatcher | None = None,
     create_upstream_checkout: bool = True,
 ) -> AdapterService:
-    _write_adapter_preparation(tmp_path, interfaces)
     dispatcher = dispatcher or FakeToolkitDispatcher()
-    external = ExternalClientService(lean_mcp_toolkit=LeanMcpToolkitClient(dispatcher=dispatcher))
-    foundation = _foundation()
-    repo_workspace = RepoWorkspaceService(foundation=foundation, external=external)
+    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": LeanMcpToolkitClient(dispatcher=dispatcher)})
+    foundation = runtime.foundation
+    _write_adapter_preparation(tmp_path, interfaces, foundation=foundation)
+    repo_workspace = runtime.repo_workspace
     assert repo_workspace.metadata.ensure_repo_model(tmp_path).ok
     assert repo_workspace.metadata.set_repo_format(
         tmp_path,
@@ -130,7 +182,7 @@ def _service(
             "  trivial\n",
             encoding="utf-8",
         )
-    service = AdapterService(foundation=foundation, external=external, repo_workspace=repo_workspace)
+    service = runtime.adapter
     written = service.write_adapter_upstream_metadata(
         tmp_path,
         source_kind="git",
@@ -202,7 +254,7 @@ def _finalize_definition(
 
 
 def test_upstream_metadata_roundtrip_and_validation(tmp_path: Path) -> None:
-    component = UpstreamMetadataComponent()
+    component = UpstreamMetadataComponent(make_runtime())
 
     missing = component.get_adapter_upstream_metadata(tmp_path)
     assert not missing.ok
@@ -244,7 +296,7 @@ def test_upstream_metadata_roundtrip_and_validation(tmp_path: Path) -> None:
 
 
 def test_upstream_metadata_rejects_conflicting_sources_and_invalid_truth(tmp_path: Path) -> None:
-    component = UpstreamMetadataComponent()
+    component = UpstreamMetadataComponent(make_runtime())
 
     git_conflict = component.write_adapter_upstream_metadata(
         tmp_path,
@@ -371,7 +423,7 @@ def test_navigation_requires_upstream_checkout_and_metadata(tmp_path: Path) -> N
     assert not missing_root.ok
     assert missing_root.issues[0].kind == "adapter_upstream_root_missing"
 
-    service_without_metadata = AdapterService()
+    service_without_metadata = make_runtime().adapter
     missing_metadata = service_without_metadata.capture_upstream_declaration_code(
         tmp_path / "missing-metadata",
         module="Upstream.Basic",
@@ -570,6 +622,22 @@ def test_adapter_decl_catalog_origin_and_dep_lifecycle(tmp_path: Path) -> None:
     self_dep = service.add_adapter_statement_dep(tmp_path, name="main_result", dep_name="main_result", reason="Self.")
     assert not self_dep.ok
     assert self_dep.issues[0].kind == "adapter_dep_self"
+
+    with pytest.raises(TypeError):
+        service.add_adapter_statement_dep(  # type: ignore[call-arg]
+            tmp_path,
+            name="main_result",
+            dependency_type="adapter_decl",
+            target_reference="support",
+            reason="Invalid generic dependency shape.",
+        )
+
+    with pytest.raises(TypeError):
+        service.add_adapter_statement_origin(  # type: ignore[call-arg]
+            tmp_path,
+            name="main_result",
+            origin_ref={"kind": "source", "path": "Upstream.Basic"},
+        )
 
     dep = service.add_adapter_statement_dep(tmp_path, name="main_result", dep_name="support", reason="Uses support theorem.")
     assert dep.ok
@@ -907,16 +975,17 @@ def test_adapter_preparation_validation_checks_repo_format_source_mode_dependenc
 
 
 def test_inspect_adapter_input_allows_missing_upstream_metadata(tmp_path: Path) -> None:
-    _write_adapter_preparation(tmp_path)
-    foundation = _foundation()
-    repo_workspace = RepoWorkspaceService(foundation=foundation)
+    runtime = make_runtime()
+    foundation = runtime.foundation
+    _write_adapter_preparation(tmp_path, foundation=foundation)
+    repo_workspace = runtime.repo_workspace
     assert repo_workspace.metadata.ensure_repo_model(tmp_path).ok
     assert repo_workspace.metadata.set_repo_format(
         tmp_path,
         repo_format=RepoFormat.ADAPTER,
         reason="unit test adapter repo",
     ).ok
-    service = AdapterService(foundation=foundation, repo_workspace=repo_workspace)
+    service = runtime.adapter
 
     inspected = service.inspect_adapter_input(tmp_path)
 

@@ -10,22 +10,27 @@ from lean_constellation.services.mathlib.mathlib_index import (
 )
 from lean_constellation.services.mathlib.node_mathlib_use import (
     MathlibUseActor,
+    NodeMathlibHintMutationView,
+    NodeMathlibHintView,
     NodeMathlibDeclUse,
     NodeMathlibModuleUse,
     NodeMathlibUseComponent,
 )
 from lean_constellation.services.mathlib.service import MathlibService
 from lean_constellation.services.mathlib.toolkit_ingestion import (
+    MathlibAccessCheckView,
     MathlibCandidateCache,
     MathlibCandidateView,
     MathlibCheckView,
     MathlibExternalSearchView,
     MathlibModuleNavigationView,
     MathlibNavigationView,
+    MathlibSemanticSearchView,
     ToolkitIngestionComponent,
 )
 
 __all__ = [
+    "MathlibAccessCheckView",
     "MathlibCandidateCache",
     "MathlibCandidateView",
     "MathlibCheckView",
@@ -36,10 +41,13 @@ __all__ = [
     "MathlibModuleNavigationView",
     "MathlibModuleEntryView",
     "MathlibNavigationView",
+    "MathlibSemanticSearchView",
     "MathlibSearchHit",
     "MathlibSearchView",
     "MathlibUseActor",
     "MathlibService",
+    "NodeMathlibHintMutationView",
+    "NodeMathlibHintView",
     "NodeMathlibDeclUse",
     "NodeMathlibModuleUse",
     "NodeMathlibUseComponent",

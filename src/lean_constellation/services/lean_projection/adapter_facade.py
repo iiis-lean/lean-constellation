@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.foundation import FoundationContext, FoundationService, GateReport, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.lean_projection.node_projection import ProjectionView
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class AdapterModuleListView(StrictModel):
@@ -28,13 +31,13 @@ class AdapterFacadeProvider(Protocol):
 
 
 class _MissingAdapterFacadeProvider:
-    def __init__(self, foundation: FoundationService) -> None:
-        self.foundation = foundation
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
 
     def list_active_adapter_modules(self, repo_root: Path) -> ServiceResult[AdapterModuleListView]:
         del repo_root
-        return self.foundation.fail(
-            self.foundation.issue(
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
                 "adapter_facade_provider_missing",
                 "No adapter facade provider is configured.",
             )
@@ -51,29 +54,30 @@ class AdapterFacadeComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
+        *,
         provider: AdapterFacadeProvider | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.provider = provider or _MissingAdapterFacadeProvider(self.foundation)
+        self.runtime = runtime
+        self.provider = provider or _MissingAdapterFacadeProvider(runtime)
 
     def render_adapter_interfaces(self, repo_root: Path) -> ServiceResult[str]:
         modules = self._active_modules(repo_root)
         if not modules.ok or modules.value is None:
-            return self.foundation.fail(modules.issues)
+            return self.runtime.foundation.fail(modules.issues)
         visibility = self._validate_modules_visible(repo_root, modules.value)
         if not visibility.ok or visibility.value is None:
-            return self.foundation.fail(visibility.issues)
+            return self.runtime.foundation.fail(visibility.issues)
         if not visibility.value.passed:
-            return self.foundation.fail(visibility.value.issues)
+            return self.runtime.foundation.fail(visibility.value.issues)
         lines = [self._HEADER.rstrip(), ""]
         lines.extend(f"public import {module}" for module in modules.value)
-        return self.foundation.ok("\n".join(lines).rstrip() + "\n")
+        return self.runtime.foundation.ok("\n".join(lines).rstrip() + "\n")
 
     def refresh_adapter_interfaces(self, repo_root: Path) -> ServiceResult[ProjectionView]:
         rendered = self.render_adapter_interfaces(repo_root)
         if not rendered.ok or rendered.value is None:
-            return self.foundation.fail(rendered.issues)
+            return self.runtime.foundation.fail(rendered.issues)
         path = self._interfaces_path(repo_root)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,14 +86,14 @@ class AdapterFacadeComponent:
             if changed:
                 path.write_text(rendered.value, encoding="utf-8")
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_interfaces_write_failed",
                     f"Failed to write adapter Main/Interfaces.lean: {exc}",
                     details={"path": str(path)},
                 )
             )
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             ProjectionView(
                 node_path="Main",
                 projection_kind="interfaces",
@@ -103,8 +107,8 @@ class AdapterFacadeComponent:
     def check_adapter_module_visible(self, repo_root: Path, *, module: str) -> ServiceResult[GateReport]:
         normalized = self._normalize_module(module)
         if normalized is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_module_invalid",
                     "Adapter module must be a safe Lean module name.",
                     field="module",
@@ -113,13 +117,13 @@ class AdapterFacadeComponent:
             )
         visible = self.provider.list_visible_upstream_modules(Path(repo_root))
         if not visible.ok or visible.value is None:
-            return self.foundation.fail(visible.issues)
+            return self.runtime.foundation.fail(visible.issues)
         visible_modules = set(self._normalize_modules(visible.value.modules))
         if normalized not in visible_modules:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "adapter_module_visible",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "adapter_module_not_visible",
                         "Adapter module is not in the upstream visible module set.",
                         object_ref=normalized,
@@ -128,8 +132,8 @@ class AdapterFacadeComponent:
                     summary="Adapter module is not visible from the configured upstream dependency.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "adapter_module_visible",
                 summary=f"Adapter module is visible: {normalized}.",
             )
@@ -138,13 +142,13 @@ class AdapterFacadeComponent:
     def check_adapter_interfaces_sync(self, repo_root: Path) -> ServiceResult[GateReport]:
         rendered = self.render_adapter_interfaces(repo_root)
         if not rendered.ok or rendered.value is None:
-            return self.foundation.fail(rendered.issues)
+            return self.runtime.foundation.fail(rendered.issues)
         path = self._interfaces_path(repo_root)
         if not path.exists():
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "adapter_interfaces_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "adapter_interfaces_missing",
                         "Generated adapter Main/Interfaces.lean is missing.",
                         details={"path": str(path)},
@@ -155,18 +159,18 @@ class AdapterFacadeComponent:
         try:
             actual = path.read_text(encoding="utf-8")
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_interfaces_read_failed",
                     f"Failed to read adapter Main/Interfaces.lean: {exc}",
                     details={"path": str(path)},
                 )
             )
         if actual != rendered.value:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "adapter_interfaces_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "adapter_interfaces_stale",
                         "Generated adapter Main/Interfaces.lean does not match active adapter modules.",
                         details={"path": str(path)},
@@ -174,8 +178,8 @@ class AdapterFacadeComponent:
                     summary="Generated adapter Main/Interfaces.lean is stale.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "adapter_interfaces_sync",
                 summary="Generated adapter Main/Interfaces.lean is synchronized.",
             )
@@ -184,31 +188,31 @@ class AdapterFacadeComponent:
     def _active_modules(self, repo_root: Path) -> ServiceResult[list[str]]:
         active = self.provider.list_active_adapter_modules(Path(repo_root))
         if not active.ok or active.value is None:
-            return self.foundation.fail(active.issues)
+            return self.runtime.foundation.fail(active.issues)
         modules = self._normalize_modules(active.value.modules)
         invalid = [module for module in active.value.modules if self._normalize_module(module) is None]
         if invalid:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "adapter_active_module_invalid",
                     "Active adapter module list contains invalid Lean module names.",
                     current=", ".join(invalid),
                 )
             )
-        return self.foundation.ok(modules)
+        return self.runtime.foundation.ok(modules)
 
     def _validate_modules_visible(self, repo_root: Path, modules: list[str]) -> ServiceResult[GateReport]:
         visible = self.provider.list_visible_upstream_modules(Path(repo_root))
         if not visible.ok or visible.value is None:
-            return self.foundation.fail(visible.issues)
+            return self.runtime.foundation.fail(visible.issues)
         visible_modules = set(self._normalize_modules(visible.value.modules))
         missing = [module for module in modules if module not in visible_modules]
         if missing:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "adapter_modules_visible",
                     [
-                        self.foundation.issue(
+                        self.runtime.foundation.issue(
                             "adapter_module_not_visible",
                             "Active adapter module is not visible from the configured upstream dependency.",
                             object_ref=module,
@@ -219,15 +223,15 @@ class AdapterFacadeComponent:
                     summary=f"{len(missing)} active adapter modules are not visible.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "adapter_modules_visible",
                 summary=f"{len(modules)} active adapter modules are visible.",
             )
         )
 
     def _interfaces_path(self, repo_root: Path) -> Path:
-        return self.foundation.layout.adapter_interfaces_path(FoundationContext(repo_root=Path(repo_root)))
+        return self.runtime.foundation.layout.adapter_interfaces_path(FoundationContext(repo_root=Path(repo_root)))
 
     def _normalize_modules(self, modules: list[str]) -> list[str]:
         normalized = [module for item in modules if (module := self._normalize_module(item)) is not None]

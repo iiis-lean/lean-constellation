@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -11,7 +12,10 @@ from lean_constellation.services.adapter.adapter_decl_catalog import AdapterDecl
 from lean_constellation.services.adapter.interface_binding import InterfaceBindingComponent
 from lean_constellation.services.adapter.projection import ProjectionComponent
 from lean_constellation.services.adapter.upstream_metadata import UpstreamMetadataComponent
-from lean_constellation.services.foundation import FoundationService, GateReport, ServiceResult
+from lean_constellation.services.foundation import GateReport, ServiceResult
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class AdapterReadyPreflightView(StrictModel):
@@ -35,21 +39,22 @@ class ReadyGateComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
+        *,
         upstream_metadata: UpstreamMetadataComponent | None = None,
         adapter_decl_catalog: AdapterDeclCatalogComponent | None = None,
         interface_binding: InterfaceBindingComponent | None = None,
         projection: ProjectionComponent | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.upstream_metadata = upstream_metadata or UpstreamMetadataComponent(self.foundation)
-        self.adapter_decl_catalog = adapter_decl_catalog or AdapterDeclCatalogComponent(self.foundation)
+        self.runtime = runtime
+        self.upstream_metadata = upstream_metadata or UpstreamMetadataComponent(runtime)
+        self.adapter_decl_catalog = adapter_decl_catalog or AdapterDeclCatalogComponent(runtime)
         self.interface_binding = interface_binding or InterfaceBindingComponent(
-            self.foundation,
+            runtime,
             adapter_decl_catalog=self.adapter_decl_catalog,
         )
         self.projection = projection or ProjectionComponent(
-            self.foundation,
+            runtime,
             adapter_decl_catalog=self.adapter_decl_catalog,
         )
 
@@ -64,22 +69,22 @@ class ReadyGateComponent:
 
         upstream = self.upstream_metadata.validate_upstream_metadata(repo_root)
         if not upstream.ok or upstream.value is None:
-            return self.foundation.fail(upstream.issues)
+            return self.runtime.foundation.fail(upstream.issues)
         reports.append(upstream.value)
 
         completeness = self.adapter_decl_catalog.check_adapter_decl_completeness(repo_root)
         if not completeness.ok or completeness.value is None:
-            return self.foundation.fail(completeness.issues)
+            return self.runtime.foundation.fail(completeness.issues)
         if completeness.value.complete:
             reports.append(
-                self.foundation.gate_passed(
+                self.runtime.foundation.gate_passed(
                     "adapter_decl_completeness",
                     summary=f"{len(completeness.value.checked_names)} adapter declarations are complete.",
                 )
             )
         else:
             reports.append(
-                self.foundation.gate_failed(
+                self.runtime.foundation.gate_failed(
                     "adapter_decl_completeness",
                     completeness.value.issues,
                     summary=completeness.value.summary,
@@ -88,12 +93,12 @@ class ReadyGateComponent:
 
         bindings = self.interface_binding.validate_adapter_interface_bindings(repo_root)
         if not bindings.ok or bindings.value is None:
-            return self.foundation.fail(bindings.issues)
+            return self.runtime.foundation.fail(bindings.issues)
         reports.append(bindings.value)
 
         projection = self.projection.check_adapter_projection(repo_root)
         if not projection.ok or projection.value is None:
-            return self.foundation.fail(projection.issues)
+            return self.runtime.foundation.fail(projection.issues)
         reports.append(projection.value)
 
-        return self.foundation.ok(self.foundation.merge_gate_reports(gate_name, reports))
+        return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports(gate_name, reports))

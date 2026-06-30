@@ -6,8 +6,9 @@ from typing import Any
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.services.external_clients import (
-    ExternalClientService,
     LeanMcpToolkitClient,
     LeanMcpToolkitClientConfig,
 )
@@ -17,7 +18,7 @@ from lean_constellation.services.node import NodeTreeComponent
 
 
 def _create_content_node(repo_root: Path, service: MathlibService) -> None:
-    tree = NodeTreeComponent(service.foundation)
+    tree = service.runtime.node.node_tree
     assert tree.ensure_root_scope_node(repo_root).ok
     assert tree.create_scope_node(
         repo_root,
@@ -100,7 +101,7 @@ def _fake_toolkit_service() -> MathlibService:
         raise KeyError(tool_name)
 
     toolkit = LeanMcpToolkitClient(dispatcher=dispatch)
-    return MathlibService(external=ExternalClientService(lean_mcp_toolkit=toolkit))
+    return make_runtime(external_overrides={"lean_mcp_toolkit": toolkit}).mathlib
 
 
 @pytest.mark.real
@@ -122,7 +123,7 @@ def test_mathlib_index_toolkit_use_real_service_lifecycle(tmp_path: Path) -> Non
     assert all(candidate.source_kind == "lean_explore.find" for candidate in search.value.candidates)
 
     cache_path = repo_root / ".lean_constellation" / "indexes" / "mathlib_candidates.json"
-    cached = service.foundation.read_json(cache_path, MathlibCandidateCache)
+    cached = service.runtime.foundation.read_json(cache_path, MathlibCandidateCache)
     assert cached.ok
     assert cached.value is not None
     assert set(cached.value.candidates) == {candidate.candidate_id for candidate in search.value.candidates}
@@ -182,7 +183,7 @@ def test_mathlib_index_toolkit_use_real_service_lifecycle(tmp_path: Path) -> Non
             "added_by": "coordinator",
         }
     ]
-    prelude_path = service.foundation.prelude_path(
+    prelude_path = service.runtime.foundation.prelude_path(
         FoundationContext(repo_root=repo_root),
         "Main.Analysis.Core",
     )
@@ -230,9 +231,9 @@ def test_mathlib_index_toolkit_live_search_can_feed_index(tmp_path: Path) -> Non
     base_url = os.environ.get("LEAN_CONSTELLATION_REAL_TOOLKIT_BASE_URL")
     if not base_url:
         pytest.skip("Set LEAN_CONSTELLATION_REAL_TOOLKIT_BASE_URL to run live Mathlib toolkit tests.")
-    service = MathlibService(
-        external=ExternalClientService(
-            lean_mcp_toolkit=LeanMcpToolkitClient.from_config(
+    service = make_runtime(
+        external_overrides={
+            "lean_mcp_toolkit": LeanMcpToolkitClient.from_config(
                 LeanMcpToolkitClientConfig(
                     base_url=base_url,
                     api_prefix=os.environ.get("LEAN_CONSTELLATION_REAL_TOOLKIT_API_PREFIX", "/api/v1"),
@@ -240,8 +241,9 @@ def test_mathlib_index_toolkit_live_search_can_feed_index(tmp_path: Path) -> Non
                     timeout_seconds=int(os.environ.get("LEAN_CONSTELLATION_REAL_TOOLKIT_TIMEOUT", "120")),
                 )
             )
-        )
+        }
     )
+    service = service.mathlib
     query = os.environ.get("LEAN_CONSTELLATION_REAL_MATHLIB_QUERY", "Nat.add")
 
     search = service.search_external_mathlib(tmp_path, query=query, search_kinds=["theorem"], limit=3)

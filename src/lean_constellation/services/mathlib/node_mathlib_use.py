@@ -4,23 +4,25 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import (
     FoundationContext,
-    FoundationService,
     GateReport,
     IssueSeverity,
     ServiceIssue,
     ServiceResult,
     WriteMode,
 )
-from lean_constellation.services.lean_projection import NodeProjectionComponent
 from lean_constellation.services.mathlib.mathlib_index import MathlibDeclEntryView, MathlibIndexComponent
 from lean_constellation.services.node import ContractComponent, NodeContractView
+
+if TYPE_CHECKING:
+    from lean_constellation.services.lean_projection import NodeProjectionComponent
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class MathlibUseActor(StrEnum):
@@ -42,20 +44,38 @@ class NodeMathlibDeclUse(StrictModel):
     added_by: MathlibUseActor = MathlibUseActor.COORDINATOR
 
 
+class NodeMathlibHintView(StrictModel):
+    node_path: str
+    contract: NodeContractView
+    modules: list[NodeMathlibModuleUse]
+    declarations: list[NodeMathlibDeclUse]
+    validation_gate: GateReport
+    summary: str
+
+
+class NodeMathlibHintMutationView(StrictModel):
+    node_path: str
+    changed: bool
+    changed_items: list[str]
+    hints: NodeMathlibHintView
+    summary: str
+
+
 class NodeMathlibUseComponent:
     """Maintain Mathlib module imports and declaration hints in NodeContract."""
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
+        *,
         contract: ContractComponent | None = None,
         mathlib_index: MathlibIndexComponent | None = None,
-        node_projection: NodeProjectionComponent | None = None,
+        node_projection: "NodeProjectionComponent | None" = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.contract = contract or ContractComponent(self.foundation)
-        self.mathlib_index = mathlib_index or MathlibIndexComponent(self.foundation)
-        self.node_projection = node_projection or NodeProjectionComponent(self.foundation, self.contract)
+        self.runtime = runtime
+        self.contract = contract or ContractComponent(runtime)
+        self.mathlib_index = mathlib_index or MathlibIndexComponent(runtime)
+        self.node_projection = node_projection
 
     def add_mathlib_module_use(
         self,
@@ -68,31 +88,31 @@ class NodeMathlibUseComponent:
     ) -> ServiceResult[NodeContractView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
-            return self.foundation.fail(normalized_actor.issues)
+            return self.runtime.foundation.fail(normalized_actor.issues)
         normalized_module = self._normalize_dotted_name(module, field="module", issue_prefix="mathlib_module")
         if not normalized_module.ok or normalized_module.value is None:
-            return self.foundation.fail(normalized_module.issues)
+            return self.runtime.foundation.fail(normalized_module.issues)
         index_warnings = self._module_index_warnings(repo_root, normalized_module.value)
         if not index_warnings.ok or index_warnings.value is None:
-            return self.foundation.fail(index_warnings.issues)
+            return self.runtime.foundation.fail(index_warnings.issues)
 
         opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_module_uses(opened.value.contract.mathlib_modules)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
 
         warnings = list(index_warnings.value)
         if any(item.module == normalized_module.value for item in current.value):
-            refreshed = self.node_projection.refresh_prelude(repo_root, node_path=node_path)
+            refreshed = self._refresh_prelude(repo_root, node_path=node_path)
             if not refreshed.ok:
-                return self.foundation.fail(refreshed.issues)
+                return self.runtime.foundation.fail(refreshed.issues)
             view = self.contract.get_current_contract(repo_root, node_path=node_path)
             if not view.ok:
-                return self.foundation.fail(view.issues)
+                return self.runtime.foundation.fail(view.issues)
             warnings.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "mathlib_module_use_duplicate",
                     f"Mathlib module use already exists: {normalized_module.value}",
                     severity=IssueSeverity.WARNING,
@@ -100,7 +120,7 @@ class NodeMathlibUseComponent:
                     field="mathlib_modules",
                 )
             )
-            return self.foundation.ok(view.value, warnings=warnings)
+            return self.runtime.foundation.ok(view.value, warnings=warnings)
 
         current.value.append(
             NodeMathlibModuleUse(
@@ -112,14 +132,151 @@ class NodeMathlibUseComponent:
         opened.value.contract.mathlib_modules = [item.model_dump(mode="json") for item in current.value]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        refreshed = self.node_projection.refresh_prelude(repo_root, node_path=node_path)
+            return self.runtime.foundation.fail(saved.issues)
+        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
         if not refreshed.ok:
-            return self.foundation.fail(refreshed.issues)
+            return self.runtime.foundation.fail(refreshed.issues)
         view = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not view.ok:
-            return self.foundation.fail(view.issues)
-        return self.foundation.ok(view.value, warnings=warnings)
+            return self.runtime.foundation.fail(view.issues)
+        return self.runtime.foundation.ok(view.value, warnings=warnings)
+
+    def get_node_mathlib_hint_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeMathlibHintView]:
+        current = self.contract.get_current_contract(repo_root, node_path=node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        modules = self._normalize_module_uses(current.value.contract.mathlib_modules)
+        decls = self._normalize_decl_uses(current.value.contract.mathlib_decls)
+        if not modules.ok:
+            return self.runtime.foundation.fail(modules.issues)
+        if not decls.ok:
+            return self.runtime.foundation.fail(decls.issues)
+        gate = self.validate_node_mathlib_uses(repo_root, node_path=node_path)
+        if not gate.ok or gate.value is None:
+            return self.runtime.foundation.fail(gate.issues)
+        assert modules.value is not None
+        assert decls.value is not None
+        return self.runtime.foundation.ok(
+            NodeMathlibHintView(
+                node_path=node_path,
+                contract=current.value,
+                modules=modules.value,
+                declarations=decls.value,
+                validation_gate=gate.value,
+                summary=f"Loaded {len(modules.value)} Mathlib module hints and {len(decls.value)} declaration hints for {node_path}.",
+            ),
+            warnings=current.issues,
+        )
+
+    def add_node_mathlib_module_hint(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        module: str,
+        reason: str | None,
+        actor: str | MathlibUseActor,
+    ) -> ServiceResult[NodeMathlibHintMutationView]:
+        added = self.add_mathlib_module_use(repo_root, node_path=node_path, module=module, reason=reason, actor=actor)
+        if not added.ok:
+            return self.runtime.foundation.fail(added.issues)
+        hints = self.get_node_mathlib_hint_view(repo_root, node_path=node_path)
+        if not hints.ok or hints.value is None:
+            return self.runtime.foundation.fail(hints.issues)
+        changed = not self._has_issue_kind(added.issues, "mathlib_module_use_duplicate")
+        changed_items = [module.strip()] if changed else []
+        return self.runtime.foundation.ok(
+            NodeMathlibHintMutationView(
+                node_path=node_path,
+                changed=changed,
+                changed_items=changed_items,
+                hints=hints.value,
+                summary=("Added Mathlib module hint." if changed else "Mathlib module hint already existed."),
+            ),
+            warnings=[*added.issues, *hints.issues],
+        )
+
+    def remove_node_mathlib_module_hint(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        module: str,
+        actor: str | MathlibUseActor,
+    ) -> ServiceResult[NodeMathlibHintMutationView]:
+        removed = self.remove_mathlib_module_use(repo_root, node_path=node_path, module=module, actor=actor)
+        if not removed.ok and self._has_issue_kind(removed.issues, "mathlib_module_use_missing"):
+            return self._missing_hint_noop(repo_root, node_path=node_path, target=module, target_kind="module")
+        if not removed.ok:
+            return self.runtime.foundation.fail(removed.issues)
+        hints = self.get_node_mathlib_hint_view(repo_root, node_path=node_path)
+        if not hints.ok or hints.value is None:
+            return self.runtime.foundation.fail(hints.issues)
+        return self.runtime.foundation.ok(
+            NodeMathlibHintMutationView(
+                node_path=node_path,
+                changed=True,
+                changed_items=[module.strip()],
+                hints=hints.value,
+                summary="Removed Mathlib module hint.",
+            ),
+            warnings=[*removed.issues, *hints.issues],
+        )
+
+    def add_node_mathlib_decl_hint(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        reason: str | None,
+        actor: str | MathlibUseActor,
+    ) -> ServiceResult[NodeMathlibHintMutationView]:
+        added = self.add_mathlib_decl_use(repo_root, node_path=node_path, decl_name=decl_name, reason=reason, actor=actor)
+        if not added.ok:
+            return self.runtime.foundation.fail(added.issues)
+        hints = self.get_node_mathlib_hint_view(repo_root, node_path=node_path)
+        if not hints.ok or hints.value is None:
+            return self.runtime.foundation.fail(hints.issues)
+        changed = not self._has_issue_kind(added.issues, "mathlib_decl_use_duplicate")
+        changed_items = [decl_name.strip()] if changed else []
+        return self.runtime.foundation.ok(
+            NodeMathlibHintMutationView(
+                node_path=node_path,
+                changed=changed,
+                changed_items=changed_items,
+                hints=hints.value,
+                summary=("Added Mathlib declaration hint." if changed else "Mathlib declaration hint already existed."),
+            ),
+            warnings=[*added.issues, *hints.issues],
+        )
+
+    def remove_node_mathlib_decl_hint(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        actor: str | MathlibUseActor,
+    ) -> ServiceResult[NodeMathlibHintMutationView]:
+        removed = self.remove_mathlib_decl_use(repo_root, node_path=node_path, decl_name=decl_name, actor=actor)
+        if not removed.ok and self._has_issue_kind(removed.issues, "mathlib_decl_use_missing"):
+            return self._missing_hint_noop(repo_root, node_path=node_path, target=decl_name, target_kind="declaration")
+        if not removed.ok:
+            return self.runtime.foundation.fail(removed.issues)
+        hints = self.get_node_mathlib_hint_view(repo_root, node_path=node_path)
+        if not hints.ok or hints.value is None:
+            return self.runtime.foundation.fail(hints.issues)
+        return self.runtime.foundation.ok(
+            NodeMathlibHintMutationView(
+                node_path=node_path,
+                changed=True,
+                changed_items=[decl_name.strip()],
+                hints=hints.value,
+                summary="Removed Mathlib declaration hint.",
+            ),
+            warnings=[*removed.issues, *hints.issues],
+        )
 
     def remove_mathlib_module_use(
         self,
@@ -131,20 +288,20 @@ class NodeMathlibUseComponent:
     ) -> ServiceResult[NodeContractView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
-            return self.foundation.fail(normalized_actor.issues)
+            return self.runtime.foundation.fail(normalized_actor.issues)
         normalized_module = self._normalize_dotted_name(module, field="module", issue_prefix="mathlib_module")
         if not normalized_module.ok or normalized_module.value is None:
-            return self.foundation.fail(normalized_module.issues)
+            return self.runtime.foundation.fail(normalized_module.issues)
         opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_module_uses(opened.value.contract.mathlib_modules)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
         target = next((item for item in current.value if item.module == normalized_module.value), None)
         if target is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_module_use_missing",
                     f"Mathlib module use not found: {normalized_module.value}",
                     object_ref=node_path,
@@ -153,17 +310,17 @@ class NodeMathlibUseComponent:
             )
         permission = self._check_remove_permission(node_path, "mathlib_modules", target.added_by, normalized_actor.value)
         if not permission.ok:
-            return self.foundation.fail(permission.issues)
+            return self.runtime.foundation.fail(permission.issues)
 
         opened.value.contract.mathlib_modules = [
             item.model_dump(mode="json") for item in current.value if item.module != normalized_module.value
         ]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        refreshed = self.node_projection.refresh_prelude(repo_root, node_path=node_path)
+            return self.runtime.foundation.fail(saved.issues)
+        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
         if not refreshed.ok:
-            return self.foundation.fail(refreshed.issues)
+            return self.runtime.foundation.fail(refreshed.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def add_mathlib_decl_use(
@@ -177,28 +334,28 @@ class NodeMathlibUseComponent:
     ) -> ServiceResult[NodeContractView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
-            return self.foundation.fail(normalized_actor.issues)
+            return self.runtime.foundation.fail(normalized_actor.issues)
         normalized_decl = self._normalize_dotted_name(decl_name, field="decl_name", issue_prefix="mathlib_decl")
         if not normalized_decl.ok or normalized_decl.value is None:
-            return self.foundation.fail(normalized_decl.issues)
+            return self.runtime.foundation.fail(normalized_decl.issues)
         decl_entry = self._decl_entry_or_warning(repo_root, normalized_decl.value)
         if not decl_entry.ok:
-            return self.foundation.fail(decl_entry.issues)
+            return self.runtime.foundation.fail(decl_entry.issues)
 
         opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_decl_uses(opened.value.contract.mathlib_decls)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
 
         warnings = list(decl_entry.issues)
         if any(item.name == normalized_decl.value for item in current.value):
             view = self.contract.get_current_contract(repo_root, node_path=node_path)
             if not view.ok:
-                return self.foundation.fail(view.issues)
+                return self.runtime.foundation.fail(view.issues)
             warnings.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "mathlib_decl_use_duplicate",
                     f"Mathlib declaration use already exists: {normalized_decl.value}",
                     severity=IssueSeverity.WARNING,
@@ -206,7 +363,7 @@ class NodeMathlibUseComponent:
                     field="mathlib_decls",
                 )
             )
-            return self.foundation.ok(view.value, warnings=warnings)
+            return self.runtime.foundation.ok(view.value, warnings=warnings)
 
         entry = decl_entry.value
         current.value.append(
@@ -221,11 +378,11 @@ class NodeMathlibUseComponent:
         opened.value.contract.mathlib_decls = [item.model_dump(mode="json") for item in current.value]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
+            return self.runtime.foundation.fail(saved.issues)
         view = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not view.ok:
-            return self.foundation.fail(view.issues)
-        return self.foundation.ok(view.value, warnings=warnings)
+            return self.runtime.foundation.fail(view.issues)
+        return self.runtime.foundation.ok(view.value, warnings=warnings)
 
     def remove_mathlib_decl_use(
         self,
@@ -237,20 +394,20 @@ class NodeMathlibUseComponent:
     ) -> ServiceResult[NodeContractView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
-            return self.foundation.fail(normalized_actor.issues)
+            return self.runtime.foundation.fail(normalized_actor.issues)
         normalized_decl = self._normalize_dotted_name(decl_name, field="decl_name", issue_prefix="mathlib_decl")
         if not normalized_decl.ok or normalized_decl.value is None:
-            return self.foundation.fail(normalized_decl.issues)
+            return self.runtime.foundation.fail(normalized_decl.issues)
         opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
-            return self.foundation.fail(opened.issues)
+            return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_decl_uses(opened.value.contract.mathlib_decls)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
         target = next((item for item in current.value if item.name == normalized_decl.value), None)
         if target is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_decl_use_missing",
                     f"Mathlib declaration use not found: {normalized_decl.value}",
                     object_ref=node_path,
@@ -259,18 +416,18 @@ class NodeMathlibUseComponent:
             )
         permission = self._check_remove_permission(node_path, "mathlib_decls", target.added_by, normalized_actor.value)
         if not permission.ok:
-            return self.foundation.fail(permission.issues)
+            return self.runtime.foundation.fail(permission.issues)
 
         opened.value.contract.mathlib_decls = [item.model_dump(mode="json") for item in current.value if item.name != normalized_decl.value]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
+            return self.runtime.foundation.fail(saved.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def validate_node_mathlib_uses(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         current = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not current.ok or current.value is None:
-            return self.foundation.fail(current.issues)
+            return self.runtime.foundation.fail(current.issues)
         modules = self._normalize_module_uses(current.value.contract.mathlib_modules)
         decls = self._normalize_decl_uses(current.value.contract.mathlib_decls)
         issues: list[ServiceIssue] = []
@@ -280,8 +437,8 @@ class NodeMathlibUseComponent:
         if not decls.ok:
             issues.extend(decls.issues)
         if issues:
-            return self.foundation.ok(
-                self.foundation.gate_failed("node_mathlib_uses", issues, summary="Node Mathlib use entries are invalid.")
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed("node_mathlib_uses", issues, summary="Node Mathlib use entries are invalid.")
             )
 
         assert modules.value is not None
@@ -290,7 +447,7 @@ class NodeMathlibUseComponent:
         duplicate_modules = sorted({name for name in module_names if module_names.count(name) > 1})
         for module in duplicate_modules:
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "mathlib_module_use_duplicate",
                     f"Duplicate Mathlib module use: {module}",
                     object_ref=node_path,
@@ -301,7 +458,7 @@ class NodeMathlibUseComponent:
         duplicate_decls = sorted({name for name in decl_names if decl_names.count(name) > 1})
         for decl in duplicate_decls:
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "mathlib_decl_use_duplicate",
                     f"Duplicate Mathlib declaration use: {decl}",
                     object_ref=node_path,
@@ -315,7 +472,7 @@ class NodeMathlibUseComponent:
             if not module_entry.ok:
                 if self._is_missing_kind(module_entry.issues, "mathlib_module_entry_missing"):
                     warnings.append(
-                        self.foundation.issue(
+                        self.runtime.foundation.issue(
                             "mathlib_module_not_indexed",
                             f"Mathlib module use is not recorded in MathlibIndex: {item.module}",
                             severity=IssueSeverity.WARNING,
@@ -331,7 +488,7 @@ class NodeMathlibUseComponent:
             if not decl_entry.ok or decl_entry.value is None:
                 if self._is_missing_kind(decl_entry.issues, "mathlib_decl_entry_missing"):
                     warnings.append(
-                        self.foundation.issue(
+                        self.runtime.foundation.issue(
                             "mathlib_decl_not_indexed",
                             f"Mathlib declaration use is not recorded in MathlibIndex: {item.name}",
                             severity=IssueSeverity.WARNING,
@@ -345,7 +502,7 @@ class NodeMathlibUseComponent:
             module = decl_entry.value.module or item.module
             if module and module not in module_set:
                 warnings.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "mathlib_decl_module_not_imported",
                         f"Mathlib declaration {item.name} is indexed in module {module}, but the node does not import that module.",
                         severity=IssueSeverity.WARNING,
@@ -356,11 +513,11 @@ class NodeMathlibUseComponent:
                 )
 
         if issues:
-            return self.foundation.ok(
-                self.foundation.gate_failed("node_mathlib_uses", issues, summary=f"{len(issues)} Mathlib use checks failed.")
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed("node_mathlib_uses", issues, summary=f"{len(issues)} Mathlib use checks failed.")
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "node_mathlib_uses",
                 summary=f"Checked {len(modules.value)} Mathlib modules and {len(decls.value)} Mathlib declaration hints.",
                 warnings=warnings,
@@ -376,7 +533,7 @@ class NodeMathlibUseComponent:
                 item = adapter.validate_python(self._upgrade_module_use(value))
             except Exception as exc:  # noqa: BLE001 - validation details are returned to caller.
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "mathlib_module_use_invalid",
                         f"Mathlib module use entry is invalid: {exc}",
                         field=f"mathlib_modules.{index}",
@@ -389,8 +546,8 @@ class NodeMathlibUseComponent:
                 continue
             normalized.append(item.model_copy(update={"module": module.value, "reason": self._optional_text(item.reason)}))
         if issues:
-            return self.foundation.fail(issues)
-        return self.foundation.ok(normalized)
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(normalized)
 
     def _normalize_decl_uses(self, values: list[dict[str, Any]]) -> ServiceResult[list[NodeMathlibDeclUse]]:
         adapter = TypeAdapter(NodeMathlibDeclUse)
@@ -401,7 +558,7 @@ class NodeMathlibUseComponent:
                 item = adapter.validate_python(self._upgrade_decl_use(value))
             except Exception as exc:  # noqa: BLE001 - validation details are returned to caller.
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "mathlib_decl_use_invalid",
                         f"Mathlib declaration use entry is invalid: {exc}",
                         field=f"mathlib_decls.{index}",
@@ -430,8 +587,8 @@ class NodeMathlibUseComponent:
                 )
             )
         if issues:
-            return self.foundation.fail(issues)
-        return self.foundation.ok(normalized)
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(normalized)
 
     def _upgrade_module_use(self, value: Any) -> dict[str, Any]:
         if isinstance(value, str):
@@ -470,11 +627,11 @@ class NodeMathlibUseComponent:
     def _module_index_warnings(self, repo_root: Path, module: str) -> ServiceResult[list[ServiceIssue]]:
         entry = self.mathlib_index.get_mathlib_module_entry(repo_root, module=module)
         if entry.ok:
-            return self.foundation.ok([])
+            return self.runtime.foundation.ok([])
         if self._is_missing_kind(entry.issues, "mathlib_module_entry_missing"):
-            return self.foundation.ok(
+            return self.runtime.foundation.ok(
                 [
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "mathlib_module_not_indexed",
                         f"Mathlib module use is not recorded in MathlibIndex: {module}",
                         severity=IssueSeverity.WARNING,
@@ -483,17 +640,17 @@ class NodeMathlibUseComponent:
                     )
                 ]
             )
-        return self.foundation.fail(entry.issues)
+        return self.runtime.foundation.fail(entry.issues)
 
     def _decl_entry_or_warning(self, repo_root: Path, name: str) -> ServiceResult[MathlibDeclEntryView | None]:
         entry = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=name)
         if entry.ok:
-            return self.foundation.ok(entry.value)
+            return self.runtime.foundation.ok(entry.value)
         if self._is_missing_kind(entry.issues, "mathlib_decl_entry_missing"):
-            return self.foundation.ok(
+            return self.runtime.foundation.ok(
                 None,
                 warnings=[
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "mathlib_decl_not_indexed",
                         f"Mathlib declaration use is not recorded in MathlibIndex: {name}",
                         severity=IssueSeverity.WARNING,
@@ -502,7 +659,7 @@ class NodeMathlibUseComponent:
                     )
                 ],
             )
-        return self.foundation.fail(entry.issues)
+        return self.runtime.foundation.fail(entry.issues)
 
     def _check_remove_permission(
         self,
@@ -512,8 +669,8 @@ class NodeMathlibUseComponent:
         actor: MathlibUseActor,
     ) -> ServiceResult[None]:
         if actor == MathlibUseActor.WORKER and target_actor != MathlibUseActor.WORKER:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_use_permission_denied",
                     "Worker can only remove Mathlib uses that were added by a worker.",
                     object_ref=node_path,
@@ -522,14 +679,48 @@ class NodeMathlibUseComponent:
                     expected=MathlibUseActor.WORKER.value,
                 )
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)
+
+    def _missing_hint_noop(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        target: str,
+        target_kind: str,
+    ) -> ServiceResult[NodeMathlibHintMutationView]:
+        hints = self.get_node_mathlib_hint_view(repo_root, node_path=node_path)
+        if not hints.ok or hints.value is None:
+            return self.runtime.foundation.fail(hints.issues)
+        issue_kind = "mathlib_module_use_missing" if target_kind == "module" else "mathlib_decl_use_missing"
+        return self.runtime.foundation.ok(
+            NodeMathlibHintMutationView(
+                node_path=node_path,
+                changed=False,
+                changed_items=[],
+                hints=hints.value,
+                summary=f"Mathlib {target_kind} hint was already absent.",
+            ),
+            warnings=[
+                self.runtime.foundation.issue(
+                    issue_kind,
+                    f"Mathlib {target_kind} hint was already absent: {target.strip()}",
+                    severity=IssueSeverity.WARNING,
+                    object_ref=node_path,
+                ),
+                *hints.issues,
+            ],
+        )
+
+    def _has_issue_kind(self, issues: list[ServiceIssue], kind: str) -> bool:
+        return any(issue.kind == kind for issue in issues)
 
     def _normalize_actor(self, actor: str | MathlibUseActor) -> ServiceResult[MathlibUseActor]:
         try:
-            return self.foundation.ok(MathlibUseActor(actor))
+            return self.runtime.foundation.ok(MathlibUseActor(actor))
         except ValueError:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "mathlib_use_actor_invalid",
                     "actor must be coordinator or worker.",
                     field="actor",
@@ -540,25 +731,34 @@ class NodeMathlibUseComponent:
     def _normalize_dotted_name(self, value: str, *, field: str, issue_prefix: str) -> ServiceResult[str]:
         normalized = value.strip() if isinstance(value, str) else ""
         if not normalized:
-            return self.foundation.fail(self.foundation.issue(f"{issue_prefix}_name_empty", "Lean dotted name is required.", field=field))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(f"{issue_prefix}_name_empty", "Lean dotted name is required.", field=field))
         if not self._is_safe_dotted_name(normalized):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     f"{issue_prefix}_name_invalid",
                     f"Invalid Lean dotted name: {value}",
                     field=field,
                     expected="a non-empty dotted Lean name without whitespace or path separators",
                 )
             )
-        return self.foundation.ok(normalized)
+        return self.runtime.foundation.ok(normalized)
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        path = self.foundation.layout.node_contract_path(
+        path = self.runtime.foundation.layout.node_contract_path(
             FoundationContext(repo_root=Path(repo_root)),
             node_path,
             getattr(contract, "version"),
         )
-        return self.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
+        return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
+
+    def _refresh_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[object]:
+        node_projection = self.node_projection
+        if node_projection is None:
+            lean_projection = self.runtime.app.lean_projection
+            if lean_projection is None:
+                return self.runtime.foundation.ok(None)
+            node_projection = lean_projection.node_projection
+        return node_projection.refresh_prelude(repo_root, node_path=node_path)
 
     def _optional_text(self, value: str | None) -> str | None:
         if value is None:

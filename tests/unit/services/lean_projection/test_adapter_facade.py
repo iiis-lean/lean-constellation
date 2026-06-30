@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.services.foundation import FoundationService, ServiceResult
@@ -53,9 +55,10 @@ class FailingAdapterFacadeProvider:
 
 
 def _component(active_modules: list[str], visible_modules: list[str]) -> AdapterFacadeComponent:
-    foundation = FoundationService()
+    runtime = make_runtime()
+    foundation = runtime.foundation
     provider = FakeAdapterFacadeProvider(foundation, active_modules=active_modules, visible_modules=visible_modules)
-    return AdapterFacadeComponent(foundation=foundation, provider=provider)
+    return AdapterFacadeComponent(runtime, provider=provider)
 
 
 def test_render_adapter_interfaces_deduplicates_sorts_and_uses_public_import(tmp_path: Path) -> None:
@@ -110,13 +113,14 @@ def test_adapter_facade_uses_exact_provider_visibility_without_import_graph_infe
 
 
 def test_adapter_facade_provider_failures_are_propagated_without_writing_projection(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
+    runtime = make_runtime()
     active_failure = AdapterFacadeComponent(
-        foundation=foundation,
+        runtime,
         provider=FailingAdapterFacadeProvider(foundation, fail_active=True),
     )
     visible_failure = AdapterFacadeComponent(
-        foundation=foundation,
+        runtime,
         provider=FailingAdapterFacadeProvider(foundation, fail_visible=True),
     )
 

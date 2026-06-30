@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
@@ -6,7 +8,7 @@ from lean_constellation.services.node import NodeContractSnapshot, NodeTreeCompo
 
 
 def _create_content_node(tmp_path: Path, service: MathlibService) -> None:
-    tree = NodeTreeComponent(service.foundation)
+    tree = service.runtime.node.node_tree
     assert tree.ensure_root_scope_node(tmp_path).ok
     assert tree.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     created = tree.create_content_node(
@@ -21,7 +23,7 @@ def _create_content_node(tmp_path: Path, service: MathlibService) -> None:
 
 
 def _prelude_path(tmp_path: Path, service: MathlibService) -> Path:
-    return service.foundation.prelude_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core")
+    return service.runtime.foundation.prelude_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core")
 
 
 class FailingProjection:
@@ -33,7 +35,7 @@ class FailingProjection:
 
 
 def test_add_mathlib_module_use_refreshes_prelude_and_dedupes(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
 
@@ -73,7 +75,7 @@ def test_add_mathlib_module_use_refreshes_prelude_and_dedupes(tmp_path: Path) ->
 
 
 def test_worker_can_only_remove_worker_added_mathlib_module_use(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
 
     coordinator_added = service.add_mathlib_module_use(
@@ -113,7 +115,7 @@ def test_worker_can_only_remove_worker_added_mathlib_module_use(tmp_path: Path) 
 
 
 def test_module_use_missing_invalid_and_coordinator_remove_branches(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
 
     bad_actor = service.add_mathlib_module_use(
@@ -165,13 +167,14 @@ def test_module_use_missing_invalid_and_coordinator_remove_branches(tmp_path: Pa
 
 
 def test_module_use_reports_prelude_refresh_failure(tmp_path: Path) -> None:
-    foundation = FoundationService()
+    runtime = make_runtime()
+    foundation = runtime.foundation
     component = NodeMathlibUseComponent(
-        foundation,
-        mathlib_index=MathlibService(foundation=foundation).mathlib_index,
+        runtime,
+        mathlib_index=runtime.mathlib.mathlib_index,
         node_projection=FailingProjection(foundation),  # type: ignore[arg-type]
     )
-    service = MathlibService(foundation=foundation, node_mathlib_use=component)
+    service = MathlibService(runtime, mathlib_index=runtime.mathlib.mathlib_index, node_mathlib_use=component)
     _create_content_node(tmp_path, service)
 
     failed = service.add_mathlib_module_use(
@@ -187,7 +190,7 @@ def test_module_use_reports_prelude_refresh_failure(tmp_path: Path) -> None:
 
 
 def test_add_mathlib_decl_use_records_hint_without_prelude_import(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
     assert service.upsert_mathlib_decl_entry(
@@ -245,7 +248,7 @@ def test_add_mathlib_decl_use_records_hint_without_prelude_import(tmp_path: Path
 
 
 def test_add_mathlib_decl_use_missing_index_warning_and_remove_permission(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
 
     added = service.add_mathlib_decl_use(
@@ -279,7 +282,7 @@ def test_add_mathlib_decl_use_missing_index_warning_and_remove_permission(tmp_pa
 
 
 def test_decl_use_invalid_input_and_missing_remove(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
 
     bad_decl = service.add_mathlib_decl_use(
@@ -303,7 +306,7 @@ def test_decl_use_invalid_input_and_missing_remove(tmp_path: Path) -> None:
 
 
 def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
     assert service.upsert_mathlib_decl_entry(
@@ -329,7 +332,7 @@ def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_
     assert checked.value.passed is True
     assert [issue.kind for issue in checked.value.issues] == ["mathlib_decl_module_not_imported"]
 
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     contract_path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1)
     loaded = foundation.read_json(contract_path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
@@ -345,7 +348,7 @@ def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_
 
 
 def test_validate_node_mathlib_uses_warning_policy_for_missing_index_entries(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.add_mathlib_module_use(
         tmp_path,
@@ -374,7 +377,7 @@ def test_validate_node_mathlib_uses_warning_policy_for_missing_index_entries(tmp
 
 
 def test_validate_node_mathlib_uses_detects_duplicates_and_legacy_shapes(tmp_path: Path) -> None:
-    service = MathlibService()
+    service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
     assert service.upsert_mathlib_decl_entry(
@@ -386,7 +389,7 @@ def test_validate_node_mathlib_uses_detects_duplicates_and_legacy_shapes(tmp_pat
         summary="Congruence for finite sums.",
         note=None,
     ).ok
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     contract_path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1)
     loaded = foundation.read_json(contract_path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None

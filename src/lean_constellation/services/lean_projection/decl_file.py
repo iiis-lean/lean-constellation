@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import (
     DeclFileKey,
     FoundationContext,
-    FoundationService,
     GateReport,
     MutationSummaryView,
     ServiceResult,
 )
 from lean_constellation.services.lean_projection.annotation import AnnotationComponent
 from lean_constellation.services.lean_projection.lean_check import LeanCheckComponent, LeanCheckView
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 DeclFileStage = Literal["statement", "proof"]
@@ -95,12 +97,12 @@ class DeclFileRevisionProvider(Protocol):
 
 
 class _MissingDeclFileRevisionProvider:
-    def __init__(self, foundation: FoundationService) -> None:
-        self.foundation = foundation
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
 
     def _missing(self, *, node_path: str, decl_name: str) -> ServiceResult[Any]:
-        return self.foundation.fail(
-            self.foundation.issue(
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
                 "decl_revision_provider_missing",
                 "No DeclRevision provider is configured for Decl-owned Lean file operations.",
                 object_ref=f"{node_path}:{decl_name}",
@@ -178,15 +180,16 @@ class DeclFileComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
+        *,
         annotation: AnnotationComponent | None = None,
         lean_check: LeanCheckComponent | None = None,
         revision_provider: DeclFileRevisionProvider | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.annotation = annotation or AnnotationComponent(self.foundation)
-        self.lean_check = lean_check or LeanCheckComponent(self.foundation)
-        self.revision_provider = revision_provider or _MissingDeclFileRevisionProvider(self.foundation)
+        self.runtime = runtime
+        self.annotation = annotation or AnnotationComponent(runtime)
+        self.lean_check = lean_check or LeanCheckComponent(runtime)
+        self.revision_provider = revision_provider or _MissingDeclFileRevisionProvider(runtime)
 
     def derive_decl_file_path(
         self,
@@ -199,22 +202,22 @@ class DeclFileComponent:
         kind_dir = self._kind_dir(kind)
         try:
             ctx = FoundationContext(repo_root=Path(repo_root))
-            path = self.foundation.layout.decl_file_path(
+            path = self.runtime.foundation.layout.decl_file_path(
                 ctx,
                 DeclFileKey(node_path=node_path, decl_kind=kind_dir, decl_name=decl_name),
             )
-            self.foundation.layout.assert_within(Path(repo_root), path)
+            self.runtime.foundation.layout.assert_within(Path(repo_root), path)
             relative = path.relative_to(Path(repo_root).expanduser().resolve(strict=False)).as_posix()
             module = ".".join(Path(relative).with_suffix("").parts)
         except ValueError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "decl_file_path_invalid",
                     f"Decl-owned Lean file path cannot be derived: {exc}",
                     object_ref=f"{node_path}:{decl_name}",
                 )
             )
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             LeanPathView(
                 node_path=node_path,
                 decl_name=decl_name,
@@ -230,19 +233,25 @@ class DeclFileComponent:
     def prepare_statement_formal_file(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[LeanFileView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
-            return self.foundation.fail(revision.issues)
+            return self.runtime.foundation.fail(revision.issues)
         kind = self._decl_kind(revision.value)
         if kind is None:
-            return self.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
+            return self.runtime.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
+        open_issue = self._require_open_revision(revision.value, node_path=node_path, decl_name=decl_name)
+        if open_issue is not None:
+            return self.runtime.foundation.fail(open_issue)
+        kind_issue = self._supported_kind_issue(kind, node_path=node_path, decl_name=decl_name)
+        if kind_issue is not None:
+            return self.runtime.foundation.fail(kind_issue)
         nl_issue = self._require_nl_text(revision.value, "statement", node_path=node_path, decl_name=decl_name)
         if nl_issue is not None:
-            return self.foundation.fail(nl_issue)
+            return self.runtime.foundation.fail(nl_issue)
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
-            return self.foundation.fail(path_view.issues)
+            return self.runtime.foundation.fail(path_view.issues)
         docstring = self.annotation.render_statement_docstring(revision.value)
         if not docstring.ok or docstring.value is None:
-            return self.foundation.fail(docstring.issues)
+            return self.runtime.foundation.fail(docstring.issues)
         text = self._render_statement_file(
             node_path=node_path,
             decl_name=decl_name,
@@ -254,13 +263,19 @@ class DeclFileComponent:
     def prepare_proof_formal_file(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[LeanFileView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
-            return self.foundation.fail(revision.issues)
+            return self.runtime.foundation.fail(revision.issues)
         kind = self._decl_kind(revision.value)
         if kind is None:
-            return self.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
+            return self.runtime.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
+        open_issue = self._require_open_revision(revision.value, node_path=node_path, decl_name=decl_name)
+        if open_issue is not None:
+            return self.runtime.foundation.fail(open_issue)
+        kind_issue = self._supported_kind_issue(kind, node_path=node_path, decl_name=decl_name)
+        if kind_issue is not None:
+            return self.runtime.foundation.fail(kind_issue)
         if not self._is_theorem_like(kind):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "decl_not_theorem_like",
                     "Proof formal files are only valid for theorem-like declarations.",
                     object_ref=f"{node_path}:{decl_name}",
@@ -270,11 +285,11 @@ class DeclFileComponent:
             )
         nl_issue = self._require_nl_text(revision.value, "proof", node_path=node_path, decl_name=decl_name)
         if nl_issue is not None:
-            return self.foundation.fail(nl_issue)
+            return self.runtime.foundation.fail(nl_issue)
         statement_code = self._formal_code(revision.value, "statement")
         if statement_code is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "statement_formal_snapshot_missing",
                     "Proof formal preparation requires a captured statement formal snapshot.",
                     object_ref=f"{node_path}:{decl_name}",
@@ -283,47 +298,47 @@ class DeclFileComponent:
             )
         docstring = self.annotation.render_proof_docstring(revision.value)
         if not docstring.ok or docstring.value is None:
-            return self.foundation.fail(docstring.issues)
+            return self.runtime.foundation.fail(docstring.issues)
         replaced = self._replace_target_docstring(statement_code, docstring.value)
         if not replaced.ok or replaced.value is None:
-            return self.foundation.fail(replaced.issues)
+            return self.runtime.foundation.fail(replaced.issues)
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
-            return self.foundation.fail(path_view.issues)
+            return self.runtime.foundation.fail(path_view.issues)
         return self._write_file_view(Path(path_view.value.path), replaced.value, path_view.value, "proof", changed_summary="Prepared proof formal Lean file from statement snapshot.")
 
     def capture_statement_formal_file(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[FormalCaptureView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
-            return self.foundation.fail(revision.issues)
+            return self.runtime.foundation.fail(revision.issues)
         kind = self._decl_kind(revision.value)
         if kind is None:
-            return self.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
+            return self.runtime.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
-            return self.foundation.fail(path_view.issues)
+            return self.runtime.foundation.fail(path_view.issues)
         file_text = self._read_lean_file(Path(path_view.value.path), object_ref=f"{node_path}:{decl_name}")
         if not file_text.ok or file_text.value is None:
-            return self.foundation.fail(file_text.issues)
+            return self.runtime.foundation.fail(file_text.issues)
         docstring = self.annotation.render_statement_docstring(revision.value)
         if not docstring.ok or docstring.value is None:
-            return self.foundation.fail(docstring.issues)
+            return self.runtime.foundation.fail(docstring.issues)
         gate = self.annotation.validate_docstring(file_text.value, decl_name=decl_name, stage="statement", expected_docstring=docstring.value)
         if not gate.ok or gate.value is None:
-            return self.foundation.fail(gate.issues)
+            return self.runtime.foundation.fail(gate.issues)
         if not gate.value.passed:
-            return self.foundation.fail(gate.value.issues)
+            return self.runtime.foundation.fail(gate.value.issues)
         location = self.annotation.locate_target_declaration(file_text.value, decl_name=decl_name)
         if not location.ok or location.value is None:
-            return self.foundation.fail(location.issues)
+            return self.runtime.foundation.fail(location.issues)
         kind_gate = self._check_decl_kind_match(kind, location.value.kind, node_path=node_path, decl_name=decl_name)
         if not kind_gate.ok:
-            return self.foundation.fail(kind_gate.issues)
+            return self.runtime.foundation.fail(kind_gate.issues)
         check = self.lean_check.build_statement_lean_check(repo_root, file_path=Path(path_view.value.path), decl_kind=kind)
         if not check.ok or check.value is None:
-            return self.foundation.fail(check.issues)
+            return self.runtime.foundation.fail(check.issues)
         if check.value.status != "passed":
-            return self.foundation.fail(self._lean_check_failed_issue(node_path, decl_name, "statement", check.value))
+            return self.runtime.foundation.fail(self._lean_check_failed_issue(node_path, decl_name, "statement", check.value))
         saved = self.revision_provider.save_statement_formal_snapshot(
             Path(repo_root),
             node_path=node_path,
@@ -332,8 +347,8 @@ class DeclFileComponent:
             check=check.value,
         )
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(
             FormalCaptureView(
                 node_path=node_path,
                 decl_name=decl_name,
@@ -349,13 +364,13 @@ class DeclFileComponent:
     def capture_proof_formal_file(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[FormalCaptureView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
-            return self.foundation.fail(revision.issues)
+            return self.runtime.foundation.fail(revision.issues)
         kind = self._decl_kind(revision.value)
         if kind is None:
-            return self.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
+            return self.runtime.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
         if not self._is_theorem_like(kind):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "decl_not_theorem_like",
                     "Proof capture is only valid for theorem-like declarations.",
                     object_ref=f"{node_path}:{decl_name}",
@@ -364,8 +379,8 @@ class DeclFileComponent:
             )
         statement_code = self._formal_code(revision.value, "statement")
         if statement_code is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "statement_formal_snapshot_missing",
                     "Proof capture requires a captured statement formal snapshot.",
                     object_ref=f"{node_path}:{decl_name}",
@@ -374,28 +389,28 @@ class DeclFileComponent:
             )
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
-            return self.foundation.fail(path_view.issues)
+            return self.runtime.foundation.fail(path_view.issues)
         file_text = self._read_lean_file(Path(path_view.value.path), object_ref=f"{node_path}:{decl_name}")
         if not file_text.ok or file_text.value is None:
-            return self.foundation.fail(file_text.issues)
+            return self.runtime.foundation.fail(file_text.issues)
         docstring = self.annotation.render_proof_docstring(revision.value)
         if not docstring.ok or docstring.value is None:
-            return self.foundation.fail(docstring.issues)
+            return self.runtime.foundation.fail(docstring.issues)
         doc_gate = self.annotation.validate_docstring(file_text.value, decl_name=decl_name, stage="proof", expected_docstring=docstring.value)
         if not doc_gate.ok or doc_gate.value is None:
-            return self.foundation.fail(doc_gate.issues)
+            return self.runtime.foundation.fail(doc_gate.issues)
         if not doc_gate.value.passed:
-            return self.foundation.fail(doc_gate.value.issues)
+            return self.runtime.foundation.fail(doc_gate.value.issues)
         header_gate = self.annotation.compare_theorem_header(statement_code, file_text.value, decl_name=decl_name)
         if not header_gate.ok or header_gate.value is None:
-            return self.foundation.fail(header_gate.issues)
+            return self.runtime.foundation.fail(header_gate.issues)
         if not header_gate.value.passed:
-            return self.foundation.fail(header_gate.value.issues)
+            return self.runtime.foundation.fail(header_gate.value.issues)
         check = self.lean_check.build_proof_lean_check(repo_root, file_path=Path(path_view.value.path))
         if not check.ok or check.value is None:
-            return self.foundation.fail(check.issues)
+            return self.runtime.foundation.fail(check.issues)
         if check.value.status != "passed":
-            return self.foundation.fail(self._lean_check_failed_issue(node_path, decl_name, "proof", check.value))
+            return self.runtime.foundation.fail(self._lean_check_failed_issue(node_path, decl_name, "proof", check.value))
         saved = self.revision_provider.save_proof_formal_snapshot(
             Path(repo_root),
             node_path=node_path,
@@ -404,8 +419,8 @@ class DeclFileComponent:
             check=check.value,
         )
         if not saved.ok:
-            return self.foundation.fail(saved.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(
             FormalCaptureView(
                 node_path=node_path,
                 decl_name=decl_name,
@@ -428,22 +443,22 @@ class DeclFileComponent:
     ) -> ServiceResult[GateReport]:
         normalized_stage = self._normalize_stage(stage)
         if normalized_stage is None:
-            return self.foundation.fail(self._invalid_stage_issue(stage))
+            return self.runtime.foundation.fail(self._invalid_stage_issue(stage))
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
-            return self.foundation.fail(revision.issues)
+            return self.runtime.foundation.fail(revision.issues)
         kind = self._decl_kind(revision.value)
         if kind is None:
-            return self.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
+            return self.runtime.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
-            return self.foundation.fail(path_view.issues)
+            return self.runtime.foundation.fail(path_view.issues)
         snapshot = self._formal_code(revision.value, normalized_stage)
         if snapshot is None:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "decl_file_snapshot_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "formal_snapshot_missing",
                         "No captured formal snapshot exists for the requested stage.",
                         object_ref=f"{node_path}:{decl_name}",
@@ -454,10 +469,10 @@ class DeclFileComponent:
             )
         path = Path(path_view.value.path)
         if not path.exists():
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "decl_file_snapshot_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "decl_file_missing",
                         "Decl-owned Lean file is missing.",
                         object_ref=f"{node_path}:{decl_name}",
@@ -468,12 +483,12 @@ class DeclFileComponent:
             )
         file_text = self._read_lean_file(path, object_ref=f"{node_path}:{decl_name}")
         if not file_text.ok or file_text.value is None:
-            return self.foundation.fail(file_text.issues)
+            return self.runtime.foundation.fail(file_text.issues)
         if file_text.value != snapshot:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "decl_file_snapshot_sync",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "decl_file_snapshot_stale",
                         "Decl-owned Lean file was modified after the latest capture.",
                         object_ref=f"{node_path}:{decl_name}",
@@ -482,8 +497,8 @@ class DeclFileComponent:
                     summary="Decl-owned Lean file is not synchronized with captured metadata.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 "decl_file_snapshot_sync",
                 summary=f"{normalized_stage} formal file is synchronized with captured metadata.",
             )
@@ -492,22 +507,22 @@ class DeclFileComponent:
     def sync_decl_file_after_revision_reset(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[MutationSummaryView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
-            return self.foundation.fail(revision.issues)
+            return self.runtime.foundation.fail(revision.issues)
         kind = self._decl_kind(revision.value)
         if kind is None:
-            return self.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
+            return self.runtime.foundation.fail(self._missing_field_issue(node_path, decl_name, "kind"))
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
-            return self.foundation.fail(path_view.issues)
+            return self.runtime.foundation.fail(path_view.issues)
         path = Path(path_view.value.path)
         proof_code = self._formal_code(revision.value, "proof")
         statement_code = self._formal_code(revision.value, "statement")
         if proof_code is not None:
             write = self._write_text_if_changed(path, proof_code)
             if not write.ok or write.value is None:
-                return self.foundation.fail(write.issues)
-            return self.foundation.ok(
-                self.foundation.mutation_view(
+                return self.runtime.foundation.fail(write.issues)
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.mutation_view(
                     object_ref=f"{node_path}:{decl_name}",
                     changed=write.value,
                     summary="Synchronized Decl-owned file to proof formal snapshot.",
@@ -517,9 +532,9 @@ class DeclFileComponent:
         if statement_code is not None:
             write = self._write_text_if_changed(path, statement_code)
             if not write.ok or write.value is None:
-                return self.foundation.fail(write.issues)
-            return self.foundation.ok(
-                self.foundation.mutation_view(
+                return self.runtime.foundation.fail(write.issues)
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.mutation_view(
                     object_ref=f"{node_path}:{decl_name}",
                     changed=write.value,
                     summary="Synchronized Decl-owned file to statement formal snapshot.",
@@ -531,16 +546,16 @@ class DeclFileComponent:
             if changed:
                 path.unlink()
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "decl_file_delete_failed",
                     f"Failed to remove reset Decl-owned Lean file: {exc}",
                     object_ref=f"{node_path}:{decl_name}",
                     details={"path": str(path)},
                 )
             )
-        return self.foundation.ok(
-            self.foundation.mutation_view(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.mutation_view(
                 object_ref=f"{node_path}:{decl_name}",
                 changed=changed,
                 summary="Removed Decl-owned Lean file because the current revision has no formal snapshot.",
@@ -551,27 +566,27 @@ class DeclFileComponent:
     def remove_decl_file_for_delete(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[MutationSummaryView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not revision.ok or revision.value is None:
-            return self.foundation.fail(revision.issues)
+            return self.runtime.foundation.fail(revision.issues)
         kind = self._decl_kind(revision.value) or "definition"
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
-            return self.foundation.fail(path_view.issues)
+            return self.runtime.foundation.fail(path_view.issues)
         path = Path(path_view.value.path)
         changed = path.exists()
         try:
             if changed:
                 path.unlink()
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "decl_file_delete_failed",
                     f"Failed to remove Decl-owned Lean file: {exc}",
                     object_ref=f"{node_path}:{decl_name}",
                     details={"path": str(path)},
                 )
             )
-        return self.foundation.ok(
-            self.foundation.mutation_view(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.mutation_view(
                 object_ref=f"{node_path}:{decl_name}",
                 changed=changed,
                 summary=("Removed Decl-owned Lean file." if changed else "Decl-owned Lean file was already absent."),
@@ -611,12 +626,12 @@ class DeclFileComponent:
     def _replace_target_docstring(self, file_text: str, new_docstring: str) -> ServiceResult[str]:
         marker = self.annotation.parse_target_marker(file_text)
         if not marker.ok or marker.value is None:
-            return self.foundation.fail(marker.issues)
+            return self.runtime.foundation.fail(marker.issues)
         lines = file_text.splitlines()
         start = marker.value.docstring_start_line - 1
         end = marker.value.docstring_end_line
         new_lines = new_docstring.splitlines()
-        return self.foundation.ok("\n".join([*lines[:start], *new_lines, *lines[end:]]).rstrip() + "\n")
+        return self.runtime.foundation.ok("\n".join([*lines[:start], *new_lines, *lines[end:]]).rstrip() + "\n")
 
     def _write_file_view(
         self,
@@ -629,8 +644,8 @@ class DeclFileComponent:
     ) -> ServiceResult[LeanFileView]:
         write = self._write_text_if_changed(path, text)
         if not write.ok or write.value is None:
-            return self.foundation.fail(write.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(write.issues)
+        return self.runtime.foundation.ok(
             LeanFileView(
                 node_path=path_view.node_path,
                 decl_name=path_view.decl_name,
@@ -650,10 +665,10 @@ class DeclFileComponent:
             changed = old != text
             if changed:
                 path.write_text(text, encoding="utf-8")
-            return self.foundation.ok(changed)
+            return self.runtime.foundation.ok(changed)
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "decl_file_write_failed",
                     f"Failed to write Decl-owned Lean file: {exc}",
                     details={"path": str(path)},
@@ -662,18 +677,18 @@ class DeclFileComponent:
 
     def _read_lean_file(self, path: Path, *, object_ref: str) -> ServiceResult[str]:
         if not path.exists():
-            return self.foundation.fail(
-                self.foundation.issue("decl_file_missing", "Decl-owned Lean file is missing.", object_ref=object_ref, details={"path": str(path)})
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("decl_file_missing", "Decl-owned Lean file is missing.", object_ref=object_ref, details={"path": str(path)})
             )
         try:
-            return self.foundation.ok(path.read_text(encoding="utf-8"))
+            return self.runtime.foundation.ok(path.read_text(encoding="utf-8"))
         except UnicodeDecodeError as exc:
-            return self.foundation.fail(
-                self.foundation.issue("decl_file_not_utf8", f"Decl-owned Lean file is not UTF-8: {exc}", object_ref=object_ref, details={"path": str(path)})
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("decl_file_not_utf8", f"Decl-owned Lean file is not UTF-8: {exc}", object_ref=object_ref, details={"path": str(path)})
             )
         except OSError as exc:
-            return self.foundation.fail(
-                self.foundation.issue("decl_file_read_failed", f"Failed to read Decl-owned Lean file: {exc}", object_ref=object_ref, details={"path": str(path)})
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("decl_file_read_failed", f"Failed to read Decl-owned Lean file: {exc}", object_ref=object_ref, details={"path": str(path)})
             )
 
     def _formal_code(self, revision: Any, stage: DeclFileStage) -> str | None:
@@ -695,9 +710,11 @@ class DeclFileComponent:
 
     def _require_nl_text(self, revision: Any, stage: DeclFileStage, *, node_path: str, decl_name: str) -> Any | None:
         value = self._get_path(revision, (stage, "nl", "text"))
+        if not (isinstance(value, str) and value.strip()):
+            value = self._get_path(revision, (f"{stage}_nl",))
         if isinstance(value, str) and value.strip():
             return None
-        return self.foundation.issue(
+        return self.runtime.foundation.issue(
             f"{stage}_nl_missing",
             f"{stage.capitalize()} natural-language content is required before preparing the formal Lean file.",
             object_ref=f"{node_path}:{decl_name}",
@@ -708,8 +725,8 @@ class DeclFileComponent:
         normalized = self._normalize_kind(expected_kind)
         allowed = self._ALLOWED_LEAN_KINDS.get(normalized, {normalized})
         if lean_kind not in allowed:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "target_declaration_kind_mismatch",
                     "Target Lean declaration kind does not match Decl metadata kind.",
                     object_ref=f"{node_path}:{decl_name}",
@@ -717,10 +734,36 @@ class DeclFileComponent:
                     expected=", ".join(sorted(allowed)),
                 )
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)
+
+    def _require_open_revision(self, revision: Any, *, node_path: str, decl_name: str) -> Any | None:
+        version_status = self._text_or_none(self._get_path(revision, ("version_status",)))
+        if version_status is None or version_status == "open":
+            return None
+        return self.runtime.foundation.issue(
+            "decl_revision_not_open",
+            "Preparing a formal Lean file requires the current declaration revision to be open.",
+            object_ref=f"{node_path}:{decl_name}",
+            field="version_status",
+            current=version_status,
+            expected="open",
+        )
+
+    def _supported_kind_issue(self, kind: str, *, node_path: str, decl_name: str) -> Any | None:
+        normalized = self._normalize_kind(kind)
+        if normalized in self._KIND_DIRS:
+            return None
+        return self.runtime.foundation.issue(
+            "decl_kind_unsupported",
+            "Decl-owned Lean file preparation does not support this declaration kind.",
+            object_ref=f"{node_path}:{decl_name}",
+            field="kind",
+            current=kind,
+            expected=", ".join(sorted(self._KIND_DIRS)),
+        )
 
     def _lean_check_failed_issue(self, node_path: str, decl_name: str, stage: DeclFileStage, check: LeanCheckView) -> Any:
-        return self.foundation.issue(
+        return self.runtime.foundation.issue(
             f"{stage}_lean_check_failed",
             check.message,
             object_ref=f"{node_path}:{decl_name}",
@@ -728,7 +771,7 @@ class DeclFileComponent:
         )
 
     def _missing_field_issue(self, node_path: str, decl_name: str, field: str) -> Any:
-        return self.foundation.issue(
+        return self.runtime.foundation.issue(
             "decl_revision_field_missing",
             f"DeclRevision is missing required field: {field}.",
             object_ref=f"{node_path}:{decl_name}",
@@ -736,7 +779,7 @@ class DeclFileComponent:
         )
 
     def _invalid_stage_issue(self, stage: object) -> Any:
-        return self.foundation.issue(
+        return self.runtime.foundation.issue(
             "decl_file_stage_invalid",
             "Decl file stage must be statement or proof.",
             field="stage",

@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, field_validator
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.foundation import FoundationService, GateReport, ServiceResult
+from lean_constellation.services.foundation import GateReport, ServiceResult
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class TargetMarkerView(StrictModel):
@@ -75,14 +78,14 @@ class AnnotationComponent:
         "scoped",
     )
 
-    def __init__(self, foundation: FoundationService | None = None) -> None:
-        self.foundation = foundation or FoundationService()
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
 
     def render_statement_docstring(self, revision: Any) -> ServiceResult[str]:
         decl_name = self._decl_name(revision)
         if decl_name is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "decl_name_missing",
                     "Cannot render statement docstring without a Decl name.",
                     field="revision.name",
@@ -92,7 +95,7 @@ class AnnotationComponent:
         nl_text = self._nl_text(self._get_path(statement, ("nl",)))
         origin = self._get_path(self._get_path(statement, ("nl",)), ("origin",))
         deps = self._as_list(self._get_path(statement, ("deps",)))
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             self._render_docstring(
                 decl_name=decl_name,
                 stage="statement",
@@ -107,8 +110,8 @@ class AnnotationComponent:
     def render_proof_docstring(self, revision: Any) -> ServiceResult[str]:
         decl_name = self._decl_name(revision)
         if decl_name is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "decl_name_missing",
                     "Cannot render proof docstring without a Decl name.",
                     field="revision.name",
@@ -119,7 +122,7 @@ class AnnotationComponent:
         statement_nl = self._nl_text(self._get_path(statement, ("nl",)))
         proof_nl = self._nl_text(self._get_path(proof, ("nl",)))
         proof_origin = self._get_path(self._get_path(proof, ("nl",)), ("origin",))
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             self._render_docstring(
                 decl_name=decl_name,
                 stage="proof",
@@ -157,21 +160,21 @@ class AnnotationComponent:
                     )
                 )
         if not markers:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "target_marker_missing",
                     "No lean-constellation target marker was found in the Lean file text.",
                 )
             )
         if len(markers) > 1:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "target_marker_duplicate",
                     "A Decl-owned Lean file must contain exactly one target marker.",
                     current=", ".join(marker.decl_name for marker in markers),
                 )
             )
-        return self.foundation.ok(markers[0])
+        return self.runtime.foundation.ok(markers[0])
 
     def validate_docstring(
         self,
@@ -182,8 +185,8 @@ class AnnotationComponent:
         expected_docstring: str,
     ) -> ServiceResult[GateReport]:
         if stage not in {"statement", "proof"}:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "docstring_stage_invalid",
                     "Docstring stage must be statement or proof.",
                     field="stage",
@@ -193,8 +196,8 @@ class AnnotationComponent:
             )
         marker = self.parse_target_marker(file_text)
         if not marker.ok or marker.value is None:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     f"{stage}_docstring",
                     marker.issues,
                     summary="Target docstring marker is missing or invalid.",
@@ -203,7 +206,7 @@ class AnnotationComponent:
         issues = []
         if marker.value.decl_name != decl_name:
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "target_marker_decl_mismatch",
                     "The target marker points to a different declaration.",
                     field="decl_name",
@@ -213,7 +216,7 @@ class AnnotationComponent:
             )
         if self._normalize_docstring(marker.value.docstring) != self._normalize_docstring(expected_docstring):
             issues.append(
-                self.foundation.issue(
+                self.runtime.foundation.issue(
                     "system_docstring_changed",
                     "The system docstring does not match the expected generated docstring.",
                     object_ref=decl_name,
@@ -221,15 +224,15 @@ class AnnotationComponent:
                 )
             )
         if issues:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     f"{stage}_docstring",
                     issues,
                     summary="System docstring validation failed.",
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
                 f"{stage}_docstring",
                 summary=f"System {stage} docstring is synchronized.",
             )
@@ -238,16 +241,16 @@ class AnnotationComponent:
     def locate_target_declaration(self, file_text: str, *, decl_name: str) -> ServiceResult[LeanDeclarationLocationView]:
         matches = self._find_declaration_headers(file_text, decl_name)
         if not matches:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "target_declaration_missing",
                     "Target declaration header could not be located conservatively.",
                     object_ref=decl_name,
                 )
             )
         if len(matches) > 1:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "target_declaration_duplicate",
                     "Multiple declaration headers match the target declaration name.",
                     object_ref=decl_name,
@@ -255,7 +258,7 @@ class AnnotationComponent:
                 )
             )
         kind, start_line, header_end_line, header = matches[0]
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             LeanDeclarationLocationView(
                 decl_name=decl_name,
                 kind=kind,
@@ -275,8 +278,8 @@ class AnnotationComponent:
         if not proof_header.ok:
             issues.extend(proof_header.issues)
         if issues:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "theorem_header",
                     issues,
                     summary="The theorem header could not be extracted reliably.",
@@ -287,10 +290,10 @@ class AnnotationComponent:
         expected = self._normalize_header(statement_header.value)
         current = self._normalize_header(proof_header.value)
         if expected != current:
-            return self.foundation.ok(
-                self.foundation.gate_failed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
                     "theorem_header",
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "theorem_header_changed",
                         "Proof formalization changed the theorem statement header.",
                         object_ref=decl_name,
@@ -300,7 +303,7 @@ class AnnotationComponent:
                     summary="Theorem header changed.",
                 )
             )
-        return self.foundation.ok(self.foundation.gate_passed("theorem_header", summary="Theorem header is unchanged."))
+        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("theorem_header", summary="Theorem header is unchanged."))
 
     def _render_docstring(
         self,
@@ -353,10 +356,10 @@ class AnnotationComponent:
     def _extract_theorem_header(self, code: str, decl_name: str) -> ServiceResult[str]:
         location = self.locate_target_declaration(code, decl_name=decl_name)
         if not location.ok or location.value is None:
-            return self.foundation.fail(location.issues)
+            return self.runtime.foundation.fail(location.issues)
         if location.value.kind not in {"theorem", "lemma"}:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "target_not_theorem_like",
                     "The target declaration is not theorem-like.",
                     object_ref=decl_name,
@@ -367,14 +370,14 @@ class AnnotationComponent:
         header = location.value.header
         terminator = self._header_terminator_index(header)
         if terminator is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "theorem_header_terminator_missing",
                     "The theorem header must contain a recognizable ':=' or proof-introducing 'by'.",
                     object_ref=decl_name,
                 )
             )
-        return self.foundation.ok(header[:terminator].strip())
+        return self.runtime.foundation.ok(header[:terminator].strip())
 
     def _header_terminator_index(self, text: str) -> int | None:
         assign = text.find(":=")

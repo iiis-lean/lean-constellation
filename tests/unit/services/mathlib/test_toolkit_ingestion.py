@@ -1,13 +1,14 @@
 from pathlib import Path
 
-from lean_constellation.services.external_clients import ExternalClientService, LeanMcpToolkitClient
+from tests.unit_services_helpers import make_runtime
+
+from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.mathlib import MathlibCandidateCache, MathlibService
 
 
 def _service(dispatcher) -> MathlibService:
     toolkit = LeanMcpToolkitClient(dispatcher=dispatcher)
-    external = ExternalClientService(lean_mcp_toolkit=toolkit)
-    return MathlibService(external=external)
+    return make_runtime(external_overrides={"lean_mcp_toolkit": toolkit}).mathlib
 
 
 def test_search_external_mathlib_caches_candidates_without_index_write(tmp_path: Path) -> None:
@@ -62,7 +63,7 @@ def test_search_external_mathlib_reuses_stable_candidate_id_for_same_query_and_i
     assert first.value.candidates[0].candidate_id == second.value.candidates[0].candidate_id
     assert second.value.candidates[0].source_kind == "lean_explore.find"
     cache_path = tmp_path / ".lean_constellation" / "indexes" / "mathlib_candidates.json"
-    cached = service.foundation.read_json(cache_path, MathlibCandidateCache)
+    cached = service.runtime.foundation.read_json(cache_path, MathlibCandidateCache)
     assert cached.ok and cached.value is not None
     assert list(cached.value.candidates) == [first.value.candidates[0].candidate_id]
 

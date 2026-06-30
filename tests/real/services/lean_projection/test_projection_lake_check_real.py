@@ -6,9 +6,10 @@ from typing import Any
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.external_clients import (
-    ExternalClientService,
     LakeCommandClient,
     LakeCommandClientConfig,
     LeanMcpToolkitClient,
@@ -104,7 +105,7 @@ def _write_minimal_lake_repo(repo_root: Path) -> None:
 
 
 def _create_content_node(repo_root: Path) -> None:
-    tree = NodeTreeComponent()
+    tree = make_runtime().node.node_tree
     assert tree.ensure_root_scope_node(repo_root).ok
     assert tree.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     assert tree.create_content_node(
@@ -146,17 +147,18 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
     _write_minimal_lake_repo(repo_root)
     _create_content_node(repo_root)
 
-    foundation = FoundationService()
-    public_provider = MutablePublicDeclProvider(foundation)
-    export = ExportComponent(foundation=foundation, public_decl_provider=public_provider)
-    revisions = {("Main.Topic.Core", "main_result"): _revision()}
-    external = ExternalClientService(
-        lake=LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout)),
-        lean_mcp_toolkit=LeanMcpToolkitClient(),
+    runtime = make_runtime(
+        external_overrides={
+            "lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout)),
+            "lean_mcp_toolkit": LeanMcpToolkitClient(),
+        }
     )
+    foundation = runtime.foundation
+    public_provider = MutablePublicDeclProvider(foundation)
+    revisions = {("Main.Topic.Core", "main_result"): _revision()}
+    export = ExportComponent(runtime, public_decl_provider=public_provider)
     service = LeanProjectionService(
-        foundation=foundation,
-        external=external,
+        runtime,
         decl_revision_provider=DictRevisionProvider(foundation, revisions),
     )
     service.node_projection.export = export
@@ -172,7 +174,7 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
     assert empty_interfaces.value is not None
     assert service.node_projection.check_interfaces_sync(repo_root, node_path="Main.Topic.Core").value.passed is True  # type: ignore[union-attr]
 
-    initial_build = external.lake.run_lake_build(repo_root, timeout_seconds=timeout)
+    initial_build = runtime.external.lake.run_lake_build(repo_root, timeout_seconds=timeout)
     assert initial_build.ok, initial_build.summary
 
     prepared_statement = service.prepare_statement_formal_stage_file(
@@ -253,7 +255,7 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
     assert "import Main.Topic.Core.Theorems.main_result" in interfaces_text
     assert service.node_projection.check_interfaces_sync(repo_root, node_path="Main.Topic.Core").value.passed is True  # type: ignore[union-attr]
 
-    final_build = external.lake.run_lake_build(repo_root, timeout_seconds=timeout)
+    final_build = runtime.external.lake.run_lake_build(repo_root, timeout_seconds=timeout)
     assert final_build.ok, final_build.summary
 
     bad_file = repo_root / "Main" / "Topic" / "Core" / "BadDiagnostics.lean"
