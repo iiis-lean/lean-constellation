@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agent_runtime_kit.flow.registry import FlowTypeRegistry, StepTypeRegistry
 from agent_runtime_kit.flow.standard_steps import DispatchStep
 
@@ -33,3 +35,34 @@ def test_lean_flow_step_registry_is_idempotent() -> None:
 
     assert first
     assert second == []
+
+
+def test_lean_flow_step_registry_applies_step_type_overrides() -> None:
+    class ControlledDispatchStep(DispatchStep):
+        step_type = DispatchStep.step_type
+
+    step_registry = StepTypeRegistry()
+
+    register_lean_flow_step_types(
+        step_registry=step_registry,
+        step_type_overrides={DispatchStep.step_type: ControlledDispatchStep},
+    )
+
+    assert step_registry.get(DispatchStep.step_type) is ControlledDispatchStep
+
+
+def test_lean_flow_step_registry_rejects_invalid_step_type_overrides() -> None:
+    class WrongDispatchStep(DispatchStep):
+        step_type = "wrong_dispatch"
+
+    with pytest.raises(ValueError, match="unknown step_type override"):
+        register_lean_flow_step_types(
+            step_registry=StepTypeRegistry(),
+            step_type_overrides={"missing_step": DispatchStep},
+        )
+
+    with pytest.raises(ValueError, match="declares wrong_dispatch"):
+        register_lean_flow_step_types(
+            step_registry=StepTypeRegistry(),
+            step_type_overrides={DispatchStep.step_type: WrongDispatchStep},
+        )

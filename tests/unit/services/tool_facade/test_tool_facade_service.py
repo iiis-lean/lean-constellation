@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.unit_services_helpers import make_runtime
 
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -75,12 +76,19 @@ def _write_preparation_input(repo_root: Path) -> None:
     assert foundation.store.write_json_atomic(path, prep).ok
 
 
-def _runtime(repo_root: Path, *, view: str = "worker_view", role: str = "worker", successful: bool = False) -> RuntimeToolContext:
+def _runtime(
+    repo_root: Path,
+    *,
+    view: str = "worker_view",
+    role: str = "worker",
+    agent_type: str = "statement_nl_worker",
+    successful: bool = False,
+) -> RuntimeToolContext:
     return RuntimeToolContext(
         flow_id="flow_1",
         step_id="step_1",
         agent_id="agent_1",
-        agent_type="statement_nl_worker",
+        agent_type=agent_type,
         agent_role=role,
         expected_view_key=view,
         repo_root=repo_root,
@@ -97,7 +105,12 @@ def _runtime(repo_root: Path, *, view: str = "worker_view", role: str = "worker"
     )
 
 
-def _tool_service(tmp_path: Path) -> tuple[ToolFacadeService, list[str], FakeSubmissionGateway]:
+def _tool_service(
+    tmp_path: Path,
+    *,
+    agent_skill_keys: Mapping[str, Sequence[str]] | None = None,
+    agent_type_permission_names: Callable[[str], set[str]] | None = None,
+) -> tuple[ToolFacadeService, list[str], FakeSubmissionGateway]:
     runtime = make_runtime(
         external_overrides={"lean_mcp_toolkit": LeanMcpToolkitClient(dispatcher=FakeToolkitDispatcher())}
     )
@@ -127,7 +140,12 @@ def _tool_service(tmp_path: Path) -> tuple[ToolFacadeService, list[str], FakeSub
             )
         )
 
-    service = ToolFacadeService(runtime, submission_gateway=gateway)
+    service = ToolFacadeService(
+        runtime,
+        submission_gateway=gateway,
+        agent_skill_keys=agent_skill_keys,
+        agent_type_permission_names=agent_type_permission_names,
+    )
     registered = service.register_application_tools(
         [
             ToolSpec(
@@ -254,6 +272,35 @@ def test_tool_view_registry_validates_views_and_alignment(tmp_path: Path) -> Non
     assert alignment.value is not None
     assert alignment.value.passed is True
     assert alignment.value.issues[0].kind == "tool_skill_alignment_missing"
+
+
+def test_tool_view_accepts_inherited_agent_type_permission_names(tmp_path: Path) -> None:
+    def permission_names(agent_type: str) -> set[str]:
+        if agent_type == "controlled_worker":
+            return {"controlled_worker", "statement_nl_worker"}
+        return {agent_type}
+
+    service, calls, _ = _tool_service(
+        tmp_path,
+        agent_skill_keys={"controlled_worker": ["worker-write"]},
+        agent_type_permission_names=permission_names,
+    )
+
+    view = service.build_tool_view("controlled_worker")
+    assert view.ok
+    assert view.value is not None
+    assert view.value.key == "worker_view"
+
+    raw = RawToolCallContext(
+        endpoint_view_key="worker_view",
+        runtime_context=_runtime(tmp_path, agent_type="controlled_worker"),
+    )
+    invoked = service.invoke_agent_tool(raw, tool_name="echo_write", flat_args={"message": "controlled"})
+
+    assert invoked.ok
+    assert invoked.value is not None
+    assert invoked.value.ok is True
+    assert calls == ["worker:controlled"]
 
 
 def test_permission_guard_blocks_wrong_roles_and_object_mutations(tmp_path: Path) -> None:

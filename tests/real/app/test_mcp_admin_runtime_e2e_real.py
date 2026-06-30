@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
 import sys
+from time import monotonic, sleep
 from typing import Any
 
 import pytest
@@ -13,15 +15,32 @@ from agent_runtime_kit.agent.homes import HomeCreateSpec
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import (
+    AdminFlowAdvanceInput,
+    AdminStepStartInput,
+    ExternalTakeoverCompleteInput,
+    ExternalTakeoverToolCallInput,
+    ExternalTakeoverToolListInput,
     LeanAdminApi,
+    ManualCheckpointInput,
+    SetAgentStepOverrideInput,
     SnapshotCreateInput,
     SnapshotRestoreInput,
     StartFlowInput,
+    build_external_takeover_agent_providers,
+    call_external_takeover_tool,
+    complete_external_takeover_handoff,
     create_app_runtime_services,
+    create_test_control_runtime_services,
     initialize_repo_runtime,
     materialize_agent_home,
 )
+from lean_constellation.agents import build_agent_type_specs, derive_agent_type_spec
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.flows.testing import (
+    CONTROLLED_AGENT_OVERRIDE_ALIASES,
+    CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES,
+    ControlledAgentOverrideSpec,
+)
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.mcp import create_mcp_server
 from lean_constellation.services.decl_graph import DeclState
@@ -145,6 +164,79 @@ class _ScriptedMcpProvider:
         path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+class _ExternalTakeoverMcpController:
+    def __init__(self, runtime, runtime_root: Path, scripts: dict[str, list[Any]]) -> None:
+        self.runtime = runtime
+        self.runtime_root = Path(runtime_root)
+        self.scripts = {key: list(value) for key, value in scripts.items()}
+        self.calls: list[dict[str, Any]] = []
+        self.completed_handoff_ids: set[str] = set()
+
+    def drain_pending(self, *, wait_s: float = 0) -> int:
+        deadline = monotonic() + wait_s
+        processed = 0
+        while True:
+            processed += self._drain_once()
+            if processed or wait_s <= 0 or monotonic() >= deadline:
+                return processed
+            sleep(0.01)
+
+    def _drain_once(self) -> int:
+        processed = 0
+        for handoff_path in sorted((self.runtime_root / "external_turns").glob("*/handoff.json")):
+            completion_path = handoff_path.with_name("completion.json")
+            if completion_path.exists():
+                continue
+            handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+            handoff_id = str(handoff["handoff_id"])
+            if handoff_id in self.completed_handoff_ids:
+                continue
+            self._handle_handoff(handoff)
+            self.completed_handoff_ids.add(handoff_id)
+            processed += 1
+        return processed
+
+    def _handle_handoff(self, handoff: dict[str, Any]) -> None:
+        env = dict(handoff["env"])
+        agent_type = env["LEAN_CONSTELLATION_AGENT_TYPE"]
+        if not self.scripts.get(agent_type):
+            raise AssertionError(f"no external takeover action available for {agent_type}")
+        actions = _ScriptedMcpProvider(None, {})._normalize_actions(self.scripts[agent_type].pop(0))
+        last_tool_name: str | None = None
+        for view_kind, tool_name, arguments in actions:
+            view_key = env["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] if view_kind == "application" else env["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"]
+            called = call_external_takeover_tool(
+                self.runtime,
+                self.runtime_root,
+                ExternalTakeoverToolCallInput(
+                    handoff_id=str(handoff["handoff_id"]),
+                    view_kind=view_kind,
+                    tool_name=tool_name,
+                    arguments=dict(arguments),
+                ),
+            )
+            assert called.ok is True, called
+            last_tool_name = tool_name
+            self.calls.append(
+                {
+                    "agent_type": agent_type,
+                    "tool_name": tool_name,
+                    "arguments": dict(arguments),
+                    "prompt": handoff.get("prompt"),
+                    "view_key": view_key,
+                    "handoff_id": handoff["handoff_id"],
+                }
+            )
+        complete_external_takeover_handoff(
+            self.runtime_root,
+            ExternalTakeoverCompleteInput(
+                handoff_id=str(handoff["handoff_id"]),
+                final_response=f"{agent_type} externally called {last_tool_name or 'no tool'}",
+                thread_id=f"external-thread-{handoff['handoff_id']}",
+            ),
+        )
+
+
 class _FakeLakeClient:
     def run_lake_update(self, repo_root: Path) -> ExternalCommandResult:
         return ExternalCommandResult(ok=True, command=["lake", "update"], cwd=str(repo_root), exit_code=0, summary="lake update ok")
@@ -182,6 +274,22 @@ def _runtime(tmp_path: Path, provider: _ScriptedMcpProvider | None = None):
     if provider is not None:
         runtime.ark.agent_service.providers["codex"] = provider
     return runtime
+
+
+def _external_takeover_runtime(tmp_path: Path, *, extra_agent_type_specs=None, step_type_overrides=None):
+    runtime_root = tmp_path / ".agent_runtime"
+    runtime = create_app_runtime_services(
+        runtime_root=runtime_root,
+        external_overrides={"lake": _FakeLakeClient()},
+        extra_agent_type_specs=extra_agent_type_specs,
+        step_type_overrides=step_type_overrides,
+        agent_providers=build_external_takeover_agent_providers(
+            runtime_root,
+            poll_interval_s=0.01,
+            default_timeout_s=10,
+        ),
+    )
+    return runtime, runtime_root
 
 
 def _install_provider(runtime, provider: _ScriptedMcpProvider) -> None:
@@ -292,6 +400,91 @@ def _schedule_until(runtime, predicate, *, limit: int = 80, step_timeout_s: floa
     raise AssertionError("scheduler did not reach expected state")
 
 
+def _schedule_external_until(runtime, controller: _ExternalTakeoverMcpController, predicate, *, limit: int = 80) -> None:  # noqa: ANN001
+    for _ in range(limit):
+        if predicate():
+            return
+        runtime.ark.schedule_service.rebuild_candidate_queues()
+        tick = runtime.ark.schedule_service.schedule_ready()
+        if tick.started_step_ids:
+            controller.drain_pending(wait_s=2)
+        else:
+            controller.drain_pending()
+        for step_id in tick.started_step_ids:
+            runtime.ark.step_service.wait_step(step_id, timeout_s=10)
+        controller.drain_pending()
+        if predicate():
+            return
+    raise AssertionError("external takeover scheduler did not reach expected state")
+
+
+def _start_resource_curation_flow(runtime, repo_root: Path, *, target_kind: str, target: str) -> str:  # noqa: ANN001
+    return runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="resource_curation",
+            scope_id=f"repo:{repo_root.name}",
+            params={
+                "repo_key": repo_root.name,
+                "repo_root": str(repo_root),
+                "target_kind": target_kind,
+                "target": target,
+                "requested_by": "coordinator",
+                "context_summary": "External takeover test resource request.",
+            },
+        )
+    )
+
+
+def _run_external_step(runtime, controller: _ExternalTakeoverMcpController, step_id: str) -> None:  # noqa: ANN001
+    runtime.ark.step_service.start_step(step_id)
+    controller.drain_pending(wait_s=2)
+    runtime.ark.step_service.wait_step(step_id, timeout_s=10)
+    controller.drain_pending()
+
+
+def _wait_for_admin_pending_handoff(admin: LeanAdminApi):
+    deadline = monotonic() + 5
+    while monotonic() < deadline:
+        pending = admin.list_external_takeovers(status="pending")
+        assert pending.ok, pending.issues
+        if pending.value:
+            return pending.value[0]
+        sleep(0.01)
+    raise TimeoutError("external takeover handoff was not visible through Admin API")
+
+
+def _admin_run_external_submit(admin: LeanAdminApi, step_id: str, tool_name: str, arguments: dict[str, Any]) -> None:
+    started = admin.start_step_once(AdminStepStartInput(step_id=step_id, wait=False))
+    assert started.ok, started.issues
+    handoff = _wait_for_admin_pending_handoff(admin)
+    called = admin.call_external_takeover_tool(
+        ExternalTakeoverToolCallInput(
+            handoff_id=handoff.handoff_id,
+            view_kind="submit",
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+    )
+    assert called.ok and called.value is not None
+    assert called.value.ok is True
+    completed = admin.complete_external_takeover(
+        ExternalTakeoverCompleteInput(
+            handoff_id=handoff.handoff_id,
+            final_response=f"Admin external takeover called {tool_name}.",
+            thread_id=f"admin-thread-{handoff.handoff_id}",
+        )
+    )
+    assert completed.ok, completed.issues
+    waited = admin.wait_step(AdminStepStartInput(step_id=step_id, timeout_s=10))
+    assert waited.ok, waited.issues
+
+
+def _write_resource_draft_files(draft_root: Path, source_text: str = "resource text\n") -> None:
+    (draft_root / "README.md").write_text("# Curated resource\n\nCreated by external takeover test.\n", encoding="utf-8")
+    (draft_root / "original" / "raw.txt").write_text(source_text, encoding="utf-8")
+    (draft_root / "normalized" / "main.md").write_text(source_text, encoding="utf-8")
+
+
 def test_semireal_repo_format_discovery_mcp_submit_through_scheduler(tmp_path: Path) -> None:
     provider = _ScriptedMcpProvider(
         None,
@@ -328,6 +521,764 @@ def test_semireal_repo_format_discovery_mcp_submit_through_scheduler(tmp_path: P
     assert provider.calls[0]["tool_name"] == "submit_native_repo_choice"
     agent_steps = runtime.ark.flow_service.list_steps(flow_id=flow_id, step_type="repo_format_discovery_agent_step")
     assert agent_steps[0].submission.submission_type == "repo_format_native_choice"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected_outcome", "expected_submission"),
+    [
+        (
+            "submit_native_repo_choice",
+            {"summary": "Use native via external takeover.", "source_corpus_mode": "prepare"},
+            "native_bootstrap_ready",
+            "repo_format_native_choice",
+        ),
+        (
+            "submit_adapter_repo_choice",
+            {
+                "summary": "Use adapter via external takeover.",
+                "upstream_github_url": "https://github.com/example/upstream.git",
+                "upstream_revision": "main",
+                "upstream_subdir": "lean",
+                "adapter_repo_name": "AdapterProvider",
+            },
+            "adapter_bootstrap_ready",
+            "repo_format_adapter_choice",
+        ),
+    ],
+)
+def test_semireal_external_takeover_repo_format_native_and_adapter(
+    tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, Any],
+    expected_outcome: str,
+    expected_submission: str,
+) -> None:
+    runtime, runtime_root = _external_takeover_runtime(tmp_path)
+    controller = _ExternalTakeoverMcpController(
+        runtime,
+        runtime_root,
+        {"RepoFormatDiscoveryAgent": [(tool_name, arguments)]},
+    )
+    _create_homes(runtime, "RepoFormatDiscoveryAgent")
+    workspace = tmp_path / "workspace"
+    repo_name = "AdapterProvider" if expected_submission == "repo_format_adapter_choice" else "Provider"
+    repo_root = workspace / repo_name
+    _write_bootstrap_preparation(runtime, repo_root)
+    flow_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="requirement_group_repo_bootstrap",
+            scope_id=f"repo:{repo_name}",
+            params={
+                "target_repo": repo_name,
+                "repo_root": str(repo_root),
+                "workspace_root": str(workspace),
+                "requirement_refs": ["Consumer:need_provider"],
+            },
+        )
+    )
+
+    _schedule_external_until(runtime, controller, lambda: runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED)
+
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    agent_steps = runtime.ark.flow_service.list_steps(flow_id=flow_id, step_type="repo_format_discovery_agent_step")
+    assert flow.result is not None
+    assert flow.result.outcome == expected_outcome
+    assert agent_steps[0].submission.submission_type == expected_submission
+    assert controller.calls[0]["tool_name"] == tool_name
+    assert controller.calls[0]["view_key"] == "repo_format_discovery_submit"
+
+
+def test_semireal_external_takeover_resource_request_callback(tmp_path: Path) -> None:
+    runtime, runtime_root = _external_takeover_runtime(tmp_path)
+    controller = _ExternalTakeoverMcpController(
+        runtime,
+        runtime_root,
+        {
+            "CoordinatorAgent": [
+                (
+                    "submit_resource_request",
+                    {
+                        "summary": "Curate arxiv source through external takeover.",
+                        "target_kind": "arxiv",
+                        "target": "2501.12345",
+                        "context_summary": "Need a narrow source.",
+                    },
+                ),
+                (
+                    "submit_repo_requirement",
+                    {
+                        "summary": "Wait for provider after callback.",
+                        "name": "provider_req",
+                        "target_repo": "ProviderRepo",
+                        "reason": "Need reusable provider.",
+                    },
+                ),
+            ],
+            "ResourceCuratorAgent": [
+                (
+                    "submit_resource_rejected",
+                    {
+                        "reason": "No useful source found.",
+                        "target_kind": "arxiv",
+                        "target": "2501.12345",
+                        "details": ["Search exhausted."],
+                    },
+                )
+            ],
+        },
+    )
+    _create_homes(runtime, "CoordinatorAgent", "ResourceCuratorAgent")
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    flow_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="native_repo_coordinator",
+            scope_id="repo:Repo",
+            params={"repo_key": "Repo", "repo_root": str(repo_root), "start_mode": "admin_start", "start_reason": "external takeover e2e"},
+        )
+    )
+
+    _schedule_external_until(
+        runtime,
+        controller,
+        lambda: runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.WAITING
+        and runtime.ark.flow_service.get_flow(flow_id).state.position.phase == "waiting_requirement",
+    )
+
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    coordinator_calls = [call for call in controller.calls if call["agent_type"] == "CoordinatorAgent"]
+    assert flow.state.position.phase == "waiting_requirement"
+    assert flow.state.waiting_requirement_name == "provider_req"
+    assert len(coordinator_calls) == 2
+    assert "The child workflows you requested have finished." in coordinator_calls[1]["prompt"]
+    assert "No useful source found." in coordinator_calls[1]["prompt"]
+
+
+def test_semireal_external_takeover_resource_local_created(tmp_path: Path) -> None:
+    runtime, runtime_root = _external_takeover_runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    local_source = repo_root / "source.md"
+    local_source.write_text("local source material\n", encoding="utf-8")
+    flow_input = runtime.material.submit_resource_request(
+        {"repo_root": repo_root},
+        target_kind="local_file",
+        target=str(local_source),
+    )
+    assert flow_input.ok and flow_input.value is not None
+    draft = runtime.material.allocate_resource_draft(
+        repo_root,
+        target=flow_input.value.normalized_target,
+        title_hint="Local source",
+    )
+    assert draft.ok and draft.value is not None
+    _write_resource_draft_files(Path(draft.value.draft_root), local_source.read_text(encoding="utf-8"))
+    controller = _ExternalTakeoverMcpController(
+        runtime,
+        runtime_root,
+        {
+            "ResourceCuratorAgent": [
+                (
+                    "submit_local_resource_created",
+                    {
+                        "summary": "Created local resource through external takeover.",
+                        "target_kind": "local_file",
+                        "target": str(local_source),
+                        "draft_id": draft.value.draft.draft_id,
+                    },
+                )
+            ]
+        },
+    )
+    _create_homes(runtime, "ResourceCuratorAgent")
+    flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="local_file", target=str(local_source))
+
+    _schedule_external_until(runtime, controller, lambda: runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED)
+
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert flow.result is not None
+    assert flow.result.outcome == "local_resource_created"
+    assert flow.result.resource_key is not None
+    assert controller.calls[0]["tool_name"] == "submit_local_resource_created"
+
+
+def test_semireal_external_takeover_resource_external_repo_required(tmp_path: Path) -> None:
+    runtime, runtime_root = _external_takeover_runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    controller = _ExternalTakeoverMcpController(
+        runtime,
+        runtime_root,
+        {
+            "ResourceCuratorAgent": [
+                (
+                    "submit_external_repo_required",
+                    {
+                        "reason": "The target is a full upstream project.",
+                        "target_kind": "web",
+                        "target": "https://example.com/upstream",
+                        "source_description": "A web-accessible upstream project.",
+                        "suggested_repo_name": "upstream_project",
+                        "required_interfaces_hint": "Expose the main reusable theorem.",
+                    },
+                )
+            ]
+        },
+    )
+    _create_homes(runtime, "ResourceCuratorAgent")
+    flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="web", target="https://example.com/upstream")
+
+    _schedule_external_until(runtime, controller, lambda: runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED)
+
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert flow.result is not None
+    assert flow.result.outcome == "external_repo_required"
+    assert flow.result.external_repo is not None
+    assert flow.result.external_repo.suggested_repo_name == "upstream_project"
+
+
+def test_semireal_controlled_fresh_same_type_external_takeover_step_binding_only(tmp_path: Path) -> None:
+    runtime, runtime_root = _external_takeover_runtime(
+        tmp_path,
+        step_type_overrides=CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES,
+    )
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    controller = _ExternalTakeoverMcpController(
+        runtime,
+        runtime_root,
+        {
+            "ResourceCuratorAgent": [
+                (
+                    "submit_resource_rejected",
+                    {
+                        "reason": "Stop after controlled fresh same type.",
+                        "target_kind": "web",
+                        "target": "https://example.com/source",
+                    },
+                )
+            ]
+        },
+    )
+    _create_homes(runtime, "ResourceCuratorAgent")
+    flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="web", target="https://example.com/source")
+    preflight_step_id = runtime.ark.flow_service.advance_flow(flow_id)
+    assert preflight_step_id is not None
+    runtime.ark.step_service.run_step(preflight_step_id)
+    agent_step_id = runtime.ark.flow_service.advance_flow(flow_id)
+    assert agent_step_id is not None
+    runtime.ark.flow_service.store.update_step_record(
+        agent_step_id,
+        lambda step: step.state.variables.__setitem__(
+            CONTROLLED_AGENT_OVERRIDE_ALIASES[0],
+            {"strategy": "fresh_same_agent_type"},
+        ),
+    )
+
+    _run_external_step(runtime, controller, agent_step_id)
+
+    step = runtime.ark.flow_service.get_step(agent_step_id)
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    agent_id = step.agent_bindings.get("resource_curator")
+    assert flow.status is FlowStatus.COMPLETED
+    assert agent_id is not None
+    assert flow.agent_bindings.get("resource_curator") is None
+    assert runtime.ark.agent_service.get_agent(agent_id).agent_type == "ResourceCuratorAgent"
+
+
+def test_semireal_controlled_test_agent_type_external_takeover_inherits_tool_view(tmp_path: Path) -> None:
+    controlled = derive_agent_type_spec(
+        base_agent_type="ResourceCuratorAgent",
+        agent_type="ResourceCuratorControlledTestAgent",
+    )
+    runtime, runtime_root = _external_takeover_runtime(
+        tmp_path,
+        extra_agent_type_specs=[controlled],
+        step_type_overrides=CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES,
+    )
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    controller = _ExternalTakeoverMcpController(
+        runtime,
+        runtime_root,
+        {
+            "ResourceCuratorControlledTestAgent": [
+                (
+                    "submit_resource_rejected",
+                    {
+                        "reason": "Stop after controlled test type.",
+                        "target_kind": "web",
+                        "target": "https://example.com/test-agent",
+                    },
+                )
+            ]
+        },
+    )
+    _create_homes(runtime, "ResourceCuratorControlledTestAgent")
+    flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="web", target="https://example.com/test-agent")
+    preflight_step_id = runtime.ark.flow_service.advance_flow(flow_id)
+    assert preflight_step_id is not None
+    runtime.ark.step_service.run_step(preflight_step_id)
+    agent_step_id = runtime.ark.flow_service.advance_flow(flow_id)
+    assert agent_step_id is not None
+    runtime.ark.flow_service.store.update_step_record(
+        agent_step_id,
+        lambda step: step.state.variables.__setitem__(
+            CONTROLLED_AGENT_OVERRIDE_ALIASES[0],
+            {
+                "strategy": "fresh_test_agent_type",
+                "agent_type_override": "ResourceCuratorControlledTestAgent",
+            },
+        ),
+    )
+
+    _run_external_step(runtime, controller, agent_step_id)
+
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.COMPLETED
+    assert controller.calls[0]["agent_type"] == "ResourceCuratorControlledTestAgent"
+    assert controller.calls[0]["view_key"] == "resource_curator_submit"
+
+
+def test_semireal_admin_test_control_reaches_repo_format_agent_step_without_starting(tmp_path: Path) -> None:
+    runtime = create_test_control_runtime_services(
+        runtime_root=tmp_path / ".agent_runtime",
+        external_overrides={"lake": _FakeLakeClient()},
+    )
+    admin = LeanAdminApi(runtime)
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "Provider"
+    _write_bootstrap_preparation(runtime, repo_root)
+    started = admin.start_arbitrary_flow(
+        StartFlowInput(
+            flow_type="requirement_group_repo_bootstrap",
+            scope_id="repo:Provider",
+            enqueue=False,
+            params={
+                "target_repo": "Provider",
+                "repo_root": str(repo_root),
+                "workspace_root": str(workspace),
+                "requirement_refs": ["Consumer:need_provider"],
+            },
+        )
+    )
+    assert started.ok and started.value is not None
+
+    validate = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=started.value.flow_id))
+    assert validate.ok and validate.value is not None and validate.value.created_step_id is not None
+    validate_step = runtime.ark.step_service.store.get_step(validate.value.created_step_id)
+    assert validate_step.step_type == "validate_bootstrap_input_step"
+    validate_run = admin.start_step_once(AdminStepStartInput(step_id=validate.value.created_step_id, wait=True, timeout_s=5))
+    assert validate_run.ok, validate_run.issues
+
+    agent_step = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=started.value.flow_id))
+    assert agent_step.ok and agent_step.value is not None and agent_step.value.created_step_id is not None
+    step = runtime.ark.step_service.store.get_step(agent_step.value.created_step_id)
+    assert step.step_type == "repo_format_discovery_agent_step"
+    assert step.status.value == "created"
+    assert runtime.ark.step_service.list_running_steps() == []
+    control_view = admin.get_agent_step_control_view(step.step_id)
+    assert control_view.ok and control_view.value is not None
+    assert control_view.value.agent_type == "RepoFormatDiscoveryAgent"
+    assert control_view.value.tool_view_key == "repo_format_discovery"
+    assert runtime.ark.pause_controller.is_paused()
+
+
+def test_semireal_admin_checkpoint_restore_native_and_adapter_repo_format_branches(tmp_path: Path) -> None:
+    runtime = create_test_control_runtime_services(
+        runtime_root=tmp_path / ".agent_runtime",
+        external_overrides={"lake": _FakeLakeClient()},
+    )
+    admin = LeanAdminApi(runtime)
+    runtime.ark.agent_service.home_service.create_home(
+        HomeCreateSpec(cli_type="external_takeover", home_id="RepoFormatDiscoveryControlledTestAgent")
+    )
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "Provider"
+    _write_bootstrap_preparation(runtime, repo_root)
+    started = admin.start_arbitrary_flow(
+        StartFlowInput(
+            flow_type="requirement_group_repo_bootstrap",
+            scope_id="repo:Provider",
+            enqueue=False,
+            params={
+                "target_repo": "Provider",
+                "repo_root": str(repo_root),
+                "workspace_root": str(workspace),
+                "requirement_refs": ["Consumer:need_provider"],
+            },
+        )
+    )
+    assert started.ok and started.value is not None
+
+    validate = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=started.value.flow_id))
+    assert validate.ok and validate.value is not None and validate.value.created_step_id is not None
+    validate_run = admin.start_step_once(AdminStepStartInput(step_id=validate.value.created_step_id, wait=True, timeout_s=5))
+    assert validate_run.ok, validate_run.issues
+    agent_step = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=started.value.flow_id))
+    assert agent_step.ok and agent_step.value is not None and agent_step.value.created_step_id is not None
+    agent_step_id = agent_step.value.created_step_id
+
+    checkpoint = admin.create_manual_test_checkpoint(
+        ManualCheckpointInput(
+            repo_root=repo_root,
+            scope_ids=["repo:Provider"],
+            label="before_repo_format_branch",
+        )
+    )
+    assert checkpoint.ok and checkpoint.value is not None
+
+    native_override = admin.set_agent_step_override(
+        SetAgentStepOverrideInput(
+            step_id=agent_step_id,
+            override=ControlledAgentOverrideSpec(
+                strategy="fresh_test_agent_type",
+                agent_type_override="RepoFormatDiscoveryControlledTestAgent",
+                cli_type_override="external_takeover",
+            ),
+        )
+    )
+    assert native_override.ok, native_override.issues
+    _admin_run_external_submit(
+        admin,
+        agent_step_id,
+        "submit_native_repo_choice",
+        {
+            "summary": "Use native branch.",
+            "source_corpus_mode": "prepare",
+        },
+    )
+    native_apply = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=started.value.flow_id))
+    assert native_apply.ok and native_apply.value is not None and native_apply.value.created_step_id is not None
+    native_apply_run = admin.start_step_once(AdminStepStartInput(step_id=native_apply.value.created_step_id, wait=True, timeout_s=5))
+    assert native_apply_run.ok, native_apply_run.issues
+    native_flow = runtime.ark.flow_service.get_flow(started.value.flow_id)
+    assert native_flow.status is FlowStatus.COMPLETED
+    assert native_flow.result is not None
+    assert native_flow.result.outcome == "native_bootstrap_ready"
+
+    restored = admin.restore_snapshot(
+        SnapshotRestoreInput(
+            repo_root=repo_root,
+            snapshot_id=checkpoint.value.snapshot_id,
+            leave_runtime_paused=True,
+            prune_extra_files=True,
+        )
+    )
+    assert restored.ok, restored.issues
+    assert runtime.ark.pause_controller.is_paused()
+    restored_step = runtime.ark.step_service.store.get_step(agent_step_id)
+    assert restored_step.status.value == "created"
+    assert "test_override_spec" not in restored_step.state.variables
+
+    adapter_override = admin.set_agent_step_override(
+        SetAgentStepOverrideInput(
+            step_id=agent_step_id,
+            override=ControlledAgentOverrideSpec(
+                strategy="fresh_test_agent_type",
+                agent_type_override="RepoFormatDiscoveryControlledTestAgent",
+                cli_type_override="external_takeover",
+            ),
+        )
+    )
+    assert adapter_override.ok, adapter_override.issues
+    _admin_run_external_submit(
+        admin,
+        agent_step_id,
+        "submit_adapter_repo_choice",
+        {
+            "summary": "Use adapter branch.",
+            "upstream_github_url": "https://github.com/leanprover-community/mathlib4",
+            "upstream_revision": "main",
+            "adapter_repo_name": "ProviderAdapter",
+        },
+    )
+    adapter_apply = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=started.value.flow_id))
+    assert adapter_apply.ok and adapter_apply.value is not None and adapter_apply.value.created_step_id is not None
+    adapter_apply_run = admin.start_step_once(AdminStepStartInput(step_id=adapter_apply.value.created_step_id, wait=True, timeout_s=5))
+    assert adapter_apply_run.ok, adapter_apply_run.issues
+    adapter_flow = runtime.ark.flow_service.get_flow(started.value.flow_id)
+    assert adapter_flow.status is FlowStatus.COMPLETED
+    assert adapter_flow.result is not None
+    assert adapter_flow.result.outcome == "adapter_bootstrap_ready", adapter_flow.result.model_dump(mode="json")
+
+
+def test_semireal_admin_test_control_external_takeover_no_wait_workflow(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".agent_runtime"
+    runtime = create_test_control_runtime_services(
+        runtime_root=runtime_root,
+        external_overrides={"lake": _FakeLakeClient()},
+    )
+    admin = LeanAdminApi(runtime)
+    runtime.ark.agent_service.home_service.create_home(
+        HomeCreateSpec(cli_type="external_takeover", home_id="ResourceCuratorControlledTestAgent")
+    )
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="web", target="https://example.com/admin-no-wait")
+
+    preflight = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id))
+    assert preflight.ok and preflight.value is not None
+    assert preflight.value.created_step_id is not None
+    preflight_run = admin.start_step_once(AdminStepStartInput(step_id=preflight.value.created_step_id, wait=True, timeout_s=5))
+    assert preflight_run.ok, preflight_run.issues
+
+    agent_step = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id))
+    assert agent_step.ok and agent_step.value is not None
+    assert agent_step.value.created_step_id is not None
+    override = admin.set_agent_step_override(
+        SetAgentStepOverrideInput(
+            step_id=agent_step.value.created_step_id,
+            override=ControlledAgentOverrideSpec(
+                strategy="fresh_test_agent_type",
+                agent_type_override="ResourceCuratorControlledTestAgent",
+                cli_type_override="external_takeover",
+                prompt_overlay="Call submit_resource_rejected exactly once.",
+            ),
+        )
+    )
+    assert override.ok and override.value is not None
+    assert override.value.tool_view_key == "resource_curator"
+
+    started = admin.start_step_once(AdminStepStartInput(step_id=agent_step.value.created_step_id, wait=False))
+    assert started.ok and started.value is not None
+    assert started.value.status in {"created", "running"}
+    handoff = _wait_for_admin_pending_handoff(admin)
+    runtime_view = admin.get_test_control_runtime_view()
+    assert runtime_view.ok and runtime_view.value is not None
+    assert [item.handoff_id for item in runtime_view.value.pending_external_handoffs] == [handoff.handoff_id]
+
+    listed_tools = admin.list_external_takeover_tools(
+        ExternalTakeoverToolListInput(handoff_id=handoff.handoff_id, view_kind="submit")
+    )
+    assert listed_tools.ok and listed_tools.value is not None
+    assert "submit_resource_rejected" in {tool.name for tool in listed_tools.value}
+
+    called = admin.call_external_takeover_tool(
+        ExternalTakeoverToolCallInput(
+            handoff_id=handoff.handoff_id,
+            view_kind="submit",
+            tool_name="submit_resource_rejected",
+            arguments={
+                "reason": "Stop after Admin no-wait external takeover workflow.",
+                "target_kind": "web",
+                "target": "https://example.com/admin-no-wait",
+            },
+        )
+    )
+    assert called.ok and called.value is not None
+    assert called.value.ok is True
+    completed = admin.complete_external_takeover(
+        ExternalTakeoverCompleteInput(
+            handoff_id=handoff.handoff_id,
+            final_response="Admin external takeover workflow completed.",
+            thread_id=f"admin-thread-{handoff.handoff_id}",
+        )
+    )
+    assert completed.ok and completed.value is not None
+    assert completed.value.status == "completed"
+
+    waited = admin.wait_step(AdminStepStartInput(step_id=agent_step.value.created_step_id, timeout_s=10))
+    assert waited.ok and waited.value is not None
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    step = runtime.ark.step_service.store.get_step(agent_step.value.created_step_id)
+    assert step.status.value == "completed"
+    assert flow.status is FlowStatus.COMPLETED
+    assert flow.result is not None
+    assert flow.result.outcome == "rejected"
+    assert step.state.variables["controlled_agent_record"]["agent_type_override"] == "ResourceCuratorControlledTestAgent"
+    assert runtime.ark.pause_controller.is_paused()
+
+
+def test_semireal_admin_manual_checkpoint_restore_reuses_agent_step_branch(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".agent_runtime"
+    runtime = create_test_control_runtime_services(
+        runtime_root=runtime_root,
+        external_overrides={"lake": _FakeLakeClient()},
+    )
+    admin = LeanAdminApi(runtime)
+    runtime.ark.agent_service.home_service.create_home(
+        HomeCreateSpec(cli_type="external_takeover", home_id="ResourceCuratorControlledTestAgent")
+    )
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    (repo_root / "README.md").write_text("repo for checkpoint branch test\n", encoding="utf-8")
+    flow_input = runtime.material.submit_resource_request(
+        {"repo_root": repo_root},
+        target_kind="web",
+        target="https://example.com/branch",
+    )
+    assert flow_input.ok and flow_input.value is not None
+    draft = runtime.material.allocate_resource_draft(
+        repo_root,
+        target=flow_input.value.normalized_target,
+        title_hint="Branch resource",
+    )
+    assert draft.ok and draft.value is not None
+    _write_resource_draft_files(Path(draft.value.draft_root), "branch resource text\n")
+    flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="web", target="https://example.com/branch")
+
+    preflight = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id))
+    assert preflight.ok and preflight.value is not None and preflight.value.created_step_id is not None
+    preflight_run = admin.start_step_once(AdminStepStartInput(step_id=preflight.value.created_step_id, wait=True, timeout_s=5))
+    assert preflight_run.ok, preflight_run.issues
+    agent_step = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id))
+    assert agent_step.ok and agent_step.value is not None and agent_step.value.created_step_id is not None
+    agent_step_id = agent_step.value.created_step_id
+
+    checkpoint = admin.create_manual_test_checkpoint(
+        ManualCheckpointInput(
+            repo_root=repo_root,
+            scope_ids=["repo:Repo"],
+            label="before_resource_curator_branch",
+        )
+    )
+    assert checkpoint.ok and checkpoint.value is not None
+
+    first_override = admin.set_agent_step_override(
+        SetAgentStepOverrideInput(
+            step_id=agent_step_id,
+            override=ControlledAgentOverrideSpec(
+                strategy="fresh_test_agent_type",
+                agent_type_override="ResourceCuratorControlledTestAgent",
+                cli_type_override="external_takeover",
+            ),
+        )
+    )
+    assert first_override.ok, first_override.issues
+    _admin_run_external_submit(
+        admin,
+        agent_step_id,
+        "submit_resource_rejected",
+        {
+            "reason": "First branch rejects the resource.",
+            "target_kind": "web",
+            "target": "https://example.com/branch",
+        },
+    )
+    first_flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert first_flow.status is FlowStatus.COMPLETED
+    assert first_flow.result is not None
+    assert first_flow.result.outcome == "rejected"
+
+    restored = admin.restore_snapshot(
+        SnapshotRestoreInput(
+            repo_root=repo_root,
+            snapshot_id=checkpoint.value.snapshot_id,
+            leave_runtime_paused=True,
+            prune_extra_files=True,
+        )
+    )
+    assert restored.ok, restored.issues
+    assert runtime.ark.pause_controller.is_paused()
+    restored_flow = runtime.ark.flow_service.get_flow(flow_id)
+    restored_step = runtime.ark.step_service.store.get_step(agent_step_id)
+    assert restored_flow.current_step_id == agent_step_id
+    assert restored_step.status.value == "created"
+    assert "test_override_spec" not in restored_step.state.variables
+
+    second_override = admin.set_agent_step_override(
+        SetAgentStepOverrideInput(
+            step_id=agent_step_id,
+            override=ControlledAgentOverrideSpec(
+                strategy="fresh_test_agent_type",
+                agent_type_override="ResourceCuratorControlledTestAgent",
+                cli_type_override="external_takeover",
+            ),
+        )
+    )
+    assert second_override.ok, second_override.issues
+    _admin_run_external_submit(
+        admin,
+        agent_step_id,
+        "submit_external_repo_required",
+        {
+            "reason": "Second branch requires an upstream repo.",
+            "target_kind": "web",
+            "target": "https://example.com/branch",
+            "source_description": "An upstream web project.",
+            "suggested_repo_name": "branch_upstream",
+            "required_interfaces_hint": "Expose the reusable theorem.",
+        },
+    )
+    second_flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert second_flow.status is FlowStatus.COMPLETED
+    assert second_flow.result is not None
+    assert second_flow.result.outcome == "external_repo_required"
+    assert second_flow.result.external_repo is not None
+    assert second_flow.result.external_repo.suggested_repo_name == "branch_upstream"
+
+    restored_again = admin.restore_snapshot(
+        SnapshotRestoreInput(
+            repo_root=repo_root,
+            snapshot_id=checkpoint.value.snapshot_id,
+            leave_runtime_paused=True,
+            prune_extra_files=True,
+        )
+    )
+    assert restored_again.ok, restored_again.issues
+    third_override = admin.set_agent_step_override(
+        SetAgentStepOverrideInput(
+            step_id=agent_step_id,
+            override=ControlledAgentOverrideSpec(
+                strategy="fresh_test_agent_type",
+                agent_type_override="ResourceCuratorControlledTestAgent",
+                cli_type_override="external_takeover",
+            ),
+        )
+    )
+    assert third_override.ok, third_override.issues
+    _admin_run_external_submit(
+        admin,
+        agent_step_id,
+        "submit_local_resource_created",
+        {
+            "summary": "Third branch creates a local resource.",
+            "target_kind": "web",
+            "target": "https://example.com/branch",
+            "draft_id": draft.value.draft.draft_id,
+        },
+    )
+    third_flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert third_flow.status is FlowStatus.COMPLETED
+    assert third_flow.result is not None
+    assert third_flow.result.outcome == "local_resource_created"
+    assert third_flow.result.resource_key is not None
+
+
+def test_semireal_external_takeover_snapshot_restore_after_completion(tmp_path: Path) -> None:
+    runtime, runtime_root = _external_takeover_runtime(tmp_path)
+    controller = _ExternalTakeoverMcpController(
+        runtime,
+        runtime_root,
+        {"RepoFormatDiscoveryAgent": [("submit_native_repo_choice", {"summary": "Use native.", "source_corpus_mode": "prepare"})]},
+    )
+    _create_homes(runtime, "RepoFormatDiscoveryAgent")
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "Provider"
+    _write_bootstrap_preparation(runtime, repo_root)
+    flow_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="requirement_group_repo_bootstrap",
+            scope_id="repo:Provider",
+            params={
+                "target_repo": "Provider",
+                "repo_root": str(repo_root),
+                "workspace_root": str(workspace),
+                "requirement_refs": ["Consumer:need_provider"],
+            },
+        )
+    )
+    _schedule_external_until(runtime, controller, lambda: runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED)
+    admin = LeanAdminApi(runtime)
+
+    created = admin.create_snapshot(SnapshotCreateInput(repo_root=repo_root, label="external takeover complete"))
+    assert created.ok and created.value is not None
+    restored = admin.restore_snapshot(
+        SnapshotRestoreInput(repo_root=repo_root, snapshot_id=created.value.snapshot_id, dry_run=True)
+    )
+
+    assert restored.ok
 
 
 def test_semireal_resource_request_dispatch_and_callback_prompt(tmp_path: Path) -> None:
@@ -786,6 +1737,91 @@ def test_real_codex_repo_format_discovery_submit_env_gated(tmp_path: Path) -> No
     )
 
     flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert flow.result is not None
+    assert flow.result.outcome in {"native_bootstrap_ready", "adapter_bootstrap_ready"}
+
+
+@pytest.mark.real_codex
+def test_real_codex_controlled_test_agent_type_mcp_mount_env_gated(tmp_path: Path) -> None:
+    config_home = _require_real_codex()
+    base_config_path = _write_noninteractive_codex_base_config(config_home, tmp_path)
+    controlled = derive_agent_type_spec(
+        base_agent_type="RepoFormatDiscoveryAgent",
+        agent_type="RepoFormatDiscoveryControlledTestAgent",
+    )
+    specs = build_agent_type_specs(extra_specs=[controlled])
+    runtime = create_app_runtime_services(
+        runtime_root=tmp_path / ".agent_runtime",
+        external_overrides={"lake": _FakeLakeClient()},
+        agent_type_specs=specs,
+        step_type_overrides=CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES,
+    )
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "Provider"
+    _write_bootstrap_preparation(runtime, repo_root)
+    app_config = tmp_path / "lean_constellation.toml"
+    app_config.write_text(
+        f'workspace_root = "{workspace}"\nruntime_root = "{tmp_path / ".agent_runtime"}"\n',
+        encoding="utf-8",
+    )
+    materialized = materialize_agent_home(
+        runtime,
+        "RepoFormatDiscoveryControlledTestAgent",
+        mcp_server_command=sys.executable,
+        mcp_server_args=["-m", "lean_constellation.mcp.stdio", "--config", str(app_config)],
+        mcp_server_env={"PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
+        base_config_path=base_config_path,
+        auth_json_path=config_home / "auth.json",
+        agent_type_specs=specs,
+    )
+    assert materialized.ok and materialized.value is not None
+    flow_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="requirement_group_repo_bootstrap",
+            scope_id="repo:Provider",
+            params={
+                "target_repo": "Provider",
+                "repo_root": str(repo_root),
+                "workspace_root": str(workspace),
+                "requirement_refs": ["Consumer:need_provider"],
+            },
+        ),
+        enqueue=False,
+    )
+    validate_step_id = runtime.ark.flow_service.advance_flow(flow_id)
+    assert validate_step_id is not None
+    runtime.ark.step_service.run_step(validate_step_id)
+    agent_step_id = runtime.ark.flow_service.advance_flow(flow_id)
+    assert agent_step_id is not None
+    runtime.ark.flow_service.store.update_step_record(
+        agent_step_id,
+        lambda step: step.state.variables.__setitem__(
+            CONTROLLED_AGENT_OVERRIDE_ALIASES[0],
+            {
+                "strategy": "fresh_test_agent_type",
+                "agent_type_override": "RepoFormatDiscoveryControlledTestAgent",
+                "prompt_overlay": (
+                    "For this controlled runtime test, use the inherited submit ToolView and submit "
+                    "a native repository choice with source_corpus_mode prepare."
+                ),
+            },
+        ),
+    )
+
+    real_step_timeout = float(os.environ.get("LEAN_CONSTELLATION_REAL_CODEX_STEP_TIMEOUT", "300"))
+    runtime.ark.step_service.start_step(agent_step_id)
+    runtime.ark.step_service.wait_step(agent_step_id, timeout_s=real_step_timeout)
+    _schedule_until(
+        runtime,
+        lambda: runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED,
+        limit=20,
+        step_timeout_s=real_step_timeout,
+    )
+
+    agent_step = runtime.ark.flow_service.get_step(agent_step_id)
+    flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert agent_step.submission is not None
+    assert agent_step.submission.tool_name in {"submit_native_repo_choice", "submit_adapter_repo_choice"}
     assert flow.result is not None
     assert flow.result.outcome in {"native_bootstrap_ready", "adapter_bootstrap_ready"}
 

@@ -10,6 +10,10 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "config-view" in help_text
     assert "start-flow" in help_text
     assert "snapshot" in help_text
+    assert "external-list" in help_text
+    assert "external-complete" in help_text
+    assert "external-tools" in help_text
+    assert "external-call" in help_text
 
 
 def test_cli_config_view_prints_redacted_config(tmp_path, capsys) -> None:

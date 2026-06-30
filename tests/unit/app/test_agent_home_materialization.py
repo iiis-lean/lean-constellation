@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from lean_constellation.agents import build_agent_type_specs, derive_agent_type_spec
 from lean_constellation.app import create_app_runtime_services, materialize_agent_home
 
 
@@ -72,3 +73,26 @@ def test_agent_home_materialization_writes_stdio_mcp_view_servers(tmp_path: Path
     assert "repo_format_discovery_submit" in config_text
     assert "env_vars" in config_text
     assert "ARK_STEP_ID" in config_text
+
+
+def test_agent_home_materialization_supports_derived_agent_type_specs(tmp_path: Path) -> None:
+    controlled = derive_agent_type_spec(
+        base_agent_type="RepoFormatDiscoveryAgent",
+        agent_type="RepoFormatDiscoveryControlledTestAgent",
+    )
+    specs = build_agent_type_specs(extra_specs=[controlled])
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime", agent_type_specs=specs)
+
+    view = materialize_agent_home(
+        runtime,
+        "RepoFormatDiscoveryControlledTestAgent",
+        mcp_server_url="http://127.0.0.1:8765/mcp",
+        agent_type_specs=specs,
+    )
+
+    assert view.ok and view.value is not None
+    home_root = Path(view.value.home_root)
+    manifest = json.loads((home_root / ".agents" / "lean_constellation_home.json").read_text(encoding="utf-8"))
+    assert manifest["agent_type"] == "RepoFormatDiscoveryControlledTestAgent"
+    assert manifest["fixed_env"]["LEAN_CONSTELLATION_AGENT_TYPE"] == "RepoFormatDiscoveryControlledTestAgent"
+    assert manifest["tool_view_config"]["submit_view_key"] == "repo_format_discovery_submit"

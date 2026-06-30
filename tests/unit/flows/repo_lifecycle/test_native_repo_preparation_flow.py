@@ -236,6 +236,7 @@ def test_native_preparation_existing_source_handoff_dispatches_coordinator(tmp_p
     _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
     assert ark_snapshot.created
+    assert ark_snapshot.created[0][1] == ["repo:Provider"]
     _advance_and_run(runtime, flow_id)
 
     flow = runtime.flow_service.get_flow(flow_id)

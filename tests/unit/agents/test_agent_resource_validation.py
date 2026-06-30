@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from lean_constellation.agents import get_agent_type_spec, validate_agent_resources
+from lean_constellation.agents import build_agent_type_specs, derive_agent_type_spec, get_agent_type_spec, validate_agent_resources
 from lean_constellation.services.tool_facade import ToolViewSpec
 
 
@@ -53,3 +53,29 @@ def test_missing_tool_group_reports_structured_error() -> None:
 
     assert not report.ok
     assert any(issue.code == "tool_group_not_registered" for issue in report.issues)
+
+
+def test_derived_agent_type_reuses_base_tool_view_permissions() -> None:
+    controlled = derive_agent_type_spec(
+        base_agent_type="CoordinatorAgent",
+        agent_type="CoordinatorControlledTestAgent",
+    )
+    specs = build_agent_type_specs(extra_specs=[controlled])
+
+    report = validate_agent_resources(specs)
+
+    assert report.ok
+
+
+def test_unknown_agent_type_inheritance_reports_structured_error() -> None:
+    spec = get_agent_type_spec("CoordinatorAgent").model_copy(
+        update={
+            "agent_type": "CoordinatorBrokenTestAgent",
+            "extends_agent_type": "MissingBaseAgent",
+        }
+    )
+
+    report = validate_agent_resources([spec])
+
+    assert not report.ok
+    assert any(issue.code == "agent_type_extends_unknown" for issue in report.issues)

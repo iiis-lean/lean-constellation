@@ -674,6 +674,55 @@ def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> N
     assert ark.restored == [("ark_1", True)]
 
 
+def test_repo_stable_point_snapshot_accepts_explicit_scope_ids(tmp_path: Path) -> None:
+    foundation = make_runtime().foundation
+    _write_preparation_input(tmp_path)
+    ark = FakeArkSnapshotProvider(foundation)
+    service = ValidationSnapshotService(
+        foundation.runtime,
+        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot_provider=ark,
+    )
+
+    created = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
+        label="explicit repo scope",
+        scope_ids=[" repo:Repo ", "repo:Repo", "node:Main"],
+    )
+
+    assert created.ok
+    assert created.value is not None
+    assert created.value.refreshed_scope_ids == ["repo:Repo", "node:Main"]
+    assert ark.created == [(["repo:Repo", "node:Main"], "explicit repo scope")]
+    manifest = foundation.store.read_json(
+        Path(created.value.root) / "snapshot.json",
+        RepoCheckpointSnapshotManifest,
+    )
+    assert manifest.ok
+    assert manifest.value is not None
+    assert manifest.value.refreshed_scope_ids == ["repo:Repo", "node:Main"]
+
+
+def test_repo_stable_point_snapshot_rejects_empty_explicit_scope_id(tmp_path: Path) -> None:
+    foundation = make_runtime().foundation
+    _write_preparation_input(tmp_path)
+    service = ValidationSnapshotService(
+        foundation.runtime,
+        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+    )
+
+    created = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
+        scope_ids=["repo:Repo", " "],
+    )
+
+    assert not created.ok
+    assert created.issues[0].kind == "checkpoint_scope_id_required"
+
+
 def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
@@ -922,6 +971,41 @@ def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
         "text": "import Main\n",
         "calls": 2,
     }
+
+
+def test_restore_can_prune_extra_snapshot_managed_files(tmp_path: Path) -> None:
+    foundation = make_runtime().foundation
+    _write_preparation_input(tmp_path)
+    (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    service = ValidationSnapshotService(
+        foundation.runtime,
+        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+    )
+    created = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
+    )
+    assert created.ok and created.value is not None
+    (tmp_path / "Main.lean").write_text("-- modified after snapshot\n", encoding="utf-8")
+    (tmp_path / "Extra.lean").write_text("-- extra project file\n", encoding="utf-8")
+    (tmp_path / ".lean_constellation" / "repo_format.json").write_text('{"repo_format": "native"}\n', encoding="utf-8")
+    (tmp_path / ".lake").mkdir()
+    (tmp_path / ".lake" / "kept.txt").write_text("build artifact\n", encoding="utf-8")
+
+    restored = service.restore_repo_checkpoint_snapshot(
+        tmp_path,
+        snapshot_id=created.value.snapshot_id,
+        prune_extra_files=True,
+    )
+
+    assert restored.ok
+    assert restored.value is not None
+    assert (tmp_path / "Main.lean").read_text(encoding="utf-8") == "import Main\n"
+    assert not (tmp_path / "Extra.lean").exists()
+    assert not (tmp_path / ".lean_constellation" / "repo_format.json").exists()
+    assert (tmp_path / ".lake" / "kept.txt").exists()
+    assert set(restored.value.pruned_files) == {"Extra.lean", ".lean_constellation/repo_format.json"}
 
 
 def test_snapshot_list_filters_sorts_and_skips_malformed_manifests(tmp_path: Path) -> None:

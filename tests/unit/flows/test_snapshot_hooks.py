@@ -60,7 +60,7 @@ def test_before_dispatch_snapshot(tmp_path: Path) -> None:
     assert snapshot_step.result.outcome == "snapshot_created"
     assert snapshot_step.result.checkpoint_kind == "before_content_task_dispatch"
     assert stability.calls == [(RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH, ["Main.Core"])]
-    assert ark_snapshot.created == [(["repo", "node:Main.Core"], "before_content_task_dispatch for Repo")]
+    assert ark_snapshot.created == [(["repo:Repo", "node:Main.Core"], "before_content_task_dispatch for Repo")]
 
     dispatch_step_id = runtime.flow_service.advance_flow(flow_id)
     assert dispatch_step_id is not None
@@ -100,8 +100,8 @@ def test_after_child_batch_snapshot(tmp_path: Path) -> None:
         (RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL, ["Main.Core"]),
     ]
     assert ark_snapshot.created == [
-        (["repo", "node:Main.Core"], "before_content_task_dispatch for Repo"),
-        (["repo", "node:Main.Core"], "after_content_task_batch_terminal for Repo"),
+        (["repo:Repo", "node:Main.Core"], "before_content_task_dispatch for Repo"),
+        (["repo:Repo", "node:Main.Core"], "after_content_task_batch_terminal for Repo"),
     ]
 
 
