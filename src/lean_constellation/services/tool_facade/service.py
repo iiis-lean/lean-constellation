@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from lean_constellation.services.external_clients import ExternalClientService
-from lean_constellation.services.foundation import FoundationService, MutationSummaryView, ServiceResult, ToolResultView
-from lean_constellation.services.node import NodeService
-from lean_constellation.services.repo_workspace import RepoWorkspaceService
+from lean_constellation.services.foundation import MutationSummaryView, ServiceResult, ToolResultView
 from lean_constellation.services.tool_facade.context_resolver import (
     ContextResolverComponent,
     RawToolCallContext,
@@ -15,8 +12,11 @@ from lean_constellation.services.tool_facade.context_resolver import (
 )
 from lean_constellation.services.tool_facade.mcp_wrapper import FastMcpViewApp, MCPWrapperComponent
 from lean_constellation.services.tool_facade.permission_guard import PermissionGuardComponent
-from lean_constellation.services.tool_facade.submit_submission import RuntimeSubmissionGateway, SubmitSubmissionComponent
+from lean_constellation.services.tool_facade.submit_submission import ArkRuntimeSubmissionGatewayAdapter, RuntimeSubmissionGateway, SubmitSubmissionComponent
 from lean_constellation.services.tool_facade.tool_view import ToolGroupSpec, ToolSpec, ToolSpecView, ToolViewComponent, ToolViewSpec
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class ToolFacadeService:
@@ -24,11 +24,8 @@ class ToolFacadeService:
 
     def __init__(
         self,
+        runtime: LeanRuntimeServices,
         *,
-        foundation: FoundationService | None = None,
-        external: ExternalClientService | None = None,
-        repo_workspace: RepoWorkspaceService | None = None,
-        node: NodeService | None = None,
         context_resolver: ContextResolverComponent | None = None,
         tool_view: ToolViewComponent | None = None,
         permission_guard: PermissionGuardComponent | None = None,
@@ -38,41 +35,45 @@ class ToolFacadeService:
         submission_gateway: RuntimeSubmissionGateway | None = None,
         backing_services: dict[str, Any] | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.external = external or ExternalClientService()
-        self.repo_workspace = repo_workspace or RepoWorkspaceService(foundation=self.foundation, external=self.external)
-        self.node = node or NodeService(foundation=self.foundation, repo_workspace=self.repo_workspace)
-        self.tool_view = tool_view or ToolViewComponent(self.foundation)
+        self.runtime = runtime
+        self.tool_view = tool_view or ToolViewComponent(runtime)
+        repo_workspace = self.runtime.repo_workspace
+        node = self.runtime.node
         self.context_resolver = context_resolver or ContextResolverComponent(
-            self.foundation,
-            repo_workspace=self.repo_workspace,
-            node=self.node,
+            runtime,
+            repo_workspace=repo_workspace,
+            node=node,
             runtime_gateway=runtime_gateway,
         )
         self.permission_guard = permission_guard or PermissionGuardComponent(
-            self.foundation,
+            runtime,
             tool_view=self.tool_view,
         )
         self.submit_submission = submit_submission or SubmitSubmissionComponent(
-            self.foundation,
+            runtime,
             tool_view=self.tool_view,
-            submission_gateway=submission_gateway,
+            submission_gateway=submission_gateway or self._submission_gateway_from_runtime_gateway(runtime_gateway),
         )
         default_backing = {
-            "foundation": self.foundation,
-            "external": self.external,
-            "repo_workspace": self.repo_workspace,
-            "node": self.node,
+            "foundation": self.runtime.foundation,
+            "external": self.runtime.external,
+            "repo_workspace": repo_workspace,
+            "material": self.runtime.material,
+            "node": node,
+            "mathlib": self.runtime.mathlib,
+            "lean_projection": self.runtime.lean_projection,
+            "adapter": self.runtime.adapter,
+            "decl_graph": self.runtime.decl_graph,
+            "validation_snapshot": self.runtime.validation_snapshot,
         }
         if backing_services:
             default_backing.update(backing_services)
         self.mcp_wrapper = mcp_wrapper or MCPWrapperComponent(
-            self.foundation,
+            runtime,
             context_resolver=self.context_resolver,
             tool_view=self.tool_view,
             permission_guard=self.permission_guard,
             submit_submission=self.submit_submission,
-            external=self.external,
             backing_services=default_backing,
         )
 
@@ -112,10 +113,10 @@ class ToolFacadeService:
         for tool_spec in tool_specs:
             result = self.mcp_wrapper.register_tool(tool_spec)
             if not result.ok or result.value is None:
-                return self.foundation.fail(result.issues)
+                return self.runtime.foundation.fail(result.issues)
             changed.append(tool_spec.name)
-        return self.foundation.ok(
-            self.foundation.mutation_view(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.mutation_view(
                 object_ref="application_tools",
                 changed=bool(changed),
                 summary=f"Registered {len(changed)} application tools.",
@@ -128,3 +129,9 @@ class ToolFacadeService:
 
     def register_tool_views(self, view_specs: list[ToolViewSpec]) -> ServiceResult[MutationSummaryView]:
         return self.tool_view.register_tool_views(view_specs)
+
+    @staticmethod
+    def _submission_gateway_from_runtime_gateway(runtime_gateway: RuntimeMcpToolGateway | None) -> RuntimeSubmissionGateway | None:
+        if runtime_gateway is None or not hasattr(runtime_gateway, "accept_step_submission"):
+            return None
+        return ArkRuntimeSubmissionGatewayAdapter(runtime_gateway)

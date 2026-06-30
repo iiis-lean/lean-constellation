@@ -4,18 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.foundation import (
-    FoundationService,
-    GateReport,
-    MutationSummaryView,
-    ServiceResult,
-)
+from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
 from lean_constellation.services.tool_facade.context_resolver import ActorRole, ToolExecutionContext
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class ToolCapability(StrEnum):
@@ -31,7 +29,7 @@ class SubmitBehavior(StrEnum):
     DISPATCH_CHILD_FLOWS = "dispatch_child_flows"
 
 
-ToolHandler = Callable[[ToolExecutionContext, BaseModel], Any]
+ToolHandler = Callable[..., Any]
 
 
 class ToolSpec(StrictModel):
@@ -128,11 +126,11 @@ class ToolViewComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
         *,
         agent_skill_keys: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
+        self.runtime = runtime
         self._tools: dict[str, ToolSpec] = {}
         self._groups: dict[str, ToolGroupSpec] = {}
         self._views: dict[str, ToolViewSpec] = {}
@@ -143,16 +141,16 @@ class ToolViewComponent:
 
     def register_tool(self, tool_spec: ToolSpec) -> ServiceResult[MutationSummaryView]:
         if tool_spec.name in self._tools:
-            return self.foundation.fail(
-                self.foundation.issue("tool_already_registered", "Tool is already registered.", object_ref=tool_spec.name)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("tool_already_registered", "Tool is already registered.", object_ref=tool_spec.name)
             )
         if not tool_spec.description.strip():
-            return self.foundation.fail(
-                self.foundation.issue("tool_description_missing", "Tool description is required.", object_ref=tool_spec.name)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("tool_description_missing", "Tool description is required.", object_ref=tool_spec.name)
             )
         self._tools[tool_spec.name] = tool_spec
-        return self.foundation.ok(
-            self.foundation.mutation_view(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.mutation_view(
                 object_ref=tool_spec.name,
                 changed=True,
                 summary=f"Registered tool {tool_spec.name}.",
@@ -164,13 +162,13 @@ class ToolViewComponent:
         changed: list[str] = []
         for group in group_specs:
             if group.key in self._groups:
-                return self.foundation.fail(
-                    self.foundation.issue("tool_group_already_registered", "Tool group is already registered.", object_ref=group.key)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("tool_group_already_registered", "Tool group is already registered.", object_ref=group.key)
                 )
             duplicates = self._duplicates(group.tool_names)
             if duplicates:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "tool_group_duplicate_tool",
                         "Tool group contains duplicate tool names.",
                         object_ref=group.key,
@@ -179,8 +177,8 @@ class ToolViewComponent:
                 )
             missing = [name for name in group.tool_names if name not in self._tools]
             if missing:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "tool_group_unknown_tool",
                         "Tool group references unknown tools.",
                         object_ref=group.key,
@@ -189,8 +187,8 @@ class ToolViewComponent:
                 )
             self._groups[group.key] = group
             changed.append(group.key)
-        return self.foundation.ok(
-            self.foundation.mutation_view(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.mutation_view(
                 object_ref="tool_groups",
                 changed=bool(changed),
                 summary=f"Registered {len(changed)} tool groups.",
@@ -202,13 +200,13 @@ class ToolViewComponent:
         changed: list[str] = []
         for view in view_specs:
             if view.key in self._views:
-                return self.foundation.fail(
-                    self.foundation.issue("tool_view_already_registered", "Tool view is already registered.", object_ref=view.key)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("tool_view_already_registered", "Tool view is already registered.", object_ref=view.key)
                 )
             missing_groups = [key for key in view.group_keys if key not in self._groups]
             if missing_groups:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "tool_view_unknown_group",
                         "Tool view references unknown groups.",
                         object_ref=view.key,
@@ -217,8 +215,8 @@ class ToolViewComponent:
                 )
             missing_tools = [name for name in view.extra_tool_names if name not in self._tools]
             if missing_tools:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "tool_view_unknown_tool",
                         "Tool view references unknown extra tools.",
                         object_ref=view.key,
@@ -227,8 +225,8 @@ class ToolViewComponent:
                 )
             overlap = self._view_overlap(view)
             if overlap:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "tool_view_group_overlap",
                         "Tool view contains overlapping tool names across groups or extras.",
                         object_ref=view.key,
@@ -237,8 +235,8 @@ class ToolViewComponent:
                 )
             self._views[view.key] = view
             changed.append(view.key)
-        return self.foundation.ok(
-            self.foundation.mutation_view(
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.mutation_view(
                 object_ref="tool_views",
                 changed=bool(changed),
                 summary=f"Registered {len(changed)} tool views.",
@@ -261,50 +259,50 @@ class ToolViewComponent:
         ]
         candidates.sort(key=lambda view: ((view.flow_kind is None), (view.stage is None), view.key))
         if not candidates:
-            return self.foundation.fail(
-                self.foundation.issue("tool_view_not_found", "No tool view is registered for this agent type.", object_ref=agent_type)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("tool_view_not_found", "No tool view is registered for this agent type.", object_ref=agent_type)
             )
-        return self.foundation.ok(candidates[0])
+        return self.runtime.foundation.ok(candidates[0])
 
     def get_tool_view_by_key(self, view_key: str) -> ServiceResult[ToolViewSpec]:
         view = self._views.get(view_key)
         if view is None:
-            return self.foundation.fail(
-                self.foundation.issue("tool_view_not_found", "Tool view is not registered.", object_ref=view_key)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("tool_view_not_found", "Tool view is not registered.", object_ref=view_key)
             )
-        return self.foundation.ok(view)
+        return self.runtime.foundation.ok(view)
 
     def get_tool(self, tool_name: str) -> ServiceResult[ToolSpec]:
         tool = self._tools.get(tool_name)
         if tool is None:
-            return self.foundation.fail(
-                self.foundation.issue("tool_not_registered", "Tool is not registered.", object_ref=tool_name)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("tool_not_registered", "Tool is not registered.", object_ref=tool_name)
             )
-        return self.foundation.ok(tool)
+        return self.runtime.foundation.ok(tool)
 
     def list_tools_for_agent(self, agent_type: str) -> ServiceResult[list[ToolSpecView]]:
         view = self.get_tool_view(agent_type)
         if not view.ok or view.value is None:
-            return self.foundation.fail(view.issues)
+            return self.runtime.foundation.fail(view.issues)
         return self.list_tools_for_view(view.value.key)
 
     def list_tools_for_view(self, view_key: str) -> ServiceResult[list[ToolSpecView]]:
         expanded = self._expand_view(view_key)
         if not expanded.ok or expanded.value is None:
-            return self.foundation.fail(expanded.issues)
-        return self.foundation.ok([self._tool_view(self._tools[name]) for name in expanded.value])
+            return self.runtime.foundation.fail(expanded.issues)
+        return self.runtime.foundation.ok([self._tool_view(self._tools[name]) for name in expanded.value])
 
     def validate_tool_skill_alignment(self, agent_type: str) -> ServiceResult[GateReport]:
         view = self.get_tool_view(agent_type)
         if not view.ok or view.value is None:
-            return self.foundation.fail(view.issues)
+            return self.runtime.foundation.fail(view.issues)
         required_skills: set[str] = set()
         for group_key in view.value.group_keys:
             required_skills.update(self._groups[group_key].skill_keys)
         actual_skills = self._agent_skill_keys.get(agent_type, set())
         missing = sorted(required_skills - actual_skills)
         if missing:
-            warning = self.foundation.issue(
+            warning = self.runtime.foundation.issue(
                 "tool_skill_alignment_missing",
                 "Agent type does not declare every skill associated with its tool groups.",
                 severity="warning",
@@ -312,21 +310,21 @@ class ToolViewComponent:
                 details={"missing_skills": ",".join(missing)},
                 suggested_action="Add the missing skills to the AgentType definition or remove the corresponding tool group.",
             )
-            return self.foundation.ok(
-                self.foundation.gate_passed(
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_passed(
                     "tool_skill_alignment",
                     summary=f"Tool skill alignment has {len(missing)} warnings.",
                     warnings=[warning],
                 )
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed("tool_skill_alignment", summary="Tool skills are aligned.")
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed("tool_skill_alignment", summary="Tool skills are aligned.")
         )
 
     def validate_step_expected_view(self, ctx: ToolExecutionContext) -> ServiceResult[None]:
         if ctx.endpoint_view_key != ctx.expected_view_key:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "tool_view_mismatch",
                     "Endpoint view does not match expected view.",
                     current=ctx.endpoint_view_key,
@@ -335,10 +333,10 @@ class ToolViewComponent:
             )
         view = self.get_tool_view_by_key(ctx.expected_view_key)
         if not view.ok or view.value is None:
-            return self.foundation.fail(view.issues)
+            return self.runtime.foundation.fail(view.issues)
         if ctx.actor.agent_type and ctx.actor.agent_type not in view.value.allowed_agent_types:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "agent_type_not_allowed_for_view",
                     "Current agent type is not allowed to use this tool view.",
                     object_ref=ctx.actor.agent_type,
@@ -346,7 +344,7 @@ class ToolViewComponent:
                     expected=",".join(view.value.allowed_agent_types),
                 )
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)
 
     def tool_names_for_view(self, view_key: str) -> ServiceResult[list[str]]:
         return self._expand_view(view_key)
@@ -354,21 +352,21 @@ class ToolViewComponent:
     def _expand_view(self, view_key: str) -> ServiceResult[list[str]]:
         view_result = self.get_tool_view_by_key(view_key)
         if not view_result.ok or view_result.value is None:
-            return self.foundation.fail(view_result.issues)
+            return self.runtime.foundation.fail(view_result.issues)
         view = view_result.value
         names: list[str] = []
         for group_key in view.group_keys:
             group = self._groups.get(group_key)
             if group is None:
-                return self.foundation.fail(
-                    self.foundation.issue("tool_view_unknown_group", "Tool view references an unknown group.", object_ref=group_key)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("tool_view_unknown_group", "Tool view references an unknown group.", object_ref=group_key)
                 )
             names.extend(group.tool_names)
         names.extend(view.extra_tool_names)
         duplicates = self._duplicates(names)
         if duplicates:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "tool_view_group_overlap",
                     "Tool view contains duplicate tool names.",
                     object_ref=view_key,
@@ -377,15 +375,15 @@ class ToolViewComponent:
             )
         missing = [name for name in names if name not in self._tools]
         if missing:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "tool_view_unknown_tool",
                     "Tool view references unknown tools.",
                     object_ref=view_key,
                     details={"missing": ",".join(missing)},
                 )
             )
-        return self.foundation.ok(sorted(names))
+        return self.runtime.foundation.ok(sorted(names))
 
     def _view_overlap(self, view: ToolViewSpec) -> list[str]:
         names: list[str] = []

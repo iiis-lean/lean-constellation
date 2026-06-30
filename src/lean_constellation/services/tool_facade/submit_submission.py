@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from pydantic import Field
+from agent_runtime_kit.flow.models import BaseSubmission, ChildFlowDispatchSubmission
+from agent_runtime_kit.runtime.mcp_tool_gateway import RuntimeToolContextError, RuntimeToolIdentity
+from pydantic import Field, SerializeAsAny
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
-from lean_constellation.services.foundation import FoundationService, ServiceIssue, ServiceResult, ToolResultView
+from lean_constellation.flows.common.submissions import dump_submission_for_view
+from lean_constellation.services.foundation import ServiceIssue, ServiceResult, ToolResultView
 from lean_constellation.services.tool_facade.context_resolver import ToolExecutionContext
 from lean_constellation.services.tool_facade.tool_view import SubmitBehavior, ToolViewComponent
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class SubmissionKind(StrEnum):
@@ -24,6 +30,8 @@ class DispatchSubmissionPayload(StrictModel):
 
 
 class SubmissionView(StrictModel):
+    """Legacy generic submission view retained for import compatibility."""
+
     tool_name: str
     submission_kind: SubmissionKind
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -31,10 +39,19 @@ class SubmissionView(StrictModel):
     created_at: str = Field(default_factory=utc_now_iso)
 
 
+class PreparedSubmissionView(StrictModel):
+    """Successful submit handler output consumed by MCPWrapperComponent."""
+
+    submission: SerializeAsAny[BaseSubmission]
+    summary: str
+    agent_view: dict[str, Any] = Field(default_factory=dict)
+
+
 class SubmissionAckView(StrictModel):
     accepted: bool
-    submission: SubmissionView
+    submission: dict[str, Any]
     message: str
+    dispatch_request_count: int = 0
 
 
 class SubmitRejectedView(StrictModel):
@@ -45,8 +62,35 @@ class SubmitRejectedView(StrictModel):
 
 @runtime_checkable
 class RuntimeSubmissionGateway(Protocol):
-    def accept_step_submission(self, ctx: ToolExecutionContext, submission: SubmissionView) -> Any:
+    def accept_step_submission(self, ctx: ToolExecutionContext, submission: BaseSubmission) -> Any:
         ...
+
+
+class ArkRuntimeSubmissionGatewayAdapter:
+    """Adapter from Lean ToolExecutionContext to ARK RuntimeMcpToolGateway."""
+
+    def __init__(self, gateway: Any) -> None:
+        self.gateway = gateway
+
+    def accept_step_submission(self, ctx: ToolExecutionContext, submission: BaseSubmission) -> Any:
+        runtime_context = ctx.runtime.extra.get("ark_runtime_context")
+        if runtime_context is None:
+            resolver = getattr(self.gateway, "resolver", None)
+            resolve = getattr(resolver, "resolve_from_identity", None)
+            if not callable(resolve):
+                raise RuntimeError("ARK gateway cannot resolve RuntimeToolContext from Lean tool context.")
+            if not ctx.runtime.step_id or not ctx.runtime.flow_id or not ctx.runtime.agent_id:
+                raise RuntimeError("Lean tool context is missing ARK step_id, flow_id, or agent_id.")
+            runtime_context = resolve(
+                RuntimeToolIdentity(
+                    step_id=ctx.runtime.step_id,
+                    flow_id=ctx.runtime.flow_id,
+                    agent_id=ctx.runtime.agent_id,
+                ),
+                require_running_step=True,
+                allowed_submit_tool_name=submission.tool_name,
+            )
+        return self.gateway.accept_step_submission(runtime_context, submission)
 
 
 class SubmitSubmissionComponent:
@@ -56,12 +100,12 @@ class SubmitSubmissionComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
         *,
         tool_view: ToolViewComponent | None = None,
         submission_gateway: RuntimeSubmissionGateway | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
+        self.runtime = runtime
         self.tool_view = tool_view
         self.submission_gateway = submission_gateway
 
@@ -72,34 +116,68 @@ class SubmitSubmissionComponent:
         payload: dict[str, Any],
         result_view: dict[str, Any],
     ) -> ServiceResult[SubmissionView]:
+        """Legacy generic builder retained only for backward compatibility."""
+
         if not tool_name.startswith("submit_"):
-            return self.foundation.fail(
-                self.foundation.issue("invalid_submit_tool_name", "Successful submissions must come from submit_* tools.", object_ref=tool_name)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("invalid_submit_tool_name", "Successful submissions must come from submit_* tools.", object_ref=tool_name)
             )
         serializable = self._assert_json_serializable({"payload": payload, "result_view": result_view})
         if not serializable.ok:
-            return self.foundation.fail(serializable.issues)
-        kind = self._infer_submission_kind(tool_name, payload)
-        submission = SubmissionView(
-            tool_name=tool_name,
-            submission_kind=kind,
-            payload=payload,
-            result_view=result_view,
+            return self.runtime.foundation.fail(serializable.issues)
+        return self.runtime.foundation.ok(
+            SubmissionView(
+                tool_name=tool_name,
+                submission_kind=self._infer_submission_kind(tool_name, payload),
+                payload=payload,
+                result_view=result_view,
+            )
         )
-        return self.foundation.ok(submission)
+
+    def prepare_submission(
+        self,
+        ctx: ToolExecutionContext,
+        *,
+        prepared: Any,
+        tool_name: str,
+    ) -> ServiceResult[PreparedSubmissionView]:
+        del ctx
+        if isinstance(prepared, PreparedSubmissionView):
+            return self._validate_prepared_tool(prepared, tool_name=tool_name)
+        if isinstance(prepared, BaseSubmission):
+            return self._validate_prepared_tool(
+                PreparedSubmissionView(
+                    submission=prepared,
+                    summary=prepared.summary or f"{tool_name} accepted.",
+                ),
+                tool_name=tool_name,
+            )
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "prepared_submission_invalid",
+                "Submit handlers must return PreparedSubmissionView or an ARK BaseSubmission subclass.",
+                object_ref=tool_name,
+                details={"returned_type": type(prepared).__name__},
+            )
+        )
 
     def record_successful_submission(
         self,
         ctx: ToolExecutionContext,
         *,
-        submission: SubmissionView,
+        submission: BaseSubmission,
     ) -> ServiceResult[SubmissionAckView]:
-        conflict = self.assert_no_conflicting_submission(ctx, submission_kind=submission.submission_kind.value)
+        conflict = self.assert_no_conflicting_submission(ctx, submission=submission)
         if not conflict.ok:
-            return self.foundation.fail(conflict.issues)
+            return self.runtime.foundation.fail(conflict.issues)
+        if submission.submitted_by_agent_id is None and ctx.runtime.agent_id:
+            submission = submission.model_copy(update={"submitted_by_agent_id": ctx.runtime.agent_id})
+        serializable = self.assert_json_serializable_submission(submission)
+        if not serializable.ok:
+            return self.runtime.foundation.fail(serializable.issues)
         if self.submission_gateway is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "submission_gateway_missing",
                     "Cannot record a successful submission because no ARK submission gateway is configured.",
                     suggested_action="Inject RuntimeMcpToolGateway.accept_step_submission before exposing submit tools.",
@@ -107,47 +185,51 @@ class SubmitSubmissionComponent:
             )
         try:
             accepted = self.submission_gateway.accept_step_submission(ctx, submission)
-        except Exception as exc:  # noqa: BLE001 - runtime boundary.
-            return self.foundation.fail(
-                self.foundation.issue("submission_gateway_failed", f"Runtime submission gateway failed: {exc}")
+        except RuntimeToolContextError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(exc.code, exc.message, details=dict(exc.details))
             )
-        if isinstance(accepted, ServiceResult):
-            if not accepted.ok:
-                return self.foundation.fail(accepted.issues)
-        return self.foundation.ok(
+        except Exception as exc:  # noqa: BLE001 - runtime boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("submission_gateway_failed", f"Runtime submission gateway failed: {exc}")
+            )
+        if isinstance(accepted, ServiceResult) and not accepted.ok:
+            return self.runtime.foundation.fail(accepted.issues)
+        return self.runtime.foundation.ok(
             SubmissionAckView(
                 accepted=True,
-                submission=submission,
+                submission=dump_submission_for_view(submission),
                 message=self.STOP_MESSAGE,
+                dispatch_request_count=len(submission.requests) if isinstance(submission, ChildFlowDispatchSubmission) else 0,
             )
         )
 
     def reject_submit(self, ctx: ToolExecutionContext, *, issues: list[ServiceIssue]) -> ServiceResult[ToolResultView]:
         del ctx
         if not issues:
-            issues = [self.foundation.issue("submit_rejected", "Submit was rejected.")]
-        return self.foundation.fail(issues)
+            issues = [self.runtime.foundation.issue("submit_rejected", "Submit was rejected.")]
+        return self.runtime.foundation.fail(issues)
 
     def assert_no_conflicting_submission(
         self,
         ctx: ToolExecutionContext,
         *,
-        submission_kind: str,
+        submission: BaseSubmission,
     ) -> ServiceResult[None]:
         if ctx.runtime.successful_submission_count <= 0:
-            return self.foundation.ok(None)
+            return self.runtime.foundation.ok(None)
         current = ctx.runtime.successful_submission_kind
-        if current == submission_kind == SubmissionKind.DISPATCH_CHILD_FLOWS.value:
-            return self.foundation.fail(
-                self.foundation.issue(
-                    "dispatch_submission_already_recorded",
-                    "A dispatch submission is already recorded for this AgentStep.",
+        if current == submission.submission_type:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "submission_already_recorded",
+                    "A successful submission of this type is already recorded for this AgentStep.",
                     current=current,
                     expected="no existing submission",
                 )
             )
-        return self.foundation.fail(
-            self.foundation.issue(
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
                 "conflicting_submission",
                 "A successful submission is already recorded for this AgentStep.",
                 current=current,
@@ -155,6 +237,30 @@ class SubmitSubmissionComponent:
                 suggested_action="Stop making tool calls and wait for the workflow to continue.",
             )
         )
+
+    def assert_json_serializable_submission(self, submission: BaseSubmission) -> ServiceResult[None]:
+        return self._assert_json_serializable(submission.model_dump(mode="json"))
+
+    def _validate_prepared_tool(
+        self,
+        prepared: PreparedSubmissionView,
+        *,
+        tool_name: str,
+    ) -> ServiceResult[PreparedSubmissionView]:
+        if not tool_name.startswith("submit_"):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("invalid_submit_tool_name", "Successful submissions must come from submit_* tools.", object_ref=tool_name)
+            )
+        if prepared.submission.tool_name != tool_name:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "submission_tool_mismatch",
+                    "Prepared submission tool_name does not match the invoked submit tool.",
+                    current=prepared.submission.tool_name,
+                    expected=tool_name,
+                )
+            )
+        return self.runtime.foundation.ok(prepared)
 
     def _infer_submission_kind(self, tool_name: str, payload: dict[str, Any]) -> SubmissionKind:
         if self.tool_view is not None:
@@ -171,7 +277,7 @@ class SubmitSubmissionComponent:
         try:
             json.dumps(value, sort_keys=True)
         except TypeError as exc:
-            return self.foundation.fail(
-                self.foundation.issue("submission_payload_not_json", f"Submission payload must be JSON serializable: {exc}")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("submission_payload_not_json", f"Submission payload must be JSON serializable: {exc}")
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)

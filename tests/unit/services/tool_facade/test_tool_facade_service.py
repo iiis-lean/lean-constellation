@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field
+from agent_runtime_kit.flow.models import BaseSubmission, ChildFlowDispatchSubmission, FlowRequest
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.services.external_clients import ExternalClientService, LeanMcpToolkitClient
+from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.foundation import FoundationContext, FoundationService
 from lean_constellation.services.tool_facade import (
     ContractMutationFieldGroup,
     RawToolCallContext,
     RuntimeToolContext,
-    SubmissionView,
     SubmitBehavior,
     ToolCapability,
     ToolFacadeService,
@@ -39,9 +41,9 @@ class FileArgs(StrictModel):
 class FakeSubmissionGateway:
     def __init__(self, foundation: FoundationService) -> None:
         self.foundation = foundation
-        self.accepted: list[SubmissionView] = []
+        self.accepted: list[BaseSubmission] = []
 
-    def accept_step_submission(self, ctx, submission: SubmissionView):
+    def accept_step_submission(self, ctx, submission: BaseSubmission):
         del ctx
         self.accepted.append(submission)
         return self.foundation.ok({"accepted": True})
@@ -60,7 +62,7 @@ class FakeToolkitDispatcher:
 
 
 def _write_preparation_input(repo_root: Path) -> None:
-    foundation = FoundationService()
+    foundation = make_runtime().foundation
     prep = RepoPreparationInput(
         goal="Formalize a unit-test source.",
         source_corpus_mode=SourceCorpusMode.PREPARE,
@@ -96,8 +98,10 @@ def _runtime(repo_root: Path, *, view: str = "worker_view", role: str = "worker"
 
 
 def _tool_service(tmp_path: Path) -> tuple[ToolFacadeService, list[str], FakeSubmissionGateway]:
-    foundation = FoundationService()
-    external = ExternalClientService(lean_mcp_toolkit=LeanMcpToolkitClient(dispatcher=FakeToolkitDispatcher()))
+    runtime = make_runtime(
+        external_overrides={"lean_mcp_toolkit": LeanMcpToolkitClient(dispatcher=FakeToolkitDispatcher())}
+    )
+    foundation = runtime.foundation
     gateway = FakeSubmissionGateway(foundation)
     calls: list[str] = []
 
@@ -108,13 +112,22 @@ def _tool_service(tmp_path: Path) -> tuple[ToolFacadeService, list[str], FakeSub
     def submit_handler(ctx, args: SubmitArgs):
         calls.append(f"submit:{args.summary}")
         return foundation.ok(
-            {
-                "summary": "Submit gate passed.",
-                "flow_requests": [{"flow_type": "unit_child", "input": {"summary": args.summary}}],
-            }
+            ChildFlowDispatchSubmission(
+                submission_id="sub_test",
+                tool_name="submit_ready",
+                submitted_by_agent_id=ctx.runtime.agent_id,
+                summary="Submit gate passed.",
+                requests=[
+                    FlowRequest(
+                        flow_type="unit_child",
+                        scope_id="scope_test",
+                        params={"summary": args.summary},
+                    )
+                ],
+            )
         )
 
-    service = ToolFacadeService(foundation=foundation, external=external, submission_gateway=gateway)
+    service = ToolFacadeService(runtime, submission_gateway=gateway)
     registered = service.register_application_tools(
         [
             ToolSpec(
@@ -302,8 +315,9 @@ def test_mcp_wrapper_invokes_handlers_and_records_submit(tmp_path: Path) -> None
     assert submitted.value.ok is True
     assert "Stop making further" in submitted.value.summary
     assert len(gateway.accepted) == 1
-    assert gateway.accepted[0].submission_kind == "dispatch_child_flows"
-    assert gateway.accepted[0].payload["flow_requests"][0]["flow_type"] == "unit_child"
+    assert isinstance(gateway.accepted[0], ChildFlowDispatchSubmission)
+    assert gateway.accepted[0].requests[0].flow_type == "unit_child"
+    assert gateway.accepted[0].requests[0].params == {"summary": "done"}
 
     after_submit = service.invoke_agent_tool(
         RawToolCallContext(endpoint_view_key="worker_view", runtime_context=_runtime(tmp_path, successful=True)),

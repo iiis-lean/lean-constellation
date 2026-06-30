@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import inspect
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.external_clients import ExternalClientService, ToolkitCallResult
-from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, ToolResultView
+from lean_constellation.services.external_clients import ToolkitCallResult
+from lean_constellation.services.foundation import FoundationContext, ServiceResult, ToolResultView
 from lean_constellation.services.tool_facade.context_resolver import RawToolCallContext, ToolExecutionContext, ContextResolverComponent
 from lean_constellation.services.tool_facade.permission_guard import PermissionGuardComponent
 from lean_constellation.services.tool_facade.submit_submission import SubmitSubmissionComponent
 from lean_constellation.services.tool_facade.tool_view import SubmitBehavior, ToolCapability, ToolSpec, ToolSpecView, ToolViewComponent
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class FastMcpViewApp(StrictModel):
@@ -44,21 +48,19 @@ class MCPWrapperComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
         *,
         context_resolver: ContextResolverComponent,
         tool_view: ToolViewComponent,
         permission_guard: PermissionGuardComponent,
         submit_submission: SubmitSubmissionComponent,
-        external: ExternalClientService | None = None,
         backing_services: Mapping[str, Any] | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
+        self.runtime = runtime
         self.context_resolver = context_resolver
         self.tool_view = tool_view
         self.permission_guard = permission_guard
         self.submit_submission = submit_submission
-        self.external = external or ExternalClientService()
         self.backing_services = dict(backing_services or {})
 
     def register_tool(self, tool_spec: ToolSpec) -> ServiceResult[Any]:
@@ -67,8 +69,8 @@ class MCPWrapperComponent:
     def get_registered_tool(self, tool_name: str) -> ServiceResult[ToolSpecView]:
         spec = self.tool_view.get_tool(tool_name)
         if not spec.ok or spec.value is None:
-            return self.foundation.fail(spec.issues)
-        return self.foundation.ok(self.tool_view._tool_view(spec.value))
+            return self.runtime.foundation.fail(spec.issues)
+        return self.runtime.foundation.ok(self.tool_view._tool_view(spec.value))
 
     def list_registered_tools(
         self,
@@ -84,13 +86,13 @@ class MCPWrapperComponent:
             if capability is not None and spec.capability != ToolCapability(capability):
                 continue
             views.append(self.tool_view._tool_view(spec))
-        return self.foundation.ok(views)
+        return self.runtime.foundation.ok(views)
 
     def build_view_fastmcp_app(self, view_key: str) -> ServiceResult[FastMcpViewApp]:
         tools = self.tool_view.list_tools_for_view(view_key)
         if not tools.ok or tools.value is None:
-            return self.foundation.fail(tools.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(tools.issues)
+        return self.runtime.foundation.ok(
             FastMcpViewApp(
                 view_key=view_key,
                 tool_names=[tool.name for tool in tools.value],
@@ -112,7 +114,7 @@ class MCPWrapperComponent:
         else:
             ctx_result = self.context_resolver.resolve_tool_context(raw_context)
         if not ctx_result.ok or ctx_result.value is None:
-            return self.foundation.ok(self.format_tool_error(ctx_result))
+            return self.runtime.foundation.ok(self.format_tool_error(ctx_result))
         return self._invoke_with_context(ctx_result.value, tool_name=tool_name, flat_args=flat_args)
 
     def invoke_view_tool(
@@ -126,7 +128,7 @@ class MCPWrapperComponent:
         raw = raw_context.model_copy(update={"endpoint_view_key": endpoint_view_key})
         ctx_result = self.context_resolver.resolve_tool_context(raw)
         if not ctx_result.ok or ctx_result.value is None:
-            return self.foundation.ok(self.format_tool_error(ctx_result))
+            return self.runtime.foundation.ok(self.format_tool_error(ctx_result))
         return self._invoke_with_context(ctx_result.value, tool_name=tool_name, flat_args=flat_args)
 
     def invoke_toolkit_proxy_tool(
@@ -138,8 +140,8 @@ class MCPWrapperComponent:
     ) -> ServiceResult[ToolResultView]:
         safety = self._check_toolkit_proxy_args(ctx, flat_args)
         if not safety.ok:
-            return self.foundation.ok(self.format_tool_error(safety))
-        result = self.external.lean_mcp_toolkit.call_tool(proxy_tool_name, dict(flat_args))
+            return self.runtime.foundation.ok(self.format_tool_error(safety))
+        result = self.runtime.external.lean_mcp_toolkit.call_tool(proxy_tool_name, dict(flat_args))
         return self.normalize_toolkit_result(ctx, proxy_tool_name=proxy_tool_name, result=result)
 
     def resolve_toolkit_path_arg(
@@ -153,14 +155,14 @@ class MCPWrapperComponent:
         mode = mode.strip()
         if mode in {"repo_relative_file", "relative_file"}:
             try:
-                rel = self.foundation.layout.ensure_relative_path(arg_value)
+                rel = self.runtime.foundation.layout.ensure_relative_path(arg_value)
                 path = Path(ctx.repo_root) / rel
-                self.foundation.layout.assert_within(ctx.repo_root, path)
+                self.runtime.foundation.layout.assert_within(ctx.repo_root, path)
             except Exception as exc:  # noqa: BLE001
-                return self.foundation.fail(
-                    self.foundation.issue("toolkit_path_rejected", f"Unsafe repo-relative path: {exc}", field=arg_name)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("toolkit_path_rejected", f"Unsafe repo-relative path: {exc}", field=arg_name)
                 )
-            return self.foundation.ok(
+            return self.runtime.foundation.ok(
                 SafeToolkitPathView(
                     mode="repo_relative_file",
                     arg_name=arg_name,
@@ -172,27 +174,27 @@ class MCPWrapperComponent:
             )
         if mode == "decl_owned_file":
             if ctx.node is None:
-                return self.foundation.fail(
-                    self.foundation.issue("node_context_missing", "Decl-owned file resolution requires a current node.")
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("node_context_missing", "Decl-owned file resolution requires a current node.")
                 )
             decl_kind = ctx.runtime.decl_kind
             if not decl_kind:
-                return self.foundation.fail(
-                    self.foundation.issue("decl_kind_missing", "Decl-owned file resolution requires runtime decl_kind.")
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("decl_kind_missing", "Decl-owned file resolution requires runtime decl_kind.")
                 )
             try:
                 from lean_constellation.services.foundation import DeclFileKey
 
-                path = self.foundation.layout.decl_file_path(
+                path = self.runtime.foundation.layout.decl_file_path(
                     FoundationContext(repo_root=ctx.repo_root),
                     DeclFileKey(node_path=ctx.node.node_path, decl_kind=decl_kind, decl_name=arg_value),
                 )
-                self.foundation.layout.assert_within(ctx.repo_root, path)
+                self.runtime.foundation.layout.assert_within(ctx.repo_root, path)
             except Exception as exc:  # noqa: BLE001
-                return self.foundation.fail(
-                    self.foundation.issue("toolkit_path_rejected", f"Unsafe Decl-owned file target: {exc}", field=arg_name)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("toolkit_path_rejected", f"Unsafe Decl-owned file target: {exc}", field=arg_name)
                 )
-            return self.foundation.ok(
+            return self.runtime.foundation.ok(
                 SafeToolkitPathView(
                     mode=mode,
                     arg_name=arg_name,
@@ -204,15 +206,15 @@ class MCPWrapperComponent:
             )
         if mode in {"adapter_upstream_module", "mathlib_module"}:
             if Path(arg_value).is_absolute() or ".." in Path(arg_value).parts:
-                return self.foundation.fail(
-                    self.foundation.issue("toolkit_module_rejected", "Module arguments cannot be absolute paths or contain '..'.", field=arg_name)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("toolkit_module_rejected", "Module arguments cannot be absolute paths or contain '..'.", field=arg_name)
                 )
             module = arg_value.strip()
             if not module or any(part.strip() == "" for part in module.split(".")):
-                return self.foundation.fail(
-                    self.foundation.issue("toolkit_module_rejected", "Module name is empty or malformed.", field=arg_name)
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("toolkit_module_rejected", "Module name is empty or malformed.", field=arg_name)
                 )
-            return self.foundation.ok(
+            return self.runtime.foundation.ok(
                 SafeToolkitPathView(
                     mode=mode,
                     arg_name=arg_name,
@@ -222,8 +224,8 @@ class MCPWrapperComponent:
                     summary=f"Accepted {mode} argument.",
                 )
             )
-        return self.foundation.fail(
-            self.foundation.issue("toolkit_path_mode_unknown", "Unknown toolkit path guard mode.", field=arg_name, current=mode)
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue("toolkit_path_mode_unknown", "Unknown toolkit path guard mode.", field=arg_name, current=mode)
         )
 
     def normalize_toolkit_result(
@@ -236,13 +238,13 @@ class MCPWrapperComponent:
         del ctx
         if isinstance(result, ToolkitCallResult):
             if not result.ok:
-                issue = self.foundation.issue(result.issue_code or "toolkit_call_failed", result.summary or "Toolkit call failed.")
-                return self.foundation.ok(ToolResultView(ok=False, summary=result.summary or "Toolkit call failed.", issues=[issue]))
+                issue = self.runtime.foundation.issue(result.issue_code or "toolkit_call_failed", result.summary or "Toolkit call failed.")
+                return self.runtime.foundation.ok(ToolResultView(ok=False, summary=result.summary or "Toolkit call failed.", issues=[issue]))
             value = result.value
         else:
             value = result
         clean_value = self._sanitize_toolkit_value(value)
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             ToolResultView(
                 ok=True,
                 summary=f"Toolkit proxy {proxy_tool_name} returned normalized results.",
@@ -275,66 +277,65 @@ class MCPWrapperComponent:
     ) -> ServiceResult[ToolResultView]:
         tool_result = self.tool_view.get_tool(tool_name)
         if not tool_result.ok or tool_result.value is None:
-            return self.foundation.ok(self.format_tool_error(tool_result))
+            return self.runtime.foundation.ok(self.format_tool_error(tool_result))
         spec = tool_result.value
         allowed = self.permission_guard.assert_tool_allowed(ctx, tool_name=tool_name)
         if not allowed.ok:
-            return self.foundation.ok(self.format_tool_error(allowed))
+            return self.runtime.foundation.ok(self.format_tool_error(allowed))
         args_result = self._validate_args(spec, flat_args)
         if not args_result.ok or args_result.value is None:
-            return self.foundation.ok(self.format_tool_error(args_result))
+            return self.runtime.foundation.ok(self.format_tool_error(args_result))
         if spec.toolkit_proxy_name:
             return self.invoke_toolkit_proxy_tool(ctx, proxy_tool_name=spec.toolkit_proxy_name, flat_args=args_result.value.model_dump())
         core_result = self._call_backing_api(ctx, spec, args_result.value)
-        tool_view = self.format_tool_result(core_result, view_kind=spec.result_view)
-        if not tool_view.ok or spec.submit_behavior == SubmitBehavior.NONE:
-            return self.foundation.ok(tool_view)
-        submission_payload = dict(args_result.value.model_dump())
-        if isinstance(tool_view.value, dict):
-            if "flow_requests" in tool_view.value:
-                submission_payload["flow_requests"] = tool_view.value["flow_requests"]
-            if "flow_request" in tool_view.value:
-                submission_payload["flow_request"] = tool_view.value["flow_request"]
-        submission = self.submit_submission.build_submission(
-            spec.name,
-            payload=submission_payload,
-            result_view=tool_view.model_dump(),
-        )
-        if not submission.ok or submission.value is None:
-            return self.foundation.ok(self.format_tool_error(submission))
-        ack = self.submit_submission.record_successful_submission(ctx, submission=submission.value)
-        if not ack.ok or ack.value is None:
-            return self.foundation.ok(self.format_tool_error(ack))
-        return self.foundation.ok(
-            ToolResultView(
-                ok=True,
-                summary=ack.value.message,
-                value=ack.value.model_dump(),
+        if spec.submit_behavior != SubmitBehavior.NONE:
+            if not core_result.ok:
+                return self.runtime.foundation.ok(self.format_tool_error(core_result))
+            prepared = self.submit_submission.prepare_submission(
+                ctx,
+                prepared=core_result.value,
+                tool_name=spec.name,
             )
-        )
+            if not prepared.ok or prepared.value is None:
+                return self.runtime.foundation.ok(self.format_tool_error(prepared))
+            ack = self.submit_submission.record_successful_submission(ctx, submission=prepared.value.submission)
+            if not ack.ok or ack.value is None:
+                return self.runtime.foundation.ok(self.format_tool_error(ack))
+            return self.runtime.foundation.ok(
+                ToolResultView(
+                    ok=True,
+                    summary=ack.value.message,
+                    value={
+                        **ack.value.model_dump(mode="json"),
+                        "agent_view": prepared.value.agent_view,
+                    },
+                )
+            )
+        tool_view = self.format_tool_result(core_result, view_kind=spec.result_view)
+        return self.runtime.foundation.ok(tool_view)
 
     def _validate_args(self, spec: ToolSpec, flat_args: dict[str, Any]) -> ServiceResult[BaseModel]:
         try:
             args = spec.args_model.model_validate(flat_args)
         except ValidationError as exc:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "tool_arguments_invalid",
                     f"Tool arguments do not match schema: {exc.errors()}",
                     object_ref=spec.name,
                 )
             )
-        return self.foundation.ok(args)
+        return self.runtime.foundation.ok(args)
 
     def _call_backing_api(self, ctx: ToolExecutionContext, spec: ToolSpec, args: BaseModel) -> ServiceResult[Any]:
         try:
             if spec.backing_handler is not None:
-                value = spec.backing_handler(ctx, args)
+                value = self._call_handler(spec, ctx, args)
             else:
                 service = self.backing_services.get(spec.backing_service)
                 if service is None:
-                    return self.foundation.fail(
-                        self.foundation.issue(
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
                             "backing_service_missing",
                             "Tool backing service is not configured.",
                             object_ref=spec.backing_service,
@@ -348,10 +349,37 @@ class MCPWrapperComponent:
                 else:
                     value = method(**payload)
         except Exception as exc:  # noqa: BLE001 - Service boundary.
-            return self.foundation.fail(self.foundation.issue("backing_tool_call_failed", f"Backing tool call failed: {exc}", object_ref=spec.name))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("backing_tool_call_failed", f"Backing tool call failed: {exc}", object_ref=spec.name))
         if isinstance(value, ServiceResult):
             return value
-        return self.foundation.ok(value)
+        return self.runtime.foundation.ok(value)
+
+    def _call_handler(self, spec: ToolSpec, ctx: ToolExecutionContext, args: BaseModel) -> Any:
+        """Call a ToolSpec handler with backward-compatible arity.
+
+        Application tools often need the Lean runtime service graph to inject
+        context-owned values such as current node path or actor. Earlier tests
+        and local helper tools used two-argument handlers `(ctx, args)`, so the
+        facade accepts both forms.
+        """
+
+        assert spec.backing_handler is not None
+        try:
+            signature = inspect.signature(spec.backing_handler)
+        except (TypeError, ValueError):
+            return spec.backing_handler(ctx, args)
+        positional = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            }
+        ]
+        if len(positional) >= 3:
+            return spec.backing_handler(self.runtime, ctx, args)
+        return spec.backing_handler(ctx, args)
 
     def _check_toolkit_proxy_args(self, ctx: ToolExecutionContext, flat_args: dict[str, Any]) -> ServiceResult[None]:
         for key, value in flat_args.items():
@@ -361,8 +389,8 @@ class MCPWrapperComponent:
             if "path" in lower or "file" in lower:
                 safe = self.resolve_toolkit_path_arg(ctx, arg_name=key, arg_value=value, mode="repo_relative_file")
                 if not safe.ok:
-                    return self.foundation.fail(safe.issues)
-        return self.foundation.ok(None)
+                    return self.runtime.foundation.fail(safe.issues)
+        return self.runtime.foundation.ok(None)
 
     def _sanitize_toolkit_value(self, value: Any) -> Any:
         if isinstance(value, BaseModel):

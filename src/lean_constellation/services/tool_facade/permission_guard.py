@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.tool_facade.context_resolver import ToolExecutionContext
 from lean_constellation.services.tool_facade.tool_view import ToolCapability, ToolSpec, ToolViewComponent
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class PermissionIssueCode(StrEnum):
@@ -47,23 +51,23 @@ class PermissionGuardComponent:
 
     def __init__(
         self,
-        foundation: FoundationService | None = None,
+        runtime: LeanRuntimeServices,
         *,
         tool_view: ToolViewComponent,
     ) -> None:
-        self.foundation = foundation or FoundationService()
+        self.runtime = runtime
         self.tool_view = tool_view
 
     def assert_tool_allowed(self, ctx: ToolExecutionContext, *, tool_name: str) -> ServiceResult[None]:
         endpoint = self.assert_endpoint_view_allowed(ctx)
         if not endpoint.ok:
-            return self.foundation.fail(endpoint.issues)
+            return self.runtime.foundation.fail(endpoint.issues)
         names = self.tool_view.tool_names_for_view(ctx.expected_view_key)
         if not names.ok or names.value is None:
-            return self.foundation.fail(names.issues)
+            return self.runtime.foundation.fail(names.issues)
         if tool_name not in names.value:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.TOOL_NOT_IN_VIEW.value,
                     "Tool is not part of the current ToolView.",
                     object_ref=tool_name,
@@ -72,11 +76,11 @@ class PermissionGuardComponent:
             )
         spec_result = self.tool_view.get_tool(tool_name)
         if not spec_result.ok or spec_result.value is None:
-            return self.foundation.fail(spec_result.issues)
+            return self.runtime.foundation.fail(spec_result.issues)
         spec = spec_result.value
         if spec.allowed_roles and ctx.actor.role not in spec.allowed_roles:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.ROLE_NOT_ALLOWED.value,
                     "Current actor role is not allowed to call this tool.",
                     object_ref=tool_name,
@@ -89,21 +93,21 @@ class PermissionGuardComponent:
             ToolCapability.SUBMIT,
             ToolCapability.ADMIN,
         }:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.SUBMISSION_ALREADY_ACCEPTED.value,
                     "A successful submission is already recorded for this AgentStep; further state-changing calls are rejected.",
                     object_ref=tool_name,
                     suggested_action="Stop making tool calls and wait for the workflow to continue.",
                 )
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)
 
     def assert_endpoint_view_allowed(self, ctx: ToolExecutionContext) -> ServiceResult[None]:
         check = self.tool_view.validate_step_expected_view(ctx)
         if not check.ok:
-            return self.foundation.fail(check.issues)
-        return self.foundation.ok(None)
+            return self.runtime.foundation.fail(check.issues)
+        return self.runtime.foundation.ok(None)
 
     def assert_contract_mutation_allowed(
         self,
@@ -114,23 +118,23 @@ class PermissionGuardComponent:
     ) -> ServiceResult[None]:
         field_group = ContractMutationFieldGroup(field_group)
         if ctx.actor.role == "reviewer":
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.CONTRACT_MUTATION_REJECTED.value,
                     "Reviewer actors cannot mutate NodeContract fields.",
                     field=field_group.value,
                 )
             )
         if ctx.actor.role in {"admin", "coordinator"}:
-            return self.foundation.ok(None)
+            return self.runtime.foundation.ok(None)
         if field_group in {
             ContractMutationFieldGroup.REFS,
             ContractMutationFieldGroup.DEPS,
             ContractMutationFieldGroup.MATHLIB,
         } and ctx.actor.role in {"worker", "plan"}:
             if item_added_by is not None and item_added_by != ctx.actor.added_by:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         PermissionIssueCode.CONTRACT_MUTATION_REJECTED.value,
                         "Current actor cannot delete or modify contract items added by another actor.",
                         field=field_group.value,
@@ -138,9 +142,9 @@ class PermissionGuardComponent:
                         expected=ctx.actor.added_by,
                     )
                 )
-            return self.foundation.ok(None)
-        return self.foundation.fail(
-            self.foundation.issue(
+            return self.runtime.foundation.ok(None)
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
                 PermissionIssueCode.CONTRACT_MUTATION_REJECTED.value,
                 "Current actor cannot mutate this contract field group.",
                 field=field_group.value,
@@ -157,8 +161,8 @@ class PermissionGuardComponent:
         decl_name: str,
     ) -> ServiceResult[None]:
         if ctx.actor.role in {"reviewer", "admin"}:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.DECL_STAGE_MUTATION_REJECTED.value,
                     "Reviewer/admin actors cannot perform worker decl stage mutations.",
                     object_ref=decl_name,
@@ -167,12 +171,12 @@ class PermissionGuardComponent:
                 )
             )
         if ctx.decl_stage is None:
-            return self.foundation.fail(
-                self.foundation.issue("decl_stage_context_missing", "Current context has no decl stage.")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("decl_stage_context_missing", "Current context has no decl stage.")
             )
         if ctx.decl_stage.stage != stage:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.DECL_STAGE_MUTATION_REJECTED.value,
                     "Tool stage does not match current decl stage.",
                     object_ref=decl_name,
@@ -181,39 +185,39 @@ class PermissionGuardComponent:
                 )
             )
         if ctx.decl_stage.batch_decls and decl_name not in ctx.decl_stage.batch_decls:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.DECL_STAGE_MUTATION_REJECTED.value,
                     "Decl is not in the current stage batch.",
                     object_ref=decl_name,
                     expected=",".join(ctx.decl_stage.batch_decls),
                 )
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)
 
     def assert_review_only(self, ctx: ToolExecutionContext) -> ServiceResult[None]:
         if ctx.actor.role != "reviewer":
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.REVIEW_ONLY_REJECTED.value,
                     "This tool is only available to reviewer actors.",
                     current=ctx.actor.role,
                     expected="reviewer",
                 )
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)
 
     def assert_admin(self, ctx: ToolExecutionContext) -> ServiceResult[None]:
         if ctx.actor.role != "admin":
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     PermissionIssueCode.ADMIN_REQUIRED.value,
                     "This tool requires an admin actor.",
                     current=ctx.actor.role,
                     expected="admin",
                 )
             )
-        return self.foundation.ok(None)
+        return self.runtime.foundation.ok(None)
 
     def assert_tool_capability_allowed(self, ctx: ToolExecutionContext, spec: ToolSpec) -> ServiceResult[None]:
         if spec.capability == ToolCapability.ADMIN:

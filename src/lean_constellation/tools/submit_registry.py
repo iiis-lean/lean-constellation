@@ -1,0 +1,369 @@
+"""Submit ToolSpec registry bootstrap."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+from lean_constellation.services.foundation import MutationSummaryView, ServiceResult
+from lean_constellation.services.runtime import LeanRuntimeServices
+from lean_constellation.services.tool_facade import SubmitBehavior, ToolCapability, ToolGroupSpec, ToolSpec, ToolViewSpec
+from lean_constellation.tools import submit_handlers as handlers
+from lean_constellation.tools.submit_args import (
+    SubmitAdapterCatalogBlockedArgs,
+    SubmitAdapterCatalogReadyArgs,
+    SubmitAdapterRepoChoiceArgs,
+    SubmitContentNodeBlockedArgs,
+    SubmitContentNodeFailedArgs,
+    SubmitContentNodeReadyArgs,
+    SubmitContentNodeTasksArgs,
+    SubmitContentPreparationReconArgs,
+    SubmitCurrentDeclRoundArgs,
+    SubmitExternalRepoRequiredArgs,
+    SubmitLocalResourceCreatedArgs,
+    SubmitMathlibReconCompletedArgs,
+    SubmitNativeRepoChoiceArgs,
+    SubmitNodeDirDependencyReconCompletedArgs,
+    SubmitRepoReadyArgs,
+    SubmitRepoRequirementArgs,
+    SubmitResourceDuplicateArgs,
+    SubmitResourceReconBlockedArgs,
+    SubmitResourceReconCompletedArgs,
+    SubmitResourceRejectedArgs,
+    SubmitResourceRequestArgs,
+    SubmitRootInterfacePrepareReadyArgs,
+    SubmitSourceCorpusBlockedArgs,
+    SubmitSourceCorpusPreparedArgs,
+    SubmitSourceIndexBuilderRoundArgs,
+    SubmitSourceIndexReviewRoundArgs,
+    SubmitStageReviewArgs,
+    SubmitStageWorkerBlockedArgs,
+    SubmitStageWorkerCompletedArgs,
+)
+from lean_constellation.tools.submit_groups import build_submit_tool_groups as _build_groups
+from lean_constellation.tools.submit_views import build_submit_tool_views as _build_views
+from lean_constellation.tools.specs import submit_handler_tool
+
+
+def _submit_tool(
+    *,
+    name: str,
+    description: str,
+    args_model: type,
+    groups: set[str],
+    roles: set[str],
+    handler,
+    behavior: SubmitBehavior = SubmitBehavior.TERMINAL,
+    result_view: str = "submit_submission",
+    required_context: set[str] | None = None,
+) -> ToolSpec:
+    return submit_handler_tool(
+        name=name,
+        description=description,
+        args_model=args_model,
+        result_view=result_view,
+        groups=groups,
+        roles=roles,
+        handler=handler,
+        submit_behavior=behavior,
+        required_context=required_context,
+    )
+
+
+def build_submit_tool_specs() -> list[ToolSpec]:
+    """Collect every layer-3 submit ToolSpec."""
+
+    specs = [
+        _submit_tool(
+            name="submit_adapter_repo_choice",
+            description="Submit that the current requirement repo should be built as an adapter around an existing GitHub Lean repo.",
+            args_model=SubmitAdapterRepoChoiceArgs,
+            groups={"repo_format_discovery_submit"},
+            roles={"coordinator", "admin"},
+            handler=handlers.submit_adapter_repo_choice,
+        ),
+        _submit_tool(
+            name="submit_native_repo_choice",
+            description="Submit that the current requirement repo should be prepared as a native Lean repo.",
+            args_model=SubmitNativeRepoChoiceArgs,
+            groups={"repo_format_discovery_submit"},
+            roles={"coordinator", "admin"},
+            handler=handlers.submit_native_repo_choice,
+        ),
+        _submit_tool(
+            name="submit_source_corpus_prepared",
+            description="Submit that the source corpus has been organized and is ready for indexing.",
+            args_model=SubmitSourceCorpusPreparedArgs,
+            groups={"source_corpus_prepare_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_source_corpus_prepared,
+        ),
+        _submit_tool(
+            name="submit_source_corpus_blocked",
+            description="Submit that source corpus preparation cannot continue without external action.",
+            args_model=SubmitSourceCorpusBlockedArgs,
+            groups={"source_corpus_prepare_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_source_corpus_blocked,
+        ),
+        _submit_tool(
+            name="submit_source_index_builder_round",
+            description="Submit the current SourceIndex draft for reviewer inspection.",
+            args_model=SubmitSourceIndexBuilderRoundArgs,
+            groups={"source_index_builder_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_source_index_builder_round,
+        ),
+        _submit_tool(
+            name="submit_source_index_review_round",
+            description="Submit the SourceIndex reviewer decision for this round.",
+            args_model=SubmitSourceIndexReviewRoundArgs,
+            groups={"source_index_reviewer_submit"},
+            roles={"reviewer", "admin"},
+            handler=handlers.submit_source_index_review_round,
+        ),
+        _submit_tool(
+            name="submit_root_interface_prepare_ready",
+            description="Submit that the Main scope interface preparation is ready for native Coordinator handoff.",
+            args_model=SubmitRootInterfacePrepareReadyArgs,
+            groups={"root_interface_prepare_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_root_interface_prepare_ready,
+        ),
+        _submit_tool(
+            name="submit_adapter_catalog_ready",
+            description="Submit that adapter declaration catalog and interface bindings are ready.",
+            args_model=SubmitAdapterCatalogReadyArgs,
+            groups={"adapter_ready_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_adapter_catalog_ready,
+        ),
+        _submit_tool(
+            name="submit_adapter_catalog_blocked",
+            description="Submit that adapter declaration catalog work is blocked.",
+            args_model=SubmitAdapterCatalogBlockedArgs,
+            groups={"adapter_ready_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_adapter_catalog_blocked,
+        ),
+        _submit_tool(
+            name="submit_resource_request",
+            description="Submit a request to dispatch ResourceCurationFlow for a precise resource target.",
+            args_model=SubmitResourceRequestArgs,
+            groups={"resource_request_submit"},
+            roles={"coordinator", "plan", "worker", "admin"},
+            handler=handlers.submit_resource_request,
+            behavior=SubmitBehavior.DISPATCH_CHILD_FLOWS,
+        ),
+        _submit_tool(
+            name="submit_resource_duplicate",
+            description="Submit that the requested resource duplicates existing source or resource material.",
+            args_model=SubmitResourceDuplicateArgs,
+            groups={"resource_curator_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_resource_duplicate,
+        ),
+        _submit_tool(
+            name="submit_local_resource_created",
+            description="Submit that a local Resource has been finalized from the current resource draft.",
+            args_model=SubmitLocalResourceCreatedArgs,
+            groups={"resource_curator_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_local_resource_created,
+        ),
+        _submit_tool(
+            name="submit_external_repo_required",
+            description="Submit that this resource target should become a separate provider repo requirement.",
+            args_model=SubmitExternalRepoRequiredArgs,
+            groups={"resource_curator_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_external_repo_required,
+        ),
+        _submit_tool(
+            name="submit_resource_rejected",
+            description="Submit that the requested resource target is invalid or not usable.",
+            args_model=SubmitResourceRejectedArgs,
+            groups={"resource_curator_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_resource_rejected,
+        ),
+        _submit_tool(
+            name="submit_content_node_tasks",
+            description="Submit runnable content node tasks for child ContentNodeTaskFlow dispatch.",
+            args_model=SubmitContentNodeTasksArgs,
+            groups={"coordinator_submit"},
+            roles={"coordinator", "admin"},
+            handler=handlers.submit_content_node_tasks,
+            behavior=SubmitBehavior.DISPATCH_CHILD_FLOWS,
+        ),
+        _submit_tool(
+            name="submit_repo_requirement",
+            description="Submit a provider repo dependency requirement from the current Coordinator.",
+            args_model=SubmitRepoRequirementArgs,
+            groups={"coordinator_submit"},
+            roles={"coordinator", "admin"},
+            handler=handlers.submit_repo_requirement,
+        ),
+        _submit_tool(
+            name="submit_repo_ready",
+            description="Submit that the current repo satisfies its ready gate.",
+            args_model=SubmitRepoReadyArgs,
+            groups={"coordinator_submit"},
+            roles={"coordinator", "admin"},
+            handler=handlers.submit_repo_ready,
+        ),
+        _submit_tool(
+            name="submit_content_preparation_recon",
+            description="Submit a preparation recon child flow request for the current content node.",
+            args_model=SubmitContentPreparationReconArgs,
+            groups={"content_plan_submit"},
+            roles={"plan", "admin"},
+            handler=handlers.submit_content_preparation_recon,
+            behavior=SubmitBehavior.DISPATCH_CHILD_FLOWS,
+        ),
+        _submit_tool(
+            name="submit_current_decl_round",
+            description="Submit the current decl round for child DeclGraphRoundFlow dispatch.",
+            args_model=SubmitCurrentDeclRoundArgs,
+            groups={"content_plan_submit"},
+            roles={"plan", "admin"},
+            handler=handlers.submit_current_decl_round,
+            behavior=SubmitBehavior.DISPATCH_CHILD_FLOWS,
+        ),
+        _submit_tool(
+            name="submit_content_node_ready",
+            description="Submit that the current content node task is ready.",
+            args_model=SubmitContentNodeReadyArgs,
+            groups={"content_completion_submit"},
+            roles={"plan", "admin"},
+            handler=handlers.submit_content_node_ready,
+        ),
+        _submit_tool(
+            name="submit_content_node_blocked",
+            description="Submit that the current content node task is blocked.",
+            args_model=SubmitContentNodeBlockedArgs,
+            groups={"content_completion_submit"},
+            roles={"plan", "admin"},
+            handler=handlers.submit_content_node_blocked,
+        ),
+        _submit_tool(
+            name="submit_content_node_failed",
+            description="Submit that the current content node task failed after allowed retries.",
+            args_model=SubmitContentNodeFailedArgs,
+            groups={"content_completion_submit"},
+            roles={"plan", "admin"},
+            handler=handlers.submit_content_node_failed,
+        ),
+        _submit_tool(
+            name="submit_node_dir_dependency_recon_completed",
+            description="Submit completion of node directory dependency recon.",
+            args_model=SubmitNodeDirDependencyReconCompletedArgs,
+            groups={"preparation_recon_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_node_dir_dependency_recon_completed,
+        ),
+        _submit_tool(
+            name="submit_mathlib_recon_completed",
+            description="Submit completion of Mathlib dependency recon.",
+            args_model=SubmitMathlibReconCompletedArgs,
+            groups={"preparation_recon_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_mathlib_recon_completed,
+        ),
+        _submit_tool(
+            name="submit_resource_recon_completed",
+            description="Submit completion of resource recon.",
+            args_model=SubmitResourceReconCompletedArgs,
+            groups={"preparation_recon_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_resource_recon_completed,
+        ),
+        _submit_tool(
+            name="submit_resource_recon_blocked",
+            description="Submit that resource recon is blocked.",
+            args_model=SubmitResourceReconBlockedArgs,
+            groups={"preparation_recon_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_resource_recon_blocked,
+        ),
+        _submit_tool(
+            name="submit_stage_worker_completed",
+            description="Submit that the current decl stage worker batch is complete.",
+            args_model=SubmitStageWorkerCompletedArgs,
+            groups={"decl_stage_worker_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_stage_worker_completed,
+        ),
+        _submit_tool(
+            name="submit_stage_worker_blocked",
+            description="Submit that the current decl stage worker batch is blocked.",
+            args_model=SubmitStageWorkerBlockedArgs,
+            groups={"decl_stage_worker_submit"},
+            roles={"worker", "admin"},
+            handler=handlers.submit_stage_worker_blocked,
+        ),
+        _submit_tool(
+            name="submit_stage_review",
+            description="Submit the current decl stage review decision after per-decl review marks are recorded.",
+            args_model=SubmitStageReviewArgs,
+            groups={"decl_stage_reviewer_submit"},
+            roles={"reviewer", "admin"},
+            handler=handlers.submit_stage_review,
+        ),
+    ]
+    _validate_submit_tool_specs(specs)
+    return specs
+
+
+def build_submit_tool_groups(tool_specs: Sequence[ToolSpec] | None = None) -> list[ToolGroupSpec]:
+    specs = list(tool_specs) if tool_specs is not None else build_submit_tool_specs()
+    return _build_groups(specs)
+
+
+def build_submit_tool_views(group_specs: Sequence[ToolGroupSpec] | None = None) -> list[ToolViewSpec]:
+    groups = list(group_specs) if group_specs is not None else build_submit_tool_groups()
+    return _build_views(groups)
+
+
+def register_submit_tooling(runtime: LeanRuntimeServices) -> ServiceResult[MutationSummaryView]:
+    specs = build_submit_tool_specs()
+    groups = build_submit_tool_groups(specs)
+    views = build_submit_tool_views(groups)
+    tools_result = runtime.tool_facade.register_application_tools(specs)
+    if not tools_result.ok:
+        return runtime.foundation.fail(tools_result.issues)
+    groups_result = runtime.tool_facade.register_tool_groups(groups)
+    if not groups_result.ok:
+        return runtime.foundation.fail(groups_result.issues)
+    views_result = runtime.tool_facade.register_tool_views(views)
+    if not views_result.ok:
+        return runtime.foundation.fail(views_result.issues)
+    return runtime.foundation.ok(
+        runtime.foundation.mutation_view(
+            object_ref="submit_tooling",
+            changed=True,
+            summary=f"Registered {len(specs)} submit tools, {len(groups)} groups, and {len(views)} views.",
+            changed_items=["tools", "groups", "views"],
+        )
+    )
+
+
+def _validate_submit_tool_specs(specs: Sequence[ToolSpec]) -> None:
+    names = [spec.name for spec in specs]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate submit tool names: {', '.join(duplicates)}")
+    invalid = [
+        spec.name
+        for spec in specs
+        if not spec.name.startswith("submit_")
+        or spec.capability != ToolCapability.SUBMIT
+        or spec.submit_behavior == SubmitBehavior.NONE
+    ]
+    if invalid:
+        raise ValueError(f"Invalid submit tool specs: {', '.join(sorted(invalid))}")
+    missing_groups = [spec.name for spec in specs if not spec.tool_groups]
+    if missing_groups:
+        raise ValueError(f"Every submit tool must declare at least one group: {', '.join(sorted(missing_groups))}")
+    missing_roles = [spec.name for spec in specs if not spec.allowed_roles]
+    if missing_roles:
+        raise ValueError(f"Every submit tool must declare allowed roles: {', '.join(sorted(missing_roles))}")
