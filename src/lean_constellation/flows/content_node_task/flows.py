@@ -1,0 +1,413 @@
+"""Content node task Flow type definitions."""
+
+from __future__ import annotations
+
+from typing import ClassVar, Literal
+
+from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowReadContext, FlowStepContext
+from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, FlowPosition, FlowStatus
+from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, AgentStepState, DispatchStep, DispatchStepResult, DispatchStepState
+from pydantic import Field
+
+from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
+from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
+from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
+from lean_constellation.flows.content_node_task.steps import (
+    ContentPlanStepResult,
+    ContentTaskAdmissionStep,
+    ContentTaskAdmissionStepResult,
+    EnsureDeclStageAgentsStep,
+    EnsureDeclStageAgentsStepResult,
+    new_content_step_id,
+)
+from lean_constellation.flows.content_node_task.submissions import (
+    ContentPreparationDispatchSubmission,
+    ContentResourceRequestSubmission,
+)
+
+
+class ContentNodeTaskParams(LeanFlowParams):
+    repo_key: str
+    node_path: str
+    repo_path: str | None = None
+    contract_version: int | None = None
+    task_mode: str = "run"
+
+
+class ContentNodeTaskInput(LeanRenderableFlowInput):
+    input_type: Literal["content_node_task"] = "content_node_task"
+    repo_key: str
+    repo_path: str | None = None
+    node_path: str
+    contract_version: int | None = None
+    task_mode: str = "run"
+
+    def agent_title(self) -> str:
+        return f"Run content node task {self.node_path}"
+
+    def agent_fields(self) -> dict[str, object]:
+        return {
+            "repo_key": self.repo_key,
+            "node_path": self.node_path,
+            "contract_version": self.contract_version,
+            "task_mode": self.task_mode,
+        }
+
+
+class ContentNodeTaskState(BaseFlowState):
+    state_type: Literal["content_node_task"] = "content_node_task"
+    position: FlowPosition = Field(default_factory=lambda: FlowPosition(phase="admission"))
+    waiting_dispatch_step_id: str | None = None
+    used_preparation_kinds: list[Literal["node_dir_dependency", "mathlib", "resource"]] = Field(default_factory=list)
+    decl_round_count: int = 0
+    pending_dispatch_source_step_id: str | None = None
+    pending_dispatch_source_submission_id: str | None = None
+    waiting_child_kind: Literal["node_dir_dependency", "mathlib", "resource", "resource_curation", "decl_graph_round"] | None = None
+    stage_agent_bindings_initialized: bool = False
+    latest_callback_summary: str | None = None
+
+
+class ContentNodeTaskResult(LeanRenderableFlowResult):
+    result_type: Literal["content_node_task"] = "content_node_task"
+    outcome: Literal["ready", "blocked", "failed"]
+    repo_key: str
+    node_path: str
+    contract_version: int | None = None
+    reason: str | None = None
+
+    def agent_fields(self) -> dict[str, object]:
+        return {
+            "outcome": self.outcome,
+            "repo_key": self.repo_key,
+            "node_path": self.node_path,
+            "contract_version": self.contract_version,
+            "reason": self.reason,
+        }
+
+
+class ContentNodeTaskFlow(LeanBusinessFlow):
+    flow_type: ClassVar[str] = "content_node_task"
+    Params: ClassVar[type[LeanFlowParams]] = ContentNodeTaskParams
+    Input: ClassVar[type[BaseFlowInput]] = ContentNodeTaskInput
+    State: ClassVar[type[BaseFlowState]] = ContentNodeTaskState
+    Result: ClassVar[type[BaseFlowResult]] = ContentNodeTaskResult
+    Results: ClassVar[dict[str, type[BaseFlowResult]]] = {"content_node_task": ContentNodeTaskResult}
+
+    @classmethod
+    def build_from_request(cls, ctx: FlowBuildContext) -> "ContentNodeTaskFlow":
+        params = ContentNodeTaskParams.model_validate(ctx.params)
+        return cls._build(
+            ctx,
+            input_model=ContentNodeTaskInput(
+                summary=f"Run task for content node {params.node_path}.",
+                **params.model_dump(),
+            ),
+            state=ContentNodeTaskState(),
+        )
+
+    def can_exit_waiting(self, ctx: FlowReadContext) -> bool:
+        state = _require_content_task_state(self.state)
+        if state.position.phase != "waiting_child" or not state.waiting_dispatch_step_id:
+            return False
+        child_flows = _child_flows_for_dispatch(ctx, self.flow_id, state.waiting_dispatch_step_id)
+        if not child_flows:
+            return False
+        return all(child.status in {FlowStatus.COMPLETED, FlowStatus.FAILED} for child in child_flows)
+
+    def on_exit_waiting(self, ctx: FlowContext) -> None:
+        state = _require_content_task_state(self.state)
+        state.latest_callback_summary = _child_callback_summary(ctx, self.flow_id, state.waiting_dispatch_step_id)
+        state.position = FlowPosition(phase="callback_plan_agent", round_index=state.decl_round_count)
+        super().on_exit_waiting(ctx)
+
+    def create_next_step(self, ctx: FlowContext) -> str | None:
+        state = _require_content_task_state(self.state)
+        input_model = _require_content_task_input(self.input)
+        if state.position.phase == "admission":
+            return ctx.create_step(
+                ContentTaskAdmissionStep(
+                    step_id=new_content_step_id("content_task_admission"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                )
+            )
+        if state.position.phase == "plan_agent":
+            return ctx.create_step(_content_plan_agent_step(self, input_model, state, callback=False))
+        if state.position.phase == "callback_plan_agent":
+            return ctx.create_step(_content_plan_agent_step(self, input_model, state, callback=True))
+        if state.position.phase == "ensure_stage_agents":
+            return ctx.create_step(
+                EnsureDeclStageAgentsStep(
+                    step_id=new_content_step_id("ensure_decl_stage_agents"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                )
+            )
+        if state.position.phase == "dispatch_child":
+            return ctx.create_step(_dispatch_step_from_pending(ctx, self, state))
+        return None
+
+    def on_step_terminal(self, ctx: FlowStepContext) -> None:
+        state = _require_content_task_state(self.state)
+        input_model = _require_content_task_input(self.input)
+        if ctx.step.error is not None:
+            self.error = BaseFlowError(
+                error_type="content_node_task_step_failed",
+                message=ctx.step.error.message,
+                details={"step_type": ctx.step.step_type, **ctx.step.error.details},
+            )
+            super().on_step_terminal(ctx)
+            return
+
+        result = ctx.step.result
+        if isinstance(result, ContentTaskAdmissionStepResult):
+            self._consume_admission_result(state, input_model, result)
+        elif ctx.step.step_type == "content_plan_agent_step":
+            self._consume_plan_result(state, input_model, result, ctx.step.submission, ctx.step.step_id)
+        elif isinstance(result, EnsureDeclStageAgentsStepResult):
+            self._consume_stage_agents_result(state, input_model, result)
+        elif isinstance(result, DispatchStepResult):
+            self._consume_dispatch_result(state, input_model, result, ctx.step.step_id)
+        super().on_step_terminal(ctx)
+        if self.result is None and self.error is None and state.position.phase == "waiting_child":
+            self.status = FlowStatus.WAITING
+
+    def _consume_admission_result(
+        self,
+        state: ContentNodeTaskState,
+        input_model: ContentNodeTaskInput,
+        result: ContentTaskAdmissionStepResult,
+    ) -> None:
+        if result.outcome == "accepted":
+            state.position = FlowPosition(phase="plan_agent")
+            return
+        state.position = FlowPosition(phase="completed")
+        self.result = ContentNodeTaskResult(
+            outcome="failed",
+            repo_key=input_model.repo_key,
+            node_path=input_model.node_path,
+            contract_version=input_model.contract_version,
+            reason=result.reason or result.summary,
+            summary=result.summary or result.reason or "Content node task admission rejected.",
+        )
+
+    def _consume_plan_result(
+        self,
+        state: ContentNodeTaskState,
+        input_model: ContentNodeTaskInput,
+        result: object | None,
+        submission: object | None,
+        step_id: str,
+    ) -> None:
+        if isinstance(result, AgentStepIncompleteResult) or result is None:
+            self._finish_content_task(input_model, "failed", "ContentPlanAgent did not submit a valid result.", "ContentPlanAgent incomplete.")
+            return
+        if not isinstance(result, ContentPlanStepResult):
+            self._finish_content_task(
+                input_model,
+                "failed",
+                f"ContentPlanAgent returned unsupported result: {getattr(result, 'result_type', None)}.",
+                "ContentPlanAgent returned unsupported result.",
+            )
+            return
+        if result.outcome == "incomplete":
+            self._finish_content_task(input_model, "failed", result.incomplete_reason or result.summary, result.summary)
+            return
+        if result.outcome == "preparation_dispatch" and isinstance(submission, ContentPreparationDispatchSubmission) and result.preparation is not None:
+            kind = result.preparation.recon_kind
+            if kind in state.used_preparation_kinds:
+                self._finish_content_task(input_model, "failed", f"{kind} preparation recon has already been used.", "Duplicate preparation recon dispatch.")
+                return
+            if not result.preparation.objective or not result.preparation.objective.strip():
+                self._finish_content_task(input_model, "failed", "Preparation recon dispatch requires a non-empty objective.", "Preparation recon objective missing.")
+                return
+            state.used_preparation_kinds.append(kind)
+            self._set_pending_dispatch(state, step_id, submission.submission_id, kind)
+            state.position = FlowPosition(phase="dispatch_child")
+            return
+        if result.outcome == "resource_request" and isinstance(submission, ContentResourceRequestSubmission):
+            self._set_pending_dispatch(state, step_id, submission.submission_id, "resource_curation")
+            state.position = FlowPosition(phase="dispatch_child")
+            return
+        if result.outcome == "decl_round_dispatch" and isinstance(submission, DeclRoundDispatchSubmission):
+            state.decl_round_count += 1
+            self._set_pending_dispatch(state, step_id, submission.submission_id, "decl_graph_round")
+            state.position = FlowPosition(phase="ensure_stage_agents")
+            return
+        if result.outcome in {"ready", "blocked", "failed"}:
+            reason = result.completion.reason if result.completion else None
+            self._finish_content_task(input_model, result.outcome, reason, result.summary)
+            return
+        self._finish_content_task(input_model, "failed", "ContentPlanAgent result did not match its accepted submission.", "ContentPlanAgent submission mismatch.")
+
+    def _consume_stage_agents_result(
+        self,
+        state: ContentNodeTaskState,
+        input_model: ContentNodeTaskInput,
+        result: EnsureDeclStageAgentsStepResult,
+    ) -> None:
+        if result.outcome == "ready":
+            state.stage_agent_bindings_initialized = True
+            state.position = FlowPosition(phase="dispatch_child", round_index=state.decl_round_count)
+            return
+        self._finish_content_task(input_model, "failed", result.reason or result.summary, result.summary)
+
+    def _consume_dispatch_result(
+        self,
+        state: ContentNodeTaskState,
+        input_model: ContentNodeTaskInput,
+        result: DispatchStepResult,
+        step_id: str,
+    ) -> None:
+        if result.outcome == "dispatched" and result.continuation == "wait_for_callback":
+            state.waiting_dispatch_step_id = step_id
+            state.position = FlowPosition(phase="waiting_child", round_index=state.decl_round_count)
+            return
+        self._finish_content_task(input_model, "failed", result.summary or "Child dispatch failed.", result.summary)
+
+    def _set_pending_dispatch(self, state: ContentNodeTaskState, step_id: str, submission_id: str, child_kind: str) -> None:
+        state.pending_dispatch_source_step_id = step_id
+        state.pending_dispatch_source_submission_id = submission_id
+        state.waiting_child_kind = child_kind  # type: ignore[assignment]
+
+    def _finish_content_task(
+        self,
+        input_model: ContentNodeTaskInput,
+        outcome: Literal["ready", "blocked", "failed"],
+        reason: str | None,
+        summary: str | None,
+    ) -> None:
+        state = _require_content_task_state(self.state)
+        state.position = FlowPosition(phase="completed")
+        self.result = ContentNodeTaskResult(
+            outcome=outcome,
+            repo_key=input_model.repo_key,
+            node_path=input_model.node_path,
+            contract_version=input_model.contract_version,
+            reason=reason,
+            summary=summary or reason or outcome,
+        )
+
+
+CONTENT_NODE_TASK_FLOW_TYPES: tuple[type[LeanBusinessFlow], ...] = (ContentNodeTaskFlow,)
+
+
+def _require_content_task_state(state: BaseFlowState) -> ContentNodeTaskState:
+    if not isinstance(state, ContentNodeTaskState):
+        raise TypeError("content_node_task flow has invalid state")
+    return state
+
+
+def _require_content_task_input(input_model: BaseFlowInput | None) -> ContentNodeTaskInput:
+    if not isinstance(input_model, ContentNodeTaskInput):
+        raise TypeError("content_node_task flow has invalid input")
+    return input_model
+
+
+def _content_plan_agent_step(
+    flow: ContentNodeTaskFlow,
+    input_model: ContentNodeTaskInput,
+    state: ContentNodeTaskState,
+    *,
+    callback: bool,
+):
+    from lean_constellation.flows.common.agent_steps import ContentPlanAgentStep
+
+    return ContentPlanAgentStep(
+        step_id=new_content_step_id("content_plan_callback" if callback else "content_plan"),
+        flow_id=flow.flow_id,
+        scope_id=flow.scope_id,
+        state=AgentStepState(
+            agent_role="content_plan",
+            agent_type="ContentPlanAgent",
+            home_id="ContentPlanAgent",
+            create_agent_if_missing=True,
+            bind_created_agent_to="flow",
+            variables={
+                "repo_key": input_model.repo_key,
+                "node_path": input_model.node_path,
+                "contract_version": input_model.contract_version,
+                "task_mode": input_model.task_mode,
+                "used_preparation_kinds": list(state.used_preparation_kinds),
+                "decl_round_count": state.decl_round_count,
+            },
+            prompt_mode="callback" if callback else "initial",
+            prompt_override=None if callback else _content_plan_initial_prompt(input_model),
+            callback_dispatch_step_id=state.waiting_dispatch_step_id if callback else None,
+            env_overrides={
+                "LEAN_CONSTELLATION_AGENT_TYPE": "ContentPlanAgent",
+                "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "content_plan",
+                "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "content_plan_submit",
+            },
+            workdir_override=input_model.repo_path,
+            max_auto_continue_turns=1,
+        ),
+    )
+
+
+def _content_plan_initial_prompt(input_model: ContentNodeTaskInput) -> str:
+    parts = [
+        f"Run the content node task for {input_model.node_path}.",
+        f"Task mode: {input_model.task_mode}.",
+    ]
+    if input_model.contract_version is not None:
+        parts.append(f"Contract version: {input_model.contract_version}.")
+    parts.append(
+        "Read the current node contract and task context through tools. Submit exactly one next action: "
+        "preparation recon, resource request, decl round, ready, blocked, or failed."
+    )
+    return "\n".join(parts)
+
+
+def _dispatch_step_from_pending(ctx: FlowContext, flow: ContentNodeTaskFlow, state: ContentNodeTaskState) -> DispatchStep:
+    source_step_id = state.pending_dispatch_source_step_id
+    source_submission_id = state.pending_dispatch_source_submission_id
+    if source_step_id is None or source_submission_id is None:
+        raise TypeError("content node task dispatch source step/submission is missing")
+    flow_service = ctx.ark.flow_service
+    if flow_service is None:
+        raise TypeError("ark.flow_service is not registered")
+    source_step = flow_service.get_step(source_step_id)
+    submission = source_step.submission
+    if not isinstance(submission, (ContentPreparationDispatchSubmission, ContentResourceRequestSubmission, DeclRoundDispatchSubmission)):
+        raise TypeError(f"content node task dispatch got unsupported submission {type(submission).__name__}")
+    return DispatchStep(
+        step_id=new_content_step_id(f"dispatch_{state.waiting_child_kind or 'child'}"),
+        flow_id=flow.flow_id,
+        scope_id=flow.scope_id,
+        state=DispatchStepState(
+            source_step_id=source_step_id,
+            source_submission_id=source_submission_id,
+            requests=list(submission.requests),
+            continuation=submission.continuation,
+        ),
+    )
+
+
+def _child_flows_for_dispatch(ctx: FlowReadContext | FlowContext, parent_flow_id: str, dispatch_step_id: str | None):
+    if dispatch_step_id is None:
+        return []
+    flow_service = ctx.ark.flow_service
+    store = getattr(flow_service, "store", None) if flow_service is not None else None
+    if store is not None and hasattr(store, "list_child_flows"):
+        return list(store.list_child_flows(parent_flow_id=parent_flow_id, parent_dispatch_step_id=dispatch_step_id))
+    if flow_service is None:
+        return []
+    return [
+        flow
+        for flow in flow_service.list_flows()
+        if flow.parent_flow_id == parent_flow_id and flow.parent_dispatch_step_id == dispatch_step_id
+    ]
+
+
+def _child_callback_summary(ctx: FlowReadContext | FlowContext, parent_flow_id: str, dispatch_step_id: str | None) -> str | None:
+    child_flows = _child_flows_for_dispatch(ctx, parent_flow_id, dispatch_step_id)
+    if not child_flows:
+        return None
+    parts = []
+    for child in child_flows:
+        if child.result is not None:
+            parts.append(child.result.summary or getattr(child.result, "outcome", child.flow_type))
+        elif child.error is not None:
+            parts.append(child.error.message)
+    return "; ".join(part for part in parts if part) or None

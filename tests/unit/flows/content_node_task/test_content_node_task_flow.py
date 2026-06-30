@@ -1,0 +1,264 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from agent_runtime_kit.flow.models import FlowStatus
+
+from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.flows.common.flow_requests import build_decl_round_request, build_preparation_recon_request
+from lean_constellation.flows.common.submissions import new_submission_id
+from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
+from lean_constellation.flows.content_node_task.decl_round.flow import DeclGraphRoundResult
+from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
+from lean_constellation.flows.content_node_task.preparation.node_dir_recon.flow import NodeDirDependencyReconResult
+from lean_constellation.flows.content_node_task.submissions import (
+    ContentNodeBlockedSubmission,
+    ContentNodeReadySubmission,
+    ContentPreparationDispatchSubmission,
+)
+from tests.unit_services_helpers import make_runtime
+
+
+def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
+    lean_runtime = make_runtime()
+    flow_runtime = create_fake_lean_flow_runtime(
+        tmp_path / "ark",
+        ark_services=lean_runtime.ark,
+        app_services=lean_runtime.app,
+    )
+    return flow_runtime, lean_runtime
+
+
+def _prepare_content_repo(lean_runtime, repo_root: Path) -> None:
+    repo_root.mkdir(parents=True)
+    assert lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    written = lean_runtime.repo_workspace.preparation.write_preparation_input(
+        repo_root,
+        input=RepoPreparationInput(
+            goal="Formalize a small source corpus.",
+            source_corpus_mode=SourceCorpusMode.EXISTING,
+            source_corpus_relpath=".lean_constellation/source",
+            interface_inputs=[],
+        ),
+    )
+    assert written.ok
+    (repo_root / ".lean_constellation" / "source").mkdir(parents=True, exist_ok=True)
+    assert lean_runtime.node.ensure_native_root_main_contract(repo_root).ok
+    content = lean_runtime.node.create_content_node(
+        repo_root,
+        path="Main.Core",
+        goal="Formalize core facts.",
+        boundary="Core facts only.",
+        objective="Prove the core facts.",
+        success_criteria="The core facts are proved.",
+    )
+    assert content.ok
+
+
+def _start_content_task(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
+    return runtime.start_flow(
+        "content_node_task",
+        {
+            "repo_key": repo_root.name,
+            "repo_path": str(repo_root),
+            "node_path": "Main.Core",
+            "contract_version": 1,
+            "task_mode": "run",
+        },
+        scope_id=f"repo:{repo_root.name}:node:Main.Core",
+    )
+
+
+def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:
+    step_id = runtime.flow_service.advance_flow(flow_id)
+    assert step_id is not None
+    runtime.run_step(step_id)
+    return step_id
+
+
+def _complete_child_flow(runtime: FakeLeanFlowRuntime, child_flow_id: str, result) -> None:
+    runtime.flow_service.store.update_flow_record(
+        child_flow_id,
+        lambda flow: (
+            setattr(flow, "result", result),
+            setattr(flow, "status", FlowStatus.COMPLETED),
+            setattr(flow, "current_step_id", None),
+        ),
+    )
+
+
+def _node_dir_submission(repo_root: Path) -> ContentPreparationDispatchSubmission:
+    return ContentPreparationDispatchSubmission(
+        submission_id=new_submission_id("sub"),
+        submission_type="content_preparation_dispatch",
+        tool_name="submit_content_preparation_recon",
+        repo_key=repo_root.name,
+        node_path="Main.Core",
+        recon_kind="node_dir_dependency",
+        objective="Check visible dependencies.",
+        requests=[
+            build_preparation_recon_request(
+                recon_kind="node_dir_dependency",
+                repo_key=repo_root.name,
+                node_path="Main.Core",
+                repo_path=str(repo_root),
+                scope_id=f"repo:{repo_root.name}:node:Main.Core",
+                objective="Check visible dependencies.",
+            )
+        ],
+        summary="Dispatch node dependency recon.",
+    )
+
+
+def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "plan_agent"
+
+    runtime.agent_service.queue_submission(_node_dir_submission(repo_root))
+    _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "dispatch_child"
+    assert flow.state.used_preparation_kinds == ["node_dir_dependency"]
+
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.WAITING
+    child_flows = runtime.flow_service.store.list_child_flows(parent_flow_id=flow_id, parent_dispatch_step_id=dispatch_step_id)
+    assert len(child_flows) == 1
+    assert child_flows[0].flow_type == "node_dir_dependency_recon"
+
+    _complete_child_flow(
+        runtime,
+        child_flows[0].flow_id,
+        NodeDirDependencyReconResult(
+            outcome="completed",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            added_node_deps=["Main.Base"],
+            summary="Node deps found.",
+        ),
+    )
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert callback_step_id is not None
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "callback_plan_agent"
+
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Need Coordinator to add an external provider.",
+            summary="Need Coordinator to add an external provider.",
+        )
+    )
+    runtime.run_step(callback_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.COMPLETED
+    assert flow.result.outcome == "blocked"
+    assert len(runtime.agent_service.start_records) == 2
+    assert runtime.agent_service.start_records[0].agent_id == runtime.agent_service.start_records[1].agent_id
+    assert "Node deps found." in (runtime.agent_service.start_records[1].prompt or "")
+
+
+def test_content_node_task_rejects_duplicate_preparation_dispatch(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+
+    runtime.agent_service.queue_submission(_node_dir_submission(repo_root))
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child_flow = runtime.flow_service.store.list_child_flows(parent_flow_id=flow_id, parent_dispatch_step_id=dispatch_step_id)[0]
+    _complete_child_flow(
+        runtime,
+        child_flow.flow_id,
+        NodeDirDependencyReconResult(outcome="completed", repo_key=repo_root.name, node_path="Main.Core", summary="Done."),
+    )
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert callback_step_id is not None
+
+    runtime.agent_service.queue_submission(_node_dir_submission(repo_root))
+    runtime.run_step(callback_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.COMPLETED
+    assert flow.result.outcome == "failed"
+    assert "already been used" in flow.result.reason
+
+
+def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+
+    runtime.agent_service.queue_submission(
+        DeclRoundDispatchSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="decl_round_dispatch",
+            tool_name="submit_current_decl_round",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            strategy_id="strategy_1",
+            round_id="round_1",
+            round_index=1,
+            requests=[
+                build_decl_round_request(
+                    repo_key=repo_root.name,
+                    node_path="Main.Core",
+                    scope_id=f"repo:{repo_root.name}:node:Main.Core",
+                    strategy_id="strategy_1",
+                    round_id="round_1",
+                    round_index=1,
+                )
+            ],
+            summary="Dispatch decl round.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "ensure_stage_agents"
+
+    _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.stage_agent_bindings_initialized is True
+    assert flow.state.position.phase == "dispatch_child"
+
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child_flow = runtime.flow_service.store.list_child_flows(parent_flow_id=flow_id, parent_dispatch_step_id=dispatch_step_id)[0]
+    assert child_flow.flow_type == "decl_graph_round"
+    _complete_child_flow(
+        runtime,
+        child_flow.flow_id,
+        DeclGraphRoundResult(
+            outcome="completed",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            round_id="round_1",
+            completed_stages=["statement_nl"],
+            summary="Round completed.",
+        ),
+    )
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    runtime.agent_service.queue_submission(
+        ContentNodeReadySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_ready",
+            tool_name="submit_content_node_ready",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            summary="Content ready.",
+        )
+    )
+    runtime.run_step(callback_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.COMPLETED
+    assert flow.result.outcome == "ready"
