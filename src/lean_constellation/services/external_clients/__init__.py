@@ -22,9 +22,11 @@ from lean_constellation.services.external_clients.lean_mcp_toolkit import (
     SorryAxiomScanResult,
     ToolkitCatalogResult,
     ToolkitCallResult,
+    ToolkitResponseWarning,
     ToolkitToolView,
 )
 from lean_constellation.services.external_clients.material_acquisition import (
+    AcquiredArtifactView,
     AcquiredArtifactResult,
     ExtractedMaterialResult,
     MaterialAcquisitionConfig,
@@ -37,6 +39,7 @@ from lean_constellation.services.external_clients.service import ExternalClientC
 
 __all__ = [
     "AcquiredArtifactResult",
+    "AcquiredArtifactView",
     "ExternalClientConfig",
     "ExternalClientService",
     "ExternalCommandResult",
@@ -62,5 +65,6 @@ __all__ = [
     "SorryAxiomScanResult",
     "ToolkitCatalogResult",
     "ToolkitCallResult",
+    "ToolkitResponseWarning",
     "ToolkitToolView",
 ]

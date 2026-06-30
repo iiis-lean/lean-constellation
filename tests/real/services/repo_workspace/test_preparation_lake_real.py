@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.preparation import UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
-from lean_constellation.services.external_clients import ExternalClientService, LakeCommandClient, LakeCommandClientConfig
+from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
 from lean_constellation.services.repo_workspace import RepoWorkspaceService
 
 
@@ -88,10 +90,9 @@ def test_repo_workspace_real_lake_native_adapter_and_workspace_dependency(tmp_pa
     upstream = workspace / "upstream-src"
     workspace.mkdir()
 
-    external = ExternalClientService(
-        lake=LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout)),
-    )
-    service = RepoWorkspaceService(external=external)
+    service = make_runtime(
+        external_overrides={"lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout))}
+    ).repo_workspace
 
     consumer_init = service.initialize_repo_as_native(consumer, project_name="Consumer")
     provider_init = service.initialize_repo_as_native(provider, project_name="Provider")

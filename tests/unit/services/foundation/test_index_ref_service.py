@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.unit_services_helpers import make_runtime
+
 from typing import Any
 
 from lean_constellation.domain.common import utc_now_iso
@@ -134,7 +136,7 @@ class ResolveOnlyResolver:
 
 
 def test_foundation_service_wires_components() -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
 
     assert service.result is service.result_error
     assert service.store.result is service.result_error
@@ -143,7 +145,7 @@ def test_foundation_service_wires_components() -> None:
 
 
 def test_index_ensure_cache_hit_and_stale_rebuild(tmp_path) -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path, caller="test")
     builder = CountingBuilder()
 
@@ -164,7 +166,7 @@ def test_index_ensure_cache_hit_and_stale_rebuild(tmp_path) -> None:
 
 
 def test_register_index_builder_allows_same_instance_and_rejects_conflict() -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     builder = CountingBuilder()
 
     first = service.register_index_builder(builder)
@@ -180,7 +182,7 @@ def test_register_index_builder_allows_same_instance_and_rejects_conflict() -> N
 
 
 def test_rebuild_index_direct_success_unknown_builder_builder_fail_and_write_fail(tmp_path) -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path, caller="test")
     builder = CountingBuilder()
     failing_builder = FailingBuilder()
@@ -215,7 +217,7 @@ def test_rebuild_index_direct_success_unknown_builder_builder_fail_and_write_fai
 
 
 def test_mark_index_stale_creates_stale_metadata_when_cache_is_missing(tmp_path) -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path, caller="test")
     builder = CountingBuilder()
     service.register_index_builder(builder)
@@ -236,7 +238,7 @@ def test_mark_index_stale_creates_stale_metadata_when_cache_is_missing(tmp_path)
 
 
 def test_ref_resolver_register_resolve_validate_and_batch(tmp_path) -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     ctx = RefResolveContext(repo_root=str(tmp_path), purpose="node_dep")
     resolver = NodeResolver()
 
@@ -254,7 +256,7 @@ def test_ref_resolver_register_resolve_validate_and_batch(tmp_path) -> None:
 
 
 def test_ref_resolver_duplicate_registration_and_conflict() -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     resolver = NodeResolver()
 
     first = service.register_ref_resolver(resolver)
@@ -270,7 +272,7 @@ def test_ref_resolver_duplicate_registration_and_conflict() -> None:
 
 
 def test_ref_resolver_explicit_kind_unregistered_exception_and_structural_inference(tmp_path) -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     ctx = RefResolveContext(repo_root=str(tmp_path))
     for kind in [RefKind.SOURCE, RefKind.RESOURCE, RefKind.NODE, RefKind.DECL, RefKind.MATHLIB]:
         assert service.register_ref_resolver(GenericResolver(kind)).ok is True
@@ -287,11 +289,11 @@ def test_ref_resolver_explicit_kind_unregistered_exception_and_structural_infere
     assert inferred_decl.ok is True and inferred_decl.value is not None and inferred_decl.value.kind == RefKind.DECL
     assert inferred_mathlib.ok is True and inferred_mathlib.value is not None and inferred_mathlib.value.kind == RefKind.MATHLIB
 
-    unregistered = FoundationService().resolve_ref(ctx, {"path": "source.md", "start_line": 1, "end_line": 2})
+    unregistered = make_runtime().foundation.resolve_ref(ctx, {"path": "source.md", "start_line": 1, "end_line": 2})
     assert unregistered.ok is False
     assert unregistered.issues[0].kind == "resolver_not_registered"
 
-    raising_service = FoundationService()
+    raising_service = make_runtime().foundation
     raising_service.register_ref_resolver(RaisingResolver())
     raised = raising_service.resolve_ref(ctx, {"node_path": "Main"}, kind=RefKind.NODE)
     assert raised.ok is False
@@ -299,7 +301,7 @@ def test_ref_resolver_explicit_kind_unregistered_exception_and_structural_infere
 
 
 def test_ref_resolver_fallback_validate_returns_invalid_result_as_success(tmp_path) -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     ctx = RefResolveContext(repo_root=str(tmp_path))
     service.register_ref_resolver(ResolveOnlyResolver())
 
@@ -315,7 +317,7 @@ def test_ref_resolver_fallback_validate_returns_invalid_result_as_success(tmp_pa
 
 
 def test_resolved_ref_view_has_stable_fields_and_hides_metadata() -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     resolved = ResolvedRef(
         kind=RefKind.RESOURCE,
         canonical_ref="resource:r1",
@@ -333,7 +335,7 @@ def test_resolved_ref_view_has_stable_fields_and_hides_metadata() -> None:
 
 
 def test_ref_resolver_rejects_unknown_kind(tmp_path) -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     ctx = RefResolveContext(repo_root=str(tmp_path))
 
     result = service.resolve_ref(ctx, {"kind": "unknown", "value": "x"})

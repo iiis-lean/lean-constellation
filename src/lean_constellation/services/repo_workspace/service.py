@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -11,22 +12,32 @@ from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.preparation import (
     BootstrapInputValidationView,
     ProviderReadyView,
+    ProviderRepoRuntimeShellView,
     RepoRequirementRef,
+    RepoPreparationInput,
+    RequirementResumeCandidateView,
+    RequirementWaitingView,
     SourceCorpusMode,
     UpstreamDependencyInput,
 )
 from lean_constellation.domain.repo import WorkspaceCoordinatorView
-from lean_constellation.services.external_clients import ExternalClientService
-from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.repo_workspace.lake_dependency import (
     AdapterSetupView,
     LakeDependencyComponent,
     RepoSkeletonView,
 )
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
-from lean_constellation.services.repo_workspace.repo_preparation import RepoPreparationComponent
+from lean_constellation.services.repo_workspace.repo_preparation import (
+    PreparationStartPreflightView,
+    ProviderRepoRuntimeBootstrapProvider,
+    RepoPreparationComponent,
+)
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
 from lean_constellation.services.repo_workspace.workspace_catalog import WorkspaceCatalogComponent
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class RequirementConsumeView(StrictModel):
@@ -43,31 +54,28 @@ class RepoWorkspaceService:
 
     def __init__(
         self,
+        runtime: LeanRuntimeServices,
         *,
-        foundation: FoundationService | None = None,
-        external: ExternalClientService | None = None,
         metadata: RepoMetadataComponent | None = None,
         requirement: RepoRequirementComponent | None = None,
         lake_dependency: LakeDependencyComponent | None = None,
         preparation: RepoPreparationComponent | None = None,
         workspace_catalog: WorkspaceCatalogComponent | None = None,
     ) -> None:
-        self.foundation = foundation or FoundationService()
-        self.external = external or ExternalClientService()
-        self.metadata = metadata or RepoMetadataComponent(self.foundation)
-        self.requirement = requirement or RepoRequirementComponent(self.foundation)
+        self.runtime = runtime
+        self.metadata = metadata or RepoMetadataComponent(runtime)
+        self.requirement = requirement or RepoRequirementComponent(runtime)
         self.lake_dependency = lake_dependency or LakeDependencyComponent(
-            self.foundation,
-            self.external,
+            runtime,
             self.metadata,
         )
         self.preparation = preparation or RepoPreparationComponent(
-            self.foundation,
+            runtime,
             self.metadata,
             self.requirement,
         )
         self.workspace_catalog = workspace_catalog or WorkspaceCatalogComponent(
-            self.foundation,
+            runtime,
             self.metadata,
             self.requirement,
             self.lake_dependency,
@@ -94,7 +102,7 @@ class RepoWorkspaceService:
             reason=reason,
         )
         if not created.ok or created.value is None:
-            return self.foundation.fail(created.issues)
+            return self.runtime.foundation.fail(created.issues)
         current = created
         for interface in interfaces or []:
             current = self.requirement.add_requirement_interface(
@@ -106,7 +114,7 @@ class RepoWorkspaceService:
                 statement_hint=interface.get("statement_hint"),
             )
             if not current.ok:
-                return self.foundation.fail(current.issues)
+                return self.runtime.foundation.fail(current.issues)
         return current
 
     def create_provider_repo_shell_from_group(
@@ -122,6 +130,23 @@ class RepoWorkspaceService:
             source_corpus_mode=source_corpus_mode,
         )
 
+    def prepare_provider_repo_runtime_shell(
+        self,
+        workspace_root: Path,
+        *,
+        target_repo: str,
+        preparation_input: RepoPreparationInput,
+        project_name: str | None = None,
+        runtime_bootstrap: ProviderRepoRuntimeBootstrapProvider | None = None,
+    ) -> ServiceResult[ProviderRepoRuntimeShellView]:
+        return self.preparation.prepare_provider_repo_runtime_shell(
+            workspace_root,
+            target_repo=target_repo,
+            preparation_input=preparation_input,
+            project_name=project_name,
+            runtime_bootstrap=runtime_bootstrap,
+        )
+
     def attach_provider_for_requirement(
         self,
         consumer_repo_root: Path,
@@ -130,11 +155,11 @@ class RepoWorkspaceService:
     ) -> ServiceResult[RequirementConsumeView]:
         requirement = self.requirement.get_requirement(consumer_repo_root, name=requirement_name)
         if not requirement.ok or requirement.value is None:
-            return self.foundation.fail(requirement.issues)
+            return self.runtime.foundation.fail(requirement.issues)
         provider_repo = requirement.value.requirement.provider_repo
         if not provider_repo:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "requirement_not_satisfied",
                     "Requirement has no provider repo to attach.",
                     object_ref=requirement_name,
@@ -145,15 +170,15 @@ class RepoWorkspaceService:
             provider_repo_key=provider_repo,
         )
         if not attached.ok:
-            return self.foundation.fail(attached.issues)
+            return self.runtime.foundation.fail(attached.issues)
         handled = self.requirement.mark_requirement_handled(
             consumer_repo_root,
             requirement_name=requirement_name,
             note=f"Attached provider repo {provider_repo}.",
         )
         if not handled.ok:
-            return self.foundation.fail(handled.issues)
-        return self.foundation.ok(
+            return self.runtime.foundation.fail(handled.issues)
+        return self.runtime.foundation.ok(
             RequirementConsumeView(
                 requirement_name=requirement_name,
                 provider_repo=provider_repo,
@@ -161,6 +186,56 @@ class RepoWorkspaceService:
                 handled=True,
                 summary=f"Attached and handled requirement {requirement_name}.",
             )
+        )
+
+    def mark_requirement_waiting_for_provider(
+        self,
+        repo_root: Path,
+        *,
+        requirement_name: str,
+        provider_repo: str | None = None,
+        reason: str | None = None,
+    ) -> ServiceResult[RequirementWaitingView]:
+        return self.requirement.mark_requirement_waiting_for_provider(
+            repo_root,
+            requirement_name=requirement_name,
+            provider_repo=provider_repo,
+            reason=reason,
+        )
+
+    def list_resume_candidates_for_requirement(
+        self,
+        workspace_root: Path,
+        *,
+        provider_repo: str,
+    ) -> ServiceResult[list[RequirementResumeCandidateView]]:
+        return self.requirement.list_resume_candidates_for_requirement(
+            workspace_root,
+            provider_repo=provider_repo,
+        )
+
+    def mark_requirement_result_observed(
+        self,
+        repo_root: Path,
+        *,
+        requirement_name: str,
+        note: str | None = None,
+    ) -> ServiceResult[RequirementWaitingView]:
+        return self.requirement.mark_requirement_result_observed(
+            repo_root,
+            requirement_name=requirement_name,
+            note=note,
+        )
+
+    def get_preparation_start_preflight(
+        self,
+        repo_root: Path,
+        *,
+        expected_format: str | None = None,
+    ) -> ServiceResult[PreparationStartPreflightView]:
+        return self.preparation.get_preparation_start_preflight(
+            repo_root,
+            expected_format=expected_format,
         )
 
     def validate_requirement_bootstrap_input(
@@ -193,8 +268,8 @@ class RepoWorkspaceService:
     ) -> ServiceResult[RepoSkeletonView]:
         prep = self.preparation.get_preparation_input(repo_root)
         if prep.ok and prep.value and prep.value.input.source_corpus_mode == SourceCorpusMode.NONE:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "invalid_source_corpus_mode",
                     "Native repo initialization requires source_corpus_mode != none.",
                 )
@@ -207,7 +282,7 @@ class RepoWorkspaceService:
     def mark_provider_repo_ready(self, repo_root: Path, *, summary: str) -> ServiceResult[ProviderReadyView]:
         ready = self.metadata.set_provider_ready(repo_root, summary=summary)
         if not ready.ok:
-            return self.foundation.fail(ready.issues)
+            return self.runtime.foundation.fail(ready.issues)
         prep = self.preparation.get_preparation_input(repo_root)
         satisfied = 0
         if prep.ok and prep.value is not None:
@@ -221,10 +296,11 @@ class RepoWorkspaceService:
                 )
                 if result.ok:
                     satisfied += 1
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             ProviderReadyView(
                 provider_ready_marked=True,
                 satisfied_requirement_count=satisfied,
+                repo_summary=summary.strip(),
                 summary=f"Marked provider repo ready; satisfied {satisfied} requirements.",
             )
         )

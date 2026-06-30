@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 from collections.abc import Callable
+from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -19,6 +21,18 @@ from lean_constellation.domain.common import StrictModel
 ToolkitDispatcher = Callable[[str, dict[str, Any]], Any]
 
 
+class ToolkitTimeoutError(TimeoutError):
+    """Internal timeout marker for external toolkit boundaries."""
+
+
+class ToolkitMalformedResponseError(ValueError):
+    """Internal malformed-response marker with a bounded excerpt."""
+
+    def __init__(self, message: str, raw_text: str) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+
+
 class LeanMcpToolkitClientConfig(StrictModel):
     base_url: str | None = None
     api_prefix: str = "/api/v1"
@@ -28,12 +42,20 @@ class LeanMcpToolkitClientConfig(StrictModel):
     response_excerpt_chars: int = 12000
 
 
+class ToolkitResponseWarning(StrictModel):
+    code: str
+    message: str
+    field: str | None = None
+    item_index: int | None = None
+
+
 class ToolkitCallResult(StrictModel):
     ok: bool
     toolkit_tool: str
     payload: dict[str, Any] = Field(default_factory=dict)
     value: dict[str, Any] | list[Any] | str | None = None
     raw_excerpt: str | None = None
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
     summary: str | None = None
     issue_code: str | None = None
 
@@ -57,6 +79,8 @@ class MathlibSearchResult(StrictModel):
     ok: bool
     query: str
     items: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
+    raw_excerpt: str | None = None
     summary: str
     issue_code: str | None = None
 
@@ -66,6 +90,7 @@ class LeanDiagnosticsResult(StrictModel):
     repo_root: str
     file_path: str | None = None
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
     summary: str
     issue_code: str | None = None
     raw_excerpt: str | None = None
@@ -78,6 +103,7 @@ class ToolkitDeclarationView(StrictModel):
     module: str | None = None
     decl_start_pos: dict[str, Any] | None = None
     decl_end_pos: dict[str, Any] | None = None
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
     summary: str
     issue_code: str | None = None
     raw_excerpt: str | None = None
@@ -89,6 +115,7 @@ class ToolkitModuleView(StrictModel):
     summary: str
     imports: list[str] = Field(default_factory=list)
     declarations: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
     raw_excerpt: str | None = None
     issue_code: str | None = None
 
@@ -166,6 +193,14 @@ class LeanMcpToolkitClient:
                 issue_code="toolkit_tool_missing",
                 summary=f"Toolkit tool is missing: {exc}",
             )
+        except (TimeoutError, socket.timeout) as exc:
+            return ToolkitCallResult(
+                ok=False,
+                toolkit_tool=tool_name,
+                payload=payload,
+                issue_code="toolkit_timeout",
+                summary=f"Toolkit call timed out: {exc}",
+            )
         except Exception as exc:  # noqa: BLE001 - external boundary.
             return ToolkitCallResult(
                 ok=False,
@@ -174,13 +209,24 @@ class LeanMcpToolkitClient:
                 issue_code="toolkit_call_failed",
                 summary=f"Toolkit call failed: {exc}",
             )
-        value_dict = self._normalize_value(value)
+        try:
+            value_dict, warnings = self._normalize_value(value)
+        except ToolkitMalformedResponseError as exc:
+            return ToolkitCallResult(
+                ok=False,
+                toolkit_tool=tool_name,
+                payload=payload,
+                issue_code="toolkit_malformed_response",
+                summary=str(exc),
+                raw_excerpt=self._excerpt(exc.raw_text),
+            )
         return ToolkitCallResult(
             ok=True,
             toolkit_tool=tool_name,
             payload=payload,
             value=value_dict,
             raw_excerpt=self._excerpt(value_dict),
+            warnings=warnings,
             summary="Toolkit call succeeded",
         )
 
@@ -195,6 +241,21 @@ class LeanMcpToolkitClient:
             )
         try:
             raw = self._get_json("/meta/tools")
+        except ToolkitTimeoutError as exc:
+            return ToolkitCatalogResult(
+                ok=False,
+                summary=f"Toolkit catalog probe timed out: {exc}",
+                issue_code="toolkit_timeout",
+                missing_tools=list(required_tools),
+            )
+        except ToolkitMalformedResponseError as exc:
+            return ToolkitCatalogResult(
+                ok=False,
+                summary=str(exc),
+                issue_code="toolkit_malformed_response",
+                raw_excerpt=self._excerpt(exc.raw_text),
+                missing_tools=list(required_tools),
+            )
         except Exception as exc:  # noqa: BLE001 - external HTTP boundary.
             return ToolkitCatalogResult(
                 ok=False,
@@ -238,10 +299,26 @@ class LeanMcpToolkitClient:
             fallback_payload={"query": query, "kinds": kinds or [], "limit": limit},
         )
         if not result.ok:
-            return MathlibSearchResult(ok=False, query=query, summary=result.summary or "Mathlib search failed", issue_code=result.issue_code)
+            return MathlibSearchResult(
+                ok=False,
+                query=query,
+                summary=result.summary or "Mathlib search failed",
+                issue_code=result.issue_code,
+                raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
+            )
         items = self._items_from_value(result.value, key="results")
         items = self._items_with_source_tool(items, result.toolkit_tool)
-        return MathlibSearchResult(ok=True, query=query, items=items[:limit], summary=f"Found {len(items[:limit])} Mathlib results")
+        normalized_items = items[:limit]
+        warnings = [*result.warnings, *self._field_warnings(normalized_items, optional_fields=("module",), context="Mathlib search result")]
+        return MathlibSearchResult(
+            ok=True,
+            query=query,
+            items=normalized_items,
+            warnings=warnings,
+            raw_excerpt=result.raw_excerpt,
+            summary=f"Found {len(normalized_items)} Mathlib results",
+        )
 
     def inspect_mathlib_decl(self, decl_name: str) -> ToolkitDeclarationView:
         result = self._call_tool_with_fallback(
@@ -261,17 +338,36 @@ class LeanMcpToolkitClient:
         if result.toolkit_tool == "inspect_mathlib_decl":
             return self._declaration_view(decl_name, result)
         if not result.ok:
-            return ToolkitDeclarationView(ok=False, name=decl_name, summary=result.summary or "Declaration inspect failed", issue_code=result.issue_code)
+            return ToolkitDeclarationView(
+                ok=False,
+                name=decl_name,
+                summary=result.summary or "Declaration inspect failed",
+                issue_code=result.issue_code,
+                raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
+            )
         items = self._items_from_value(result.value, key="results")
         exact = next((item for item in items if item.get("name") == decl_name), None)
         item = exact or (items[0] if items else None)
         if item is None:
-            return ToolkitDeclarationView(ok=False, name=decl_name, summary=f"Declaration not found: {decl_name}", issue_code="declaration_not_found")
+            return ToolkitDeclarationView(
+                ok=False,
+                name=decl_name,
+                summary=f"Declaration not found: {decl_name}",
+                issue_code="declaration_not_found",
+                raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
+            )
+        warnings = [
+            *result.warnings,
+            *self._field_warnings([item], optional_fields=("module", "source_text"), context=f"Declaration candidate {decl_name}"),
+        ]
         return ToolkitDeclarationView(
             ok=True,
             name=str(item.get("name") or decl_name),
             code=str(item.get("source_text")) if item.get("source_text") is not None else None,
             module=str(item.get("module")) if item.get("module") is not None else None,
+            warnings=warnings,
             summary=f"Inspected declaration {decl_name}",
             raw_excerpt=result.raw_excerpt,
         )
@@ -289,7 +385,14 @@ class LeanMcpToolkitClient:
             fallback_payload={"module": module},
         )
         if not result.ok:
-            return ToolkitModuleView(ok=False, module=module, summary=result.summary or "Module inspect failed", issue_code=result.issue_code)
+            return ToolkitModuleView(
+                ok=False,
+                module=module,
+                summary=result.summary or "Module inspect failed",
+                issue_code=result.issue_code,
+                raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
+            )
         value = result.value if isinstance(result.value, dict) else {}
         items = self._items_from_value(result.value, key="declarations")
         imports = value.get("imports") or []
@@ -300,6 +403,7 @@ class LeanMcpToolkitClient:
             module=module,
             imports=[str(item) for item in imports if str(item).strip()],
             declarations=items,
+            warnings=list(result.warnings),
             summary=f"Inspected module {module}",
             raw_excerpt=result.raw_excerpt,
         )
@@ -307,9 +411,23 @@ class LeanMcpToolkitClient:
     def search_arxiv_theorems(self, query: str, limit: int = 20) -> MathlibSearchResult:
         result = self.call_tool("search_arxiv_theorems", {"query": query, "limit": limit})
         if not result.ok:
-            return MathlibSearchResult(ok=False, query=query, summary=result.summary or "arXiv theorem search unavailable", issue_code=result.issue_code)
+            return MathlibSearchResult(
+                ok=False,
+                query=query,
+                summary=result.summary or "arXiv theorem search unavailable",
+                issue_code=result.issue_code,
+                raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
+            )
         items = self._items_from_value(result.value)
-        return MathlibSearchResult(ok=True, query=query, items=items[:limit], summary=f"Found {len(items[:limit])} theorem candidates")
+        return MathlibSearchResult(
+            ok=True,
+            query=query,
+            items=items[:limit],
+            raw_excerpt=result.raw_excerpt,
+            warnings=list(result.warnings),
+            summary=f"Found {len(items[:limit])} theorem candidates",
+        )
 
     def run_file_diagnostics(self, repo_root: Path, file_path: Path) -> LeanDiagnosticsResult:
         result = self._call_tool_with_fallback(
@@ -325,6 +443,8 @@ class LeanMcpToolkitClient:
                 file_path=str(file_path),
                 summary=result.summary or "Diagnostics failed",
                 issue_code=result.issue_code,
+                raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
             )
         diagnostics = self._items_from_value(result.value, key="diagnostics")
         return LeanDiagnosticsResult(
@@ -332,6 +452,7 @@ class LeanMcpToolkitClient:
             repo_root=str(repo_root),
             file_path=str(file_path),
             diagnostics=diagnostics,
+            warnings=list(result.warnings),
             summary=f"Diagnostics returned {len(diagnostics)} items",
             raw_excerpt=result.raw_excerpt,
         )
@@ -379,10 +500,18 @@ class LeanMcpToolkitClient:
 
     def _declaration_view(self, name: str, result: ToolkitCallResult) -> ToolkitDeclarationView:
         if not result.ok:
-            return ToolkitDeclarationView(ok=False, name=name, summary=result.summary or "Declaration inspect failed", issue_code=result.issue_code)
+            return ToolkitDeclarationView(
+                ok=False,
+                name=name,
+                summary=result.summary or "Declaration inspect failed",
+                issue_code=result.issue_code,
+                raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
+            )
         value = result.value if isinstance(result.value, dict) else {}
         code = value.get("code") or value.get("source") or value.get("text")
         module = value.get("module")
+        warnings = [*result.warnings, *self._field_warnings([value], optional_fields=("module", "code"), context=f"Declaration view {name}")]
         return ToolkitDeclarationView(
             ok=True,
             name=name,
@@ -390,6 +519,7 @@ class LeanMcpToolkitClient:
             module=str(module) if module is not None else None,
             decl_start_pos=value.get("decl_start_pos") if isinstance(value.get("decl_start_pos"), dict) else None,
             decl_end_pos=value.get("decl_end_pos") if isinstance(value.get("decl_end_pos"), dict) else None,
+            warnings=warnings,
             summary=f"Inspected declaration {name}",
             raw_excerpt=result.raw_excerpt,
         )
@@ -402,7 +532,14 @@ class LeanMcpToolkitClient:
         module_or_file: str,
     ) -> ToolkitDeclarationView:
         if not result.ok:
-            return ToolkitDeclarationView(ok=False, name=name, summary=result.summary or "Declaration extract failed", issue_code=result.issue_code)
+            return ToolkitDeclarationView(
+                ok=False,
+                name=name,
+                summary=result.summary or "Declaration extract failed",
+                issue_code=result.issue_code,
+                raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
+            )
         value = result.value if isinstance(result.value, dict) else {}
         if value.get("success") is False:
             return ToolkitDeclarationView(
@@ -411,6 +548,7 @@ class LeanMcpToolkitClient:
                 summary=str(value.get("error_message") or "Declaration extract failed"),
                 issue_code="declaration_extract_failed",
                 raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
             )
         declarations = self._items_from_value(value, key="declarations")
         item = next((decl for decl in declarations if decl.get("name") == name), None)
@@ -421,6 +559,7 @@ class LeanMcpToolkitClient:
                 summary=f"Declaration not found: {name}",
                 issue_code="declaration_not_found",
                 raw_excerpt=result.raw_excerpt,
+                warnings=list(result.warnings),
             )
         code = item.get("full_declaration") or item.get("code") or item.get("source") or item.get("text")
         return ToolkitDeclarationView(
@@ -430,18 +569,78 @@ class LeanMcpToolkitClient:
             module=module_or_file,
             decl_start_pos=item.get("decl_start_pos") if isinstance(item.get("decl_start_pos"), dict) else None,
             decl_end_pos=item.get("decl_end_pos") if isinstance(item.get("decl_end_pos"), dict) else None,
+            warnings=list(result.warnings),
             summary=f"Extracted declaration {name}",
             raw_excerpt=result.raw_excerpt,
         )
 
-    def _normalize_value(self, value: Any) -> dict[str, Any] | list[Any] | str:
+    def _normalize_value(self, value: Any) -> tuple[dict[str, Any] | list[Any] | str, list[ToolkitResponseWarning]]:
+        warnings: list[ToolkitResponseWarning] = []
         if hasattr(value, "model_dump"):
-            return value.model_dump(mode="json")
+            return value.model_dump(mode="json"), warnings
         if hasattr(value, "to_dict"):
-            return value.to_dict()
-        if isinstance(value, (dict, list, str)):
-            return value
-        return {"value": repr(value)}
+            return value.to_dict(), warnings
+        if isinstance(value, bytes):
+            decoded = value.decode("utf-8", errors="replace")
+            parsed = self._parse_jsonish_string(decoded)
+            if parsed is not None:
+                return parsed, warnings
+            warnings.append(
+                ToolkitResponseWarning(
+                    code="toolkit_response_bytes_not_json",
+                    message="Toolkit returned bytes that were decoded as plain text.",
+                )
+            )
+            return decoded, warnings
+        if isinstance(value, str):
+            parsed = self._parse_jsonish_string(value)
+            if parsed is not None:
+                return parsed, warnings
+            return value, warnings
+        if isinstance(value, (dict, list)):
+            return value, warnings
+        warnings.append(
+            ToolkitResponseWarning(
+                code="toolkit_response_repr_fallback",
+                message=f"Toolkit returned unsupported response type: {type(value).__name__}.",
+            )
+        )
+        return {"value": repr(value)}, warnings
+
+    def _parse_jsonish_string(self, value: str) -> dict[str, Any] | list[Any] | str | None:
+        text = value.strip()
+        if not text:
+            return None
+        if text[0] not in "{[":
+            return None
+        try:
+            decoded = json.loads(text)
+        except JSONDecodeError as exc:
+            raise ToolkitMalformedResponseError(f"Toolkit response is not valid JSON: {exc.msg}", value) from exc
+        if isinstance(decoded, (dict, list, str)):
+            return decoded
+        return {"value": decoded}
+
+    def _field_warnings(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        optional_fields: tuple[str, ...],
+        context: str,
+    ) -> list[ToolkitResponseWarning]:
+        warnings: list[ToolkitResponseWarning] = []
+        for index, item in enumerate(items):
+            for field in optional_fields:
+                if item.get(field) is None:
+                    warnings.append(
+                        ToolkitResponseWarning(
+                            code="toolkit_candidate_missing_optional_field",
+                            message=f"{context} is missing optional field: {field}",
+                            field=field,
+                            item_index=index,
+                        )
+                    )
+        return warnings
 
     def _items_with_source_tool(self, items: list[dict[str, Any]], toolkit_tool: str) -> list[dict[str, Any]]:
         return [dict(item, source_tool=toolkit_tool) for item in items]
@@ -482,11 +681,18 @@ class LeanMcpToolkitClient:
             except Exception:
                 body = str(exc)
             raise RuntimeError(f"HTTP {exc.code}: {body[: self.config.response_excerpt_chars]}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise ToolkitTimeoutError(str(exc)) from exc
         except URLError as exc:
+            if self._is_timeout_exception(exc):
+                raise ToolkitTimeoutError(str(exc)) from exc
             raise RuntimeError(str(exc)) from exc
-        decoded = json.loads(body or "{}")
+        try:
+            decoded = json.loads(body or "{}")
+        except JSONDecodeError as exc:
+            raise ToolkitMalformedResponseError(f"Toolkit HTTP response is not valid JSON: {exc.msg}", body) from exc
         if not isinstance(decoded, dict):
-            raise RuntimeError("expected JSON object response")
+            raise ToolkitMalformedResponseError("Toolkit HTTP response must be a JSON object.", body)
         return decoded
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -504,11 +710,18 @@ class LeanMcpToolkitClient:
             except Exception:
                 body = str(exc)
             raise RuntimeError(f"HTTP {exc.code}: {body[: self.config.response_excerpt_chars]}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise ToolkitTimeoutError(str(exc)) from exc
         except URLError as exc:
+            if self._is_timeout_exception(exc):
+                raise ToolkitTimeoutError(str(exc)) from exc
             raise RuntimeError(str(exc)) from exc
-        decoded = json.loads(body or "{}")
+        try:
+            decoded = json.loads(body or "{}")
+        except JSONDecodeError as exc:
+            raise ToolkitMalformedResponseError(f"Toolkit HTTP response is not valid JSON: {exc.msg}", body) from exc
         if not isinstance(decoded, dict):
-            raise RuntimeError("expected JSON object response")
+            raise ToolkitMalformedResponseError("Toolkit HTTP response must be a JSON object.", body)
         return decoded
 
     def _build_url(self, path: str) -> str:
@@ -532,6 +745,23 @@ class LeanMcpToolkitClient:
                     summary=f"Toolkit tool is missing: {tool_name}",
                 )
             value = self._post_json(api_path, payload)
+        except ToolkitTimeoutError as exc:
+            return ToolkitCallResult(
+                ok=False,
+                toolkit_tool=tool_name,
+                payload=payload,
+                issue_code="toolkit_timeout",
+                summary=f"Toolkit HTTP call timed out: {exc}",
+            )
+        except ToolkitMalformedResponseError as exc:
+            return ToolkitCallResult(
+                ok=False,
+                toolkit_tool=tool_name,
+                payload=payload,
+                issue_code="toolkit_malformed_response",
+                raw_excerpt=self._excerpt(exc.raw_text),
+                summary=str(exc),
+            )
         except Exception as exc:  # noqa: BLE001 - external HTTP boundary.
             return ToolkitCallResult(
                 ok=False,
@@ -540,15 +770,30 @@ class LeanMcpToolkitClient:
                 issue_code="toolkit_call_failed",
                 summary=f"Toolkit HTTP call failed: {exc}",
             )
-        value_dict = self._normalize_value(value)
+        try:
+            value_dict, warnings = self._normalize_value(value)
+        except ToolkitMalformedResponseError as exc:
+            return ToolkitCallResult(
+                ok=False,
+                toolkit_tool=tool_name,
+                payload=payload,
+                issue_code="toolkit_malformed_response",
+                raw_excerpt=self._excerpt(exc.raw_text),
+                summary=str(exc),
+            )
         return ToolkitCallResult(
             ok=True,
             toolkit_tool=tool_name,
             payload=payload,
             value=value_dict,
             raw_excerpt=self._excerpt(value_dict),
+            warnings=warnings,
             summary="Toolkit call succeeded",
         )
+
+    def _is_timeout_exception(self, exc: URLError) -> bool:
+        reason = getattr(exc, "reason", None)
+        return isinstance(reason, (TimeoutError, socket.timeout))
 
     def _api_path_for_tool(self, catalog: dict[str, Any], tool_name: str) -> str | None:
         tools_raw = catalog.get("tools")

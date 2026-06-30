@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus, SourceCorpusMode
 from lean_constellation.services.repo_workspace import RepoWorkspaceService
@@ -16,7 +18,7 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
     consumer_b = workspace / "consumer_b"
     workspace.mkdir()
 
-    service = RepoWorkspaceService()
+    service = make_runtime().repo_workspace
     assert service.metadata.ensure_repo_model(consumer_a).ok
     assert service.metadata.ensure_repo_model(consumer_b).ok
 

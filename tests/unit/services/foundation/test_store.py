@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.common import StrictModel
@@ -18,7 +20,7 @@ class VersionedModel(StrictModel):
 
 
 def test_json_read_write_modes(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     path = tmp_path / "item.json"
 
     created = store.write_json_atomic(path, ExampleModel(name="a", value=1), mode=WriteMode.CREATE_ONLY)
@@ -34,7 +36,7 @@ def test_json_read_write_modes(tmp_path) -> None:
 
 
 def test_read_json_reports_missing_and_schema_validation_errors(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
 
     missing = store.read_json(tmp_path / "missing.json", ExampleModel)
     assert missing.ok is False
@@ -48,7 +50,7 @@ def test_read_json_reports_missing_and_schema_validation_errors(tmp_path) -> Non
 
 
 def test_list_json_reports_bad_files(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     store.write_json_atomic(tmp_path / "b.json", ExampleModel(name="b", value=2))
     store.write_json_atomic(tmp_path / "a.json", ExampleModel(name="a", value=1))
     (tmp_path / "bad.json").write_text("{bad", encoding="utf-8")
@@ -60,7 +62,7 @@ def test_list_json_reports_bad_files(tmp_path) -> None:
 
 
 def test_delete_json_handles_missing_ok_and_missing_error(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     path = tmp_path / "delete.json"
 
     missing_ok = store.delete_json(path, missing_ok=True)
@@ -78,7 +80,7 @@ def test_delete_json_handles_missing_ok_and_missing_error(tmp_path) -> None:
 
 
 def test_ensure_dir_reports_created_and_existing(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     path = tmp_path / "nested" / "dir"
 
     created = store.ensure_dir(path)
@@ -91,7 +93,7 @@ def test_ensure_dir_reports_created_and_existing(tmp_path) -> None:
 
 
 def test_exists_reports_files_directories_and_missing_paths(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     file_path = tmp_path / "file.json"
     dir_path = tmp_path / "dir"
     file_path.write_text("{}", encoding="utf-8")
@@ -103,7 +105,7 @@ def test_exists_reports_files_directories_and_missing_paths(tmp_path) -> None:
 
 
 def test_temp_dir_promote_and_cleanup(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     temp = store.create_temp_dir(tmp_path / "tmp", "resource")
     assert temp.ok is True and temp.value is not None
     (Path(temp.value) / "file.txt").write_text("content", encoding="utf-8")
@@ -117,7 +119,7 @@ def test_temp_dir_promote_and_cleanup(tmp_path) -> None:
 
 
 def test_promote_dir_atomic_rejects_missing_temp_existing_target_and_updates_existing(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
 
     missing_temp = store.promote_dir_atomic(tmp_path / "missing-temp", tmp_path / "final")
     assert missing_temp.ok is False
@@ -153,7 +155,7 @@ def test_promote_dir_atomic_rejects_missing_temp_existing_target_and_updates_exi
 
 
 def test_mutation_session_commits_staged_writes_and_deletes(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     delete_path = tmp_path / "delete.json"
     store.write_json_atomic(delete_path, ExampleModel(name="old", value=0))
 
@@ -168,7 +170,7 @@ def test_mutation_session_commits_staged_writes_and_deletes(tmp_path) -> None:
 
 
 def test_mutation_session_rolls_back_on_context_exit_without_commit(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     staged_path = tmp_path / "staged.json"
 
     with store.mutation("rollback") as tx:
@@ -178,7 +180,7 @@ def test_mutation_session_rolls_back_on_context_exit_without_commit(tmp_path) ->
 
 
 def test_mutation_session_cleans_prepared_temp_files_after_preflight_failure(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     existing_path = tmp_path / "existing.json"
     first_path = tmp_path / "first.json"
     store.write_json_atomic(existing_path, ExampleModel(name="existing", value=1))
@@ -195,7 +197,7 @@ def test_mutation_session_cleans_prepared_temp_files_after_preflight_failure(tmp
 
 
 def test_allocate_uuid_retries_collisions() -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     seen: set[str] = set()
 
     def exists(value: str) -> bool:
@@ -211,7 +213,7 @@ def test_allocate_uuid_retries_collisions() -> None:
 
 
 def test_ensure_open_version_copies_committed(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     latest = VersionedModel(version=1, version_status="committed", payload="old")
 
     def copy_committed(value: VersionedModel) -> VersionedModel:
@@ -230,7 +232,7 @@ def test_ensure_open_version_copies_committed(tmp_path) -> None:
 
 
 def test_ensure_open_version_returns_existing_open_and_reports_missing_base(tmp_path) -> None:
-    store = StoreComponent()
+    store = make_runtime().foundation.store
     open_version = VersionedModel(version=3, version_status="open", payload="draft")
 
     existing = store.ensure_open_version(

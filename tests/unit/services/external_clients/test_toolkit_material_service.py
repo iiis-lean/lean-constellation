@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.services.external_clients import (
-    ExternalClientConfig,
-    ExternalClientService,
     LeanMcpToolkitClient,
     LeanMcpToolkitClientConfig,
     MaterialAcquisitionExtractionClient,
@@ -547,7 +547,7 @@ def test_validate_readable_text_missing_empty_and_decode_replacement(tmp_path) -
 def test_external_client_service_allows_injected_clients() -> None:
     toolkit = LeanMcpToolkitClient(dispatcher=lambda tool, payload: {"ok": True})
 
-    service = ExternalClientService(ExternalClientConfig(), lean_mcp_toolkit=toolkit)
+    service = make_runtime(external_overrides={"lean_mcp_toolkit": toolkit}).external
     health = service.check_external_client_health(required_toolkit_groups=["mathlib"], required_toolkit_tools=["search"])
 
     assert service.lean_toolkit is toolkit

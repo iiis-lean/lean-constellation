@@ -4,6 +4,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.services.foundation import (
     FoundationContext,
@@ -51,7 +53,7 @@ class FilesystemIndexBuilder:
 
 @pytest.mark.real
 def test_foundation_filesystem_store_index_real(tmp_path) -> None:
-    service = FoundationService()
+    service = make_runtime().foundation
     repo_root = tmp_path / "repo"
     ctx = FoundationContext(repo_root=repo_root, caller="real-test")
 

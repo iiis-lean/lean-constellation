@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoDependencyRequirementStatus
@@ -7,7 +9,7 @@ from lean_constellation.services.repo_workspace import RepoMetadataComponent
 
 
 def test_ensure_repo_model_is_idempotent_and_rejects_conflict(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
+    component = make_runtime().repo_workspace.metadata
 
     created = component.ensure_repo_model(tmp_path)
     assert created.ok
@@ -26,7 +28,7 @@ def test_ensure_repo_model_is_idempotent_and_rejects_conflict(tmp_path: Path) ->
 
 
 def test_repo_format_policy_and_state_view(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
+    component = make_runtime().repo_workspace.metadata
     component.ensure_repo_model(tmp_path)
 
     unknown = component.get_repo_format(tmp_path)
@@ -64,20 +66,28 @@ def test_repo_format_policy_and_state_view(tmp_path: Path) -> None:
     assert updated.value.policy.max_parallel_content_node_tasks == 3
     assert updated.value.policy.readiness_policy == "declared_closure"
 
-    ready = component.set_provider_ready(tmp_path, summary="ready")
+    ready = component.set_provider_ready(tmp_path, summary="Ready provider summary.")
     assert ready.ok
+    assert ready.value is not None
+    assert ready.value.ready is True
+
+    model = component.get_repo_model(tmp_path)
+    assert model.ok
+    assert model.value is not None
+    assert model.value.summary == "Ready provider summary."
 
     state = component.get_repo_state_view(tmp_path)
     assert state.ok
     assert state.value is not None
     assert state.value.main_node == "Main"
+    assert state.value.repo_summary == "Ready provider summary."
     assert state.value.repo_format == RepoFormat.NATIVE
     assert state.value.provider_ready is True
     assert state.value.max_parallel_content_node_tasks == 3
 
 
 def test_get_repo_model_missing_returns_structured_failure(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
+    component = make_runtime().repo_workspace.metadata
 
     missing = component.get_repo_model(tmp_path)
 
@@ -87,7 +97,7 @@ def test_get_repo_model_missing_returns_structured_failure(tmp_path: Path) -> No
 
 
 def test_get_repo_format_reads_adapter_state(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
+    component = make_runtime().repo_workspace.metadata
 
     set_format = component.set_repo_format(tmp_path, repo_format=RepoFormat.ADAPTER, reason="upstream Lean repo")
     assert set_format.ok
@@ -100,7 +110,7 @@ def test_get_repo_format_reads_adapter_state(tmp_path: Path) -> None:
 
 
 def test_set_repo_format_rejects_missing_reason_unknown_and_invalid_values(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
+    component = make_runtime().repo_workspace.metadata
 
     missing_reason = component.set_repo_format(tmp_path, repo_format=RepoFormat.NATIVE, reason=" ")
     assert not missing_reason.ok
@@ -116,7 +126,8 @@ def test_set_repo_format_rejects_missing_reason_unknown_and_invalid_values(tmp_p
 
 
 def test_set_repo_format_allows_admin_overwrite_before_ready_but_locks_after_ready(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
+    component = make_runtime().repo_workspace.metadata
+    component.ensure_repo_model(tmp_path)
     component.set_repo_format(tmp_path, repo_format=RepoFormat.NATIVE, reason="first")
 
     overwritten = component.set_repo_format(
@@ -143,7 +154,7 @@ def test_set_repo_format_allows_admin_overwrite_before_ready_but_locks_after_rea
 
 
 def test_update_repo_policy_rejects_invalid_parallelism(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
+    component = make_runtime().repo_workspace.metadata
 
     result = component.update_repo_policy(tmp_path, max_parallel_content_node_tasks=0)
     assert not result.ok
@@ -151,7 +162,7 @@ def test_update_repo_policy_rejects_invalid_parallelism(tmp_path: Path) -> None:
 
 
 def test_update_repo_policy_rejects_empty_readiness_policy(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
+    component = make_runtime().repo_workspace.metadata
 
     result = component.update_repo_policy(tmp_path, readiness_policy="  ")
 
@@ -160,8 +171,8 @@ def test_update_repo_policy_rejects_empty_readiness_policy(tmp_path: Path) -> No
 
 
 def test_repo_state_view_counts_requirements_structurally_and_warns_on_missing_model(tmp_path: Path) -> None:
-    component = RepoMetadataComponent(FoundationService())
-    foundation = component.foundation
+    component = make_runtime().repo_workspace.metadata
+    foundation = component.runtime.foundation
     ctx = component._ctx(tmp_path)
     req_root = foundation.layout.requirements_root(ctx)
     foundation.store.ensure_dir(req_root)

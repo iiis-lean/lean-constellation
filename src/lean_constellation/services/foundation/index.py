@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 from pydantic import Field
 
@@ -17,6 +17,9 @@ from lean_constellation.services.foundation.result_error import (
 from lean_constellation.services.foundation.store import StoreComponent, WriteMode
 
 T = TypeVar("T")
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class IndexMetadata(StrictModel):
@@ -58,11 +61,13 @@ class IndexComponent:
 
     def __init__(
         self,
+        runtime: LeanRuntimeServices,
         *,
         store: StoreComponent,
         layout: LayoutComponent,
         result: ResultErrorComponent | None = None,
     ) -> None:
+        self.runtime = runtime
         self.store = store
         self.layout = layout
         self.result = result or store.result

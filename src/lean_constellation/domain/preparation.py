@@ -33,6 +33,16 @@ class RepoRequirementRef(StrictModel):
     requirement_name: str
 
 
+class RequirementWaitingState(StrictModel):
+    waiting: bool = False
+    provider_repo: str | None = None
+    reason: str | None = None
+    submitted_at: str | None = None
+    result_observed: bool = False
+    result_observed_at: str | None = None
+    result_note: str | None = None
+
+
 class RepoDependencyRequirement(StrictModel):
     name: str
     target_repo: str
@@ -43,6 +53,7 @@ class RepoDependencyRequirement(StrictModel):
     satisfaction_mode: RepoDependencySatisfactionMode = RepoDependencySatisfactionMode.REPO_READY
     provider_repo: str | None = None
     note: str | None = None
+    waiting_state: RequirementWaitingState = Field(default_factory=RequirementWaitingState)
 
 
 class RepoPreparationInput(StrictModel):
@@ -66,6 +77,28 @@ class RepoPreparationInput(StrictModel):
 class RequirementView(StrictModel):
     repo_root: str
     requirement: RepoDependencyRequirement
+
+
+class RequirementWaitingView(StrictModel):
+    repo_root: str
+    requirement_name: str
+    target_repo: str
+    provider_repo: str
+    status: RepoDependencyRequirementStatus
+    waiting: bool
+    result_observed: bool
+    summary: str
+
+
+class RequirementResumeCandidateView(StrictModel):
+    consumer_repo: str
+    consumer_repo_root: str
+    requirement_name: str
+    target_repo: str
+    provider_repo: str
+    status: RepoDependencyRequirementStatus
+    result_observed: bool
+    summary: str
 
 
 class RequirementGroupItem(StrictModel):
@@ -108,6 +141,21 @@ class ProviderRepoShellView(StrictModel):
     summary: str
 
 
+class RepoRuntimeBootstrapView(StrictModel):
+    repo_root: str
+    runtime_root: str
+    created: bool
+    initialized_paths: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class ProviderRepoRuntimeShellView(StrictModel):
+    shell: RepoShellView
+    preparation_input: RepoPreparationInputView
+    runtime_bootstrap: RepoRuntimeBootstrapView
+    summary: str
+
+
 class BootstrapInputValidationView(StrictModel):
     passed: bool
     requirement_count: int
@@ -120,6 +168,7 @@ class BootstrapInputValidationView(StrictModel):
 class ProviderReadyView(StrictModel):
     provider_ready_marked: bool
     satisfied_requirement_count: int = 0
+    repo_summary: str | None = None
     summary: str
     issue_code: str | None = None
 

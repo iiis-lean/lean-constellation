@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -18,6 +19,9 @@ from lean_constellation.services.external_clients.material_acquisition import (
     MaterialAcquisitionConfig,
     MaterialAcquisitionExtractionClient,
 )
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class ExternalClientConfig(StrictModel):
@@ -42,6 +46,7 @@ class ExternalClientHealthView(StrictModel):
 class ExternalClientService:
     def __init__(
         self,
+        runtime: LeanRuntimeServices,
         config: ExternalClientConfig | None = None,
         *,
         github_repo: GitHubRepoClient | None = None,
@@ -49,13 +54,19 @@ class ExternalClientService:
         lean_mcp_toolkit: LeanMcpToolkitClient | None = None,
         material_acquisition: MaterialAcquisitionExtractionClient | None = None,
     ) -> None:
+        self.runtime = runtime
         self.config = config or ExternalClientConfig()
         self.github_repo = github_repo or GitHubRepoClient(self.config.github_repo)
         self.lake = lake or LakeCommandClient(self.config.lake)
         self.lean_mcp_toolkit = lean_mcp_toolkit or LeanMcpToolkitClient.from_config(self.config.lean_toolkit)
         self.lean_toolkit = self.lean_mcp_toolkit
         self.material_acquisition = material_acquisition or MaterialAcquisitionExtractionClient(self.config.material)
-        self.material = self.material_acquisition
+
+    @property
+    def material(self) -> MaterialAcquisitionExtractionClient:
+        """Compatibility alias for the material acquisition client."""
+
+        return self.material_acquisition
 
     def check_external_client_health(
         self,
@@ -96,5 +107,5 @@ class ExternalClientService:
         )
 
 
-def create_external_client_service(config: ExternalClientConfig) -> ExternalClientService:
-    return ExternalClientService(config)
+def create_external_client_service(runtime: LeanRuntimeServices, config: ExternalClientConfig) -> ExternalClientService:
+    return ExternalClientService(runtime, config)

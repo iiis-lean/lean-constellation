@@ -3,21 +3,29 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import (
     RepoDependencyRequirement,
     RepoDependencyRequirementStatus,
+    RequirementResumeCandidateView,
+    RequirementWaitingState,
+    RequirementWaitingView,
     RequirementView,
 )
-from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
+from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class RepoRequirementComponent:
     """Maintain `.lean_constellation/repo_dependency_requirements/*.json`."""
 
-    def __init__(self, foundation: FoundationService) -> None:
-        self.foundation = foundation
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
 
     def create_requirement(
         self,
@@ -28,11 +36,11 @@ class RepoRequirementComponent:
         source_description: str | None = None,
         reason: str | None = None,
     ) -> ServiceResult[RequirementView]:
-        safe_name = self.foundation.layout.ensure_safe_key(name)
-        safe_target = self.foundation.layout.ensure_safe_key(target_repo)
+        safe_name = self.runtime.foundation.layout.ensure_safe_key(name)
+        safe_target = self.runtime.foundation.layout.ensure_safe_key(target_repo)
         if not (source_description and source_description.strip()) and not (reason and reason.strip()):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "requirement_missing_context",
                     "Requirement needs at least source_description or reason.",
                 )
@@ -44,32 +52,32 @@ class RepoRequirementComponent:
             reason=self._strip_or_none(reason),
         )
         path = self._path(repo_root, safe_name)
-        self.foundation.store.ensure_dir(path.parent)
-        written = self.foundation.store.write_json_atomic(path, requirement, mode=WriteMode.CREATE_ONLY)
+        self.runtime.foundation.store.ensure_dir(path.parent)
+        written = self.runtime.foundation.store.write_json_atomic(path, requirement, mode=WriteMode.CREATE_ONLY)
         if not written.ok:
             if any(issue.kind == "duplicate_file" for issue in written.issues):
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "requirement_name_duplicate",
                         f"Requirement already exists: {safe_name}",
                         object_ref=str(path),
                     )
                 )
-            return self.foundation.fail(written.issues)
-        return self.foundation.ok(self._view(repo_root, requirement))
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(self._view(repo_root, requirement))
 
     def get_requirement(self, repo_root: Path, *, name: str) -> ServiceResult[RequirementView]:
         path = self._path(repo_root, name)
-        loaded = self.foundation.store.read_json(path, RepoDependencyRequirement)
+        loaded = self.runtime.foundation.store.read_json(path, RepoDependencyRequirement)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "requirement_not_found",
                     f"Requirement not found: {name}",
                     object_ref=str(path),
                 )
             )
-        return self.foundation.ok(self._view(repo_root, loaded.value))
+        return self.runtime.foundation.ok(self._view(repo_root, loaded.value))
 
     def list_requirements(
         self,
@@ -78,17 +86,17 @@ class RepoRequirementComponent:
         status: RepoDependencyRequirementStatus | str | None = None,
     ) -> ServiceResult[list[RequirementView]]:
         ctx = FoundationContext(repo_root=Path(repo_root))
-        root = self.foundation.layout.requirements_root(ctx)
+        root = self.runtime.foundation.layout.requirements_root(ctx)
         if not root.exists():
-            return self.foundation.ok([])
+            return self.runtime.foundation.ok([])
         status_value = RepoDependencyRequirementStatus(status) if status is not None else None
-        loaded = self.foundation.store.list_json(root, RepoDependencyRequirement)
+        loaded = self.runtime.foundation.store.list_json(root, RepoDependencyRequirement)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         requirements = sorted(loaded.value, key=lambda item: item.name)
         if status_value is not None:
             requirements = [item for item in requirements if item.status == status_value]
-        return self.foundation.ok([self._view(repo_root, item) for item in requirements])
+        return self.runtime.foundation.ok([self._view(repo_root, item) for item in requirements])
 
     def add_requirement_interface(
         self,
@@ -102,7 +110,7 @@ class RepoRequirementComponent:
     ) -> ServiceResult[RequirementView]:
         requirement = self._load_open(repo_root, requirement_name)
         if not requirement.ok or requirement.value is None:
-            return self.foundation.fail(requirement.issues)
+            return self.runtime.foundation.fail(requirement.issues)
         value = requirement.value
         interface = DeclInterface(
             name=interface_name.strip(),
@@ -113,9 +121,9 @@ class RepoRequirementComponent:
         for existing in value.interfaces:
             if existing.name == interface.name:
                 if existing.model_dump() == interface.model_dump():
-                    return self.foundation.ok(self._view(repo_root, value))
-                return self.foundation.fail(
-                    self.foundation.issue(
+                    return self.runtime.foundation.ok(self._view(repo_root, value))
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "interface_duplicate",
                         f"Interface already exists with different content: {interface.name}",
                         object_ref=requirement_name,
@@ -134,13 +142,13 @@ class RepoRequirementComponent:
     ) -> ServiceResult[RequirementView]:
         requirement = self._load_open(repo_root, requirement_name)
         if not requirement.ok or requirement.value is None:
-            return self.foundation.fail(requirement.issues)
+            return self.runtime.foundation.fail(requirement.issues)
         value = requirement.value
         before = len(value.interfaces)
         value.interfaces = [item for item in value.interfaces if item.name != interface_name]
         if len(value.interfaces) == before:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "interface_not_found",
                     f"Interface not found in requirement: {interface_name}",
                     object_ref=requirement_name,
@@ -158,14 +166,14 @@ class RepoRequirementComponent:
     ) -> ServiceResult[RequirementView]:
         loaded = self.get_requirement(repo_root, name=requirement_name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         requirement = loaded.value.requirement
         if requirement.status not in {
             RepoDependencyRequirementStatus.OPEN,
             RepoDependencyRequirementStatus.SATISFIED,
         }:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "requirement_not_open",
                     "Only open or already satisfied requirements can be marked satisfied.",
                     current=requirement.status.value,
@@ -173,9 +181,208 @@ class RepoRequirementComponent:
                 )
             )
         requirement.status = RepoDependencyRequirementStatus.SATISFIED
-        requirement.provider_repo = self.foundation.layout.ensure_safe_key(provider_repo)
+        requirement.provider_repo = self.runtime.foundation.layout.ensure_safe_key(provider_repo)
         requirement.note = self._strip_or_none(note) or requirement.note
         return self._save(repo_root, requirement)
+
+    def mark_requirement_waiting_for_provider(
+        self,
+        repo_root: Path,
+        *,
+        requirement_name: str,
+        provider_repo: str | None = None,
+        reason: str | None = None,
+    ) -> ServiceResult[RequirementWaitingView]:
+        loaded = self.get_requirement(repo_root, name=requirement_name)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        requirement = loaded.value.requirement
+        if requirement.status == RepoDependencyRequirementStatus.OBSOLETE:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_obsolete_cannot_resume",
+                    "Obsolete requirements cannot enter waiting state.",
+                    current=requirement.status.value,
+                    expected=RepoDependencyRequirementStatus.OPEN.value,
+                    object_ref=requirement.name,
+                )
+            )
+        if requirement.status == RepoDependencyRequirementStatus.HANDLED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_already_handled",
+                    "Handled requirements cannot enter waiting state.",
+                    current=requirement.status.value,
+                    expected=RepoDependencyRequirementStatus.OPEN.value,
+                    object_ref=requirement.name,
+                )
+            )
+        provider = self.runtime.foundation.layout.ensure_safe_key(provider_repo or requirement.target_repo)
+        state = requirement.waiting_state
+        if state.waiting and state.provider_repo == provider and not state.result_observed:
+            return self.runtime.foundation.ok(
+                self._waiting_view(
+                    repo_root,
+                    requirement,
+                    summary=f"Requirement {requirement.name} is already waiting for provider {provider}.",
+                )
+            )
+        if state.waiting and state.provider_repo != provider and not state.result_observed:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_waiting_conflict",
+                    "Requirement is already waiting for a different provider repo.",
+                    current=state.provider_repo,
+                    expected=provider,
+                    object_ref=requirement.name,
+                )
+            )
+        requirement.waiting_state = RequirementWaitingState(
+            waiting=True,
+            provider_repo=provider,
+            reason=self._strip_or_none(reason),
+            submitted_at=state.submitted_at or utc_now_iso(),
+            result_observed=False,
+            result_observed_at=None,
+            result_note=None,
+        )
+        saved = self._save(repo_root, requirement)
+        if not saved.ok or saved.value is None:
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(
+            self._waiting_view(
+                repo_root,
+                saved.value.requirement,
+                summary=f"Requirement {requirement.name} is waiting for provider {provider}.",
+            )
+        )
+
+    def list_resume_candidates_for_requirement(
+        self,
+        workspace_root: Path,
+        *,
+        provider_repo: str,
+    ) -> ServiceResult[list[RequirementResumeCandidateView]]:
+        provider_repo = self.runtime.foundation.layout.ensure_safe_key(provider_repo)
+        workspace_root = Path(workspace_root)
+        provider_root = workspace_root / provider_repo
+        if not provider_root.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_repo_not_found",
+                    f"Provider repo not found: {provider_repo}",
+                    object_ref=str(provider_root),
+                )
+            )
+        ready = self.runtime.repo_workspace.metadata.get_provider_ready(provider_root)
+        if not ready.ok:
+            return self.runtime.foundation.fail(ready.issues)
+        if ready.value is None or not ready.value.ready:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_repo_not_ready",
+                    f"Provider repo is not ready: {provider_repo}",
+                    object_ref=str(provider_root),
+                )
+            )
+        candidates: list[RequirementResumeCandidateView] = []
+        for repo_dir in sorted(path for path in workspace_root.iterdir() if path.is_dir()):
+            ctx = FoundationContext(repo_root=repo_dir)
+            if not self.runtime.foundation.layout.constellation_root(ctx).exists():
+                continue
+            listed = self.list_requirements(repo_dir, status=RepoDependencyRequirementStatus.SATISFIED)
+            if not listed.ok or listed.value is None:
+                return self.runtime.foundation.fail(listed.issues)
+            for view in listed.value:
+                requirement = view.requirement
+                state = requirement.waiting_state
+                if not state.waiting or state.result_observed:
+                    continue
+                if (requirement.provider_repo or state.provider_repo) != provider_repo:
+                    continue
+                candidates.append(
+                    RequirementResumeCandidateView(
+                        consumer_repo=repo_dir.name,
+                        consumer_repo_root=str(repo_dir),
+                        requirement_name=requirement.name,
+                        target_repo=requirement.target_repo,
+                        provider_repo=provider_repo,
+                        status=requirement.status,
+                        result_observed=state.result_observed,
+                        summary=f"{repo_dir.name}/{requirement.name} can resume from provider {provider_repo}.",
+                    )
+                )
+        candidates.sort(key=lambda item: (item.consumer_repo, item.requirement_name))
+        return self.runtime.foundation.ok(candidates)
+
+    def mark_requirement_result_observed(
+        self,
+        repo_root: Path,
+        *,
+        requirement_name: str,
+        note: str | None = None,
+    ) -> ServiceResult[RequirementWaitingView]:
+        loaded = self.get_requirement(repo_root, name=requirement_name)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        requirement = loaded.value.requirement
+        if requirement.status == RepoDependencyRequirementStatus.OBSOLETE:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_obsolete_cannot_resume",
+                    "Obsolete requirements cannot be resumed.",
+                    object_ref=requirement.name,
+                )
+            )
+        state = requirement.waiting_state
+        if not state.waiting:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_not_waiting",
+                    "Requirement is not waiting for a provider result.",
+                    object_ref=requirement.name,
+                )
+            )
+        if requirement.status not in {
+            RepoDependencyRequirementStatus.SATISFIED,
+            RepoDependencyRequirementStatus.HANDLED,
+        }:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_not_resumable",
+                    "Requirement result can only be observed after it is satisfied or handled.",
+                    current=requirement.status.value,
+                    expected=f"{RepoDependencyRequirementStatus.SATISFIED.value}|{RepoDependencyRequirementStatus.HANDLED.value}",
+                    object_ref=requirement.name,
+                )
+            )
+        if state.result_observed:
+            return self.runtime.foundation.ok(
+                self._waiting_view(
+                    repo_root,
+                    requirement,
+                    summary=f"Requirement {requirement.name} result was already observed.",
+                )
+            )
+        requirement.waiting_state = RequirementWaitingState(
+            waiting=state.waiting,
+            provider_repo=state.provider_repo or requirement.provider_repo or requirement.target_repo,
+            reason=state.reason,
+            submitted_at=state.submitted_at,
+            result_observed=True,
+            result_observed_at=utc_now_iso(),
+            result_note=self._strip_or_none(note),
+        )
+        saved = self._save(repo_root, requirement)
+        if not saved.ok or saved.value is None:
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(
+            self._waiting_view(
+                repo_root,
+                saved.value.requirement,
+                summary=f"Requirement {requirement.name} provider result observed.",
+            )
+        )
 
     def mark_requirement_handled(
         self,
@@ -186,11 +393,11 @@ class RepoRequirementComponent:
     ) -> ServiceResult[RequirementView]:
         loaded = self.get_requirement(repo_root, name=requirement_name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         requirement = loaded.value.requirement
         if requirement.status != RepoDependencyRequirementStatus.SATISFIED:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "requirement_not_satisfied",
                     "Only satisfied requirements can be marked handled.",
                     current=requirement.status.value,
@@ -209,10 +416,10 @@ class RepoRequirementComponent:
         note: str,
     ) -> ServiceResult[RequirementView]:
         if not note.strip():
-            return self.foundation.fail(self.foundation.issue("missing_note", "Obsolete requirements require a note."))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_note", "Obsolete requirements require a note."))
         loaded = self.get_requirement(repo_root, name=requirement_name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         requirement = loaded.value.requirement
         requirement.status = RepoDependencyRequirementStatus.OBSOLETE
         requirement.note = note.strip()
@@ -221,11 +428,11 @@ class RepoRequirementComponent:
     def _load_open(self, repo_root: Path, name: str) -> ServiceResult[RepoDependencyRequirement]:
         loaded = self.get_requirement(repo_root, name=name)
         if not loaded.ok or loaded.value is None:
-            return self.foundation.fail(loaded.issues)
+            return self.runtime.foundation.fail(loaded.issues)
         requirement = loaded.value.requirement
         if requirement.status != RepoDependencyRequirementStatus.OPEN:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "requirement_not_open",
                     "Requirement must be open for this operation.",
                     current=requirement.status.value,
@@ -233,19 +440,38 @@ class RepoRequirementComponent:
                     object_ref=requirement.name,
                 )
             )
-        return self.foundation.ok(requirement)
+        return self.runtime.foundation.ok(requirement)
 
     def _save(self, repo_root: Path, requirement: RepoDependencyRequirement) -> ServiceResult[RequirementView]:
-        written = self.foundation.store.write_json_atomic(self._path(repo_root, requirement.name), requirement)
+        written = self.runtime.foundation.store.write_json_atomic(self._path(repo_root, requirement.name), requirement)
         if not written.ok:
-            return self.foundation.fail(written.issues)
-        return self.foundation.ok(self._view(repo_root, requirement))
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(self._view(repo_root, requirement))
 
     def _view(self, repo_root: Path, requirement: RepoDependencyRequirement) -> RequirementView:
         return RequirementView(repo_root=str(Path(repo_root)), requirement=requirement)
 
+    def _waiting_view(
+        self,
+        repo_root: Path,
+        requirement: RepoDependencyRequirement,
+        *,
+        summary: str,
+    ) -> RequirementWaitingView:
+        provider = requirement.waiting_state.provider_repo or requirement.provider_repo or requirement.target_repo
+        return RequirementWaitingView(
+            repo_root=str(Path(repo_root)),
+            requirement_name=requirement.name,
+            target_repo=requirement.target_repo,
+            provider_repo=provider,
+            status=requirement.status,
+            waiting=requirement.waiting_state.waiting,
+            result_observed=requirement.waiting_state.result_observed,
+            summary=summary,
+        )
+
     def _path(self, repo_root: Path, name: str) -> Path:
-        return self.foundation.layout.requirement_path(FoundationContext(repo_root=Path(repo_root)), name)
+        return self.runtime.foundation.layout.requirement_path(FoundationContext(repo_root=Path(repo_root)), name)
 
     @staticmethod
     def _strip_or_none(value: str | None) -> str | None:

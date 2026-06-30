@@ -16,6 +16,7 @@ class RepoFormat(StrEnum):
 
 class RepoModel(StrictModel):
     main_node: str = "Main"
+    summary: str | None = None
 
 
 class RepoFormatState(StrictModel):
@@ -37,12 +38,12 @@ class RepoPolicy(StrictModel):
 
 class ProviderReadyState(StrictModel):
     ready: bool = False
-    summary: str | None = None
 
 
 class RepoModelView(StrictModel):
     repo_root: str
     main_node: str
+    summary: str | None = None
     created: bool = False
 
 
@@ -60,6 +61,7 @@ class RepoPolicyView(StrictModel):
 class RepoStateView(StrictModel):
     repo_root: str
     main_node: str | None = None
+    repo_summary: str | None = None
     repo_format: RepoFormat = RepoFormat.UNKNOWN
     provider_ready: bool = False
     readiness_policy: str = "proved_closure"
@@ -72,6 +74,7 @@ class RepoStateView(StrictModel):
 class WorkspaceRepoSummary(StrictModel):
     repo_key: str
     repo_root: str
+    repo_summary: str | None = None
     repo_format: RepoFormat = RepoFormat.UNKNOWN
     provider_ready: bool = False
     open_requirement_count: int = 0

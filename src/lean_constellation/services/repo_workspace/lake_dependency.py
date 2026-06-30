@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
-from lean_constellation.services.external_clients import ExternalClientService
 from lean_constellation.services.external_clients.lake_command import LakeCommandSummaryView, LeanCheckSummaryView
-from lean_constellation.services.foundation import FoundationContext, FoundationService, GateReport, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class LakeDependencyEntry(StrictModel):
@@ -66,18 +69,16 @@ class LakeDependencyComponent:
 
     def __init__(
         self,
-        foundation: FoundationService,
-        external: ExternalClientService,
+        runtime: LeanRuntimeServices,
         metadata: RepoMetadataComponent,
     ) -> None:
-        self.foundation = foundation
-        self.external = external
+        self.runtime = runtime
         self.metadata = metadata
 
     def parse_lake_dependencies(self, repo_root: Path) -> ServiceResult[LakeDependencyView]:
         lakefile = self._lakefile(repo_root)
         if lakefile is None:
-            return self.foundation.ok(
+            return self.runtime.foundation.ok(
                 LakeDependencyView(repo_root=str(Path(repo_root)), summary="No lakefile found.")
             )
         text = lakefile.read_text(encoding="utf-8", errors="replace")
@@ -85,7 +86,7 @@ class LakeDependencyComponent:
             deps = self._parse_toml_deps(text)
         else:
             deps = self._parse_lean_deps(text)
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             LakeDependencyView(
                 repo_root=str(Path(repo_root)),
                 lakefile_path=str(lakefile),
@@ -100,12 +101,12 @@ class LakeDependencyComponent:
         *,
         provider_repo_key: str,
     ) -> ServiceResult[LakeDependencyAttachView]:
-        provider_repo_key = self.foundation.layout.ensure_safe_key(provider_repo_key)
+        provider_repo_key = self.runtime.foundation.layout.ensure_safe_key(provider_repo_key)
         consumer_root = Path(consumer_repo_root)
         provider_root = consumer_root.parent / provider_repo_key
         if not provider_root.exists():
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "provider_repo_not_found",
                     f"Provider repo does not exist in workspace: {provider_repo_key}",
                     object_ref=str(provider_root),
@@ -113,8 +114,8 @@ class LakeDependencyComponent:
             )
         lakefile = consumer_root / "lakefile.toml"
         if not lakefile.exists():
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "lakefile_not_found",
                     "attach_workspace_repo_dependency currently requires lakefile.toml.",
                     object_ref=str(lakefile),
@@ -122,13 +123,13 @@ class LakeDependencyComponent:
             )
         deps = self.parse_lake_dependencies(consumer_root)
         if not deps.ok or deps.value is None:
-            return self.foundation.fail(deps.issues)
+            return self.runtime.foundation.fail(deps.issues)
         relative = provider_root.relative_to(consumer_root) if provider_root.is_relative_to(consumer_root) else None
         rel_path = relative.as_posix() if relative is not None else self._relative_path(provider_root, consumer_root)
         for dep in deps.value.dependencies:
             if dep.name == provider_repo_key:
-                return self.foundation.fail(
-                    self.foundation.issue(
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
                         "dependency_already_attached",
                         f"Lake dependency already attached: {provider_repo_key}",
                         object_ref=str(lakefile),
@@ -138,9 +139,9 @@ class LakeDependencyComponent:
         lakefile.write_text(lakefile.read_text(encoding="utf-8") + block, encoding="utf-8")
         update = self.run_lake_update(consumer_root)
         if not update.ok or update.value is None:
-            return self.foundation.fail(update.issues)
+            return self.runtime.foundation.fail(update.issues)
         dep = LakeDependencyEntry(name=provider_repo_key, source="path", path=rel_path)
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             LakeDependencyAttachView(
                 consumer_repo_root=str(consumer_root),
                 provider_repo_key=provider_repo_key,
@@ -160,23 +161,23 @@ class LakeDependencyComponent:
     ) -> ServiceResult[RepoSkeletonView]:
         normalized = self._normalize_module_name(project_name)
         if not normalized.ok or normalized.value is None:
-            return self.foundation.fail(normalized.issues)
+            return self.runtime.foundation.fail(normalized.issues)
         project_name = normalized.value
         repo_root = Path(repo_root)
         ensured = self.metadata.ensure_repo_model(repo_root)
         if not ensured.ok:
-            return self.foundation.fail(ensured.issues)
+            return self.runtime.foundation.fail(ensured.issues)
         fmt = self.metadata.set_repo_format(
             repo_root,
             repo_format=RepoFormat.NATIVE,
             reason="Initialize native Lean project skeleton.",
         )
         if not fmt.ok:
-            return self.foundation.fail(fmt.issues)
+            return self.runtime.foundation.fail(fmt.issues)
         written = self._write_native_skeleton(repo_root, project_name, lean_toolchain)
         build = self.run_lake_build(repo_root)
         build_summary = build.value.summary if build.ok and build.value is not None else self._issue_summary(build.issues)
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             RepoSkeletonView(
                 project_name=project_name,
                 lake_check_summary=build_summary,
@@ -194,19 +195,19 @@ class LakeDependencyComponent:
     ) -> ServiceResult[AdapterSetupView]:
         normalized = self._normalize_module_name(project_name)
         if not normalized.ok or normalized.value is None:
-            return self.foundation.fail(normalized.issues)
+            return self.runtime.foundation.fail(normalized.issues)
         project_name = normalized.value
         repo_root = Path(repo_root)
         ensured = self.metadata.ensure_repo_model(repo_root)
         if not ensured.ok:
-            return self.foundation.fail(ensured.issues)
+            return self.runtime.foundation.fail(ensured.issues)
         fmt = self.metadata.set_repo_format(
             repo_root,
             repo_format=RepoFormat.ADAPTER,
             reason="Initialize adapter Lean project skeleton.",
         )
         if not fmt.ok:
-            return self.foundation.fail(fmt.issues)
+            return self.runtime.foundation.fail(fmt.issues)
         written = self._write_native_skeleton(repo_root, project_name, None)
         lakefile = repo_root / "lakefile.toml"
         package = upstream.package_name or self._package_from_git_url(upstream.git_url)
@@ -230,7 +231,7 @@ class LakeDependencyComponent:
             ]
             if part
         ]
-        return self.foundation.ok(
+        return self.runtime.foundation.ok(
             AdapterSetupView(
                 upstream_summary=upstream.evidence_summary or f"Adapter upstream: {upstream.git_url}",
                 lake_check_summary="; ".join(summaries) if summaries else None,
@@ -256,60 +257,60 @@ class LakeDependencyComponent:
         for path in required:
             if not path.exists():
                 issues.append(
-                    self.foundation.issue(
+                    self.runtime.foundation.issue(
                         "native_skeleton_missing_file",
                         f"Native skeleton file is missing: {path.name}",
                         object_ref=str(path),
                     )
                 )
         if issues:
-            return self.foundation.ok(
-                self.foundation.gate_failed("native_repo_skeleton", issues, summary=f"{len(issues)} files missing.")
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed("native_repo_skeleton", issues, summary=f"{len(issues)} files missing.")
             )
-        return self.foundation.ok(
-            self.foundation.gate_passed("native_repo_skeleton", summary="Native repo skeleton is present.")
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed("native_repo_skeleton", summary="Native repo skeleton is present.")
         )
 
     def run_lake_update(self, repo_root: Path) -> ServiceResult[LakeCommandSummaryView]:
-        result = self.external.lake.run_lake_update(Path(repo_root))
-        summary = self.external.lake.summarize_command_result(result)
+        result = self.runtime.external.lake.run_lake_update(Path(repo_root))
+        summary = self.runtime.external.lake.summarize_command_result(result)
         if not result.ok:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "lake_update_failed",
                     summary.summary,
                     object_ref=str(repo_root),
                     details={"exit_code": str(summary.exit_code), "stderr": summary.stderr_excerpt or ""},
                 )
             )
-        return self.foundation.ok(summary)
+        return self.runtime.foundation.ok(summary)
 
     def run_lake_build(self, repo_root: Path, *, target: str | None = None) -> ServiceResult[LakeCommandSummaryView]:
-        result = self.external.lake.run_lake_build(Path(repo_root), target=target)
-        summary = self.external.lake.summarize_command_result(result)
+        result = self.runtime.external.lake.run_lake_build(Path(repo_root), target=target)
+        summary = self.runtime.external.lake.summarize_command_result(result)
         if not result.ok:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "lake_build_failed",
                     summary.summary,
                     object_ref=str(repo_root),
                     details={"exit_code": str(summary.exit_code), "stderr": summary.stderr_excerpt or ""},
                 )
             )
-        return self.foundation.ok(summary)
+        return self.runtime.foundation.ok(summary)
 
     def run_minimal_import_check(self, repo_root: Path, *, module: str) -> ServiceResult[LeanCheckSummaryView]:
-        result = self.external.lake.run_minimal_import_check(Path(repo_root), module)
+        result = self.runtime.external.lake.run_minimal_import_check(Path(repo_root), module)
         if not result.ok:
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "minimal_import_check_failed",
                     result.summary,
                     object_ref=str(repo_root),
                     details={"module": module, "diagnostics": result.diagnostics_excerpt or ""},
                 )
             )
-        return self.foundation.ok(result)
+        return self.runtime.foundation.ok(result)
 
     def _write_native_skeleton(self, repo_root: Path, project_name: str, lean_toolchain: str | None) -> list[Path]:
         repo_root.mkdir(parents=True, exist_ok=True)
@@ -398,14 +399,14 @@ class LakeDependencyComponent:
     def _normalize_module_name(self, value: str) -> ServiceResult[str]:
         value = value.strip()
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", value):
-            return self.foundation.fail(
-                self.foundation.issue(
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
                     "invalid_lean_project_name",
                     "Lean project/module name must start with a letter and contain only letters, digits, or underscores.",
                     current=value,
                 )
             )
-        return self.foundation.ok(value)
+        return self.runtime.foundation.ok(value)
 
     @staticmethod
     def _relative_path(target: Path, base: Path) -> str:

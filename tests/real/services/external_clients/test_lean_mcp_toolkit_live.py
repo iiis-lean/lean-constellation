@@ -97,6 +97,8 @@ def test_toolkit_live_mathlib_wrappers_use_canonical_tools() -> None:
         pytest.skip(f"Toolkit lean_explore backend is unavailable in this environment: {search.summary}")
     assert search.ok, search.summary
     assert search.items
+    assert search.raw_excerpt
+    assert all(warning.code for warning in search.warnings)
     assert all(item.get("source_tool") == "lean_explore.find" for item in search.items)
 
     module_name = os.environ.get("LEAN_CONSTELLATION_REAL_TOOLKIT_MATHLIB_MODULE", "Mathlib")
@@ -119,8 +121,10 @@ def test_toolkit_live_project_diagnostics_and_declaration_extract(tmp_path: Path
     diagnostics = client.run_file_diagnostics(repo_root, diagnostics_file)
     assert diagnostics.ok, diagnostics.summary
     assert diagnostics.raw_excerpt is not None
+    assert all(warning.code for warning in diagnostics.warnings)
 
     extracted = client.extract_declaration(repo_root, target, decl_name)
     assert extracted.ok, extracted.summary
     assert extracted.code and decl_name in extracted.code
     assert extracted.raw_excerpt
+    assert all(warning.code for warning in extracted.warnings)

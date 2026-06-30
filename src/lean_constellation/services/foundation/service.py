@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from lean_constellation.services.foundation.index import IndexBuilder, IndexComponent
 from lean_constellation.services.foundation.layout import FoundationContext, LayoutComponent
@@ -24,12 +24,16 @@ from lean_constellation.services.foundation.store import StoreComponent, WriteMo
 
 T = TypeVar("T")
 
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
+
 
 class FoundationService:
     """Composition root for bottom-level service utilities."""
 
     def __init__(
         self,
+        runtime: LeanRuntimeServices,
         *,
         result_error: ResultErrorComponent | None = None,
         layout: LayoutComponent | None = None,
@@ -37,12 +41,13 @@ class FoundationService:
         index: IndexComponent | None = None,
         ref_resolver: RefResolverComponent | None = None,
     ) -> None:
+        self.runtime = runtime
         self.result_error = result_error or ResultErrorComponent()
         self.result = self.result_error
         self.layout = layout or LayoutComponent()
-        self.store = store or StoreComponent(self.result_error)
-        self.index = index or IndexComponent(store=self.store, layout=self.layout, result=self.result_error)
-        self.ref_resolver = ref_resolver or RefResolverComponent(self.result_error)
+        self.store = store or StoreComponent(runtime, self.result_error)
+        self.index = index or IndexComponent(runtime, store=self.store, layout=self.layout, result=self.result_error)
+        self.ref_resolver = ref_resolver or RefResolverComponent(runtime, self.result_error)
         self.refs = self.ref_resolver
 
     def issue(self, *args: Any, **kwargs: Any) -> ServiceIssue:

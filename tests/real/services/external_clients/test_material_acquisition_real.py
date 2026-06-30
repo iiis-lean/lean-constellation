@@ -51,13 +51,26 @@ def test_material_acquisition_real_local_fixture_extraction(tmp_path: Path) -> N
 
     assert acquired_html.ok is True
     assert acquired_html.content_hash
+    assert acquired_html.artifact_view is not None
+    assert acquired_html.artifact_view.phase == "acquired"
+    assert acquired_html.artifact_view.output_root == str(draft.resolve())
+    assert acquired_html.artifact_view.mime_type == "text/html"
     assert extracted_html.ok is True
+    assert extracted_html.artifact_view is not None
+    assert extracted_html.artifact_view.phase == "extracted"
+    assert extracted_html.artifact_view.output_root == str(draft.resolve())
     assert "Hello world" in (extracted_html.text_preview or "")
     assert normalized_text.ok is True
+    assert normalized_text.artifact_view is not None
+    assert normalized_text.material_kind == "text"
     assert "Second line" in (normalized_text.text_preview or "")
     assert extracted_tex.ok is True
+    assert extracted_tex.artifact_view is not None
+    assert extracted_tex.material_kind == "tex_source"
     assert Path(extracted_tex.primary_text_path).name == "paper.tex"
     assert imported_dir.ok is True
+    assert imported_dir.artifact_view is not None
+    assert imported_dir.artifact_kind == "directory"
     assert len(imported_dir.artifact_paths) == 1
     assert validation.ok is True
 
@@ -120,6 +133,9 @@ def test_material_acquisition_real_pdf_fixture_when_configured(tmp_path: Path) -
     extracted = client.extract_pdf_text(pdf_path=pdf_path, output_root=tmp_path / "pdf")
 
     assert extracted.ok, extracted.summary
+    assert extracted.artifact_view is not None
+    assert extracted.artifact_view.output_root == str((tmp_path / "pdf").resolve())
+    assert extracted.material_kind == "text"
     assert extracted.primary_text_path
     extracted_text = Path(extracted.primary_text_path).read_text(encoding="utf-8", errors="replace")
     assert "Generated PDF text" in extracted_text or raw_pdf
@@ -135,8 +151,11 @@ def test_material_acquisition_real_network_opt_in(tmp_path: Path) -> None:
 
     page = client.fetch_web_page(url, output_root=tmp_path / "web")
     assert page.ok, page.summary
+    assert page.artifact_view is not None
+    assert page.artifact_view.source_url == url
     extracted = client.extract_web_main_text(html_path=Path(page.primary_artifact_path), output_root=tmp_path / "web")
     assert extracted.ok, extracted.summary
+    assert extracted.artifact_view is not None
     assert extracted.text_preview
 
     arxiv_id = os.environ.get("LEAN_CONSTELLATION_REAL_ARXIV_ID")

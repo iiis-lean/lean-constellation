@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
@@ -72,11 +74,14 @@ class FakeExternal:
         self.lake = FakeLakeClient()
 
 
-def test_initialize_native_skeleton_and_parse_dependencies(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
+def _lake_component() -> tuple[LakeDependencyComponent, FakeExternal]:
     external = FakeExternal()
-    component = LakeDependencyComponent(foundation, external, metadata)  # type: ignore[arg-type]
+    runtime = make_runtime(external_overrides={"lake": external.lake})
+    return runtime.repo_workspace.lake_dependency, external
+
+
+def test_initialize_native_skeleton_and_parse_dependencies(tmp_path: Path) -> None:
+    component, external = _lake_component()
 
     result = component.initialize_native_repo_skeleton(tmp_path, project_name="MyProject", lean_toolchain="lean/test")
     assert result.ok
@@ -95,10 +100,7 @@ def test_initialize_native_skeleton_and_parse_dependencies(tmp_path: Path) -> No
 
 
 def test_parse_lake_dependencies_toml_lean_and_missing_lakefile(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
-    external = FakeExternal()
-    component = LakeDependencyComponent(foundation, external, metadata)  # type: ignore[arg-type]
+    component, external = _lake_component()
 
     missing = component.parse_lake_dependencies(tmp_path / "missing")
     assert missing.ok
@@ -141,10 +143,7 @@ def test_attach_workspace_dependency_updates_lakefile_and_runs_update(tmp_path: 
     workspace = tmp_path
     consumer = workspace / "consumer"
     provider = workspace / "provider"
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
-    external = FakeExternal()
-    component = LakeDependencyComponent(foundation, external, metadata)  # type: ignore[arg-type]
+    component, external = _lake_component()
     component.initialize_native_repo_skeleton(consumer, project_name="Consumer")
     component.initialize_native_repo_skeleton(provider, project_name="Provider")
 
@@ -165,10 +164,7 @@ def test_attach_workspace_dependency_failure_branches(tmp_path: Path) -> None:
     workspace = tmp_path
     consumer = workspace / "consumer"
     provider = workspace / "provider"
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
-    external = FakeExternal()
-    component = LakeDependencyComponent(foundation, external, metadata)  # type: ignore[arg-type]
+    component, external = _lake_component()
     consumer.mkdir()
 
     missing_provider = component.attach_workspace_repo_dependency(consumer, provider_repo_key="provider")
@@ -188,17 +184,14 @@ def test_attach_workspace_dependency_failure_branches(tmp_path: Path) -> None:
 
 
 def test_initialize_native_skeleton_validation_and_check_gate(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
-    external = FakeExternal()
-    component = LakeDependencyComponent(foundation, external, metadata)  # type: ignore[arg-type]
+    component, external = _lake_component()
 
     invalid_name = component.initialize_native_repo_skeleton(tmp_path / "invalid", project_name="bad-name")
     assert not invalid_name.ok
     assert invalid_name.issues[0].kind == "invalid_lean_project_name"
 
     conflict_repo = tmp_path / "conflict"
-    metadata.ensure_repo_model(conflict_repo, main_node="Other")
+    component.metadata.ensure_repo_model(conflict_repo, main_node="Other")
     conflict = component.initialize_native_repo_skeleton(conflict_repo, project_name="MainProject")
     assert not conflict.ok
     assert conflict.issues[0].kind == "repo_model_conflict"
@@ -220,10 +213,7 @@ def test_initialize_native_skeleton_validation_and_check_gate(tmp_path: Path) ->
 
 
 def test_initialize_adapter_skeleton_records_upstream_and_checks_import(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
-    external = FakeExternal()
-    component = LakeDependencyComponent(foundation, external, metadata)  # type: ignore[arg-type]
+    component, external = _lake_component()
 
     upstream = UpstreamDependencyInput(
         git_url="https://github.com/example/upstream.git",
@@ -246,10 +236,7 @@ def test_initialize_adapter_skeleton_records_upstream_and_checks_import(tmp_path
 
 
 def test_initialize_adapter_validation_and_untrusted_checks(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
-    external = FakeExternal()
-    component = LakeDependencyComponent(foundation, external, metadata)  # type: ignore[arg-type]
+    component, external = _lake_component()
     upstream = UpstreamDependencyInput(git_url="https://github.com/example/upstream.git", module_name="Upstream")
 
     invalid_name = component.initialize_adapter_repo_skeleton(tmp_path / "bad", project_name="bad-name", upstream=upstream)
@@ -264,10 +251,7 @@ def test_initialize_adapter_validation_and_untrusted_checks(tmp_path: Path) -> N
 
 
 def test_lake_command_wrapper_failures_and_target(tmp_path: Path) -> None:
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
-    external = FakeExternal()
-    component = LakeDependencyComponent(foundation, external, metadata)  # type: ignore[arg-type]
+    component, external = _lake_component()
 
     build_target = component.run_lake_build(tmp_path, target="Main")
     assert build_target.ok
@@ -294,7 +278,7 @@ def test_repo_workspace_service_marks_provider_ready_and_attach(tmp_path: Path) 
     consumer = workspace / "consumer"
     provider = workspace / "provider"
     external = FakeExternal()
-    service = RepoWorkspaceService(external=external)  # type: ignore[arg-type]
+    service = make_runtime(external_overrides={"lake": external.lake}).repo_workspace
     service.metadata.ensure_repo_model(consumer)
     service.metadata.ensure_repo_model(provider)
     service.lake_dependency.initialize_native_repo_skeleton(consumer, project_name="Consumer")
@@ -320,6 +304,7 @@ def test_repo_workspace_service_marks_provider_ready_and_attach(tmp_path: Path) 
     assert ready.ok
     assert ready.value is not None
     assert ready.value.satisfied_requirement_count == 1
+    assert ready.value.repo_summary == "provider ready"
 
     attach = service.attach_provider_for_requirement(consumer, requirement_name="need_provider")
     assert attach.ok

@@ -1,3 +1,5 @@
+from tests.unit_services_helpers import make_runtime
+
 from pathlib import Path
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -28,11 +30,13 @@ def _components() -> tuple[
     RepoRequirementComponent,
     RepoPreparationComponent,
 ]:
-    foundation = FoundationService()
-    metadata = RepoMetadataComponent(foundation)
-    requirement = RepoRequirementComponent(foundation)
-    preparation = RepoPreparationComponent(foundation, metadata, requirement)
-    return foundation, metadata, requirement, preparation
+    runtime = make_runtime()
+    return (
+        runtime.foundation,
+        runtime.repo_workspace.metadata,
+        runtime.repo_workspace.requirement,
+        runtime.repo_workspace.preparation,
+    )
 
 
 def _catalog_components() -> tuple[
@@ -43,8 +47,7 @@ def _catalog_components() -> tuple[
     WorkspaceCatalogComponent,
 ]:
     foundation, metadata, requirement, preparation = _components()
-    lake = LakeDependencyComponent(foundation, _FakeExternal(), metadata)  # type: ignore[arg-type]
-    catalog = WorkspaceCatalogComponent(foundation, metadata, requirement, lake)
+    catalog = metadata.runtime.repo_workspace.workspace_catalog
     return foundation, metadata, requirement, preparation, catalog
 
 
@@ -249,7 +252,7 @@ def test_workspace_catalog_lists_repos_and_current_repo_first(tmp_path: Path) ->
     metadata.ensure_repo_model(provider)
     metadata.set_repo_format(current, repo_format=RepoFormat.NATIVE, reason="current")
     metadata.set_repo_format(provider, repo_format=RepoFormat.ADAPTER, reason="provider")
-    metadata.set_provider_ready(provider, summary="ready")
+    metadata.set_provider_ready(provider, summary="Provider exposes the required public interface.")
     requirement.create_requirement(current, name="need_provider", target_repo="provider", reason="use provider")
 
     missing = catalog.list_workspace_repos(workspace / "missing")
@@ -262,6 +265,7 @@ def test_workspace_catalog_lists_repos_and_current_repo_first(tmp_path: Path) ->
     assert [repo.repo_key for repo in repos.value] == ["consumer", "provider"]
     assert repos.value[0].open_requirement_count == 1
     assert repos.value[1].provider_ready is True
+    assert repos.value[1].repo_summary == "Provider exposes the required public interface."
 
     view = catalog.get_workspace_catalog(workspace, current_repo="provider")
     assert view.ok
@@ -279,12 +283,13 @@ def test_workspace_catalog_ready_filter_and_coordinator_view(tmp_path: Path) -> 
     metadata.ensure_repo_model(ready_provider)
     metadata.ensure_repo_model(not_ready_provider)
     metadata.set_provider_ready(current, summary="current ready but should be excluded")
-    metadata.set_provider_ready(ready_provider, summary="provider ready")
+    metadata.set_provider_ready(ready_provider, summary="Ready provider summary.")
 
     ready = catalog.list_ready_provider_repos(workspace, current_repo="current")
     assert ready.ok
     assert ready.value is not None
     assert [repo.repo_key for repo in ready.value] == ["ready_provider"]
+    assert ready.value[0].repo_summary == "Ready provider summary."
 
     coordinator_view = catalog.inspect_workspace_for_coordinator(current)
     assert coordinator_view.ok
@@ -439,8 +444,7 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
     assert not duplicate.ok
     assert duplicate.issues[0].kind == "target_repo_already_exists"
 
-    catalog_lake = LakeDependencyComponent(foundation, _FakeExternal(), metadata)  # type: ignore[arg-type]
-    catalog = WorkspaceCatalogComponent(foundation, metadata, requirement, catalog_lake)
+    catalog = metadata.runtime.repo_workspace.workspace_catalog
     summaries = catalog.list_open_requirement_groups(workspace)
     assert summaries.ok
     assert summaries.value is not None

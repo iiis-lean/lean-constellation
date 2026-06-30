@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import Field
 
@@ -15,6 +15,9 @@ from lean_constellation.services.foundation.result_error import (
     ServiceIssue,
     ServiceResult,
 )
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class RefKind(StrEnum):
@@ -65,7 +68,8 @@ class RefResolver(Protocol):
 class RefResolverComponent:
     """Delegate ref validation to business-specific resolvers."""
 
-    def __init__(self, result: ResultErrorComponent | None = None) -> None:
+    def __init__(self, runtime: LeanRuntimeServices, result: ResultErrorComponent | None = None) -> None:
+        self.runtime = runtime
         self.result = result or ResultErrorComponent()
         self._resolvers: dict[RefKind, RefResolver] = {}
 

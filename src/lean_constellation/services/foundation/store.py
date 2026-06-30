@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter
 
@@ -22,6 +22,9 @@ from lean_constellation.services.foundation.result_error import (
 )
 
 T = TypeVar("T")
+
+if TYPE_CHECKING:
+    from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class WriteMode(StrEnum):
@@ -168,7 +171,8 @@ class MutationSession:
 class StoreComponent:
     """Read, write, and stage JSON truth files."""
 
-    def __init__(self, result: ResultErrorComponent | None = None) -> None:
+    def __init__(self, runtime: LeanRuntimeServices, result: ResultErrorComponent | None = None) -> None:
+        self.runtime = runtime
         self.result = result or ResultErrorComponent()
 
     def read_json(self, path: Path, model_type: type[T]) -> ServiceResult[T]:
