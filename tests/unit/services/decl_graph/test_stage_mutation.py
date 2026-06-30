@@ -1,0 +1,209 @@
+from pathlib import Path
+
+from tests.unit_services_helpers import make_runtime
+
+from lean_constellation.services.decl_graph import DeclState
+
+
+def _create_content_node(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal",
+        boundary="Topic boundary",
+    ).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build the core declarations.",
+        success_criteria="The core declarations are ready.",
+    ).ok
+
+
+def _create_running_round_with_decl(tmp_path: Path, *, name: str = "main_result", kind: str = "theorem") -> str:
+    service = make_runtime().decl_graph
+    strategy = service.ensure_open_strategy(tmp_path, node_path="Main.Topic.Core", objective="Strategy.")
+    assert strategy.ok and strategy.value is not None
+    round_record = service.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Round objective.",
+    )
+    assert round_record.ok and round_record.value is not None
+    assert service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        name=name,
+        kind=kind,
+        objective=f"Create {name}.",
+        summary=f"{name} summary.",
+        end_after_state=DeclState.PROVED if kind == "theorem" else DeclState.DECLARED,
+    ).ok
+    assert service.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
+    return round_record.value.round_id
+
+
+def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_running_round_with_decl(tmp_path)
+    service = make_runtime().decl_graph
+
+    statement_nl = service.write_statement_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+        origin=[{"kind": "source", "ref": "source:main"}],
+        deps=["supporting_lemma"],
+    )
+    assert statement_nl.ok and statement_nl.value is not None
+    assert statement_nl.value.state == DeclState.SPECIFIED
+    assert statement_nl.value.statement_origin == [{"kind": "source", "ref": "source:main"}]
+    assert statement_nl.value.decl_deps == ["supporting_lemma"]
+
+    statement_formal = service.write_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        lean_code="theorem main_result : True := by sorry",
+        lean_check={"passed": True, "contains_sorry": True},
+        deps=["supporting_lemma"],
+    )
+    assert statement_formal.ok and statement_formal.value is not None
+    assert statement_formal.value.state == DeclState.DECLARED
+    assert statement_formal.value.statement_lean_check == {"contains_sorry": "True", "passed": "True"}
+
+    proof_nl = service.write_proof_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The proof is by triviality.",
+        deps=["supporting_lemma", "proof_helper"],
+    )
+    assert proof_nl.ok and proof_nl.value is not None
+    assert proof_nl.value.state == DeclState.DECLARED
+    assert proof_nl.value.decl_deps == ["proof_helper", "supporting_lemma"]
+
+    proof_formal = service.write_proof_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        lean_code="by trivial",
+        lean_check={"passed": True, "contains_sorry": False},
+        deps=["proof_helper"],
+    )
+    assert proof_formal.ok and proof_formal.value is not None
+    assert proof_formal.value.state == DeclState.PROVED
+    assert proof_formal.value.proof_lean_code == "by trivial"
+    assert proof_formal.value.decl_deps == ["proof_helper", "supporting_lemma"]
+
+
+def test_statement_formal_requires_statement_nl(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_running_round_with_decl(tmp_path)
+    service = make_runtime().decl_graph
+
+    result = service.write_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        lean_code="theorem main_result : True := by sorry",
+        lean_check={"passed": True},
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "statement_nl_missing"
+
+
+def test_proof_stages_reject_non_theorem_like_decl(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_running_round_with_decl(tmp_path, name="main_def", kind="definition")
+    service = make_runtime().decl_graph
+    assert service.write_statement_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_def",
+        nl="The definition has type Nat.",
+    ).ok
+    assert service.write_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_def",
+        lean_code="def main_def : Nat := 0",
+        lean_check={"passed": True},
+    ).ok
+
+    result = service.write_proof_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_def",
+        nl="No proof is needed.",
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "decl_not_theorem_like"
+
+
+def test_stage_mutation_requires_running_round(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    service = make_runtime().decl_graph
+    strategy = service.ensure_open_strategy(tmp_path, node_path="Main.Topic.Core", objective="Strategy.")
+    assert strategy.ok and strategy.value is not None
+    round_record = service.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Round objective.",
+    )
+    assert round_record.ok and round_record.value is not None
+    assert service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        name="main_result",
+        kind="theorem",
+        objective="Create main_result.",
+        summary="Main result.",
+    ).ok
+
+    result = service.write_statement_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "round_not_running"
+
+
+def test_stage_mutation_rejects_decl_not_in_round(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_running_round_with_decl(tmp_path)
+    service = make_runtime().decl_graph
+
+    result = service.write_statement_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="missing_decl",
+        nl="Missing declaration.",
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "decl_not_in_round"
