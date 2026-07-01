@@ -306,32 +306,21 @@ class ToolViewComponent:
         return self.runtime.foundation.ok([self._tool_view(self._tools[name]) for name in expanded.value])
 
     def validate_tool_skill_alignment(self, agent_type: str) -> ServiceResult[GateReport]:
+        """Return a compatibility gate without enforcing ToolGroup -> Skill binding.
+
+        Agent tool visibility is defined by ToolView group membership. Skill
+        required-tool-group coverage is validated at the AgentType registry
+        layer in the forward direction: Agent skills -> required groups.
+        """
+
         view = self.get_tool_view(agent_type)
         if not view.ok or view.value is None:
             return self.runtime.foundation.fail(view.issues)
-        required_skills: set[str] = set()
-        for group_key in view.value.group_keys:
-            required_skills.update(self._groups[group_key].skill_keys)
-        actual_skills = self._agent_skill_keys.get(agent_type, set())
-        missing = sorted(required_skills - actual_skills)
-        if missing:
-            warning = self.runtime.foundation.issue(
-                "tool_skill_alignment_missing",
-                "Agent type does not declare every skill associated with its tool groups.",
-                severity="warning",
-                object_ref=agent_type,
-                details={"missing_skills": ",".join(missing)},
-                suggested_action="Add the missing skills to the AgentType definition or remove the corresponding tool group.",
-            )
-            return self.runtime.foundation.ok(
-                self.runtime.foundation.gate_passed(
-                    "tool_skill_alignment",
-                    summary=f"Tool skill alignment has {len(missing)} warnings.",
-                    warnings=[warning],
-                )
-            )
         return self.runtime.foundation.ok(
-            self.runtime.foundation.gate_passed("tool_skill_alignment", summary="Tool skills are aligned.")
+            self.runtime.foundation.gate_passed(
+                "tool_skill_alignment",
+                summary="ToolGroup-to-Skill reverse alignment is not enforced.",
+            )
         )
 
     def validate_step_expected_view(self, ctx: ToolExecutionContext) -> ServiceResult[None]:

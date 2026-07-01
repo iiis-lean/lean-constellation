@@ -13,6 +13,7 @@ from lean_constellation.tools.args import (
     TargetRepoArgs,
     UrlOrSlugArgs,
 )
+from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import direct_tool, handler_tool
 
 
@@ -56,7 +57,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_component="preparation",
             backing_method="get_preparation_input",
             result_view="repo_preparation_input",
-            groups={"repo_preparation_input_read"},
+            groups={AppGroup.REPO_PREPARATION_INPUT_READ},
             roles=roles,
         ),
         direct_tool(
@@ -67,7 +68,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="repo_workspace",
             backing_method="get_preparation_start_preflight",
             result_view="preparation_start_preflight",
-            groups={"repo_preparation_input_read"},
+            groups={AppGroup.REPO_PREPARATION_INPUT_READ},
             roles={"coordinator", "admin"},
         ),
         direct_tool(
@@ -78,7 +79,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="node",
             backing_method="check_root_main_handoff_interfaces",
             result_view="gate_report",
-            groups={"root_interface_prepare_read"},
+            groups={AppGroup.ROOT_INTERFACE_PREPARE_READ},
             roles={"worker", "coordinator", "admin"},
         ),
         direct_tool(
@@ -89,7 +90,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="repo_workspace",
             backing_method="inspect_workspace_for_coordinator",
             result_view="workspace_coordinator",
-            groups={"workspace_repo_catalog_read", "workspace_provider_catalog_read"},
+            groups={AppGroup.WORKSPACE_REPO_CATALOG_READ, AppGroup.WORKSPACE_PROVIDER_CATALOG_READ},
             roles={"coordinator", "admin"},
         ),
         handler_tool(
@@ -98,7 +99,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="workspace_provider_repos",
-            groups={"workspace_provider_catalog_read"},
+            groups={AppGroup.WORKSPACE_PROVIDER_CATALOG_READ},
             roles={"coordinator", "admin"},
             handler=_list_ready_provider_repos,
         ),
@@ -108,7 +109,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="requirement_group_list",
-            groups={"workspace_requirement_read"},
+            groups={AppGroup.WORKSPACE_REQUIREMENT_READ},
             roles={"coordinator", "admin"},
             handler=_list_open_requirement_groups,
         ),
@@ -118,7 +119,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=TargetRepoArgs,
             capability=ToolCapability.READ,
             result_view="requirement_group",
-            groups={"workspace_requirement_read"},
+            groups={AppGroup.WORKSPACE_REQUIREMENT_READ},
             roles={"coordinator", "admin"},
             handler=_get_requirement_group,
         ),
@@ -131,7 +132,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_component="workspace_catalog",
             backing_method="list_current_lake_dependency_repos",
             result_view="lake_dependencies",
-            groups={"lake_dependency_read"},
+            groups={AppGroup.LAKE_DEPENDENCY_READ},
             roles={"coordinator", "admin"},
         ),
         direct_tool(
@@ -142,7 +143,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="repo_workspace",
             backing_method="attach_provider_for_requirement",
             result_view="requirement_consume",
-            groups={"lake_dependency_write"},
+            groups={AppGroup.LAKE_DEPENDENCY_WRITE},
             roles={"coordinator", "admin"},
         ),
         handler_tool(
@@ -151,7 +152,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ProviderRepoArgs,
             capability=ToolCapability.READ,
             result_view="requirement_resume_candidates",
-            groups={"workspace_requirement_read"},
+            groups={AppGroup.WORKSPACE_REQUIREMENT_READ},
             roles={"coordinator", "admin"},
             handler=_list_resume_candidates,
         ),
@@ -163,7 +164,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="repo_workspace",
             backing_method="mark_requirement_result_observed",
             result_view="requirement_waiting",
-            groups={"workspace_requirement_write"},
+            groups={AppGroup.WORKSPACE_REQUIREMENT_WRITE},
             roles={"coordinator", "admin"},
         ),
         direct_tool(
@@ -175,7 +176,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_component="github_repo",
             backing_method="search_repositories",
             result_view="github_repo_search",
-            groups={"upstream_repo_search"},
+            groups={AppGroup.UPSTREAM_REPO_SEARCH},
             roles={"coordinator", "admin"},
             required_context=set(),
         ),
@@ -188,7 +189,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_component="github_repo",
             backing_method="inspect_repository",
             result_view="github_repo_candidate",
-            groups={"upstream_repo_search"},
+            groups={AppGroup.UPSTREAM_REPO_SEARCH},
             roles={"coordinator", "admin"},
             required_context=set(),
         ),

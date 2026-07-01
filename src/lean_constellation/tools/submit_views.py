@@ -5,38 +5,54 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from lean_constellation.services.tool_facade import ToolGroupSpec, ToolViewSpec
-from lean_constellation.tools.views import _aliases
+from lean_constellation.tools.keys import SubmitToolGroupKey as SubmitGroup
+from lean_constellation.tools.keys import SubmitToolViewKey as SubmitView
+from lean_constellation.tools.views import StringKey, _aliases, _key
 
 
 def _view(
-    key: str,
-    group_keys: Sequence[str],
+    key: StringKey,
+    group_keys: Sequence[StringKey],
     allowed_agent_types: Sequence[str],
     *,
     flow_kind: str | None = None,
     stage: str | None = None,
 ) -> ToolViewSpec:
-    return ToolViewSpec(key=key, group_keys=list(group_keys), allowed_agent_types=list(allowed_agent_types), flow_kind=flow_kind, stage=stage)
+    return ToolViewSpec(
+        key=_key(key),
+        group_keys=[_key(group_key) for group_key in group_keys],
+        allowed_agent_types=list(allowed_agent_types),
+        flow_kind=flow_kind,
+        stage=stage,
+    )
 
 
 def build_submit_tool_views(group_specs: Iterable[ToolGroupSpec] | None = None) -> list[ToolViewSpec]:
     del group_specs
     return [
-        _view("repo_format_discovery_submit", ["repo_format_discovery_submit"], _aliases("repo_format_discovery", "RepoFormatDiscoveryAgent")),
-        _view("source_corpus_prepare_submit", ["source_corpus_prepare_submit"], _aliases("source_corpus_prepare", "SourceCorpusPrepareAgent")),
-        _view("source_index_builder_submit", ["source_index_builder_submit"], _aliases("source_index_builder", "SourceIndexBuilderAgent")),
-        _view("source_index_reviewer_submit", ["source_index_reviewer_submit"], _aliases("source_index_reviewer", "SourceIndexReviewerAgent")),
-        _view("root_interface_prepare_submit", ["root_interface_prepare_submit"], _aliases("root_interface_prepare", "RootInterfacePrepareAgent")),
-        _view("adapter_repo_import_submit", ["adapter_ready_submit"], _aliases("adapter_repo_import", "AdapterRepoImportAgent", "AdapterDeclCatalogAgent")),
-        _view("resource_curator_submit", ["resource_curator_submit"], _aliases("resource_curator", "ResourceCuratorAgent")),
-        _view("native_repo_coordinator_submit", ["coordinator_submit", "resource_request_submit"], _aliases("native_repo_coordinator", "NativeRepoCoordinatorAgent", "CoordinatorAgent", "coordinator")),
-        _view("content_plan_submit", ["content_plan_submit", "content_completion_submit", "resource_request_submit"], _aliases("content_plan", "ContentPlanAgent", "plan")),
-        _view("node_dir_dependency_recon_submit", ["preparation_recon_submit"], _aliases("node_dir_dependency_recon", "NodeDirDependencyReconAgent")),
-        _view("mathlib_recon_submit", ["preparation_recon_submit"], _aliases("mathlib_recon", "MathlibReconAgent")),
-        _view("resource_recon_submit", ["preparation_recon_submit", "resource_request_submit"], _aliases("resource_recon", "ResourceReconAgent")),
+        _view(SubmitView.REPO_FORMAT_DISCOVERY_SUBMIT, [SubmitGroup.REPO_FORMAT_DISCOVERY_SUBMIT], _aliases("repo_format_discovery", "RepoFormatDiscoveryAgent")),
+        _view(SubmitView.SOURCE_CORPUS_PREPARE_SUBMIT, [SubmitGroup.SOURCE_CORPUS_PREPARE_SUBMIT], _aliases("source_corpus_prepare", "SourceCorpusPrepareAgent")),
+        _view(SubmitView.SOURCE_INDEX_BUILDER_SUBMIT, [SubmitGroup.SOURCE_INDEX_BUILDER_SUBMIT], _aliases("source_index_builder", "SourceIndexBuilderAgent")),
+        _view(SubmitView.SOURCE_INDEX_REVIEWER_SUBMIT, [SubmitGroup.SOURCE_INDEX_REVIEWER_SUBMIT], _aliases("source_index_reviewer", "SourceIndexReviewerAgent")),
+        _view(SubmitView.ROOT_INTERFACE_PREPARE_SUBMIT, [SubmitGroup.ROOT_INTERFACE_PREPARE_SUBMIT], _aliases("root_interface_prepare", "RootInterfacePrepareAgent")),
+        _view(SubmitView.ADAPTER_REPO_IMPORT_SUBMIT, [SubmitGroup.ADAPTER_READY_SUBMIT], _aliases("adapter_repo_import", "AdapterRepoImportAgent", "AdapterDeclCatalogAgent")),
+        _view(SubmitView.RESOURCE_CURATOR_SUBMIT, [SubmitGroup.RESOURCE_CURATOR_SUBMIT], _aliases("resource_curator", "ResourceCuratorAgent")),
         _view(
-            "decl_stage_worker_submit",
-            ["decl_stage_worker_submit"],
+            SubmitView.NATIVE_REPO_COORDINATOR_SUBMIT,
+            [SubmitGroup.COORDINATOR_SUBMIT, SubmitGroup.RESOURCE_REQUEST_SUBMIT],
+            _aliases("native_repo_coordinator", "NativeRepoCoordinatorAgent", "CoordinatorAgent", "coordinator"),
+        ),
+        _view(
+            SubmitView.CONTENT_PLAN_SUBMIT,
+            [SubmitGroup.CONTENT_PLAN_SUBMIT, SubmitGroup.CONTENT_COMPLETION_SUBMIT, SubmitGroup.RESOURCE_REQUEST_SUBMIT],
+            _aliases("content_plan", "ContentPlanAgent", "plan"),
+        ),
+        _view(SubmitView.NODE_DIR_DEPENDENCY_RECON_SUBMIT, [SubmitGroup.PREPARATION_RECON_SUBMIT], _aliases("node_dir_dependency_recon", "NodeDirDependencyReconAgent")),
+        _view(SubmitView.MATHLIB_RECON_SUBMIT, [SubmitGroup.PREPARATION_RECON_SUBMIT], _aliases("mathlib_recon", "MathlibReconAgent")),
+        _view(SubmitView.RESOURCE_RECON_SUBMIT, [SubmitGroup.PREPARATION_RECON_SUBMIT, SubmitGroup.RESOURCE_REQUEST_SUBMIT], _aliases("resource_recon", "ResourceReconAgent")),
+        _view(
+            SubmitView.DECL_STAGE_WORKER_SUBMIT,
+            [SubmitGroup.DECL_STAGE_WORKER_SUBMIT],
             _aliases(
                 "statement_nl_worker",
                 "StatementNLWorkerAgent",
@@ -51,8 +67,8 @@ def build_submit_tool_views(group_specs: Iterable[ToolGroupSpec] | None = None) 
             stage="decl_stage_worker",
         ),
         _view(
-            "decl_stage_reviewer_submit",
-            ["decl_stage_reviewer_submit"],
+            SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
+            [SubmitGroup.DECL_STAGE_REVIEWER_SUBMIT],
             _aliases(
                 "statement_nl_reviewer",
                 "StatementNLReviewerAgent",

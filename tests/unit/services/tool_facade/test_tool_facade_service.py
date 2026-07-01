@@ -271,7 +271,8 @@ def test_tool_view_registry_validates_views_and_alignment(tmp_path: Path) -> Non
     assert alignment.ok
     assert alignment.value is not None
     assert alignment.value.passed is True
-    assert alignment.value.issues[0].kind == "tool_skill_alignment_missing"
+    assert alignment.value.issues == []
+    assert "not enforced" in (alignment.value.summary or "")
 
 
 def test_tool_view_accepts_inherited_agent_type_permission_names(tmp_path: Path) -> None:

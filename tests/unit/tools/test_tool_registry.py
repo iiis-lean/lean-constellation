@@ -12,6 +12,24 @@ from lean_constellation.tools import (
 )
 
 
+def _missing_schema_descriptions(schema: dict, *, path: str) -> list[str]:
+    missing: list[str] = []
+    if schema.get("type") == "object":
+        for field_name, field_schema in schema.get("properties", {}).items():
+            if "$ref" not in field_schema and "description" not in field_schema:
+                missing.append(f"{path}.{field_name}")
+            missing.extend(_missing_schema_descriptions(field_schema, path=f"{path}.{field_name}"))
+    for defs_key in ("$defs", "definitions"):
+        for name, nested_schema in schema.get(defs_key, {}).items():
+            missing.extend(_missing_schema_descriptions(nested_schema, path=f"{path}.{defs_key}.{name}"))
+    for union_key in ("anyOf", "oneOf", "allOf"):
+        for nested_schema in schema.get(union_key, []):
+            missing.extend(_missing_schema_descriptions(nested_schema, path=path))
+    if "items" in schema:
+        missing.extend(_missing_schema_descriptions(schema["items"], path=f"{path}[]"))
+    return missing
+
+
 def test_direct_tool_backing_methods_exist_on_runtime() -> None:
     runtime = create_test_runtime_services()
 
@@ -68,9 +86,42 @@ def test_application_tool_specs_are_unique_non_submit_and_schema_described() -> 
     assert all(spec.allowed_roles for spec in specs)
 
     for spec in specs:
-        schema = spec.args_model.model_json_schema()
-        for field_name in schema.get("properties", {}):
-            assert "description" in schema["properties"][field_name], f"{spec.name}.{field_name} lacks description"
+        missing = _missing_schema_descriptions(spec.args_model.model_json_schema(), path=spec.name)
+        assert not missing, f"{spec.name} has undocumented schema fields: {missing}"
+
+
+def test_application_read_groups_do_not_expose_write_tools() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+    groups = build_application_tool_groups(list(specs.values()))
+
+    violations: dict[str, list[str]] = {}
+    for group in groups:
+        if "_read" not in group.key:
+            continue
+        write_tools = [tool_name for tool_name in group.tool_names if specs[tool_name].capability.value == "write"]
+        if write_tools:
+            violations[group.key] = sorted(write_tools)
+
+    assert not violations
+
+
+def test_application_tool_groups_do_not_reverse_bind_skills() -> None:
+    specs = build_application_tool_specs()
+    groups = build_application_tool_groups(specs)
+
+    assert groups
+    assert all(group.skill_keys == [] for group in groups)
+
+
+def test_arxiv_theorem_search_has_dedicated_agent_schema() -> None:
+    spec = next(spec for spec in build_application_tool_specs() if spec.name == "search_arxiv_theorems")
+    schema = spec.args_model.model_json_schema()
+
+    assert spec.args_model.__name__ == "ArxivTheoremSearchArgs"
+    assert "arXiv theorem-like statements" in spec.description
+    assert "Mathlib semantic search" not in schema["properties"]["query"]["description"]
+    assert "arXiv ids" in schema["properties"]["query"]["description"]
+    assert "theorem-like arXiv candidates" in schema["properties"]["limit"]["description"]
 
 
 def test_application_tooling_registers_on_real_tool_facade() -> None:

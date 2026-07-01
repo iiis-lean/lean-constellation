@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
@@ -11,6 +12,11 @@ from lean_constellation.services.tool_facade import ActorContext, SubmitBehavior
 
 
 ToolHandler = Callable[..., Any]
+StringKey = str | StrEnum
+
+
+def key_set(values: set[StringKey]) -> set[str]:
+    return {value.value if isinstance(value, StrEnum) else str(value) for value in values}
 
 
 def direct_tool(
@@ -22,7 +28,7 @@ def direct_tool(
     backing_service: str,
     backing_method: str,
     result_view: str,
-    groups: set[str],
+    groups: set[StringKey],
     roles: set[str],
     backing_component: str | None = None,
     required_context: set[str] | None = None,
@@ -37,7 +43,7 @@ def direct_tool(
         backing_method=backing_method,
         result_view=result_view,
         required_context={"repo"} if required_context is None else required_context,
-        tool_groups=groups,
+        tool_groups=key_set(groups),
         allowed_roles=set(roles),
     )
 
@@ -49,7 +55,7 @@ def handler_tool(
     args_model: type[BaseModel],
     capability: ToolCapability,
     result_view: str,
-    groups: set[str],
+    groups: set[StringKey],
     roles: set[str],
     handler: ToolHandler,
     backing_service: str = "handler",
@@ -65,7 +71,7 @@ def handler_tool(
         backing_method=backing_method,
         result_view=result_view,
         required_context={"repo"} if required_context is None else required_context,
-        tool_groups=groups,
+        tool_groups=key_set(groups),
         allowed_roles=set(roles),
         backing_handler=handler,
     )
@@ -77,7 +83,7 @@ def submit_handler_tool(
     description: str,
     args_model: type[BaseModel],
     result_view: str,
-    groups: set[str],
+    groups: set[StringKey],
     roles: set[str],
     handler: ToolHandler,
     submit_behavior: SubmitBehavior,
@@ -94,7 +100,7 @@ def submit_handler_tool(
         backing_method=backing_method,
         result_view=result_view,
         required_context={"repo"} if required_context is None else required_context,
-        tool_groups=groups,
+        tool_groups=key_set(groups),
         allowed_roles=set(roles),
         submit_behavior=submit_behavior,
         backing_handler=handler,

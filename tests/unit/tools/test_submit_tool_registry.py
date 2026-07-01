@@ -38,6 +38,24 @@ EXPECTED_SUBMIT_TOOLS = {
 }
 
 
+def _missing_schema_descriptions(schema: dict, *, path: str) -> list[str]:
+    missing: list[str] = []
+    if schema.get("type") == "object":
+        for field_name, field_schema in schema.get("properties", {}).items():
+            if "$ref" not in field_schema and "description" not in field_schema:
+                missing.append(f"{path}.{field_name}")
+            missing.extend(_missing_schema_descriptions(field_schema, path=f"{path}.{field_name}"))
+    for defs_key in ("$defs", "definitions"):
+        for name, nested_schema in schema.get(defs_key, {}).items():
+            missing.extend(_missing_schema_descriptions(nested_schema, path=f"{path}.{defs_key}.{name}"))
+    for union_key in ("anyOf", "oneOf", "allOf"):
+        for nested_schema in schema.get(union_key, []):
+            missing.extend(_missing_schema_descriptions(nested_schema, path=path))
+    if "items" in schema:
+        missing.extend(_missing_schema_descriptions(schema["items"], path=f"{path}[]"))
+    return missing
+
+
 def test_submit_registry_contains_only_real_submit_tools() -> None:
     specs = build_submit_tool_specs()
     names = {spec.name for spec in specs}
@@ -48,6 +66,9 @@ def test_submit_registry_contains_only_real_submit_tools() -> None:
     assert all(spec.capability == ToolCapability.SUBMIT for spec in specs)
     assert all(spec.submit_behavior != SubmitBehavior.NONE for spec in specs)
     assert any(spec.submit_behavior == SubmitBehavior.DISPATCH_CHILD_FLOWS for spec in specs)
+    for spec in specs:
+        missing = _missing_schema_descriptions(spec.args_model.model_json_schema(), path=spec.name)
+        assert not missing, f"{spec.name} has undocumented schema fields: {missing}"
 
 
 def test_submit_groups_and_views_are_self_contained() -> None:
@@ -60,3 +81,11 @@ def test_submit_groups_and_views_are_self_contained() -> None:
     assert {view.key for view in views}
     for view in views:
         assert view.group_keys
+
+
+def test_submit_tool_groups_do_not_reverse_bind_skills() -> None:
+    specs = build_submit_tool_specs()
+    groups = build_submit_tool_groups(specs)
+
+    assert groups
+    assert all(group.skill_keys == [] for group in groups)

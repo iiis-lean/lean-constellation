@@ -6,6 +6,7 @@ from pathlib import Path
 
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import FormalPolicyCheckArgs, RepoRelativeFileArgs
+from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import handler_tool
 
 
@@ -75,7 +76,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=RepoRelativeFileArgs,
             capability=ToolCapability.READ,
             result_view="lean_diagnostics",
-            groups={"formal_diagnostics_read"},
+            groups={AppGroup.FORMAL_DIAGNOSTICS_READ},
             roles=roles,
             handler=_run_file_diagnostics,
         ),
@@ -85,7 +86,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=RepoRelativeFileArgs,
             capability=ToolCapability.READ,
             result_view="sorry_axiom_scan",
-            groups={"formal_diagnostics_read"},
+            groups={AppGroup.FORMAL_DIAGNOSTICS_READ},
             roles=roles,
             handler=_scan_sorry_axiom,
         ),
@@ -95,7 +96,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=FormalPolicyCheckArgs,
             capability=ToolCapability.READ,
             result_view="lean_check",
-            groups={"formal_diagnostics_read"},
+            groups={AppGroup.FORMAL_DIAGNOSTICS_READ},
             roles=roles,
             handler=_check_statement_policy,
         ),
@@ -105,7 +106,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=RepoRelativeFileArgs,
             capability=ToolCapability.READ,
             result_view="lean_check",
-            groups={"formal_diagnostics_read"},
+            groups={AppGroup.FORMAL_DIAGNOSTICS_READ},
             roles=roles,
             handler=_check_proof_policy,
         ),

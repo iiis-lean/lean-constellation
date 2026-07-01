@@ -110,6 +110,7 @@ class AgentResourceIssue(StrictModel):
 class AgentResourceValidationReport(StrictModel):
     ok: bool
     issues: list[AgentResourceIssue] = Field(default_factory=list)
+    warnings: list[AgentResourceIssue] = Field(default_factory=list)
 
 
 class AgentToolViewConfig(StrictModel):

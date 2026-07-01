@@ -27,6 +27,7 @@ from lean_constellation.tools.args import (
     UpstreamModuleArgs,
     UpstreamSourceContextArgs,
 )
+from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import direct_tool
 
 
@@ -42,7 +43,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="inspect_adapter_input",
             result_view="adapter_input",
-            groups={"adapter_input_read"},
+            groups={AppGroup.ADAPTER_INPUT_READ},
             roles=roles,
         ),
         direct_tool(
@@ -53,7 +54,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="get_adapter_upstream_metadata",
             result_view="adapter_upstream",
-            groups={"upstream_metadata_read"},
+            groups={AppGroup.UPSTREAM_METADATA_READ},
             roles=roles,
         ),
         direct_tool(
@@ -64,7 +65,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="get_adapter_upstream_status",
             result_view="adapter_upstream_status",
-            groups={"upstream_metadata_read"},
+            groups={AppGroup.UPSTREAM_METADATA_READ},
             roles=roles,
         ),
         direct_tool(
@@ -75,7 +76,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="write_adapter_upstream_metadata",
             result_view="adapter_upstream",
-            groups={"upstream_metadata_write"},
+            groups={AppGroup.UPSTREAM_METADATA_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -86,7 +87,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="mark_upstream_build_trusted",
             result_view="adapter_upstream",
-            groups={"upstream_metadata_write"},
+            groups={AppGroup.UPSTREAM_METADATA_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -97,7 +98,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="record_visible_upstream_modules",
             result_view="adapter_upstream",
-            groups={"upstream_metadata_write"},
+            groups={AppGroup.UPSTREAM_METADATA_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -108,7 +109,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="search_upstream_declarations",
             result_view="upstream_decl_search",
-            groups={"upstream_navigation"},
+            groups={AppGroup.UPSTREAM_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -119,7 +120,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="search_upstream_modules",
             result_view="upstream_module_search",
-            groups={"upstream_navigation"},
+            groups={AppGroup.UPSTREAM_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -130,7 +131,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="list_upstream_module_declarations",
             result_view="upstream_module_decls",
-            groups={"upstream_navigation"},
+            groups={AppGroup.UPSTREAM_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -141,7 +142,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="inspect_upstream_declaration",
             result_view="upstream_decl_detail",
-            groups={"upstream_navigation"},
+            groups={AppGroup.UPSTREAM_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -152,7 +153,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="read_upstream_source_context",
             result_view="upstream_source_context",
-            groups={"upstream_navigation"},
+            groups={AppGroup.UPSTREAM_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -163,7 +164,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="capture_upstream_declaration_code",
             result_view="upstream_capture",
-            groups={"upstream_navigation"},
+            groups={AppGroup.UPSTREAM_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -174,7 +175,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="inspect_upstream_module_imports",
             result_view="upstream_module_imports",
-            groups={"upstream_navigation"},
+            groups={AppGroup.UPSTREAM_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -185,7 +186,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="ensure_flat_main_catalog",
             result_view="adapter_catalog_init",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -196,7 +197,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="create_adapter_decl",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -207,7 +208,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="set_adapter_statement_formal",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -218,7 +219,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="set_adapter_statement_nl",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -229,7 +230,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="add_adapter_statement_origin",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -240,7 +241,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="add_adapter_statement_dep",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -251,7 +252,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="remove_adapter_statement_dep",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -262,7 +263,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="set_adapter_proof_formal",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -273,7 +274,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="set_adapter_proof_nl",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -284,7 +285,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="add_adapter_proof_origin",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -295,7 +296,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="add_adapter_proof_dep",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -306,7 +307,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="remove_adapter_proof_dep",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -317,7 +318,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="list_adapter_decls",
             result_view="adapter_decl_list",
-            groups={"adapter_decl_catalog_read"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_READ},
             roles=roles,
         ),
         direct_tool(
@@ -328,7 +329,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="inspect_adapter_decl",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_read"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_READ},
             roles=roles,
         ),
         direct_tool(
@@ -339,7 +340,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="list_registered_adapter_modules",
             result_view="adapter_modules",
-            groups={"adapter_decl_catalog_read"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_READ},
             roles=roles,
         ),
         direct_tool(
@@ -350,7 +351,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="check_adapter_decl_completeness",
             result_view="adapter_decl_completeness",
-            groups={"adapter_decl_catalog_read"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_READ},
             roles=roles,
         ),
         direct_tool(
@@ -361,7 +362,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="finalize_adapter_decl",
             result_view="adapter_decl",
-            groups={"adapter_decl_catalog_write"},
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -372,7 +373,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="bind_adapter_interface",
             result_view="adapter_interface_binding",
-            groups={"adapter_interface_binding_write"},
+            groups={AppGroup.ADAPTER_INTERFACE_BINDING_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -383,7 +384,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="unbind_adapter_interface",
             result_view="adapter_interface_binding",
-            groups={"adapter_interface_binding_write"},
+            groups={AppGroup.ADAPTER_INTERFACE_BINDING_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -394,7 +395,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="list_unbound_adapter_interfaces",
             result_view="adapter_unbound_interfaces",
-            groups={"adapter_interface_binding_read"},
+            groups={AppGroup.ADAPTER_INTERFACE_BINDING_READ},
             roles=roles,
         ),
         direct_tool(
@@ -405,7 +406,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="validate_adapter_interface_bindings",
             result_view="gate_report",
-            groups={"adapter_interface_binding_read"},
+            groups={AppGroup.ADAPTER_INTERFACE_BINDING_READ},
             roles=roles,
         ),
         direct_tool(
@@ -416,7 +417,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="preview_adapter_import_modules",
             result_view="adapter_import_preview",
-            groups={"adapter_projection_check"},
+            groups={AppGroup.ADAPTER_PROJECTION_CHECK},
             roles=roles,
         ),
         direct_tool(
@@ -427,7 +428,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="refresh_adapter_projection",
             result_view="adapter_projection",
-            groups={"adapter_projection_write"},
+            groups={AppGroup.ADAPTER_PROJECTION_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -438,7 +439,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="check_adapter_projection",
             result_view="gate_report",
-            groups={"adapter_projection_check"},
+            groups={AppGroup.ADAPTER_PROJECTION_CHECK},
             roles=roles,
         ),
         direct_tool(
@@ -449,7 +450,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="adapter",
             backing_method="check_adapter_ready",
             result_view="gate_report",
-            groups={"adapter_ready_read"},
+            groups={AppGroup.ADAPTER_READY_READ},
             roles=roles,
         ),
     ]

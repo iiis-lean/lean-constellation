@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from enum import StrEnum
 
+from lean_constellation.agents.keys import ProductionAgentTypeKey, SkillKey
 from lean_constellation.agents.models import (
     AgentResourceIssue,
     AgentResourceValidationReport,
     AgentTypeSpec,
 )
-from lean_constellation.agents.skills import known_skill_keys
+from lean_constellation.agents.skills import SKILL_DEFINITIONS, known_skill_keys
 from lean_constellation.services.tool_facade import ToolGroupSpec, ToolViewSpec
 from lean_constellation.tools import (
     build_application_tool_groups,
@@ -19,6 +21,19 @@ from lean_constellation.tools import (
     build_submit_tool_specs,
     build_submit_tool_views,
 )
+from lean_constellation.tools.keys import ApplicationToolViewKey as AppView
+from lean_constellation.tools.keys import SubmitToolViewKey as SubmitView
+
+
+StringKey = str | StrEnum
+
+
+def _value(value: StringKey) -> str:
+    return value.value if isinstance(value, StrEnum) else str(value)
+
+
+def _values(values: Iterable[StringKey]) -> list[str]:
+    return [_value(value) for value in values]
 
 
 COMMON_FRAGMENTS = [
@@ -126,6 +141,7 @@ def validate_agent_resources(
     submit_view_by_key = {view.key: view for view in sub_views}
 
     issues: list[AgentResourceIssue] = []
+    warnings: list[AgentResourceIssue] = []
     seen_agent_types: set[str] = set()
     agent_types = {spec.agent_type for spec in resolved_specs}
     for spec in resolved_specs:
@@ -208,8 +224,14 @@ def validate_agent_resources(
             permission_names=permission_names,
             issues=issues,
         )
+        _validate_skill_required_tool_group_coverage(
+            spec=spec,
+            application_view_by_key=app_view_by_key,
+            submit_view_by_key=submit_view_by_key,
+            warnings=warnings,
+        )
 
-    return AgentResourceValidationReport(ok=not issues, issues=issues)
+    return AgentResourceValidationReport(ok=not issues, issues=issues, warnings=warnings)
 
 
 def _validate_view(
@@ -264,31 +286,62 @@ def _validate_view(
             )
 
 
+def _validate_skill_required_tool_group_coverage(
+    *,
+    spec: AgentTypeSpec,
+    application_view_by_key: dict[str, ToolViewSpec],
+    submit_view_by_key: dict[str, ToolViewSpec],
+    warnings: list[AgentResourceIssue],
+) -> None:
+    app_view = application_view_by_key.get(spec.application_tool_view_key)
+    submit_view = submit_view_by_key.get(spec.submit_tool_view_key)
+    if app_view is None or submit_view is None:
+        return
+    visible_groups = set(app_view.group_keys) | set(submit_view.group_keys)
+    for skill_key in spec.skill_keys:
+        skill = SKILL_DEFINITIONS.get(skill_key)
+        if skill is None:
+            continue
+        missing_groups = sorted(set(skill.required_tool_groups) - visible_groups)
+        if not missing_groups:
+            continue
+        warnings.append(
+            AgentResourceIssue(
+                code="skill_required_tool_group_missing",
+                message="AgentType declares a skill whose required tool groups are not covered by its ToolViews.",
+                agent_type=spec.agent_type,
+                resource_type="skill_required_tool_group",
+                resource_key=skill_key,
+                details={"missing_groups": ",".join(missing_groups)},
+            )
+        )
+
+
 def _spec(
     *,
-    agent_type: str,
+    agent_type: StringKey,
     role: str,
     lifecycle_group: str,
     context_scope: str,
     agent_step_type: str,
     fragments: list[str],
-    skills: list[str],
-    app_view: str,
-    submit_view: str,
+    skills: list[StringKey],
+    app_view: StringKey,
+    submit_view: StringKey,
     aliases: list[str] | None = None,
     stage: str | None = None,
 ) -> AgentTypeSpec:
     return AgentTypeSpec(
-        agent_type=agent_type,
+        agent_type=_value(agent_type),
         role=role,  # type: ignore[arg-type]
         lifecycle_group=lifecycle_group,  # type: ignore[arg-type]
         context_scope=context_scope,  # type: ignore[arg-type]
         agent_step_type=agent_step_type,
         instruction_fragment_keys=fragments,
-        specific_instruction_key=agent_type,
-        skill_keys=skills,
-        application_tool_view_key=app_view,
-        submit_tool_view_key=submit_view,
+        specific_instruction_key=_value(agent_type),
+        skill_keys=_values(skills),
+        application_tool_view_key=_value(app_view),
+        submit_tool_view_key=_value(submit_view),
         tool_view_agent_aliases=aliases or [],
         stage=stage,
     )
@@ -326,7 +379,7 @@ def _resolve_agent_type_specs(
 
 AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
     _spec(
-        agent_type="RepoFormatDiscoveryAgent",
+        agent_type=ProductionAgentTypeKey.REPO_FORMAT_DISCOVERY,
         role="coordinator",
         lifecycle_group="repo_lifecycle",
         context_scope="repo",
@@ -338,24 +391,24 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "repo.adapter_repo_context",
         ],
         skills=[],
-        app_view="repo_format_discovery",
-        submit_view="repo_format_discovery_submit",
+        app_view=AppView.REPO_FORMAT_DISCOVERY,
+        submit_view=SubmitView.REPO_FORMAT_DISCOVERY_SUBMIT,
         aliases=["RepoFormatDiscovery", "repo_format_discovery"],
     ),
     _spec(
-        agent_type="SourceCorpusPrepareAgent",
+        agent_type=ProductionAgentTypeKey.SOURCE_CORPUS_PREPARE,
         role="worker",
         lifecycle_group="repo_lifecycle",
         context_scope="repo",
         agent_step_type="source_corpus_prepare_agent_step",
         fragments=[*BLOCKED_FRAGMENTS, "repo.native_repo_context", "source.source_corpus_context"],
-        skills=["material-acquisition"],
-        app_view="source_corpus_prepare",
-        submit_view="source_corpus_prepare_submit",
+        skills=[SkillKey.MATERIAL_ACQUISITION],
+        app_view=AppView.SOURCE_CORPUS_PREPARE,
+        submit_view=SubmitView.SOURCE_CORPUS_PREPARE_SUBMIT,
         aliases=["SourceCorpusPrepare", "source_corpus_prepare"],
     ),
     _spec(
-        agent_type="SourceIndexBuilderAgent",
+        agent_type=ProductionAgentTypeKey.SOURCE_INDEX_BUILDER,
         role="worker",
         lifecycle_group="repo_lifecycle",
         context_scope="repo",
@@ -368,12 +421,12 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.source_fidelity",
         ],
         skills=[],
-        app_view="source_index_builder",
-        submit_view="source_index_builder_submit",
+        app_view=AppView.SOURCE_INDEX_BUILDER,
+        submit_view=SubmitView.SOURCE_INDEX_BUILDER_SUBMIT,
         aliases=["SourceIndexBuilder", "source_index_builder"],
     ),
     _spec(
-        agent_type="SourceIndexReviewerAgent",
+        agent_type=ProductionAgentTypeKey.SOURCE_INDEX_REVIEWER,
         role="reviewer",
         lifecycle_group="repo_lifecycle",
         context_scope="repo",
@@ -387,12 +440,12 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.review_contract",
         ],
         skills=[],
-        app_view="source_index_reviewer",
-        submit_view="source_index_reviewer_submit",
+        app_view=AppView.SOURCE_INDEX_REVIEWER,
+        submit_view=SubmitView.SOURCE_INDEX_REVIEWER_SUBMIT,
         aliases=["SourceIndexReviewer", "source_index_reviewer"],
     ),
     _spec(
-        agent_type="RootInterfacePrepareAgent",
+        agent_type=ProductionAgentTypeKey.ROOT_INTERFACE_PREPARE,
         role="worker",
         lifecycle_group="repo_lifecycle",
         context_scope="repo",
@@ -404,13 +457,13 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "scope.scope_contract_exports_context",
             "quality.source_fidelity",
         ],
-        skills=["scope-export-interface-curation"],
-        app_view="root_interface_prepare",
-        submit_view="root_interface_prepare_submit",
+        skills=[SkillKey.SCOPE_EXPORT_INTERFACE_CURATION],
+        app_view=AppView.ROOT_INTERFACE_PREPARE,
+        submit_view=SubmitView.ROOT_INTERFACE_PREPARE_SUBMIT,
         aliases=["RootInterfacePrepare", "root_interface_prepare"],
     ),
     _spec(
-        agent_type="AdapterDeclCatalogAgent",
+        agent_type=ProductionAgentTypeKey.ADAPTER_DECL_CATALOG,
         role="worker",
         lifecycle_group="repo_lifecycle",
         context_scope="repo",
@@ -423,24 +476,24 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.lean_safety",
         ],
         skills=[],
-        app_view="adapter_repo_import",
-        submit_view="adapter_repo_import_submit",
+        app_view=AppView.ADAPTER_REPO_IMPORT,
+        submit_view=SubmitView.ADAPTER_REPO_IMPORT_SUBMIT,
         aliases=["AdapterDeclCatalog", "AdapterRepoImport", "AdapterRepoImportAgent", "adapter_repo_import"],
     ),
     _spec(
-        agent_type="ResourceCuratorAgent",
+        agent_type=ProductionAgentTypeKey.RESOURCE_CURATOR,
         role="worker",
         lifecycle_group="resource_request",
         context_scope="resource_request",
         agent_step_type="resource_curator_agent_step",
         fragments=[*BLOCKED_FRAGMENTS, "resource.resource_library_context"],
-        skills=["material-acquisition", "resource-draft-curation"],
-        app_view="resource_curator",
-        submit_view="resource_curator_submit",
+        skills=[SkillKey.MATERIAL_ACQUISITION, SkillKey.RESOURCE_DRAFT_CURATION],
+        app_view=AppView.RESOURCE_CURATOR,
+        submit_view=SubmitView.RESOURCE_CURATOR_SUBMIT,
         aliases=["ResourceCurator", "resource_curator"],
     ),
     _spec(
-        agent_type="CoordinatorAgent",
+        agent_type=ProductionAgentTypeKey.COORDINATOR,
         role="coordinator",
         lifecycle_group="coordinator",
         context_scope="repo",
@@ -460,23 +513,23 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "decl.readiness_policy_context",
         ],
         skills=[
-            "coordinator-node-decomposition",
-            "coordinator-scope-lifecycle",
-            "coordinator-content-task-lifecycle",
-            "node-contract-design",
-            "scope-export-interface-curation",
-            "resource-request-handling",
-            "external-resource-discovery",
-            "mathlib-index-first-recon",
-            "mathlib-semantic-search-navigation",
-            "mathlib-index-entry-curation",
+            SkillKey.COORDINATOR_NODE_DECOMPOSITION,
+            SkillKey.COORDINATOR_SCOPE_LIFECYCLE,
+            SkillKey.COORDINATOR_CONTENT_TASK_LIFECYCLE,
+            SkillKey.NODE_CONTRACT_DESIGN,
+            SkillKey.SCOPE_EXPORT_INTERFACE_CURATION,
+            SkillKey.RESOURCE_REQUEST_HANDLING,
+            SkillKey.EXTERNAL_RESOURCE_DISCOVERY,
+            SkillKey.MATHLIB_INDEX_FIRST_RECON,
+            SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
+            SkillKey.MATHLIB_INDEX_ENTRY_CURATION,
         ],
-        app_view="native_repo_coordinator",
-        submit_view="native_repo_coordinator_submit",
+        app_view=AppView.NATIVE_REPO_COORDINATOR,
+        submit_view=SubmitView.NATIVE_REPO_COORDINATOR_SUBMIT,
         aliases=["NativeRepoCoordinatorAgent", "NativeRepoCoordinator", "native_repo_coordinator", "coordinator"],
     ),
     _spec(
-        agent_type="ContentPlanAgent",
+        agent_type=ProductionAgentTypeKey.CONTENT_PLAN,
         role="plan",
         lifecycle_group="content_node_task",
         context_scope="content_node",
@@ -495,26 +548,26 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.source_fidelity",
         ],
         skills=[
-            "content-contract-reading",
-            "visible-node-dependency-recon",
-            "mathlib-index-first-recon",
-            "mathlib-semantic-search-navigation",
-            "mathlib-index-entry-curation",
-            "current-node-mathlib-hint-maintenance",
-            "external-resource-discovery",
-            "resource-request-handling",
-            "content-preparation-orchestration",
-            "decl-strategy-planning",
-            "decl-round-change-planning",
-            "decl-round-closeout",
-            "content-node-completion-decision",
+            SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.VISIBLE_NODE_DEPENDENCY_RECON,
+            SkillKey.MATHLIB_INDEX_FIRST_RECON,
+            SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
+            SkillKey.MATHLIB_INDEX_ENTRY_CURATION,
+            SkillKey.CURRENT_NODE_MATHLIB_HINT_MAINTENANCE,
+            SkillKey.EXTERNAL_RESOURCE_DISCOVERY,
+            SkillKey.RESOURCE_REQUEST_HANDLING,
+            SkillKey.CONTENT_PREPARATION_ORCHESTRATION,
+            SkillKey.DECL_STRATEGY_PLANNING,
+            SkillKey.DECL_ROUND_CHANGE_PLANNING,
+            SkillKey.DECL_ROUND_CLOSEOUT,
+            SkillKey.CONTENT_NODE_COMPLETION_DECISION,
         ],
-        app_view="content_plan",
-        submit_view="content_plan_submit",
+        app_view=AppView.CONTENT_PLAN,
+        submit_view=SubmitView.CONTENT_PLAN_SUBMIT,
         aliases=["ContentPlan", "content_plan", "plan"],
     ),
     _spec(
-        agent_type="NodeDirDependencyReconAgent",
+        agent_type=ProductionAgentTypeKey.NODE_DIR_DEPENDENCY_RECON,
         role="worker",
         lifecycle_group="content_node_task",
         context_scope="content_node",
@@ -525,13 +578,13 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "node.node_contract_context",
             "content.content_contract_task_context",
         ],
-        skills=["content-contract-reading", "visible-node-dependency-recon"],
-        app_view="node_dir_dependency_recon",
-        submit_view="node_dir_dependency_recon_submit",
+        skills=[SkillKey.CONTENT_CONTRACT_READING, SkillKey.VISIBLE_NODE_DEPENDENCY_RECON],
+        app_view=AppView.NODE_DIR_DEPENDENCY_RECON,
+        submit_view=SubmitView.NODE_DIR_DEPENDENCY_RECON_SUBMIT,
         aliases=["NodeDirDependencyRecon", "node_dir_dependency_recon"],
     ),
     _spec(
-        agent_type="MathlibReconAgent",
+        agent_type=ProductionAgentTypeKey.MATHLIB_RECON,
         role="worker",
         lifecycle_group="content_node_task",
         context_scope="content_node",
@@ -544,18 +597,18 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.source_fidelity",
         ],
         skills=[
-            "content-contract-reading",
-            "mathlib-index-first-recon",
-            "mathlib-semantic-search-navigation",
-            "mathlib-index-entry-curation",
-            "current-node-mathlib-hint-maintenance",
+            SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.MATHLIB_INDEX_FIRST_RECON,
+            SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
+            SkillKey.MATHLIB_INDEX_ENTRY_CURATION,
+            SkillKey.CURRENT_NODE_MATHLIB_HINT_MAINTENANCE,
         ],
-        app_view="mathlib_recon",
-        submit_view="mathlib_recon_submit",
+        app_view=AppView.MATHLIB_RECON,
+        submit_view=SubmitView.MATHLIB_RECON_SUBMIT,
         aliases=["MathlibRecon", "mathlib_recon"],
     ),
     _spec(
-        agent_type="ResourceReconAgent",
+        agent_type=ProductionAgentTypeKey.RESOURCE_RECON,
         role="worker",
         lifecycle_group="content_node_task",
         context_scope="content_node",
@@ -567,13 +620,13 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "node.node_contract_context",
             "content.content_contract_task_context",
         ],
-        skills=["content-contract-reading", "external-resource-discovery", "resource-request-handling"],
-        app_view="resource_recon",
-        submit_view="resource_recon_submit",
+        skills=[SkillKey.CONTENT_CONTRACT_READING, SkillKey.EXTERNAL_RESOURCE_DISCOVERY, SkillKey.RESOURCE_REQUEST_HANDLING],
+        app_view=AppView.RESOURCE_RECON,
+        submit_view=SubmitView.RESOURCE_RECON_SUBMIT,
         aliases=["ResourceRecon", "resource_recon"],
     ),
     _spec(
-        agent_type="StatementNLWorkerAgent",
+        agent_type=ProductionAgentTypeKey.STATEMENT_NL_WORKER,
         role="worker",
         lifecycle_group="decl_stage",
         context_scope="decl_stage",
@@ -588,18 +641,18 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.source_fidelity",
         ],
         skills=[
-            "content-contract-reading",
-            "decl-dependency-origin-curation",
-            "mathlib-index-first-recon",
-            "mathlib-semantic-search-navigation",
+            SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
+            SkillKey.MATHLIB_INDEX_FIRST_RECON,
+            SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
         ],
-        app_view="statement_nl_worker",
-        submit_view="decl_stage_worker_submit",
+        app_view=AppView.STATEMENT_NL_WORKER,
+        submit_view=SubmitView.DECL_STAGE_WORKER_SUBMIT,
         aliases=["StatementNlWorkerAgent", "StatementNlWorker", "statement_nl_worker"],
         stage="statement_nl",
     ),
     _spec(
-        agent_type="StatementNLReviewerAgent",
+        agent_type=ProductionAgentTypeKey.STATEMENT_NL_REVIEWER,
         role="reviewer",
         lifecycle_group="decl_stage",
         context_scope="decl_stage",
@@ -613,14 +666,14 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.source_fidelity",
             "quality.review_contract",
         ],
-        skills=["content-contract-reading", "decl-dependency-origin-curation"],
-        app_view="statement_nl_reviewer",
-        submit_view="decl_stage_reviewer_submit",
+        skills=[SkillKey.CONTENT_CONTRACT_READING, SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION],
+        app_view=AppView.STATEMENT_NL_REVIEWER,
+        submit_view=SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
         aliases=["StatementNlReviewerAgent", "StatementNlReviewer", "statement_nl_reviewer"],
         stage="statement_nl_review",
     ),
     _spec(
-        agent_type="StatementFormalWorkerAgent",
+        agent_type=ProductionAgentTypeKey.STATEMENT_FORMAL_WORKER,
         role="worker",
         lifecycle_group="decl_stage",
         context_scope="decl_stage",
@@ -635,22 +688,22 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.lean_safety",
         ],
         skills=[
-            "content-contract-reading",
-            "decl-owned-lean-file-capture-check",
-            "lean-statement-formalization",
-            "decl-dependency-origin-curation",
-            "mathlib-index-first-recon",
-            "mathlib-semantic-search-navigation",
-            "mathlib-index-entry-curation",
-            "current-node-mathlib-hint-maintenance",
+            SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.DECL_OWNED_LEAN_FILE_CAPTURE_CHECK,
+            SkillKey.LEAN_STATEMENT_FORMALIZATION,
+            SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
+            SkillKey.MATHLIB_INDEX_FIRST_RECON,
+            SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
+            SkillKey.MATHLIB_INDEX_ENTRY_CURATION,
+            SkillKey.CURRENT_NODE_MATHLIB_HINT_MAINTENANCE,
         ],
-        app_view="statement_formal_worker",
-        submit_view="decl_stage_worker_submit",
+        app_view=AppView.STATEMENT_FORMAL_WORKER,
+        submit_view=SubmitView.DECL_STAGE_WORKER_SUBMIT,
         aliases=["StatementFormalWorker", "statement_formal_worker"],
         stage="statement_formal",
     ),
     _spec(
-        agent_type="StatementFormalReviewerAgent",
+        agent_type=ProductionAgentTypeKey.STATEMENT_FORMAL_REVIEWER,
         role="reviewer",
         lifecycle_group="decl_stage",
         context_scope="decl_stage",
@@ -664,14 +717,14 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.lean_safety",
             "quality.review_contract",
         ],
-        skills=["content-contract-reading", "decl-dependency-origin-curation"],
-        app_view="statement_formal_reviewer",
-        submit_view="decl_stage_reviewer_submit",
+        skills=[SkillKey.CONTENT_CONTRACT_READING, SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION],
+        app_view=AppView.STATEMENT_FORMAL_REVIEWER,
+        submit_view=SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
         aliases=["StatementFormalReviewer", "statement_formal_reviewer"],
         stage="statement_formal_review",
     ),
     _spec(
-        agent_type="ProofNLWorkerAgent",
+        agent_type=ProductionAgentTypeKey.PROOF_NL_WORKER,
         role="worker",
         lifecycle_group="decl_stage",
         context_scope="decl_stage",
@@ -685,18 +738,18 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.source_fidelity",
         ],
         skills=[
-            "content-contract-reading",
-            "decl-dependency-origin-curation",
-            "mathlib-index-first-recon",
-            "mathlib-semantic-search-navigation",
+            SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
+            SkillKey.MATHLIB_INDEX_FIRST_RECON,
+            SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
         ],
-        app_view="proof_nl_worker",
-        submit_view="decl_stage_worker_submit",
+        app_view=AppView.PROOF_NL_WORKER,
+        submit_view=SubmitView.DECL_STAGE_WORKER_SUBMIT,
         aliases=["ProofNlWorkerAgent", "ProofNlWorker", "proof_nl_worker"],
         stage="proof_nl",
     ),
     _spec(
-        agent_type="ProofNLReviewerAgent",
+        agent_type=ProductionAgentTypeKey.PROOF_NL_REVIEWER,
         role="reviewer",
         lifecycle_group="decl_stage",
         context_scope="decl_stage",
@@ -710,14 +763,14 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.source_fidelity",
             "quality.review_contract",
         ],
-        skills=["content-contract-reading", "decl-dependency-origin-curation"],
-        app_view="proof_nl_reviewer",
-        submit_view="decl_stage_reviewer_submit",
+        skills=[SkillKey.CONTENT_CONTRACT_READING, SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION],
+        app_view=AppView.PROOF_NL_REVIEWER,
+        submit_view=SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
         aliases=["ProofNlReviewerAgent", "ProofNlReviewer", "proof_nl_reviewer"],
         stage="proof_nl_review",
     ),
     _spec(
-        agent_type="ProofFormalWorkerAgent",
+        agent_type=ProductionAgentTypeKey.PROOF_FORMAL_WORKER,
         role="worker",
         lifecycle_group="decl_stage",
         context_scope="decl_stage",
@@ -731,22 +784,22 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.lean_safety",
         ],
         skills=[
-            "content-contract-reading",
-            "decl-owned-lean-file-capture-check",
-            "lean-proof-formalization",
-            "decl-dependency-origin-curation",
-            "mathlib-index-first-recon",
-            "mathlib-semantic-search-navigation",
-            "mathlib-index-entry-curation",
-            "current-node-mathlib-hint-maintenance",
+            SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.DECL_OWNED_LEAN_FILE_CAPTURE_CHECK,
+            SkillKey.LEAN_PROOF_FORMALIZATION,
+            SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
+            SkillKey.MATHLIB_INDEX_FIRST_RECON,
+            SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
+            SkillKey.MATHLIB_INDEX_ENTRY_CURATION,
+            SkillKey.CURRENT_NODE_MATHLIB_HINT_MAINTENANCE,
         ],
-        app_view="proof_formal_worker",
-        submit_view="decl_stage_worker_submit",
+        app_view=AppView.PROOF_FORMAL_WORKER,
+        submit_view=SubmitView.DECL_STAGE_WORKER_SUBMIT,
         aliases=["ProofFormalWorker", "proof_formal_worker"],
         stage="proof_formal",
     ),
     _spec(
-        agent_type="ProofFormalReviewerAgent",
+        agent_type=ProductionAgentTypeKey.PROOF_FORMAL_REVIEWER,
         role="reviewer",
         lifecycle_group="decl_stage",
         context_scope="decl_stage",
@@ -760,9 +813,9 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "quality.lean_safety",
             "quality.review_contract",
         ],
-        skills=["content-contract-reading", "decl-dependency-origin-curation"],
-        app_view="proof_formal_reviewer",
-        submit_view="decl_stage_reviewer_submit",
+        skills=[SkillKey.CONTENT_CONTRACT_READING, SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION],
+        app_view=AppView.PROOF_FORMAL_REVIEWER,
+        submit_view=SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
         aliases=["ProofFormalReviewer", "proof_formal_reviewer"],
         stage="proof_formal_review",
     ),

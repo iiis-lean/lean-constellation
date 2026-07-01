@@ -4,9 +4,25 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from agent_runtime_kit.agent.skills import SkillSpec, write_skill_spec
+
+from lean_constellation.agents.keys import SkillKey
+from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
+from lean_constellation.tools.keys import SubmitToolGroupKey as SubmitGroup
+
+
+StringKey = str | StrEnum
+
+
+def _value(value: StringKey) -> str:
+    return value.value if isinstance(value, StrEnum) else str(value)
+
+
+def _groups(*groups: StringKey) -> tuple[str, ...]:
+    return tuple(_value(group) for group in groups)
 
 
 @dataclass(frozen=True)
@@ -30,10 +46,10 @@ class LeanSkillDefinition:
         )
 
 
-def build_skill_specs(skill_keys: Iterable[str] | None = None) -> dict[str, SkillSpec]:
+def build_skill_specs(skill_keys: Iterable[StringKey] | None = None) -> dict[str, SkillSpec]:
     """Build ARK SkillSpec objects for all or selected Lean skills."""
 
-    selected = set(skill_keys) if skill_keys is not None else set(SKILL_DEFINITIONS)
+    selected = {_value(skill_key) for skill_key in skill_keys} if skill_keys is not None else set(SKILL_DEFINITIONS)
     missing = sorted(selected - set(SKILL_DEFINITIONS))
     if missing:
         raise KeyError(f"unknown skill keys: {', '.join(missing)}")
@@ -45,7 +61,7 @@ def build_skill_specs(skill_keys: Iterable[str] | None = None) -> dict[str, Skil
 
 def materialize_skill_specs(
     target_root: Path,
-    skill_keys: Iterable[str] | None = None,
+    skill_keys: Iterable[StringKey] | None = None,
 ) -> dict[str, Path]:
     """Write selected skills as Codex-compatible directories."""
 
@@ -61,9 +77,9 @@ def known_skill_keys() -> set[str]:
     return set(SKILL_DEFINITIONS)
 
 
-def required_tool_groups_for_skill(skill_key: str) -> tuple[str, ...]:
+def required_tool_groups_for_skill(skill_key: StringKey) -> tuple[str, ...]:
     try:
-        return SKILL_DEFINITIONS[skill_key].required_tool_groups
+        return SKILL_DEFINITIONS[_value(skill_key)].required_tool_groups
     except KeyError as exc:
         raise KeyError(f"unknown skill: {skill_key}") from exc
 
@@ -105,15 +121,15 @@ def _body(title: str, purpose: str, steps: tuple[str, ...], boundaries: tuple[st
 
 
 SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
-    "node-contract-design": LeanSkillDefinition(
+    SkillKey.NODE_CONTRACT_DESIGN.value: LeanSkillDefinition(
         name="node-contract-design",
         description="Designs and updates Lean Constellation scope and content node contracts.",
         group="node",
-        required_tool_groups=(
-            "node_contract_read_coordinator",
-            "node_contract_core_coordinator_write",
-            "node_tree_coordinator_write",
-            "scope_export_interface_write",
+        required_tool_groups=_groups(
+            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE,
+            AppGroup.NODE_TREE_COORDINATOR_WRITE,
+            AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -132,11 +148,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "content-contract-reading": LeanSkillDefinition(
+    SkillKey.CONTENT_CONTRACT_READING.value: LeanSkillDefinition(
         name="content-contract-reading",
         description="Interprets Lean Constellation content node contracts as task input.",
         group="node",
-        required_tool_groups=("node_contract_read_current",),
+        required_tool_groups=_groups(AppGroup.NODE_CONTRACT_READ_CURRENT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "content-contract-reading",
@@ -154,15 +170,15 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "visible-node-dependency-recon": LeanSkillDefinition(
+    SkillKey.VISIBLE_NODE_DEPENDENCY_RECON.value: LeanSkillDefinition(
         name="visible-node-dependency-recon",
         description="Finds and records useful visible node dependencies for a Lean Constellation content node.",
         group="node",
-        required_tool_groups=(
-            "node_contract_read_current",
-            "node_boundary_read_current",
-            "node_contract_dependency_current_write",
-            "decl_readiness_read",
+        required_tool_groups=_groups(
+            AppGroup.NODE_CONTRACT_READ_CURRENT,
+            AppGroup.NODE_BOUNDARY_READ_CURRENT,
+            AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
+            AppGroup.DECL_READINESS_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -181,14 +197,13 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "scope-export-interface-curation": LeanSkillDefinition(
+    SkillKey.SCOPE_EXPORT_INTERFACE_CURATION.value: LeanSkillDefinition(
         name="scope-export-interface-curation",
         description="Curates Lean Constellation scope exports and interface bindings.",
         group="node",
-        required_tool_groups=(
-            "scope_export_interface_read",
-            "scope_export_interface_write",
-            "root_interface_prepare_read",
+        required_tool_groups=_groups(
+            AppGroup.SCOPE_EXPORT_INTERFACE_READ,
+            AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -207,11 +222,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "material-acquisition": LeanSkillDefinition(
+    SkillKey.MATERIAL_ACQUISITION.value: LeanSkillDefinition(
         name="material-acquisition",
         description="Guides agents using material acquisition and extraction tools for arXiv, web, PDF, HTML, archive, and local-file targets.",
         group="material",
-        required_tool_groups=("material_acquisition", "source_acquisition"),
+        required_tool_groups=(),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "material-acquisition",
@@ -229,11 +244,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "external-resource-discovery": LeanSkillDefinition(
+    SkillKey.EXTERNAL_RESOURCE_DISCOVERY.value: LeanSkillDefinition(
         name="external-resource-discovery",
         description="Guides agents that are allowed to discover new external material targets before submitting explicit resource requests.",
         group="resource",
-        required_tool_groups=("external_resource_discovery", "external_theorem_search"),
+        required_tool_groups=(),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "external-resource-discovery",
@@ -251,11 +266,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "resource-request-handling": LeanSkillDefinition(
+    SkillKey.RESOURCE_REQUEST_HANDLING.value: LeanSkillDefinition(
         name="resource-request-handling",
         description="Guides callers of Lean Constellation resource requests.",
         group="resource",
-        required_tool_groups=("resource_request_submit", "node_contract_material_current_write"),
+        required_tool_groups=_groups(SubmitGroup.RESOURCE_REQUEST_SUBMIT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "resource-request-handling",
@@ -273,11 +288,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "resource-draft-curation": LeanSkillDefinition(
+    SkillKey.RESOURCE_DRAFT_CURATION.value: LeanSkillDefinition(
         name="resource-draft-curation",
         description="Guides resource curation agents when preparing a local Resource draft.",
         group="resource",
-        required_tool_groups=("resource_draft_write", "material_acquisition", "resource_curator_submit"),
+        required_tool_groups=_groups(AppGroup.RESOURCE_DRAFT_WRITE, SubmitGroup.RESOURCE_CURATOR_SUBMIT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "resource-draft-curation",
@@ -295,11 +310,15 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "coordinator-node-decomposition": LeanSkillDefinition(
+    SkillKey.COORDINATOR_NODE_DECOMPOSITION.value: LeanSkillDefinition(
         name="coordinator-node-decomposition",
         description="Guides a native repo Coordinator in decomposing the repository node tree from Main into scope nodes and content nodes.",
         group="coordinator",
-        required_tool_groups=("node_tree_coordinator_read", "node_tree_coordinator_write", "node_contract_read_coordinator"),
+        required_tool_groups=_groups(
+            AppGroup.NODE_TREE_COORDINATOR_READ,
+            AppGroup.NODE_TREE_COORDINATOR_WRITE,
+            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "coordinator-node-decomposition",
@@ -317,11 +336,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "coordinator-scope-lifecycle": LeanSkillDefinition(
+    SkillKey.COORDINATOR_SCOPE_LIFECYCLE.value: LeanSkillDefinition(
         name="coordinator-scope-lifecycle",
         description="Guides a Coordinator through the lifecycle of one Scope node.",
         group="coordinator",
-        required_tool_groups=("scope_export_interface_read", "scope_export_interface_write", "scope_close_read"),
+        required_tool_groups=_groups(AppGroup.SCOPE_EXPORT_INTERFACE_READ, AppGroup.SCOPE_EXPORT_INTERFACE_WRITE, AppGroup.SCOPE_CLOSE_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "coordinator-scope-lifecycle",
@@ -339,11 +358,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "coordinator-content-task-lifecycle": LeanSkillDefinition(
+    SkillKey.COORDINATOR_CONTENT_TASK_LIFECYCLE.value: LeanSkillDefinition(
         name="coordinator-content-task-lifecycle",
         description="Guides a Coordinator through one content node task cycle.",
         group="coordinator",
-        required_tool_groups=("content_task_admission_read", "coordinator_submit", "node_contract_read_coordinator"),
+        required_tool_groups=_groups(SubmitGroup.COORDINATOR_SUBMIT, AppGroup.CONTENT_TASK_ADMISSION_READ, AppGroup.NODE_CONTRACT_READ_COORDINATOR),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "coordinator-content-task-lifecycle",
@@ -361,11 +380,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "mathlib-index-first-recon": LeanSkillDefinition(
+    SkillKey.MATHLIB_INDEX_FIRST_RECON.value: LeanSkillDefinition(
         name="mathlib-index-first-recon",
         description="Use repo-level MathlibIndex before running broader Mathlib search.",
         group="mathlib",
-        required_tool_groups=("node_mathlib_hint_read", "mathlib_index_read"),
+        required_tool_groups=_groups(AppGroup.MATHLIB_INDEX_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "mathlib-index-first-recon",
@@ -383,11 +402,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "mathlib-semantic-search-navigation": LeanSkillDefinition(
+    SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION.value: LeanSkillDefinition(
         name="mathlib-semantic-search-navigation",
         description="Search Mathlib with LeanExplore and inspect Mathlib modules/source context through navigation tools.",
         group="mathlib",
-        required_tool_groups=("mathlib_semantic_search", "mathlib_navigation"),
+        required_tool_groups=_groups(AppGroup.MATHLIB_SEMANTIC_SEARCH, AppGroup.MATHLIB_NAVIGATION),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "mathlib-semantic-search-navigation",
@@ -405,11 +424,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "mathlib-index-entry-curation": LeanSkillDefinition(
+    SkillKey.MATHLIB_INDEX_ENTRY_CURATION.value: LeanSkillDefinition(
         name="mathlib-index-entry-curation",
         description="Record verified Mathlib modules and declarations into the repo-level MathlibIndex.",
         group="mathlib",
-        required_tool_groups=("mathlib_index_write",),
+        required_tool_groups=_groups(AppGroup.MATHLIB_INDEX_WRITE),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "mathlib-index-entry-curation",
@@ -427,11 +446,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "current-node-mathlib-hint-maintenance": LeanSkillDefinition(
+    SkillKey.CURRENT_NODE_MATHLIB_HINT_MAINTENANCE.value: LeanSkillDefinition(
         name="current-node-mathlib-hint-maintenance",
         description="Add or remove Mathlib module and declaration hints for a Lean Constellation node contract.",
         group="mathlib",
-        required_tool_groups=("node_mathlib_hint_read", "node_mathlib_hint_write"),
+        required_tool_groups=_groups(AppGroup.NODE_MATHLIB_HINT_READ, AppGroup.NODE_MATHLIB_HINT_WRITE),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "current-node-mathlib-hint-maintenance",
@@ -449,11 +468,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "content-preparation-orchestration": LeanSkillDefinition(
+    SkillKey.CONTENT_PREPARATION_ORCHESTRATION.value: LeanSkillDefinition(
         name="content-preparation-orchestration",
         description="Use when the ContentPlanAgent decides whether to dispatch node dependency, Mathlib, or resource recon child flows.",
         group="content_plan",
-        required_tool_groups=("content_plan_submit",),
+        required_tool_groups=_groups(SubmitGroup.CONTENT_PLAN_SUBMIT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "Content Preparation Orchestration",
@@ -471,11 +490,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "decl-strategy-planning": LeanSkillDefinition(
+    SkillKey.DECL_STRATEGY_PLANNING.value: LeanSkillDefinition(
         name="decl-strategy-planning",
         description="Use when the ContentPlanAgent creates, continues, closes, or replaces a DeclGraph strategy.",
         group="content_plan",
-        required_tool_groups=("decl_graph_read_current", "decl_strategy_write"),
+        required_tool_groups=_groups(AppGroup.DECL_GRAPH_READ_CURRENT, AppGroup.DECL_STRATEGY_WRITE),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "Decl Strategy Planning",
@@ -493,11 +512,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "decl-round-change-planning": LeanSkillDefinition(
+    SkillKey.DECL_ROUND_CHANGE_PLANNING.value: LeanSkillDefinition(
         name="decl-round-change-planning",
         description="Use when the ContentPlanAgent prepares create, update, or delete changes for the next DeclGraph round.",
         group="content_plan",
-        required_tool_groups=("decl_round_change_write", "decl_catalog_plan_write", "content_plan_submit"),
+        required_tool_groups=_groups(AppGroup.DECL_ROUND_CHANGE_WRITE, SubmitGroup.CONTENT_PLAN_SUBMIT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "Decl Round Change Planning",
@@ -515,11 +534,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "decl-round-closeout": LeanSkillDefinition(
+    SkillKey.DECL_ROUND_CLOSEOUT.value: LeanSkillDefinition(
         name="decl-round-closeout",
         description="Use when the ContentPlanAgent receives a DeclGraphRoundFlow callback and must summarize and commit the round.",
         group="content_plan",
-        required_tool_groups=("decl_round_closeout_write", "decl_graph_read_current"),
+        required_tool_groups=_groups(AppGroup.DECL_ROUND_CLOSEOUT_WRITE, AppGroup.DECL_GRAPH_READ_CURRENT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "Decl Round Closeout",
@@ -537,11 +556,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "content-node-completion-decision": LeanSkillDefinition(
+    SkillKey.CONTENT_NODE_COMPLETION_DECISION.value: LeanSkillDefinition(
         name="content-node-completion-decision",
         description="Use when the ContentPlanAgent decides whether the current content node task should end as ready, blocked, or failed.",
         group="content_plan",
-        required_tool_groups=("content_completion_submit", "decl_readiness_read"),
+        required_tool_groups=_groups(SubmitGroup.CONTENT_COMPLETION_SUBMIT, AppGroup.DECL_READINESS_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "Content Node Completion Decision",
@@ -559,11 +578,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "decl-dependency-origin-curation": LeanSkillDefinition(
+    SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION.value: LeanSkillDefinition(
         name="decl-dependency-origin-curation",
         description="Curate source/resource origins and declaration dependencies for Lean Constellation declaration stage artifacts.",
         group="decl_stage",
-        required_tool_groups=("decl_detail_read", "decl_history_read", "resource_library_read", "mathlib_index_read"),
+        required_tool_groups=_groups(AppGroup.DECL_DETAIL_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "decl-dependency-origin-curation",
@@ -581,11 +600,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "decl-owned-lean-file-capture-check": LeanSkillDefinition(
+    SkillKey.DECL_OWNED_LEAN_FILE_CAPTURE_CHECK.value: LeanSkillDefinition(
         name="decl-owned-lean-file-capture-check",
         description="Work safely with Lean Constellation declaration-owned Lean files, manual Lean checks, and capture/check tools.",
         group="lean",
-        required_tool_groups=("decl_stage_statement_formal_file", "decl_stage_proof_formal_file", "formal_diagnostics_read"),
+        required_tool_groups=_groups(AppGroup.FORMAL_DIAGNOSTICS_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "decl-owned-lean-file-capture-check",
@@ -603,11 +622,15 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "lean-statement-formalization": LeanSkillDefinition(
+    SkillKey.LEAN_STATEMENT_FORMALIZATION.value: LeanSkillDefinition(
         name="lean-statement-formalization",
         description="Formalize an accepted natural-language declaration statement into a Lean declaration.",
         group="lean",
-        required_tool_groups=("decl_stage_statement_formal_file", "formal_diagnostics_read"),
+        required_tool_groups=_groups(
+            AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE,
+            AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE_WRITE,
+            AppGroup.FORMAL_DIAGNOSTICS_READ,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "lean-statement-formalization",
@@ -625,11 +648,15 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    "lean-proof-formalization": LeanSkillDefinition(
+    SkillKey.LEAN_PROOF_FORMALIZATION.value: LeanSkillDefinition(
         name="lean-proof-formalization",
         description="Formalize a reviewed natural-language proof route into a Lean proof while preserving the accepted formal statement.",
         group="lean",
-        required_tool_groups=("decl_stage_proof_formal_file", "formal_diagnostics_read"),
+        required_tool_groups=_groups(
+            AppGroup.DECL_STAGE_PROOF_FORMAL_FILE,
+            AppGroup.DECL_STAGE_PROOF_FORMAL_FILE_WRITE,
+            AppGroup.FORMAL_DIAGNOSTICS_READ,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "lean-proof-formalization",

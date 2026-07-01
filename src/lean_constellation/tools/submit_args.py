@@ -75,37 +75,37 @@ class SubmitResourceRequestArgs(SummarySubmitArgs):
 
 
 class SubmitResourceDuplicateArgs(ReasonSubmitArgs):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"]
-    target: str
-    arxiv_version: str | None = None
-    existing_kind: Literal["resource", "source"]
+    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of requested resource target that was found to be duplicate.")
+    target: str = Field(description="Requested URL, arXiv id, or local path that duplicates existing material.")
+    arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the duplicate target.")
+    existing_kind: Literal["resource", "source"] = Field(description="Whether the duplicate is an accepted resource or original source material.")
     duplicate_reason: str = Field(description="Why the existing material is the same target.")
-    existing_resource_key: str | None = None
-    existing_source_path: str | None = None
-    preview: str | None = None
+    existing_resource_key: str | None = Field(default=None, description="Existing resource key when existing_kind is resource.")
+    existing_source_path: str | None = Field(default=None, description="Existing source corpus path when existing_kind is source.")
+    preview: str | None = Field(default=None, description="Short evidence excerpt showing the duplicate relationship.")
 
 
 class SubmitLocalResourceCreatedArgs(SummarySubmitArgs):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"]
-    target: str
-    arxiv_version: str | None = None
+    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of resource target finalized into the local resource library.")
+    target: str = Field(description="URL, arXiv id, or local path finalized from the resource draft.")
+    arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the finalized target.")
     draft_id: str = Field(description="Resource draft id to finalize.")
 
 
 class SubmitExternalRepoRequiredArgs(ReasonSubmitArgs):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"]
-    target: str
-    arxiv_version: str | None = None
+    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of resource target that should become an external provider repo requirement.")
+    target: str = Field(description="URL, arXiv id, or local path requiring separate provider repo work.")
+    arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the external provider target.")
     source_description: str = Field(description="Source description to pass to a provider repo requirement.")
-    suggested_repo_name: str | None = None
-    required_interfaces_hint: str | None = None
+    suggested_repo_name: str | None = Field(default=None, description="Optional suggested provider repo key for the external requirement.")
+    required_interfaces_hint: str | None = Field(default=None, description="Optional description of interfaces the external provider repo should expose.")
 
 
 class SubmitResourceRejectedArgs(ReasonSubmitArgs):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"]
-    target: str
-    arxiv_version: str | None = None
-    details: list[str] = Field(default_factory=list)
+    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of requested resource target being rejected.")
+    target: str = Field(description="Requested URL, arXiv id, or local path being rejected.")
+    arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the rejected target.")
+    details: list[str] = Field(default_factory=list, description="Concrete reasons or evidence supporting the rejection.")
 
 
 class SubmitContentNodeTasksArgs(SummarySubmitArgs):
@@ -114,18 +114,18 @@ class SubmitContentNodeTasksArgs(SummarySubmitArgs):
 
 
 class RequirementInterfaceArg(StrictModel):
-    name: str
-    kind: str
-    summary: str
-    statement_hint: str | None = None
+    name: str = Field(description="Interface name requested from the provider repo.")
+    kind: str = Field(description="Interface kind expected from the provider repo, such as theorem, definition, or namespace.")
+    summary: str = Field(description="Short summary of what this requested interface should provide.")
+    statement_hint: str | None = Field(default=None, description="Optional informal statement or signature hint for the requested interface.")
 
 
 class SubmitRepoRequirementArgs(SummarySubmitArgs):
     name: str = Field(description="Requirement name in the current consumer repo.")
     target_repo: str = Field(description="Provider repo key to request.")
-    source_description: str | None = None
-    reason: str | None = None
-    interfaces: list[RequirementInterfaceArg] = Field(default_factory=list)
+    source_description: str | None = Field(default=None, description="Optional source or context description motivating the provider repo requirement.")
+    reason: str | None = Field(default=None, description="Why the current repo needs this provider repo requirement.")
+    interfaces: list[RequirementInterfaceArg] = Field(default_factory=list, description="Interfaces requested from the provider repo.")
 
 
 class SubmitRepoReadyArgs(SummarySubmitArgs):
@@ -133,15 +133,15 @@ class SubmitRepoReadyArgs(SummarySubmitArgs):
 
 
 class SubmitContentPreparationReconArgs(SummarySubmitArgs):
-    recon_kind: Literal["node_dir_dependency", "mathlib", "resource"]
-    objective: str | None = None
-    context_summary: str | None = None
+    recon_kind: Literal["node_dir_dependency", "mathlib", "resource"] = Field(description="Preparation recon child flow kind to dispatch for the current content node.")
+    objective: str | None = Field(default=None, description="Optional objective for the preparation recon child flow.")
+    context_summary: str | None = Field(default=None, description="Optional context summary to pass to the preparation recon child flow.")
 
 
 class SubmitCurrentDeclRoundArgs(SummarySubmitArgs):
-    strategy_id: str
-    round_id: str
-    round_index: int | None = None
+    strategy_id: str = Field(description="Current declaration strategy id that owns the submitted round.")
+    round_id: str = Field(description="Declaration round id to dispatch for child DeclGraphRoundFlow execution.")
+    round_index: int | None = Field(default=None, description="Optional human-readable round index for diagnostics and review.")
 
 
 class SubmitContentNodeReadyArgs(SummarySubmitArgs):
@@ -157,30 +157,30 @@ class SubmitContentNodeFailedArgs(ReasonSubmitArgs):
 
 
 class SubmitNodeDirDependencyReconCompletedArgs(SummarySubmitArgs):
-    added_node_deps: list[str] = Field(default_factory=list)
-    removed_node_deps: list[str] = Field(default_factory=list)
+    added_node_deps: list[str] = Field(default_factory=list, description="Current-node dependency paths added during node directory dependency recon.")
+    removed_node_deps: list[str] = Field(default_factory=list, description="Current-node dependency paths removed during node directory dependency recon.")
 
 
 class SubmitMathlibReconCompletedArgs(SummarySubmitArgs):
-    added_modules: list[str] = Field(default_factory=list)
-    added_decls: list[str] = Field(default_factory=list)
+    added_modules: list[str] = Field(default_factory=list, description="Mathlib module hints added to the current node during recon.")
+    added_decls: list[str] = Field(default_factory=list, description="Mathlib declaration hints added to the current node during recon.")
 
 
 class SubmitResourceReconCompletedArgs(SummarySubmitArgs):
-    added_owned_refs: list[str] = Field(default_factory=list)
-    added_context_refs: list[str] = Field(default_factory=list)
+    added_owned_refs: list[str] = Field(default_factory=list, description="Material/resource references added as owned requirements of the current node.")
+    added_context_refs: list[str] = Field(default_factory=list, description="Material/resource references added as contextual support for the current node.")
 
 
 class SubmitResourceReconBlockedArgs(ReasonSubmitArgs):
-    missing_targets: list[str] = Field(default_factory=list)
+    missing_targets: list[str] = Field(default_factory=list, description="Resource or material targets that are still missing after recon.")
 
 
 class SubmitStageWorkerCompletedArgs(SummarySubmitArgs):
-    completed_decl_names: list[str] = Field(default_factory=list)
+    completed_decl_names: list[str] = Field(default_factory=list, description="Declaration names completed by this stage worker batch.")
 
 
 class SubmitStageWorkerBlockedArgs(ReasonSubmitArgs):
-    affected_decl_names: list[str] = Field(default_factory=list)
+    affected_decl_names: list[str] = Field(default_factory=list, description="Declaration names that remain blocked in this stage worker batch.")
 
 
 class SubmitStageReviewArgs(SummarySubmitArgs):

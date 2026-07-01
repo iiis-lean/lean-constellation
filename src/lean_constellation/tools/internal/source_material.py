@@ -29,6 +29,7 @@ from lean_constellation.tools.args import (
     SourceMaterialNormalizeArgs,
     SourceRangeArgs,
 )
+from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import direct_tool
 
 
@@ -44,7 +45,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="create_draft_source_index",
             result_view="source_index",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -55,7 +56,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="get_source_index",
             result_view="source_index",
-            groups={"source_index_draft_read", "source_index_committed_read"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_READ, AppGroup.SOURCE_INDEX_COMMITTED_READ},
             roles=read_roles,
         ),
         direct_tool(
@@ -66,7 +67,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="set_source_index_overview",
             result_view="source_index",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -77,7 +78,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="create_source_block",
             result_view="source_block",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -88,7 +89,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="update_source_block",
             result_view="source_block",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -99,7 +100,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="add_source_block_ref",
             result_view="source_block",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -110,7 +111,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="remove_source_block_ref",
             result_view="source_block",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -121,7 +122,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="mark_block_refs_done",
             result_view="gate_report",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -132,7 +133,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="create_source_link",
             result_view="source_link",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -143,7 +144,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="mark_block_links_done",
             result_view="gate_report",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -154,7 +155,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="mark_block_completed",
             result_view="gate_report",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -165,7 +166,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="set_file_survey_status",
             result_view="source_file_index",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -176,7 +177,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="set_file_indexing_status",
             result_view="source_file_index",
-            groups={"source_index_draft_write"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
         direct_tool(
@@ -187,7 +188,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="validate_source_index",
             result_view="gate_report",
-            groups={"source_index_draft_read"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_READ},
             roles=read_roles,
         ),
         direct_tool(
@@ -198,7 +199,7 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="get_source_index_coverage",
             result_view="source_index_coverage",
-            groups={"source_index_draft_read", "source_index_committed_read"},
+            groups={AppGroup.SOURCE_INDEX_DRAFT_READ, AppGroup.SOURCE_INDEX_COMMITTED_READ},
             roles=read_roles,
         ),
     ]
@@ -215,7 +216,7 @@ def build_material_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="search_material_text",
             result_view="material_search",
-            groups={"source_material_text_read"},
+            groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
             roles=roles,
         ),
         direct_tool(
@@ -226,7 +227,7 @@ def build_material_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="read_source_range",
             result_view="material_range",
-            groups={"source_material_text_read"},
+            groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
             roles=roles,
         ),
     ]
@@ -243,7 +244,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="scan_source_corpus",
             result_view="source_corpus_manifest",
-            groups={"source_corpus_read"},
+            groups={AppGroup.SOURCE_CORPUS_READ},
             roles=roles,
         ),
         direct_tool(
@@ -254,7 +255,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="check_source_corpus_draft",
             result_view="gate_report",
-            groups={"source_corpus_read"},
+            groups={AppGroup.SOURCE_CORPUS_READ},
             roles=roles,
         ),
         direct_tool(
@@ -265,7 +266,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="acquire_source_material",
             result_view="source_acquisition",
-            groups={"source_acquisition", "material_acquisition"},
+            groups={AppGroup.SOURCE_ACQUISITION, AppGroup.MATERIAL_ACQUISITION},
             roles={"worker", "admin"},
         ),
         direct_tool(
@@ -276,7 +277,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="extract_source_artifact",
             result_view="source_extraction",
-            groups={"source_acquisition", "material_acquisition"},
+            groups={AppGroup.SOURCE_ACQUISITION, AppGroup.MATERIAL_ACQUISITION},
             roles={"worker", "admin"},
         ),
         direct_tool(
@@ -287,7 +288,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="import_source_material",
             result_view="source_acquisition",
-            groups={"source_acquisition", "material_acquisition"},
+            groups={AppGroup.SOURCE_ACQUISITION, AppGroup.MATERIAL_ACQUISITION},
             roles={"worker", "admin"},
         ),
         direct_tool(
@@ -298,7 +299,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="normalize_source_text_material",
             result_view="source_extraction",
-            groups={"source_acquisition", "material_acquisition"},
+            groups={AppGroup.SOURCE_ACQUISITION, AppGroup.MATERIAL_ACQUISITION},
             roles={"worker", "admin"},
         ),
     ]

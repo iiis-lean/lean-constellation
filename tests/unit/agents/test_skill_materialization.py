@@ -26,7 +26,9 @@ def test_skill_materialization_writes_skill_md_and_references(tmp_path: Path) ->
 
     assert (material_skill / "SKILL.md").read_text(encoding="utf-8").startswith("---")
     assert 'name: "material-acquisition"' in (material_skill / "SKILL.md").read_text(encoding="utf-8")
-    assert "material_acquisition" in (material_skill / "references" / "tool_groups.md").read_text(encoding="utf-8")
+    assert "None required beyond the Agent-specific submit workflow." in (
+        material_skill / "references" / "tool_groups.md"
+    ).read_text(encoding="utf-8")
     assert "resource_request_submit" in (request_skill / "references" / "tool_groups.md").read_text(encoding="utf-8")
 
 

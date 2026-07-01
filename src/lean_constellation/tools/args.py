@@ -372,6 +372,16 @@ class MathlibSemanticSearchArgs(StrictModel):
     limit: int = Field(default=20, ge=1, le=50, description="Maximum number of candidates.")
 
 
+class ArxivTheoremSearchArgs(StrictModel):
+    query: str = Field(
+        description=(
+            "arXiv theorem search query. Natural-language queries use the configured remote theorem provider; "
+            "explicit arXiv ids such as math/0001001 or 2401.00001 can fall back to parsing the paper e-print source."
+        ),
+    )
+    limit: int = Field(default=20, ge=1, le=50, description="Maximum number of theorem-like arXiv candidates to return.")
+
+
 class MathlibExternalSearchArgs(StrictModel):
     query: str = Field(description="Search query for external Mathlib/theorem search tools.")
     search_kinds: list[str] = Field(default_factory=lambda: ["lean_explore"], description="Search backends or result kinds to use.")

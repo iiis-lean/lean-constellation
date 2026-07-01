@@ -17,6 +17,7 @@ from lean_constellation.tools.args import (
     SourceMaterialImportArgs,
     SourceMaterialNormalizeArgs,
 )
+from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import current_node_path, direct_tool, handler_tool
 
 
@@ -55,7 +56,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=MaterialContextArgs,
             capability=ToolCapability.READ,
             result_view="material_context",
-            groups={"resource_curation_context_read", "external_resource_discovery"},
+            groups={AppGroup.RESOURCE_CURATION_CONTEXT_READ, AppGroup.EXTERNAL_RESOURCE_DISCOVERY},
             roles=roles,
             handler=_material_context,
         ),
@@ -65,7 +66,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ResourceTargetArgs,
             capability=ToolCapability.READ,
             result_view="resource_target",
-            groups={"resource_curation_context_read", "external_resource_discovery"},
+            groups={AppGroup.RESOURCE_CURATION_CONTEXT_READ, AppGroup.EXTERNAL_RESOURCE_DISCOVERY},
             roles=roles,
             handler=_normalize_resource_target,
             required_context=set(),
@@ -76,7 +77,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ResourceTargetArgs,
             capability=ToolCapability.READ,
             result_view="resource_duplicate",
-            groups={"resource_curation_context_read", "external_resource_discovery"},
+            groups={AppGroup.RESOURCE_CURATION_CONTEXT_READ, AppGroup.EXTERNAL_RESOURCE_DISCOVERY},
             roles=roles,
             handler=_find_duplicate_resource,
         ),
@@ -88,7 +89,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="acquire_source_material",
             result_view="source_acquisition",
-            groups={"material_acquisition"},
+            groups={AppGroup.MATERIAL_ACQUISITION},
             roles=curator_roles,
         ),
         direct_tool(
@@ -99,7 +100,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="extract_source_artifact",
             result_view="source_extraction",
-            groups={"material_acquisition"},
+            groups={AppGroup.MATERIAL_ACQUISITION},
             roles=curator_roles,
         ),
         direct_tool(
@@ -110,7 +111,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="import_source_material",
             result_view="source_acquisition",
-            groups={"material_acquisition"},
+            groups={AppGroup.MATERIAL_ACQUISITION},
             roles=curator_roles,
         ),
         direct_tool(
@@ -121,7 +122,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="normalize_source_text_material",
             result_view="source_extraction",
-            groups={"material_acquisition"},
+            groups={AppGroup.MATERIAL_ACQUISITION},
             roles=curator_roles,
         ),
         direct_tool(
@@ -132,7 +133,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="read_resource_range",
             result_view="material_range",
-            groups={"resource_library_read"},
+            groups={AppGroup.RESOURCE_LIBRARY_READ},
             roles=roles,
         ),
         direct_tool(
@@ -144,7 +145,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_component="resource_library",
             backing_method="list_resources",
             result_view="resource_list",
-            groups={"resource_library_read"},
+            groups={AppGroup.RESOURCE_LIBRARY_READ},
             roles=roles,
         ),
         direct_tool(
@@ -156,7 +157,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_component="resource_library",
             backing_method="get_resource",
             result_view="resource",
-            groups={"resource_library_read"},
+            groups={AppGroup.RESOURCE_LIBRARY_READ},
             roles=roles,
         ),
         direct_tool(
@@ -167,7 +168,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="allocate_resource_draft",
             result_view="resource_draft",
-            groups={"resource_draft_write"},
+            groups={AppGroup.RESOURCE_DRAFT_WRITE},
             roles=curator_roles,
         ),
         direct_tool(
@@ -178,7 +179,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="get_resource_draft",
             result_view="resource_draft",
-            groups={"resource_draft_write"},
+            groups={AppGroup.RESOURCE_DRAFT_WRITE},
             roles=curator_roles,
         ),
         direct_tool(
@@ -189,7 +190,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="check_resource_draft",
             result_view="gate_report",
-            groups={"resource_draft_write"},
+            groups={AppGroup.RESOURCE_DRAFT_WRITE},
             roles=curator_roles,
         ),
         direct_tool(
@@ -200,7 +201,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="abandon_resource_draft",
             result_view="resource_draft",
-            groups={"resource_draft_write"},
+            groups={AppGroup.RESOURCE_DRAFT_WRITE},
             roles=curator_roles,
         ),
     ]

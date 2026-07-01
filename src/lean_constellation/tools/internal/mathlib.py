@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
+    ArxivTheoremSearchArgs,
     CurrentMathlibDeclUseArgs,
     CurrentMathlibModuleUseArgs,
     MathlibCandidateArgs,
@@ -20,6 +21,7 @@ from lean_constellation.tools.args import (
     MathlibSemanticSearchArgs,
     NoArgs,
 )
+from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import actor_for_write, current_node_path, direct_tool, handler_tool
 
 
@@ -71,7 +73,7 @@ def _validate_current_mathlib_hints(runtime, ctx, args):
     return runtime.mathlib.validate_node_mathlib_uses(ctx.repo_root, node_path=current_node_path(ctx))
 
 
-def _search_arxiv_theorems(runtime, ctx, args: MathlibSemanticSearchArgs):
+def _search_arxiv_theorems(runtime, ctx, args: ArxivTheoremSearchArgs):
     del ctx
     result = runtime.external.lean_mcp_toolkit.search_arxiv_theorems(args.query, limit=args.limit)
     if not result.ok:
@@ -91,7 +93,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="search_mathlib_index",
             result_view="mathlib_search",
-            groups={"mathlib_index_read"},
+            groups={AppGroup.MATHLIB_INDEX_READ},
             roles=roles,
         ),
         direct_tool(
@@ -102,7 +104,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="get_mathlib_module_entry",
             result_view="mathlib_module_entry",
-            groups={"mathlib_index_read"},
+            groups={AppGroup.MATHLIB_INDEX_READ},
             roles=roles,
         ),
         direct_tool(
@@ -113,7 +115,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="get_mathlib_decl_entry",
             result_view="mathlib_decl_entry",
-            groups={"mathlib_index_read"},
+            groups={AppGroup.MATHLIB_INDEX_READ},
             roles=roles,
         ),
         direct_tool(
@@ -124,7 +126,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="record_mathlib_module_checked",
             result_view="mathlib_module_entry",
-            groups={"mathlib_index_write"},
+            groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -135,7 +137,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="record_mathlib_decl_checked",
             result_view="mathlib_decl_entry",
-            groups={"mathlib_index_write"},
+            groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -146,7 +148,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="add_module_important_decl",
             result_view="mathlib_module_entry",
-            groups={"mathlib_index_write"},
+            groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
         ),
         direct_tool(
@@ -157,7 +159,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="search_external_mathlib",
             result_view="mathlib_external_search",
-            groups={"mathlib_semantic_search"},
+            groups={AppGroup.MATHLIB_SEMANTIC_SEARCH},
             roles=roles,
         ),
         direct_tool(
@@ -168,7 +170,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="search_mathlib_declarations",
             result_view="mathlib_semantic_search",
-            groups={"mathlib_semantic_search"},
+            groups={AppGroup.MATHLIB_SEMANTIC_SEARCH},
             roles=roles,
         ),
         direct_tool(
@@ -179,7 +181,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="inspect_mathlib_search_candidate",
             result_view="mathlib_candidate",
-            groups={"mathlib_navigation"},
+            groups={AppGroup.MATHLIB_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -190,7 +192,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="inspect_mathlib_declaration",
             result_view="mathlib_navigation",
-            groups={"mathlib_navigation"},
+            groups={AppGroup.MATHLIB_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -201,7 +203,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="inspect_mathlib_module",
             result_view="mathlib_module_navigation",
-            groups={"mathlib_navigation"},
+            groups={AppGroup.MATHLIB_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -212,7 +214,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="check_mathlib_name",
             result_view="mathlib_check",
-            groups={"mathlib_navigation"},
+            groups={AppGroup.MATHLIB_NAVIGATION},
             roles=roles,
         ),
         direct_tool(
@@ -223,16 +225,19 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="ingest_mathlib_candidate",
             result_view="mathlib_decl_entry",
-            groups={"mathlib_index_write"},
+            groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
         ),
         handler_tool(
             name="search_arxiv_theorems",
-            description="Search arXiv theorem-like statements through the Lean toolkit integration.",
-            args_model=MathlibSemanticSearchArgs,
+            description=(
+                "Search arXiv theorem-like statements through the Lean toolkit integration; explicit arXiv id queries "
+                "can fall back to parsing real e-print TeX source when the remote theorem provider fails."
+            ),
+            args_model=ArxivTheoremSearchArgs,
             capability=ToolCapability.READ,
             result_view="arxiv_theorem_search",
-            groups={"external_theorem_search"},
+            groups={AppGroup.EXTERNAL_THEOREM_SEARCH},
             roles=roles,
             handler=_search_arxiv_theorems,
             required_context=set(),
@@ -243,7 +248,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="node_mathlib_hints",
-            groups={"node_mathlib_hint_read"},
+            groups={AppGroup.NODE_MATHLIB_HINT_READ},
             roles=roles,
             handler=_current_hint_view,
         ),
@@ -253,7 +258,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=CurrentMathlibModuleUseArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
-            groups={"node_mathlib_hint_write"},
+            groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
             roles=write_roles,
             handler=_add_current_module_hint,
         ),
@@ -263,7 +268,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=CurrentMathlibModuleUseArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
-            groups={"node_mathlib_hint_write"},
+            groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
             roles=write_roles,
             handler=_remove_current_module_hint,
         ),
@@ -273,7 +278,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=CurrentMathlibDeclUseArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
-            groups={"node_mathlib_hint_write"},
+            groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
             roles=write_roles,
             handler=_add_current_decl_hint,
         ),
@@ -283,7 +288,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=CurrentMathlibDeclUseArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
-            groups={"node_mathlib_hint_write"},
+            groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
             roles=write_roles,
             handler=_remove_current_decl_hint,
         ),
@@ -293,7 +298,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="gate_report",
-            groups={"node_mathlib_hint_read"},
+            groups={AppGroup.NODE_MATHLIB_HINT_READ},
             roles=roles,
             handler=_validate_current_mathlib_hints,
         ),
