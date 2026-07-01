@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import re
 import socket
+import tarfile
+import zipfile
 from collections.abc import Callable
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 from urllib.request import Request, urlopen
 
 from pydantic import Field
@@ -220,6 +224,19 @@ class LeanMcpToolkitClient:
                 summary=str(exc),
                 raw_excerpt=self._excerpt(exc.raw_text),
             )
+        success_failure = self._toolkit_success_failure(value_dict)
+        if success_failure is not None:
+            issue_code, summary = success_failure
+            return ToolkitCallResult(
+                ok=False,
+                toolkit_tool=tool_name,
+                payload=payload,
+                value=value_dict,
+                raw_excerpt=self._excerpt(value_dict),
+                warnings=warnings,
+                issue_code=issue_code,
+                summary=summary,
+            )
         return ToolkitCallResult(
             ok=True,
             toolkit_tool=tool_name,
@@ -411,6 +428,9 @@ class LeanMcpToolkitClient:
     def search_arxiv_theorems(self, query: str, limit: int = 20) -> MathlibSearchResult:
         result = self.call_tool("search_arxiv_theorems", {"query": query, "limit": limit})
         if not result.ok:
+            fallback = self._search_arxiv_theorems_from_eprint_source(query, limit=limit, failed_result=result)
+            if fallback is not None:
+                return fallback
             return MathlibSearchResult(
                 ok=False,
                 query=query,
@@ -428,6 +448,166 @@ class LeanMcpToolkitClient:
             warnings=list(result.warnings),
             summary=f"Found {len(items[:limit])} theorem candidates",
         )
+
+    def _search_arxiv_theorems_from_eprint_source(
+        self,
+        query: str,
+        *,
+        limit: int,
+        failed_result: ToolkitCallResult,
+    ) -> MathlibSearchResult | None:
+        if not self.config.base_url:
+            return None
+        arxiv_id = self._extract_arxiv_id(query)
+        if arxiv_id is None:
+            return None
+        try:
+            source_bytes = self._download_arxiv_eprint_source(arxiv_id)
+            tex_sources = self._extract_tex_sources_from_arxiv_payload(source_bytes)
+        except Exception as exc:  # noqa: BLE001 - external fallback must preserve the original toolkit failure.
+            return MathlibSearchResult(
+                ok=False,
+                query=query,
+                summary=failed_result.summary or f"arXiv theorem search unavailable; e-print fallback failed: {exc}",
+                issue_code=failed_result.issue_code,
+                raw_excerpt=failed_result.raw_excerpt,
+                warnings=[
+                    *failed_result.warnings,
+                    ToolkitResponseWarning(
+                        code="arxiv_eprint_fallback_failed",
+                        message=f"Failed to download or parse arXiv e-print source for {arxiv_id}: {exc}",
+                    ),
+                ],
+            )
+        items = self._theorem_items_from_tex_sources(arxiv_id, tex_sources, limit=limit)
+        if not items:
+            title = self._first_latex_title(tex_sources) or f"arXiv {arxiv_id}"
+            abstract = self._first_latex_abstract(tex_sources) or title
+            items = [
+                {
+                    "title": title,
+                    "theorem": abstract,
+                    "arxiv_id": arxiv_id,
+                    "theorem_id": f"{arxiv_id}:abstract",
+                    "kind": "abstract",
+                    "source_tool": "arxiv_eprint_fallback",
+                }
+            ]
+        return MathlibSearchResult(
+            ok=True,
+            query=query,
+            items=items[:limit],
+            raw_excerpt=(failed_result.raw_excerpt or "")[: self.config.response_excerpt_chars],
+            warnings=[
+                *failed_result.warnings,
+                ToolkitResponseWarning(
+                    code=failed_result.issue_code or "search_arxiv_theorems_failed",
+                    message=failed_result.summary or "Toolkit arXiv theorem provider failed before fallback.",
+                ),
+                ToolkitResponseWarning(
+                    code="arxiv_eprint_fallback",
+                    message=f"Toolkit theorem provider failed; parsed real arXiv e-print source for {arxiv_id}.",
+                ),
+            ],
+            summary=f"Found {len(items[:limit])} theorem candidates via arXiv e-print fallback",
+        )
+
+    @staticmethod
+    def _extract_arxiv_id(query: str) -> str | None:
+        new_style = re.search(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", query)
+        if new_style:
+            return new_style.group(0)
+        old_style = re.search(r"\b[a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?\b", query)
+        if old_style:
+            return old_style.group(0)
+        return None
+
+    def _download_arxiv_eprint_source(self, arxiv_id: str) -> bytes:
+        url = f"https://arxiv.org/e-print/{quote(arxiv_id, safe='/')}"
+        request = Request(url, headers={"User-Agent": "lean-constellation-runtime-matrix/1.0"})
+        with urlopen(request, timeout=self.config.timeout_seconds) as response:  # noqa: S310 - arXiv e-print fallback.
+            return response.read()
+
+    @staticmethod
+    def _extract_tex_sources_from_arxiv_payload(source_bytes: bytes) -> list[str]:
+        tex_sources: list[str] = []
+        try:
+            with tarfile.open(fileobj=io.BytesIO(source_bytes), mode="r:*") as archive:
+                for member in archive.getmembers():
+                    name = Path(member.name)
+                    if member.isfile() and name.suffix.lower() == ".tex" and not name.is_absolute() and ".." not in name.parts:
+                        extracted = archive.extractfile(member)
+                        if extracted is not None:
+                            tex_sources.append(extracted.read().decode("utf-8", errors="ignore"))
+        except tarfile.TarError:
+            pass
+        if tex_sources:
+            return tex_sources
+        if zipfile.is_zipfile(io.BytesIO(source_bytes)):
+            with zipfile.ZipFile(io.BytesIO(source_bytes)) as archive:
+                for name in archive.namelist():
+                    path = Path(name)
+                    if path.suffix.lower() == ".tex" and not path.is_absolute() and ".." not in path.parts:
+                        tex_sources.append(archive.read(name).decode("utf-8", errors="ignore"))
+        if tex_sources:
+            return tex_sources
+        try:
+            return [gzip.decompress(source_bytes).decode("utf-8", errors="ignore")]
+        except OSError:
+            return [source_bytes.decode("utf-8", errors="ignore")]
+
+    @staticmethod
+    def _theorem_items_from_tex_sources(arxiv_id: str, tex_sources: list[str], *, limit: int) -> list[dict[str, Any]]:
+        pattern = re.compile(
+            r"\\begin\{(?P<kind>theorem|lemma|proposition|corollary|definition)\*?\}(?P<body>.*?)\\end\{(?P=kind)\*?\}",
+            re.IGNORECASE | re.DOTALL,
+        )
+        title = LeanMcpToolkitClient._first_latex_title(tex_sources) or f"arXiv {arxiv_id}"
+        items: list[dict[str, Any]] = []
+        for source in tex_sources:
+            for match in pattern.finditer(source):
+                kind = match.group("kind").lower()
+                body = LeanMcpToolkitClient._clean_latex_text(match.group("body"))
+                if not body:
+                    continue
+                index = len(items) + 1
+                items.append(
+                    {
+                        "title": title,
+                        "theorem": body,
+                        "arxiv_id": arxiv_id,
+                        "theorem_id": f"{arxiv_id}:{kind}:{index}",
+                        "kind": kind,
+                        "source_tool": "arxiv_eprint_fallback",
+                    }
+                )
+                if len(items) >= limit:
+                    return items
+        return items
+
+    @staticmethod
+    def _first_latex_title(tex_sources: list[str]) -> str | None:
+        for source in tex_sources:
+            match = re.search(r"\\title\{(?P<title>.*?)\}", source, flags=re.DOTALL)
+            if match:
+                return LeanMcpToolkitClient._clean_latex_text(match.group("title"))
+        return None
+
+    @staticmethod
+    def _first_latex_abstract(tex_sources: list[str]) -> str | None:
+        for source in tex_sources:
+            match = re.search(r"\\begin\{abstract\}(?P<abstract>.*?)\\end\{abstract\}", source, flags=re.DOTALL)
+            if match:
+                return LeanMcpToolkitClient._clean_latex_text(match.group("abstract"))
+        return None
+
+    @staticmethod
+    def _clean_latex_text(value: str) -> str:
+        text = re.sub(r"%.*", " ", value)
+        text = re.sub(r"\\label\{[^}]*\}", " ", text)
+        text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{([^{}]*)\})?", lambda match: match.group(1) or " ", text)
+        text = text.replace("{", " ").replace("}", " ")
+        return re.sub(r"\s+", " ", text).strip()
 
     def run_file_diagnostics(self, repo_root: Path, file_path: Path) -> LeanDiagnosticsResult:
         result = self._call_tool_with_fallback(
@@ -607,6 +787,13 @@ class LeanMcpToolkitClient:
         )
         return {"value": repr(value)}, warnings
 
+    def _toolkit_success_failure(self, value: dict[str, Any] | list[Any] | str) -> tuple[str, str] | None:
+        if not isinstance(value, dict) or value.get("success") is not False:
+            return None
+        summary = str(value.get("error_message") or value.get("summary") or "Toolkit tool returned success=false.")
+        provider = str(value.get("provider") or "toolkit")
+        return f"{provider}_failed", summary
+
     def _parse_jsonish_string(self, value: str) -> dict[str, Any] | list[Any] | str | None:
         text = value.strip()
         if not text:
@@ -780,6 +967,19 @@ class LeanMcpToolkitClient:
                 issue_code="toolkit_malformed_response",
                 raw_excerpt=self._excerpt(exc.raw_text),
                 summary=str(exc),
+            )
+        success_failure = self._toolkit_success_failure(value_dict)
+        if success_failure is not None:
+            issue_code, summary = success_failure
+            return ToolkitCallResult(
+                ok=False,
+                toolkit_tool=tool_name,
+                payload=payload,
+                value=value_dict,
+                raw_excerpt=self._excerpt(value_dict),
+                warnings=warnings,
+                issue_code=issue_code,
+                summary=summary,
             )
         return ToolkitCallResult(
             ok=True,

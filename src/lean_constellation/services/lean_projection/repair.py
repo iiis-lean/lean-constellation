@@ -15,6 +15,7 @@ from lean_constellation.services.foundation import (
     ServiceIssue,
     ServiceResult,
 )
+from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.lean_projection.adapter_facade import AdapterFacadeComponent
 from lean_constellation.services.lean_projection.decl_file import DeclFileComponent
 from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent, ProjectionView
@@ -169,25 +170,40 @@ class RepairComponent:
                 if not check.ok or check.value is None:
                     return self.runtime.foundation.fail(check.issues)
                 reports.append(check.value)
-        adapter = self.adapter_facade.check_adapter_interfaces_sync(Path(repo_root))
-        if adapter.ok and adapter.value is not None:
-            reports.append(adapter.value)
-        elif self._only_adapter_provider_missing(adapter.issues):
+        if self._is_native_repo(Path(repo_root)):
             reports.append(
                 self.runtime.foundation.gate_passed(
                     "adapter_interfaces_sync",
-                    summary="Adapter facade audit skipped because no adapter provider is configured.",
+                    summary="Adapter facade audit skipped for native repo format.",
                     warnings=[
                         self.runtime.foundation.issue(
                             "adapter_facade_audit_skipped",
-                            "Adapter facade audit skipped because no adapter provider is configured.",
+                            "Adapter facade audit skipped for native repo format.",
                             severity=IssueSeverity.WARNING,
                         )
                     ],
                 )
             )
         else:
-            return self.runtime.foundation.fail(adapter.issues)
+            adapter = self.adapter_facade.check_adapter_interfaces_sync(Path(repo_root))
+            if adapter.ok and adapter.value is not None:
+                reports.append(adapter.value)
+            elif self._only_adapter_provider_missing(adapter.issues):
+                reports.append(
+                    self.runtime.foundation.gate_passed(
+                        "adapter_interfaces_sync",
+                        summary="Adapter facade audit skipped because no adapter provider is configured.",
+                        warnings=[
+                            self.runtime.foundation.issue(
+                                "adapter_facade_audit_skipped",
+                                "Adapter facade audit skipped because no adapter provider is configured.",
+                                severity=IssueSeverity.WARNING,
+                            )
+                        ],
+                    )
+                )
+            else:
+                return self.runtime.foundation.fail(adapter.issues)
         if not reports:
             reports.append(
                 self.runtime.foundation.gate_passed(
@@ -289,3 +305,10 @@ class RepairComponent:
 
     def _only_adapter_provider_missing(self, issues: list[ServiceIssue]) -> bool:
         return bool(issues) and all(issue.kind == "adapter_facade_provider_missing" for issue in issues)
+
+    def _is_native_repo(self, repo_root: Path) -> bool:
+        metadata = getattr(getattr(self.runtime, "repo_workspace", None), "metadata", None)
+        if metadata is None:
+            return False
+        repo_format = metadata.get_repo_format(repo_root)
+        return bool(repo_format.ok and repo_format.value is not None and repo_format.value.repo_format == RepoFormat.NATIVE)

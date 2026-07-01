@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import socket
+import tarfile
 
 import pytest
 from urllib.error import URLError
@@ -64,6 +66,74 @@ def test_toolkit_call_timeout_is_structured() -> None:
     assert "slow backend" in result.summary
 
 
+def test_toolkit_success_false_response_is_structured_failure() -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "search_arxiv_theorems"
+        return {
+            "success": False,
+            "error_message": "HTTP request failed: http 500: Internal Server Error",
+            "provider": "arxiv_theorems",
+            "items": [],
+        }
+
+    result = LeanMcpToolkitClient(dispatcher=dispatch).call_tool("search_arxiv_theorems", {"query": "Nat"})
+
+    assert result.ok is False
+    assert result.issue_code == "arxiv_theorems_failed"
+    assert "http 500" in result.summary
+    assert isinstance(result.value, dict)
+    assert result.value["success"] is False
+
+
+def test_search_arxiv_theorems_falls_back_to_real_eprint_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "search_arxiv_theorems"
+        return {
+            "success": False,
+            "error_message": "HTTP request failed: http 500: Internal Server Error",
+            "provider": "arxiv_theorems",
+            "items": [],
+        }
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return _arxiv_source_tarball(
+                r"""
+\title{Runtime Matrix Source}
+\begin{theorem}
+Every strict runtime matrix fallback test has a real TeX theorem body.
+\end{theorem}
+"""
+            )
+
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request, timeout: int):
+        requested_urls.append(request.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr(toolkit_module, "urlopen", fake_urlopen)
+    client = LeanMcpToolkitClient(
+        LeanMcpToolkitClientConfig(base_url="http://127.0.0.1:18080", api_prefix="/api/v1"),
+        dispatcher=dispatch,
+    )
+
+    result = client.search_arxiv_theorems("math/0001001", limit=1)
+
+    assert result.ok is True
+    assert requested_urls == ["https://arxiv.org/e-print/math/0001001"]
+    assert result.items[0]["arxiv_id"] == "math/0001001"
+    assert result.items[0]["source_tool"] == "arxiv_eprint_fallback"
+    assert "real TeX theorem body" in result.items[0]["theorem"]
+    assert {warning.code for warning in result.warnings} >= {"arxiv_theorems_failed", "arxiv_eprint_fallback"}
+
+
 def test_toolkit_http_invalid_json_is_structured(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeResponse:
         def __enter__(self):
@@ -88,6 +158,16 @@ def test_toolkit_http_invalid_json_is_structured(monkeypatch: pytest.MonkeyPatch
     assert "{bad json" in (result.raw_excerpt or "")
     assert catalog.ok is False
     assert catalog.issue_code == "toolkit_malformed_response"
+
+
+def _arxiv_source_tarball(source: str) -> bytes:
+    payload = source.encode("utf-8")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("main.tex")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
 
 
 def test_toolkit_http_timeout_is_structured(monkeypatch: pytest.MonkeyPatch) -> None:

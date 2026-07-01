@@ -330,6 +330,28 @@ def test_full_projection_audit_reports_failed_then_passed_after_repair(tmp_path:
     assert any(issue.kind == "adapter_facade_audit_skipped" for issue in synced.value.issues)
 
 
+def test_full_projection_audit_skips_adapter_facade_for_native_repo_format(tmp_path: Path) -> None:
+    _create_nodes(tmp_path)
+    component = _repair_component(tmp_path)
+    formatted = component.runtime.repo_workspace.metadata.set_repo_format(
+        tmp_path,
+        repo_format="native",
+        reason="Unit test native projection audit.",
+    )
+    assert formatted.ok
+    assert component.repair_node_projection(tmp_path, node_path="Main").ok
+    assert component.repair_node_projection(tmp_path, node_path="Main.Topic").ok
+    assert component.repair_node_projection(tmp_path, node_path="Main.Topic.Core").ok
+
+    audit = component.full_projection_audit(tmp_path)
+
+    assert audit.ok
+    assert audit.value is not None
+    assert audit.value.passed is True
+    assert any(issue.kind == "adapter_facade_audit_skipped" for issue in audit.value.issues)
+    assert "checks passed" in audit.value.summary
+
+
 def test_full_projection_audit_includes_adapter_facade_when_provider_configured(tmp_path: Path) -> None:
     component = _repair_component(tmp_path, active_adapter_modules=["Upstream.A"], visible_adapter_modules=["Upstream.A"])
     adapter_refresh = component.adapter_facade.refresh_adapter_interfaces(tmp_path)

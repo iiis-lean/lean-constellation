@@ -170,6 +170,36 @@ def test_declaration_repo_nav_mathlib_and_policy_wrappers(tmp_path: Path) -> Non
     assert [tool for tool, _ in calls] == ["declarations.extract", "repo_nav.file_outline", "lean_explore.find"]
 
 
+def test_repo_navigation_falls_back_to_local_lean_files_when_toolkit_unavailable(tmp_path: Path) -> None:
+    (tmp_path / "Demo.lean").write_text(
+        "import Init\n\n"
+        "namespace Demo\n\n"
+        "theorem smoke : True := by\n"
+        "  trivial\n\n"
+        "def answer : Nat := 42\n\n"
+        "end Demo\n",
+        encoding="utf-8",
+    )
+    client = LeanToolchainClient(lake=RecordingLake(), toolkit=LeanMcpToolkitClient())
+
+    tree = client.list_repo_tree(tmp_path, name_filter="Demo", limit=5)
+    outline = client.outline_repo_file(tmp_path, "Demo")
+    found = client.find_repo_declarations(tmp_path, query="smoke", module_filter="Demo", limit=5)
+    source = client.read_repo_source_window(tmp_path, "Demo", start_line=5, end_line=6)
+    extracted = client.extract_declaration(tmp_path, "Demo", "smoke")
+
+    assert tree.ok and tree.provider == "local_repo_fallback"
+    assert tree.value["items"][0]["module"] == "Demo"
+    assert outline.ok and outline.value["imports"] == ["Init"]
+    assert [item["name"] for item in outline.value["declarations"]] == ["smoke", "answer"]
+    assert found.ok and found.value["results"][0]["name"] == "smoke"
+    assert "5: theorem smoke" in source.value["text"]
+    assert extracted.ok
+    assert extracted.provider == "local_repo_fallback"
+    assert extracted.fallback_provider == "lean_mcp_toolkit"
+    assert "theorem smoke" in (extracted.code or "")
+
+
 def test_mathlib_accessibility_uses_lake_project_snippet_and_preserves_failed_check(tmp_path: Path) -> None:
     (tmp_path / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
     lake = RecordingLake()

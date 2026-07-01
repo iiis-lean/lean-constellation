@@ -291,6 +291,16 @@ class LeanToolchainClient:
 
     def extract_declaration(self, repo_root: Path, target: str, decl_name: str) -> ToolchainDeclarationView:
         result = self.toolkit.extract_declaration(Path(repo_root), target, decl_name)
+        if result.ok:
+            return self._declaration_view(result, provider="lean_mcp_toolkit")
+        fallback = self._extract_declaration_local(Path(repo_root), target, decl_name)
+        if fallback.ok:
+            return fallback.model_copy(
+                update={
+                    "fallback_provider": "lean_mcp_toolkit",
+                    "fallback_reason": result.issue_code or result.summary,
+                }
+            )
         return self._declaration_view(result, provider="lean_mcp_toolkit")
 
     def list_repo_tree(
@@ -307,7 +317,24 @@ class LeanToolchainClient:
             payload["module_prefix"] = module_prefix
         if name_filter:
             payload["name_filter"] = name_filter
-        return self._tool_call_view(self.toolkit.call_tool("repo_nav.tree", payload))
+        result = self._tool_call_view(self.toolkit.call_tool("repo_nav.tree", payload))
+        if result.ok:
+            return result
+        fallback = self._list_repo_tree_local(
+            Path(repo_root),
+            module_prefix=module_prefix,
+            name_filter=name_filter,
+            depth=depth,
+            limit=limit,
+        )
+        if fallback.ok:
+            return fallback.model_copy(
+                update={
+                    "fallback_provider": "lean_mcp_toolkit",
+                    "fallback_reason": result.issue_code or result.summary,
+                }
+            )
+        return result
 
     def outline_repo_file(
         self,
@@ -321,7 +348,7 @@ class LeanToolchainClient:
         include_scope_cmds: bool = True,
         limit_decls: int = 300,
     ) -> ToolchainToolCallView:
-        return self._tool_call_view(
+        result = self._tool_call_view(
             self.toolkit.call_tool(
                 "repo_nav.file_outline",
                 {
@@ -336,6 +363,24 @@ class LeanToolchainClient:
                 },
             )
         )
+        if result.ok:
+            return result
+        fallback = self._outline_repo_file_local(
+            Path(repo_root),
+            target,
+            include_imports=include_imports,
+            include_decl_headers=include_decl_headers,
+            include_scope_cmds=include_scope_cmds,
+            limit_decls=limit_decls,
+        )
+        if fallback.ok:
+            return fallback.model_copy(
+                update={
+                    "fallback_provider": "lean_mcp_toolkit",
+                    "fallback_reason": result.issue_code or result.summary,
+                }
+            )
+        return result
 
     def grep_repo(
         self,
@@ -360,7 +405,7 @@ class LeanToolchainClient:
         max_lines: int | None = None,
         with_line_numbers: bool = True,
     ) -> ToolchainToolCallView:
-        return self._tool_call_view(
+        result = self._tool_call_view(
             self.toolkit.call_tool(
                 "repo_nav.read",
                 {
@@ -373,6 +418,24 @@ class LeanToolchainClient:
                 },
             )
         )
+        if result.ok:
+            return result
+        fallback = self._read_repo_source_window_local(
+            Path(repo_root),
+            target,
+            start_line=start_line,
+            end_line=end_line,
+            max_lines=max_lines,
+            with_line_numbers=with_line_numbers,
+        )
+        if fallback.ok:
+            return fallback.model_copy(
+                update={
+                    "fallback_provider": "lean_mcp_toolkit",
+                    "fallback_reason": result.issue_code or result.summary,
+                }
+            )
+        return result
 
     def find_repo_declarations(
         self,
@@ -385,7 +448,7 @@ class LeanToolchainClient:
         include_deps: bool = False,
         limit: int = 20,
     ) -> ToolchainToolCallView:
-        return self._tool_call_view(
+        result = self._tool_call_view(
             self.toolkit.call_tool(
                 "repo_nav.local_decl.find",
                 {
@@ -399,6 +462,24 @@ class LeanToolchainClient:
                 },
             )
         )
+        if result.ok:
+            return result
+        fallback = self._find_repo_declarations_local(
+            Path(repo_root),
+            query=query,
+            match_mode=match_mode,
+            decl_kinds=decl_kinds,
+            module_filter=module_filter,
+            limit=limit,
+        )
+        if fallback.ok:
+            return fallback.model_copy(
+                update={
+                    "fallback_provider": "lean_mcp_toolkit",
+                    "fallback_reason": result.issue_code or result.summary,
+                }
+            )
+        return result
 
     def find_repo_declaration(self, repo_root: Path, decl_name: str, *, module: str | None = None) -> ToolchainToolCallView:
         return self.find_repo_declarations(repo_root, query=decl_name, match_mode="exact", module_filter=module, limit=5)
@@ -712,6 +793,322 @@ class LeanToolchainClient:
             return target.resolve(strict=False).relative_to(repo_root.resolve(strict=False)).as_posix()
         except ValueError:
             return file_path.as_posix()
+
+    def _list_repo_tree_local(
+        self,
+        repo_root: Path,
+        *,
+        module_prefix: str | None = None,
+        name_filter: str | None = None,
+        depth: int,
+        limit: int,
+    ) -> ToolchainToolCallView:
+        modules = []
+        normalized_filter = (name_filter or "").strip().lower()
+        for path in self._iter_lean_files(repo_root):
+            module = self._module_from_file(repo_root, path)
+            if module_prefix and not module.startswith(module_prefix):
+                continue
+            rel_depth = len(path.relative_to(repo_root).parts)
+            if rel_depth > depth:
+                continue
+            if (
+                normalized_filter
+                and normalized_filter not in module.lower()
+                and normalized_filter not in path.name.lower()
+            ):
+                continue
+            modules.append(
+                {
+                    "module": module,
+                    "module_name": module,
+                    "relative_path": path.relative_to(repo_root).as_posix(),
+                    "kind": "lean_file",
+                }
+            )
+            if len(modules) >= limit:
+                break
+        return ToolchainToolCallView(
+            ok=True,
+            provider="local_repo_fallback",
+            toolkit_tool="repo_nav.tree",
+            payload={
+                "repo_root": str(repo_root),
+                "module_prefix": module_prefix,
+                "name_filter": name_filter,
+                "depth": depth,
+                "limit": limit,
+            },
+            value={"items": modules},
+            summary=f"Local repo fallback listed {len(modules)} Lean modules.",
+        )
+
+    def _outline_repo_file_local(
+        self,
+        repo_root: Path,
+        target: str,
+        *,
+        include_imports: bool,
+        include_decl_headers: bool,
+        include_scope_cmds: bool,
+        limit_decls: int,
+    ) -> ToolchainToolCallView:
+        path = self._resolve_repo_module_or_file(repo_root, target)
+        if path is None:
+            return ToolchainToolCallView(
+                ok=False,
+                provider="local_repo_fallback",
+                toolkit_tool="repo_nav.file_outline",
+                payload={"repo_root": str(repo_root), "target": target},
+                summary=f"Cannot resolve Lean module or file: {target}.",
+                issue_code="repo_nav_target_missing",
+            )
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        declarations = self._scan_local_declarations(lines, limit=limit_decls) if include_decl_headers else []
+        imports = self._scan_local_imports(lines) if include_imports else []
+        scope_cmds = self._scan_local_scope_cmds(lines) if include_scope_cmds else []
+        return ToolchainToolCallView(
+            ok=True,
+            provider="local_repo_fallback",
+            toolkit_tool="repo_nav.file_outline",
+            payload={"repo_root": str(repo_root), "target": target},
+            value={
+                "module": self._module_from_file(repo_root, path),
+                "relative_path": path.relative_to(repo_root).as_posix(),
+                "imports": imports,
+                "declarations": declarations,
+                "scope_cmds": scope_cmds,
+            },
+            summary=f"Local repo fallback outlined {len(declarations)} declarations from {target}.",
+        )
+
+    def _read_repo_source_window_local(
+        self,
+        repo_root: Path,
+        target: str,
+        *,
+        start_line: int | None,
+        end_line: int | None,
+        max_lines: int | None,
+        with_line_numbers: bool,
+    ) -> ToolchainToolCallView:
+        path = self._resolve_repo_module_or_file(repo_root, target)
+        if path is None:
+            return ToolchainToolCallView(
+                ok=False,
+                provider="local_repo_fallback",
+                toolkit_tool="repo_nav.read",
+                payload={"repo_root": str(repo_root), "target": target},
+                summary=f"Cannot resolve Lean module or file: {target}.",
+                issue_code="repo_nav_target_missing",
+            )
+        lines = path.read_text(encoding="utf-8").splitlines()
+        first = max(1, start_line or 1)
+        last = min(len(lines), end_line or (first + (max_lines or len(lines)) - 1))
+        selected = lines[first - 1 : last]
+        if with_line_numbers:
+            text = "\n".join(f"{line_no}: {line}" for line_no, line in enumerate(selected, start=first))
+        else:
+            text = "\n".join(selected)
+        return ToolchainToolCallView(
+            ok=True,
+            provider="local_repo_fallback",
+            toolkit_tool="repo_nav.read",
+            payload={
+                "repo_root": str(repo_root),
+                "target": target,
+                "start_line": start_line,
+                "end_line": end_line,
+                "max_lines": max_lines,
+            },
+            value={"text": text, "start_line": first, "end_line": last},
+            summary=f"Local repo fallback read {len(selected)} lines from {target}.",
+        )
+
+    def _find_repo_declarations_local(
+        self,
+        repo_root: Path,
+        *,
+        query: str,
+        match_mode: str,
+        decl_kinds: list[str] | None,
+        module_filter: str | None,
+        limit: int,
+    ) -> ToolchainToolCallView:
+        normalized_query = query.strip().lower()
+        normalized_kinds = {kind.strip() for kind in decl_kinds or [] if kind and kind.strip()}
+        matches = []
+        for path in self._iter_lean_files(repo_root):
+            module = self._module_from_file(repo_root, path)
+            if module_filter and module_filter != module:
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for item in self._scan_local_declarations(lines, limit=1000):
+                if normalized_kinds and item.get("kind") not in normalized_kinds:
+                    continue
+                haystack = " ".join(
+                    str(item.get(key) or "")
+                    for key in ("name", "full_name", "signature", "header_preview")
+                ).lower()
+                name = str(item.get("name") or "").lower()
+                if match_mode == "exact":
+                    matched = normalized_query == name or normalized_query == f"{module}.{name}".lower()
+                else:
+                    matched = normalized_query in haystack
+                if not matched:
+                    continue
+                matches.append(
+                    {
+                        **item,
+                        "module": module,
+                        "module_name": module,
+                        "match_reason": "local_repo_fallback",
+                    }
+                )
+                if len(matches) >= limit:
+                    return self._local_tool_call(
+                        "repo_nav.local_decl.find",
+                        repo_root,
+                        {"results": matches},
+                        f"Local repo fallback found {len(matches)} declarations.",
+                    )
+        return self._local_tool_call(
+            "repo_nav.local_decl.find",
+            repo_root,
+            {"results": matches},
+            f"Local repo fallback found {len(matches)} declarations.",
+        )
+
+    def _extract_declaration_local(
+        self,
+        repo_root: Path,
+        target: str,
+        decl_name: str,
+    ) -> ToolchainDeclarationView:
+        path = self._resolve_repo_module_or_file(repo_root, target)
+        if path is None:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider="local_repo_fallback",
+                name=decl_name,
+                summary=f"Cannot resolve Lean module or file: {target}.",
+                issue_code="repo_nav_target_missing",
+            )
+        lines = path.read_text(encoding="utf-8").splitlines()
+        declarations = self._scan_local_declarations(lines, limit=1000)
+        short_name = decl_name.rsplit(".", 1)[-1]
+        item = next((decl for decl in declarations if decl.get("name") in {decl_name, short_name}), None)
+        if item is None:
+            return ToolchainDeclarationView(
+                ok=False,
+                provider="local_repo_fallback",
+                name=decl_name,
+                module=self._module_from_file(repo_root, path),
+                summary=f"Declaration {decl_name} was not found in {target}.",
+                issue_code="declaration_not_found",
+            )
+        start = int(item["line_start"])
+        end = int(item["line_end"])
+        code = "\n".join(lines[start - 1 : end])
+        return ToolchainDeclarationView(
+            ok=True,
+            provider="local_repo_fallback",
+            name=decl_name,
+            code=code,
+            module=self._module_from_file(repo_root, path),
+            kind=str(item.get("kind") or ""),
+            signature=str(item.get("signature") or ""),
+            summary=f"Local repo fallback extracted {decl_name}.",
+        )
+
+    def _local_tool_call(
+        self,
+        tool_name: str,
+        repo_root: Path,
+        value: dict[str, Any],
+        summary: str,
+    ) -> ToolchainToolCallView:
+        return ToolchainToolCallView(
+            ok=True,
+            provider="local_repo_fallback",
+            toolkit_tool=tool_name,
+            payload={"repo_root": str(repo_root)},
+            value=value,
+            summary=summary,
+        )
+
+    def _iter_lean_files(self, repo_root: Path) -> list[Path]:
+        return sorted(
+            path
+            for path in repo_root.rglob("*.lean")
+            if ".lake" not in path.relative_to(repo_root).parts
+        )
+
+    def _resolve_repo_module_or_file(self, repo_root: Path, target: str) -> Path | None:
+        raw = target.strip()
+        direct = Path(raw)
+        candidates = []
+        if direct.suffix == ".lean":
+            candidates.append(direct if direct.is_absolute() else repo_root / direct)
+        candidates.append(repo_root / f"{raw.replace('.', '/')}.lean")
+        candidates.append(repo_root / f"{raw}.lean")
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _module_from_file(self, repo_root: Path, path: Path) -> str:
+        rel = path.relative_to(repo_root).with_suffix("")
+        return ".".join(rel.parts)
+
+    def _scan_local_imports(self, lines: list[str]) -> list[str]:
+        imports = []
+        for line in lines:
+            match = re.match(r"^\s*import\s+(.+?)\s*$", line)
+            if match:
+                imports.extend(part for part in match.group(1).split() if part)
+        return imports
+
+    def _scan_local_scope_cmds(self, lines: list[str]) -> list[dict[str, Any]]:
+        scopes = []
+        for index, line in enumerate(lines, start=1):
+            match = re.match(r"^\s*(namespace|section|open)\s+(.+?)\s*$", line)
+            if match:
+                scopes.append({"kind": match.group(1), "target": match.group(2).strip(), "line": index})
+        return scopes
+
+    def _scan_local_declarations(self, lines: list[str], *, limit: int) -> list[dict[str, Any]]:
+        decl_starts: list[tuple[int, re.Match[str]]] = []
+        pattern = re.compile(
+            r"^\s*(theorem|lemma|def|instance|axiom|inductive|structure|class)\s+([A-Za-z0-9_'.]+)"
+        )
+        for index, line in enumerate(lines, start=1):
+            match = pattern.match(line)
+            if match:
+                decl_starts.append((index, match))
+        declarations = []
+        for position, (start, match) in enumerate(decl_starts[:limit]):
+            next_start = (
+                decl_starts[position + 1][0]
+                if position + 1 < len(decl_starts)
+                else len(lines) + 1
+            )
+            end = max(start, next_start - 1)
+            header = lines[start - 1].strip()
+            signature = header.split(":=", 1)[0].strip()
+            declarations.append(
+                {
+                    "name": match.group(2),
+                    "full_name": match.group(2),
+                    "kind": match.group(1),
+                    "signature": signature,
+                    "header_preview": header,
+                    "line_start": start,
+                    "line_end": end,
+                }
+            )
+        return declarations
 
     def _looks_like_lake_project(self, repo_root: Path) -> bool:
         return (repo_root / "lakefile.toml").is_file() or (repo_root / "lakefile.lean").is_file()

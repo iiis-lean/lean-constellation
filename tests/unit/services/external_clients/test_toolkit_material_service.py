@@ -121,7 +121,7 @@ def test_toolkit_canonical_decl_module_diagnostics_and_extract(tmp_path) -> None
         if tool_name == "mathlib_nav.file_outline":
             return {"imports": ["Init"], "declarations": [{"name": "Nat.add_assoc"}]}
         if tool_name == "diagnostics.file":
-            return {"success": False, "items": [{"severity": "error"}], "error_count": 1}
+            return {"success": True, "items": [{"severity": "error"}], "error_count": 1}
         if tool_name == "declarations.extract":
             return {
                 "success": True,
