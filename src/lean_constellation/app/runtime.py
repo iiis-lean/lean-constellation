@@ -153,6 +153,17 @@ def create_app_runtime_from_config(
     test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
     runtime_root = config.runtime_root or (config.workspace_root / ".agent_runtime")
+    if test_control_enabled and agent_type_specs is None and extra_agent_type_specs is None:
+        return create_test_control_runtime_services(
+            runtime_root=runtime_root,
+            external_config=external_config,
+            external_overrides=external_overrides,
+            providers=providers,
+            agent_providers=agent_providers,
+            max_concurrent_flow_advances=config.max_concurrent_flow_advances,
+            max_concurrent_steps=config.max_concurrent_steps,
+            start_paused=start_paused,
+        )
     return create_app_runtime_services(
         runtime_root=runtime_root,
         external_config=external_config,

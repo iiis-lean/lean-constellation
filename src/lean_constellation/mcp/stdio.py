@@ -108,7 +108,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.view_key:
         parser.error("--view-key or LEAN_CONSTELLATION_MCP_VIEW_KEY is required")
     config = load_app_config(args.config)
-    runtime = create_app_runtime_from_config(config)
+    runtime = create_app_runtime_from_config(
+        config,
+        test_control_enabled=os.environ.get("LEAN_CONSTELLATION_TEST_CONTROL_ENABLED") == "1",
+    )
     anyio.run(lambda: run_mcp_stdio_server(runtime, view_key=args.view_key))
     return 0
 
