@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sys
 from time import monotonic, sleep
 from typing import Any
 
@@ -45,6 +44,7 @@ from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResu
 from lean_constellation.mcp import create_mcp_server
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
+from tests.real.runtime_matrix.transport import start_runtime_mcp_http_server
 from tests.unit.flows.decl_round._helpers import NODE_PATH, create_round_with_decl, setup_content_node
 
 
@@ -1690,7 +1690,8 @@ def _write_noninteractive_codex_base_config(config_home: Path, tmp_path: Path) -
 
 
 @pytest.mark.real_codex
-def test_real_codex_repo_format_discovery_submit_env_gated(tmp_path: Path) -> None:
+@pytest.mark.mcp_http
+def test_real_codex_repo_format_discovery_submit_env_gated(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     config_home = _require_real_codex()
     base_config_path = _write_noninteractive_codex_base_config(config_home, tmp_path)
     runtime = create_app_runtime_services(
@@ -1700,17 +1701,12 @@ def test_real_codex_repo_format_discovery_submit_env_gated(tmp_path: Path) -> No
     workspace = tmp_path / "workspace"
     repo_root = workspace / "Provider"
     _write_bootstrap_preparation(runtime, repo_root)
-    app_config = tmp_path / "lean_constellation.toml"
-    app_config.write_text(
-        f'workspace_root = "{workspace}"\nruntime_root = "{tmp_path / ".agent_runtime"}"\n',
-        encoding="utf-8",
-    )
+    http_server = start_runtime_mcp_http_server(runtime)
+    request.addfinalizer(http_server.close)
     materialized = materialize_agent_home(
         runtime,
         "RepoFormatDiscoveryAgent",
-        mcp_server_command=sys.executable,
-        mcp_server_args=["-m", "lean_constellation.mcp.stdio", "--config", str(app_config)],
-        mcp_server_env={"PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
+        mcp_http_base_url=http_server.base_url,
         base_config_path=base_config_path,
         auth_json_path=config_home / "auth.json",
     )
@@ -1742,7 +1738,8 @@ def test_real_codex_repo_format_discovery_submit_env_gated(tmp_path: Path) -> No
 
 
 @pytest.mark.real_codex
-def test_real_codex_controlled_test_agent_type_mcp_mount_env_gated(tmp_path: Path) -> None:
+@pytest.mark.mcp_http
+def test_real_codex_controlled_test_agent_type_mcp_mount_env_gated(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     config_home = _require_real_codex()
     base_config_path = _write_noninteractive_codex_base_config(config_home, tmp_path)
     controlled = derive_agent_type_spec(
@@ -1759,17 +1756,12 @@ def test_real_codex_controlled_test_agent_type_mcp_mount_env_gated(tmp_path: Pat
     workspace = tmp_path / "workspace"
     repo_root = workspace / "Provider"
     _write_bootstrap_preparation(runtime, repo_root)
-    app_config = tmp_path / "lean_constellation.toml"
-    app_config.write_text(
-        f'workspace_root = "{workspace}"\nruntime_root = "{tmp_path / ".agent_runtime"}"\n',
-        encoding="utf-8",
-    )
+    http_server = start_runtime_mcp_http_server(runtime)
+    request.addfinalizer(http_server.close)
     materialized = materialize_agent_home(
         runtime,
         "RepoFormatDiscoveryControlledTestAgent",
-        mcp_server_command=sys.executable,
-        mcp_server_args=["-m", "lean_constellation.mcp.stdio", "--config", str(app_config)],
-        mcp_server_env={"PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
+        mcp_http_base_url=http_server.base_url,
         base_config_path=base_config_path,
         auth_json_path=config_home / "auth.json",
         agent_type_specs=specs,

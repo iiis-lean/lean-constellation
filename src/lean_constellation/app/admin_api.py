@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
+from agent_runtime_kit.agent.models import to_jsonable
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import Field, field_validator
@@ -717,6 +718,159 @@ class LeanAdminApi:
                 self.runtime.foundation.issue("external_takeover_call_failed", f"Failed to call external handoff tool: {exc}")
             )
 
+    def get_agent_rollout_info(self, agent_id: str):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.get_rollout_info(agent_id),
+            failure_kind="agent_rollout_info_failed",
+            failure_message="Failed to read Agent rollout info",
+        )
+
+    def list_agent_turns(self, agent_id: str):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.list_trace_turns(agent_id),
+            failure_kind="agent_turns_failed",
+            failure_message="Failed to list Agent turns",
+        )
+
+    def get_agent_turn(
+        self,
+        agent_id: str,
+        *,
+        turn_id: str | None = None,
+        index: int | None = None,
+        latest: bool = False,
+    ):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.get_trace_turn(
+                agent_id,
+                turn_id=turn_id,
+                index=index,
+                latest=latest,
+            ),
+            failure_kind="agent_turn_failed",
+            failure_message="Failed to read Agent turn",
+        )
+
+    def get_agent_event(
+        self,
+        agent_id: str,
+        *,
+        index: int | None = None,
+        last: bool = False,
+    ):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.get_trace_event(agent_id, index=index, last=last),
+            failure_kind="agent_event_failed",
+            failure_message="Failed to read Agent event",
+        )
+
+    def tail_agent_events(
+        self,
+        agent_id: str,
+        *,
+        limit: int = 20,
+        event_type: str | None = None,
+        payload_type: str | None = None,
+    ):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.tail_trace_events(
+                agent_id,
+                limit=limit,
+                event_type=event_type,
+                payload_type=payload_type,
+            ),
+            failure_kind="agent_events_tail_failed",
+            failure_message="Failed to tail Agent events",
+        )
+
+    def list_agent_response_texts(
+        self,
+        agent_id: str,
+        *,
+        turn_id: str | None = None,
+        latest: bool = False,
+    ):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.list_response_texts(
+                agent_id,
+                turn_id=turn_id,
+                latest=latest,
+            ),
+            failure_kind="agent_response_texts_failed",
+            failure_message="Failed to list Agent response texts",
+        )
+
+    def get_latest_agent_response_text(self, agent_id: str):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.get_latest_response_text(agent_id),
+            failure_kind="agent_latest_response_text_failed",
+            failure_message="Failed to read latest Agent response text",
+        )
+
+    def list_agent_tool_calls(
+        self,
+        agent_id: str,
+        *,
+        turn_id: str | None = None,
+        latest: bool = False,
+    ):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.list_tool_calls(
+                agent_id,
+                turn_id=turn_id,
+                latest=latest,
+            ),
+            failure_kind="agent_tool_calls_failed",
+            failure_message="Failed to list Agent tool calls",
+        )
+
+    def get_agent_tool_call(
+        self,
+        agent_id: str,
+        *,
+        call_id: str | None = None,
+        index: int | None = None,
+        last: bool = False,
+    ):
+        return self._agent_trace_call(
+            lambda agent_service: agent_service.get_tool_call(
+                agent_id,
+                call_id=call_id,
+                index=index,
+                last=last,
+            ),
+            failure_kind="agent_tool_call_failed",
+            failure_message="Failed to read Agent tool call",
+        )
+
+    def export_agent_trace_report(
+        self,
+        agent_id: str,
+        *,
+        artifact_path: str | Path | None = None,
+        output_path: str | Path | None = None,
+        format: Literal["json", "markdown"] = "json",
+    ):
+        def build(agent_service):
+            if output_path is None:
+                return agent_service.build_trace_report(agent_id, artifact_path=artifact_path)
+            report = agent_service.export_trace_report(
+                agent_id,
+                output_path=output_path,
+                format=format,
+                artifact_path=artifact_path,
+            )
+            payload = to_jsonable(report)
+            if isinstance(payload, dict):
+                payload["report_path"] = str(output_path)
+            return payload
+
+        return self._agent_trace_call(
+            build,
+            failure_kind="agent_trace_report_failed",
+            failure_message="Failed to build Agent trace report",
+        )
+
     def _require_test_control(self):
         if self.runtime.test_control_enabled:
             return None
@@ -802,6 +956,19 @@ class LeanAdminApi:
             providers = getattr(agent_service, "providers", {})
             if override.cli_type_override not in providers:
                 raise ValueError(f"unknown Agent provider cli_type: {override.cli_type_override}")
+
+    def _agent_trace_call(self, fn, *, failure_kind: str, failure_message: str):
+        agent_service = self.runtime.ark.agent_service
+        if agent_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
+            )
+        try:
+            return self.runtime.foundation.ok(to_jsonable(fn(agent_service)))
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(failure_kind, f"{failure_message}: {exc}")
+            )
 
     def _agent_runtime_root(self) -> Path | None:
         agent_service = self.runtime.ark.agent_service

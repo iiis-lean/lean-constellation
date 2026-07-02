@@ -4,7 +4,6 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
-import sys
 
 import pytest
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
@@ -13,12 +12,13 @@ from lean_constellation.app import create_app_runtime_services, materialize_agen
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixFakeLakeClient
 from tests.real.runtime_matrix.scripted_provider import schedule_until
+from tests.real.runtime_matrix.transport import start_runtime_mcp_http_server
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow, pytest.mark.real_codex]
 
 
-def test_real_codex_repo_format_submit_smoke_env_gated(tmp_path: Path) -> None:
+def test_real_codex_repo_format_submit_smoke_env_gated(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     config_home = _require_real_codex()
     base_config_path = _write_noninteractive_codex_base_config(config_home, tmp_path)
     runtime_root = tmp_path / ".agent_runtime"
@@ -29,17 +29,12 @@ def test_real_codex_repo_format_submit_smoke_env_gated(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     repo_root = workspace / "Provider"
     _write_bootstrap_preparation(runtime, repo_root)
-    app_config = tmp_path / "lean_constellation.toml"
-    app_config.write_text(
-        f'workspace_root = "{workspace}"\nruntime_root = "{runtime_root}"\n',
-        encoding="utf-8",
-    )
+    http_server = start_runtime_mcp_http_server(runtime)
+    request.addfinalizer(http_server.close)
     materialized = materialize_agent_home(
         runtime,
         "RepoFormatDiscoveryAgent",
-        mcp_server_command=sys.executable,
-        mcp_server_args=["-m", "lean_constellation.mcp.stdio", "--config", str(app_config)],
-        mcp_server_env={"PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
+        mcp_http_base_url=http_server.base_url,
         base_config_path=base_config_path,
         auth_json_path=config_home / "auth.json",
     )

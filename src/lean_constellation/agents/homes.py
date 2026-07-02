@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from urllib.parse import quote
 
 from agent_runtime_kit.agent.homes import HomeCreateSpec, McpServerSpec
 
@@ -13,11 +15,43 @@ from lean_constellation.agents.skills import build_skill_specs
 from lean_constellation.mcp.context import RUNTIME_ENV_KEYS
 
 
+@dataclass(frozen=True)
+class ViewMcpEndpointSpec:
+    purpose: str
+    view_key: str
+    server_name: str
+
+
+_RUNTIME_HTTP_HEADER_ENV = {
+    "x-ark-flow-id": RUNTIME_ENV_KEYS["flow_id"],
+    "x-ark-step-id": RUNTIME_ENV_KEYS["step_id"],
+    "x-ark-agent-id": RUNTIME_ENV_KEYS["agent_id"],
+    "x-ark-scope-id": RUNTIME_ENV_KEYS["scope_id"],
+    "x-ark-agent-type": RUNTIME_ENV_KEYS["agent_type"],
+    "x-ark-agent-role": RUNTIME_ENV_KEYS["agent_role"],
+    "x-ark-expected-tool-view": RUNTIME_ENV_KEYS["expected_view_key"],
+    "x-ark-workspace-root": RUNTIME_ENV_KEYS["workspace_root"],
+    "x-ark-repo-root": RUNTIME_ENV_KEYS["repo_root"],
+    "x-ark-node-path": RUNTIME_ENV_KEYS["node_path"],
+    "x-ark-node-kind": RUNTIME_ENV_KEYS["node_kind"],
+    "x-ark-contract-version": RUNTIME_ENV_KEYS["contract_version"],
+    "x-ark-decl-stage": RUNTIME_ENV_KEYS["stage"],
+    "x-ark-round-id": RUNTIME_ENV_KEYS["round_id"],
+    "x-ark-batch-decls": RUNTIME_ENV_KEYS["batch_decls"],
+    "x-ark-current-decl": RUNTIME_ENV_KEYS["current_decl"],
+    "x-ark-decl-kind": RUNTIME_ENV_KEYS["decl_kind"],
+    "x-ark-retry-attempt": RUNTIME_ENV_KEYS["retry_attempt"],
+    "x-ark-successful-submission-count": RUNTIME_ENV_KEYS["successful_submission_count"],
+    "x-ark-successful-submission-kind": RUNTIME_ENV_KEYS["successful_submission_kind"],
+}
+
+
 def build_agent_home_bootstrap_spec(
     agent_type: str,
     *,
     home_id: str | None = None,
     mcp_server_url: str | None = None,
+    mcp_http_base_url: str | None = None,
     mcp_server_command: str | None = None,
     mcp_server_args: Iterable[str] | None = None,
     mcp_server_env: dict[str, str] | None = None,
@@ -53,11 +87,28 @@ def build_agent_home_bootstrap_spec(
         env["LEAN_CONSTELLATION_STAGE"] = spec.stage
     env.update(fixed_env or {})
 
-    if mcp_server_url is not None and mcp_server_command is not None:
-        raise ValueError("mcp_server_url and mcp_server_command are mutually exclusive")
+    if mcp_server_url is not None and mcp_http_base_url is not None:
+        raise ValueError("mcp_server_url and mcp_http_base_url are mutually exclusive")
+    if (mcp_server_url is not None or mcp_http_base_url is not None) and mcp_server_command is not None:
+        raise ValueError("HTTP MCP settings and mcp_server_command are mutually exclusive")
 
     mcp_servers: list[McpServerSpec] = []
-    if mcp_server_url is not None:
+    if mcp_http_base_url is not None:
+        for endpoint_spec in _view_endpoint_specs(
+            spec.application_tool_view_key,
+            spec.submit_tool_view_key,
+            mcp_server_name=mcp_server_name,
+        ):
+            mcp_servers.append(
+                McpServerSpec(
+                    name=endpoint_spec.server_name,
+                    transport="http",
+                    url=_mcp_view_url(mcp_http_base_url, endpoint_spec.view_key),
+                    required=True,
+                    env_http_headers=_RUNTIME_HTTP_HEADER_ENV,
+                )
+            )
+    elif mcp_server_url is not None:
         mcp_servers.append(
             McpServerSpec(
                 name=mcp_server_name,
@@ -131,6 +182,7 @@ def build_agent_home_bootstrap_spec(
 def build_all_agent_home_bootstrap_specs(
     *,
     mcp_server_url: str | None = None,
+    mcp_http_base_url: str | None = None,
     specs: Sequence[AgentTypeSpec] | None = None,
     validate_resources: bool = True,
 ) -> dict[str, AgentHomeBootstrapSpec]:
@@ -139,6 +191,7 @@ def build_all_agent_home_bootstrap_specs(
         spec.agent_type: build_agent_home_bootstrap_spec(
             spec.agent_type,
             mcp_server_url=mcp_server_url,
+            mcp_http_base_url=mcp_http_base_url,
             specs=resolved_specs,
             validate_resources=validate_resources,
         )
@@ -157,3 +210,22 @@ def _stdio_args_for_view(base_args: Iterable[str], view_key: str) -> list[str]:
     if any("{view_key}" in arg for arg in args):
         return [arg.replace("{view_key}", view_key) for arg in args]
     return [*args, "--view-key", view_key]
+
+
+def _view_endpoint_specs(application_view_key: str, submit_view_key: str, *, mcp_server_name: str) -> list[ViewMcpEndpointSpec]:
+    return [
+        ViewMcpEndpointSpec(
+            purpose="application",
+            view_key=application_view_key,
+            server_name=f"{mcp_server_name}-application",
+        ),
+        ViewMcpEndpointSpec(
+            purpose="submit",
+            view_key=submit_view_key,
+            server_name=f"{mcp_server_name}-submit",
+        ),
+    ]
+
+
+def _mcp_view_url(base_url: str, view_key: str) -> str:
+    return f"{base_url.rstrip('/')}/mcp/views/{quote(view_key, safe='')}/"

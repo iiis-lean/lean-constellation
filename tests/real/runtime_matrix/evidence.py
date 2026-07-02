@@ -62,6 +62,8 @@ class CodexArtifactEvidence:
     skill_markers_seen: tuple[str, ...]
     tools_called: tuple[str, ...]
     transcript_path: str | None = None
+    mcp_transport: str | None = None
+    mcp_server_urls: tuple[str, ...] = ()
 
 
 @dataclass
@@ -199,6 +201,8 @@ class EvidenceRecorder:
         instruction_marker_seen: bool,
         skill_markers_seen: list[str],
         tools_called: list[str],
+        mcp_transport: str | None = None,
+        mcp_server_urls: list[str] | None = None,
     ) -> None:
         self.evidence.codex_artifacts.append(
             CodexArtifactEvidence(
@@ -210,6 +214,8 @@ class EvidenceRecorder:
                 instruction_marker_seen=instruction_marker_seen,
                 skill_markers_seen=tuple(skill_markers_seen),
                 tools_called=tuple(tools_called),
+                mcp_transport=mcp_transport,
+                mcp_server_urls=tuple(mcp_server_urls or ()),
             )
         )
 

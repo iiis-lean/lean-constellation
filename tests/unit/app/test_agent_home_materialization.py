@@ -13,20 +13,33 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
     view = materialize_agent_home(
         runtime,
         "SourceCorpusPrepareAgent",
-        mcp_server_url="http://127.0.0.1:8765/mcp",
+        mcp_http_base_url="http://127.0.0.1:8765",
     )
 
     assert view.ok and view.value is not None
     home_root = Path(view.value.home_root)
     assert Path(view.value.instruction_path).exists()
-    assert "lean-constellation-tools" in view.value.mcp_server_names
+    assert view.value.mcp_server_names == [
+        "lean-constellation-tools-application",
+        "lean-constellation-tools-submit",
+    ]
     assert (home_root / ".agents" / "skills" / "material-acquisition" / "SKILL.md").exists()
     assert view.value.codex_config_path is not None
     config_text = Path(view.value.codex_config_path).read_text(encoding="utf-8")
-    assert "http://127.0.0.1:8765/mcp" in config_text
+    assert "http://127.0.0.1:8765/mcp/views/source_corpus_prepare" in config_text
+    assert "http://127.0.0.1:8765/mcp/views/source_corpus_prepare_submit" in config_text
+    assert "env_http_headers" in config_text
+    assert ".env]" not in config_text
+    assert "x-ark-flow-id" in config_text
+    assert "x-ark-expected-tool-view" in config_text
+    assert "LEAN_CONSTELLATION_EXPECTED_TOOL_VIEW" in config_text
+    assert "LEAN_CONSTELLATION_EXPECTED_VIEW_KEY" not in config_text
+    assert "LEAN_CONSTELLATION_MCP_VIEW_KEY" not in config_text
     manifest = json.loads((home_root / ".agents" / "lean_constellation_home.json").read_text(encoding="utf-8"))
     assert manifest["tool_view_config"]["application_view_key"] == "source_corpus_prepare"
     assert manifest["tool_view_config"]["submit_view_key"] == "source_corpus_prepare_submit"
+    assert manifest["mcp_transport"] == "http"
+    assert len(manifest["mcp_server_specs"]) == 2
 
 
 def test_agent_home_materialization_supports_base_config_and_auth_reference(tmp_path: Path) -> None:
@@ -39,7 +52,7 @@ def test_agent_home_materialization_supports_base_config_and_auth_reference(tmp_
     view = materialize_agent_home(
         runtime,
         "RepoFormatDiscoveryAgent",
-        mcp_server_url="http://127.0.0.1:8765/mcp",
+        mcp_http_base_url="http://127.0.0.1:8765",
         base_config_path=base_config,
         auth_json_path=auth,
     )
@@ -86,7 +99,7 @@ def test_agent_home_materialization_supports_derived_agent_type_specs(tmp_path: 
     view = materialize_agent_home(
         runtime,
         "RepoFormatDiscoveryControlledTestAgent",
-        mcp_server_url="http://127.0.0.1:8765/mcp",
+        mcp_http_base_url="http://127.0.0.1:8765",
         agent_type_specs=specs,
     )
 
@@ -96,3 +109,18 @@ def test_agent_home_materialization_supports_derived_agent_type_specs(tmp_path: 
     assert manifest["agent_type"] == "RepoFormatDiscoveryControlledTestAgent"
     assert manifest["fixed_env"]["LEAN_CONSTELLATION_AGENT_TYPE"] == "RepoFormatDiscoveryControlledTestAgent"
     assert manifest["tool_view_config"]["submit_view_key"] == "repo_format_discovery_submit"
+
+
+def test_agent_home_materialization_keeps_legacy_single_http_url(tmp_path: Path) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime")
+
+    view = materialize_agent_home(
+        runtime,
+        "RepoFormatDiscoveryAgent",
+        mcp_server_url="http://127.0.0.1:8765/mcp",
+    )
+
+    assert view.ok and view.value is not None
+    assert view.value.mcp_server_names == ["lean-constellation-tools"]
+    config_text = Path(view.value.codex_config_path or "").read_text(encoding="utf-8")
+    assert "http://127.0.0.1:8765/mcp" in config_text

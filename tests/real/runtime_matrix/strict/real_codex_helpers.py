@@ -14,6 +14,7 @@ import pytest
 from lean_constellation.agents import build_agent_type_specs, build_controlled_test_agent_type_specs
 from lean_constellation.app import materialize_agent_home
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
+from tests.real.runtime_matrix.transport import ensure_runtime_mcp_http_server, requested_mcp_transport_mode
 
 
 def require_real_codex() -> Path:
@@ -76,21 +77,39 @@ def materialize_strict_codex_home(
     config_home: Path,
     base_config_path: Path,
     agent_type_specs: Iterable[object],
+    transport: str | None = None,
 ) -> Path:
+    transport = transport or requested_mcp_transport_mode()
+    if transport not in {"http", "stdio"}:
+        raise ValueError("materialize_strict_codex_home only supports a concrete 'http' or 'stdio' transport")
+    http_server = ensure_runtime_mcp_http_server(ws) if transport == "http" else None
     app_config = ws.tmp_path / f"lean_constellation_{agent_type}.toml"
-    app_config.write_text(
-        f'workspace_root = "{ws.workspace_root}"\n'
-        f'runtime_root = "{ws.runtime_root}"\n'
-        "max_concurrent_flow_advances = 1\n"
-        "max_concurrent_steps = 1\n",
-        encoding="utf-8",
+    config_lines = [
+        f'workspace_root = "{ws.workspace_root}"',
+        f'runtime_root = "{ws.runtime_root}"',
+    ]
+    if http_server is not None:
+        config_lines.append(f'mcp_http_base_url = "{http_server.base_url}"')
+    config_lines.extend(
+        [
+            "max_concurrent_flow_advances = 1",
+            "max_concurrent_steps = 1",
+        ]
+    )
+    app_config.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+    mcp_kwargs = (
+        {"mcp_http_base_url": http_server.base_url}
+        if http_server is not None
+        else {
+            "mcp_server_command": sys.executable,
+            "mcp_server_args": ["-m", "lean_constellation.mcp.stdio", "--config", str(app_config)],
+            "mcp_server_env": _mcp_server_env(),
+        }
     )
     materialized = materialize_agent_home(
         ws.runtime,
         agent_type,
-        mcp_server_command=sys.executable,
-        mcp_server_args=["-m", "lean_constellation.mcp.stdio", "--config", str(app_config)],
-        mcp_server_env=_mcp_server_env(),
+        **mcp_kwargs,
         base_config_path=base_config_path,
         auth_json_path=config_home / "auth.json",
         agent_type_specs=list(agent_type_specs),

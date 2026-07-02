@@ -87,6 +87,7 @@ def materialize_agent_home(
     agent_type: str,
     *,
     mcp_server_url: str | None = None,
+    mcp_http_base_url: str | None = None,
     mcp_server_command: str | None = None,
     mcp_server_args: list[str] | None = None,
     mcp_server_env: dict[str, str] | None = None,
@@ -104,6 +105,7 @@ def materialize_agent_home(
             agent_type,
             home_id=home_id,
             mcp_server_url=mcp_server_url,
+            mcp_http_base_url=mcp_http_base_url,
             mcp_server_command=mcp_server_command,
             mcp_server_args=mcp_server_args,
             mcp_server_env=mcp_server_env,
@@ -164,7 +166,32 @@ def _write_agent_home_manifest(home_root: Path, spec: AgentHomeBootstrapSpec) ->
         "fixed_env": dict(sorted(spec.fixed_env.items())),
         "required_env": sorted(spec.required_env),
         "mcp_servers": [server.name for server in spec.mcp_servers],
+        "mcp_transport": _mcp_transport_summary(spec),
+        "mcp_server_specs": [_mcp_server_manifest(server) for server in spec.mcp_servers],
         "skill_keys": sorted(spec.skill_specs),
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _mcp_transport_summary(spec: AgentHomeBootstrapSpec) -> str | None:
+    transports = sorted({server.transport for server in spec.mcp_servers})
+    if not transports:
+        return None
+    if len(transports) == 1:
+        return transports[0]
+    return "+".join(transports)
+
+
+def _mcp_server_manifest(server) -> dict[str, object]:  # noqa: ANN001 - ARK dataclass boundary.
+    return {
+        "name": server.name,
+        "transport": server.transport,
+        "url": server.url,
+        "command": server.command,
+        "args": list(server.args),
+        "env_keys": sorted(server.env),
+        "env_vars": list(server.env_vars),
+        "http_header_keys": sorted(server.http_headers),
+        "env_http_header_keys": sorted(server.env_http_headers),
+    }

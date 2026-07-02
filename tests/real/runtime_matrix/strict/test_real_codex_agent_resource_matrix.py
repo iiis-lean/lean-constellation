@@ -1090,6 +1090,7 @@ def _record_real_codex_artifact(
     skill_markers_seen: list[str],
     tools_called: list[str],
 ) -> None:
+    transport_info = _mcp_transport_info_from_artifact(data)
     transcript_path = _write_real_codex_transcript(
         ws=ws,
         agent_type=agent_type,
@@ -1097,6 +1098,7 @@ def _record_real_codex_artifact(
         artifact_path=artifact_path,
         started=started,
         data=data,
+        transport_info=transport_info,
     )
     evidence_recorder.record_codex_artifact(
         agent_type=agent_type,
@@ -1107,6 +1109,8 @@ def _record_real_codex_artifact(
         instruction_marker_seen=instruction_marker_seen,
         skill_markers_seen=skill_markers_seen,
         tools_called=tools_called,
+        mcp_transport=transport_info["mcp_transport"],
+        mcp_server_urls=transport_info["mcp_server_urls"],
     )
 
 
@@ -1118,32 +1122,39 @@ def _write_real_codex_transcript(
     artifact_path: Path,
     started: object,
     data: dict[str, object],
+    transport_info: dict[str, object],
 ) -> Path:
     step = ws.runtime.ark.flow_service.get_step(step_id)
     agent_id = _agent_id_for_step(step)
     agent_service = ws.runtime.ark.agent_service
     agent = agent_service.get_agent(agent_id) if agent_id is not None else None
-    latest_turn = None
-    latest_turn_error = None
+    trace_report = None
+    trace_report_error = None
+    latest_event = None
     if agent_id is not None:
         try:
-            latest_turn = agent_service.read_latest_turn_result(agent_id)
+            trace_report = agent_service.build_trace_report(agent_id, artifact_path=artifact_path)
         except Exception as exc:  # noqa: BLE001 - transcript evidence should preserve lookup failures.
-            latest_turn_error = str(exc)
-    rollout_events: list[dict[str, Any]] = []
-    rollout_path = None
-    if agent_id is not None:
-        rollout_path = agent_service.store.locate_rollout(agent_id)
+            trace_report_error = str(exc)
         try:
-            rollout_events = agent_service.read_rollout_events(agent_id)
+            latest_event = agent_service.get_trace_event(agent_id, last=True)
         except Exception as exc:  # noqa: BLE001 - transcript evidence should preserve lookup failures.
-            rollout_events = [{"read_error": str(exc)}]
-    final_response = getattr(latest_turn, "final_response", None)
+            latest_event = {"read_error": str(exc)}
+    trace_payload = _jsonable(trace_report) if trace_report is not None else {}
+    latest_turn_payload = trace_payload.get("latest_turn") if isinstance(trace_payload, dict) else None
+    latest_turn_payload = latest_turn_payload if isinstance(latest_turn_payload, dict) else {}
+    rollout_payload = trace_payload.get("rollout") if isinstance(trace_payload, dict) else None
+    rollout_payload = rollout_payload if isinstance(rollout_payload, dict) else {}
+    artifact_payload = trace_payload.get("artifact") if isinstance(trace_payload, dict) else None
+    artifact_payload = artifact_payload if isinstance(artifact_payload, dict) else {}
+    final_response = latest_turn_payload.get("final_response")
     transcript = {
         "agent_type": agent_type,
         "step_id": step_id,
         "agent_id": agent_id,
         "artifact_path": str(artifact_path),
+        "mcp_transport": transport_info["mcp_transport"],
+        "mcp_server_urls": transport_info["mcp_server_urls"],
         "codex_artifact": data,
         "admin_start_result": _jsonable(started),
         "step": {
@@ -1156,23 +1167,28 @@ def _write_real_codex_transcript(
         },
         "agent": _jsonable(agent),
         "latest_turn": {
-            "id": getattr(latest_turn, "id", None),
-            "status": _jsonable(getattr(latest_turn, "status", None)),
-            "error": _jsonable(getattr(latest_turn, "error", None)),
-            "started_at": getattr(latest_turn, "started_at", None),
-            "completed_at": getattr(latest_turn, "completed_at", None),
-            "duration_ms": getattr(latest_turn, "duration_ms", None),
+            "id": latest_turn_payload.get("turn_id"),
+            "status": latest_turn_payload.get("status"),
+            "error": None,
+            "started_at": latest_turn_payload.get("started_at"),
+            "completed_at": latest_turn_payload.get("completed_at"),
+            "duration_ms": latest_turn_payload.get("duration_ms"),
             "final_response": final_response,
-            "usage": _jsonable(getattr(latest_turn, "usage", None)),
-            "read_error": latest_turn_error,
+            "usage": latest_turn_payload.get("usage"),
+            "read_error": trace_report_error,
         },
         "rollout": {
-            "relpath": getattr(agent, "rollout_relpath", None) if agent is not None else None,
-            "path": str(rollout_path) if rollout_path is not None else None,
-            "exists": bool(rollout_path is not None and rollout_path.exists()),
-            "event_count": len(rollout_events),
-            "last_event": _jsonable(rollout_events[-1]) if rollout_events else None,
+            "relpath": rollout_payload.get("rollout_relpath"),
+            "path": rollout_payload.get("rollout_path"),
+            "exists": rollout_payload.get("exists"),
+            "event_count": rollout_payload.get("event_count"),
+            "last_event": _jsonable(latest_event),
         },
+        "trace_report": trace_payload,
+        "response_texts": trace_payload.get("response_texts", []) if isinstance(trace_payload, dict) else [],
+        "tool_calls": trace_payload.get("tool_calls", []) if isinstance(trace_payload, dict) else [],
+        "slow_tool_calls": trace_payload.get("slow_tool_calls", []) if isinstance(trace_payload, dict) else [],
+        "artifact_summary": artifact_payload.get("summary"),
     }
     transcript_path = artifact_path.with_name(f"{artifact_path.stem}_transcript.json")
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1181,6 +1197,27 @@ def _write_real_codex_transcript(
     assert transcript["rollout"]["relpath"], transcript
     assert transcript["rollout"]["exists"] is True, transcript
     return transcript_path
+
+
+def _mcp_transport_info_from_artifact(data: dict[str, object]) -> dict[str, object]:
+    home_root = data.get("artifact_home_root")
+    if not isinstance(home_root, str) or not home_root:
+        return {"mcp_transport": None, "mcp_server_urls": []}
+    manifest_path = Path(home_root) / ".agents" / "lean_constellation_home.json"
+    if not manifest_path.exists():
+        return {"mcp_transport": None, "mcp_server_urls": []}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    server_specs = manifest.get("mcp_server_specs", [])
+    urls = [
+        str(item["url"])
+        for item in server_specs
+        if isinstance(item, dict) and item.get("url")
+    ]
+    transport = manifest.get("mcp_transport")
+    return {
+        "mcp_transport": str(transport) if transport is not None else None,
+        "mcp_server_urls": urls,
+    }
 
 
 def _agent_id_for_step(step: object) -> str | None:

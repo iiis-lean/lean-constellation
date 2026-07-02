@@ -30,6 +30,9 @@ dev_docs/
 data/
 
 # Local config (keep only examples)
+.env
+.env.*
+!.env.example
 configs/*.yaml
 configs/*.yml
 !configs/*example*.yaml
@@ -40,4 +43,3 @@ configs/*.toml
 # AGENTS files are local guidance by default
 AGENTS.md
 **/AGENTS.md
-

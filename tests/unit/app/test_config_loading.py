@@ -18,6 +18,8 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
                 "max_concurrent_flow_advances = 2",
                 "max_concurrent_steps = 3",
                 'mcp_server_url = "http://127.0.0.1:8765/mcp"',
+                'mcp_http_host = "0.0.0.0"',
+                "mcp_http_port = 9876",
             ]
         )
         + "\n",
@@ -33,6 +35,9 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
     assert config.codex_auth_json_path == config_home / "auth.json"
     assert view.max_concurrent_flow_advances == 2
     assert view.max_concurrent_steps == 3
+    assert view.mcp_http_host == "0.0.0.0"
+    assert view.mcp_http_port == 9876
+    assert view.mcp_http_base_url == "http://0.0.0.0:9876"
     assert "secret-token" not in dumped
 
 
@@ -45,8 +50,10 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
         env={
             "LEAN_CONSTELLATION_WORKSPACE_ROOT": str(tmp_path / "from_env"),
             "LEAN_CONSTELLATION_MAX_CONCURRENT_STEPS": "4",
+            "LEAN_CONSTELLATION_MCP_HTTP_BASE_URL": "http://127.0.0.1:9999/custom",
         },
     )
 
     assert config.workspace_root == tmp_path / "from_env"
     assert config.max_concurrent_steps == 4
+    assert config.mcp_http_effective_base_url() == "http://127.0.0.1:9999/custom"

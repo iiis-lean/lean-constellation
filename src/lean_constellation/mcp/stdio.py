@@ -39,7 +39,13 @@ def create_mcp_protocol_server(runtime: LeanRuntimeServices, *, view_key: str) -
 
     @protocol_server.call_tool(validate_input=True)
     async def call_tool(tool_name: str, arguments: dict[str, Any]) -> types.CallToolResult:
-        return mcp_protocol_call_tool(endpoint, tool_name, arguments, env=dict(os.environ))
+        return mcp_protocol_call_tool(
+            endpoint,
+            tool_name,
+            arguments,
+            headers=_current_request_headers(protocol_server),
+            env=dict(os.environ),
+        )
 
     return runtime.foundation.ok(protocol_server)
 
@@ -66,11 +72,12 @@ def mcp_protocol_call_tool(
     tool_name: str,
     arguments: dict[str, Any],
     *,
+    headers: dict[str, str] | None = None,
     env: dict[str, str] | None = None,
 ) -> types.CallToolResult:
     """Call a Lean MCP endpoint and convert the result to MCP protocol output."""
 
-    result = endpoint.call_tool(tool_name, arguments, env=env or {})
+    result = endpoint.call_tool(tool_name, arguments, headers=headers, env=env or {})
     if not result.ok or result.value is None:
         summary = _issues_summary(result)
         return _call_tool_result(
@@ -132,6 +139,20 @@ def _issues_summary(result: ServiceResult[Any]) -> str:
 
 def _dump_issues(result: ServiceResult[Any]) -> list[dict[str, Any]]:
     return [issue.model_dump(mode="json") for issue in result.issues]
+
+
+def _current_request_headers(protocol_server: Server) -> dict[str, str]:
+    try:
+        request = protocol_server.request_context.request
+    except LookupError:
+        return {}
+    if request is None:
+        return {}
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return {}
+    items = headers.items() if hasattr(headers, "items") else []
+    return {str(key): str(value) for key, value in items}
 
 
 __all__ = [
