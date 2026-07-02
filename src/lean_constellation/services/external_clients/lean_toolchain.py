@@ -26,8 +26,9 @@ from lean_constellation.services.external_clients.process import ExternalCommand
 class LeanToolchainProviderPolicy(StrictModel):
     diagnostics_prefer_toolkit: bool = True
     diagnostics_fallback_to_lake: bool = True
-    mathlib_check_prefer_lake_project: bool = True
+    mathlib_check_prefer_lake_project: bool = False
     mathlib_check_fallback_to_toolkit: bool = True
+    mathlib_check_fallback_to_lake_project: bool = True
 
 
 class LeanToolchainClientConfig(StrictModel):
@@ -504,30 +505,58 @@ class LeanToolchainClient:
         decl_name: str,
         timeout_seconds: int | None = None,
     ) -> ToolchainLeanCheckView:
+        repo_path = Path(repo_root)
         code = self._check_code(module, decl_name)
-        if self.config.provider_policy.mathlib_check_prefer_lake_project and self._looks_like_lake_project(Path(repo_root)):
-            checked = self.run_snippet_check(repo_root, imports=[module] if module else [], code=f"#check {decl_name}", timeout_seconds=timeout_seconds)
+        if self.config.provider_policy.mathlib_check_prefer_lake_project and self._looks_like_lake_project(repo_path):
+            checked = self.run_snippet_check(repo_path, imports=[module] if module else [], code=f"#check {decl_name}", timeout_seconds=timeout_seconds)
             if checked.ok or not self._should_fallback_mathlib_lake_check(checked):
                 return checked.model_copy(update={"ok": True, "passed": checked.ok})
-            fallback = self._check_mathlib_name_with_toolkit(Path(repo_root), module=module, decl_name=decl_name, code=code)
+            fallback = self._check_mathlib_name_with_toolkit(repo_path, module=module, decl_name=decl_name, code=code)
             return fallback.model_copy(
                 update={
                     "fallback_provider": "lake_command",
                     "fallback_reason": checked.issue_code or checked.summary,
                 }
             )
-        return self._check_mathlib_name_with_toolkit(Path(repo_root), module=module, decl_name=decl_name, code=code)
+        checked = self._check_mathlib_name_with_toolkit(repo_path, module=module, decl_name=decl_name, code=code)
+        if checked.ok or not self._should_fallback_mathlib_toolkit_check(checked) or not self._looks_like_lake_project(repo_path):
+            return checked
+        fallback = self.run_snippet_check(
+            repo_path,
+            imports=[module] if module else [],
+            code=f"#check {decl_name}",
+            timeout_seconds=timeout_seconds,
+        )
+        return fallback.model_copy(
+            update={
+                "ok": self._lake_check_provider_ran(fallback),
+                "passed": fallback.ok,
+                "fallback_provider": "lean_mcp_toolkit",
+                "fallback_reason": checked.issue_code or checked.summary,
+            }
+        )
 
     def check_mathlib_module(self, repo_root: Path, *, module: str, timeout_seconds: int | None = None) -> ToolchainLeanCheckView:
+        repo_path = Path(repo_root)
         code = "#check True"
-        if self.config.provider_policy.mathlib_check_prefer_lake_project and self._looks_like_lake_project(Path(repo_root)):
-            checked = self.run_snippet_check(repo_root, imports=[module], code=code, timeout_seconds=timeout_seconds)
+        if self.config.provider_policy.mathlib_check_prefer_lake_project and self._looks_like_lake_project(repo_path):
+            checked = self.run_snippet_check(repo_path, imports=[module], code=code, timeout_seconds=timeout_seconds)
             if checked.ok or not self._should_fallback_mathlib_lake_check(checked):
                 return checked.model_copy(update={"ok": True, "passed": checked.ok})
-            fallback = self._check_snippet_with_toolkit(Path(repo_root), code=f"import {module}\n{code}\n", attempted_tools=("lsp.run_snippet", "run_snippet"))
+            fallback = self._check_snippet_with_toolkit(repo_path, code=f"import {module}\n{code}\n", attempted_tools=("lsp.run_snippet", "run_snippet"))
             return fallback.model_copy(update={"module": module, "fallback_provider": "lake_command", "fallback_reason": checked.issue_code or checked.summary})
-        return self._check_snippet_with_toolkit(Path(repo_root), code=f"import {module}\n{code}\n", attempted_tools=("lsp.run_snippet", "run_snippet")).model_copy(
-            update={"module": module}
+        checked = self._check_snippet_with_toolkit(repo_path, code=f"import {module}\n{code}\n", attempted_tools=("lsp.run_snippet", "run_snippet")).model_copy(update={"module": module})
+        if checked.ok or not self._should_fallback_mathlib_toolkit_check(checked) or not self._looks_like_lake_project(repo_path):
+            return checked
+        fallback = self.run_snippet_check(repo_path, imports=[module], code=code, timeout_seconds=timeout_seconds)
+        return fallback.model_copy(
+            update={
+                "ok": self._lake_check_provider_ran(fallback),
+                "passed": fallback.ok,
+                "fallback_provider": "lean_mcp_toolkit",
+                "fallback_reason": checked.issue_code or checked.summary,
+                "module": module,
+            }
         )
 
     def scan_sorry_axiom(self, file_text: str) -> ToolchainPolicyScanView:
@@ -737,6 +766,18 @@ class LeanToolchainClient:
         if checked.diagnostics_excerpt:
             return False
         return checked.issue_code in {"command_start_failed", "command_timeout", "missing_repo_root", None}
+
+    def _should_fallback_mathlib_toolkit_check(self, checked: ToolchainLeanCheckView) -> bool:
+        if not self.config.provider_policy.mathlib_check_fallback_to_lake_project:
+            return False
+        if checked.issue_code in {"mathlib_check_unavailable", "snippet_check_unavailable", "toolkit_unavailable", "toolkit_call_failed"}:
+            return True
+        if checked.diagnostics_excerpt:
+            return False
+        return checked.issue_code is None
+
+    def _lake_check_provider_ran(self, checked: ToolchainLeanCheckView) -> bool:
+        return checked.ok or checked.issue_code == "command_failed" or bool(checked.diagnostics_excerpt)
 
     def _diagnostics_strings_from_value(self, value: dict[str, Any]) -> list[str]:
         raw = value.get("diagnostics") or value.get("errors") or []

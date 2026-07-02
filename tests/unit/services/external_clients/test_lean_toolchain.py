@@ -7,6 +7,8 @@ from lean_constellation.services.external_clients import (
     LeanCheckSummaryView,
     LeanMcpToolkitClient,
     LeanToolchainClient,
+    LeanToolchainClientConfig,
+    LeanToolchainProviderPolicy,
 )
 
 
@@ -200,12 +202,100 @@ def test_repo_navigation_falls_back_to_local_lean_files_when_toolkit_unavailable
     assert "theorem smoke" in (extracted.code or "")
 
 
-def test_mathlib_accessibility_uses_lake_project_snippet_and_preserves_failed_check(tmp_path: Path) -> None:
+def test_mathlib_accessibility_prefers_toolkit_by_default(tmp_path: Path) -> None:
+    (tmp_path / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
+    lake = RecordingLake()
+    lake.snippet_ok = False
+    calls: list[tuple[str, dict]] = []
+
+    def dispatch(tool_name: str, payload: dict):
+        calls.append((tool_name, payload))
+        return {"passed": True, "diagnostics": []}
+
+    toolkit = LeanMcpToolkitClient(dispatcher=dispatch)
+    client = LeanToolchainClient(lake=lake, toolkit=toolkit)
+
+    result = client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.add_assoc")
+
+    assert result.ok
+    assert result.passed is True
+    assert result.provider == "lean_mcp_toolkit"
+    assert result.toolkit_tool == "check_mathlib_name"
+    assert calls == [
+        (
+            "check_mathlib_name",
+            {
+                "repo_root": str(tmp_path),
+                "module": "Init",
+                "decl_name": "Nat.add_assoc",
+                "code": "import Init\n#check Nat.add_assoc\n",
+            },
+        )
+    ]
+    assert lake.snippets == []
+
+
+def test_mathlib_accessibility_falls_back_to_lake_when_toolkit_unavailable(tmp_path: Path) -> None:
+    (tmp_path / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
+    lake = RecordingLake()
+    toolkit = LeanMcpToolkitClient()
+    client = LeanToolchainClient(lake=lake, toolkit=toolkit)
+
+    result = client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.add_assoc")
+
+    assert result.ok
+    assert result.passed is True
+    assert result.provider == "lake_command"
+    assert result.fallback_provider == "lean_mcp_toolkit"
+    assert result.fallback_reason == "mathlib_check_unavailable"
+    assert lake.snippets == [(tmp_path, ["Init"], "#check Nat.add_assoc")]
+
+
+def test_mathlib_accessibility_preserves_lake_provider_failure_after_toolkit_unavailable(tmp_path: Path) -> None:
+    class BrokenLake(RecordingLake):
+        def run_snippet_check(
+            self,
+            *,
+            repo_root: Path,
+            imports: list[str],
+            code: str,
+            timeout_seconds: int | None = None,
+        ) -> LeanCheckSummaryView:
+            del timeout_seconds
+            self.snippets.append((Path(repo_root), list(imports), code))
+            return LeanCheckSummaryView(
+                ok=False,
+                command=["lake", "env", "lean"],
+                summary="lake failed to start",
+                issue_code="command_start_failed",
+            )
+
+    (tmp_path / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
+    lake = BrokenLake()
+    client = LeanToolchainClient(lake=lake, toolkit=LeanMcpToolkitClient())
+
+    result = client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.add_assoc")
+
+    assert result.ok is False
+    assert result.passed is False
+    assert result.provider == "lake_command"
+    assert result.issue_code == "command_start_failed"
+    assert result.fallback_provider == "lean_mcp_toolkit"
+    assert lake.snippets == [(tmp_path, ["Init"], "#check Nat.add_assoc")]
+
+
+def test_mathlib_accessibility_can_force_lake_project_first(tmp_path: Path) -> None:
     (tmp_path / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
     lake = RecordingLake()
     lake.snippet_ok = False
     toolkit = LeanMcpToolkitClient(dispatcher=lambda tool_name, payload: {"passed": True, "diagnostics": []})
-    client = LeanToolchainClient(lake=lake, toolkit=toolkit)
+    client = LeanToolchainClient(
+        lake=lake,
+        toolkit=toolkit,
+        config=LeanToolchainClientConfig(
+            provider_policy=LeanToolchainProviderPolicy(mathlib_check_prefer_lake_project=True)
+        ),
+    )
 
     result = client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.nope")
 
