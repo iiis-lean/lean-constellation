@@ -136,11 +136,12 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "node-contract-design",
             "Use this skill when planning node tree structure, creating child nodes, preparing content node tasks, or updating contract goals, boundaries, objectives, materials, dependencies, constraints, or interfaces.",
             (
-                "Read the current scope or content contract before changing it.",
+                "Read the current scope or content contract with `get_node_contract` before changing it.",
                 "Write goals and boundaries in mathematical terms rather than file-layout terms.",
                 "Make sibling boundaries explicit and avoid duplicate ownership.",
+                "Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for durable contract changes.",
                 "Prepare content tasks with enough objective, material, dependency, and interface context for node-local work.",
-                "Check previews or gates before submit whenever the tools provide them.",
+                "Check previews such as `preview_delete_node` before destructive node changes.",
             ),
             (
                 "Do not leave durable contract decisions only in conversation.",
@@ -158,9 +159,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "content-contract-reading",
             "Use this skill when a content plan, recon agent, declaration worker, or reviewer must understand a node goal, boundary, objective, materials, dependencies, Mathlib references, and interfaces before acting.",
             (
-                "Read the current content contract first.",
+                "Read the current content contract first with `get_current_node_contract`.",
                 "Separate owned material from context material.",
-                "Use visible dependencies and Mathlib references as the allowed working context.",
+                "Use `list_current_node_deps`, `list_node_material_refs`, and `get_current_node_mathlib_hints` as the allowed working context when those tools are visible.",
                 "Keep local changes inside the current task authority.",
                 "Block or return feedback when the contract is unclear or inconsistent.",
             ),
@@ -185,10 +186,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "visible-node-dependency-recon",
             "Use this skill when inspecting ready same-repository boundaries or already attached provider boundaries and adding current-node dependencies when justified.",
             (
-                "Start from the current contract and objective.",
-                "Inspect same-repository ready boundaries before provider boundaries.",
-                "Inspect public declarations selectively for relevance.",
-                "Add dependencies only when they support the node objective and are visible.",
+                "Start from the current contract and objective with `get_current_node_contract`.",
+                "Inspect same-repository ready boundaries before provider boundaries with `list_current_visible_node_boundaries`.",
+                "Inspect public declarations selectively with `list_content_public_decls` and `compute_decl_dependency_closure`.",
+                "Add dependencies with `add_current_node_dep` only when they support the node objective and are visible.",
                 "Report unresolved needs without inventing unavailable dependencies.",
             ),
             (
@@ -211,10 +212,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill when closing a scope node, selecting public declarations from ready children, binding scope interfaces, checking projection/readiness, or committing a scope contract summary.",
             (
                 "Check child readiness before curating exports.",
-                "Read required interfaces and current export candidates.",
-                "Choose exports that belong to the scope public view.",
-                "Bind interfaces only to declarations that satisfy their meaning.",
-                "Run available projection or readiness checks before submit.",
+                "Read required interfaces and current export candidates with `list_node_interfaces`, `list_scope_export_candidates`, and `list_scope_exports`.",
+                "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
+                "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
+                "Run `check_content_node_ready` or available projection checks before submit.",
             ),
             (
                 "Do not export unstable private implementation details.",
@@ -233,8 +234,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill before organizing fetched artifacts into a source corpus or local resource draft.",
             (
                 "Normalize the target kind before acquiring material.",
-                "Fetch or import the artifact through the available acquisition tools.",
-                "Extract readable text or project files when needed.",
+                "Fetch or import source targets with `acquire_source_material` or `import_source_material`; fetch or import resource targets with `acquire_material_resource` or `import_material_file`.",
+                "Extract readable text or project files with `extract_source_artifact` or `extract_material_artifact` when needed.",
+                "Normalize text with `normalize_source_text_material` or `normalize_material_text` before downstream use.",
                 "Preserve useful originals and normalized outputs separately.",
                 "Treat tool failures as concrete repair or blocked information.",
             ),
@@ -254,10 +256,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "external-resource-discovery",
             "Use this skill when existing source and resource material is insufficient and the agent must find a precise arXiv, web, or local-file target without broad duplicate searching.",
             (
-                "Start from existing source, resources, Mathlib, and visible dependencies.",
+                "Start from existing source, resources, Mathlib, and visible dependencies with `get_material_context`, `search_material_text`, and available Mathlib index tools.",
                 "Keep search narrow and tied to the current mathematical need.",
                 "Prefer reliable mathematical sources and stable URLs.",
-                "Choose one accurate target rather than a broad search result list.",
+                "Use `search_arxiv_theorems` only for arXiv theorem-like candidates, and choose one accurate target rather than a broad search result list.",
                 "Submit or report the target with evidence for why it is needed.",
             ),
             (
@@ -277,9 +279,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill when an agent can submit an explicit resource target to ResourceCurationFlow and later interpret duplicate, local resource, external repo required, or rejected callback results.",
             (
                 "Check existing material before submitting a request.",
-                "Submit only precise targets with a clear reason.",
+                "Call `submit_resource_request` only for precise targets with a clear reason.",
                 "After a duplicate result, use the returned existing reference when relevant.",
-                "After a local resource result, decide whether the current node should attach the resource.",
+                "After a local resource result, decide whether the current node should attach it with `add_current_material_ref` when that tool is visible.",
                 "After an external repository result, decide whether the current task must return to Coordinator-level handling.",
             ),
             (
@@ -298,11 +300,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "resource-draft-curation",
             "Use this skill for local Resource draft layout, README requirements, normalized text requirements, draft checks, and local_resource_created submit readiness.",
             (
-                "Allocate or inspect the current resource draft.",
-                "Place originals, normalized text, and notes in predictable locations.",
+                "Allocate or inspect the current resource draft with `allocate_resource_draft` or `get_resource_draft`.",
+                "Place originals, normalized text, and notes in predictable locations using material acquisition tools.",
                 "Write README content that identifies source, license or access notes, and reading order.",
-                "Run draft checks and repair failures within your authority.",
-                "Submit local_resource_created only after the draft is coherent.",
+                "Run `check_resource_draft` and repair failures within your authority.",
+                "Call `submit_local_resource_created` only after the draft is coherent.",
             ),
             (
                 "Do not use this skill for duplicate, external-repo-required, or rejected outcomes.",
@@ -324,10 +326,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "coordinator-node-decomposition",
             "Use this skill when deciding whether to create or revise a Scope node or Content node, splitting mathematical regions, assigning sibling boundaries, or repairing an over-broad or over-fragmented node structure.",
             (
-                "Start from root interfaces, source index structure, current tree, and ready provider context.",
+                "Start from root interfaces, source index structure, current tree from `get_node_tree`, and ready provider context from `list_ready_provider_repos`.",
                 "Choose scope nodes for broad mathematical areas and content nodes for focused declaration work.",
-                "Write node contracts through node-contract-design.",
-                "Revise the tree when boundaries overlap or missing shared foundations are discovered.",
+                "Write node contracts through `create_scope_node`, `create_content_node`, and `update_node_contract_text`.",
+                "Use `preview_delete_node` before deleting or replacing tree structure.",
                 "Leave the tree in a state that can dispatch content tasks without hidden boundary guesses.",
             ),
             (
@@ -348,9 +350,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             (
                 "Create or update the scope contract before child work depends on it.",
                 "Plan required public interfaces and child responsibilities.",
-                "Analyze children when they become ready.",
-                "Use scope-export-interface-curation for export and binding details.",
-                "Commit scope summaries only after readiness and projection checks pass.",
+                "Analyze children with `get_scope_close_view` when they become ready.",
+                "Use `list_scope_export_candidates`, `add_scope_export`, and `bind_node_interface` for export and binding details.",
+                "Commit scope summaries only after readiness and projection checks pass through the available scope tools.",
             ),
             (
                 "Do not close a scope while required child work is unresolved.",
@@ -368,11 +370,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "coordinator-content-task-lifecycle",
             "Use this skill when preparing content node contracts before dispatch, submitting runnable content tasks, processing callbacks, committing summaries, and deciding follow-up actions.",
             (
-                "Check that candidate content nodes are runnable before dispatch.",
+                "Check that candidate content nodes are runnable with `check_content_task_admission` before dispatch.",
                 "Prepare each task contract with current objective and constraints.",
-                "Submit runnable tasks through the coordinator submit tool.",
+                "Submit runnable tasks through `submit_content_node_tasks`.",
                 "Process ready, blocked, or failed callbacks against current repository truth.",
-                "Decide whether to update contracts, create follow-up tasks, request resources, or close scopes.",
+                "Decide whether to update contracts, create follow-up tasks, call `submit_resource_request`, call `submit_repo_requirement`, or close scopes.",
             ),
             (
                 "Do not dispatch tasks whose dependencies are not visible or whose boundaries are unclear.",
@@ -390,9 +392,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "mathlib-index-first-recon",
             "Use this skill when finding Mathlib modules or declarations for a Lean Constellation node while avoiding repeated global search.",
             (
-                "Read current node Mathlib hints first.",
+                "Read current node Mathlib hints first with `get_current_node_mathlib_hints`.",
                 "Translate the node objective into search directions.",
-                "Search the repo MathlibIndex before external search.",
+                "Search the repo MathlibIndex with `search_mathlib_index` before external search.",
                 "Identify index gaps explicitly.",
                 "Report useful local coverage and unresolved needs.",
             ),
@@ -412,10 +414,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "mathlib-semantic-search-navigation",
             "Use this skill after current node hints and repo-level MathlibIndex are insufficient.",
             (
-                "Use semantic search for the mathematical concept, not only expected names.",
-                "Inspect candidate declarations and modules before relying on them.",
+                "Use `search_mathlib_declarations` for mathematical concepts and `search_external_mathlib` when additional toolkit-backed backends are appropriate.",
+                "Inspect candidate declarations and modules with `inspect_mathlib_search_candidate`, `inspect_mathlib_declaration`, and `inspect_mathlib_module` before relying on them.",
                 "Confirm namespace, assumptions, typeclasses, imports, and theorem direction.",
-                "Record useful candidates for later index curation.",
+                "Record useful candidates later through `ingest_mathlib_candidate`, `record_mathlib_decl`, or `record_mathlib_module` when write tools are visible.",
                 "Report unresolved directions when search is inconclusive.",
             ),
             (
@@ -434,11 +436,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "mathlib-index-entry-curation",
             "Use this skill after search or navigation has identified reusable Mathlib knowledge.",
             (
-                "Record modules with concise purpose and import relevance.",
-                "Record declarations with statement meaning and usage notes.",
-                "Attach important declarations to module entries when useful.",
+                "Record modules with concise purpose and import relevance through `record_mathlib_module`.",
+                "Record declarations with statement meaning and usage notes through `record_mathlib_decl` or `ingest_mathlib_candidate`.",
+                "Attach important declarations to module entries with `add_mathlib_module_important_decl` when useful.",
                 "Keep entries lightweight and reusable across nodes.",
-                "Re-read entries after writing when the tool provides a view.",
+                "Re-read entries after writing with `get_mathlib_module_entry` or `get_mathlib_decl_entry`.",
             ),
             (
                 "Do not use the index as a dumping ground for every search result.",
@@ -457,10 +459,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill after relevant Mathlib entries are known or recorded in MathlibIndex.",
             (
                 "Understand whether a module hint or declaration hint is appropriate.",
-                "Add module hints for imports that are broadly useful to the node.",
-                "Add declaration hints for specific facts or definitions that support planned work.",
-                "Remove hints conservatively when they are stale or misleading.",
-                "Validate current hints when the tool provides a check.",
+                "Add module hints for imports that are broadly useful to the node with `add_current_mathlib_module_hint`.",
+                "Add declaration hints for specific facts or definitions that support planned work with `add_current_mathlib_decl_hint`.",
+                "Remove stale hints conservatively with `remove_current_mathlib_module_hint` or `remove_current_mathlib_decl_hint`.",
+                "Validate current hints with `validate_current_node_mathlib_hints`.",
             ),
             (
                 "Do not add broad imports only because they compile.",
@@ -480,7 +482,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             (
                 "Read current contract, DeclGraph state, source/resource context, dependencies, and Mathlib hints.",
                 "Decide whether node dependency, Mathlib, or resource recon is actually needed.",
-                "Give each child flow only objective and context_summary.",
+                "Call `submit_content_preparation_recon` with only objective and context_summary for each child flow.",
                 "Run each preparation kind at most once per content task.",
                 "After callback, update the plan or proceed to declaration round planning.",
             ),
@@ -500,10 +502,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Decl Strategy Planning",
             "Use this skill to maintain the current plan for how the content node will make mathematical progress.",
             (
-                "Read current truth before changing strategy.",
+                "Read current truth with `get_current_decl_graph_store`, `list_decl_strategies`, and `get_decl_strategy` before changing strategy.",
                 "Analyze node objective, existing declarations, dependencies, resource gaps, and round history.",
-                "Create a strategy with a clear purpose and expected path.",
-                "Continue, close, or supersede a strategy based on actual results.",
+                "Create a strategy with `ensure_open_decl_strategy` and a clear purpose.",
+                "Close or supersede a strategy with `close_decl_strategy` based on actual results.",
                 "Keep targeted supplements small and justified.",
             ),
             (
@@ -523,10 +525,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill when preparing the concrete declaration changes for the next DeclGraphRoundFlow.",
             (
                 "Choose a small independent batch aligned with the current strategy.",
-                "Write create changes with clear mathematical objectives.",
-                "Write update changes with the stage that should be repaired.",
-                "Preview delete closure before planning deletion.",
-                "Submit the round only after validation accepts the draft.",
+                "Write create changes with `plan_create_decl` and clear mathematical objectives.",
+                "Write update changes with `plan_update_decl` and the stage that should be repaired.",
+                "Preview delete closure with `preview_decl_delete_closure` before `plan_delete_decl`.",
+                "Call `validate_decl_round_draft` before `submit_current_decl_round`.",
             ),
             (
                 "Do not choose ready as a planned declaration state.",
@@ -545,9 +547,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill before planning the next action after a round terminal callback.",
             (
                 "Read the terminal context and changed declarations.",
-                "Write change summaries one by one.",
-                "Write the round summary with success, blocked, or failed meaning.",
-                "Commit closeout through the provided tools.",
+                "Write change summaries one by one with `write_decl_change_summary`.",
+                "Write the round summary with `write_decl_round_summary` and success, blocked, or failed meaning.",
+                "Commit terminal closeout with `mark_decl_round_terminal`.",
                 "Decide whether to plan another round, run preparation, or complete the content task.",
             ),
             (
@@ -566,10 +568,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Content Node Completion Decision",
             "Use this skill when deciding whether to submit ready, blocked, or failed for a content node task.",
             (
-                "Check contract satisfaction, declaration readiness, dependencies, interfaces, and unresolved callbacks.",
-                "Submit ready only when current tools show the node satisfies its contract.",
-                "Submit blocked when upstream Coordinator action or external prerequisite is required.",
-                "Submit failed when the current automated route is exhausted under the allowed strategy.",
+                "Check contract satisfaction, declaration readiness, dependencies, interfaces, and unresolved callbacks with `check_content_node_ready`.",
+                "Call `submit_content_node_ready` only when current tools show the node satisfies its contract.",
+                "Call `submit_content_node_blocked` when upstream Coordinator action or external prerequisite is required.",
+                "Call `submit_content_node_failed` when the current automated route is exhausted under the allowed strategy.",
                 "Stop state-changing work after an accepted completion submit.",
             ),
             (
@@ -588,8 +590,8 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "decl-dependency-origin-curation",
             "Use this skill when a declaration worker or reviewer must connect a statement or proof idea to evidence, visible project declarations, Mathlib declarations, and blocked follow-up needs.",
             (
-                "Start from the declaration task and stage objective.",
-                "Search source, resources, visible declarations, and Mathlib in the right order.",
+                "Start from the declaration task and stage objective with `get_decl`.",
+                "Search source, resources, visible declarations, and Mathlib with `search_material_text`, `list_content_public_decls`, and Mathlib index tools in the right order.",
                 "Choose origins that actually support the statement or proof.",
                 "Choose project and Mathlib dependencies for real mathematical use.",
                 "Differentiate statement dependencies from proof dependencies.",
@@ -610,10 +612,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "decl-owned-lean-file-capture-check",
             "Use this skill when a formal worker edits a tracked declaration file or when a reviewer needs to understand formal capture semantics.",
             (
-                "Stay inside the assigned declaration-owned file.",
+                "Use `prepare_statement_formal_file` or `prepare_proof_formal_file` before editing and stay inside the assigned declaration-owned file.",
                 "Keep system markers and prepared structure intact.",
-                "Use manual Lean checks for debugging but do not treat them as durable acceptance.",
-                "Capture formal code through workflow tools after editing.",
+                "Use `run_lean_file_diagnostics`, `check_statement_formal_policy`, or `check_proof_formal_policy` for debugging and policy checks.",
+                "Capture formal code through `capture_statement_formal_file` or `capture_proof_formal_file` after editing.",
+                "Use `check_formal_stage_consistency` before worker submit when it is available.",
                 "Respect safety policy before worker submit.",
             ),
             (
@@ -639,8 +642,8 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Start from the accepted statement and declared objective.",
                 "Map variables, assumptions, definitions, and conclusions to Lean deliberately.",
                 "Search dependencies in visible project context and Mathlib before adding imports or hints.",
-                "Edit the declaration-owned file and run diagnostics.",
-                "Capture, check, and refine dependencies before completed submit.",
+                "Prepare and edit the declaration-owned file with `prepare_statement_formal_file`, then run `run_lean_file_diagnostics` and `check_statement_formal_policy`.",
+                "Capture with `capture_statement_formal_file`, check consistency with `check_formal_stage_consistency`, and refine dependencies before `submit_stage_worker_completed`.",
             ),
             (
                 "Do not silently change statement meaning to make Lean easier.",
@@ -664,9 +667,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             (
                 "Start from the frozen statement and reviewed proof route.",
                 "Search formal dependencies in visible project context and Mathlib.",
-                "Edit the proof body without changing the accepted statement.",
-                "Use Lean checks iteratively and capture at the durable boundary.",
-                "Restore or block when the working file is damaged or the route needs planning changes.",
+                "Prepare the assigned file with `prepare_proof_formal_file` and edit the proof body without changing the accepted statement.",
+                "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` iteratively, then capture at the durable boundary with `capture_proof_formal_file`.",
+                "Use `check_formal_stage_consistency` before submit, and call `submit_stage_worker_blocked` when the route needs planning changes.",
             ),
             (
                 "Do not alter the theorem statement to make the proof work.",

@@ -43,7 +43,7 @@ class RepoRelativeFileArgs(StrictModel):
 
 
 class FormalPolicyCheckArgs(RepoRelativeFileArgs):
-    decl_kind: str | None = Field(default=None, description="Declaration kind for statement policy checks.")
+    decl_kind: str | None = Field(default=None, description="Expected Lean declaration kind for statement-formal policy checks, such as def, theorem, lemma, or instance.")
 
 
 class RequirementNameArgs(StrictModel):
@@ -130,9 +130,9 @@ class ResourceTargetArgs(StrictModel):
 
 
 class ResourceDraftTargetArgs(StrictModel):
-    target: str = Field(description="Canonical resource target, usually a URL, arXiv id, DOI, or local-path target.")
-    resource_kind: str | None = Field(default=None, description="Resource kind such as arxiv, web, pdf, local, or notes.")
-    title_hint: str | None = Field(default=None, description="Optional human-readable title hint for the draft.")
+    target: str = Field(description="Canonical resource target for the draft, usually a URL, arXiv id, DOI, or local-path target.")
+    resource_kind: str | None = Field(default=None, description="Resource kind hint such as arxiv, web, pdf, local, or notes.")
+    title_hint: str | None = Field(default=None, description="Optional human-readable title hint used to initialize draft metadata.")
 
 
 class DraftIdArgs(StrictModel):
@@ -319,57 +319,57 @@ class CurrentMaterialRefRemoveArgs(StrictModel):
 
 
 class MathlibIndexSearchArgs(StrictModel):
-    query: str = Field(description="Text or regex to search in the repo-level MathlibIndex.")
-    regex: bool = Field(default=False, description="Whether query is a regular expression.")
-    entry_kind: str = Field(default="all", description="Entry kind: all, module, declaration, or def/theorem-like kind.")
-    limit: int = Field(default=20, ge=1, le=100, description="Maximum entries to return.")
+    query: str = Field(description="Text or regex to search across recorded MathlibIndex module names, declaration names, summaries, signatures, and notes.")
+    regex: bool = Field(default=False, description="Whether query should be interpreted as a regular expression.")
+    entry_kind: str = Field(default="all", description="Entry kind filter: all, module, declaration, or a Lean declaration kind such as def, theorem, lemma, or instance.")
+    limit: int = Field(default=20, ge=1, le=100, description="Maximum MathlibIndex entries to return.")
 
 
 class MathlibModuleArgs(StrictModel):
-    module: str = Field(description="Mathlib module name.")
+    module: str = Field(description="Mathlib module name, for example Mathlib.Data.Nat.Basic.")
 
 
 class MathlibDeclArgs(StrictModel):
-    name: str = Field(description="Mathlib declaration name.")
+    name: str = Field(description="Mathlib declaration name recorded in the repo-level MathlibIndex.")
 
 
 class MathlibDeclNameArgs(StrictModel):
-    decl_name: str = Field(description="Mathlib declaration name.")
+    decl_name: str = Field(description="Fully qualified Mathlib declaration name to inspect or check.")
 
 
 class MathlibModuleDeclArgs(StrictModel):
-    module: str = Field(description="Mathlib module name.")
-    decl_name: str = Field(description="Mathlib declaration name.")
+    module: str = Field(description="Mathlib module to import before checking or associating the declaration.")
+    decl_name: str = Field(description="Fully qualified Mathlib declaration name.")
 
 
 class MathlibCandidateArgs(StrictModel):
-    candidate_id: str = Field(description="Candidate id returned by a Mathlib search tool.")
+    candidate_id: str = Field(description="Candidate id returned by a Mathlib search tool in the current tool session.")
 
 
 class MathlibCandidateIngestArgs(MathlibCandidateArgs):
-    summary: str = Field(description="Summary to store for the ingested declaration.")
-    note: str | None = Field(default=None, description="Optional note to store with the ingested declaration.")
+    summary: str = Field(description="Concise reusable-purpose summary to store for the ingested Mathlib declaration.")
+    note: str | None = Field(default=None, description="Optional usage note or search provenance to store with the ingested declaration.")
 
 
 class MathlibModuleRecordArgs(StrictModel):
-    module_name: str = Field(description="Mathlib module name verified in the current repo.")
-    summary: str | None = Field(default=None, description="Short summary of why the module is useful.")
-    source: str | None = Field(default=None, description="Where this module candidate came from.")
+    module_name: str = Field(description="Mathlib module name to verify as importable from the current repo before recording.")
+    summary: str | None = Field(default=None, description="Short summary of why the module is reusable for this repo or current node.")
+    source: str | None = Field(default=None, description="Search result, document, or reasoning source that led to this module candidate.")
 
 
 class MathlibDeclRecordArgs(StrictModel):
-    decl_name: str = Field(description="Mathlib declaration name verified in the current repo.")
-    module_name: str | None = Field(default=None, description="Known module containing the declaration.")
-    summary: str | None = Field(default=None, description="Short summary of why the declaration is useful.")
-    source: str | None = Field(default=None, description="Where this declaration candidate came from.")
-    kind: str | None = Field(default=None, description="Lean declaration kind if known.")
-    signature: str | None = Field(default=None, description="Lean signature or type if known.")
-    snippet: str | None = Field(default=None, description="Relevant source snippet if known.")
+    decl_name: str = Field(description="Mathlib declaration name to verify as accessible from the current repo before recording.")
+    module_name: str | None = Field(default=None, description="Known Mathlib module containing the declaration, if discovered.")
+    summary: str | None = Field(default=None, description="Short summary of why the declaration is reusable for this repo or current node.")
+    source: str | None = Field(default=None, description="Search result, source inspection, or reasoning source that led to this declaration candidate.")
+    kind: str | None = Field(default=None, description="Lean declaration kind if known, such as def, theorem, lemma, or instance.")
+    signature: str | None = Field(default=None, description="Lean signature or type of the declaration if known.")
+    snippet: str | None = Field(default=None, description="Relevant source or documentation snippet supporting the declaration entry.")
 
 
 class MathlibSemanticSearchArgs(StrictModel):
-    query: str = Field(description="Natural-language or Lean-name query for Mathlib semantic search.")
-    limit: int = Field(default=20, ge=1, le=50, description="Maximum number of candidates.")
+    query: str = Field(description="Natural-language mathematical concept, theorem statement, or Lean-name query for LeanExplore Mathlib semantic search.")
+    limit: int = Field(default=20, ge=1, le=50, description="Maximum number of ranked Mathlib semantic-search candidates to return.")
 
 
 class ArxivTheoremSearchArgs(StrictModel):
@@ -383,24 +383,24 @@ class ArxivTheoremSearchArgs(StrictModel):
 
 
 class MathlibExternalSearchArgs(StrictModel):
-    query: str = Field(description="Search query for external Mathlib/theorem search tools.")
-    search_kinds: list[str] = Field(default_factory=lambda: ["lean_explore"], description="Search backends or result kinds to use.")
-    limit: int = Field(default=20, ge=1, le=50, description="Maximum number of results.")
+    query: str = Field(description="Search query for configured external Mathlib or theorem search backends.")
+    search_kinds: list[str] = Field(default_factory=lambda: ["lean_explore"], description="Toolkit search backends or result kinds to use, such as lean_explore.")
+    limit: int = Field(default=20, ge=1, le=50, description="Maximum external search results to return.")
 
 
 class MathlibInspectModuleArgs(StrictModel):
-    module: str = Field(description="Mathlib module name to inspect.")
-    pattern: str | None = Field(default=None, description="Optional declaration/text pattern to filter module contents.")
+    module: str = Field(description="Mathlib module name to inspect through toolkit navigation.")
+    pattern: str | None = Field(default=None, description="Optional declaration name or source text pattern to filter module contents.")
 
 
 class CurrentMathlibModuleUseArgs(StrictModel):
-    module: str = Field(description="Mathlib module to add or remove from the current node contract.")
-    reason: str | None = Field(default=None, description="Why this module is useful for the current node.")
+    module: str = Field(description="Recorded Mathlib module name to add to or remove from the current node contract hints.")
+    reason: str | None = Field(default=None, description="Why this module is useful for the current node objective.")
 
 
 class CurrentMathlibDeclUseArgs(StrictModel):
-    decl_name: str = Field(description="Mathlib declaration to add or remove from the current node contract.")
-    reason: str | None = Field(default=None, description="Why this declaration is useful for the current node.")
+    decl_name: str = Field(description="Recorded Mathlib declaration name to add to or remove from the current node contract hints.")
+    reason: str | None = Field(default=None, description="Why this declaration is useful for the current node objective.")
 
 
 class StrategyEnsureArgs(StrictModel):

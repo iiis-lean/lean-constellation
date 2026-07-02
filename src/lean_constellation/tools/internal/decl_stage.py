@@ -146,7 +146,7 @@ def build_tool_specs() -> list[ToolSpec]:
     return [
         handler_tool(
             name="write_statement_nl",
-            description="Write natural-language statement, origins, and draft deps for a decl in the current statement_nl stage.",
+            description="Write natural-language statement text, supporting origins, and draft dependencies for one declaration in the current statement natural-language stage.",
             args_model=DeclStageNlArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_revision",
@@ -156,7 +156,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="write_proof_nl",
-            description="Write natural-language proof route, origins, and draft deps for a decl in the current proof_nl stage.",
+            description="Write a natural-language proof route, supporting origins, and draft proof dependencies for one declaration in the current proof natural-language stage.",
             args_model=DeclStageNlArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_revision",
@@ -166,7 +166,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="prepare_statement_formal_file",
-            description="Prepare the Decl-owned Lean file for statement formalization in the current stage.",
+            description="Create or refresh the declaration-owned Lean file scaffold for statement formalization in the current stage.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="lean_file",
@@ -176,7 +176,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="capture_statement_formal_file",
-            description="Capture/check the statement formal Lean file and save the statement formal snapshot.",
+            description="Run capture checks on the statement formal Lean file and save the accepted statement formal snapshot into the current DeclRevision.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="formal_capture",
@@ -186,7 +186,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="prepare_proof_formal_file",
-            description="Prepare the Decl-owned Lean file for proof formalization in the current stage.",
+            description="Create or refresh the declaration-owned Lean file scaffold for proof formalization in the current stage.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="lean_file",
@@ -196,7 +196,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="capture_proof_formal_file",
-            description="Capture/check the proof formal Lean file and save the proof formal snapshot.",
+            description="Run capture checks on the proof formal Lean file and save the accepted proof formal snapshot into the current DeclRevision.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="formal_capture",
@@ -206,7 +206,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="check_decl_file_snapshot_sync",
-            description="Check whether a Decl-owned Lean file is synchronized with the captured DeclRevision snapshot.",
+            description="Check whether a declaration-owned Lean file still matches the captured formal snapshot stored in the DeclRevision.",
             args_model=DeclStageFileCheckArgs,
             capability=ToolCapability.READ,
             result_view="gate_report",
@@ -216,7 +216,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="sync_decl_file_after_revision_reset",
-            description="Synchronize a Decl-owned Lean file after an update reset.",
+            description="Restore a declaration-owned Lean file from the current DeclRevision snapshot after an update reset.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="mutation",
@@ -226,7 +226,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="remove_decl_file_for_delete",
-            description="Remove a Decl-owned Lean file for a planned delete operation.",
+            description="Remove the declaration-owned Lean file for a declaration that is being deleted by the current planned round.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="mutation",
@@ -236,7 +236,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="check_formal_stage_consistency",
-            description="Run deterministic consistency checks for one formal stage artifact.",
+            description="Run deterministic consistency checks between a formal stage artifact, its DeclRevision state, and the current round context.",
             args_model=DeclStageFileCheckArgs,
             capability=ToolCapability.READ,
             result_view="gate_report",
@@ -246,7 +246,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="record_decl_review",
-            description="Record the reviewer mark for one declaration in the current DeclGraph stage review.",
+            description="Record the reviewer pass/fail mark, issue category, and suggested fix for one declaration in the current DeclGraph stage review.",
             args_model=DeclReviewMarkArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_review_mark",
@@ -256,7 +256,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="run_decl_round_local_audit",
-            description="Run a local audit for the current decl round and stage.",
+            description="Run a local audit for the current declaration round and stage using the current decl-stage tool context.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="audit_report",

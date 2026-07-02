@@ -87,7 +87,7 @@ def build_tool_specs() -> list[ToolSpec]:
     return [
         direct_tool(
             name="search_mathlib_index",
-            description="Search the repo-level MathlibIndex modules and declarations.",
+            description="Search recorded repo-level MathlibIndex module and declaration entries by text, regex, or entry kind.",
             args_model=MathlibIndexSearchArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -120,7 +120,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="record_mathlib_module",
-            description="Check and record a Mathlib module in the repo-level MathlibIndex.",
+            description="Verify that a Mathlib module is importable from the current repo and record its reusable purpose in the repo-level MathlibIndex.",
             args_model=MathlibModuleRecordArgs,
             capability=ToolCapability.WRITE,
             backing_service="mathlib",
@@ -131,7 +131,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="record_mathlib_decl",
-            description="Check and record a Mathlib declaration in the repo-level MathlibIndex.",
+            description="Verify that a Mathlib declaration is accessible from the current repo and record its statement, kind, module, and reuse notes in the repo-level MathlibIndex.",
             args_model=MathlibDeclRecordArgs,
             capability=ToolCapability.WRITE,
             backing_service="mathlib",
@@ -142,7 +142,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="add_mathlib_module_important_decl",
-            description="Record an important declaration under a Mathlib module entry.",
+            description="Attach a recorded Mathlib declaration name as an important reusable declaration for a recorded Mathlib module entry.",
             args_model=MathlibModuleDeclArgs,
             capability=ToolCapability.WRITE,
             backing_service="mathlib",
@@ -153,7 +153,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="search_external_mathlib",
-            description="Search external Mathlib/theorem tools through the Lean toolkit integration.",
+            description="Run configured toolkit-backed Mathlib search backends and return candidate declarations or theorem references for the query.",
             args_model=MathlibExternalSearchArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -164,7 +164,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="search_mathlib_declarations",
-            description="Search Mathlib declarations semantically through Lean Explore/toolkit.",
+            description="Run LeanExplore-backed semantic search over Mathlib declarations and return ranked candidate ids for later inspection or ingestion.",
             args_model=MathlibSemanticSearchArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -175,7 +175,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="inspect_mathlib_search_candidate",
-            description="Inspect and enrich a cached Mathlib search candidate.",
+            description="Inspect a cached Mathlib search candidate and enrich it with declaration metadata, module context, and source or type details when available.",
             args_model=MathlibCandidateArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -186,7 +186,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="inspect_mathlib_declaration",
-            description="Inspect one Mathlib declaration through the toolkit navigation layer.",
+            description="Inspect one Mathlib declaration through toolkit navigation and return its module, kind, type, documentation, and source context when available.",
             args_model=MathlibDeclNameArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -197,7 +197,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="inspect_mathlib_module",
-            description="Inspect one Mathlib module and optionally filter declarations by pattern.",
+            description="Inspect one Mathlib module and optionally filter its declarations or source context by a text pattern.",
             args_model=MathlibInspectModuleArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -208,7 +208,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="check_mathlib_name",
-            description="Check whether a Mathlib declaration name is accessible from the current repo.",
+            description="Check whether a Mathlib declaration name is available after importing the given module in the current repo context.",
             args_model=MathlibModuleDeclArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -219,7 +219,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="ingest_mathlib_candidate",
-            description="Turn a cached Mathlib search candidate into a checked MathlibIndex declaration entry.",
+            description="Verify a cached Mathlib search candidate and store it as a checked declaration entry in the repo-level MathlibIndex.",
             args_model=MathlibCandidateIngestArgs,
             capability=ToolCapability.WRITE,
             backing_service="mathlib",
@@ -244,7 +244,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="get_current_node_mathlib_hints",
-            description="Read Mathlib module/declaration hints on the current node contract.",
+            description="Read Mathlib module and declaration hints recorded on the current node contract.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="node_mathlib_hints",
@@ -254,7 +254,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_current_mathlib_module_hint",
-            description="Add a Mathlib module hint to the current node contract.",
+            description="Add a recorded Mathlib module as a current-node hint with a reason tied to the node objective.",
             args_model=CurrentMathlibModuleUseArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
@@ -264,7 +264,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="remove_current_mathlib_module_hint",
-            description="Remove a Mathlib module hint from the current node contract.",
+            description="Remove a Mathlib module hint from the current node contract when it is stale or no longer useful.",
             args_model=CurrentMathlibModuleUseArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
@@ -274,7 +274,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_current_mathlib_decl_hint",
-            description="Add a Mathlib declaration hint to the current node contract.",
+            description="Add a recorded Mathlib declaration as a current-node hint with a reason tied to the node objective.",
             args_model=CurrentMathlibDeclUseArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
@@ -284,7 +284,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="remove_current_mathlib_decl_hint",
-            description="Remove a Mathlib declaration hint from the current node contract.",
+            description="Remove a Mathlib declaration hint from the current node contract when it is stale or no longer useful.",
             args_model=CurrentMathlibDeclUseArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
@@ -294,7 +294,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="validate_current_node_mathlib_hints",
-            description="Validate current node Mathlib hints against the repo-level MathlibIndex.",
+            description="Validate that current-node Mathlib hints refer to entries recorded in the repo-level MathlibIndex.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="gate_report",

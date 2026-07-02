@@ -72,7 +72,7 @@ def build_tool_specs() -> list[ToolSpec]:
     return [
         handler_tool(
             name="run_lean_file_diagnostics",
-            description="Run Lean diagnostics for a repo-relative Lean file through the configured toolkit or Lake fallback.",
+            description="Run Lean diagnostics for a repo-relative Lean file through the configured toolkit or Lake fallback without saving DeclGraph state.",
             args_model=RepoRelativeFileArgs,
             capability=ToolCapability.READ,
             result_view="lean_diagnostics",
@@ -82,7 +82,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="scan_lean_sorry_axiom",
-            description="Scan a repo-relative Lean file for sorry, admit, axiom, opaque, and unsafe tokens outside comments and strings.",
+            description="Scan a repo-relative Lean file for sorry, admit, axiom, opaque, and unsafe tokens outside comments and strings without invoking Lean.",
             args_model=RepoRelativeFileArgs,
             capability=ToolCapability.READ,
             result_view="sorry_axiom_scan",
@@ -92,7 +92,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="check_statement_formal_policy",
-            description="Run statement-formal diagnostics and sorry/axiom policy checks on a repo-relative Lean file.",
+            description="Run statement-formal diagnostics plus declaration-kind and sorry/axiom policy checks on a repo-relative Lean file without saving captured formal state.",
             args_model=FormalPolicyCheckArgs,
             capability=ToolCapability.READ,
             result_view="lean_check",
@@ -102,7 +102,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="check_proof_formal_policy",
-            description="Run proof-formal diagnostics and no-sorry/no-axiom policy checks on a repo-relative Lean file.",
+            description="Run proof-formal diagnostics plus no-sorry/no-axiom safety policy checks on a repo-relative Lean file without saving captured proof state.",
             args_model=RepoRelativeFileArgs,
             capability=ToolCapability.READ,
             result_view="lean_check",

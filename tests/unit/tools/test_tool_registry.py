@@ -124,6 +124,19 @@ def test_arxiv_theorem_search_has_dedicated_agent_schema() -> None:
     assert "theorem-like arXiv candidates" in schema["properties"]["limit"]["description"]
 
 
+def test_high_priority_tool_descriptions_explain_runtime_boundaries() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    assert "repo-level MathlibIndex" in specs["search_mathlib_index"].description
+    assert "LeanExplore-backed semantic search" in specs["search_mathlib_declarations"].description
+    assert "accessible from the current repo" in specs["record_mathlib_decl"].description
+    assert "without saving captured formal state" in specs["check_statement_formal_policy"].description
+    assert "without saving captured proof state" in specs["check_proof_formal_policy"].description
+    assert "save the accepted statement formal snapshot" in specs["capture_statement_formal_file"].description
+    assert "save the accepted proof formal snapshot" in specs["capture_proof_formal_file"].description
+    assert "coherent metadata" in specs["check_resource_draft"].description
+
+
 def test_application_tooling_registers_on_real_tool_facade() -> None:
     runtime = create_test_runtime_services()
 

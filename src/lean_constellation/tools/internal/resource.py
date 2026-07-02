@@ -52,7 +52,7 @@ def build_tool_specs() -> list[ToolSpec]:
     return [
         handler_tool(
             name="get_material_context",
-            description="Read source/resource material context for the current node and optional query.",
+            description="Read source corpus, source index, and resource-library material context for the current node, optionally narrowed by a text or regex query.",
             args_model=MaterialContextArgs,
             capability=ToolCapability.READ,
             result_view="material_context",
@@ -62,7 +62,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="normalize_resource_target",
-            description="Normalize a resource target into canonical resource-target fields.",
+            description="Normalize a resource target such as a URL, arXiv id, DOI, or local path into canonical fields for duplicate checks and draft allocation.",
             args_model=ResourceTargetArgs,
             capability=ToolCapability.READ,
             result_view="resource_target",
@@ -73,7 +73,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="find_duplicate_resource",
-            description="Check whether a target duplicates an existing source or resource in the current repo.",
+            description="Check whether a normalized resource target duplicates existing source corpus material or a registered resource in the current repo.",
             args_model=ResourceTargetArgs,
             capability=ToolCapability.READ,
             result_view="resource_duplicate",
@@ -83,7 +83,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="acquire_material_resource",
-            description="Acquire raw material for source/resource preparation into the draft area.",
+            description="Acquire raw resource material such as arXiv source, PDF, web page, or local target into the current material draft area.",
             args_model=SourceMaterialAcquireArgs,
             capability=ToolCapability.WRITE,
             backing_service="material",
@@ -94,7 +94,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="extract_material_artifact",
-            description="Extract readable text from an acquired material artifact.",
+            description="Extract readable text or project files from an acquired material artifact for resource draft curation.",
             args_model=SourceArtifactExtractArgs,
             capability=ToolCapability.WRITE,
             backing_service="material",
@@ -105,7 +105,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="import_material_file",
-            description="Import a local file or directory into the material draft area.",
+            description="Import a local file or directory into the current material draft area for resource curation.",
             args_model=SourceMaterialImportArgs,
             capability=ToolCapability.WRITE,
             backing_service="material",
@@ -116,7 +116,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="normalize_material_text",
-            description="Normalize a draft material reference into readable text.",
+            description="Normalize a draft material reference into readable text for README summaries, resource notes, and downstream line-range reads.",
             args_model=SourceMaterialNormalizeArgs,
             capability=ToolCapability.WRITE,
             backing_service="material",
@@ -127,7 +127,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="read_resource_range",
-            description="Read a line range from a normalized resource.",
+            description="Read a line range from a registered resource's normalized text by resource key.",
             args_model=ResourceRangeArgs,
             capability=ToolCapability.READ,
             backing_service="material",
@@ -138,7 +138,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="list_resources",
-            description="List resources registered in the current repo resource library.",
+            description="List resources registered in the current repo resource library with optional text filtering.",
             args_model=ResourceListArgs,
             capability=ToolCapability.READ,
             backing_service="material",
@@ -150,7 +150,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="get_resource",
-            description="Inspect a registered resource by resource key.",
+            description="Inspect metadata, normalized text availability, and notes for one registered resource by resource key.",
             args_model=ResourceKeyArgs,
             capability=ToolCapability.READ,
             backing_service="material",
@@ -162,7 +162,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="allocate_resource_draft",
-            description="Allocate a resource draft directory for curator work.",
+            description="Allocate a resource draft directory for one canonical target and return the draft id and writable draft layout for curator work.",
             args_model=ResourceDraftTargetArgs,
             capability=ToolCapability.WRITE,
             backing_service="material",
@@ -173,7 +173,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="get_resource_draft",
-            description="Inspect a resource draft by draft id.",
+            description="Inspect a resource draft by draft id, including target metadata, draft paths, and current readiness state.",
             args_model=DraftIdArgs,
             capability=ToolCapability.READ,
             backing_service="material",
@@ -184,7 +184,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="check_resource_draft",
-            description="Validate resource draft structure before submit.",
+            description="Validate that a resource draft has coherent metadata, readable normalized material, and required README content before local-resource submit.",
             args_model=DraftIdArgs,
             capability=ToolCapability.READ,
             backing_service="material",
@@ -195,7 +195,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="abandon_resource_draft",
-            description="Abandon a resource draft that should not be finalized.",
+            description="Mark a resource draft as abandoned with a reason when it should not be finalized into the resource library.",
             args_model=DraftIdReasonArgs,
             capability=ToolCapability.WRITE,
             backing_service="material",
