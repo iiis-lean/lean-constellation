@@ -553,15 +553,9 @@ def _env_path(name: str) -> Path | None:
 
 
 def _mathlib_template_root() -> Path | None:
-    explicit = _env_path("LEAN_CONSTELLATION_REAL_LEAN_TEMPLATE_ROOT")
+    explicit = _env_path("LEAN_CONSTELLATION_REAL_LEAN_TEMPLATE_ROOT") or _env_path(
+        "LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PROJECT_ROOT"
+    )
     if explicit is not None:
         return explicit
-    for candidate in (
-        Path("~/lean_projects/lean_template_428").expanduser(),
-        Path("~/lean_projects/lean_template_427").expanduser(),
-        Path("/root/lean_projects/lean_template_428"),
-        Path("/root/lean_projects/lean_template_427"),
-    ):
-        if candidate.exists():
-            return candidate
     return None

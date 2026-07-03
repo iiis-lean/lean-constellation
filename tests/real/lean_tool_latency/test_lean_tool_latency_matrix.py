@@ -643,18 +643,12 @@ def _write_mathlib_cached_repo(repo_root: Path, template_root: Path) -> None:
 
 
 def _mathlib_template_root() -> Path | None:
-    explicit = os.environ.get("LEAN_CONSTELLATION_REAL_LEAN_TEMPLATE_ROOT")
+    explicit = os.environ.get("LEAN_CONSTELLATION_REAL_LEAN_TEMPLATE_ROOT") or os.environ.get(
+        "LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PROJECT_ROOT"
+    )
     if explicit:
         root = Path(explicit).expanduser()
         return root if root.is_dir() else None
-    for candidate in (
-        Path("~/lean_projects/lean_template_428").expanduser(),
-        Path("~/lean_projects/lean_template_427").expanduser(),
-        Path("/root/lean_projects/lean_template_428"),
-        Path("/root/lean_projects/lean_template_427"),
-    ):
-        if candidate.is_dir():
-            return candidate
     return None
 
 

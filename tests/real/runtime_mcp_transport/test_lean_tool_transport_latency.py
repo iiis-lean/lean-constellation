@@ -565,7 +565,9 @@ def _mcp_structured(value: Any) -> dict[str, Any] | None:
 
 
 def _mcp_pythonpath() -> str:
-    entries = [str(Path(__file__).resolve().parents[3] / "src"), "/root/code/agent-runtime-kit/src"]
+    entries = [str(Path(__file__).resolve().parents[3] / "src")]
+    if ark_src := os.environ.get("LEAN_CONSTELLATION_ARK_SRC"):
+        entries.append(str(Path(ark_src).expanduser()))
     existing = os.environ.get("PYTHONPATH")
     if existing:
         entries.append(existing)
