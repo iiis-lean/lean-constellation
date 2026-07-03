@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from lean_constellation.app import (
+    BootstrapMainNativeRepoInput,
+    CreateMainRepoShellInput,
+    InitializeMainNativeSkeletonInput,
+    LeanAdminApi,
+    StartPreparationInput,
+    ValidateMainSourceCorpusInput,
+    WriteMainRepoPreparationInput,
+    create_app_runtime_services,
+)
+from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
+
+
+class FakeLakeClient:
+    def __init__(self) -> None:
+        self.built: list[tuple[Path, str | None]] = []
+
+    def run_lake_update(self, repo_root: Path) -> ExternalCommandResult:
+        return ExternalCommandResult(ok=True, command=["lake", "update"], cwd=str(repo_root), exit_code=0, summary="lake update ok")
+
+    def run_lake_build(self, repo_root: Path, target: str | None = None) -> ExternalCommandResult:
+        self.built.append((Path(repo_root), target))
+        return ExternalCommandResult(
+            ok=True,
+            command=["lake", "build"] + ([target] if target else []),
+            cwd=str(repo_root),
+            exit_code=0,
+            summary="lake build ok",
+        )
+
+    def run_minimal_import_check(self, repo_root: Path, module: str) -> LeanCheckSummaryView:
+        return LeanCheckSummaryView(ok=True, module=module, command=["lean"], summary=f"import {module} ok")
+
+
+def _runtime_with_fake_lake(tmp_path: Path):
+    lake = FakeLakeClient()
+    runtime = create_app_runtime_services(
+        runtime_root=tmp_path / ".runtime",
+        external_overrides={"lake": lake},
+    )
+    return runtime, lake
+
+
+def _main_input() -> RepoPreparationInput:
+    return RepoPreparationInput(
+        goal="Formalize the target theorem.",
+        source_corpus_mode=SourceCorpusMode.EXISTING,
+        source_corpus_relpath=".lean_constellation/source",
+        source_description="Copied source files for the main theorem.",
+    )
+
+
+def test_admin_main_repo_manual_preparation_flow(tmp_path: Path) -> None:
+    runtime, lake = _runtime_with_fake_lake(tmp_path)
+    admin = LeanAdminApi(runtime)
+
+    shell = admin.create_main_repo_shell(
+        CreateMainRepoShellInput(workspace_root=tmp_path, repo_name="MainRepo", project_name="MainProject")
+    )
+    assert shell.ok and shell.value is not None
+    repo_root = Path(shell.value.repo_root)
+    assert repo_root == tmp_path / "MainRepo"
+    assert not (repo_root / ".lean_constellation" / "preparation_input.json").exists()
+
+    written = admin.write_main_repo_preparation_input(
+        WriteMainRepoPreparationInput(repo_root=repo_root, input=_main_input())
+    )
+    assert written.ok and written.value is not None
+
+    missing_source = admin.validate_main_source_corpus(ValidateMainSourceCorpusInput(repo_root=repo_root))
+    assert not missing_source.ok
+    assert missing_source.issues[0].kind == "main_source_corpus_missing"
+
+    source_dir = repo_root / ".lean_constellation" / "source"
+    source_dir.mkdir(parents=True)
+    (source_dir / "source.tex").write_text("Theorem source.", encoding="utf-8")
+    valid_source = admin.validate_main_source_corpus(ValidateMainSourceCorpusInput(repo_root=repo_root))
+    assert valid_source.ok and valid_source.value is not None
+    assert valid_source.value.file_count == 1
+
+    skeleton = admin.initialize_main_native_skeleton(
+        InitializeMainNativeSkeletonInput(repo_root=repo_root, project_name="MainProject")
+    )
+    assert skeleton.ok and skeleton.value is not None
+    assert (repo_root / "lakefile.toml").exists()
+    assert lake.built == [(repo_root, None)]
+
+    started = admin.start_native_preparation(StartPreparationInput(repo_root=repo_root, repo_key="MainRepo"))
+    assert started.ok and started.value is not None
+    assert runtime.ark.flow_service.get_flow(started.value.flow_id).flow_type == "native_repo_preparation"
+
+
+def test_admin_main_repo_bootstrap_can_skip_source_validation_for_prepare_mode(tmp_path: Path) -> None:
+    runtime, lake = _runtime_with_fake_lake(tmp_path)
+    admin = LeanAdminApi(runtime)
+    input_model = RepoPreparationInput(
+        goal="Prepare source through the system.",
+        source_corpus_mode=SourceCorpusMode.PREPARE,
+        source_corpus_relpath=".lean_constellation/source",
+    )
+
+    result = admin.bootstrap_main_native_repo(
+        BootstrapMainNativeRepoInput(
+            workspace_root=tmp_path,
+            repo_name="MainRepo",
+            project_name="MainProject",
+            preparation_input=input_model,
+            validate_source_corpus=False,
+        )
+    )
+
+    assert result.ok and result.value is not None
+    assert result.value.skeleton.project_name == "MainProject"
+    assert result.value.preparation_flow.flow_type == "native_repo_preparation"
+    assert lake.built == [(tmp_path / "MainRepo", None)]

@@ -21,13 +21,14 @@ from lean_constellation.app.external_takeover import (
     list_external_takeover_tools,
 )
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.preparation import SourceCorpusMode
+from lean_constellation.domain.preparation import RepoPreparationInput, RepoPreparationInputView, RepoShellView, SourceCorpusMode
 from lean_constellation.flows.testing import (
     CONTROLLED_AGENT_OVERRIDE_KEY,
     CONTROLLED_AGENT_RECORD_KEY,
     ControlledAgentOverrideSpec,
 )
-from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.services.foundation import FoundationContext, ServiceIssue, ServiceResult
+from lean_constellation.services.repo_workspace import RepoSkeletonView
 from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -43,6 +44,19 @@ class AdminFlowStartView(StrictModel):
 class RuntimePauseView(StrictModel):
     paused: bool
     scope_id: str | None = None
+    summary: str
+
+
+class RuntimeStatusView(StrictModel):
+    paused: bool
+    test_control_enabled: bool
+    flow_candidate_queue: list[str] = Field(default_factory=list)
+    step_candidate_queue: list[str] = Field(default_factory=list)
+    queued_flow_ids: list[str] = Field(default_factory=list)
+    queued_step_ids: list[str] = Field(default_factory=list)
+    active_flow_advances: list[str] = Field(default_factory=list)
+    running_step_ids: list[str] = Field(default_factory=list)
+    created_step_ids: list[str] = Field(default_factory=list)
     summary: str
 
 
@@ -171,6 +185,82 @@ class StartPreparationInput(StrictModel):
     @classmethod
     def _coerce_repo(cls, value: Any) -> Path:
         return Path(value).expanduser()
+
+
+class CreateMainRepoShellInput(StrictModel):
+    workspace_root: Path
+    repo_name: str
+    project_name: str
+
+    @field_validator("workspace_root", mode="before")
+    @classmethod
+    def _coerce_workspace(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class WriteMainRepoPreparationInput(StrictModel):
+    repo_root: Path
+    input: RepoPreparationInput
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class ValidateMainSourceCorpusInput(StrictModel):
+    repo_root: Path
+    require_files: bool = True
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class MainSourceCorpusValidationView(StrictModel):
+    repo_root: str
+    source_corpus_mode: SourceCorpusMode
+    source_corpus_relpath: str | None = None
+    source_corpus_path: str | None = None
+    exists: bool
+    file_count: int
+    passed: bool
+    issues: list[ServiceIssue] = Field(default_factory=list)
+    summary: str
+
+
+class InitializeMainNativeSkeletonInput(StrictModel):
+    repo_root: Path
+    project_name: str | None = None
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class BootstrapMainNativeRepoInput(StrictModel):
+    workspace_root: Path
+    repo_name: str
+    project_name: str
+    preparation_input: RepoPreparationInput
+    validate_source_corpus: bool = True
+    enqueue: bool = True
+
+    @field_validator("workspace_root", mode="before")
+    @classmethod
+    def _coerce_workspace(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class MainNativeRepoBootstrapView(StrictModel):
+    shell: RepoShellView
+    preparation_input: RepoPreparationInputView
+    source_corpus_validation: MainSourceCorpusValidationView | None = None
+    skeleton: RepoSkeletonView
+    preparation_flow: AdminFlowStartView
+    summary: str
 
 
 class StartFlowInput(StrictModel):
@@ -308,6 +398,154 @@ class LeanAdminApi:
             repo_root=str(input_model.repo_root),
         )
 
+    def create_main_repo_shell(self, input_model: CreateMainRepoShellInput) -> ServiceResult[RepoShellView]:
+        return self.runtime.repo_workspace.create_main_repo_shell(
+            input_model.workspace_root,
+            repo_name=input_model.repo_name,
+            project_name=input_model.project_name,
+        )
+
+    def write_main_repo_preparation_input(
+        self,
+        input_model: WriteMainRepoPreparationInput,
+    ) -> ServiceResult[RepoPreparationInputView]:
+        return self.runtime.repo_workspace.write_preparation_input(
+            input_model.repo_root,
+            input=input_model.input,
+        )
+
+    def validate_main_source_corpus(
+        self,
+        input_model: ValidateMainSourceCorpusInput,
+    ) -> ServiceResult[MainSourceCorpusValidationView]:
+        loaded = self.runtime.repo_workspace.preparation.get_preparation_input(input_model.repo_root)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        preparation = loaded.value.input
+        issues: list[ServiceIssue] = []
+        source_path: Path | None = None
+        exists = False
+        file_count = 0
+        if preparation.source_corpus_mode == SourceCorpusMode.NONE:
+            issues.append(
+                self.runtime.foundation.issue(
+                    "main_source_corpus_none",
+                    "Main native repo preparation requires source_corpus_mode to be existing or prepare.",
+                    field="source_corpus_mode",
+                    current=SourceCorpusMode.NONE.value,
+                    expected="existing|prepare",
+                )
+            )
+        else:
+            try:
+                source_path = self.runtime.foundation.layout.source_corpus_root(
+                    FoundationContext(repo_root=input_model.repo_root),
+                    preparation.source_corpus_relpath or ".lean_constellation/source",
+                )
+            except ValueError as exc:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "main_source_corpus_path_invalid",
+                        f"Main source corpus path is invalid: {exc}",
+                        field="source_corpus_relpath",
+                        current=preparation.source_corpus_relpath,
+                    )
+                )
+            if source_path is not None:
+                exists = source_path.exists() and source_path.is_dir()
+                if not exists:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "main_source_corpus_missing",
+                            "Main source corpus directory is missing.",
+                            object_ref=str(source_path),
+                        )
+                    )
+                else:
+                    file_count = sum(1 for item in source_path.rglob("*") if item.is_file())
+                    if input_model.require_files and file_count == 0:
+                        issues.append(
+                            self.runtime.foundation.issue(
+                                "main_source_corpus_empty",
+                                "Main source corpus directory contains no files.",
+                                object_ref=str(source_path),
+                            )
+                        )
+        passed = not issues
+        view = MainSourceCorpusValidationView(
+            repo_root=str(input_model.repo_root),
+            source_corpus_mode=preparation.source_corpus_mode,
+            source_corpus_relpath=preparation.source_corpus_relpath,
+            source_corpus_path=str(source_path) if source_path is not None else None,
+            exists=exists,
+            file_count=file_count,
+            passed=passed,
+            issues=issues,
+            summary="Main source corpus validation passed." if passed else f"Main source corpus validation found {len(issues)} issues.",
+        )
+        if passed:
+            return self.runtime.foundation.ok(view)
+        return self.runtime.foundation.fail(issues)
+
+    def initialize_main_native_skeleton(
+        self,
+        input_model: InitializeMainNativeSkeletonInput,
+    ) -> ServiceResult[RepoSkeletonView]:
+        return self.runtime.repo_workspace.initialize_repo_as_native(
+            input_model.repo_root,
+            project_name=input_model.project_name or input_model.repo_root.name,
+        )
+
+    def bootstrap_main_native_repo(
+        self,
+        input_model: BootstrapMainNativeRepoInput,
+    ) -> ServiceResult[MainNativeRepoBootstrapView]:
+        shell = self.runtime.repo_workspace.create_main_repo_shell(
+            input_model.workspace_root,
+            repo_name=input_model.repo_name,
+            project_name=input_model.project_name,
+        )
+        if not shell.ok or shell.value is None:
+            return self.runtime.foundation.fail(shell.issues)
+        repo_root = Path(shell.value.repo_root)
+        written = self.write_main_repo_preparation_input(
+            WriteMainRepoPreparationInput(repo_root=repo_root, input=input_model.preparation_input)
+        )
+        if not written.ok or written.value is None:
+            return self.runtime.foundation.fail(written.issues)
+        source_validation = None
+        if input_model.validate_source_corpus:
+            validated = self.validate_main_source_corpus(ValidateMainSourceCorpusInput(repo_root=repo_root))
+            if not validated.ok or validated.value is None:
+                return self.runtime.foundation.fail(validated.issues)
+            source_validation = validated.value
+        skeleton = self.initialize_main_native_skeleton(
+            InitializeMainNativeSkeletonInput(repo_root=repo_root, project_name=input_model.project_name)
+        )
+        if not skeleton.ok or skeleton.value is None:
+            return self.runtime.foundation.fail(skeleton.issues)
+        preparation = self.start_native_preparation(
+            StartPreparationInput(
+                repo_root=repo_root,
+                repo_key=input_model.repo_name,
+                start_reason="admin",
+                admin_notes="Started by main native repo bootstrap.",
+                enqueue=input_model.enqueue,
+            )
+        )
+        if not preparation.ok or preparation.value is None:
+            return self.runtime.foundation.fail(preparation.issues)
+        return self.runtime.foundation.ok(
+            MainNativeRepoBootstrapView(
+                shell=shell.value,
+                preparation_input=written.value,
+                source_corpus_validation=source_validation,
+                skeleton=skeleton.value,
+                preparation_flow=preparation.value,
+                summary=f"Bootstrapped main native repo {input_model.repo_name}.",
+            )
+        )
+
     def start_arbitrary_flow(
         self,
         input_model: StartFlowInput,
@@ -355,6 +593,27 @@ class LeanAdminApi:
             schedule_service.rebuild_candidate_queues(scope_id=scope_id)
         return self.runtime.foundation.ok(
             RuntimePauseView(paused=False, scope_id=scope_id, summary="Resumed runtime scheduling.")
+        )
+
+    def get_runtime_status(self) -> ServiceResult[RuntimeStatusView]:
+        paused = False
+        controller = self.runtime.ark.pause_controller
+        if controller is not None and hasattr(controller, "is_paused"):
+            paused = bool(controller.is_paused())
+        queues = self._candidate_queue_view()
+        return self.runtime.foundation.ok(
+            RuntimeStatusView(
+                paused=paused,
+                test_control_enabled=self.runtime.test_control_enabled,
+                flow_candidate_queue=queues.flow_candidate_queue,
+                step_candidate_queue=queues.step_candidate_queue,
+                queued_flow_ids=queues.queued_flow_ids,
+                queued_step_ids=queues.queued_step_ids,
+                active_flow_advances=queues.active_flow_advances,
+                running_step_ids=queues.running_step_ids,
+                created_step_ids=queues.created_step_ids,
+                summary="Loaded runtime status.",
+            )
         )
 
     def get_test_control_runtime_view(
@@ -454,6 +713,9 @@ class LeanAdminApi:
         )
 
     def wait_step(self, input_model: AdminStepStartInput) -> ServiceResult[AdminStepRunView]:
+        guarded = self._require_test_control()
+        if guarded is not None:
+            return guarded
         step_service = self.runtime.ark.step_service
         if step_service is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("step_service_missing", "ARK step service is not configured."))
@@ -609,6 +871,25 @@ class LeanAdminApi:
         )
 
     def resume_requirement(self, input_model: RequirementResumeInput) -> ServiceResult[RequirementResumeView]:
+        loaded = self.runtime.repo_workspace.requirement.get_requirement(
+            input_model.consumer_repo_root,
+            name=input_model.requirement_name,
+        )
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        requirement = loaded.value.requirement
+        expected_provider = self.runtime.foundation.layout.ensure_safe_key(input_model.provider_repo)
+        waiting_provider = requirement.waiting_state.provider_repo or requirement.provider_repo or requirement.target_repo
+        if waiting_provider != expected_provider:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_provider_mismatch",
+                    "Requirement resume provider does not match the waiting requirement provider.",
+                    current=expected_provider,
+                    expected=waiting_provider,
+                    object_ref=input_model.requirement_name,
+                )
+            )
         observed = self.runtime.repo_workspace.mark_requirement_result_observed(
             input_model.consumer_repo_root,
             requirement_name=input_model.requirement_name,

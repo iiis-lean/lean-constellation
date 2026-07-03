@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from tests.unit_services_helpers import make_runtime
 
 
@@ -125,6 +126,56 @@ def test_requirement_resume_candidates_require_ready_provider(tmp_path: Path) ->
     assert candidates.value[0].consumer_repo == "consumer"
     assert candidates.value[0].requirement_name == "need_provider"
     assert candidates.value[0].provider_repo == "provider"
+
+
+def test_mark_provider_ready_rejects_stale_requirement_ref_without_ready_marker(tmp_path: Path) -> None:
+    runtime, _, _, provider = _setup_consumer_provider(tmp_path)
+    written = runtime.repo_workspace.write_preparation_input(
+        provider,
+        input=RepoPreparationInput(
+            goal="Provide missing dependency.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            requirement_refs=[{"consumer_repo": "consumer", "requirement_name": "missing_need"}],
+        ),
+    )
+
+    result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider ready.")
+    ready = runtime.repo_workspace.metadata.get_provider_ready(provider)
+
+    assert written.ok
+    assert not result.ok
+    assert result.issues[0].kind == "requirement_not_found"
+    assert ready.ok
+    assert ready.value is not None
+    assert ready.value.ready is False
+
+
+def test_mark_provider_ready_rejects_provider_mismatch_without_ready_marker(tmp_path: Path) -> None:
+    runtime, _, consumer, provider = _setup_consumer_provider(tmp_path)
+    waiting = runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="other_provider",
+    )
+    written = runtime.repo_workspace.write_preparation_input(
+        provider,
+        input=RepoPreparationInput(
+            goal="Provide dependency.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            requirement_refs=[{"consumer_repo": "consumer", "requirement_name": "need_provider"}],
+        ),
+    )
+
+    result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider ready.")
+    ready = runtime.repo_workspace.metadata.get_provider_ready(provider)
+
+    assert waiting.ok
+    assert written.ok
+    assert not result.ok
+    assert result.issues[0].kind == "requirement_provider_mismatch"
+    assert ready.ok
+    assert ready.value is not None
+    assert ready.value.ready is False
 
 
 def test_requirement_result_observed_removes_resume_candidate(tmp_path: Path) -> None:

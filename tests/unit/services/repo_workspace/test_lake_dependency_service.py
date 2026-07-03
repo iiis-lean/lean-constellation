@@ -2,6 +2,9 @@ from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
 
+import json
+
+from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
@@ -96,7 +99,36 @@ def test_initialize_native_skeleton_and_parse_dependencies(tmp_path: Path) -> No
     deps = component.parse_lake_dependencies(tmp_path)
     assert deps.ok
     assert deps.value is not None
+    assert [(dep.name, dep.source, dep.scope, dep.rev) for dep in deps.value.dependencies] == [
+        ("mathlib", "registry", "leanprover-community", "v4.28.0")
+    ]
+
+
+def test_initialize_native_skeleton_can_disable_mathlib(tmp_path: Path) -> None:
+    component, external = _lake_component()
+
+    result = component.initialize_native_repo_skeleton(
+        tmp_path,
+        project_name="NoMathlibProject",
+        config=NativeLakeProjectConfig(mathlib_enabled=False),
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert "import Mathlib" not in (tmp_path / "NoMathlibProject" / "Main" / "Prelude.lean").read_text(encoding="utf-8")
+    deps = component.parse_lake_dependencies(tmp_path)
+    assert deps.ok and deps.value is not None
     assert deps.value.dependencies == []
+
+
+def test_initialize_native_skeleton_strictly_fails_when_lake_build_fails(tmp_path: Path) -> None:
+    component, external = _lake_component()
+    external.lake.build_ok = False
+
+    result = component.initialize_native_repo_skeleton(tmp_path, project_name="BuildFails")
+
+    assert not result.ok
+    assert result.issues[0].kind == "lake_build_failed"
 
 
 def test_parse_lake_dependencies_toml_lean_and_missing_lakefile(tmp_path: Path) -> None:
@@ -137,6 +169,66 @@ def test_parse_lake_dependencies_toml_lean_and_missing_lakefile(tmp_path: Path) 
         ("alpha", "git", "https://example.com/alpha.git", None),
         ("beta", "path", None, "../beta"),
     ]
+
+
+def test_initialize_native_skeleton_links_local_package_cache_and_writes_manifest(tmp_path: Path) -> None:
+    component, external = _lake_component()
+    template = tmp_path / "template"
+    packages = template / ".lake" / "packages"
+    (packages / "mathlib").mkdir(parents=True)
+    (packages / "aesop").mkdir()
+    (template / "lake-manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "1.1.0",
+                "packagesDir": ".lake/packages",
+                "packages": [
+                    {"name": "mathlib", "url": "https://example.com/mathlib", "scope": "leanprover-community"},
+                    {"name": "aesop", "url": "https://example.com/aesop", "scope": "leanprover-community"},
+                ],
+                "name": "template",
+                "lakeDir": ".lake",
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    config = NativeLakeProjectConfig(
+        local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template),
+    )
+
+    result = component.initialize_native_repo_skeleton(repo, project_name="CachedProject", config=config)
+
+    assert result.ok
+    assert result.value is not None
+    assert sorted(result.value.linked_packages) == ["aesop", "mathlib"]
+    assert (repo / ".lake" / "packages" / "mathlib").is_symlink()
+    assert (repo / ".lake" / "packages" / "mathlib").resolve() == (packages / "mathlib").resolve()
+    manifest = json.loads((repo / "lake-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["name"] == "CachedProject"
+    assert [package["name"] for package in manifest["packages"]] == ["mathlib", "aesop"]
+    assert result.value.lake_manifest_path == str(repo / "lake-manifest.json")
+
+
+def test_initialize_native_skeleton_rejects_local_package_cache_conflict(tmp_path: Path) -> None:
+    component, external = _lake_component()
+    template = tmp_path / "template"
+    packages = template / ".lake" / "packages"
+    (packages / "mathlib").mkdir(parents=True)
+    (template / "lake-manifest.json").write_text(
+        json.dumps({"packages": [{"name": "mathlib"}]}),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    (repo / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    config = NativeLakeProjectConfig(
+        local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template),
+    )
+
+    result = component.initialize_native_repo_skeleton(repo, project_name="ConflictProject", config=config)
+
+    assert not result.ok
+    assert result.issues[0].kind == "local_lake_cache_package_conflict"
 
 
 def test_attach_workspace_dependency_updates_lakefile_and_runs_update(tmp_path: Path) -> None:
@@ -244,10 +336,21 @@ def test_initialize_adapter_validation_and_untrusted_checks(tmp_path: Path) -> N
     assert invalid_name.issues[0].kind == "invalid_lean_project_name"
 
     external.lake.update_ok = False
-    untrusted = component.initialize_adapter_repo_skeleton(tmp_path / "adapter", project_name="Adapter", upstream=upstream)
-    assert untrusted.ok
-    assert untrusted.value is not None
-    assert untrusted.value.trusted_build is False
+    update_failed = component.initialize_adapter_repo_skeleton(tmp_path / "adapter_update", project_name="Adapter", upstream=upstream)
+    assert not update_failed.ok
+    assert update_failed.issues[0].kind == "lake_update_failed"
+
+    external.lake.update_ok = True
+    external.lake.build_ok = False
+    build_failed = component.initialize_adapter_repo_skeleton(tmp_path / "adapter_build", project_name="Adapter", upstream=upstream)
+    assert not build_failed.ok
+    assert build_failed.issues[0].kind == "lake_build_failed"
+
+    external.lake.build_ok = True
+    external.lake.import_ok = False
+    import_failed = component.initialize_adapter_repo_skeleton(tmp_path / "adapter_import", project_name="Adapter", upstream=upstream)
+    assert not import_failed.ok
+    assert import_failed.issues[0].kind == "minimal_import_check_failed"
 
 
 def test_lake_command_wrapper_failures_and_target(tmp_path: Path) -> None:

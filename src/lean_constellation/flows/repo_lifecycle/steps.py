@@ -232,6 +232,30 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                 return ctx.complete_step(
                     _repair_result("adapter_choice_missing_upstream", "Adapter choice must include upstream_github_url.")
                 )
+            prepared_input = repo_workspace.preparation.get_preparation_input(repo_root)
+            if not prepared_input.ok or prepared_input.value is None:
+                return ctx.complete_step(
+                    _repair_result_from_issues(
+                        prepared_input.issues,
+                        fallback_code="adapter_preparation_input_missing",
+                        fallback_message="Adapter repo preparation input is missing.",
+                    )
+                )
+            rewritten_input = prepared_input.value.input.model_copy(
+                update={
+                    "source_corpus_mode": SourceCorpusMode.NONE,
+                    "source_corpus_relpath": None,
+                }
+            )
+            written_input = repo_workspace.preparation.write_preparation_input(repo_root, input=rewritten_input)
+            if not written_input.ok:
+                return ctx.complete_step(
+                    _repair_result_from_issues(
+                        written_input.issues,
+                        fallback_code="adapter_preparation_input_rewrite_failed",
+                        fallback_message="Adapter repo preparation input rewrite failed.",
+                    )
+                )
             upstream = UpstreamDependencyInput(
                 git_url=submission.upstream_github_url,
                 revision=submission.upstream_revision,

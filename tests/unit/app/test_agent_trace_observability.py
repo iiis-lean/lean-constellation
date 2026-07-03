@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from lean_constellation.app import LeanAdminApi, create_app_runtime_services
 from lean_constellation.app import cli as cli_module
@@ -24,24 +25,39 @@ def test_admin_api_reads_agent_trace_views(tmp_path: Path) -> None:
     assert report.ok and report.value["latest_turn"]["final_response"] == "complete"
 
 
-def test_cli_agent_trace_commands_print_json_and_export_report(tmp_path: Path, monkeypatch, capsys) -> None:
-    runtime, agent_id = _runtime_with_rollout(tmp_path)
+def test_cli_agent_trace_commands_use_admin_http(tmp_path: Path, monkeypatch, capsys) -> None:
+    agent_id = "agent-1"
     report_path = tmp_path / "trace_report.json"
-    monkeypatch.setattr(cli_module, "load_app_config", lambda path: object())
-    monkeypatch.setattr(cli_module, "create_app_runtime_from_config", lambda config: runtime)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(f'workspace_root = "{tmp_path / "workspace"}"\n', encoding="utf-8")
+    calls = []
 
-    exit_code = cli_module.main(["agent-response-text", agent_id])
+    def fake_request_json(method, url, payload=None):  # noqa: ANN001
+        calls.append((method, url, payload))
+        if url.endswith("/latest-response"):
+            return {"ok": True, "value": "complete"}
+        return {"ok": True, "value": {"report_path": str(report_path), "tool_calls": [{"call_id": "call-1"}]}}
+
+    monkeypatch.setattr(cli_module, "_request_json", fake_request_json)
+
+    exit_code = cli_module.main(["--config", str(config_path), "--admin-base-url", "http://admin.test", "agent-response-text", agent_id])
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert json.loads(output) == "complete"
+    assert json.loads(output)["value"] == "complete"
 
-    exit_code = cli_module.main(["agent-trace-report", agent_id, "--out", str(report_path)])
+    exit_code = cli_module.main(
+        ["--config", str(config_path), "--admin-base-url", "http://admin.test", "agent-trace-report", agent_id, "--out", str(report_path)]
+    )
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert json.loads(output)["report_path"] == str(report_path)
-    assert json.loads(report_path.read_text(encoding="utf-8"))["tool_calls"][0]["call_id"] == "call-1"
+    assert json.loads(output)["value"]["report_path"] == str(report_path)
+    assert calls[0] == ("GET", "http://admin.test/admin/agents/agent-1/latest-response", None)
+    trace_url = urlsplit(calls[1][1])
+    assert calls[1][0] == "GET"
+    assert f"{trace_url.scheme}://{trace_url.netloc}{trace_url.path}" == "http://admin.test/admin/agents/agent-1/trace-report"
+    assert parse_qs(trace_url.query) == {"output_path": [str(report_path)], "format": ["json"]}
 
 
 def _runtime_with_rollout(tmp_path: Path):

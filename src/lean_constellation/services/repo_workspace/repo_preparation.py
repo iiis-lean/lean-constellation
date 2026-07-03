@@ -435,7 +435,7 @@ class RepoPreparationComponent:
         *,
         repo_name: str,
         project_name: str,
-        input: RepoPreparationInput,
+        input: RepoPreparationInput | None = None,
     ) -> ServiceResult[RepoShellView]:
         repo_name = self.runtime.foundation.layout.ensure_safe_key(repo_name)
         repo_root = Path(workspace_root) / repo_name
@@ -447,9 +447,10 @@ class RepoPreparationComponent:
         ensure = self.metadata.ensure_repo_model(repo_root)
         if not ensure.ok:
             return self.runtime.foundation.fail(ensure.issues)
-        written = self.write_preparation_input(repo_root, input=input)
-        if not written.ok:
-            return self.runtime.foundation.fail(written.issues)
+        if input is not None:
+            written = self.write_preparation_input(repo_root, input=input)
+            if not written.ok:
+                return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(
             RepoShellView(
                 repo_root=str(repo_root),

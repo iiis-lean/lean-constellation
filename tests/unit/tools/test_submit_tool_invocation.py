@@ -159,3 +159,42 @@ def test_second_successful_submit_is_rejected_before_gateway(tmp_path: Path) -> 
     assert result.value.ok is False
     assert result.value.issues[0].kind in {"submission_already_accepted", "submission_already_recorded", "conflicting_submission"}
     assert gateway.accepted == []
+
+
+def test_submit_repo_requirement_records_waiting_state(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_repo_requirement",
+        flat_args={
+            "name": "need_provider",
+            "target_repo": "Provider",
+            "summary": "Need provider repo.",
+            "reason": "Need provider theorem.",
+            "source_description": "A source dependency mentions the provider theorem.",
+        },
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is True
+    requirement = runtime.repo_workspace.requirement.get_requirement(tmp_path, name="need_provider")
+    assert requirement.ok and requirement.value is not None
+    state = requirement.value.requirement.waiting_state
+    assert state.waiting is True
+    assert state.provider_repo == "Provider"
+    assert state.reason == "Need provider theorem."
+    assert len(gateway.accepted) == 1
+    assert gateway.accepted[0].submission_type == "coordinator_repo_requirement"

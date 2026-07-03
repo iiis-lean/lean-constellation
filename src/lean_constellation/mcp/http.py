@@ -75,7 +75,7 @@ async def run_mcp_http_server(
         raise RuntimeError(_issues_summary(app))
     import uvicorn
 
-    config = uvicorn.Config(app.value, host=host, port=port, log_level=log_level)
+    config = uvicorn.Config(app.value, host=host, port=port, log_level=log_level, ws="wsproto")
     server = uvicorn.Server(config)
     await server.serve()
 

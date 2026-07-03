@@ -188,6 +188,10 @@ def test_requirement_bootstrap_adapter_choice_initializes_adapter_skeleton(tmp_p
     assert flow.result is not None
     assert flow.result.outcome == "adapter_bootstrap_ready"
     assert flow.result.next_preparation_flow == "adapter_repo_preparation"
+    preparation = lean_runtime.repo_workspace.preparation.get_preparation_input(repo_root)
+    assert preparation.ok and preparation.value is not None
+    assert preparation.value.input.source_corpus_mode == SourceCorpusMode.NONE
+    assert preparation.value.input.source_corpus_relpath is None
     assert lake.updated == [repo_root]
     assert lake.checked == [(repo_root, "upstream")]
 

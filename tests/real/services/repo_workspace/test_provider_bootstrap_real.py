@@ -9,6 +9,7 @@ import pytest
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
@@ -22,8 +23,17 @@ def _require_real_lake() -> int:
 
 
 def _runtime(timeout: int):
+    template_value = os.environ.get("LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PROJECT_ROOT")
+    if not template_value:
+        pytest.skip("Set LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PROJECT_ROOT to run real provider bootstrap tests.")
+    template = Path(template_value).expanduser()
+    if not template.is_dir():
+        pytest.skip(f"Local Lake package cache template is missing: {template}")
     return make_runtime(
-        external_overrides={"lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout))}
+        external_overrides={"lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout))},
+        native_lake_project_config=NativeLakeProjectConfig(
+            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template)
+        ),
     )
 
 

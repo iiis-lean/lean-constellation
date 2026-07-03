@@ -88,6 +88,7 @@ def start_runtime_mcp_http_server(runtime: object) -> RuntimeMcpHttpTestServer:
             port=port,
             log_level="warning",
             lifespan="on",
+            ws="wsproto",
         )
     )
     thread = threading.Thread(target=lambda: anyio.run(server.serve), name=f"runtime-mcp-http-{port}", daemon=True)

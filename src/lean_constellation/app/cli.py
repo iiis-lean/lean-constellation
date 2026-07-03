@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict, is_dataclass
+from json import JSONDecodeError
 from pathlib import Path
+from urllib import error, request
+from urllib.parse import urlencode
 
 import anyio
 
-from lean_constellation.app.admin_api import LeanAdminApi, SnapshotCreateInput, StartFlowInput
+from lean_constellation.app.admin_api import LeanAdminApi
 from lean_constellation.app.config import load_app_config
 from lean_constellation.app.external_takeover import (
     ExternalTakeoverCompleteInput,
@@ -17,19 +20,25 @@ from lean_constellation.app.external_takeover import (
     ExternalTakeoverToolListInput,
 )
 from lean_constellation.app.runtime import create_app_runtime_from_config
-from lean_constellation.mcp.http import run_mcp_http_server
+from lean_constellation.app.server import run_production_app_server
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lean-constellation", description="Lean Constellation admin CLI")
     parser.add_argument("--config", type=Path, default=None, help="Path to JSON/TOML app config.")
+    parser.add_argument("--admin-base-url", default=None, help="Admin HTTP base URL. Defaults to config admin_http_base_url.")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("config-view", help="Print redacted config view.")
+    sub.add_parser("status", help="Read production server runtime status over Admin HTTP.")
+    pause = sub.add_parser("pause", help="Pause production server scheduler over Admin HTTP.")
+    pause.add_argument("--scope-id", default=None)
+    resume = sub.add_parser("resume", help="Resume production server scheduler over Admin HTTP.")
+    resume.add_argument("--scope-id", default=None)
 
-    serve = sub.add_parser("serve", help="Run the shared MCP HTTP server.")
-    serve.add_argument("--host", default=None, help="HTTP bind host. Defaults to config mcp_http_host.")
-    serve.add_argument("--port", type=int, default=None, help="HTTP bind port. Defaults to config mcp_http_port.")
+    serve = sub.add_parser("serve", help="Run the unified production Admin HTTP + MCP HTTP server.")
+    serve.add_argument("--host", default=None, help="Admin HTTP bind host. Defaults to config admin_http_host.")
+    serve.add_argument("--port", type=int, default=None, help="Admin HTTP bind port. Defaults to config admin_http_port.")
     serve.add_argument("--mcp-base-url", default=None, help="Advertised MCP base URL for Agent home materialization.")
     serve.add_argument("--view-key", action="append", default=None, help="Limit the server to selected ToolView keys.")
     serve.add_argument("--log-level", default="info")
@@ -130,18 +139,22 @@ def main(argv: list[str] | None = None) -> int:
         print(config.redacted_view().model_dump_json(indent=2))
         return 0
 
-    runtime = create_app_runtime_from_config(config)
+    admin_base_url = (args.admin_base_url or config.admin_http_effective_base_url()).rstrip("/")
     if args.command == "serve":
-        bind_host = args.host or config.mcp_http_host
-        bind_port = config.mcp_http_port if args.port is None else args.port
-        advertised_base_url = (args.mcp_base_url or config.mcp_http_base_url or f"http://{bind_host}:{bind_port}").rstrip("/")
+        bind_host = args.host or config.admin_http_host
+        bind_port = config.admin_http_port if args.port is None else args.port
+        config.admin_http_host = bind_host
+        config.admin_http_port = bind_port
+        if args.mcp_base_url:
+            config.mcp_http_base_url = args.mcp_base_url
         print(
             json.dumps(
                 {
                     "command": "serve",
                     "bind_host": bind_host,
                     "bind_port": bind_port,
-                    "mcp_base_url": advertised_base_url,
+                    "admin_base_url": config.admin_http_effective_base_url(),
+                    "mcp_base_url": config.mcp_http_effective_base_url(),
                     "view_keys": args.view_key or "all",
                     "config": config.redacted_view().model_dump(mode="json"),
                 },
@@ -151,32 +164,140 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         anyio.run(
-            lambda: run_mcp_http_server(
-                runtime,
-                host=bind_host,
-                port=bind_port,
+            lambda: run_production_app_server(
+                config,
                 view_keys=args.view_key,
                 log_level=args.log_level,
             )
         )
         return 0
 
-    admin = LeanAdminApi(runtime)
+    if args.command == "status":
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/runtime/status"))
+    if args.command == "pause":
+        return _print_http_result(_request_json("POST", f"{admin_base_url}/admin/runtime/pause", {"scope_id": args.scope_id}))
+    if args.command == "resume":
+        return _print_http_result(_request_json("POST", f"{admin_base_url}/admin/runtime/resume", {"scope_id": args.scope_id}))
     if args.command == "start-flow":
-        result = admin.start_arbitrary_flow(
-            StartFlowInput(
-                flow_type=args.flow_type,
-                scope_id=args.scope_id,
-                params=_parse_params(args.param),
-                enqueue=not args.no_enqueue,
+        return _print_http_result(
+            _request_json(
+                "POST",
+                f"{admin_base_url}/admin/flows/start",
+                {
+                    "flow_type": args.flow_type,
+                    "scope_id": args.scope_id,
+                    "params": _parse_params(args.param),
+                    "enqueue": not args.no_enqueue,
+                },
             )
         )
-        return _print_result(result)
     if args.command == "snapshot":
-        result = admin.create_snapshot(
-            SnapshotCreateInput(repo_root=args.repo_root, checkpoint_kind=args.kind, label=args.label)
+        return _print_http_result(
+            _request_json(
+                "POST",
+                f"{admin_base_url}/admin/snapshots/create",
+                {
+                    "repo_root": str(args.repo_root),
+                    "checkpoint_kind": args.kind,
+                    "label": args.label,
+                },
+            )
         )
-        return _print_result(result)
+    if args.command == "agent-rollout-info":
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/agents/{args.agent_id}/rollout"))
+    if args.command == "agent-turns":
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/agents/{args.agent_id}/turns"))
+    if args.command == "agent-turn":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/agents/{args.agent_id}/turn",
+                    {
+                        "turn_id": args.turn_id,
+                        "index": args.index,
+                        "latest": args.latest or (args.turn_id is None and args.index is None),
+                    },
+                ),
+            )
+        )
+    if args.command == "agent-event":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/agents/{args.agent_id}/event",
+                    {"index": args.index, "last": args.last or args.index is None},
+                ),
+            )
+        )
+    if args.command == "agent-events-tail":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/agents/{args.agent_id}/events/tail",
+                    {
+                        "limit": args.limit,
+                        "event_type": args.event_type,
+                        "payload_type": args.payload_type,
+                    },
+                ),
+            )
+        )
+    if args.command == "agent-response-text":
+        if args.latest or args.turn_id is None:
+            return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/agents/{args.agent_id}/latest-response"))
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/agents/{args.agent_id}/responses",
+                    {"turn_id": args.turn_id},
+                ),
+            )
+        )
+    if args.command == "agent-tool-calls":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/agents/{args.agent_id}/tool-calls",
+                    {"turn_id": args.turn_id, "latest": args.latest},
+                ),
+            )
+        )
+    if args.command == "agent-tool-call":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/agents/{args.agent_id}/tool-call",
+                    {
+                        "call_id": args.call_id,
+                        "index": args.index,
+                        "last": args.last or (args.call_id is None and args.index is None),
+                    },
+                ),
+            )
+        )
+    if args.command == "agent-trace-report":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/agents/{args.agent_id}/trace-report",
+                    {
+                        "artifact_path": str(args.artifact_path) if args.artifact_path is not None else None,
+                        "output_path": str(args.out) if args.out is not None else None,
+                        "format": args.format,
+                    },
+                ),
+            )
+        )
+
+    runtime = create_app_runtime_from_config(config)
+    admin = LeanAdminApi(runtime)
     if args.command == "external-list":
         return _print_result(
             admin.list_external_takeovers(handoff_dirname=args.handoff_dirname, status=args.status)
@@ -219,66 +340,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         )
-    if args.command == "agent-rollout-info":
-        return _print_result(admin.get_agent_rollout_info(args.agent_id))
-    if args.command == "agent-turns":
-        return _print_result(admin.list_agent_turns(args.agent_id))
-    if args.command == "agent-turn":
-        return _print_result(
-            admin.get_agent_turn(
-                args.agent_id,
-                turn_id=args.turn_id,
-                index=args.index,
-                latest=args.latest or (args.turn_id is None and args.index is None),
-            )
-        )
-    if args.command == "agent-event":
-        return _print_result(
-            admin.get_agent_event(
-                args.agent_id,
-                index=args.index,
-                last=args.last or args.index is None,
-            )
-        )
-    if args.command == "agent-events-tail":
-        return _print_result(
-            admin.tail_agent_events(
-                args.agent_id,
-                limit=args.limit,
-                event_type=args.event_type,
-                payload_type=args.payload_type,
-            )
-        )
-    if args.command == "agent-response-text":
-        if args.latest or args.turn_id is None:
-            return _print_result(admin.get_latest_agent_response_text(args.agent_id))
-        return _print_result(admin.list_agent_response_texts(args.agent_id, turn_id=args.turn_id))
-    if args.command == "agent-tool-calls":
-        return _print_result(
-            admin.list_agent_tool_calls(
-                args.agent_id,
-                turn_id=args.turn_id,
-                latest=args.latest,
-            )
-        )
-    if args.command == "agent-tool-call":
-        return _print_result(
-            admin.get_agent_tool_call(
-                args.agent_id,
-                call_id=args.call_id,
-                index=args.index,
-                last=args.last or (args.call_id is None and args.index is None),
-            )
-        )
-    if args.command == "agent-trace-report":
-        return _print_result(
-            admin.export_agent_trace_report(
-                args.agent_id,
-                artifact_path=args.artifact_path,
-                output_path=args.out,
-                format=args.format,
-            )
-        )
     parser.error(f"unknown command: {args.command}")
     return 2
 
@@ -303,6 +364,61 @@ def _print_result(result) -> int:
     else:
         print(json.dumps(_jsonable(value), indent=2))
     return 0
+
+
+def _request_json(method: str, url: str, payload: dict | None = None) -> dict:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    req = request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with request.urlopen(req, timeout=30) as response:  # noqa: S310 - local admin endpoint by configuration.
+            raw = response.read().decode("utf-8")
+    except error.HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+    except error.URLError as exc:
+        return {
+            "ok": False,
+            "value": None,
+            "issues": [
+                {
+                    "kind": "admin_http_request_failed",
+                    "message": f"Failed to reach Admin HTTP server at {url}: {exc.reason}",
+                    "severity": "error",
+                }
+            ],
+        }
+    if not raw:
+        return {
+            "ok": False,
+            "value": None,
+            "issues": [{"kind": "empty_admin_response", "message": "Admin server returned an empty response.", "severity": "error"}],
+        }
+    try:
+        return json.loads(raw)
+    except JSONDecodeError as exc:
+        return {
+            "ok": False,
+            "value": None,
+            "issues": [
+                {
+                    "kind": "admin_http_invalid_json",
+                    "message": f"Admin server returned invalid JSON: {exc}",
+                    "severity": "error",
+                }
+            ],
+        }
+
+
+def _print_http_result(payload: dict) -> int:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if payload.get("ok") is True else 1
+
+
+def _url_with_query(url: str, params: dict[str, object | None]) -> str:
+    clean = {key: value for key, value in params.items() if value is not None and value is not False}
+    if not clean:
+        return url
+    return f"{url}?{urlencode(clean)}"
 
 
 def _jsonable(value):

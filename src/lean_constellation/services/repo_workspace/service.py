@@ -7,11 +7,13 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.preparation import (
     BootstrapInputValidationView,
     ProviderReadyView,
+    RepoDependencyRequirementStatus,
     ProviderRepoRuntimeShellView,
     RepoRequirementRef,
     RepoPreparationInput,
@@ -61,6 +63,7 @@ class RepoWorkspaceService:
         lake_dependency: LakeDependencyComponent | None = None,
         preparation: RepoPreparationComponent | None = None,
         workspace_catalog: WorkspaceCatalogComponent | None = None,
+        native_lake_project_config: NativeLakeProjectConfig | None = None,
     ) -> None:
         self.runtime = runtime
         self.metadata = metadata or RepoMetadataComponent(runtime)
@@ -68,6 +71,7 @@ class RepoWorkspaceService:
         self.lake_dependency = lake_dependency or LakeDependencyComponent(
             runtime,
             self.metadata,
+            config=native_lake_project_config,
         )
         self.preparation = preparation or RepoPreparationComponent(
             runtime,
@@ -146,6 +150,43 @@ class RepoWorkspaceService:
             project_name=project_name,
             runtime_bootstrap=runtime_bootstrap,
         )
+
+    def build_main_repo_preparation_input(
+        self,
+        *,
+        goal: str,
+        source_corpus_mode: SourceCorpusMode | str,
+        source_description: str | None = None,
+        interface_inputs: list[object] | None = None,
+        allow_interface_supplement: bool = True,
+        notes: str | None = None,
+    ):
+        return self.preparation.build_main_repo_preparation_input(
+            goal=goal,
+            source_corpus_mode=source_corpus_mode,
+            source_description=source_description,
+            interface_inputs=interface_inputs,  # type: ignore[arg-type]
+            allow_interface_supplement=allow_interface_supplement,
+            notes=notes,
+        )
+
+    def create_main_repo_shell(
+        self,
+        workspace_root: Path,
+        *,
+        repo_name: str,
+        project_name: str,
+        input: RepoPreparationInput | None = None,
+    ):
+        return self.preparation.create_main_repo_shell(
+            workspace_root,
+            repo_name=repo_name,
+            project_name=project_name,
+            input=input,
+        )
+
+    def write_preparation_input(self, repo_root: Path, *, input: RepoPreparationInput):
+        return self.preparation.write_preparation_input(repo_root, input=input)
 
     def attach_provider_for_requirement(
         self,
@@ -280,22 +321,82 @@ class RepoWorkspaceService:
         return self.preparation.validate_native_handoff(repo_root)
 
     def mark_provider_repo_ready(self, repo_root: Path, *, summary: str) -> ServiceResult[ProviderReadyView]:
+        repo_root = Path(repo_root)
+        summary = summary.strip()
+        if not summary:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_summary", "Repo summary is required."))
+        prep = self.preparation.get_preparation_input(repo_root)
+        if not prep.ok or prep.value is None:
+            return self.runtime.foundation.fail(prep.issues)
+        provider_repo = self.runtime.foundation.layout.ensure_safe_key(repo_root.name)
+        requirement_refs: list[tuple[Path, str]] = []
+        for ref in prep.value.input.requirement_refs:
+            try:
+                consumer_repo = self.runtime.foundation.layout.ensure_safe_key(ref.consumer_repo)
+                requirement_name = self.runtime.foundation.layout.ensure_safe_key(ref.requirement_name)
+            except ValueError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "invalid_requirement_ref",
+                        f"Invalid provider preparation requirement ref: {exc}",
+                        object_ref=str(repo_root),
+                    )
+                )
+            consumer = repo_root.parent / consumer_repo
+            loaded = self.requirement.get_requirement(consumer, name=requirement_name)
+            if not loaded.ok or loaded.value is None:
+                return self.runtime.foundation.fail(loaded.issues)
+            requirement = loaded.value.requirement
+            if requirement.status not in {
+                RepoDependencyRequirementStatus.OPEN,
+                RepoDependencyRequirementStatus.SATISFIED,
+            }:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "requirement_not_open",
+                        "Provider ready can only satisfy open or already satisfied requirements.",
+                        object_ref=requirement.name,
+                        current=requirement.status.value,
+                        expected=f"{RepoDependencyRequirementStatus.OPEN.value}|{RepoDependencyRequirementStatus.SATISFIED.value}",
+                    )
+                )
+            expected_provider = requirement.waiting_state.provider_repo if requirement.waiting_state.waiting else requirement.target_repo
+            if expected_provider != provider_repo:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "requirement_provider_mismatch",
+                        "Provider ready requirement ref points at a different provider repo.",
+                        object_ref=requirement.name,
+                        current=provider_repo,
+                        expected=expected_provider,
+                    )
+                )
+            if requirement.status == RepoDependencyRequirementStatus.SATISFIED and requirement.provider_repo:
+                if requirement.provider_repo != provider_repo:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "requirement_provider_mismatch",
+                            "Satisfied requirement is already attached to a different provider repo.",
+                            object_ref=requirement.name,
+                            current=provider_repo,
+                            expected=requirement.provider_repo,
+                        )
+                    )
+            requirement_refs.append((consumer, requirement_name))
+
         ready = self.metadata.set_provider_ready(repo_root, summary=summary)
         if not ready.ok:
             return self.runtime.foundation.fail(ready.issues)
-        prep = self.preparation.get_preparation_input(repo_root)
-        satisfied = 0
-        if prep.ok and prep.value is not None:
-            for ref in prep.value.input.requirement_refs:
-                consumer = Path(repo_root).parent / ref.consumer_repo
-                result = self.requirement.mark_requirement_satisfied(
-                    consumer,
-                    requirement_name=ref.requirement_name,
-                    provider_repo=Path(repo_root).name,
-                    note=f"Provider ready: {summary}",
-                )
-                if result.ok:
-                    satisfied += 1
+        for consumer, requirement_name in requirement_refs:
+            result = self.requirement.mark_requirement_satisfied(
+                consumer,
+                requirement_name=requirement_name,
+                provider_repo=provider_repo,
+                note=f"Provider ready: {summary}",
+            )
+            if not result.ok:
+                return self.runtime.foundation.fail(result.issues)
+        satisfied = len(requirement_refs)
         return self.runtime.foundation.ok(
             ProviderReadyView(
                 provider_ready_marked=True,

@@ -10,6 +10,7 @@ from lean_constellation.services.runtime import ARKServices, LeanConstellationSe
 
 if TYPE_CHECKING:
     from lean_constellation.agents.models import AgentTypeSpec
+    from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 
 
 @dataclass
@@ -35,6 +36,7 @@ def create_lean_runtime_services(
     external_overrides: dict[str, object] | None = None,
     providers: LeanProviderOverrides | None = None,
     agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    native_lake_project_config: "NativeLakeProjectConfig | None" = None,
     register_application_tools: bool = False,
     test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
@@ -74,7 +76,7 @@ def create_lean_runtime_services(
         lean_toolchain=overrides.get("lean_toolchain"),
         material_acquisition=overrides.get("material_acquisition"),
     )
-    app.repo_workspace = RepoWorkspaceService(runtime)
+    app.repo_workspace = RepoWorkspaceService(runtime, native_lake_project_config=native_lake_project_config)
     app.material = MaterialService(runtime)
     app.decl_graph = DeclGraphService(runtime)
     app.node = NodeService(runtime, public_decl_provider=providers.content_public_decl_provider or app.decl_graph)
@@ -125,6 +127,7 @@ def create_test_runtime_services(
     external_overrides: dict[str, object] | None = None,
     providers: LeanProviderOverrides | None = None,
     agent_type_specs: Sequence[AgentTypeSpec] | None = None,
+    native_lake_project_config: "NativeLakeProjectConfig | None" = None,
     register_application_tools: bool = False,
     test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
@@ -136,6 +139,7 @@ def create_test_runtime_services(
         external_overrides=external_overrides,
         providers=providers,
         agent_type_specs=agent_type_specs,
+        native_lake_project_config=native_lake_project_config,
         register_application_tools=register_application_tools,
         test_control_enabled=test_control_enabled,
     )

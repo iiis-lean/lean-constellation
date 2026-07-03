@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.preparation import UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.external_clients.lean_toolchain import ToolchainCommandView, ToolchainLeanCheckView
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
 class LakeDependencyEntry(StrictModel):
     name: str
     source: str | None = None
+    scope: str | None = None
     path: str | None = None
     git: str | None = None
     rev: str | None = None
@@ -48,6 +51,9 @@ class LakeDependencyAttachView(StrictModel):
 class RepoSkeletonView(StrictModel):
     repo_format: RepoFormat = RepoFormat.NATIVE
     project_name: str
+    lean_toolchain: str | None = None
+    lake_manifest_path: str | None = None
+    linked_packages: list[str] = Field(default_factory=list)
     lake_check_summary: str | None = None
     next_entry_flow: str = "native_repo_preparation"
     summary: str
@@ -71,9 +77,12 @@ class LakeDependencyComponent:
         self,
         runtime: LeanRuntimeServices,
         metadata: RepoMetadataComponent,
+        *,
+        config: NativeLakeProjectConfig | None = None,
     ) -> None:
         self.runtime = runtime
         self.metadata = metadata
+        self.config = config or NativeLakeProjectConfig()
 
     def parse_lake_dependencies(self, repo_root: Path) -> ServiceResult[LakeDependencyView]:
         lakefile = self._lakefile(repo_root)
@@ -158,7 +167,9 @@ class LakeDependencyComponent:
         *,
         project_name: str,
         lean_toolchain: str | None = None,
+        config: NativeLakeProjectConfig | None = None,
     ) -> ServiceResult[RepoSkeletonView]:
+        effective_config = config or self.config
         normalized = self._normalize_module_name(project_name)
         if not normalized.ok or normalized.value is None:
             return self.runtime.foundation.fail(normalized.issues)
@@ -174,12 +185,21 @@ class LakeDependencyComponent:
         )
         if not fmt.ok:
             return self.runtime.foundation.fail(fmt.issues)
-        written = self._write_native_skeleton(repo_root, project_name, lean_toolchain)
+        written = self._write_native_skeleton(repo_root, project_name, lean_toolchain, config=effective_config)
+        linked_packages = self._prepare_local_package_cache(repo_root, effective_config)
+        if not linked_packages.ok or linked_packages.value is None:
+            return self.runtime.foundation.fail(linked_packages.issues)
+        written.extend(Path(path) for path in linked_packages.value.get("written_paths", []))
         build = self.run_lake_build(repo_root)
-        build_summary = build.value.summary if build.ok and build.value is not None else self._issue_summary(build.issues)
+        if not build.ok or build.value is None:
+            return self.runtime.foundation.fail(build.issues)
+        build_summary = build.value.summary
         return self.runtime.foundation.ok(
             RepoSkeletonView(
                 project_name=project_name,
+                lean_toolchain=lean_toolchain or effective_config.lean_toolchain,
+                lake_manifest_path=str(repo_root / "lake-manifest.json") if (repo_root / "lake-manifest.json").exists() else None,
+                linked_packages=list(linked_packages.value.get("linked_packages", [])),
                 lake_check_summary=build_summary,
                 summary=f"Initialized native Lean project skeleton for {project_name}.",
                 written_files=[str(path) for path in written],
@@ -208,7 +228,7 @@ class LakeDependencyComponent:
         )
         if not fmt.ok:
             return self.runtime.foundation.fail(fmt.issues)
-        written = self._write_native_skeleton(repo_root, project_name, None)
+        written = self._write_native_skeleton(repo_root, project_name, None, config=self.config)
         lakefile = repo_root / "lakefile.toml"
         package = upstream.package_name or self._package_from_git_url(upstream.git_url)
         dep_block = f'\n[[require]]\nname = "{package}"\ngit = "{upstream.git_url}"\n'
@@ -218,16 +238,26 @@ class LakeDependencyComponent:
             dep_block += f'subDir = "{upstream.subdir}"\n'
         lakefile.write_text(lakefile.read_text(encoding="utf-8") + dep_block, encoding="utf-8")
         written.append(lakefile)
+        linked_packages = self._prepare_local_package_cache(repo_root, self.config)
+        if not linked_packages.ok or linked_packages.value is None:
+            return self.runtime.foundation.fail(linked_packages.issues)
+        written.extend(Path(path) for path in linked_packages.value.get("written_paths", []))
         update = self.run_lake_update(repo_root)
+        if not update.ok or update.value is None:
+            return self.runtime.foundation.fail(update.issues)
         module = upstream.module_name or package
         build = self.run_lake_build(repo_root, target=module)
+        if not build.ok or build.value is None:
+            return self.runtime.foundation.fail(build.issues)
         check = self.run_minimal_import_check(repo_root, module=module)
+        if not check.ok or check.value is None:
+            return self.runtime.foundation.fail(check.issues)
         summaries = [
             part
             for part in [
-                update.value.summary if update.ok and update.value else self._issue_summary(update.issues),
-                build.value.summary if build.ok and build.value else self._issue_summary(build.issues),
-                check.value.summary if check.ok and check.value else self._issue_summary(check.issues),
+                update.value.summary,
+                build.value.summary,
+                check.value.summary,
             ]
             if part
         ]
@@ -235,7 +265,7 @@ class LakeDependencyComponent:
             AdapterSetupView(
                 upstream_summary=upstream.evidence_summary or f"Adapter upstream: {upstream.git_url}",
                 lake_check_summary="; ".join(summaries) if summaries else None,
-                trusted_build=bool(update.ok and build.ok and check.ok and check.value and check.value.ok),
+                trusted_build=True,
                 summary=f"Initialized adapter Lean project skeleton for {project_name}.",
                 written_files=[str(path) for path in written],
             )
@@ -254,6 +284,8 @@ class LakeDependencyComponent:
             project_root / "Main" / "Interfaces.lean",
             repo_root / ".lean_constellation",
         ]
+        if self.config.mathlib_enabled and self.config.local_package_cache is not None:
+            required.append(repo_root / "lake-manifest.json")
         for path in required:
             if not path.exists():
                 issues.append(
@@ -310,22 +342,23 @@ class LakeDependencyComponent:
             )
         return self.runtime.foundation.ok(result)
 
-    def _write_native_skeleton(self, repo_root: Path, project_name: str, lean_toolchain: str | None) -> list[Path]:
+    def _write_native_skeleton(
+        self,
+        repo_root: Path,
+        project_name: str,
+        lean_toolchain: str | None,
+        *,
+        config: NativeLakeProjectConfig,
+    ) -> list[Path]:
         repo_root.mkdir(parents=True, exist_ok=True)
         (repo_root / ".lean_constellation").mkdir(parents=True, exist_ok=True)
         main_dir = repo_root / project_name / "Main"
         main_dir.mkdir(parents=True, exist_ok=True)
         files: dict[Path, str] = {
-            repo_root / "lakefile.toml": (
-                f'name = "{project_name}"\n'
-                'version = "0.1.0"\n'
-                f'defaultTargets = ["{project_name}"]\n\n'
-                '[[lean_lib]]\n'
-                f'name = "{project_name}"\n'
-            ),
-            repo_root / "lean-toolchain": (lean_toolchain or "leanprover/lean4:stable") + "\n",
+            repo_root / "lakefile.toml": self._native_lakefile_text(project_name, config),
+            repo_root / "lean-toolchain": (lean_toolchain or config.lean_toolchain or f"leanprover/lean4:v{config.lean_version}") + "\n",
             repo_root / f"{project_name}.lean": f"import {project_name}.Main.Prelude\nimport {project_name}.Main.Interfaces\n",
-            main_dir / "Prelude.lean": "import Mathlib\n",
+            main_dir / "Prelude.lean": "import Mathlib\n" if config.mathlib_enabled else "",
             main_dir / "Interfaces.lean": f"import {project_name}.Main.Prelude\n",
             main_dir / "Basic.lean": f"import {project_name}.Main.Prelude\n",
         }
@@ -335,6 +368,134 @@ class LakeDependencyComponent:
                 path.write_text(text, encoding="utf-8")
                 written.append(path)
         return written
+
+    def _native_lakefile_text(self, project_name: str, config: NativeLakeProjectConfig) -> str:
+        parts = [
+            f'name = "{project_name}"',
+            'version = "0.1.0"',
+            f'defaultTargets = ["{project_name}"]',
+            "",
+            "[leanOptions]",
+            "pp.unicode.fun = true",
+            "relaxedAutoImplicit = false",
+            "weak.linter.mathlibStandardSet = true",
+            "maxSynthPendingDepth = 3",
+            "",
+        ]
+        if config.mathlib_enabled:
+            parts.extend(
+                [
+                    "[[require]]",
+                    'name = "mathlib"',
+                    f'scope = "{config.mathlib_scope}"',
+                    f'rev = "{config.mathlib_rev}"',
+                    "",
+                ]
+            )
+        parts.extend(["[[lean_lib]]", f'name = "{project_name}"', ""])
+        return "\n".join(parts)
+
+    def _prepare_local_package_cache(
+        self,
+        repo_root: Path,
+        config: NativeLakeProjectConfig,
+    ) -> ServiceResult[dict[str, object]]:
+        cache = config.local_package_cache
+        if cache is None:
+            return self.runtime.foundation.ok({"linked_packages": [], "written_paths": []})
+        if not config.mathlib_enabled:
+            return self.runtime.foundation.ok({"linked_packages": [], "written_paths": []})
+        if cache.manifest_path is None or not cache.manifest_path.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_manifest_missing",
+                    "Local Lake package cache manifest is missing.",
+                    object_ref=str(cache.manifest_path) if cache.manifest_path else None,
+                )
+            )
+        if cache.packages_root is None or not cache.packages_root.is_dir():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_packages_missing",
+                    "Local Lake package cache packages directory is missing.",
+                    object_ref=str(cache.packages_root) if cache.packages_root else None,
+                )
+            )
+        manifest = self._read_local_lake_manifest(cache.manifest_path)
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        package_names = cache.package_names or [str(package.get("name")) for package in manifest.value.get("packages", []) if package.get("name")]
+        packages = [package for package in manifest.value.get("packages", []) if package.get("name") in set(package_names)]
+        missing_manifest = sorted(set(package_names) - {str(package.get("name")) for package in packages})
+        if missing_manifest and cache.require_all_packages:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_manifest_package_missing",
+                    "Local Lake package cache manifest is missing requested packages.",
+                    details={"missing_packages": ",".join(missing_manifest)},
+                    object_ref=str(cache.manifest_path),
+                )
+            )
+        written: list[Path] = []
+        lake_dir = repo_root / ".lake"
+        packages_dir = lake_dir / "packages"
+        packages_dir.mkdir(parents=True, exist_ok=True)
+        written.extend([lake_dir, packages_dir])
+        for name in package_names:
+            source = cache.packages_root / name
+            if not source.exists():
+                if cache.require_all_packages:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "local_lake_cache_package_missing",
+                            f"Local Lake package cache package is missing: {name}",
+                            object_ref=str(source),
+                        )
+                    )
+                continue
+            target = packages_dir / name
+            if target.exists() or target.is_symlink():
+                if target.is_symlink() and target.resolve(strict=False) == source.resolve(strict=False):
+                    continue
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "local_lake_cache_package_conflict",
+                        f"Repo package path already exists and is not the expected symlink: {name}",
+                        object_ref=str(target),
+                    )
+                )
+            target.symlink_to(source, target_is_directory=source.is_dir())
+            written.append(target)
+        manifest_payload = dict(manifest.value)
+        manifest_payload["name"] = self._project_name_from_lakefile(repo_root)
+        manifest_payload["packagesDir"] = ".lake/packages"
+        manifest_payload["lakeDir"] = ".lake"
+        manifest_payload["packages"] = packages
+        manifest_path = repo_root / "lake-manifest.json"
+        manifest_path.write_text(json.dumps(manifest_payload, indent=1) + "\n", encoding="utf-8")
+        written.append(manifest_path)
+        return self.runtime.foundation.ok({"linked_packages": package_names, "written_paths": [str(path) for path in written]})
+
+    def _read_local_lake_manifest(self, manifest_path: Path) -> ServiceResult[dict[str, object]]:
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - file boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_manifest_invalid",
+                    f"Local Lake package cache manifest is invalid: {exc}",
+                    object_ref=str(manifest_path),
+                )
+            )
+        if not isinstance(payload, dict) or not isinstance(payload.get("packages"), list):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "local_lake_cache_manifest_invalid",
+                    "Local Lake package cache manifest must contain a packages list.",
+                    object_ref=str(manifest_path),
+                )
+            )
+        return self.runtime.foundation.ok(payload)
 
     def _lakefile(self, repo_root: Path) -> Path | None:
         repo_root = Path(repo_root)
@@ -349,16 +510,19 @@ class LakeDependencyComponent:
         for block in re.split(r"(?m)^\s*\[\[require\]\]\s*$", text)[1:]:
             values: dict[str, str] = {}
             for line in block.splitlines():
+                if line.strip().startswith("["):
+                    break
                 match = re.match(r'\s*([A-Za-z0-9_.-]+)\s*=\s*"([^"]*)"', line)
                 if match:
                     values[match.group(1)] = match.group(2)
             name = values.get("name")
             if name:
-                source = "path" if "path" in values else "git" if "git" in values else None
+                source = "path" if "path" in values else "git" if "git" in values else "registry" if "scope" in values else None
                 deps.append(
                     LakeDependencyEntry(
                         name=name,
                         source=source,
+                        scope=values.get("scope"),
                         path=values.get("path"),
                     git=values.get("git"),
                     rev=values.get("rev") or values.get("revision"),

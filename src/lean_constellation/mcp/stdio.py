@@ -13,8 +13,6 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from lean_constellation.app.config import load_app_config
-from lean_constellation.app.runtime import create_app_runtime_from_config
 from lean_constellation.mcp.server import LeanMcpViewEndpoint, create_mcp_server
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.runtime import LeanRuntimeServices
@@ -114,6 +112,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.view_key:
         parser.error("--view-key or LEAN_CONSTELLATION_MCP_VIEW_KEY is required")
+    from lean_constellation.app.config import load_app_config
+    from lean_constellation.app.runtime import create_app_runtime_from_config
+
     config = load_app_config(args.config)
     runtime = create_app_runtime_from_config(
         config,

@@ -42,3 +42,41 @@ def test_admin_requirement_resume_marks_observed_and_starts_resume_flow(tmp_path
     assert flow.input.start_mode == "requirement_resume"
     waiting = runtime.repo_workspace.requirement.get_requirement(consumer, name="need_provider")
     assert waiting.value.requirement.waiting_state.result_observed is True
+
+
+def test_admin_requirement_resume_rejects_provider_mismatch(tmp_path) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    consumer = tmp_path / "Consumer"
+    assert initialize_repo_runtime(runtime, consumer).ok
+    assert runtime.repo_workspace.create_requirement_with_interfaces(
+        consumer,
+        name="need_provider",
+        target_repo="Provider",
+        reason="Need provider result.",
+    ).ok
+    assert runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="Provider",
+        reason="Waiting for provider.",
+    ).ok
+    assert runtime.repo_workspace.requirement.mark_requirement_satisfied(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="Provider",
+        note="Provider is ready.",
+    ).ok
+
+    result = LeanAdminApi(runtime).resume_requirement(
+        RequirementResumeInput(
+            consumer_repo_root=consumer,
+            requirement_name="need_provider",
+            provider_repo="OtherProvider",
+        )
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "requirement_provider_mismatch"
+    waiting = runtime.repo_workspace.requirement.get_requirement(consumer, name="need_provider")
+    assert waiting.value.requirement.waiting_state.result_observed is False
+    assert runtime.ark.flow_service.list_flows(flow_type="native_repo_coordinator") == []

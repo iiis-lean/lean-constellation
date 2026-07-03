@@ -543,6 +543,14 @@ def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: Submi
     )
     if not created.ok or created.value is None:
         return runtime.foundation.fail(created.issues)
+    waiting = runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        ctx.repo_root,
+        requirement_name=args.name,
+        provider_repo=args.target_repo,
+        reason=args.reason or args.summary,
+    )
+    if not waiting.ok or waiting.value is None:
+        return runtime.foundation.fail(waiting.issues)
     return _prepared(
         runtime,
         CoordinatorRepoRequirementSubmission(
@@ -553,7 +561,7 @@ def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: Submi
             reason=args.reason,
             interfaces=interfaces,
         ),
-        agent_view=created.value.model_dump(mode="json") if hasattr(created.value, "model_dump") else {},
+        agent_view=waiting.value.model_dump(mode="json"),
     )
 
 
