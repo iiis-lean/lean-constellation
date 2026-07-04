@@ -40,23 +40,36 @@ def test_cli_agent_trace_commands_use_admin_http(tmp_path: Path, monkeypatch, ca
 
     monkeypatch.setattr(cli_module, "_request_json", fake_request_json)
 
-    exit_code = cli_module.main(["--config", str(config_path), "--admin-base-url", "http://admin.test", "agent-response-text", agent_id])
+    exit_code = cli_module.main(
+        ["--config", str(config_path), "--admin-base-url", "http://admin.test", "agent-response-text", "--repo-key", "Repo", agent_id]
+    )
     output = capsys.readouterr().out
 
     assert exit_code == 0
     assert json.loads(output)["value"] == "complete"
 
     exit_code = cli_module.main(
-        ["--config", str(config_path), "--admin-base-url", "http://admin.test", "agent-trace-report", agent_id, "--out", str(report_path)]
+        [
+            "--config",
+            str(config_path),
+            "--admin-base-url",
+            "http://admin.test",
+            "agent-trace-report",
+            "--repo-key",
+            "Repo",
+            agent_id,
+            "--out",
+            str(report_path),
+        ]
     )
     output = capsys.readouterr().out
 
     assert exit_code == 0
     assert json.loads(output)["value"]["report_path"] == str(report_path)
-    assert calls[0] == ("GET", "http://admin.test/admin/agents/agent-1/latest-response", None)
+    assert calls[0] == ("GET", "http://admin.test/admin/repos/Repo/agents/agent-1/latest-response", None)
     trace_url = urlsplit(calls[1][1])
     assert calls[1][0] == "GET"
-    assert f"{trace_url.scheme}://{trace_url.netloc}{trace_url.path}" == "http://admin.test/admin/agents/agent-1/trace-report"
+    assert f"{trace_url.scheme}://{trace_url.netloc}{trace_url.path}" == "http://admin.test/admin/repos/Repo/agents/agent-1/trace-report"
     assert parse_qs(trace_url.query) == {"output_path": [str(report_path)], "format": ["json"]}
 
 

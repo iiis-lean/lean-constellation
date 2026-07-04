@@ -12,7 +12,37 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     RepoFormatNativeChoiceSubmission,
 )
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
+from lean_constellation.services.foundation import FoundationService
+from lean_constellation.services.validation_snapshot import RepoCheckpointKind, ValidationSnapshotService
 from tests.unit_services_helpers import make_runtime
+
+
+class AlwaysStableRuntimeProvider:
+    def __init__(self, foundation: FoundationService) -> None:
+        self.foundation = foundation
+
+    def check_repo_stable_point(
+        self,
+        repo_root: Path,
+        *,
+        checkpoint_kind: RepoCheckpointKind,
+        node_paths: list[str] | None = None,
+    ):
+        del repo_root, checkpoint_kind, node_paths
+        return self.foundation.ok(self.foundation.gate_passed("runtime_stability", summary="Runtime is stable."))
+
+
+class FakeArkSnapshotProvider:
+    def __init__(self, foundation: FoundationService) -> None:
+        self.foundation = foundation
+
+    def create_runtime_snapshot(self, repo_root: Path, *, scope_ids: list[str], label: str | None = None):
+        del repo_root, scope_ids, label
+        return self.foundation.ok("ark_snapshot")
+
+    def restore_runtime_snapshot(self, repo_root: Path, *, snapshot_id: str, leave_runtime_paused: bool = True):
+        del repo_root, leave_runtime_paused
+        return self.foundation.ok(snapshot_id)
 
 
 class FakeLakeClient:
@@ -72,6 +102,11 @@ class FakeLakeClient:
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object, FakeLakeClient]:
     lake = FakeLakeClient()
     lean_runtime = make_runtime(external_overrides={"lake": lake})
+    lean_runtime.app.validation_snapshot = ValidationSnapshotService(
+        lean_runtime,
+        runtime_stability_provider=AlwaysStableRuntimeProvider(lean_runtime.foundation),
+        ark_snapshot_provider=FakeArkSnapshotProvider(lean_runtime.foundation),
+    )
     flow_runtime = create_fake_lean_flow_runtime(
         tmp_path / "ark",
         ark_services=lean_runtime.ark,

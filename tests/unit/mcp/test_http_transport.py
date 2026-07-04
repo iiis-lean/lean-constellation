@@ -8,7 +8,9 @@ import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from lean_constellation.app import LeanAppConfig, RepoRuntimeRegistry
 from lean_constellation.mcp.http import create_mcp_http_app
+from lean_constellation.mcp.http import create_repo_mcp_http_routes
 from tests.unit.mcp._helpers import FakeSubmissionGateway, make_mcp_runtime, runtime_env
 
 
@@ -33,6 +35,44 @@ def test_http_transport_accepts_submit_tool(tmp_path: Path) -> None:
     assert len(gateway.accepted) == 1
     assert gateway.accepted[0].tool_name == "submit_native_repo_choice"
     assert gateway.accepted[0].submitted_by_agent_id == "agent_http_submit"
+
+
+def test_repo_mcp_router_keeps_same_view_managers_repo_local(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "RepoA")
+    _make_repo(workspace, "RepoB")
+    registry = RepoRuntimeRegistry(LeanAppConfig(workspace_root=workspace, materialize_agent_homes=False))
+    router, _ = create_repo_mcp_http_routes(registry, view_keys=["resource_curator"])
+
+    async def exercise() -> None:
+        repo_a = await router._get_manager("RepoA", "resource_curator")
+        repo_b = await router._get_manager("RepoB", "resource_curator")
+        assert repo_a.ok and repo_a.value is not None
+        assert repo_b.ok and repo_b.value is not None
+        assert repo_a.value is not repo_b.value
+        assert ("RepoA", "resource_curator") in router._managers
+        assert ("RepoB", "resource_curator") in router._managers
+        await router.shutdown()
+
+    anyio.run(exercise)
+
+
+def test_repo_mcp_router_cleanup_repo_closes_only_that_repo_managers(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "RepoA")
+    _make_repo(workspace, "RepoB")
+    registry = RepoRuntimeRegistry(LeanAppConfig(workspace_root=workspace, materialize_agent_homes=False))
+    router, _ = create_repo_mcp_http_routes(registry, view_keys=["resource_curator"])
+
+    async def exercise() -> None:
+        assert (await router._get_manager("RepoA", "resource_curator")).ok
+        assert (await router._get_manager("RepoB", "resource_curator")).ok
+        await router.cleanup_repo("RepoA")
+        assert ("RepoA", "resource_curator") not in router._managers
+        assert ("RepoB", "resource_curator") in router._managers
+        await router.shutdown()
+
+    anyio.run(exercise)
 
 
 async def _exercise_resource_curator_http_mcp(app, tmp_path: Path) -> None:  # noqa: ANN001 - ASGI app boundary.
@@ -132,3 +172,9 @@ def _runtime_headers(env: dict[str, str]) -> dict[str, str]:
         "X-Ark-Current-Decl": env["LEAN_CONSTELLATION_CURRENT_DECL"],
         "X-Ark-Decl-Kind": env["LEAN_CONSTELLATION_DECL_KIND"],
     }
+
+
+def _make_repo(workspace: Path, name: str) -> Path:
+    repo_root = workspace / name
+    (repo_root / ".lean_constellation").mkdir(parents=True)
+    return repo_root

@@ -15,6 +15,12 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "pause" in help_text
     assert "resume" in help_text
     assert "serve" in help_text
+    assert "flow-tree" in help_text
+    assert "waiting-requirements" in help_text
+    assert "resume-candidates" in help_text
+    assert "agents" in help_text
+    assert "external-health" in help_text
+    assert "main-repo-status" in help_text
     assert "start-flow" in help_text
     assert "snapshot" in help_text
     assert "external-list" in help_text
@@ -97,6 +103,8 @@ def test_cli_start_flow_uses_admin_http(tmp_path, capsys, monkeypatch) -> None:
             "--config",
             str(config_path),
             "start-flow",
+            "--repo-key",
+            "Repo",
             "native_repo_preparation",
             "repo-1",
             "--param",
@@ -109,7 +117,7 @@ def test_cli_start_flow_uses_admin_http(tmp_path, capsys, monkeypatch) -> None:
     assert calls == [
         (
             "POST",
-            "http://admin.test/admin/flows/start",
+            "http://admin.test/admin/repos/Repo/flows/start",
             {
                 "flow_type": "native_repo_preparation",
                 "scope_id": "repo-1",
@@ -134,14 +142,14 @@ def test_cli_agent_turn_uses_admin_http_query(tmp_path, capsys, monkeypatch) -> 
 
     monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
 
-    exit_code = main(["--config", str(config_path), "agent-turn", "agent-1", "--index", "2"])
+    exit_code = main(["--config", str(config_path), "agent-turn", "--repo-key", "Repo", "agent-1", "--index", "2"])
 
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out)["value"]["turn_id"] == "turn-2"
     assert calls == [
         (
             "GET",
-            "http://admin.test/root/admin/agents/agent-1/turn?index=2",
+            "http://admin.test/root/admin/repos/Repo/agents/agent-1/turn?index=2",
             None,
         )
     ]
@@ -165,4 +173,4 @@ def test_cli_admin_http_connection_failure_prints_structured_error(tmp_path, cap
     assert exit_code == 1
     assert payload["ok"] is False
     assert payload["issues"][0]["kind"] == "admin_http_request_failed"
-    assert "http://127.0.0.1:65534/admin/runtime/status" in payload["issues"][0]["message"]
+    assert "http://127.0.0.1:65534/admin/workspace/status" in payload["issues"][0]["message"]

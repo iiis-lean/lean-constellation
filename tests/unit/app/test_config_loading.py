@@ -20,6 +20,10 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
                 'mcp_server_url = "http://127.0.0.1:8765/mcp"',
                 'mcp_http_host = "0.0.0.0"',
                 "mcp_http_port = 9876",
+                "[toolkit]",
+                'mode = "managed"',
+                "port = 8288",
+                'required_tools = ["diagnostics.file"]',
             ]
         )
         + "\n",
@@ -30,7 +34,7 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
     view = config.redacted_view()
     dumped = view.model_dump_json()
 
-    assert config.runtime_root == tmp_path / "workspace" / ".agent_runtime"
+    assert config.runtime_root is None
     assert config.codex_base_config_path == config_home / "config.toml"
     assert config.codex_auth_json_path == config_home / "auth.json"
     assert view.max_concurrent_flow_advances == 2
@@ -38,9 +42,14 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
     assert view.mcp_http_host == "0.0.0.0"
     assert view.mcp_http_port == 9876
     assert view.mcp_http_base_url == "http://0.0.0.0:9876"
+    assert view.production_mcp_http_base_url == "http://127.0.0.1:8766"
     assert view.admin_http_base_url == "http://127.0.0.1:8766"
     assert view.server_start_paused is True
+    assert view.materialize_agent_homes is True
     assert view.scheduler_enabled is True
+    assert view.toolkit.mode == "managed"
+    assert view.toolkit.effective_base_url() == "http://127.0.0.1:8288"
+    assert view.toolkit.required_tools == ["diagnostics.file"]
     assert view.native_lake_project.lean_toolchain == "leanprover/lean4:v4.28.0"
     assert view.native_lake_project.mathlib_rev == "v4.28.0"
     assert "secret-token" not in dumped
@@ -58,6 +67,10 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
             "LEAN_CONSTELLATION_MCP_HTTP_BASE_URL": "http://127.0.0.1:9999/custom",
             "LEAN_CONSTELLATION_ADMIN_HTTP_PORT": "9998",
             "LEAN_CONSTELLATION_SERVER_START_PAUSED": "false",
+            "LEAN_CONSTELLATION_MATERIALIZE_AGENT_HOMES": "false",
+            "LEAN_CONSTELLATION_TOOLKIT_BASE_URL": "http://toolkit.test",
+            "LEAN_CONSTELLATION_TOOLKIT_ENABLED_GROUPS": "lean,mathlib",
+            "LEAN_CONSTELLATION_TOOLKIT_REQUIRED_TOOLS": "diagnostics.file,lean_explore.semantic_search",
             "LEAN_CONSTELLATION_LEAN_VERSION": "4.29.0",
             "LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PROJECT_ROOT": str(tmp_path / "template"),
             "LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PACKAGE_NAMES": "mathlib,aesop",
@@ -67,8 +80,13 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
     assert config.workspace_root == tmp_path / "from_env"
     assert config.max_concurrent_steps == 4
     assert config.mcp_http_effective_base_url() == "http://127.0.0.1:9999/custom"
+    assert config.production_mcp_http_effective_base_url() == "http://127.0.0.1:9999/custom"
     assert config.admin_http_effective_base_url() == "http://127.0.0.1:9998"
     assert config.server_start_paused is False
+    assert config.materialize_agent_homes is False
+    assert config.toolkit.base_url == "http://toolkit.test"
+    assert config.toolkit.enabled_groups == ["lean", "mathlib"]
+    assert config.toolkit.required_tools == ["diagnostics.file", "lean_explore.semantic_search"]
     assert config.native_lake_project.lean_version == "4.29.0"
     assert config.native_lake_project.lean_toolchain == "leanprover/lean4:v4.29.0"
     assert config.native_lake_project.mathlib_rev == "v4.29.0"

@@ -58,3 +58,30 @@ def test_context_resolver_accepts_header_aliases_and_rejects_incomplete_metadata
     )
     assert not incomplete.ok
     assert incomplete.issues[0].kind == "runtime_context_metadata_incomplete"
+
+
+def test_context_resolver_rejects_repo_route_mismatch(tmp_path) -> None:
+    runtime = make_mcp_runtime()
+    repo_a = tmp_path / "RepoA"
+    repo_b = tmp_path / "RepoB"
+    env = runtime_env(
+        repo_a,
+        view="resource_curator",
+        agent_type="resource_curator",
+        role="worker",
+        flow_id="flow_from_env",
+        step_id="step_from_env",
+        agent_id="agent_from_env",
+    )
+
+    resolved = runtime.tool_facade.context_resolver.resolve_tool_context(
+        RawToolCallContext(
+            endpoint_view_key="resource_curator",
+            env=env,
+            expected_repo_key="RepoB",
+            expected_repo_root=repo_b,
+        )
+    )
+
+    assert not resolved.ok
+    assert resolved.issues[0].kind == "runtime_repo_route_mismatch"

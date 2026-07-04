@@ -171,8 +171,8 @@ def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> 
         (RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH, ["Main.Core"]),
         (RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL, ["Main.Core"]),
     ]
-    assert ark_snapshot.created[0][0] == ["repo:Repo", "node:Main.Core"]
-    assert ark_snapshot.created[1][0] == ["repo:Repo", "node:Main.Core"]
+    assert ark_snapshot.created[0][0] == ["repo:Repo", "repo:Repo:node:Main.Core"]
+    assert ark_snapshot.created[1][0] == ["repo:Repo", "repo:Repo:node:Main.Core"]
 
     runtime.agent_service.queue_submission(
         CoordinatorRepoRequirementSubmission(

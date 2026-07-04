@@ -646,7 +646,7 @@ def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> N
     assert created.ok
     assert created.value is not None
     assert created.value.ark_runtime_snapshot_id == "ark_1"
-    assert ark.created == [(["repo"], "bootstrap done")]
+    assert ark.created == [([f"repo:{tmp_path.name}"], "bootstrap done")]
     files_manifest = foundation.store.read_json(
         Path(created.value.root) / "files_manifest.json",
         SnapshotFilesManifest,
@@ -741,16 +741,21 @@ def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) 
 
     assert created.ok
     assert created.value is not None
-    assert created.value.refreshed_scope_ids == ["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"]
+    expected_scopes = [
+        f"repo:{tmp_path.name}",
+        f"repo:{tmp_path.name}:node:Main.Topic.Core",
+        f"repo:{tmp_path.name}:node:Main.Topic.Consumer",
+    ]
+    assert created.value.refreshed_scope_ids == expected_scopes
     assert created.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
-    assert ark.created == [(["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"], "content batch finished")]
+    assert ark.created == [(expected_scopes, "content batch finished")]
     manifest = foundation.store.read_json(
         Path(created.value.root) / "snapshot.json",
         RepoCheckpointSnapshotManifest,
     )
     assert manifest.ok
     assert manifest.value is not None
-    assert manifest.value.refreshed_scope_ids == ["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"]
+    assert manifest.value.refreshed_scope_ids == expected_scopes
     assert manifest.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
 
 
@@ -775,14 +780,19 @@ def test_content_task_checkpoint_normalizes_node_paths(tmp_path: Path) -> None:
     assert created.ok
     assert created.value is not None
     assert created.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
-    assert created.value.refreshed_scope_ids == ["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"]
+    expected_scopes = [
+        f"repo:{tmp_path.name}",
+        f"repo:{tmp_path.name}:node:Main.Topic.Core",
+        f"repo:{tmp_path.name}:node:Main.Topic.Consumer",
+    ]
+    assert created.value.refreshed_scope_ids == expected_scopes
     assert runtime.calls == [
         (
             RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
             ["Main.Topic.Core", "Main.Topic.Consumer"],
         )
     ]
-    assert ark.created == [(["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"], "before dispatch")]
+    assert ark.created == [(expected_scopes, "before dispatch")]
 
     invalid = service.create_repo_stable_point_snapshot(
         tmp_path,
@@ -904,7 +914,7 @@ def test_snapshot_create_copy_failure_cleans_manifest_without_ark_rollback(tmp_p
 
     assert not created.ok
     assert created.issues[0].kind == "repo_checkpoint_snapshot_write_failed"
-    assert ark.created == [(["repo"], None)]
+    assert ark.created == [([f"repo:{tmp_path.name}"], None)]
     assert service.list_repo_checkpoint_snapshots(tmp_path).value == []
 
 
