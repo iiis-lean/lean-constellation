@@ -21,7 +21,14 @@ from lean_constellation.app.external_takeover import (
     list_external_takeover_tools,
 )
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.preparation import RepoPreparationInput, RepoPreparationInputView, RepoShellView, SourceCorpusMode
+from lean_constellation.domain.preparation import (
+    RepoDependencyRequirementStatus,
+    RepoPreparationInput,
+    RepoPreparationInputView,
+    RepoShellView,
+    RequirementResumeCandidateView,
+    SourceCorpusMode,
+)
 from lean_constellation.flows.testing import (
     CONTROLLED_AGENT_OVERRIDE_KEY,
     CONTROLLED_AGENT_RECORD_KEY,
@@ -57,6 +64,143 @@ class RuntimeStatusView(StrictModel):
     active_flow_advances: list[str] = Field(default_factory=list)
     running_step_ids: list[str] = Field(default_factory=list)
     created_step_ids: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class StepMonitorView(StrictModel):
+    step_id: str
+    flow_id: str
+    scope_id: str
+    step_type: str
+    status: str
+    state_type: str | None = None
+    submission_type: str | None = None
+    submit_tool: str | None = None
+    result_type: str | None = None
+    error_type: str | None = None
+    agent_type: str | None = None
+    bound_agent_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    summary: str
+
+
+class FlowMonitorView(StrictModel):
+    flow_id: str
+    flow_type: str
+    scope_id: str
+    status: str
+    phase: str | None = None
+    round_index: int | None = None
+    current_step_id: str | None = None
+    parent_flow_id: str | None = None
+    parent_dispatch_step_id: str | None = None
+    manual_pause_active: bool = False
+    step_count: int
+    child_flow_count: int
+    result_type: str | None = None
+    error_type: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    steps: list[StepMonitorView] = Field(default_factory=list)
+    summary: str
+
+
+class FlowTreeMonitorView(StrictModel):
+    scope_id: str | None = None
+    include_terminal: bool = True
+    total_flows: int
+    total_steps: int
+    root_count: int
+    roots: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str
+
+
+class WaitingRequirementMonitorView(StrictModel):
+    consumer_repo: str
+    consumer_repo_root: str
+    requirement_name: str
+    target_repo: str
+    provider_repo: str | None = None
+    status: RepoDependencyRequirementStatus
+    waiting: bool
+    result_observed: bool
+    submitted_at: str | None = None
+    result_observed_at: str | None = None
+    reason: str | None = None
+    summary: str
+
+
+class WaitingRequirementsMonitorView(StrictModel):
+    workspace_root: str | None = None
+    repo_root: str | None = None
+    provider_repo: str | None = None
+    requirements: list[WaitingRequirementMonitorView] = Field(default_factory=list)
+    summary: str
+
+
+class RequirementResumeCandidatesMonitorView(StrictModel):
+    workspace_root: str
+    provider_repo: str
+    candidates: list[RequirementResumeCandidateView] = Field(default_factory=list)
+    summary: str
+
+
+class AgentMonitorView(StrictModel):
+    agent_id: str
+    scope_id: str
+    agent_type: str
+    cli_type: str
+    home_id: str
+    status: str
+    thread_id: str | None = None
+    rollout_relpath: str | None = None
+    rollout_exists: bool = False
+    last_completion_status: str | None = None
+    last_completion_turn_id: str | None = None
+    latest_turn_duration_ms: int | None = None
+    tool_call_count: int | None = None
+    summary: str
+
+
+class AgentListMonitorView(StrictModel):
+    scope_id: str | None = None
+    agent_type: str | None = None
+    status: str | None = None
+    agents: list[AgentMonitorView] = Field(default_factory=list)
+    summary: str
+
+
+class AgentReportIndexView(StrictModel):
+    agent_id: str
+    reports_root: str | None = None
+    latest_json_path: str | None = None
+    latest_markdown_path: str | None = None
+    existing_report_paths: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class ExternalHealthMonitorView(StrictModel):
+    health: dict[str, Any]
+    toolkit_process: dict[str, Any] | None = None
+    summary: str
+
+
+class MainRepoStatusView(StrictModel):
+    repo_root: str
+    repo_exists: bool
+    constellation_exists: bool
+    preparation_input_exists: bool
+    source_corpus_exists: bool | None = None
+    source_corpus_file_count: int | None = None
+    repo_state: dict[str, Any] | None = None
+    flow_count: int
+    nonterminal_flow_count: int
+    agent_count: int
     summary: str
 
 
@@ -322,8 +466,16 @@ class RequirementResumeInput(StrictModel):
 class LeanAdminApi:
     """Small admin service that composes existing runtime services."""
 
-    def __init__(self, runtime: LeanRuntimeServices) -> None:
+    def __init__(
+        self,
+        runtime: LeanRuntimeServices,
+        *,
+        workspace_root: Path | None = None,
+        toolkit_state: object | None = None,
+    ) -> None:
         self.runtime = runtime
+        self.workspace_root = Path(workspace_root).expanduser() if workspace_root is not None else None
+        self.toolkit_state = toolkit_state
 
     def start_requirement_group_bootstrap(
         self,
@@ -615,6 +767,294 @@ class LeanAdminApi:
                 summary="Loaded runtime status.",
             )
         )
+
+    def list_flow_tree(
+        self,
+        *,
+        scope_id: str | None = None,
+        include_terminal: bool = True,
+    ) -> ServiceResult[FlowTreeMonitorView]:
+        try:
+            flows = list(self.runtime.ark.flow_service.list_flows(scope_id=scope_id))
+            if not include_terminal:
+                flows = [
+                    flow
+                    for flow in flows
+                    if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+                ]
+            flow_by_id = {str(flow.flow_id): flow for flow in flows}
+            children_by_parent: dict[str, list[Any]] = {}
+            roots = []
+            for flow in flows:
+                parent_id = getattr(flow, "parent_flow_id", None)
+                if parent_id and str(parent_id) in flow_by_id:
+                    children_by_parent.setdefault(str(parent_id), []).append(flow)
+                else:
+                    roots.append(flow)
+            nodes = [
+                self._flow_tree_node_payload(flow, children_by_parent)
+                for flow in sorted(roots, key=lambda item: (str(item.created_at), str(item.flow_id)))
+            ]
+            total_steps = sum(len(getattr(flow, "step_ids", []) or []) for flow in flows)
+            return self.runtime.foundation.ok(
+                FlowTreeMonitorView(
+                    scope_id=scope_id,
+                    include_terminal=include_terminal,
+                    total_flows=len(flows),
+                    total_steps=total_steps,
+                    root_count=len(nodes),
+                    roots=nodes,
+                    summary=f"Loaded {len(flows)} flows and {total_steps} steps.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("flow_tree_monitor_failed", f"Failed to load flow tree: {exc}")
+            )
+
+    def get_flow_monitor(self, flow_id: str) -> ServiceResult[FlowMonitorView]:
+        try:
+            flow = self.runtime.ark.flow_service.get_flow(flow_id)
+            return self.runtime.foundation.ok(self._flow_monitor_view(flow, include_steps=True))
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("flow_monitor_failed", f"Failed to load flow monitor view: {exc}")
+            )
+
+    def get_step_monitor(self, step_id: str) -> ServiceResult[StepMonitorView]:
+        try:
+            step = self.runtime.ark.step_service.store.get_step(step_id)
+            return self.runtime.foundation.ok(self._step_monitor_view(step))
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("step_monitor_failed", f"Failed to load step monitor view: {exc}")
+            )
+
+    def list_waiting_requirements(
+        self,
+        *,
+        workspace_root: Path | None = None,
+        repo_root: Path | None = None,
+        provider_repo: str | None = None,
+    ) -> ServiceResult[WaitingRequirementsMonitorView]:
+        try:
+            roots = self._requirement_scan_roots(workspace_root=workspace_root, repo_root=repo_root)
+            provider_key = (
+                self.runtime.foundation.layout.ensure_safe_key(provider_repo)
+                if provider_repo
+                else None
+            )
+            items: list[WaitingRequirementMonitorView] = []
+            for root in roots:
+                listed = self.runtime.repo_workspace.requirement.list_requirements(root)
+                if not listed.ok or listed.value is None:
+                    return self.runtime.foundation.fail(listed.issues)
+                for view in listed.value:
+                    requirement = view.requirement
+                    state = requirement.waiting_state
+                    if not state.waiting or state.result_observed:
+                        continue
+                    resolved_provider = state.provider_repo or requirement.provider_repo or requirement.target_repo
+                    if provider_key is not None and resolved_provider != provider_key:
+                        continue
+                    items.append(
+                        WaitingRequirementMonitorView(
+                            consumer_repo=root.name,
+                            consumer_repo_root=str(root),
+                            requirement_name=requirement.name,
+                            target_repo=requirement.target_repo,
+                            provider_repo=resolved_provider,
+                            status=requirement.status,
+                            waiting=state.waiting,
+                            result_observed=state.result_observed,
+                            submitted_at=state.submitted_at,
+                            result_observed_at=state.result_observed_at,
+                            reason=state.reason,
+                            summary=f"{root.name}/{requirement.name} is waiting for provider {resolved_provider}.",
+                        )
+                    )
+            return self.runtime.foundation.ok(
+                WaitingRequirementsMonitorView(
+                    workspace_root=str(workspace_root or self.workspace_root) if workspace_root or self.workspace_root else None,
+                    repo_root=str(repo_root) if repo_root is not None else None,
+                    provider_repo=provider_key,
+                    requirements=sorted(items, key=lambda item: (item.consumer_repo, item.requirement_name)),
+                    summary=f"Loaded {len(items)} waiting requirements.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("waiting_requirements_monitor_failed", f"Failed to list waiting requirements: {exc}")
+            )
+
+    def list_requirement_resume_candidates(
+        self,
+        *,
+        provider_repo: str,
+        workspace_root: Path | None = None,
+    ) -> ServiceResult[RequirementResumeCandidatesMonitorView]:
+        resolved_workspace = Path(workspace_root or self.workspace_root).expanduser() if workspace_root or self.workspace_root else None
+        if resolved_workspace is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "workspace_root_required",
+                    "Listing requirement resume candidates requires workspace_root.",
+                )
+            )
+        candidates = self.runtime.repo_workspace.list_resume_candidates_for_requirement(
+            resolved_workspace,
+            provider_repo=provider_repo,
+        )
+        if not candidates.ok or candidates.value is None:
+            return self.runtime.foundation.fail(candidates.issues)
+        return self.runtime.foundation.ok(
+            RequirementResumeCandidatesMonitorView(
+                workspace_root=str(resolved_workspace),
+                provider_repo=provider_repo,
+                candidates=candidates.value,
+                summary=f"Loaded {len(candidates.value)} resume candidates for provider {provider_repo}.",
+            )
+        )
+
+    def list_agent_monitor(
+        self,
+        *,
+        scope_id: str | None = None,
+        agent_type: str | None = None,
+        status: str | None = None,
+    ) -> ServiceResult[AgentListMonitorView]:
+        try:
+            agents = list(self.runtime.ark.agent_service.list_agents(scope_id=scope_id, status=status))
+            if agent_type is not None:
+                agents = [agent for agent in agents if agent.agent_type == agent_type]
+            views = [self._agent_monitor_view(agent) for agent in agents]
+            return self.runtime.foundation.ok(
+                AgentListMonitorView(
+                    scope_id=scope_id,
+                    agent_type=agent_type,
+                    status=status,
+                    agents=views,
+                    summary=f"Loaded {len(views)} agents.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_monitor_failed", f"Failed to list agents: {exc}")
+            )
+
+    def get_agent_report_index(self, agent_id: str) -> ServiceResult[AgentReportIndexView]:
+        try:
+            agent_service = self.runtime.ark.agent_service
+            if hasattr(agent_service, "get_default_trace_report_paths"):
+                paths = agent_service.get_default_trace_report_paths(agent_id)
+                reports_root = getattr(paths, "reports_root", None)
+                latest_json = getattr(paths, "latest_json_path", None)
+                latest_markdown = getattr(paths, "latest_markdown_path", None)
+            else:
+                reports_root = Path(agent_service.runtime_root) / "reports" / "agents" / agent_id
+                latest_json = reports_root / "latest.json"
+                latest_markdown = reports_root / "latest.md"
+            existing = []
+            if reports_root is not None and Path(reports_root).exists():
+                existing = [
+                    str(path)
+                    for path in sorted(Path(reports_root).rglob("*"))
+                    if path.is_file()
+                ]
+            return self.runtime.foundation.ok(
+                AgentReportIndexView(
+                    agent_id=agent_id,
+                    reports_root=str(reports_root) if reports_root is not None else None,
+                    latest_json_path=str(latest_json) if latest_json is not None else None,
+                    latest_markdown_path=str(latest_markdown) if latest_markdown is not None else None,
+                    existing_report_paths=existing,
+                    summary=f"Loaded {len(existing)} trace report artifacts.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_report_index_failed", f"Failed to load Agent report index: {exc}")
+            )
+
+    def get_external_health(
+        self,
+        *,
+        required_toolkit_groups: list[str] | None = None,
+        required_toolkit_tools: list[str] | None = None,
+    ) -> ServiceResult[ExternalHealthMonitorView]:
+        try:
+            health = self.runtime.external.check_external_client_health(
+                required_toolkit_groups=required_toolkit_groups,
+                required_toolkit_tools=required_toolkit_tools,
+            )
+            toolkit_process = None
+            if self.toolkit_state is not None and hasattr(self.toolkit_state, "model_dump"):
+                toolkit_process = self.toolkit_state.model_dump(mode="json")
+            return self.runtime.foundation.ok(
+                ExternalHealthMonitorView(
+                    health=health.model_dump(mode="json"),
+                    toolkit_process=toolkit_process,
+                    summary=health.summary,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("external_health_monitor_failed", f"Failed to check external health: {exc}")
+            )
+
+    def get_main_repo_status(self, repo_root: Path) -> ServiceResult[MainRepoStatusView]:
+        try:
+            root = Path(repo_root).expanduser()
+            ctx = FoundationContext(repo_root=root)
+            constellation_root = self.runtime.foundation.layout.constellation_root(ctx)
+            preparation_path = self.runtime.foundation.layout.preparation_input_path(ctx)
+            repo_state_result = self.runtime.repo_workspace.metadata.get_repo_state_view(root)
+            repo_state = (
+                repo_state_result.value.model_dump(mode="json")
+                if repo_state_result.ok and repo_state_result.value is not None
+                else None
+            )
+            source_exists = None
+            source_file_count = None
+            if preparation_path.exists():
+                loaded = self.runtime.repo_workspace.preparation.get_preparation_input(root)
+                if loaded.ok and loaded.value is not None and loaded.value.input.source_corpus_mode != SourceCorpusMode.NONE:
+                    source_root = self.runtime.foundation.layout.source_corpus_root(
+                        ctx,
+                        loaded.value.input.source_corpus_relpath or ".lean_constellation/source",
+                    )
+                    source_exists = source_root.exists() and source_root.is_dir()
+                    source_file_count = (
+                        sum(1 for item in source_root.rglob("*") if item.is_file())
+                        if source_exists
+                        else 0
+                    )
+            flows = self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{root.name}")
+            agents = self.runtime.ark.agent_service.list_agents(scope_id=f"repo:{root.name}")
+            nonterminal = [
+                flow
+                for flow in flows
+                if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+            ]
+            return self.runtime.foundation.ok(
+                MainRepoStatusView(
+                    repo_root=str(root),
+                    repo_exists=root.exists(),
+                    constellation_exists=constellation_root.exists(),
+                    preparation_input_exists=preparation_path.exists(),
+                    source_corpus_exists=source_exists,
+                    source_corpus_file_count=source_file_count,
+                    repo_state=repo_state,
+                    flow_count=len(flows),
+                    nonterminal_flow_count=len(nonterminal),
+                    agent_count=len(agents),
+                    summary=f"Loaded main repo status for {root.name}.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("main_repo_status_failed", f"Failed to load main repo status: {exc}")
+            )
 
     def get_test_control_runtime_view(
         self,
@@ -1131,8 +1571,42 @@ class LeanAdminApi:
         artifact_path: str | Path | None = None,
         output_path: str | Path | None = None,
         format: Literal["json", "markdown"] = "json",
+        rebuild: bool = False,
     ):
         def build(agent_service):
+            def default_payload(report, paths, *, rebuilt: bool):
+                report_path = getattr(paths, "latest_json_path", None) if format == "json" else getattr(paths, "latest_markdown_path", None)
+                if isinstance(report, dict):
+                    payload = dict(report)
+                    payload["agent_id"] = agent_id
+                    payload["report_path"] = report_path
+                    payload["rebuilt"] = rebuilt
+                    return payload
+                return {
+                    "agent_id": agent_id,
+                    "report_path": report_path,
+                    "report": report,
+                    "rebuilt": rebuilt,
+                }
+
+            if output_path is None:
+                if rebuild or artifact_path is not None:
+                    if hasattr(agent_service, "export_default_trace_reports"):
+                        paths = agent_service.export_default_trace_reports(
+                            agent_id,
+                            artifact_path=artifact_path,
+                        )
+                        report = agent_service.read_default_trace_report(agent_id, format=format)
+                        return default_payload(report, paths, rebuilt=True)
+                if hasattr(agent_service, "read_default_trace_report"):
+                    report = agent_service.read_default_trace_report(agent_id, format=format)
+                    if report is not None:
+                        paths = agent_service.get_default_trace_report_paths(agent_id)
+                        return default_payload(report, paths, rebuilt=False)
+                if hasattr(agent_service, "export_default_trace_reports"):
+                    paths = agent_service.export_default_trace_reports(agent_id)
+                    report = agent_service.read_default_trace_report(agent_id, format=format)
+                    return default_payload(report, paths, rebuilt=True)
             if output_path is None:
                 return agent_service.build_trace_report(agent_id, artifact_path=artifact_path)
             report = agent_service.export_trace_report(
@@ -1160,6 +1634,120 @@ class LeanAdminApi:
                 "test_control_disabled",
                 "This admin operation is only available on a test-control runtime.",
             )
+        )
+
+    def _flow_tree_node_payload(self, flow: Any, children_by_parent: dict[str, list[Any]]) -> dict[str, Any]:
+        children = sorted(
+            children_by_parent.get(str(flow.flow_id), []),
+            key=lambda item: (str(item.created_at), str(item.flow_id)),
+        )
+        return {
+            "flow": to_jsonable(self._flow_monitor_view(flow, include_steps=True)),
+            "children": [self._flow_tree_node_payload(child, children_by_parent) for child in children],
+        }
+
+    def _flow_monitor_view(self, flow: Any, *, include_steps: bool) -> FlowMonitorView:
+        position = getattr(getattr(flow, "state", None), "position", None)
+        child_flows = self.runtime.ark.flow_service.store.list_child_flows(parent_flow_id=flow.flow_id)
+        steps = [
+            self._step_monitor_view(self.runtime.ark.step_service.store.get_step(step_id))
+            for step_id in list(getattr(flow, "step_ids", []) or [])
+        ] if include_steps else []
+        return FlowMonitorView(
+            flow_id=flow.flow_id,
+            flow_type=flow.flow_type,
+            scope_id=flow.scope_id,
+            status=str(flow.status),
+            phase=getattr(position, "phase", None),
+            round_index=getattr(position, "round_index", None),
+            current_step_id=flow.current_step_id,
+            parent_flow_id=flow.parent_flow_id,
+            parent_dispatch_step_id=flow.parent_dispatch_step_id,
+            manual_pause_active=bool(getattr(getattr(flow, "manual_pause", None), "active", False)),
+            step_count=len(getattr(flow, "step_ids", []) or []),
+            child_flow_count=len(child_flows),
+            result_type=getattr(flow.result, "result_type", None) if flow.result is not None else None,
+            error_type=getattr(flow.error, "error_type", None) if flow.error is not None else None,
+            created_at=flow.created_at,
+            updated_at=flow.updated_at,
+            started_at=flow.started_at,
+            finished_at=flow.finished_at,
+            steps=steps,
+            summary=f"Flow {flow.flow_type} is {flow.status}.",
+        )
+
+    def _step_monitor_view(self, step: Any) -> StepMonitorView:
+        agent_type = getattr(step.state, "agent_type", None)
+        agent_role = getattr(step.state, "agent_role", None)
+        bound_agent_id = step.agent_bindings.get(agent_role) if agent_role else None
+        return StepMonitorView(
+            step_id=step.step_id,
+            flow_id=step.flow_id,
+            scope_id=step.scope_id,
+            step_type=step.step_type,
+            status=str(step.status),
+            state_type=getattr(step.state, "state_type", None),
+            submission_type=getattr(step.submission, "submission_type", None) if step.submission is not None else None,
+            submit_tool=getattr(step.submission, "tool_name", None) if step.submission is not None else None,
+            result_type=getattr(step.result, "result_type", None) if step.result is not None else None,
+            error_type=getattr(step.error, "error_type", None) if step.error is not None else None,
+            agent_type=agent_type,
+            bound_agent_id=bound_agent_id,
+            created_at=step.created_at,
+            updated_at=step.updated_at,
+            started_at=step.started_at,
+            finished_at=step.finished_at,
+            summary=f"Step {step.step_type} is {step.status}.",
+        )
+
+    def _requirement_scan_roots(
+        self,
+        *,
+        workspace_root: Path | None,
+        repo_root: Path | None,
+    ) -> list[Path]:
+        if repo_root is not None:
+            return [Path(repo_root).expanduser()]
+        resolved_workspace = Path(workspace_root or self.workspace_root).expanduser() if workspace_root or self.workspace_root else None
+        if resolved_workspace is None:
+            raise ValueError("workspace_root or repo_root is required")
+        if not resolved_workspace.exists():
+            raise FileNotFoundError(f"workspace_root does not exist: {resolved_workspace}")
+        roots = []
+        for child in sorted(path for path in resolved_workspace.iterdir() if path.is_dir()):
+            ctx = FoundationContext(repo_root=child)
+            if self.runtime.foundation.layout.constellation_root(ctx).exists():
+                roots.append(child)
+        return roots
+
+    def _agent_monitor_view(self, agent: Any) -> AgentMonitorView:
+        rollout_exists = False
+        latest_turn_duration = None
+        tool_call_count = None
+        try:
+            rollout = self.runtime.ark.agent_service.store.locate_rollout(agent.agent_id)
+            rollout_exists = bool(rollout is not None and rollout.exists())
+            report = self.runtime.ark.agent_service.build_trace_report(agent.agent_id)
+            latest_turn_duration = report.latest_turn.duration_ms if report.latest_turn is not None else None
+            tool_call_count = len(report.tool_calls)
+        except Exception:
+            pass
+        completion = getattr(agent, "last_completion", None)
+        return AgentMonitorView(
+            agent_id=agent.agent_id,
+            scope_id=agent.scope_id,
+            agent_type=agent.agent_type,
+            cli_type=agent.cli_type,
+            home_id=agent.home_id,
+            status=agent.status,
+            thread_id=agent.thread_id,
+            rollout_relpath=agent.rollout_relpath,
+            rollout_exists=rollout_exists,
+            last_completion_status=getattr(completion, "status", None),
+            last_completion_turn_id=getattr(completion, "turn_id", None),
+            latest_turn_duration_ms=latest_turn_duration,
+            tool_call_count=tool_call_count,
+            summary=f"Agent {agent.agent_type} is {agent.status}.",
         )
 
     def _candidate_queue_view(self) -> TestControlCandidateQueueView:

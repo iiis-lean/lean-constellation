@@ -38,15 +38,37 @@ def build_raw_tool_call_context(
     headers: dict[str, str] | None = None,
     env: dict[str, str] | None = None,
     runtime_context: Any | None = None,
+    expected_repo_key: str | None = None,
+    expected_repo_root: str | None = None,
 ) -> RawToolCallContext:
     """Create the RawToolCallContext consumed by ToolFacade MCP invocation."""
 
+    merged = {**dict(headers or {}), **dict(env or {})}
     return RawToolCallContext(
         endpoint_view_key=endpoint_view_key,
         headers=dict(headers or {}),
         env=dict(env or {}),
         runtime_context=runtime_context,
+        expected_repo_key=expected_repo_key or _metadata_value(
+            merged,
+            "X-Lean-Constellation-Expected-Repo-Key",
+            "LEAN_CONSTELLATION_EXPECTED_REPO_KEY",
+        ),
+        expected_repo_root=expected_repo_root or _metadata_value(
+            merged,
+            "X-Lean-Constellation-Expected-Repo-Root",
+            "LEAN_CONSTELLATION_EXPECTED_REPO_ROOT",
+        ),
     )
+
+
+def _metadata_value(metadata: dict[str, str], *keys: str) -> str | None:
+    normalized = {"".join(ch for ch in key.lower() if ch.isalnum()): value for key, value in metadata.items()}
+    for key in keys:
+        value = normalized.get("".join(ch for ch in key.lower() if ch.isalnum()))
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
 
 
 def runtime_context_to_env(runtime_context: RuntimeToolContext) -> dict[str, str]:

@@ -10,6 +10,7 @@ from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, Age
 from pydantic import Field
 
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
+from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.coordinator.submissions import (
     CoordinatorContentTasksSubmission,
@@ -209,27 +210,51 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             self.status = FlowStatus.WAITING
 
     def after_step_terminal_stable(self, ctx: StableStepTerminalContext) -> None:
-        if ctx.step.step_type != "coordinator_content_batch_snapshot_step":
-            return
         result = ctx.step.result
-        if not isinstance(result, CoordinatorContentBatchSnapshotStepResult) or result.outcome != "snapshot_created":
+        if ctx.step.step_type == "coordinator_content_batch_snapshot_step":
+            if not isinstance(result, CoordinatorContentBatchSnapshotStepResult) or result.outcome != "snapshot_created":
+                return
+            input_model = _require_native_coordinator_input(self.input)
+            repo_root = _coordinator_repo_root(input_model)
+            if repo_root is None:
+                _mark_flow_failed_from_stable_snapshot(
+                    ctx,
+                    "coordinator_stable_snapshot_failed",
+                    [ValueError("Coordinator content task snapshot requires repo_root in Flow input.")],
+                )
+                return
+            _record_stable_repo_snapshot(
+                ctx,
+                repo_root,
+                checkpoint_kind=result.checkpoint_kind,
+                label=f"{result.checkpoint_kind} for {input_model.repo_key or repo_root.name}",
+                node_paths=list(result.node_paths),
+                failure_type="coordinator_stable_snapshot_failed",
+            )
+            return
+
+        if ctx.step.step_type != "coordinator_agent_step":
+            return
+        if not isinstance(result, CoordinatorStepResult) or result.outcome != "repo_requirement":
+            return
+        state = _require_native_coordinator_state(self.state)
+        if state.position.phase != "waiting_requirement":
             return
         input_model = _require_native_coordinator_input(self.input)
         repo_root = _coordinator_repo_root(input_model)
         if repo_root is None:
             _mark_flow_failed_from_stable_snapshot(
                 ctx,
-                "coordinator_stable_snapshot_failed",
-                [ValueError("Coordinator content task snapshot requires repo_root in Flow input.")],
+                "coordinator_requirement_waiting_snapshot_failed",
+                [ValueError("Coordinator requirement waiting snapshot requires repo_root in Flow input.")],
             )
             return
         _record_stable_repo_snapshot(
             ctx,
             repo_root,
-            checkpoint_kind=result.checkpoint_kind,
-            label=f"{result.checkpoint_kind} for {input_model.repo_key or repo_root.name}",
-            node_paths=list(result.node_paths),
-            failure_type="coordinator_stable_snapshot_failed",
+            checkpoint_kind="coordinator_requirement_waiting",
+            label=f"coordinator requirement waiting for {input_model.repo_key or repo_root.name}",
+            failure_type="coordinator_requirement_waiting_snapshot_failed",
         )
 
     def _consume_coordinator_agent_result(
@@ -343,15 +368,17 @@ def _record_stable_repo_snapshot(
     *,
     checkpoint_kind: str,
     label: str,
-    node_paths: list[str],
+    node_paths: list[str] | None = None,
     failure_type: str,
 ) -> None:
+    effective_node_paths = list(node_paths or [])
+    repo_key = _repo_scope_key(ctx.flow.scope_id, repo_root)
     snapshot = ctx.app.validation_snapshot.create_repo_stable_point_snapshot(
         repo_root,
         checkpoint_kind=checkpoint_kind,
         label=label,
-        node_paths=node_paths,
-        scope_ids=[ctx.flow.scope_id, *(f"node:{path}" for path in node_paths)],
+        node_paths=effective_node_paths,
+        scope_ids=[ctx.flow.scope_id, *(node_scope_id(repo_key, path) for path in effective_node_paths)],
     )
     if not snapshot.ok or snapshot.value is None:
         _mark_flow_failed_from_stable_snapshot(ctx, failure_type, snapshot.issues)
@@ -380,6 +407,12 @@ def _mark_flow_failed_from_stable_snapshot(ctx: StableStepTerminalContext, error
         flow.updated_at = now
 
     ctx.ark.flow_service.store.update_flow_record(ctx.flow.flow_id, patch_flow)
+
+
+def _repo_scope_key(scope_id: str, repo_root) -> str:
+    if scope_id.startswith("repo:") and ":node:" not in scope_id:
+        return scope_id.removeprefix("repo:")
+    return getattr(repo_root, "name", str(repo_root).rstrip("/").rsplit("/", maxsplit=1)[-1])
 
 
 def _coordinator_repo_root(input_model: NativeRepoCoordinatorInput):

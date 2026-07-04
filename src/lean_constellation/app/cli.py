@@ -31,9 +31,41 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("config-view", help="Print redacted config view.")
     sub.add_parser("status", help="Read production server runtime status over Admin HTTP.")
+    flow_tree = sub.add_parser("flow-tree", help="Read production flow/step tree over Admin HTTP.")
+    flow_tree.add_argument("--repo-key", required=True)
+    flow_tree.add_argument("--scope-id", default=None)
+    flow_tree.add_argument("--nonterminal-only", action="store_true")
+    flow_monitor = sub.add_parser("flow", help="Read one flow monitor view over Admin HTTP.")
+    flow_monitor.add_argument("--repo-key", required=True)
+    flow_monitor.add_argument("flow_id")
+    step_monitor = sub.add_parser("step", help="Read one step monitor view over Admin HTTP.")
+    step_monitor.add_argument("--repo-key", required=True)
+    step_monitor.add_argument("step_id")
+    waiting_requirements = sub.add_parser("waiting-requirements", help="List requirements waiting for provider repos.")
+    waiting_requirements.add_argument("--workspace-root", type=Path, default=None)
+    waiting_requirements.add_argument("--repo-root", type=Path, default=None)
+    waiting_requirements.add_argument("--provider-repo", default=None)
+    resume_candidates = sub.add_parser("resume-candidates", help="List consumers that can resume from a ready provider repo.")
+    resume_candidates.add_argument("provider_repo")
+    resume_candidates.add_argument("--workspace-root", type=Path, default=None)
+    agents_monitor = sub.add_parser("agents", help="List Agent monitor views over Admin HTTP.")
+    agents_monitor.add_argument("--repo-key", required=True)
+    agents_monitor.add_argument("--scope-id", default=None)
+    agents_monitor.add_argument("--agent-type", default=None)
+    agents_monitor.add_argument("--status", default=None)
+    agent_report_index = sub.add_parser("agent-report-index", help="List stored trace reports for an Agent.")
+    agent_report_index.add_argument("--repo-key", required=True)
+    agent_report_index.add_argument("agent_id")
+    external_health = sub.add_parser("external-health", help="Read external dependency health over Admin HTTP.")
+    external_health.add_argument("--required-toolkit-group", action="append", default=[])
+    external_health.add_argument("--required-toolkit-tool", action="append", default=[])
+    main_repo_status = sub.add_parser("main-repo-status", help="Read main repo status over Admin HTTP.")
+    main_repo_status.add_argument("repo_root", type=Path)
     pause = sub.add_parser("pause", help="Pause production server scheduler over Admin HTTP.")
+    pause.add_argument("--repo-key", required=True)
     pause.add_argument("--scope-id", default=None)
     resume = sub.add_parser("resume", help="Resume production server scheduler over Admin HTTP.")
+    resume.add_argument("--repo-key", required=True)
     resume.add_argument("--scope-id", default=None)
 
     serve = sub.add_parser("serve", help="Run the unified production Admin HTTP + MCP HTTP server.")
@@ -44,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--log-level", default="info")
 
     start = sub.add_parser("start-flow", help="Start a registered ARK flow.")
+    start.add_argument("--repo-key", required=True)
     start.add_argument("flow_type")
     start.add_argument("scope_id")
     start.add_argument("--param", action="append", default=[], help="Flow param as key=value. Can be repeated.")
@@ -54,11 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot.add_argument("--kind", default="requirement_bootstrap_terminal")
     snapshot.add_argument("--label", default=None)
 
-    external_list = sub.add_parser("external-list", help="List external takeover handoffs.")
+    external_list = sub.add_parser("external-list", help="Debug/local: list external takeover handoffs from a local runtime root.")
     external_list.add_argument("--status", default=None, help="Filter by pending/completed/failed/cancelled.")
     external_list.add_argument("--handoff-dirname", default="external_turns")
 
-    external_complete = sub.add_parser("external-complete", help="Complete an external takeover handoff.")
+    external_complete = sub.add_parser("external-complete", help="Debug/local: complete an external takeover handoff in a local runtime root.")
     external_complete.add_argument("handoff_id")
     external_complete.add_argument("--status", choices=["completed", "failed", "cancelled"], default="completed")
     external_complete.add_argument("--final-response", default=None)
@@ -69,12 +102,12 @@ def build_parser() -> argparse.ArgumentParser:
     external_complete.add_argument("--metadata", action="append", default=[], help="Completion metadata as key=value. Can be repeated.")
     external_complete.add_argument("--handoff-dirname", default="external_turns")
 
-    external_tools = sub.add_parser("external-tools", help="List MCP tools available to an external takeover handoff.")
+    external_tools = sub.add_parser("external-tools", help="Debug/local: list MCP tools available to an external takeover handoff.")
     external_tools.add_argument("handoff_id")
     external_tools.add_argument("--view-kind", choices=["application", "submit"], default="submit")
     external_tools.add_argument("--handoff-dirname", default="external_turns")
 
-    external_call = sub.add_parser("external-call", help="Call an MCP tool for an external takeover handoff.")
+    external_call = sub.add_parser("external-call", help="Debug/local: call an MCP tool for an external takeover handoff.")
     external_call.add_argument("handoff_id")
     external_call.add_argument("tool_name")
     external_call.add_argument("--view-kind", choices=["application", "submit"], default="submit")
@@ -82,49 +115,59 @@ def build_parser() -> argparse.ArgumentParser:
     external_call.add_argument("--handoff-dirname", default="external_turns")
 
     agent_rollout = sub.add_parser("agent-rollout-info", help="Read Agent rollout location and event count.")
+    agent_rollout.add_argument("--repo-key", required=True)
     agent_rollout.add_argument("agent_id")
 
     agent_turns = sub.add_parser("agent-turns", help="List parsed Agent turns from rollout.")
+    agent_turns.add_argument("--repo-key", required=True)
     agent_turns.add_argument("agent_id")
 
     agent_turn = sub.add_parser("agent-turn", help="Read one parsed Agent turn.")
+    agent_turn.add_argument("--repo-key", required=True)
     agent_turn.add_argument("agent_id")
     agent_turn.add_argument("--latest", action="store_true")
     agent_turn.add_argument("--turn-id", default=None)
     agent_turn.add_argument("--index", type=int, default=None)
 
     agent_event = sub.add_parser("agent-event", help="Read one Agent rollout event.")
+    agent_event.add_argument("--repo-key", required=True)
     agent_event.add_argument("agent_id")
     agent_event.add_argument("--last", action="store_true")
     agent_event.add_argument("--index", type=int, default=None)
 
     agent_events_tail = sub.add_parser("agent-events-tail", help="Read recent Agent rollout events.")
+    agent_events_tail.add_argument("--repo-key", required=True)
     agent_events_tail.add_argument("agent_id")
     agent_events_tail.add_argument("--limit", type=int, default=20)
     agent_events_tail.add_argument("--event-type", default=None)
     agent_events_tail.add_argument("--payload-type", default=None)
 
     agent_response = sub.add_parser("agent-response-text", help="Read Agent response text.")
+    agent_response.add_argument("--repo-key", required=True)
     agent_response.add_argument("agent_id")
     agent_response.add_argument("--latest", action="store_true")
     agent_response.add_argument("--turn-id", default=None)
 
     agent_tool_calls = sub.add_parser("agent-tool-calls", help="List parsed Agent tool calls.")
+    agent_tool_calls.add_argument("--repo-key", required=True)
     agent_tool_calls.add_argument("agent_id")
     agent_tool_calls.add_argument("--latest", action="store_true")
     agent_tool_calls.add_argument("--turn-id", default=None)
 
     agent_tool_call = sub.add_parser("agent-tool-call", help="Read one parsed Agent tool call.")
+    agent_tool_call.add_argument("--repo-key", required=True)
     agent_tool_call.add_argument("agent_id")
     agent_tool_call.add_argument("--last", action="store_true")
     agent_tool_call.add_argument("--call-id", default=None)
     agent_tool_call.add_argument("--index", type=int, default=None)
 
     agent_trace_report = sub.add_parser("agent-trace-report", help="Build or export an Agent trace report.")
+    agent_trace_report.add_argument("--repo-key", required=True)
     agent_trace_report.add_argument("agent_id")
     agent_trace_report.add_argument("--artifact-path", type=Path, default=None)
     agent_trace_report.add_argument("--out", type=Path, default=None)
     agent_trace_report.add_argument("--format", choices=["json", "markdown"], default="json")
+    agent_trace_report.add_argument("--rebuild", action="store_true")
     return parser
 
 
@@ -154,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
                     "bind_host": bind_host,
                     "bind_port": bind_port,
                     "admin_base_url": config.admin_http_effective_base_url(),
-                    "mcp_base_url": config.mcp_http_effective_base_url(),
+                    "mcp_base_url": config.production_mcp_http_effective_base_url(),
                     "view_keys": args.view_key or "all",
                     "config": config.redacted_view().model_dump(mode="json"),
                 },
@@ -173,16 +216,96 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "status":
-        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/runtime/status"))
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/workspace/status"))
+    if args.command == "flow-tree":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/flows/tree",
+                    {"scope_id": args.scope_id, "nonterminal_only": args.nonterminal_only},
+                ),
+            )
+        )
+    if args.command == "flow":
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/flows/{args.flow_id}"))
+    if args.command == "step":
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/steps/{args.step_id}"))
+    if args.command == "waiting-requirements":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/workspace/requirements/waiting",
+                    {
+                        "workspace_root": str(args.workspace_root) if args.workspace_root is not None else None,
+                        "repo_root": str(args.repo_root) if args.repo_root is not None else None,
+                        "provider_repo": args.provider_repo,
+                    },
+                ),
+            )
+        )
+    if args.command == "resume-candidates":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/workspace/requirements/resume-candidates",
+                    {
+                        "workspace_root": str(args.workspace_root) if args.workspace_root is not None else None,
+                        "provider_repo": args.provider_repo,
+                    },
+                ),
+            )
+        )
+    if args.command == "agents":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/agents",
+                    {
+                        "scope_id": args.scope_id,
+                        "agent_type": args.agent_type,
+                        "status": args.status,
+                    },
+                ),
+            )
+        )
+    if args.command == "agent-report-index":
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/report-index"))
+    if args.command == "external-health":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/external/health",
+                    {
+                        "required_toolkit_groups": ",".join(args.required_toolkit_group) if args.required_toolkit_group else None,
+                        "required_toolkit_tools": ",".join(args.required_toolkit_tool) if args.required_toolkit_tool else None,
+                    },
+                ),
+            )
+        )
+    if args.command == "main-repo-status":
+        return _print_http_result(
+            _request_json(
+                "GET",
+                _url_with_query(
+                    f"{admin_base_url}/admin/main-repo/status",
+                    {"repo_root": str(args.repo_root)},
+                ),
+            )
+        )
     if args.command == "pause":
-        return _print_http_result(_request_json("POST", f"{admin_base_url}/admin/runtime/pause", {"scope_id": args.scope_id}))
+        return _print_http_result(_request_json("POST", f"{admin_base_url}/admin/repos/{args.repo_key}/runtime/pause", {"scope_id": args.scope_id}))
     if args.command == "resume":
-        return _print_http_result(_request_json("POST", f"{admin_base_url}/admin/runtime/resume", {"scope_id": args.scope_id}))
+        return _print_http_result(_request_json("POST", f"{admin_base_url}/admin/repos/{args.repo_key}/runtime/resume", {"scope_id": args.scope_id}))
     if args.command == "start-flow":
         return _print_http_result(
             _request_json(
                 "POST",
-                f"{admin_base_url}/admin/flows/start",
+                f"{admin_base_url}/admin/repos/{args.repo_key}/flows/start",
                 {
                     "flow_type": args.flow_type,
                     "scope_id": args.scope_id,
@@ -195,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         return _print_http_result(
             _request_json(
                 "POST",
-                f"{admin_base_url}/admin/snapshots/create",
+                f"{admin_base_url}/admin/repos/{args.repo_root.name}/snapshots/create",
                 {
                     "repo_root": str(args.repo_root),
                     "checkpoint_kind": args.kind,
@@ -204,15 +327,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     if args.command == "agent-rollout-info":
-        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/agents/{args.agent_id}/rollout"))
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/rollout"))
     if args.command == "agent-turns":
-        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/agents/{args.agent_id}/turns"))
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/turns"))
     if args.command == "agent-turn":
         return _print_http_result(
             _request_json(
                 "GET",
                 _url_with_query(
-                    f"{admin_base_url}/admin/agents/{args.agent_id}/turn",
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/turn",
                     {
                         "turn_id": args.turn_id,
                         "index": args.index,
@@ -226,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
             _request_json(
                 "GET",
                 _url_with_query(
-                    f"{admin_base_url}/admin/agents/{args.agent_id}/event",
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/event",
                     {"index": args.index, "last": args.last or args.index is None},
                 ),
             )
@@ -236,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
             _request_json(
                 "GET",
                 _url_with_query(
-                    f"{admin_base_url}/admin/agents/{args.agent_id}/events/tail",
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/events/tail",
                     {
                         "limit": args.limit,
                         "event_type": args.event_type,
@@ -247,12 +370,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "agent-response-text":
         if args.latest or args.turn_id is None:
-            return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/agents/{args.agent_id}/latest-response"))
+            return _print_http_result(
+                _request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/latest-response")
+            )
         return _print_http_result(
             _request_json(
                 "GET",
                 _url_with_query(
-                    f"{admin_base_url}/admin/agents/{args.agent_id}/responses",
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/responses",
                     {"turn_id": args.turn_id},
                 ),
             )
@@ -262,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             _request_json(
                 "GET",
                 _url_with_query(
-                    f"{admin_base_url}/admin/agents/{args.agent_id}/tool-calls",
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/tool-calls",
                     {"turn_id": args.turn_id, "latest": args.latest},
                 ),
             )
@@ -272,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             _request_json(
                 "GET",
                 _url_with_query(
-                    f"{admin_base_url}/admin/agents/{args.agent_id}/tool-call",
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/tool-call",
                     {
                         "call_id": args.call_id,
                         "index": args.index,
@@ -286,11 +411,12 @@ def main(argv: list[str] | None = None) -> int:
             _request_json(
                 "GET",
                 _url_with_query(
-                    f"{admin_base_url}/admin/agents/{args.agent_id}/trace-report",
+                    f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/trace-report",
                     {
                         "artifact_path": str(args.artifact_path) if args.artifact_path is not None else None,
                         "output_path": str(args.out) if args.out is not None else None,
                         "format": args.format,
+                        "rebuild": args.rebuild,
                     },
                 ),
             )

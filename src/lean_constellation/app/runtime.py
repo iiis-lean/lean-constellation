@@ -30,6 +30,7 @@ from lean_constellation.flows.registry import register_lean_flow_step_types
 from lean_constellation.flows.testing import CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES
 from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_lean_runtime_services
+from lean_constellation.services.external_clients import ExternalClientConfig, LeanMcpToolkitClientConfig
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.services.validation_snapshot.snapshot_restore import RepoCheckpointKind
 from lean_constellation.tools import register_submit_tooling
@@ -57,18 +58,29 @@ def create_app_runtime_services(
 
     root = Path(runtime_root).expanduser()
     root.mkdir(parents=True, exist_ok=True)
-    effective_agent_type_specs = (
-        list(agent_type_specs)
-        if agent_type_specs is not None
-        else build_agent_type_specs(extra_specs=extra_agent_type_specs)
-    )
+    if agent_type_specs is not None:
+        effective_agent_type_specs = list(agent_type_specs)
+    elif test_control_enabled and extra_agent_type_specs is None:
+        base_specs = build_agent_type_specs()
+        effective_agent_type_specs = [
+            *base_specs,
+            *build_controlled_test_agent_type_specs(specs=base_specs),
+        ]
+    else:
+        effective_agent_type_specs = build_agent_type_specs(extra_specs=extra_agent_type_specs)
+    effective_step_type_overrides = dict(step_type_overrides or {})
+    if test_control_enabled:
+        effective_step_type_overrides = {
+            **CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES,
+            **effective_step_type_overrides,
+        }
 
     flow_registry = FlowTypeRegistry()
     step_registry = StepTypeRegistry()
     register_lean_flow_step_types(
         flow_registry=flow_registry,
         step_registry=step_registry,
-        step_type_overrides=step_type_overrides,
+        step_type_overrides=effective_step_type_overrides,
     )
     store = FlowStepStore(root, flow_registry=flow_registry, step_registry=step_registry)
 
@@ -155,10 +167,11 @@ def create_app_runtime_from_config(
     test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
     runtime_root = config.runtime_root or (config.workspace_root / ".agent_runtime")
+    resolved_external_config = external_config or external_client_config_from_app_config(config)
     if test_control_enabled and agent_type_specs is None and extra_agent_type_specs is None:
         return create_test_control_runtime_services(
             runtime_root=runtime_root,
-            external_config=external_config,
+            external_config=resolved_external_config,
             external_overrides=external_overrides,
             providers=providers,
             agent_providers=agent_providers,
@@ -169,7 +182,7 @@ def create_app_runtime_from_config(
         )
     return create_app_runtime_services(
         runtime_root=runtime_root,
-        external_config=external_config,
+        external_config=resolved_external_config,
         external_overrides=external_overrides,
         providers=providers,
         agent_type_specs=agent_type_specs,
@@ -181,6 +194,20 @@ def create_app_runtime_from_config(
         max_concurrent_steps=config.max_concurrent_steps,
         start_paused=start_paused,
         test_control_enabled=test_control_enabled,
+    )
+
+
+def external_client_config_from_app_config(config: LeanAppConfig) -> ExternalClientConfig:
+    toolkit = config.toolkit
+    return ExternalClientConfig(
+        lean_toolkit=LeanMcpToolkitClientConfig(
+            base_url=toolkit.effective_base_url(),
+            api_prefix=toolkit.api_prefix,
+            auth_token=toolkit.auth_token,
+            timeout_seconds=toolkit.timeout_seconds,
+            enabled_groups=toolkit.enabled_groups,
+            response_excerpt_chars=toolkit.response_excerpt_chars,
+        )
     )
 
 

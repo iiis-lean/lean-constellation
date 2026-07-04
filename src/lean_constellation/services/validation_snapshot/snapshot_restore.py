@@ -27,6 +27,7 @@ class RepoCheckpointKind(StrEnum):
     REQUIREMENT_BOOTSTRAP_TERMINAL = "requirement_bootstrap_terminal"
     ADAPTER_PREPARATION_TERMINAL = "adapter_preparation_terminal"
     BEFORE_NATIVE_COORDINATOR_DISPATCH = "before_native_coordinator_dispatch"
+    COORDINATOR_REQUIREMENT_WAITING = "coordinator_requirement_waiting"
     BEFORE_CONTENT_TASK_DISPATCH = "before_content_task_dispatch"
     AFTER_CONTENT_TASK_BATCH_TERMINAL = "after_content_task_batch_terminal"
     MANUAL_TEST_STABLE_POINT = "manual_test_stable_point"
@@ -225,6 +226,11 @@ class SnapshotRestoreComponent:
                 gate_name="before_native_coordinator_dispatch_stable_point",
                 summary="Native preparation is ready to hand off to the Coordinator before dispatch.",
             ),
+            RepoCheckpointKind.COORDINATOR_REQUIREMENT_WAITING: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.COORDINATOR_REQUIREMENT_WAITING,
+                gate_name="coordinator_requirement_waiting_stable_point",
+                summary="Coordinator has submitted a repo requirement and is waiting for the provider repo.",
+            ),
             RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH: RepoCheckpointPolicy(
                 checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
                 gate_name="before_content_task_dispatch_stable_point",
@@ -324,7 +330,11 @@ class SnapshotRestoreComponent:
         lc_archive = files_root / "lean_constellation"
         project_archive = files_root / "project"
 
-        effective_scope_ids = normalized_scope_ids.value or self._scope_ids_for(kind, normalized_node_paths.value)
+        effective_scope_ids = normalized_scope_ids.value or self._scope_ids_for(
+            repo_root,
+            kind,
+            normalized_node_paths.value,
+        )
         ark = self.ark_snapshot_provider.create_runtime_snapshot(repo_root, scope_ids=effective_scope_ids, label=label)
         if not ark.ok or ark.value is None:
             return self.runtime.foundation.fail(ark.issues)
@@ -540,11 +550,12 @@ class SnapshotRestoreComponent:
     def _snapshot_dir(self, repo_root: Path, snapshot_id: str) -> Path:
         return self._snapshot_root(repo_root) / self.runtime.foundation.layout.ensure_safe_key(snapshot_id)
 
-    def _scope_ids_for(self, checkpoint_kind: RepoCheckpointKind, node_paths: list[str]) -> list[str]:
+    def _scope_ids_for(self, repo_root: Path, checkpoint_kind: RepoCheckpointKind, node_paths: list[str]) -> list[str]:
         policy = self.checkpoint_policies()[checkpoint_kind]
-        scope_ids = ["repo"]
+        repo_key = Path(repo_root).name
+        scope_ids = [f"repo:{repo_key}"]
         if policy.include_node_scopes:
-            scope_ids.extend(f"node:{path}" for path in node_paths)
+            scope_ids.extend(f"repo:{repo_key}:node:{path}" for path in node_paths)
         return scope_ids
 
     def _normalize_checkpoint_scope_ids(self, scope_ids: list[str] | None) -> ServiceResult[list[str] | None]:

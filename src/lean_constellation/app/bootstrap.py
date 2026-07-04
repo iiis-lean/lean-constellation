@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
-from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec
+from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec, build_agent_type_specs
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoRuntimeBootstrapView
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
@@ -38,6 +38,16 @@ class AgentHomeMaterializationView(StrictModel):
     skill_paths: dict[str, str] = Field(default_factory=dict)
     mcp_server_names: list[str] = Field(default_factory=list)
     codex_config_path: str | None = None
+    summary: str
+
+
+class ProductionAgentHomesView(StrictModel):
+    total: int
+    materialized: list[AgentHomeMaterializationView] = Field(default_factory=list)
+    failed: list[dict[str, str]] = Field(default_factory=list)
+    mcp_http_base_url: str
+    codex_base_config_path: str | None = None
+    codex_auth_json_path: str | None = None
     summary: str
 
 
@@ -147,6 +157,74 @@ def materialize_agent_home(
             summary=f"Materialized Agent home {record.home_id}; manifest: {manifest_path.name}.",
         )
     )
+
+
+def materialize_production_agent_homes(
+    runtime: LeanRuntimeServices,
+    *,
+    mcp_http_base_url: str,
+    base_config_path: Path | str | None,
+    auth_json_path: Path | str | None,
+    agent_type_specs: Sequence["AgentTypeSpec"] | None = None,
+) -> ServiceResult[ProductionAgentHomesView]:
+    """Materialize all production Agent homes for a long-running runtime."""
+
+    base_config = Path(base_config_path).expanduser() if base_config_path is not None else None
+    auth_json = Path(auth_json_path).expanduser() if auth_json_path is not None else None
+    missing: list[dict[str, str]] = []
+    if base_config is None or not base_config.exists():
+        missing.append({"field": "codex_base_config_path", "path": str(base_config) if base_config else ""})
+    if auth_json is None or not auth_json.exists():
+        missing.append({"field": "codex_auth_json_path", "path": str(auth_json) if auth_json else ""})
+    if missing:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "codex_config_missing",
+                "Production Agent home materialization requires readable Codex base config and auth.json.",
+                details={"missing": missing},
+            )
+        )
+
+    specs = list(agent_type_specs) if agent_type_specs is not None else build_agent_type_specs()
+    materialized: list[AgentHomeMaterializationView] = []
+    failed: list[dict[str, str]] = []
+    for spec in specs:
+        result = materialize_agent_home(
+            runtime,
+            spec.agent_type,
+            home_id=spec.agent_type,
+            mcp_http_base_url=mcp_http_base_url,
+            base_config_path=base_config,
+            auth_json_path=auth_json,
+            agent_type_specs=specs,
+        )
+        if result.ok and result.value is not None:
+            materialized.append(result.value)
+            continue
+        failed.append(
+            {
+                "agent_type": spec.agent_type,
+                "message": "; ".join(issue.message for issue in result.issues) or "Agent home materialization failed.",
+            }
+        )
+    view = ProductionAgentHomesView(
+        total=len(specs),
+        materialized=materialized,
+        failed=failed,
+        mcp_http_base_url=mcp_http_base_url.rstrip("/"),
+        codex_base_config_path=str(base_config),
+        codex_auth_json_path=str(auth_json),
+        summary=f"Materialized {len(materialized)}/{len(specs)} production Agent homes.",
+    )
+    if failed:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "production_agent_home_materialization_failed",
+                view.summary,
+                details={"failed": failed},
+            )
+        )
+    return runtime.foundation.ok(view)
 
 
 def _write_agent_instruction(home_root: Path, spec: AgentHomeBootstrapSpec) -> Path:

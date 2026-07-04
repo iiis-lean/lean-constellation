@@ -30,6 +30,15 @@ class RawToolCallContext(StrictModel):
     headers: dict[str, str] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
     runtime_context: Any | None = None
+    expected_repo_key: str | None = None
+    expected_repo_root: Path | None = None
+
+    @field_validator("expected_repo_root", mode="before")
+    @classmethod
+    def _coerce_expected_repo_root(cls, value: Any) -> Path | None:
+        if value is None or isinstance(value, Path):
+            return value
+        return Path(str(value)).expanduser()
 
 
 class RuntimeToolContext(StrictModel):
@@ -178,12 +187,55 @@ class ContextResolverComponent:
                 runtime_result = self._normalize_runtime_context(raw_runtime)
         if not runtime_result.ok or runtime_result.value is None:
             return self.runtime.foundation.fail(runtime_result.issues)
+        expected_repo = self._validate_expected_repo(raw_context, runtime_result.value)
+        if not expected_repo.ok:
+            return self.runtime.foundation.fail(expected_repo.issues)
         endpoint_view_key = endpoint_view_key or runtime_result.value.expected_view_key
         if not endpoint_view_key:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("endpoint_view_missing", "Tool endpoint view key is missing from the MCP call context.")
             )
         return self.resolve_from_runtime_context(runtime_result.value, endpoint_view_key=endpoint_view_key)
+
+    def _validate_expected_repo(
+        self,
+        raw_context: RawToolCallContext,
+        runtime: RuntimeToolContext,
+    ) -> ServiceResult[None]:
+        if raw_context.expected_repo_key is None and raw_context.expected_repo_root is None:
+            return self.runtime.foundation.ok(None)
+        if runtime.repo_root is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "runtime_repo_missing_for_route",
+                    "MCP route expected a repo, but runtime context did not resolve a repo root.",
+                    expected=str(raw_context.expected_repo_root or raw_context.expected_repo_key),
+                )
+            )
+        actual_root = Path(runtime.repo_root).expanduser().resolve()
+        if raw_context.expected_repo_root is not None:
+            expected_root = Path(raw_context.expected_repo_root).expanduser().resolve()
+            if actual_root != expected_root:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "runtime_repo_route_mismatch",
+                        "MCP route repo does not match the resolved runtime repo root.",
+                        field="repo_root",
+                        current=str(actual_root),
+                        expected=str(expected_root),
+                    )
+                )
+        if raw_context.expected_repo_key is not None and actual_root.name != raw_context.expected_repo_key:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "runtime_repo_key_route_mismatch",
+                    "MCP route repo key does not match the resolved runtime repo root.",
+                    field="repo_key",
+                    current=actual_root.name,
+                    expected=raw_context.expected_repo_key,
+                )
+            )
+        return self.runtime.foundation.ok(None)
 
     def resolve_from_runtime_context(
         self,

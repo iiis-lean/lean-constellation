@@ -54,6 +54,7 @@ class ApplyRepoFormatChoiceStepResult(LeanRenderableStepResult):
     next_entry_flow: Literal["adapter_repo_preparation", "native_repo_preparation"] | None = None
     upstream_summary: str | None = None
     lake_check_summary: str | None = None
+    snapshot_id: str | None = None
     error: RequirementBootstrapStepError | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -63,6 +64,7 @@ class ApplyRepoFormatChoiceStepResult(LeanRenderableStepResult):
             "next_entry_flow": self.next_entry_flow,
             "upstream_summary": self.upstream_summary,
             "lake_check_summary": self.lake_check_summary,
+            "snapshot_id": self.snapshot_id,
             "error_code": self.error.code if self.error else None,
             "suggested_fix": self.error.suggested_fix if self.error else None,
         }
@@ -914,6 +916,7 @@ class MarkAdapterProviderReadyStepResult(LeanRenderableStepResult):
     provider_ready_marked: bool = False
     satisfied_requirement_count: int = 0
     repo_summary: str | None = None
+    snapshot_id: str | None = None
     error: AdapterPreparationStepError | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -922,6 +925,7 @@ class MarkAdapterProviderReadyStepResult(LeanRenderableStepResult):
             "provider_ready_marked": self.provider_ready_marked,
             "satisfied_requirement_count": self.satisfied_requirement_count,
             "repo_summary": self.repo_summary,
+            "snapshot_id": self.snapshot_id,
             "error_code": self.error.code if self.error else None,
         }
 

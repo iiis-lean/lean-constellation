@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import inspect
 from typing import Any, Callable
 
 from pydantic import ValidationError
@@ -17,6 +19,7 @@ from lean_constellation.app.admin_api import (
     CreateMainRepoShellInput,
     InitializeMainNativeSkeletonInput,
     LeanAdminApi,
+    MainNativeRepoBootstrapView,
     RequirementResumeInput,
     SnapshotCreateInput,
     SnapshotListInput,
@@ -27,12 +30,22 @@ from lean_constellation.app.admin_api import (
     ValidateMainSourceCorpusInput,
     WriteMainRepoPreparationInput,
 )
+from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.runtime import LeanRuntimeServices
 
 
-def create_admin_http_routes(runtime: LeanRuntimeServices) -> list[Route]:
-    admin = LeanAdminApi(runtime)
+def create_admin_http_routes(
+    runtime: LeanRuntimeServices,
+    *,
+    workspace_root: Path | str | None = None,
+    toolkit_state: object | None = None,
+) -> list[Route]:
+    admin = LeanAdminApi(
+        runtime,
+        workspace_root=Path(workspace_root).expanduser() if workspace_root is not None else None,
+        toolkit_state=toolkit_state,
+    )
 
     async def health(request: Request) -> JSONResponse:
         del request
@@ -41,6 +54,72 @@ def create_admin_http_routes(runtime: LeanRuntimeServices) -> list[Route]:
     async def status(request: Request) -> JSONResponse:
         del request
         return _service_result_response(admin.get_runtime_status())
+
+    async def flow_tree(request: Request) -> JSONResponse:
+        query = request.query_params
+        return _service_result_response(
+            admin.list_flow_tree(
+                scope_id=query.get("scope_id"),
+                include_terminal=not _query_bool(query.get("nonterminal_only")),
+            )
+        )
+
+    async def flow_monitor(request: Request) -> JSONResponse:
+        return _service_result_response(admin.get_flow_monitor(request.path_params["flow_id"]))
+
+    async def step_monitor(request: Request) -> JSONResponse:
+        return _service_result_response(admin.get_step_monitor(request.path_params["step_id"]))
+
+    async def waiting_requirements(request: Request) -> JSONResponse:
+        query = request.query_params
+        return _service_result_response(
+            admin.list_waiting_requirements(
+                workspace_root=_query_path(query.get("workspace_root")),
+                repo_root=_query_path(query.get("repo_root")),
+                provider_repo=query.get("provider_repo"),
+            )
+        )
+
+    async def requirement_resume_candidates(request: Request) -> JSONResponse:
+        query = request.query_params
+        provider_repo = query.get("provider_repo")
+        if not provider_repo:
+            return _request_validation_response("Query parameter 'provider_repo' is required.")
+        return _service_result_response(
+            admin.list_requirement_resume_candidates(
+                provider_repo=provider_repo,
+                workspace_root=_query_path(query.get("workspace_root")),
+            )
+        )
+
+    async def agents_monitor(request: Request) -> JSONResponse:
+        query = request.query_params
+        return _service_result_response(
+            admin.list_agent_monitor(
+                scope_id=query.get("scope_id"),
+                agent_type=query.get("agent_type"),
+                status=query.get("status"),
+            )
+        )
+
+    async def agent_report_index(request: Request) -> JSONResponse:
+        return _service_result_response(admin.get_agent_report_index(request.path_params["agent_id"]))
+
+    async def external_health(request: Request) -> JSONResponse:
+        query = request.query_params
+        return _service_result_response(
+            admin.get_external_health(
+                required_toolkit_groups=_query_csv(query.get("required_toolkit_groups")),
+                required_toolkit_tools=_query_csv(query.get("required_toolkit_tools")),
+            )
+        )
+
+    async def main_repo_status(request: Request) -> JSONResponse:
+        query = request.query_params
+        repo_root = _query_path(query.get("repo_root"))
+        if repo_root is None:
+            return _request_validation_response("Query parameter 'repo_root' is required.")
+        return _service_result_response(admin.get_main_repo_status(repo_root))
 
     async def pause(request: Request) -> JSONResponse:
         data = await _json_or_empty(request)
@@ -200,12 +279,22 @@ def create_admin_http_routes(runtime: LeanRuntimeServices) -> list[Route]:
                 artifact_path=query.get("artifact_path"),
                 output_path=query.get("output_path"),
                 format=query.get("format") or "json",
+                rebuild=_query_bool(query.get("rebuild")),
             )
         )
 
     return [
         Route("/health", health, methods=["GET"]),
         Route("/admin/runtime/status", status, methods=["GET"]),
+        Route("/admin/flows/tree", flow_tree, methods=["GET"]),
+        Route("/admin/flows/{flow_id:str}", flow_monitor, methods=["GET"]),
+        Route("/admin/steps/{step_id:str}", step_monitor, methods=["GET"]),
+        Route("/admin/requirements/waiting", waiting_requirements, methods=["GET"]),
+        Route("/admin/requirements/resume-candidates", requirement_resume_candidates, methods=["GET"]),
+        Route("/admin/agents", agents_monitor, methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/report-index", agent_report_index, methods=["GET"]),
+        Route("/admin/external/health", external_health, methods=["GET"]),
+        Route("/admin/main-repo/status", main_repo_status, methods=["GET"]),
         Route("/admin/runtime/pause", pause, methods=["POST"]),
         Route("/admin/runtime/resume", resume, methods=["POST"]),
         Route("/admin/flows/start", start_flow, methods=["POST"]),
@@ -239,6 +328,610 @@ def create_admin_http_routes(runtime: LeanRuntimeServices) -> list[Route]:
     ]
 
 
+def create_workspace_admin_http_routes(
+    registry: RepoRuntimeRegistry,
+    *,
+    toolkit_state: object | None = None,
+    on_repo_unload: Callable[[str], None] | None = None,
+) -> list[Route]:
+    """Create Admin HTTP routes for a workspace server with repo-local runtimes."""
+
+    del toolkit_state
+
+    async def workspace_status(request: Request) -> JSONResponse:
+        del request
+        return _service_result_response(registry.list_status())
+
+    async def workspace_repos(request: Request) -> JSONResponse:
+        del request
+        return _service_result_response(registry.list_status())
+
+    async def workspace_waiting_requirements(request: Request) -> JSONResponse:
+        query = request.query_params
+        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        return _service_result_response(
+            admin.list_waiting_requirements(
+                workspace_root=_query_path(query.get("workspace_root")) or registry.workspace_root,
+                repo_root=_query_path(query.get("repo_root")),
+                provider_repo=query.get("provider_repo"),
+            )
+        )
+
+    async def workspace_requirement_resume_candidates(request: Request) -> JSONResponse:
+        query = request.query_params
+        provider_repo = query.get("provider_repo")
+        if not provider_repo:
+            return _request_validation_response("Query parameter 'provider_repo' is required.")
+        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        return _service_result_response(
+            admin.list_requirement_resume_candidates(
+                provider_repo=provider_repo,
+                workspace_root=_query_path(query.get("workspace_root")) or registry.workspace_root,
+            )
+        )
+
+    async def repo_status(request: Request) -> JSONResponse:
+        return _service_result_response(registry.get_status(request.path_params["repo_key"]))
+
+    async def repo_load(request: Request) -> JSONResponse:
+        repo_key = request.path_params["repo_key"]
+        loaded = registry.get_or_load(repo_key)
+        if not loaded.ok:
+            return _service_result_response(loaded)
+        return _service_result_response(registry.get_status(repo_key))
+
+    async def repo_unload(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        repo_key = request.path_params["repo_key"]
+        result = registry.unload(
+            repo_key,
+            require_stable=not _body_bool(data.get("force")),
+        )
+        if result.ok and on_repo_unload is not None:
+            cleanup = on_repo_unload(repo_key)
+            if inspect.isawaitable(cleanup):
+                await cleanup
+        return _service_result_response(result)
+
+    async def repo_pause(request: Request) -> JSONResponse:
+        return _service_result_response(registry.pause(request.path_params["repo_key"]))
+
+    async def repo_resume(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        return _service_result_response(
+            registry.resume(
+                request.path_params["repo_key"],
+                rebuild_queues=not _body_bool(data.get("skip_rebuild")),
+            )
+        )
+
+    async def workspace_start_requirement_bootstrap(request: Request) -> JSONResponse:
+        try:
+            data = await _json_or_empty(request)
+            input_model = StartRequirementGroupBootstrapInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        control_admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        draft = control_admin.runtime.repo_workspace.preparation.build_preparation_input_from_group(
+            input_model.workspace_root,
+            target_repo=input_model.target_repo,
+            source_corpus_mode=input_model.source_corpus_mode,
+        )
+        if not draft.ok or draft.value is None:
+            return _service_result_response(draft)
+        prepared = control_admin.runtime.repo_workspace.prepare_provider_repo_runtime_shell(
+            input_model.workspace_root,
+            target_repo=input_model.target_repo,
+            preparation_input=draft.value.input,
+            project_name=input_model.project_name,
+        )
+        if not prepared.ok or prepared.value is None:
+            return _service_result_response(prepared)
+        loaded = registry.get_or_load(input_model.target_repo)
+        if not loaded.ok or loaded.value is None:
+            return _service_result_response(loaded)
+        refs = [
+            f"{ref.consumer_repo}:{ref.requirement_name}"
+            for ref in prepared.value.preparation_input.input.requirement_refs
+        ]
+        provider_admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+        result = provider_admin.start_arbitrary_flow(
+            StartFlowInput(
+                flow_type="requirement_group_repo_bootstrap",
+                scope_id=f"repo:{input_model.target_repo}",
+                enqueue=input_model.enqueue,
+                params={
+                    "target_repo": input_model.target_repo,
+                    "repo_root": prepared.value.shell.repo_root,
+                    "workspace_root": str(input_model.workspace_root),
+                    "requirement_refs": refs,
+                    "admin_notes": input_model.admin_notes,
+                },
+            ),
+            repo_root=prepared.value.shell.repo_root,
+        )
+        return _service_result_response(result)
+
+    async def workspace_resume_requirement(request: Request) -> JSONResponse:
+        try:
+            data = await _json_or_empty(request)
+            input_model = RequirementResumeInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        repo_key = input_model.consumer_repo_root.name
+        loaded = registry.get_or_load(repo_key, refresh_homes=False)
+        if not loaded.ok or loaded.value is None:
+            return _service_result_response(loaded)
+        admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+        return _service_result_response(admin.resume_requirement(input_model))
+
+    async def workspace_main_repo_status(request: Request) -> JSONResponse:
+        query = request.query_params
+        repo_root = _query_path(query.get("repo_root"))
+        if repo_root is None:
+            return _request_validation_response("Query parameter 'repo_root' is required.")
+        loaded = registry.get_or_load(repo_root.name, refresh_homes=False)
+        runtime = loaded.value if loaded.ok and loaded.value is not None else registry.workspace_runtime()
+        admin = LeanAdminApi(runtime, workspace_root=registry.workspace_root)
+        return _service_result_response(admin.get_main_repo_status(repo_root))
+
+    async def workspace_create_main_repo_shell(request: Request) -> JSONResponse:
+        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        return await _model_route(request, CreateMainRepoShellInput, admin.create_main_repo_shell)
+
+    async def workspace_write_main_repo_input(request: Request) -> JSONResponse:
+        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        return await _model_route(request, WriteMainRepoPreparationInput, admin.write_main_repo_preparation_input)
+
+    async def workspace_validate_main_source(request: Request) -> JSONResponse:
+        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        return await _model_route(request, ValidateMainSourceCorpusInput, admin.validate_main_source_corpus)
+
+    async def workspace_init_main_native_skeleton(request: Request) -> JSONResponse:
+        admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        return await _model_route(request, InitializeMainNativeSkeletonInput, admin.initialize_main_native_skeleton)
+
+    async def workspace_bootstrap_main_native(request: Request) -> JSONResponse:
+        try:
+            data = await _json_or_empty(request)
+            input_model = BootstrapMainNativeRepoInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        control_admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
+        shell = control_admin.create_main_repo_shell(
+            CreateMainRepoShellInput(
+                workspace_root=input_model.workspace_root,
+                repo_name=input_model.repo_name,
+                project_name=input_model.project_name,
+            )
+        )
+        if not shell.ok or shell.value is None:
+            return _service_result_response(shell)
+        repo_root = Path(shell.value.repo_root)
+        written = control_admin.write_main_repo_preparation_input(
+            WriteMainRepoPreparationInput(repo_root=repo_root, input=input_model.preparation_input)
+        )
+        if not written.ok or written.value is None:
+            return _service_result_response(written)
+        source_validation = None
+        if input_model.validate_source_corpus:
+            validated = control_admin.validate_main_source_corpus(ValidateMainSourceCorpusInput(repo_root=repo_root))
+            if not validated.ok or validated.value is None:
+                return _service_result_response(validated)
+            source_validation = validated.value
+        skeleton = control_admin.initialize_main_native_skeleton(
+            InitializeMainNativeSkeletonInput(repo_root=repo_root, project_name=input_model.project_name)
+        )
+        if not skeleton.ok or skeleton.value is None:
+            return _service_result_response(skeleton)
+        loaded = registry.get_or_load(input_model.repo_name)
+        if not loaded.ok or loaded.value is None:
+            return _service_result_response(loaded)
+        repo_admin_instance = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+        preparation = repo_admin_instance.start_native_preparation(
+            StartPreparationInput(
+                repo_root=repo_root,
+                repo_key=input_model.repo_name,
+                start_reason="admin",
+                admin_notes="Started by main native repo bootstrap.",
+                enqueue=input_model.enqueue,
+            )
+        )
+        if not preparation.ok or preparation.value is None:
+            return _service_result_response(preparation)
+        return _service_result_response(
+            loaded.value.foundation.ok(
+                MainNativeRepoBootstrapView(
+                    shell=shell.value,
+                    preparation_input=written.value,
+                    source_corpus_validation=source_validation,
+                    skeleton=skeleton.value,
+                    preparation_flow=preparation.value,
+                    summary=f"Bootstrapped main native repo {input_model.repo_name}.",
+                )
+            )
+        )
+
+    def default_repo_key_result() -> ServiceResult[str]:
+        listed = registry.list_status()
+        if not listed.ok or listed.value is None:
+            return registry.result.fail(listed.issues)
+        repo_keys = [repo.repo_key for repo in listed.value.repos]
+        if len(repo_keys) == 1:
+            return registry.result.ok(repo_keys[0])
+        if not repo_keys:
+            return registry.result.fail(
+                registry.result.issue(
+                    "repo_key_required",
+                    "No initialized repo is available; use /admin/workspace/repos or pass a repo-prefixed route.",
+                )
+            )
+        return registry.result.fail(
+            registry.result.issue(
+                "repo_key_required",
+                "Multiple repos are available; use /admin/repos/{repo_key}/... for repo-level requests.",
+                details={"repo_keys": ",".join(repo_keys)},
+            )
+        )
+
+    async def legacy_single_repo_route(request: Request, handler: Callable[[Request], Any]) -> JSONResponse:
+        repo_key = default_repo_key_result()
+        if not repo_key.ok or repo_key.value is None:
+            return _service_result_response(repo_key)
+        scope = dict(request.scope)
+        path_params = dict(scope.get("path_params") or {})
+        path_params["repo_key"] = repo_key.value
+        scope["path_params"] = path_params
+        response = handler(Request(scope, request.receive))
+        if inspect.isawaitable(response):
+            response = await response
+        return response
+
+    def legacy_repo_route(handler: Callable[[Request], Any]) -> Callable[[Request], Any]:
+        async def route(request: Request) -> JSONResponse:
+            return await legacy_single_repo_route(request, handler)
+
+        return route
+
+
+    async def repo_runtime_status(request: Request) -> JSONResponse:
+        loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
+        if not loaded.ok or loaded.value is None:
+            return _service_result_response(loaded)
+        admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+        return _service_result_response(admin.get_runtime_status())
+
+    async def repo_runtime_pause(request: Request) -> JSONResponse:
+        loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
+        if not loaded.ok or loaded.value is None:
+            return _service_result_response(loaded)
+        data = await _json_or_empty(request)
+        admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        with record.value.lock:
+            result = admin.pause_runtime(scope_id=data.get("scope_id"))
+            if result.ok:
+                registry.pause(request.path_params["repo_key"])
+        return _service_result_response(result)
+
+    async def repo_runtime_resume(request: Request) -> JSONResponse:
+        loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
+        if not loaded.ok or loaded.value is None:
+            return _service_result_response(loaded)
+        data = await _json_or_empty(request)
+        admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        with record.value.lock:
+            result = admin.resume_runtime(scope_id=data.get("scope_id"))
+            if result.ok:
+                registry.resume(request.path_params["repo_key"], rebuild_queues=False)
+        return _service_result_response(result)
+
+    def repo_admin(request: Request) -> ServiceResult[LeanAdminApi]:
+        loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
+        if not loaded.ok or loaded.value is None:
+            return registry.result.fail(loaded.issues)
+        return registry.result.ok(LeanAdminApi(loaded.value, workspace_root=registry.workspace_root))
+
+    async def repo_flow_tree(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        return _service_result_response(
+            admin_result.value.list_flow_tree(
+                scope_id=query.get("scope_id"),
+                include_terminal=not _query_bool(query.get("nonterminal_only")),
+            )
+        )
+
+    async def repo_flow_monitor(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(admin_result.value.get_flow_monitor(request.path_params["flow_id"]))
+
+    async def repo_step_monitor(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(admin_result.value.get_step_monitor(request.path_params["step_id"]))
+
+    async def repo_agents_monitor(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        return _service_result_response(
+            admin_result.value.list_agent_monitor(
+                scope_id=query.get("scope_id"),
+                agent_type=query.get("agent_type"),
+                status=query.get("status"),
+            )
+        )
+
+    async def repo_agent_report_index(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(admin_result.value.get_agent_report_index(request.path_params["agent_id"]))
+
+    async def repo_start_flow(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, StartFlowInput, LeanAdminApi.start_arbitrary_flow)
+
+    async def repo_advance_flow(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, AdminFlowAdvanceInput, LeanAdminApi.advance_flow_once)
+
+    async def repo_run_until_step(request: Request) -> JSONResponse:
+        return await _repo_model_route(
+            request,
+            registry,
+            AdminRunUntilStepCreatedInput,
+            LeanAdminApi.run_until_step_created,
+        )
+
+    async def repo_start_step(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, AdminStepStartInput, LeanAdminApi.start_step_once)
+
+    async def repo_wait_step(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, AdminStepStartInput, LeanAdminApi.wait_step)
+
+    async def repo_start_native_preparation(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, StartPreparationInput, LeanAdminApi.start_native_preparation)
+
+    async def repo_start_adapter_preparation(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, StartPreparationInput, LeanAdminApi.start_adapter_preparation)
+
+    async def repo_create_snapshot(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, SnapshotCreateInput, LeanAdminApi.create_snapshot)
+
+    async def repo_list_snapshots(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, SnapshotListInput, LeanAdminApi.list_snapshots)
+
+    async def repo_restore_snapshot(request: Request) -> JSONResponse:
+        return await _repo_model_route(request, registry, SnapshotRestoreInput, LeanAdminApi.restore_snapshot)
+
+    async def repo_agent_rollout(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(admin_result.value.get_agent_rollout_info(request.path_params["agent_id"]))
+
+    async def repo_agent_turns(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(admin_result.value.list_agent_turns(request.path_params["agent_id"]))
+
+    async def repo_agent_turn(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        try:
+            index = _query_int(query.get("index"), field="index")
+        except ValueError as exc:
+            return _request_validation_response(str(exc))
+        return _service_result_response(
+            admin_result.value.get_agent_turn(
+                request.path_params["agent_id"],
+                turn_id=query.get("turn_id"),
+                index=index,
+                latest=_query_bool(query.get("latest")),
+            )
+        )
+
+    async def repo_agent_event(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        try:
+            index = _query_int(query.get("index"), field="index")
+        except ValueError as exc:
+            return _request_validation_response(str(exc))
+        return _service_result_response(
+            admin_result.value.get_agent_event(
+                request.path_params["agent_id"],
+                index=index,
+                last=_query_bool(query.get("last")),
+            )
+        )
+
+    async def repo_agent_events_tail(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        try:
+            limit = _query_int(query.get("limit"), field="limit") or 20
+        except ValueError as exc:
+            return _request_validation_response(str(exc))
+        return _service_result_response(
+            admin_result.value.tail_agent_events(
+                request.path_params["agent_id"],
+                limit=limit,
+                event_type=query.get("event_type"),
+                payload_type=query.get("payload_type"),
+            )
+        )
+
+    async def repo_agent_responses(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        return _service_result_response(
+            admin_result.value.list_agent_response_texts(
+                request.path_params["agent_id"],
+                turn_id=query.get("turn_id"),
+                latest=_query_bool(query.get("latest")),
+            )
+        )
+
+    async def repo_agent_latest_response(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(admin_result.value.get_latest_agent_response_text(request.path_params["agent_id"]))
+
+    async def repo_agent_tool_calls(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        return _service_result_response(
+            admin_result.value.list_agent_tool_calls(
+                request.path_params["agent_id"],
+                turn_id=query.get("turn_id"),
+                latest=_query_bool(query.get("latest")),
+            )
+        )
+
+    async def repo_agent_tool_call(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        try:
+            index = _query_int(query.get("index"), field="index")
+        except ValueError as exc:
+            return _request_validation_response(str(exc))
+        return _service_result_response(
+            admin_result.value.get_agent_tool_call(
+                request.path_params["agent_id"],
+                call_id=query.get("call_id"),
+                index=index,
+                last=_query_bool(query.get("last")),
+            )
+        )
+
+    async def repo_agent_trace_report(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        return _service_result_response(
+            admin_result.value.export_agent_trace_report(
+                request.path_params["agent_id"],
+                artifact_path=query.get("artifact_path"),
+                output_path=query.get("output_path"),
+                format=query.get("format") or "json",
+                rebuild=_query_bool(query.get("rebuild")),
+            )
+        )
+
+    return [
+        Route("/admin/workspace/status", workspace_status, methods=["GET"]),
+        Route("/admin/workspace/repos", workspace_repos, methods=["GET"]),
+        Route("/admin/workspace/requirements/waiting", workspace_waiting_requirements, methods=["GET"]),
+        Route("/admin/workspace/requirements/resume-candidates", workspace_requirement_resume_candidates, methods=["GET"]),
+        Route("/admin/workspace/requirements/bootstrap", workspace_start_requirement_bootstrap, methods=["POST"]),
+        Route("/admin/workspace/requirements/resume", workspace_resume_requirement, methods=["POST"]),
+        Route("/admin/workspace/main-repo/status", workspace_main_repo_status, methods=["GET"]),
+        Route("/admin/workspace/main-repo/shell", workspace_create_main_repo_shell, methods=["POST"]),
+        Route("/admin/workspace/main-repo/preparation-input", workspace_write_main_repo_input, methods=["POST"]),
+        Route("/admin/workspace/main-repo/source-corpus/validate", workspace_validate_main_source, methods=["POST"]),
+        Route("/admin/workspace/main-repo/native-skeleton/init", workspace_init_main_native_skeleton, methods=["POST"]),
+        Route("/admin/workspace/main-repo/bootstrap-native", workspace_bootstrap_main_native, methods=["POST"]),
+        Route("/admin/workspace/repos/{repo_key:str}", repo_status, methods=["GET"]),
+        Route("/admin/workspace/repos/{repo_key:str}/load", repo_load, methods=["POST"]),
+        Route("/admin/workspace/repos/{repo_key:str}/unload", repo_unload, methods=["POST"]),
+        Route("/admin/workspace/repos/{repo_key:str}/pause", repo_pause, methods=["POST"]),
+        Route("/admin/workspace/repos/{repo_key:str}/resume", repo_resume, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/runtime/status", repo_runtime_status, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/runtime/pause", repo_runtime_pause, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/runtime/resume", repo_runtime_resume, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/flows/tree", repo_flow_tree, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/flows/{flow_id:str}", repo_flow_monitor, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/steps/{step_id:str}", repo_step_monitor, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents", repo_agents_monitor, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/report-index", repo_agent_report_index, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/flows/start", repo_start_flow, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/test-control/flows/advance", repo_advance_flow, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/test-control/flows/run-until-step", repo_run_until_step, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/test-control/steps/start", repo_start_step, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/test-control/steps/wait", repo_wait_step, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/preparation/native/start", repo_start_native_preparation, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/preparation/adapter/start", repo_start_adapter_preparation, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/snapshots/create", repo_create_snapshot, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/snapshots/list", repo_list_snapshots, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/snapshots/restore", repo_restore_snapshot, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/rollout", repo_agent_rollout, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/turns", repo_agent_turns, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/turn", repo_agent_turn, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/event", repo_agent_event, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/events/tail", repo_agent_events_tail, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/responses", repo_agent_responses, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/latest-response", repo_agent_latest_response, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/tool-calls", repo_agent_tool_calls, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/tool-call", repo_agent_tool_call, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/trace-report", repo_agent_trace_report, methods=["GET"]),
+        Route("/admin/runtime/status", legacy_repo_route(repo_runtime_status), methods=["GET"]),
+        Route("/admin/runtime/pause", legacy_repo_route(repo_runtime_pause), methods=["POST"]),
+        Route("/admin/runtime/resume", legacy_repo_route(repo_runtime_resume), methods=["POST"]),
+        Route("/admin/flows/tree", legacy_repo_route(repo_flow_tree), methods=["GET"]),
+        Route("/admin/flows/start", legacy_repo_route(repo_start_flow), methods=["POST"]),
+        Route("/admin/flows/{flow_id:str}", legacy_repo_route(repo_flow_monitor), methods=["GET"]),
+        Route("/admin/steps/{step_id:str}", legacy_repo_route(repo_step_monitor), methods=["GET"]),
+        Route("/admin/agents", legacy_repo_route(repo_agents_monitor), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/report-index", legacy_repo_route(repo_agent_report_index), methods=["GET"]),
+        Route("/admin/test-control/flows/advance", legacy_repo_route(repo_advance_flow), methods=["POST"]),
+        Route("/admin/test-control/flows/run-until-step", legacy_repo_route(repo_run_until_step), methods=["POST"]),
+        Route("/admin/test-control/steps/start", legacy_repo_route(repo_start_step), methods=["POST"]),
+        Route("/admin/test-control/steps/wait", legacy_repo_route(repo_wait_step), methods=["POST"]),
+        Route("/admin/preparation/native/start", legacy_repo_route(repo_start_native_preparation), methods=["POST"]),
+        Route("/admin/preparation/adapter/start", legacy_repo_route(repo_start_adapter_preparation), methods=["POST"]),
+        Route("/admin/requirements/waiting", workspace_waiting_requirements, methods=["GET"]),
+        Route("/admin/requirements/resume-candidates", workspace_requirement_resume_candidates, methods=["GET"]),
+        Route("/admin/requirements/bootstrap", workspace_start_requirement_bootstrap, methods=["POST"]),
+        Route("/admin/requirements/resume", workspace_resume_requirement, methods=["POST"]),
+        Route("/admin/snapshots/create", legacy_repo_route(repo_create_snapshot), methods=["POST"]),
+        Route("/admin/snapshots/list", legacy_repo_route(repo_list_snapshots), methods=["POST"]),
+        Route("/admin/snapshots/restore", legacy_repo_route(repo_restore_snapshot), methods=["POST"]),
+        Route("/admin/agents/{agent_id:str}/rollout", legacy_repo_route(repo_agent_rollout), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/turns", legacy_repo_route(repo_agent_turns), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/turn", legacy_repo_route(repo_agent_turn), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/event", legacy_repo_route(repo_agent_event), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/events/tail", legacy_repo_route(repo_agent_events_tail), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/responses", legacy_repo_route(repo_agent_responses), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/latest-response", legacy_repo_route(repo_agent_latest_response), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/tool-calls", legacy_repo_route(repo_agent_tool_calls), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/tool-call", legacy_repo_route(repo_agent_tool_call), methods=["GET"]),
+        Route("/admin/agents/{agent_id:str}/trace-report", legacy_repo_route(repo_agent_trace_report), methods=["GET"]),
+        Route("/admin/main-repo/status", workspace_main_repo_status, methods=["GET"]),
+        Route("/admin/main-repo/shell", workspace_create_main_repo_shell, methods=["POST"]),
+        Route("/admin/main-repo/preparation-input", workspace_write_main_repo_input, methods=["POST"]),
+        Route("/admin/main-repo/source-corpus/validate", workspace_validate_main_source, methods=["POST"]),
+        Route("/admin/main-repo/native-skeleton/init", workspace_init_main_native_skeleton, methods=["POST"]),
+        Route("/admin/main-repo/bootstrap-native", workspace_bootstrap_main_native, methods=["POST"]),
+    ]
+
+
 async def _model_route(request: Request, model_type, handler: Callable[[Any], ServiceResult[Any]]) -> JSONResponse:  # noqa: ANN001
     try:
         data = await _json_or_empty(request)
@@ -246,6 +939,23 @@ async def _model_route(request: Request, model_type, handler: Callable[[Any], Se
     except ValidationError as exc:
         return _request_validation_response(str(exc))
     return _service_result_response(handler(input_model))
+
+
+async def _repo_model_route(request: Request, registry: RepoRuntimeRegistry, model_type, handler: Callable[[Any, Any], ServiceResult[Any]]) -> JSONResponse:  # noqa: ANN001
+    loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
+    if not loaded.ok or loaded.value is None:
+        return _service_result_response(loaded)
+    try:
+        data = await _json_or_empty(request)
+        input_model = model_type.model_validate(data)
+    except ValidationError as exc:
+        return _request_validation_response(str(exc))
+    admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+    record = registry.discover_repo(request.path_params["repo_key"])
+    if not record.ok or record.value is None:
+        return _service_result_response(record)
+    with record.value.lock:
+        return _service_result_response(handler(admin, input_model))
 
 
 async def _json_or_empty(request: Request) -> dict[str, Any]:
@@ -295,4 +1005,25 @@ def _query_bool(value: str | None) -> bool:
     return value.lower() in {"1", "true", "yes", "y", "on"}
 
 
-__all__ = ["create_admin_http_routes"]
+def _body_bool(value: object | None) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _query_path(value: str | None) -> Path | None:
+    if value is None or not value.strip():
+        return None
+    return Path(value).expanduser()
+
+
+def _query_csv(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or None
+
+
+__all__ = ["create_admin_http_routes", "create_workspace_admin_http_routes"]

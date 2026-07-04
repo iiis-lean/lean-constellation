@@ -204,6 +204,27 @@ class RequirementGroupRepoBootstrapFlow(LeanBusinessFlow):
             self._consume_apply_result(state, input_model, result)
         super().on_step_terminal(ctx)
 
+    def after_step_terminal_stable(self, ctx: StableStepTerminalContext) -> None:
+        if ctx.step.step_type != "apply_repo_format_choice_step":
+            return
+        result = ctx.step.result
+        if not isinstance(result, ApplyRepoFormatChoiceStepResult) or result.outcome not in {"adapter_initialized", "native_initialized"}:
+            return
+        flow_result = self.result
+        if not isinstance(flow_result, RequirementGroupRepoBootstrapResult) or flow_result.outcome not in {
+            "adapter_bootstrap_ready",
+            "native_bootstrap_ready",
+        }:
+            return
+        input_model = _require_requirement_bootstrap_input(self.input)
+        _record_stable_repo_snapshot(
+            ctx,
+            input_model.repo_root,
+            checkpoint_kind="requirement_bootstrap_terminal",
+            label=f"requirement bootstrap terminal for {input_model.target_repo}",
+            failure_type="requirement_bootstrap_stable_snapshot_failed",
+        )
+
     def _consume_validate_result(
         self,
         state: RequirementGroupRepoBootstrapState,
@@ -968,6 +989,24 @@ class AdapterRepoPreparationFlow(LeanBusinessFlow):
         elif isinstance(result, MarkAdapterProviderReadyStepResult):
             self._consume_mark_adapter_ready_result(state, input_model, result)
         super().on_step_terminal(ctx)
+
+    def after_step_terminal_stable(self, ctx: StableStepTerminalContext) -> None:
+        if ctx.step.step_type != "mark_adapter_provider_ready_step":
+            return
+        result = ctx.step.result
+        if not isinstance(result, MarkAdapterProviderReadyStepResult) or result.outcome != "marked_ready":
+            return
+        flow_result = self.result
+        if not isinstance(flow_result, AdapterRepoPreparationResult) or flow_result.outcome != "adapter_ready":
+            return
+        input_model = _require_adapter_preparation_input(self.input)
+        _record_stable_repo_snapshot(
+            ctx,
+            _adapter_repo_root(input_model),
+            checkpoint_kind="adapter_preparation_terminal",
+            label=f"adapter preparation terminal for {input_model.repo_key}",
+            failure_type="adapter_preparation_stable_snapshot_failed",
+        )
 
     def _consume_adapter_validate_result(
         self,

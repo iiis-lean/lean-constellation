@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 import tomllib
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from pydantic import Field, field_validator, model_validator
 
@@ -32,21 +32,102 @@ class LeanAppConfigView(StrictModel):
     mcp_http_host: str
     mcp_http_port: int
     mcp_http_base_url: str
+    production_mcp_http_base_url: str
     admin_http_host: str
     admin_http_port: int
     admin_http_base_url: str
     server_start_paused: bool
+    materialize_agent_homes: bool
     scheduler_enabled: bool
+    test_control_enabled: bool
     scheduler_tick_interval_s: float
     scheduler_idle_interval_s: float
     scheduler_error_interval_s: float
+    toolkit: "LeanToolkitAppConfig"
     native_lake_project: NativeLakeProjectConfig
     summary: str
 
 
+class LeanToolkitAppConfig(StrictModel):
+    mode: Literal["disabled", "external", "managed"] = "external"
+    base_url: str | None = None
+    api_prefix: str = "/api/v1"
+    auth_token: str | None = None
+    timeout_seconds: int = 120
+    enabled_groups: list[str] = Field(default_factory=list)
+    response_excerpt_chars: int = 12000
+    host: str = "127.0.0.1"
+    port: int = 8279
+    config_path: Path | None = None
+    project_root: Path | None = None
+    python_executable: Path | None = None
+    module: str = "lean_mcp_toolkit.app.cli"
+    startup_timeout_s: float = 60.0
+    shutdown_timeout_s: float = 10.0
+    health_interval_s: float = 0.5
+    required_tools: list[str] = Field(default_factory=list)
+    warmup_tools: list[str] = Field(default_factory=list)
+    strict_startup: bool = True
+
+    @field_validator("config_path", "project_root", "python_executable", mode="before")
+    @classmethod
+    def _coerce_path(cls, value: Any) -> Path | None:
+        if value is None or isinstance(value, Path):
+            return value
+        return Path(str(value)).expanduser()
+
+    @field_validator("enabled_groups", "required_tools", "warmup_tools", mode="before")
+    @classmethod
+    def _coerce_string_list(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return list(value)
+
+    @field_validator("host", "api_prefix", "module")
+    @classmethod
+    def _non_empty_string(cls, value: str) -> str:
+        stripped = str(value).strip()
+        if not stripped:
+            raise ValueError("toolkit string settings must be non-empty")
+        return stripped
+
+    @field_validator("port")
+    @classmethod
+    def _valid_port(cls, value: int) -> int:
+        if value < 0 or value > 65535:
+            raise ValueError("toolkit port must be between 0 and 65535")
+        return value
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _positive_int(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("toolkit timeout_seconds must be > 0")
+        return value
+
+    @field_validator("startup_timeout_s", "shutdown_timeout_s", "health_interval_s")
+    @classmethod
+    def _positive_float(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("toolkit timing settings must be > 0")
+        return value
+
+    def effective_base_url(self) -> str | None:
+        if self.base_url is not None and self.base_url.strip():
+            return self.base_url.rstrip("/")
+        if self.mode == "managed":
+            return f"http://{self.host}:{self.port}".rstrip("/")
+        return None
+
+
 class LeanAppConfig(StrictModel):
     workspace_root: Path
-    runtime_root: Path | None = None
+    runtime_root: Path | None = Field(
+        default=None,
+        description="Debug/local single-runtime root. Production serve uses repo-local <repo>/.agent_runtime roots.",
+    )
     codex_config_home: Path | None = None
     codex_base_config_path: Path | None = None
     codex_auth_json_path: Path | None = None
@@ -60,10 +141,13 @@ class LeanAppConfig(StrictModel):
     admin_http_port: int = DEFAULT_ADMIN_HTTP_PORT
     admin_http_base_url: str | None = None
     server_start_paused: bool = True
+    materialize_agent_homes: bool = True
     scheduler_enabled: bool = True
+    test_control_enabled: bool = False
     scheduler_tick_interval_s: float = 0.25
     scheduler_idle_interval_s: float = 0.5
     scheduler_error_interval_s: float = 2.0
+    toolkit: LeanToolkitAppConfig = Field(default_factory=LeanToolkitAppConfig)
     native_lake_project: NativeLakeProjectConfig = Field(default_factory=NativeLakeProjectConfig)
 
     @field_validator(
@@ -111,8 +195,6 @@ class LeanAppConfig(StrictModel):
 
     @model_validator(mode="after")
     def _derive_runtime_and_codex_paths(self) -> "LeanAppConfig":
-        if self.runtime_root is None:
-            self.runtime_root = self.workspace_root / ".agent_runtime"
         if self.codex_config_home is not None:
             if self.codex_base_config_path is None:
                 self.codex_base_config_path = self.codex_config_home / "config.toml"
@@ -130,6 +212,11 @@ class LeanAppConfig(StrictModel):
             return self.admin_http_base_url.rstrip("/")
         return f"http://{self.admin_http_host}:{self.admin_http_port}".rstrip("/")
 
+    def production_mcp_http_effective_base_url(self) -> str:
+        if self.mcp_http_base_url is not None and self.mcp_http_base_url.strip():
+            return self.mcp_http_base_url.rstrip("/")
+        return self.admin_http_effective_base_url()
+
     def redacted_view(self) -> LeanAppConfigView:
         runtime_root = self.runtime_root or (self.workspace_root / ".agent_runtime")
         return LeanAppConfigView(
@@ -144,14 +231,18 @@ class LeanAppConfig(StrictModel):
             mcp_http_host=self.mcp_http_host,
             mcp_http_port=self.mcp_http_port,
             mcp_http_base_url=self.mcp_http_effective_base_url(),
+            production_mcp_http_base_url=self.production_mcp_http_effective_base_url(),
             admin_http_host=self.admin_http_host,
             admin_http_port=self.admin_http_port,
             admin_http_base_url=self.admin_http_effective_base_url(),
             server_start_paused=self.server_start_paused,
+            materialize_agent_homes=self.materialize_agent_homes,
             scheduler_enabled=self.scheduler_enabled,
+            test_control_enabled=self.test_control_enabled,
             scheduler_tick_interval_s=self.scheduler_tick_interval_s,
             scheduler_idle_interval_s=self.scheduler_idle_interval_s,
             scheduler_error_interval_s=self.scheduler_error_interval_s,
+            toolkit=self.toolkit,
             native_lake_project=self.native_lake_project,
             summary="Loaded Lean Constellation app config with secret-bearing file contents redacted.",
         )
@@ -191,7 +282,9 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         "admin_http_port": "LEAN_CONSTELLATION_ADMIN_HTTP_PORT",
         "admin_http_base_url": "LEAN_CONSTELLATION_ADMIN_HTTP_BASE_URL",
         "server_start_paused": "LEAN_CONSTELLATION_SERVER_START_PAUSED",
+        "materialize_agent_homes": "LEAN_CONSTELLATION_MATERIALIZE_AGENT_HOMES",
         "scheduler_enabled": "LEAN_CONSTELLATION_SCHEDULER_ENABLED",
+        "test_control_enabled": "LEAN_CONSTELLATION_TEST_CONTROL_ENABLED",
         "scheduler_tick_interval_s": "LEAN_CONSTELLATION_SCHEDULER_TICK_INTERVAL_S",
         "scheduler_idle_interval_s": "LEAN_CONSTELLATION_SCHEDULER_IDLE_INTERVAL_S",
         "scheduler_error_interval_s": "LEAN_CONSTELLATION_SCHEDULER_ERROR_INTERVAL_S",
@@ -202,7 +295,51 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         value = env.get(env_key)
         if value is not None and str(value).strip():
             data[field] = value
+    _apply_toolkit_env(data, env)
     _apply_native_lake_env(data, env)
+
+
+def _apply_toolkit_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
+    aliases = {
+        "mode": "LEAN_CONSTELLATION_TOOLKIT_MODE",
+        "base_url": "LEAN_CONSTELLATION_TOOLKIT_BASE_URL",
+        "api_prefix": "LEAN_CONSTELLATION_TOOLKIT_API_PREFIX",
+        "auth_token": "LEAN_CONSTELLATION_TOOLKIT_AUTH_TOKEN",
+        "timeout_seconds": "LEAN_CONSTELLATION_TOOLKIT_TIMEOUT",
+        "enabled_groups": "LEAN_CONSTELLATION_TOOLKIT_ENABLED_GROUPS",
+        "response_excerpt_chars": "LEAN_CONSTELLATION_TOOLKIT_RESPONSE_EXCERPT_CHARS",
+        "host": "LEAN_CONSTELLATION_TOOLKIT_HOST",
+        "port": "LEAN_CONSTELLATION_TOOLKIT_PORT",
+        "config_path": "LEAN_CONSTELLATION_TOOLKIT_CONFIG_PATH",
+        "project_root": "LEAN_CONSTELLATION_TOOLKIT_PROJECT_ROOT",
+        "python_executable": "LEAN_CONSTELLATION_TOOLKIT_PYTHON",
+        "module": "LEAN_CONSTELLATION_TOOLKIT_MODULE",
+        "startup_timeout_s": "LEAN_CONSTELLATION_TOOLKIT_STARTUP_TIMEOUT",
+        "shutdown_timeout_s": "LEAN_CONSTELLATION_TOOLKIT_SHUTDOWN_TIMEOUT",
+        "health_interval_s": "LEAN_CONSTELLATION_TOOLKIT_HEALTH_INTERVAL",
+        "required_tools": "LEAN_CONSTELLATION_TOOLKIT_REQUIRED_TOOLS",
+        "warmup_tools": "LEAN_CONSTELLATION_TOOLKIT_WARMUP_TOOLS",
+        "strict_startup": "LEAN_CONSTELLATION_TOOLKIT_STRICT_STARTUP",
+    }
+    toolkit: dict[str, Any] = dict(data.get("toolkit") or {})
+    legacy_base_url = env.get("LEAN_CONSTELLATION_REAL_TOOLKIT_BASE_URL")
+    if legacy_base_url is not None and legacy_base_url.strip() and not toolkit.get("base_url"):
+        toolkit["base_url"] = legacy_base_url
+    legacy_api_prefix = env.get("LEAN_CONSTELLATION_REAL_TOOLKIT_API_PREFIX")
+    if legacy_api_prefix is not None and legacy_api_prefix.strip() and not toolkit.get("api_prefix"):
+        toolkit["api_prefix"] = legacy_api_prefix
+    legacy_auth = env.get("LEAN_CONSTELLATION_REAL_TOOLKIT_AUTH_TOKEN")
+    if legacy_auth is not None and legacy_auth.strip() and not toolkit.get("auth_token"):
+        toolkit["auth_token"] = legacy_auth
+    legacy_timeout = env.get("LEAN_CONSTELLATION_REAL_TOOLKIT_TIMEOUT")
+    if legacy_timeout is not None and legacy_timeout.strip() and not toolkit.get("timeout_seconds"):
+        toolkit["timeout_seconds"] = legacy_timeout
+    for field, env_key in aliases.items():
+        value = env.get(env_key)
+        if value is not None and str(value).strip():
+            toolkit[field] = value
+    if toolkit:
+        data["toolkit"] = toolkit
 
 
 def _apply_native_lake_env(data: dict[str, Any], env: Mapping[str, str]) -> None:

@@ -48,6 +48,7 @@ class CoordinatorStepResult(LeanRenderableStepResult):
     resource_request: CoordinatorResourceRequestResultView | None = None
     repo_requirement: CoordinatorRepoRequirementResultView | None = None
     repo_ready: CoordinatorRepoReadyResultView | None = None
+    snapshot_id: str | None = None
     incomplete_reason: str | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -60,6 +61,7 @@ class CoordinatorStepResult(LeanRenderableStepResult):
             else None,
             "requirement_name": self.repo_requirement.requirement_name if self.repo_requirement else None,
             "repo_ready_summary": self.repo_ready.repo_summary if self.repo_ready else None,
+            "snapshot_id": self.snapshot_id,
             "incomplete_reason": self.incomplete_reason,
         }
 
