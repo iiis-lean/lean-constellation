@@ -337,6 +337,11 @@ def test_requirement_result_observed_removes_resume_candidate(tmp_path: Path) ->
         consumer,
         requirement_name="need_provider",
     )
+    runtime.repo_workspace.metadata.mark_repo_developing(provider)
+    repeated_after_provider_degraded = runtime.repo_workspace.mark_requirement_result_observed(
+        consumer,
+        requirement_name="need_provider",
+    )
 
     assert not too_early.ok
     assert too_early.issues[0].kind == "requirement_not_resumable"
@@ -352,6 +357,8 @@ def test_requirement_result_observed_removes_resume_candidate(tmp_path: Path) ->
     assert repeated.ok
     assert repeated.value is not None
     assert "already observed" in repeated.value.summary
+    assert not repeated_after_provider_degraded.ok
+    assert repeated_after_provider_degraded.issues[0].kind == "provider_repo_not_ready"
 
 
 def test_obsolete_requirement_is_not_resume_candidate(tmp_path: Path) -> None:

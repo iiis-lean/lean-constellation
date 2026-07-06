@@ -484,6 +484,14 @@ class RepoRequirementComponent:
                 )
             )
         if self.is_requirement_result_observed(requirement):
+            valid = self.validate_requirement_provider_truth(
+                repo_root,
+                requirement_name=requirement.name,
+                provider_repo=self.effective_provider_repo(requirement),
+                require_stable=True,
+            )
+            if not valid.ok:
+                return self.runtime.foundation.fail(valid.issues)
             return self.runtime.foundation.ok(
                 self._waiting_view(
                     repo_root,
