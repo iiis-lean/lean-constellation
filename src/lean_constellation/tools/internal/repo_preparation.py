@@ -96,7 +96,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="inspect_workspace_for_coordinator",
-            description="Read the workspace repo catalog and ready provider repos for the current coordinator.",
+            description="Read the workspace repo catalog and stable provider repos for the current coordinator.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             backing_service="repo_workspace",
@@ -107,7 +107,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_ready_provider_repos",
-            description="List ready provider repos in the current workspace, excluding the current repo.",
+            description="List stable provider repos in the current workspace, excluding the current repo.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="workspace_provider_repos",
@@ -160,7 +160,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_requirement_resume_candidates",
-            description="List consumer repos whose waiting requirements can resume from a ready provider repo.",
+            description="List consumer repos whose waiting requirements can resume from a stable provider repo.",
             args_model=ProviderRepoArgs,
             capability=ToolCapability.READ,
             result_view="requirement_resume_candidates",

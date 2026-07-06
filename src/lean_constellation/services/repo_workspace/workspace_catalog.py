@@ -14,7 +14,14 @@ from lean_constellation.domain.preparation import (
     RequirementGroupItem,
     RequirementGroupView,
 )
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode, WorkspaceCatalogView, WorkspaceCoordinatorView, WorkspaceRepoSummary
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoPublicationStatus,
+    RepoWorkMode,
+    WorkspaceCatalogView,
+    WorkspaceCoordinatorView,
+    WorkspaceRepoSummary,
+)
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
 from lean_constellation.services.repo_workspace.lake_dependency import LakeDependencyComponent, LakeDependencyEntry
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
@@ -107,7 +114,8 @@ class WorkspaceCatalogComponent:
             [
                 repo
                 for repo in catalog.value.repos
-                if repo.provider_ready and (current_key is None or repo.repo_key != current_key)
+                if repo.publication_status == RepoPublicationStatus.STABLE
+                and (current_key is None or repo.repo_key != current_key)
             ]
         )
 

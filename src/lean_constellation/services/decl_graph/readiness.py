@@ -93,19 +93,19 @@ class DeclReadinessComponent:
         for decl in decls.value:
             if decl.lifecycle != DeclLifecycle.ACTIVE or not decl.public:
                 continue
-            readiness = self.check_decl_ready(Path(repo_root), node_path=node_path, decl_name=decl.name)
-            if not readiness.ok or readiness.value is None:
-                return self.runtime.foundation.fail(readiness.issues)
-            if not readiness.value.ready:
+            satisfied = self.check_decl_proof_policy_satisfied(Path(repo_root), node_path=node_path, decl_name=decl.name)
+            if not satisfied.ok or satisfied.value is None:
+                return self.runtime.foundation.fail(satisfied.issues)
+            if not satisfied.value.proof_policy_satisfied:
                 warnings.append(
                     self.runtime.foundation.issue(
-                        "public_decl_not_ready",
-                        f"Public declaration is not ready: {decl.name}",
+                        "public_decl_proof_policy_unsatisfied",
+                        f"Public declaration does not satisfy current proof availability policy: {decl.name}",
                         severity=IssueSeverity.WARNING,
                         object_ref=f"{node_path}:{decl.name}",
                         details={
-                            "reason": readiness.value.reason.value if readiness.value.reason is not None else "unknown",
-                            **readiness.value.details,
+                            "reason": satisfied.value.reason.value if satisfied.value.reason is not None else "unknown",
+                            **satisfied.value.details,
                         },
                     )
                 )
@@ -115,8 +115,8 @@ class DeclReadinessComponent:
                     kind=decl.kind,
                     summary=decl.summary,
                     public=True,
-                    ready=readiness.value.ready,
-                    stale=self._is_stale_reason(readiness.value.reason),
+                    ready=satisfied.value.proof_policy_satisfied,
+                    stale=self._is_stale_reason(satisfied.value.reason),
                     source="decl_graph",
                 )
             )

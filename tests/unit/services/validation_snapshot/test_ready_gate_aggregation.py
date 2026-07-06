@@ -6,6 +6,7 @@ from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.runtime import LeanRuntimeServices
@@ -13,6 +14,7 @@ from lean_constellation.services.validation_snapshot import ReadinessGateCompone
 
 
 NODE_PATH = "Main.Topic.Core"
+MAIN_CONTENT_NODE_PATH = "Main.Core"
 
 
 class PassingConsistency:
@@ -89,6 +91,62 @@ def _create_public_decl(runtime: LeanRuntimeServices, repo_root: Path, *, decl_n
         end_after_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
+
+
+def _create_declared_main_public_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, decl_name: str = "main_result") -> None:
+    assert runtime.node.create_content_node(
+        repo_root,
+        path=MAIN_CONTENT_NODE_PATH,
+        goal="Main core goal.",
+        boundary="Main core boundary.",
+        objective="Expose the main result.",
+        success_criteria="Main core public declarations are complete.",
+    ).ok
+    strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=MAIN_CONTENT_NODE_PATH, objective="Main export strategy.")
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        strategy_id=strategy.value.strategy_id,
+        objective="Declare the main public theorem.",
+    )
+    assert round_record.ok and round_record.value is not None
+    created = runtime.decl_graph.create_decl(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+        name=decl_name,
+        kind=DeclKind.THEOREM.value,
+        objective="Create the public result.",
+        summary="Public theorem with a declared statement only.",
+        public=True,
+        end_after_state=DeclState.DECLARED,
+    )
+    assert created.ok, created.issues
+    assert runtime.decl_graph.start_round(repo_root, node_path=MAIN_CONTENT_NODE_PATH, round_id=round_record.value.round_id).ok
+    assert runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+        decl_name=decl_name,
+        nl=f"{decl_name} states True.",
+        deps=[],
+    ).ok
+    assert runtime.decl_graph.write_statement_formal(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+        decl_name=decl_name,
+        lean_code=f"theorem {decl_name} : True := by\n  sorry",
+        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        deps=[],
+    ).ok
+    assert runtime.decl_graph.commit_decl_revision(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        name=decl_name,
+        state=DeclState.DECLARED,
+    ).ok
 
 
 def _validation_with_passing_consistency(runtime: LeanRuntimeServices) -> ValidationSnapshotService:
@@ -186,3 +244,45 @@ def test_repo_ready_view_passes_with_committed_main_and_passing_providers(tmp_pa
     assert view.value.main_contract_version_status is not None
     assert view.value.gate.passed is True
     assert view.value.blocking_issue_kinds == []
+
+
+def test_repo_ready_gate_uses_target_proof_availability_for_main_public_exports(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    _write_preparation_input(runtime, tmp_path)
+    assert runtime.node.ensure_native_root_main_contract(tmp_path).ok
+    configured_declared = runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert configured_declared.ok, configured_declared.issues
+    _create_declared_main_public_theorem(runtime, tmp_path)
+    exported = runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main",
+        decl_node=MAIN_CONTENT_NODE_PATH,
+        decl_name="main_result",
+    )
+    assert exported.ok, exported.issues
+    committed = runtime.node.commit_scope_contract(tmp_path, scope_path="Main", summary="Main scope is committed.")
+    assert committed.ok, committed.issues
+    service = _validation_with_passing_consistency(runtime)
+
+    declared_view = service.get_repo_ready_view(tmp_path)
+    assert declared_view.ok and declared_view.value is not None
+    assert declared_view.value.target_proof_availability == ProofAvailability.DECLARED
+    assert declared_view.value.ready_to_submit is True
+
+    assert runtime.repo_workspace.metadata.mark_repo_developing(tmp_path).ok
+    configured_proved = runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.PROVED,
+        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+    )
+    assert configured_proved.ok, configured_proved.issues
+    proved_view = service.get_repo_ready_view(tmp_path)
+
+    assert proved_view.ok and proved_view.value is not None
+    assert proved_view.value.target_proof_availability == ProofAvailability.PROVED
+    assert proved_view.value.ready_to_submit is False
+    assert "repo_public_decl_proof_policy_unsatisfied" in proved_view.value.blocking_issue_kinds

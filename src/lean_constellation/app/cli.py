@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     waiting_requirements.add_argument("--workspace-root", type=Path, default=None)
     waiting_requirements.add_argument("--repo-root", type=Path, default=None)
     waiting_requirements.add_argument("--provider-repo", default=None)
-    resume_candidates = sub.add_parser("resume-candidates", help="List consumers that can resume from a ready provider repo.")
+    resume_candidates = sub.add_parser("resume-candidates", help="List consumers that can resume from a stable provider repo.")
     resume_candidates.add_argument("provider_repo")
     resume_candidates.add_argument("--workspace-root", type=Path, default=None)
     agents_monitor = sub.add_parser("agents", help="List Agent monitor views over Admin HTTP.")

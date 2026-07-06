@@ -9,7 +9,7 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.node import ContractVersionStatus, NodeKind, NodeService
 from lean_constellation.services.foundation import GateReport, ServiceResult
@@ -94,6 +94,8 @@ class RepoReadyGateView(StrictModel):
     """Submit-oriented view for repository ready checks."""
 
     root_scope_path: str = "Main"
+    target_proof_availability: ProofAvailability = ProofAvailability.PROVED
+    publication_status: RepoPublicationStatus = RepoPublicationStatus.DEVELOPING
     main_contract_version: int | None = None
     main_contract_version_status: ContractVersionStatus | None = None
     gate: GateReport
@@ -486,9 +488,10 @@ class ReadinessGateComponent:
     def check_repo_ready(self, repo_root: Path, *, summary: str) -> ServiceResult[GateReport]:
         reports: list[GateReport] = []
         issues = []
+        repo_root = Path(repo_root)
         if not summary or not summary.strip():
             issues.append(self.runtime.foundation.issue("repo_ready_summary_required", "Repo ready summary is required.", field="summary"))
-        requirements = self.repo_workspace.requirement.list_requirements(Path(repo_root), status=RepoDependencyRequirementStatus.OPEN)
+        requirements = self.repo_workspace.requirement.list_requirements(repo_root, status=RepoDependencyRequirementStatus.OPEN)
         if not requirements.ok or requirements.value is None:
             return self.runtime.foundation.fail(requirements.issues)
         if requirements.value:
@@ -500,7 +503,7 @@ class ReadinessGateComponent:
                     expected="0 open requirements",
                 )
             )
-        main = self.node.contract.get_visible_contract(Path(repo_root), node_path="Main")
+        main = self.node.contract.get_visible_contract(repo_root, node_path="Main")
         if not main.ok or main.value is None:
             issues.append(
                 self.runtime.foundation.issue(
@@ -517,7 +520,12 @@ class ReadinessGateComponent:
             else self.runtime.foundation.gate_passed("repo_ready_base", summary="Repo ready base checks passed.")
         )
 
-        source = self.consistency.check_source_corpus_consistency(Path(repo_root))
+        public_boundary = self._check_repo_public_boundary_proof_policy(repo_root)
+        if not public_boundary.ok or public_boundary.value is None:
+            return self.runtime.foundation.fail(public_boundary.issues)
+        reports.append(public_boundary.value)
+
+        source = self.consistency.check_source_corpus_consistency(repo_root)
         if source.ok and source.value is not None:
             reports.append(source.value)
         else:
@@ -528,7 +536,7 @@ class ReadinessGateComponent:
                     summary="Source corpus consistency could not be verified.",
                 )
             )
-        index = self.consistency.check_source_index_consistency(Path(repo_root))
+        index = self.consistency.check_source_index_consistency(repo_root)
         if index.ok and index.value is not None:
             reports.append(index.value)
         else:
@@ -539,21 +547,30 @@ class ReadinessGateComponent:
                     summary="Source index consistency could not be verified.",
                 )
             )
-        projection = self.consistency.check_projection_sync(Path(repo_root), scope="repo")
+        projection = self.consistency.check_projection_sync(repo_root, scope="repo")
         if not projection.ok or projection.value is None:
             return self.runtime.foundation.fail(projection.issues)
         reports.append(projection.value)
         return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports("repo_ready", reports))
 
     def get_repo_ready_view(self, repo_root: Path) -> ServiceResult[RepoReadyGateView]:
-        main = self.node.contract.get_current_contract(Path(repo_root), node_path="Main")
+        repo_root = Path(repo_root)
+        main = self.node.contract.get_current_contract(repo_root, node_path="Main")
         if not main.ok or main.value is None:
             return self.runtime.foundation.fail(main.issues)
-        gate = self.check_repo_ready(Path(repo_root), summary="Repo ready preflight.")
+        config = self.repo_workspace.metadata.get_repo_config(repo_root)
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        publication = self.repo_workspace.metadata.get_repo_publication(repo_root)
+        if not publication.ok or publication.value is None:
+            return self.runtime.foundation.fail(publication.issues)
+        gate = self.check_repo_ready(repo_root, summary="Repo ready preflight.")
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
         return self.runtime.foundation.ok(
             RepoReadyGateView(
+                target_proof_availability=config.value.config.target_proof_availability,
+                publication_status=publication.value.publication.status,
                 main_contract_version=main.value.version,
                 main_contract_version_status=main.value.version_status,
                 gate=gate.value,
@@ -562,6 +579,48 @@ class ReadinessGateComponent:
                 summary=("Repo is ready to submit." if gate.value.passed else "Repo ready gate has blocking issues."),
             ),
             warnings=main.issues,
+        )
+
+    def _check_repo_public_boundary_proof_policy(self, repo_root: Path) -> ServiceResult[GateReport]:
+        config = self.repo_workspace.metadata.get_repo_config(repo_root)
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        target = config.value.config.target_proof_availability
+        exports = self.node.export.list_scope_exports(repo_root, scope_path="Main")
+        if not exports.ok or exports.value is None:
+            return self.runtime.foundation.fail(exports.issues)
+        issues = []
+        for export in exports.value:
+            checked = self._check_decl_ref_proof_policy(repo_root, ref=export.ref, fallback_node_path="Main")
+            if not checked.ok or checked.value is None:
+                return self.runtime.foundation.fail(checked.issues)
+            if checked.value.proof_policy_satisfied:
+                continue
+            issues.append(
+                self.runtime.foundation.issue(
+                    "repo_public_decl_proof_policy_unsatisfied",
+                    f"Repo public declaration does not satisfy current proof availability policy: {export.ref.name}",
+                    object_ref=f"{export.ref.node}:{export.ref.name}",
+                    details={
+                        "target_proof_availability": target.value,
+                        "summary": checked.value.summary,
+                    },
+                )
+            )
+        if issues:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "repo_public_boundary_proof_policy_satisfied",
+                    issues,
+                    summary=f"{len(issues)} repo public declarations do not satisfy proof policy.",
+                )
+            )
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
+                "repo_public_boundary_proof_policy_satisfied",
+                summary=f"{len(exports.value)} repo public declarations satisfy {target.value} proof availability.",
+                warnings=exports.issues,
+            )
         )
 
     def check_adapter_ready(self, repo_root: Path) -> ServiceResult[GateReport]:

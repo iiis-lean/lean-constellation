@@ -141,8 +141,11 @@ class PublicDeclAccessResolver:
                 ImportedRepoAccessItem(
                     repo_key=repo.repo_key,
                     repo_root=repo.repo_root,
-                    source="workspace_ready_provider",
-                    summary=f"Ready provider repo {repo.repo_key}.",
+                    source="workspace_stable_provider",
+                    summary=(
+                        f"Stable provider repo {repo.repo_key} publishes "
+                        f"{repo.target_proof_availability.value}/{repo.work_mode.value}."
+                    ),
                 )
                 for repo in workspace.value
             ]

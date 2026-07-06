@@ -9,7 +9,7 @@ from lean_constellation.domain.preparation import (
     RepoRequirementRef,
     SourceCorpusMode,
 )
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus, RepoWorkMode
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.repo_workspace import (
     LakeDependencyComponent,
@@ -289,6 +289,7 @@ def test_workspace_catalog_ready_filter_and_coordinator_view(tmp_path: Path) -> 
     assert ready.ok
     assert ready.value is not None
     assert [repo.repo_key for repo in ready.value] == ["ready_provider"]
+    assert ready.value[0].publication_status == RepoPublicationStatus.STABLE
     assert ready.value[0].repo_summary == "Ready provider summary."
 
     coordinator_view = catalog.inspect_workspace_for_coordinator(current)

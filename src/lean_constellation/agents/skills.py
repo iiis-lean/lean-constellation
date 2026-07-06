@@ -451,7 +451,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "coordinator-node-decomposition",
             "Use this skill when deciding whether to create or revise a Scope node or Content node, splitting mathematical regions, assigning sibling boundaries, or repairing an over-broad or over-fragmented node structure.",
             (
-                "Start from root interfaces, source index structure, current tree from `get_node_tree`, and ready provider context from `list_ready_provider_repos`.",
+                "Start from root interfaces, source index structure, current tree from `get_node_tree`, and stable provider context from `list_ready_provider_repos`.",
                 "Choose scope nodes for broad mathematical areas and content nodes for focused declaration work.",
                 "Write node contracts through `create_scope_node`, `create_content_node`, and `update_node_contract_text`.",
                 "Use `preview_delete_node` before deleting or replacing tree structure.",

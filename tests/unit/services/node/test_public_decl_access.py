@@ -149,6 +149,8 @@ def test_coordinator_reads_stable_provider_repo_main_exports(tmp_path: Path) -> 
 
     assert imported.ok and imported.value is not None
     assert [item.repo_key for item in imported.value.repos] == ["Provider"]
+    assert imported.value.repos[0].source == "workspace_stable_provider"
+    assert "publishes proved" in imported.value.repos[0].summary
     assert public.ok and public.value is not None
     assert [(decl.ref.repo, decl.ref.node, decl.ref.name) for decl in public.value] == [
         ("Provider", "Main.Core", "provider_result")
