@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
+from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
 from lean_constellation.domain.refs import DeclRef
@@ -82,6 +83,39 @@ def _create_scope_with_public_decl(runtime, repo_root: Path) -> DeclRef:
     return ref
 
 
+class _FakeCallbackStep:
+    step_type = "coordinator_agent_step"
+
+    def __init__(self, *, dispatch_step_id: str) -> None:
+        self.state = type("State", (), {"callback_dispatch_step_id": dispatch_step_id})()
+
+
+class _FakeChildFlow:
+    flow_type = "content_node_task"
+
+    def __init__(self, *, parent_flow_id: str, parent_dispatch_step_id: str, result: ContentNodeTaskResult) -> None:
+        self.parent_flow_id = parent_flow_id
+        self.parent_dispatch_step_id = parent_dispatch_step_id
+        self.result = result
+
+
+class _FakeCallbackFlowService:
+    def __init__(self, *, flow_id: str, step_id: str, dispatch_step_id: str, results: list[ContentNodeTaskResult]) -> None:
+        self.step_id = step_id
+        self.step = _FakeCallbackStep(dispatch_step_id=dispatch_step_id)
+        self.flows = [
+            _FakeChildFlow(parent_flow_id=flow_id, parent_dispatch_step_id=dispatch_step_id, result=result)
+            for result in results
+        ]
+
+    def get_step(self, step_id: str):
+        assert step_id == self.step_id
+        return self.step
+
+    def list_flows(self):
+        return list(self.flows)
+
+
 def test_get_current_repo_work_config_tool_reads_repo_config(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     repo_root = tmp_path / "Repo"
@@ -105,6 +139,126 @@ def test_get_current_repo_work_config_tool_reads_repo_config(tmp_path: Path) -> 
     assert value["repo_key"] == "Repo"
     assert value["target_proof_availability"] == "declared"
     assert value["work_mode"] == "declared_interface"
+
+
+def test_coordinator_content_task_result_tools_read_callback_results(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    flow_id = "flow_native_repo_coordinator"
+    step_id = "step_native_repo_coordinator"
+    dispatch_step_id = "dispatch_content_tasks"
+    runtime.ark.flow_service = _FakeCallbackFlowService(
+        flow_id=flow_id,
+        step_id=step_id,
+        dispatch_step_id=dispatch_step_id,
+        results=[
+            ContentNodeTaskResult(
+                outcome="ready",
+                repo_key="Repo",
+                node_path="Main.Core",
+                contract_version=2,
+                summary="Core ready.",
+            ),
+            ContentNodeTaskResult(
+                outcome="blocked",
+                repo_key="Repo",
+                node_path="Main.Blocked",
+                contract_version=1,
+                reason="Need provider.",
+                summary="Blocked on provider.",
+            ),
+        ],
+    )
+
+    list_value = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="list_recent_content_task_results",
+            flat_args={"limit": 5},
+        )
+    )
+    inspect_value = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="inspect_content_task_result",
+            flat_args={"node_path": "Main.Core", "contract_version": 2},
+        )
+    )
+
+    assert list_value["count"] == 2
+    assert [item["node_path"] for item in list_value["items"]] == ["Main.Blocked", "Main.Core"]
+    assert inspect_value["result"]["node_path"] == "Main.Core"
+    assert inspect_value["result"]["contract_version"] == 2
+
+
+def test_commit_content_contract_tool_binds_latest_callback_result(tmp_path: Path, monkeypatch) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    flow_id = "flow_native_repo_coordinator"
+    step_id = "step_native_repo_coordinator"
+    dispatch_step_id = "dispatch_content_tasks"
+    runtime.ark.flow_service = _FakeCallbackFlowService(
+        flow_id=flow_id,
+        step_id=step_id,
+        dispatch_step_id=dispatch_step_id,
+        results=[
+            ContentNodeTaskResult(
+                outcome="ready",
+                repo_key="Repo",
+                node_path="Main.Core",
+                contract_version=3,
+                summary="Core ready.",
+            )
+        ],
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_finalize(repo_root: Path, *, node_path: str, task_result: ContentNodeTaskResult, coordinator_summary: str):
+        captured.update(
+            {
+                "repo_root": repo_root,
+                "node_path": node_path,
+                "contract_version": task_result.contract_version,
+                "coordinator_summary": coordinator_summary,
+            }
+        )
+        return runtime.foundation.ok({"node_path": node_path, "contract_version": task_result.contract_version, "summary": coordinator_summary})
+
+    monkeypatch.setattr(runtime.node, "finalize_content_task_result", _fake_finalize)
+
+    value = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="commit_content_contract",
+            flat_args={"node_path": "Main.Core", "summary": "Coordinator accepts core."},
+        )
+    )
+
+    assert captured["node_path"] == "Main.Core"
+    assert captured["contract_version"] == 3
+    assert value["summary"] == "Coordinator accepts core."
+
+
+def test_commit_scope_contract_tool_invokes_node_service(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal.",
+        boundary="Topic boundary.",
+        objective="Close topic scope.",
+    ).ok
+
+    value = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="commit_scope_contract",
+            flat_args={"node_path": "Main.Topic", "summary": "Topic scope complete."},
+        )
+    )
+
+    assert value["node_path"] == "Main.Topic"
+    assert value["version"] == 1
+    assert value["status"] == "committed"
 
 
 class _FakeMathlibToolkit:

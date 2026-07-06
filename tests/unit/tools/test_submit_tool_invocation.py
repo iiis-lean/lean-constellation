@@ -242,3 +242,41 @@ def test_submit_repo_requirement_uses_consumer_repo_default_proof_availability(t
     assert requirement.ok and requirement.value is not None
     assert requirement.value.requirement.required_proof_availability == ProofAvailability.PROVED
     assert gateway.accepted[0].required_proof_availability == ProofAvailability.PROVED
+
+
+def test_submit_content_node_tasks_passes_open_contract_version(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Core",
+        goal="Core goal.",
+        boundary="Core boundary.",
+        objective="Run core task.",
+        success_criteria="Core task completes.",
+    ).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_content_node_tasks",
+        flat_args={"node_paths": ["Main.Core"], "summary": "Run core."},
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is True, result.value.issues
+    assert len(gateway.accepted) == 1
+    submission = gateway.accepted[0]
+    assert submission.submission_type == "coordinator_content_tasks"
+    assert submission.requests[0].params["contract_version"] == 1
