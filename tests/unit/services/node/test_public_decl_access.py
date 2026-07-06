@@ -1,0 +1,155 @@
+from pathlib import Path
+
+from tests.unit_services_helpers import make_runtime
+
+from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services import LeanProviderOverrides
+from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.node import DeclPublicView
+
+
+class FakePublicDeclProvider:
+    def __init__(self, foundation: FoundationService, decls: dict[tuple[str, str], list[DeclPublicView]]) -> None:
+        self.foundation = foundation
+        self.decls = decls
+
+    def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
+        return self.foundation.ok(self.decls.get((str(Path(repo_root)), node_path), []))
+
+
+def _runtime_with_public_decls(decls: dict[tuple[str, str], list[DeclPublicView]]):
+    base = make_runtime()
+    return make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=FakePublicDeclProvider(base.foundation, decls)))
+
+
+def _create_consumer_tree(repo_root: Path) -> None:
+    service = make_runtime().node
+    assert service.node_tree.ensure_root_scope_node(repo_root).ok
+    assert service.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal.", boundary="Topic boundary.").ok
+    assert service.create_content_node(
+        repo_root,
+        path="Main.Topic.Consumer",
+        goal="Consumer goal.",
+        boundary="Consumer boundary.",
+        objective="Use visible public declarations.",
+        success_criteria="Consumer is ready.",
+    ).ok
+    assert service.create_content_node(
+        repo_root,
+        path="Main.Topic.Hidden",
+        goal="Hidden goal.",
+        boundary="Hidden boundary.",
+        objective="Build hidden content.",
+        success_criteria="Hidden is ready.",
+    ).ok
+
+
+def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider") -> None:
+    service = make_runtime().node
+    assert service.node_tree.ensure_root_scope_node(provider_root).ok
+    assert service.create_content_node(
+        provider_root,
+        path="Main.Core",
+        goal="Provider core goal.",
+        boundary="Provider core boundary.",
+        objective="Expose provider declarations.",
+        success_criteria="Provider core is ready.",
+    ).ok
+    decl = DeclRef(repo=None, node="Main.Core", name="provider_result", revision=1)
+    runtime = _runtime_with_public_decls(
+        {
+            (str(provider_root), "Main.Core"): [
+                DeclPublicView(
+                    ref=decl,
+                    kind="theorem",
+                    summary="Provider result.",
+                    ready=True,
+                    stale=False,
+                    source="test_provider",
+                )
+            ]
+        }
+    )
+    assert runtime.node.export.add_scope_export(provider_root, scope_path="Main", decl_node="Main.Core", decl_name="provider_result").ok
+    assert runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
+    assert runtime.repo_workspace.metadata.mark_repo_stable(provider_root, summary=f"{provider_name} stable.").ok
+
+
+def test_coordinator_can_list_current_repo_nodes(tmp_path: Path) -> None:
+    _create_consumer_tree(tmp_path)
+
+    visible = make_runtime().node.public_decl_access.list_visible_nodes(
+        tmp_path,
+        actor_role="coordinator",
+    )
+
+    assert visible.ok and visible.value is not None
+    assert [item.node_path for item in visible.value.nodes] == ["Main", "Main.Topic", "Main.Topic.Consumer", "Main.Topic.Hidden"]
+
+
+def test_node_scoped_actor_can_only_read_current_or_visible_node_public_decls(tmp_path: Path) -> None:
+    _create_consumer_tree(tmp_path)
+    runtime = _runtime_with_public_decls(
+        {
+            (str(tmp_path), "Main.Topic.Consumer"): [
+                DeclPublicView(
+                    ref=DeclRef(repo=None, node="Main.Topic.Consumer", name="consumer_result", revision=1),
+                    kind="theorem",
+                    summary="Consumer result.",
+                )
+            ],
+            (str(tmp_path), "Main.Topic.Hidden"): [
+                DeclPublicView(
+                    ref=DeclRef(repo=None, node="Main.Topic.Hidden", name="hidden_result", revision=1),
+                    kind="theorem",
+                    summary="Hidden result.",
+                )
+            ],
+        }
+    )
+
+    current = runtime.node.public_decl_access.list_node_public_decls(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        actor_role="plan",
+        current_node_path="Main.Topic.Consumer",
+    )
+    hidden = runtime.node.public_decl_access.list_node_public_decls(
+        tmp_path,
+        node_path="Main.Topic.Hidden",
+        actor_role="plan",
+        current_node_path="Main.Topic.Consumer",
+    )
+
+    assert current.ok and current.value is not None
+    assert [decl.ref.name for decl in current.value] == ["consumer_result"]
+    assert not hidden.ok
+    assert hidden.issues[0].kind == "node_public_decl_not_visible"
+
+
+def test_coordinator_reads_stable_provider_repo_main_exports(tmp_path: Path) -> None:
+    workspace = tmp_path
+    consumer = workspace / "Consumer"
+    provider = workspace / "Provider"
+    consumer.mkdir()
+    provider.mkdir()
+    _create_consumer_tree(consumer)
+    _create_provider_repo(provider)
+
+    runtime = make_runtime()
+    imported = runtime.node.public_decl_access.list_imported_repos(
+        consumer,
+        actor_role="coordinator",
+    )
+    public = runtime.node.public_decl_access.list_repo_public_decls(
+        consumer,
+        repo_key="Provider",
+        actor_role="coordinator",
+    )
+
+    assert imported.ok and imported.value is not None
+    assert [item.repo_key for item in imported.value.repos] == ["Provider"]
+    assert public.ok and public.value is not None
+    assert [(decl.ref.repo, decl.ref.node, decl.ref.name) for decl in public.value] == [
+        ("Provider", "Main.Core", "provider_result")
+    ]

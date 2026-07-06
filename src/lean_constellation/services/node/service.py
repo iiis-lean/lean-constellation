@@ -23,6 +23,7 @@ from lean_constellation.services.node.export import (
 from lean_constellation.services.node.interface import InterfaceComponent, InterfaceListView
 from lean_constellation.services.node.material_ref import MaterialRefComponent, NodeMaterialRefsView
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent, NodeView
+from lean_constellation.services.node.public_decl_access import PublicDeclAccessResolver
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -182,6 +183,12 @@ class NodeService:
         self.material_ref = material_ref or MaterialRefComponent(
             runtime,
             contract=self.contract,
+        )
+        self.public_decl_access = PublicDeclAccessResolver(
+            runtime,
+            node_tree=self.node_tree,
+            dependency=self.dependency,
+            export=self.export,
         )
 
     def create_scope_node(

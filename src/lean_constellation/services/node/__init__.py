@@ -61,6 +61,13 @@ from lean_constellation.services.node.node_tree import (
     RunnableContentNodeView,
 )
 from lean_constellation.services.node.node_store import NodeIndex, NodeIndexEntry, NodeStorageMigrationView, NodeStore
+from lean_constellation.services.node.public_decl_access import (
+    ImportedRepoAccessItem,
+    ImportedRepoAccessView,
+    PublicDeclAccessResolver,
+    VisibleNodeAccessItem,
+    VisibleNodeAccessView,
+)
 from lean_constellation.services.node.service import (
     ContentTaskFinalizeInput,
     ContentTaskFinalizeView,
@@ -96,6 +103,8 @@ __all__ = [
     "InterfaceBindingView",
     "InterfaceComponent",
     "InterfaceListView",
+    "ImportedRepoAccessItem",
+    "ImportedRepoAccessView",
     "InterfaceView",
     "MaterialRefActor",
     "MathlibUseActor",
@@ -126,6 +135,7 @@ __all__ = [
     "NodeView",
     "NodeService",
     "OpenContractView",
+    "PublicDeclAccessResolver",
     "RunnableContentNodeView",
     "RootInterfaceReadySubmitView",
     "ScopeExportCandidate",
@@ -136,5 +146,7 @@ __all__ = [
     "ScopeCloseView",
     "ScopeNodeContract",
     "VisibleBoundaryView",
+    "VisibleNodeAccessItem",
+    "VisibleNodeAccessView",
     "VisibleNodeBoundaryItem",
 ]
