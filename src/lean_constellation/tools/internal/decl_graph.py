@@ -44,6 +44,80 @@ def _actor_role(ctx) -> str:
     return role.value if hasattr(role, "value") else str(role)
 
 
+def _decl_satisfaction(runtime, repo_root, *, node_path: str, decl_name: str):
+    report = runtime.decl_graph.check_decl_proof_policy_satisfied(repo_root, node_path=node_path, decl_name=decl_name)
+    if not report.ok or report.value is None:
+        return report
+    return runtime.foundation.ok(report.value)
+
+
+def _decl_list_item(runtime, repo_root, view) -> dict[str, object]:
+    report = _decl_satisfaction(runtime, repo_root, node_path=view.node_path, decl_name=view.name)
+    if not report.ok or report.value is None:
+        proof_policy_satisfied = False
+    else:
+        proof_policy_satisfied = bool(report.value.proof_policy_satisfied)
+    return {
+        "name": view.name,
+        "node_path": view.node_path,
+        "kind": view.kind,
+        "lifecycle": view.lifecycle.value if hasattr(view.lifecycle, "value") else str(view.lifecycle),
+        "public": view.public,
+        "visibility": view.visibility,
+        "current_revision": view.current_revision,
+        "revision_ids": list(view.revision_ids),
+        "module": view.module,
+        "state": view.state.value if view.state is not None and hasattr(view.state, "value") else view.state,
+        "status": view.status.value if view.status is not None and hasattr(view.status, "value") else view.status,
+        "proof_policy_satisfied": proof_policy_satisfied,
+        "summary": view.summary,
+        "updated_at": view.updated_at,
+    }
+
+
+def _decl_revision_item(runtime, repo_root, view, args: DeclInspectArgs) -> dict[str, object]:
+    report = _decl_satisfaction(runtime, repo_root, node_path=view.node_path, decl_name=view.decl_name)
+    proof_policy_satisfied = bool(report.value.proof_policy_satisfied) if report.ok and report.value is not None else False
+    data = view.model_dump(mode="json")
+    data["proof_policy_satisfied"] = proof_policy_satisfied
+    if not args.include_statement_nl:
+        data.pop("statement_nl", None)
+    if not args.include_statement_formal:
+        data.pop("statement_lean_code", None)
+        data.pop("statement_lean_check", None)
+    if not args.include_proof_nl:
+        data.pop("proof_nl", None)
+    if not args.include_proof_formal:
+        data.pop("proof_lean_code", None)
+        data.pop("proof_lean_check", None)
+    return data
+
+
+def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
+    ref = public_decl.ref
+    view = runtime.decl_graph.get_decl_view(repo_root, node_path=ref.node, name=ref.name)
+    if not view.ok or view.value is None:
+        return {
+            "ref": ref.model_dump(mode="json"),
+            "kind": public_decl.kind,
+            "summary": public_decl.summary,
+            "public": public_decl.public,
+            "state": None,
+            "proof_policy_satisfied": False,
+            "source": public_decl.source,
+        }
+    item = _decl_list_item(runtime, repo_root, view.value)
+    return {
+        "ref": ref.model_dump(mode="json"),
+        "kind": item["kind"],
+        "summary": item["summary"],
+        "public": item["public"],
+        "state": item["state"],
+        "proof_policy_satisfied": item["proof_policy_satisfied"],
+        "source": public_decl.source,
+    }
+
+
 def _required_round_id(runtime, ctx, round_id: str | None) -> str:
     if round_id and round_id.strip():
         return round_id.strip()
@@ -165,6 +239,14 @@ def _list_decls(runtime, ctx, args: NoArgs):
     return runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=_node(ctx))
 
 
+def _list_current_node_decls(runtime, ctx, args: NoArgs):
+    del args
+    views = runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=_node(ctx))
+    if not views.ok or views.value is None:
+        return runtime.foundation.fail(views.issues)
+    return runtime.foundation.ok([_decl_list_item(runtime, ctx.repo_root, item) for item in views.value], warnings=views.issues)
+
+
 def _get_decl(runtime, ctx, args: DeclNameArgs):
     return runtime.decl_graph.get_decl_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
 
@@ -180,8 +262,12 @@ def _get_decl_revision(runtime, ctx, args: DeclRevisionArgs):
 
 def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):
     if args.revision is None:
-        return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
-    return runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name, revision=args.revision)
+        view = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
+    else:
+        view = runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name, revision=args.revision)
+    if not view.ok or view.value is None:
+        return runtime.foundation.fail(view.issues)
+    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
 
 
 def _get_decl_change(runtime, ctx, args: ChangeIdArgs):
@@ -237,30 +323,41 @@ def _list_imported_repos(runtime, ctx, args: NoArgs):
 
 def _list_current_node_public_decls(runtime, ctx, args: NoArgs):
     del args
-    return runtime.node.public_decl_access.list_node_public_decls(
+    public = runtime.node.public_decl_access.list_node_public_decls(
         ctx.repo_root,
         node_path=_node(ctx),
         actor_role=_actor_role(ctx),
         current_node_path=_maybe_node(ctx),
     )
+    if not public.ok or public.value is None:
+        return runtime.foundation.fail(public.issues)
+    return runtime.foundation.ok([_public_decl_item(runtime, ctx.repo_root, item) for item in public.value], warnings=public.issues)
 
 
 def _list_node_public_decls(runtime, ctx, args: NodePublicDeclListArgs):
-    return runtime.node.public_decl_access.list_node_public_decls(
+    public = runtime.node.public_decl_access.list_node_public_decls(
         ctx.repo_root,
         node_path=args.node_path,
         actor_role=_actor_role(ctx),
         current_node_path=_maybe_node(ctx),
     )
+    if not public.ok or public.value is None:
+        return runtime.foundation.fail(public.issues)
+    return runtime.foundation.ok([_public_decl_item(runtime, ctx.repo_root, item) for item in public.value], warnings=public.issues)
 
 
 def _list_repo_public_decls(runtime, ctx, args: RepoPublicDeclListArgs):
-    return runtime.node.public_decl_access.list_repo_public_decls(
+    repo_key = runtime.foundation.layout.ensure_safe_key(args.repo_key)
+    public = runtime.node.public_decl_access.list_repo_public_decls(
         ctx.repo_root,
-        repo_key=args.repo_key,
+        repo_key=repo_key,
         actor_role=_actor_role(ctx),
         current_node_path=_maybe_node(ctx),
     )
+    if not public.ok or public.value is None:
+        return runtime.foundation.fail(public.issues)
+    provider_root = ctx.repo_root.parent / repo_key
+    return runtime.foundation.ok([_public_decl_item(runtime, provider_root, item) for item in public.value], warnings=public.issues)
 
 
 def _inspect_current_node_public_decl(runtime, ctx, args: DeclInspectArgs):
@@ -287,7 +384,10 @@ def _inspect_node_public_decl(runtime, ctx, args: NodePublicDeclInspectArgs):
             )
         )
     revision = args.revision or ref.revision
-    return runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=ref.node, name=ref.name, revision=revision)
+    view = runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=ref.node, name=ref.name, revision=revision)
+    if not view.ok or view.value is None:
+        return runtime.foundation.fail(view.issues)
+    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
 
 
 def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
@@ -311,7 +411,10 @@ def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
         )
     provider_root = ctx.repo_root.parent / repo_key
     revision = args.revision or ref.revision
-    return runtime.decl_graph.get_decl_revision_view(provider_root, node_path=ref.node, name=ref.name, revision=revision)
+    view = runtime.decl_graph.get_decl_revision_view(provider_root, node_path=ref.node, name=ref.name, revision=revision)
+    if not view.ok or view.value is None:
+        return runtime.foundation.fail(view.issues)
+    return runtime.foundation.ok(_decl_revision_item(runtime, provider_root, view.value, args))
 
 
 def _list_active_decl_names(runtime, ctx, args: NoArgs):
@@ -521,7 +624,7 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="decl_list",
             groups={AppGroup.CURRENT_NODE_DECL_READ},
             roles=roles,
-            handler=_list_decls,
+            handler=_list_current_node_decls,
         ),
         handler_tool(
             name="get_decl",

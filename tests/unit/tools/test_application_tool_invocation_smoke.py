@@ -438,9 +438,23 @@ def test_current_node_decl_read_tools_invoke_decl_graph(tmp_path: Path) -> None:
         )
     )
 
-    assert [decl.name for decl in listed["items"]] == ["topic_def"]
+    assert [decl["name"] for decl in listed["items"]] == ["topic_def"]
+    assert listed["items"][0]["state"] == "planned"
+    assert listed["items"][0]["proof_policy_satisfied"] is False
     assert inspected["decl_name"] == "topic_def"
     assert inspected["public"] is True
+    assert inspected["proof_policy_satisfied"] is False
+    assert "statement_nl" not in inspected
+    assert "statement_lean_code" not in inspected
+    included = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="inspect_current_node_decl",
+            flat_args={"decl_name": "topic_def", "include_statement_nl": True, "include_statement_formal": True},
+        )
+    )
+    assert "statement_nl" in included
+    assert "statement_lean_code" in included
 
 
 def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) -> None:
@@ -508,7 +522,10 @@ def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) 
 
     assert {node["node_path"] for node in visible["nodes"]} == {"Main.Consumer", "Main.Provider"}
     assert current_public["items"] == []
-    assert provider_public["items"][0].ref.name == "helper"
+    assert provider_public["items"][0]["ref"]["name"] == "helper"
+    assert "ready" not in provider_public["items"][0]
+    assert "stale" not in provider_public["items"][0]
+    assert provider_public["items"][0]["proof_policy_satisfied"] is False
     assert inspected["decl_name"] == "helper"
 
 
@@ -562,7 +579,9 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     )
 
     assert [repo["repo_key"] for repo in imported["repos"]] == ["Provider"]
-    assert public["items"][0].ref.repo == "Provider"
+    assert public["items"][0]["ref"]["repo"] == "Provider"
+    assert "ready" not in public["items"][0]
+    assert "stale" not in public["items"][0]
     assert inspected["decl_name"] == "provider_result"
 
 
