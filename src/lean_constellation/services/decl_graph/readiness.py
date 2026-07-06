@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
 from lean_constellation.services.decl_graph.models import (
@@ -53,8 +54,35 @@ class DeclReadinessComponent:
         decl_name: str,
         policy: str | None = None,
     ) -> ServiceResult[DeclReadinessReport]:
-        del policy
-        return self._check_decl_ready(Path(repo_root), node_path=node_path, decl_name=decl_name, stack=[])
+        target = self._coerce_policy_target(policy, default=ProofAvailability.PROVED)
+        if not target.ok or target.value is None:
+            return self.runtime.foundation.fail(target.issues)
+        return self._check_decl_proof_policy_satisfied(
+            Path(repo_root),
+            node_path=node_path,
+            decl_name=decl_name,
+            target_proof_availability=target.value,
+            stack=[],
+        )
+
+    def check_decl_proof_policy_satisfied(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        target_proof_availability: ProofAvailability | str | None = None,
+    ) -> ServiceResult[DeclReadinessReport]:
+        target = self._resolve_target_proof_availability(Path(repo_root), target_proof_availability)
+        if not target.ok or target.value is None:
+            return self.runtime.foundation.fail(target.issues)
+        return self._check_decl_proof_policy_satisfied(
+            Path(repo_root),
+            node_path=node_path,
+            decl_name=decl_name,
+            target_proof_availability=target.value,
+            stack=[],
+        )
 
     def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
         decls = self.decl_catalog.list_decls(Path(repo_root), node_path=node_path)
@@ -319,12 +347,77 @@ class DeclReadinessComponent:
             gate = check.value
         return self.runtime.foundation.ok(self._audit_report("delete_sanity_audit", gate, [f"{node_path}:{round_id}"]))
 
-    def _check_decl_ready(
+    def run_strict_proved_audit(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_names: list[str] | None = None,
+    ) -> ServiceResult[AuditReport]:
+        roots = self._strict_audit_roots(Path(repo_root), node_path=node_path, decl_names=decl_names)
+        if not roots.ok or roots.value is None:
+            return self.runtime.foundation.fail(roots.issues)
+        findings: list[AuditFinding] = []
+        checked: list[str] = []
+        for decl_name in roots.value:
+            checked.append(f"{node_path}:{decl_name}")
+            report = self._check_decl_proof_policy_satisfied(
+                Path(repo_root),
+                node_path=node_path,
+                decl_name=decl_name,
+                target_proof_availability=ProofAvailability.PROVED,
+                stack=[],
+            )
+            if not report.ok or report.value is None:
+                return self.runtime.foundation.fail(report.issues)
+            if not report.value.ready:
+                findings.append(
+                    AuditFinding(
+                        kind="strict_proved_decl_not_satisfied",
+                        object_ref=f"{node_path}:{decl_name}",
+                        message=report.value.summary,
+                        suggested_action="Prove this declaration and its theorem-like proof dependency closure.",
+                    )
+                )
+        passed = not findings
+        return self.runtime.foundation.ok(
+            AuditReport(
+                audit_name="strict_proved_audit",
+                passed=passed,
+                findings=findings,
+                checked_items=checked,
+                summary=("Strict proved audit passed." if passed else f"Strict proved audit found {len(findings)} findings."),
+            )
+        )
+
+    def _strict_audit_roots(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_names: list[str] | None,
+    ) -> ServiceResult[list[str]]:
+        if decl_names is not None:
+            roots = sorted({name.strip() for name in decl_names if name and name.strip()})
+            if not roots:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue("strict_proved_audit_empty", "At least one declaration name is required.")
+                )
+            return self.runtime.foundation.ok(roots)
+        decls = self.decl_catalog.list_decls(repo_root, node_path=node_path)
+        if not decls.ok or decls.value is None:
+            return self.runtime.foundation.fail(decls.issues)
+        return self.runtime.foundation.ok(
+            sorted(decl.name for decl in decls.value if decl.lifecycle == DeclLifecycle.ACTIVE and decl.public)
+        )
+
+    def _check_decl_proof_policy_satisfied(
         self,
         repo_root: Path,
         *,
         node_path: str,
         decl_name: str,
+        target_proof_availability: ProofAvailability,
         stack: list[str],
     ) -> ServiceResult[DeclReadinessReport]:
         if decl_name in stack:
@@ -334,6 +427,7 @@ class DeclReadinessComponent:
                     node_path=node_path,
                     decl_name=decl_name,
                     reason=DeclReadinessReason.CYCLE_DETECTED,
+                    target_proof_availability=target_proof_availability,
                     details={"cycle": " -> ".join(cycle)},
                 )
             )
@@ -345,6 +439,7 @@ class DeclReadinessComponent:
                     node_path=node_path,
                     decl_name=decl_name,
                     reason=DeclReadinessReason.MISSING_DECL,
+                    target_proof_availability=target_proof_availability,
                     details={"issues": "; ".join(issue.kind for issue in current.issues) or "missing"},
                 )
             )
@@ -356,6 +451,7 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=DeclReadinessReason.MISSING_DECL,
+                    target_proof_availability=target_proof_availability,
                     details={"lifecycle": decl.lifecycle.value},
                 )
             )
@@ -366,10 +462,11 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=DeclReadinessReason.NO_ACTIVE_REVISION,
+                    target_proof_availability=target_proof_availability,
                     details={"version_status": revision.version_status},
                 )
             )
-        required_state = DeclState.PROVED if self._is_theorem_like(decl.kind) else DeclState.DECLARED
+        required_state = self._required_state_for_target(decl.kind, target_proof_availability)
         if self._state_rank(revision.state) < self._state_rank(required_state):
             return self.runtime.foundation.ok(
                 self._not_ready(
@@ -377,10 +474,16 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=DeclReadinessReason.STATE_TOO_LOW,
-                    details={"current_state": revision.state.value, "required_state": required_state.value},
+                    target_proof_availability=target_proof_availability,
+                    details={
+                        "current_state": revision.state.value,
+                        "required_state": required_state.value,
+                        "target_proof_availability": target_proof_availability.value,
+                    },
                 )
             )
-        check = revision.proof_lean_check if self._is_theorem_like(decl.kind) else revision.statement_lean_check
+        stage = self._required_check_stage(decl.kind, target_proof_availability)
+        check = revision.proof_lean_check if stage == "proof" else revision.statement_lean_check
         if check is None:
             return self.runtime.foundation.ok(
                 self._not_ready(
@@ -388,7 +491,8 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=DeclReadinessReason.LEAN_CHECK_FAILED,
-                    details={"stage": "proof" if self._is_theorem_like(decl.kind) else "statement", "check": "missing"},
+                    target_proof_availability=target_proof_availability,
+                    details={"stage": stage, "check": "missing", "target_proof_availability": target_proof_availability.value},
                 )
             )
         check_reason = self._lean_check_failure_reason(check)
@@ -399,15 +503,27 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=check_reason,
+                    target_proof_availability=target_proof_availability,
                     details=check,
                 )
             )
 
         checked: list[str] = []
         failed: list[str] = []
-        for dep_name in revision.decl_deps:
+        dep_requirements = self.dependency.dependency_requirements_for_proof_policy(
+            decl,
+            revision,
+            target_proof_availability=target_proof_availability,
+        )
+        for dep_name, dep_target in dep_requirements:
             checked.append(dep_name)
-            dep = self._check_decl_ready(repo_root, node_path=node_path, decl_name=dep_name, stack=[*stack, decl_name])
+            dep = self._check_decl_proof_policy_satisfied(
+                repo_root,
+                node_path=node_path,
+                decl_name=dep_name,
+                target_proof_availability=dep_target,
+                stack=[*stack, decl_name],
+            )
             if not dep.ok or dep.value is None:
                 return self.runtime.foundation.fail(dep.issues)
             if not dep.value.ready:
@@ -425,7 +541,12 @@ class DeclReadinessComponent:
                         decl_name=decl_name,
                         revision=revision.revision,
                         reason=reason,
-                        details={"dependency": dep_name, "dependency_reason": dep.value.reason.value if dep.value.reason else "unknown"},
+                        target_proof_availability=target_proof_availability,
+                        details={
+                            "dependency": dep_name,
+                            "dependency_reason": dep.value.reason.value if dep.value.reason else "unknown",
+                            "dependency_required_proof_availability": dep_target.value,
+                        },
                         dependencies_checked=checked,
                         failed_dependencies=failed,
                     )
@@ -436,11 +557,55 @@ class DeclReadinessComponent:
                 decl_name=decl_name,
                 revision=revision.revision,
                 ready=True,
+                proof_policy_satisfied=True,
+                target_proof_availability=target_proof_availability,
                 dependencies_checked=checked,
                 failed_dependencies=[],
-                summary=f"Declaration {node_path}:{decl_name}@{revision.revision} is ready.",
+                summary=(
+                    f"Declaration {node_path}:{decl_name}@{revision.revision} satisfies "
+                    f"{target_proof_availability.value} proof availability."
+                ),
             )
         )
+
+    def _resolve_target_proof_availability(
+        self,
+        repo_root: Path,
+        target_proof_availability: ProofAvailability | str | None,
+    ) -> ServiceResult[ProofAvailability]:
+        if target_proof_availability is not None:
+            return self._coerce_policy_target(str(target_proof_availability), default=ProofAvailability.PROVED)
+        config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        return self.runtime.foundation.ok(config.value.config.target_proof_availability)
+
+    def _coerce_policy_target(self, policy: str | None, *, default: ProofAvailability) -> ServiceResult[ProofAvailability]:
+        if policy is None:
+            return self.runtime.foundation.ok(default)
+        normalized = str(policy).strip().lower()
+        if normalized in {"declared", "declared_closure", ProofAvailability.DECLARED.value}:
+            return self.runtime.foundation.ok(ProofAvailability.DECLARED)
+        if normalized in {"proved", "proved_closure", "ready", ProofAvailability.PROVED.value}:
+            return self.runtime.foundation.ok(ProofAvailability.PROVED)
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "proof_availability_policy_invalid",
+                "Proof availability policy must be declared or proved.",
+                current=str(policy),
+                expected="declared | proved",
+            )
+        )
+
+    def _required_state_for_target(self, kind: str, target_proof_availability: ProofAvailability) -> DeclState:
+        if target_proof_availability == ProofAvailability.DECLARED:
+            return DeclState.DECLARED
+        return DeclState.PROVED if self._is_theorem_like(kind) else DeclState.DECLARED
+
+    def _required_check_stage(self, kind: str, target_proof_availability: ProofAvailability) -> str:
+        if target_proof_availability == ProofAvailability.PROVED and self._is_theorem_like(kind):
+            return "proof"
+        return "statement"
 
     def _current_decl_and_revision(
         self,
@@ -522,6 +687,7 @@ class DeclReadinessComponent:
         decl_name: str,
         reason: DeclReadinessReason,
         revision: int | None = None,
+        target_proof_availability: ProofAvailability | None = None,
         details: dict[str, str] | None = None,
         dependencies_checked: list[str] | None = None,
         failed_dependencies: list[str] | None = None,
@@ -531,6 +697,8 @@ class DeclReadinessComponent:
             decl_name=decl_name,
             revision=revision,
             ready=False,
+            proof_policy_satisfied=False,
+            target_proof_availability=target_proof_availability,
             reason=reason,
             details={str(key): str(value) for key, value in (details or {}).items()},
             dependencies_checked=dependencies_checked or [],

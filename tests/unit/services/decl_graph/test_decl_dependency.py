@@ -2,6 +2,7 @@ from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import DeclRevision
 from lean_constellation.services.foundation import WriteMode
@@ -90,6 +91,42 @@ def test_compute_dependency_closure_reports_upstream_and_downstream(tmp_path: Pa
     assert closure.value.root_decl_names == ["B"]
     assert closure.value.upstream_decl_names == ["A"]
     assert closure.value.downstream_decl_names == ["C"]
+
+
+def test_dependency_helpers_split_statement_and_proof_policy_requirements(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_round(tmp_path)
+    service = make_runtime().decl_graph
+    assert service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        name="MainResult",
+        kind="theorem",
+        objective="Create MainResult.",
+        summary="MainResult summary.",
+        end_after_state=DeclState.PROVED,
+    ).ok
+    decl = service.get_decl(tmp_path, node_path="Main.Topic.Core", name="MainResult")
+    revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="MainResult", revision=1)
+    assert decl.ok and decl.value is not None
+    assert revision.ok and revision.value is not None
+    revision.value.statement_deps = ["StatementDep"]
+    revision.value.proof_deps = ["ProofDep", "StatementDep"]
+
+    assert service.statement_dependency_names(revision.value) == ["StatementDep"]
+    assert service.proof_dependency_names(revision.value) == ["ProofDep", "StatementDep"]
+    assert service.all_dependency_names(revision.value) == ["ProofDep", "StatementDep"]
+    assert service.dependency_requirements_for_proof_policy(
+        decl.value,
+        revision.value,
+        target_proof_availability=ProofAvailability.DECLARED,
+    ) == [("StatementDep", ProofAvailability.DECLARED)]
+    assert service.dependency_requirements_for_proof_policy(
+        decl.value,
+        revision.value,
+        target_proof_availability=ProofAvailability.PROVED,
+    ) == [("ProofDep", ProofAvailability.PROVED), ("StatementDep", ProofAvailability.PROVED)]
 
 
 def test_delete_preflight_requires_downstream_closure(tmp_path: Path) -> None:

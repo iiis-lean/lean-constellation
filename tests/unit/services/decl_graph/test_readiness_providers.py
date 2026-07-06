@@ -2,6 +2,7 @@ from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclReadinessReason, DeclState
 from lean_constellation.services.lean_projection.lean_check import (
     LeanCheckView,
@@ -91,7 +92,7 @@ def _prove_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str] 
         round_id=round_id,
         decl_name=name,
         lean_code=f"theorem {name} : True := by\n  sorry",
-        lean_check={"status": "passed", "contains_sorry": True, "contains_axiom": False},
+        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
         deps=[],
     ).ok
     assert runtime.decl_graph.write_proof_nl(
@@ -112,6 +113,28 @@ def _prove_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str] 
         deps=deps or [],
     ).ok
     assert runtime.decl_graph.commit_decl_revision(tmp_path, node_path=NODE_PATH, name=name, state=DeclState.PROVED).ok
+
+
+def _declare_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str] | None = None) -> None:
+    runtime = make_runtime()
+    assert runtime.decl_graph.write_statement_nl(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name=name,
+        nl=f"{name} states True.",
+        deps=deps or [],
+    ).ok
+    assert runtime.decl_graph.write_statement_formal(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name=name,
+        lean_code=f"theorem {name} : True := by\n  sorry",
+        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        deps=deps or [],
+    ).ok
+    assert runtime.decl_graph.commit_decl_revision(tmp_path, node_path=NODE_PATH, name=name, state=DeclState.DECLARED).ok
 
 
 def _declare_definition(tmp_path: Path, *, round_id: str, name: str) -> None:
@@ -202,6 +225,97 @@ def test_definition_declared_with_statement_check_is_ready(tmp_path: Path) -> No
 
     assert report.ok and report.value is not None
     assert report.value.ready is True
+
+
+def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_round_draft(tmp_path)
+    _create_decl(tmp_path, round_id=round_id, name="supporting_def", kind="definition", end_after_state=DeclState.DECLARED)
+    _create_decl(tmp_path, round_id=round_id, name="main_result", public=True, end_after_state=DeclState.DECLARED)
+    _start_round(tmp_path, round_id)
+    _declare_definition(tmp_path, round_id=round_id, name="supporting_def")
+    _declare_theorem(tmp_path, round_id=round_id, name="main_result", deps=["supporting_def"])
+
+    runtime = make_runtime()
+    configured = runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert configured.ok
+    declared = runtime.decl_graph.check_decl_proof_policy_satisfied(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="main_result",
+    )
+    legacy_ready = runtime.decl_graph.check_decl_ready(tmp_path, node_path=NODE_PATH, decl_name="main_result")
+
+    assert declared.ok and declared.value is not None
+    assert declared.value.ready is True
+    assert declared.value.proof_policy_satisfied is True
+    assert declared.value.target_proof_availability == ProofAvailability.DECLARED
+    assert declared.value.dependencies_checked == ["supporting_def"]
+    assert legacy_ready.ok and legacy_ready.value is not None
+    assert legacy_ready.value.ready is False
+    assert legacy_ready.value.reason == DeclReadinessReason.STATE_TOO_LOW
+
+
+def test_proved_policy_checks_proof_deps_but_declared_policy_ignores_them(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_round_draft(tmp_path)
+    _create_decl(tmp_path, round_id=round_id, name="supporting_lemma", end_after_state=DeclState.DECLARED)
+    _create_decl(tmp_path, round_id=round_id, name="main_result", public=True)
+    _start_round(tmp_path, round_id)
+    _declare_theorem(tmp_path, round_id=round_id, name="supporting_lemma")
+    _prove_theorem(tmp_path, round_id=round_id, name="main_result", deps=["supporting_lemma"])
+
+    runtime = make_runtime()
+    declared = runtime.decl_graph.check_decl_proof_policy_satisfied(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="main_result",
+        target_proof_availability=ProofAvailability.DECLARED,
+    )
+    proved = runtime.decl_graph.check_decl_proof_policy_satisfied(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="main_result",
+        target_proof_availability=ProofAvailability.PROVED,
+    )
+
+    assert declared.ok and declared.value is not None
+    assert declared.value.ready is True
+    assert declared.value.dependencies_checked == []
+    assert proved.ok and proved.value is not None
+    assert proved.value.ready is False
+    assert proved.value.reason == DeclReadinessReason.DEPENDENCY_NOT_READY
+    assert proved.value.failed_dependencies == ["supporting_lemma"]
+
+
+def test_strict_proved_audit_rejects_declared_only_public_theorem(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_round_draft(tmp_path)
+    _create_decl(tmp_path, round_id=round_id, name="public_result", public=True, end_after_state=DeclState.DECLARED)
+    _start_round(tmp_path, round_id)
+    _declare_theorem(tmp_path, round_id=round_id, name="public_result")
+
+    runtime = make_runtime()
+    configured = runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert configured.ok
+    policy = runtime.decl_graph.check_decl_proof_policy_satisfied(tmp_path, node_path=NODE_PATH, decl_name="public_result")
+    audit = runtime.decl_graph.run_strict_proved_audit(tmp_path, node_path=NODE_PATH)
+
+    assert policy.ok and policy.value is not None
+    assert policy.value.ready is True
+    assert audit.ok and audit.value is not None
+    assert audit.value.passed is False
+    assert audit.value.audit_name == "strict_proved_audit"
+    assert audit.value.findings[0].kind == "strict_proved_decl_not_satisfied"
+    assert audit.value.checked_items == [f"{NODE_PATH}:public_result"]
 
 
 def test_dependency_not_ready_blocks_recursive_readiness(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from pydantic import Field, field_validator
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.lean_check import LeanCheck, compact_lean_check
 from lean_constellation.domain.refs import DeclRef, MathlibRef
+from lean_constellation.domain.repo import ProofAvailability
 
 
 class DeclState(StrEnum):
@@ -895,6 +896,8 @@ class DeclReadinessReport(StrictModel):
     decl_name: str
     revision: int | None = None
     ready: bool
+    proof_policy_satisfied: bool | None = None
+    target_proof_availability: ProofAvailability | None = None
     reason: DeclReadinessReason | None = None
     details: dict[str, str] = Field(default_factory=dict)
     dependencies_checked: list[str] = Field(default_factory=list)

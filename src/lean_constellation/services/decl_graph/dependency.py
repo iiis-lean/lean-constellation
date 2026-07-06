@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lean_constellation.domain.repo import ProofAvailability, proof_availability_satisfies
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
-from lean_constellation.services.decl_graph.models import DeclDependencyClosureView, DeclLifecycle
+from lean_constellation.services.decl_graph.models import Decl, DeclDep, DeclDependencyClosureView, DeclLifecycle, DeclRevision
 from lean_constellation.services.foundation import GateReport, ServiceResult
 
 if TYPE_CHECKING:
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
 
 class DeclDependencyComponent:
     """Compute decl dependency closures and expose round dependency audits."""
+
+    _THEOREM_LIKE_KINDS = {"theorem", "lemma", "proposition", "corollary"}
 
     def __init__(self, runtime: LeanRuntimeServices, decl_catalog: DeclCatalogComponent) -> None:
         self.runtime = runtime
@@ -110,3 +113,60 @@ class DeclDependencyComponent:
 
     def audit_round_dependencies(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[GateReport]:
         return self.decl_catalog.validate_round_draft(repo_root, node_path=node_path, round_id=round_id)
+
+    def statement_dependency_names(self, revision: DeclRevision) -> list[str]:
+        return self._repo_decl_dep_names(revision.statement.deps)
+
+    def proof_dependency_names(self, revision: DeclRevision) -> list[str]:
+        return self._repo_decl_dep_names(revision.proof.deps) if revision.proof is not None else []
+
+    def all_dependency_names(self, revision: DeclRevision) -> list[str]:
+        return sorted(set(self.statement_dependency_names(revision)) | set(self.proof_dependency_names(revision)))
+
+    def dependency_names_for_proof_policy(
+        self,
+        decl: Decl,
+        revision: DeclRevision,
+        *,
+        target_proof_availability: ProofAvailability,
+    ) -> list[str]:
+        return [
+            name
+            for name, _required in self.dependency_requirements_for_proof_policy(
+                decl,
+                revision,
+                target_proof_availability=target_proof_availability,
+            )
+        ]
+
+    def dependency_requirements_for_proof_policy(
+        self,
+        decl: Decl,
+        revision: DeclRevision,
+        *,
+        target_proof_availability: ProofAvailability,
+    ) -> list[tuple[str, ProofAvailability]]:
+        requirements: dict[str, ProofAvailability] = {}
+        for name in self.statement_dependency_names(revision):
+            requirements[name] = self._stricter_requirement(requirements.get(name), ProofAvailability.DECLARED)
+        if target_proof_availability == ProofAvailability.PROVED and self._is_theorem_like(decl.kind):
+            for name in self.proof_dependency_names(revision):
+                requirements[name] = self._stricter_requirement(requirements.get(name), ProofAvailability.PROVED)
+        return sorted(requirements.items())
+
+    def _repo_decl_dep_names(self, deps: list[DeclDep]) -> list[str]:
+        return sorted({dep.ref.name for dep in deps if dep.kind == "repo_decl"})
+
+    def _stricter_requirement(
+        self,
+        current: ProofAvailability | None,
+        candidate: ProofAvailability,
+    ) -> ProofAvailability:
+        if current is None:
+            return candidate
+        if proof_availability_satisfies(current, candidate):
+            return current
+        return candidate
+
+    def _is_theorem_like(self, kind: str) -> bool:
+        return kind.strip().lower() in self._THEOREM_LIKE_KINDS

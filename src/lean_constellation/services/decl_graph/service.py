@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph.graph_store import DeclGraphStorageMigrationView, GraphStoreComponent
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
@@ -771,6 +772,41 @@ class DeclGraphService:
     def audit_round_dependencies(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[object]:
         return self.dependency.audit_round_dependencies(repo_root, node_path=node_path, round_id=round_id)
 
+    def statement_dependency_names(self, revision: DeclRevision) -> list[str]:
+        return self.dependency.statement_dependency_names(revision)
+
+    def proof_dependency_names(self, revision: DeclRevision) -> list[str]:
+        return self.dependency.proof_dependency_names(revision)
+
+    def all_dependency_names(self, revision: DeclRevision) -> list[str]:
+        return self.dependency.all_dependency_names(revision)
+
+    def dependency_names_for_proof_policy(
+        self,
+        decl: Decl,
+        revision: DeclRevision,
+        *,
+        target_proof_availability: ProofAvailability,
+    ) -> list[str]:
+        return self.dependency.dependency_names_for_proof_policy(
+            decl,
+            revision,
+            target_proof_availability=target_proof_availability,
+        )
+
+    def dependency_requirements_for_proof_policy(
+        self,
+        decl: Decl,
+        revision: DeclRevision,
+        *,
+        target_proof_availability: ProofAvailability,
+    ) -> list[tuple[str, ProofAvailability]]:
+        return self.dependency.dependency_requirements_for_proof_policy(
+            decl,
+            revision,
+            target_proof_availability=target_proof_availability,
+        )
+
     def check_decl_ready(
         self,
         repo_root: Path,
@@ -780,6 +816,21 @@ class DeclGraphService:
         policy: str | None = None,
     ) -> ServiceResult[DeclReadinessReport]:
         return self.readiness.check_decl_ready(repo_root, node_path=node_path, decl_name=decl_name, policy=policy)
+
+    def check_decl_proof_policy_satisfied(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        target_proof_availability: ProofAvailability | str | None = None,
+    ) -> ServiceResult[DeclReadinessReport]:
+        return self.readiness.check_decl_proof_policy_satisfied(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            target_proof_availability=target_proof_availability,
+        )
 
     def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
         return self.readiness.list_content_public_decls(repo_root, node_path=node_path)
@@ -842,3 +893,12 @@ class DeclGraphService:
 
     def run_delete_sanity_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[AuditReport]:
         return self.readiness.run_delete_sanity_audit(repo_root, node_path=node_path, round_id=round_id)
+
+    def run_strict_proved_audit(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_names: list[str] | None = None,
+    ) -> ServiceResult[AuditReport]:
+        return self.readiness.run_strict_proved_audit(repo_root, node_path=node_path, decl_names=decl_names)
