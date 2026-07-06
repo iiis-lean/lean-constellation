@@ -16,6 +16,7 @@ from lean_constellation.flows.content_node_task.decl_round.steps import (
     BuildRoundResultStepResult,
     BuildRoundResultStepState,
     DeclStageName,
+    DeclStageTargetMetadata,
     DeclStageReviewerStepState,
     DeclStageReviewerStepResult,
     DeclStageWorkerStepResult,
@@ -115,6 +116,7 @@ class DeclGraphRoundState(BaseFlowState):
     current_retry_count: int = 0
     max_retries_per_stage: int = 2
     current_target_decl_names: list[str] = Field(default_factory=list)
+    current_target_metadata: list[DeclStageTargetMetadata] = Field(default_factory=list)
     completed_stages: list[DeclStageName] = Field(default_factory=list)
     skipped_stages: list[DeclStageName] = Field(default_factory=list)
     stage_summaries: list[RoundStageRuntimeSummary] = Field(default_factory=list)
@@ -294,6 +296,7 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
     def _consume_stage_targets(self, state: DeclGraphRoundState, result: PrepareStageTargetsStepResult) -> None:
         if result.outcome == "skipped":
             state.skipped_stages.append(result.stage)
+            state.current_target_metadata = []
             state.stage_summaries.append(
                 RoundStageRuntimeSummary(
                     stage=result.stage,
@@ -308,6 +311,7 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
         if result.outcome == "targets_ready":
             state.current_stage = result.stage
             state.current_target_decl_names = list(result.target_decl_names)
+            state.current_target_metadata = list(result.target_metadata)
             state.latest_worker_result = None
             state.latest_reviewer_result = None
             state.position = FlowPosition(phase="stage_worker")
@@ -450,11 +454,13 @@ def _advance_to_next_stage(state: DeclGraphRoundState) -> None:
     if next_index >= len(STAGE_ORDER):
         state.current_stage = None
         state.current_target_decl_names = []
+        state.current_target_metadata = []
         state.position = FlowPosition(phase="final_audit")
         return
     state.current_stage = STAGE_ORDER[next_index]
     state.current_retry_count = 0
     state.current_target_decl_names = []
+    state.current_target_metadata = []
     state.latest_worker_result = None
     state.latest_reviewer_result = None
     state.position = FlowPosition(phase="stage_prepare")
@@ -517,6 +523,7 @@ def _agent_variables(
         "round_index": input_model.round_index,
         "stage": state.current_stage,
         "batch_decls": list(state.current_target_decl_names),
+        "target_metadata": [item.model_dump(mode="json") for item in state.current_target_metadata],
         "retry_attempt": state.current_retry_count,
         "agent_role": agent_role,
         "expected_view_key": expected_view_key,
@@ -527,6 +534,7 @@ def _stage_worker_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRound
     stage = _require_stage(state)
     mode = "retry_after_review" if state.current_retry_count else "initial"
     targets = ", ".join(state.current_target_decl_names) or "(no explicit targets)"
+    metadata = _format_stage_target_metadata(state.current_target_metadata)
     feedback = ""
     if state.latest_reviewer_result is not None:
         feedback = f"\nPrevious review summary: {state.latest_reviewer_result.summary or ''}"
@@ -535,6 +543,7 @@ def _stage_worker_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRound
         f"Mode: {mode}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
         f"Target declarations: {targets}.\n"
+        f"Target change metadata:\n{metadata}\n"
         f"Retry attempt: {state.current_retry_count} of {state.max_retries_per_stage}."
         f"{feedback}\n"
         "Use only the stage-specific tools. Submit completed or blocked when the stage is ready."
@@ -544,14 +553,39 @@ def _stage_worker_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRound
 def _stage_reviewer_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
     stage = _require_stage(state)
     targets = ", ".join(state.current_target_decl_names) or "(no explicit targets)"
+    metadata = _format_stage_target_metadata(state.current_target_metadata)
     worker_summary = state.latest_worker_result.summary if state.latest_worker_result is not None else ""
     return (
         f"Review decl stage {stage}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
         f"Target declarations: {targets}.\n"
+        f"Target change metadata:\n{metadata}\n"
         f"Worker summary: {worker_summary or '(not provided)'}.\n"
         "Record per-declaration review marks with tools, then submit the stage review."
     )
+
+
+def _format_stage_target_metadata(items: list[DeclStageTargetMetadata]) -> str:
+    if not items:
+        return "- (no target metadata)"
+    lines: list[str] = []
+    for item in items:
+        statement_deps = ", ".join(item.known_statement_deps) or "none"
+        proof_deps = ", ".join(item.known_proof_deps) or "none"
+        lines.append(
+            "- "
+            f"{item.decl_name}: "
+            f"change_kind={item.change_kind or 'unknown'}, "
+            f"objective={item.objective or '(not provided)'}, "
+            f"start_before_state={item.start_before_state or 'none'}, "
+            f"end_after_state={item.end_after_state or 'none'}, "
+            f"require_target_state_satisfied={item.require_target_state_satisfied}, "
+            f"current_state={item.current_state}, "
+            f"current_revision={item.current_revision}, "
+            f"known_statement_deps=[{statement_deps}], "
+            f"known_proof_deps=[{proof_deps}]"
+        )
+    return "\n".join(lines)
 
 
 def _require_stage(state: DeclGraphRoundState) -> DeclStageName:

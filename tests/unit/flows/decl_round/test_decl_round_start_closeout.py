@@ -182,6 +182,54 @@ def test_decl_round_final_audit_allows_unsatisfied_target_when_opted_out(tmp_pat
     assert final_audit_step.result.outcome == "passed"
 
 
+def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        end_after_state=DeclState.PROVED,
+        require_target_state_satisfied=False,
+    )
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+    )
+
+    advance_and_run(runtime, flow_id)
+    advance_and_run(runtime, flow_id)
+    prepare_step_id = advance_and_run(runtime, flow_id)
+    prepare_step = runtime.flow_service.get_step(prepare_step_id)
+    assert prepare_step.result.outcome == "targets_ready"
+    assert prepare_step.result.target_metadata[0].decl_name == "main_result"
+    assert prepare_step.result.target_metadata[0].end_after_state == "proved"
+    assert prepare_step.result.target_metadata[0].require_target_state_satisfied is False
+
+    queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
+    advance_and_run(runtime, flow_id)
+    worker_record = runtime.agent_service.start_records[-1]
+    assert worker_record.variables["target_metadata"][0]["decl_name"] == "main_result"
+    assert worker_record.variables["target_metadata"][0]["end_after_state"] == "proved"
+    assert worker_record.variables["target_metadata"][0]["require_target_state_satisfied"] is False
+    assert "Target change metadata:" in (worker_record.prompt or "")
+    assert "change_kind=create" in (worker_record.prompt or "")
+    assert "end_after_state=proved" in (worker_record.prompt or "")
+    assert "require_target_state_satisfied=False" in (worker_record.prompt or "")
+    assert "current_state=planned" in (worker_record.prompt or "")
+    assert "known_statement_deps=[none]" in (worker_record.prompt or "")
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_reviewer"
+
+    queue_review(runtime, repo_root, stage="statement_nl", round_id=round_id, accepted=True)
+    advance_and_run(runtime, flow_id)
+    reviewer_record = runtime.agent_service.start_records[-1]
+    assert reviewer_record.variables["target_metadata"][0]["decl_name"] == "main_result"
+    assert "Review decl stage statement_nl." in (reviewer_record.prompt or "")
+    assert "Target change metadata:" in (reviewer_record.prompt or "")
+    assert "require_target_state_satisfied=False" in (reviewer_record.prompt or "")
+
+
 def test_decl_round_stale_contract_fails_before_mutation(tmp_path: Path) -> None:
     runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
     strategy_id, round_id, round_index = create_round_with_decl(lean_runtime, repo_root)

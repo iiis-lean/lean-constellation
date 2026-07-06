@@ -54,6 +54,19 @@ class RoundStageRuntimeSummary(StrictModel):
     summary: str
 
 
+class DeclStageTargetMetadata(StrictModel):
+    decl_name: str
+    change_kind: str | None = None
+    objective: str | None = None
+    start_before_state: str | None = None
+    end_after_state: str | None = None
+    require_target_state_satisfied: bool = True
+    current_state: str
+    current_revision: int
+    known_statement_deps: list[str] = Field(default_factory=list)
+    known_proof_deps: list[str] = Field(default_factory=list)
+
+
 class RoundStartValidationStepResult(LeanRenderableStepResult):
     result_type: Literal["decl_round_start_validation"] = "decl_round_start_validation"
     outcome: Literal["valid", "invalid"]
@@ -113,6 +126,7 @@ class PrepareStageTargetsStepResult(LeanRenderableStepResult):
     outcome: Literal["targets_ready", "skipped", "blocked", "failed"]
     stage: DeclStageName
     target_decl_names: list[str] = Field(default_factory=list)
+    target_metadata: list[DeclStageTargetMetadata] = Field(default_factory=list)
     skipped_reason: str | None = None
     prepared_file_count: int = 0
     error: RoundTerminalReason | None = None
@@ -122,6 +136,7 @@ class PrepareStageTargetsStepResult(LeanRenderableStepResult):
             "outcome": self.outcome,
             "stage": self.stage,
             "target_decl_names": list(self.target_decl_names),
+            "target_metadata": [item.model_dump(mode="json") for item in self.target_metadata],
             "skipped_reason": self.skipped_reason,
             "prepared_file_count": self.prepared_file_count,
             "error": self.error.message if self.error else None,
@@ -434,7 +449,8 @@ class PrepareStageTargetsStep(BaseStep):
         targets = _stage_targets(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage)
         if not targets.ok or targets.value is None:
             return ctx.complete_step(_prepare_failed(state.stage, _first_issue_message(targets.issues, "Cannot compute stage targets.")))
-        if not targets.value:
+        target_names = [target.decl_name for target in targets.value]
+        if not target_names:
             return ctx.complete_step(
                 PrepareStageTargetsStepResult(
                     outcome="skipped",
@@ -442,27 +458,28 @@ class PrepareStageTargetsStep(BaseStep):
                     skipped_reason=f"No declarations require {state.stage}.",
                     summary=f"Skipped {state.stage}: no targets.",
                 )
-            )
+        )
         prepared_file_count = 0
         if state.stage == "statement_formal":
-            for decl_name in targets.value:
+            for decl_name in target_names:
                 prepared = _lean_projection(ctx).prepare_statement_formal_stage_file(repo_root, node_path=input_model.node_path, decl_name=decl_name)
                 if not prepared.ok or prepared.value is None:
-                    return ctx.complete_step(_prepare_failed(state.stage, _first_issue_message(prepared.issues, "Statement formal file preparation failed."), targets.value))
+                    return ctx.complete_step(_prepare_failed(state.stage, _first_issue_message(prepared.issues, "Statement formal file preparation failed."), target_names))
                 prepared_file_count += 1
         elif state.stage == "proof_formal":
-            for decl_name in targets.value:
+            for decl_name in target_names:
                 prepared = _lean_projection(ctx).prepare_proof_formal_stage_file(repo_root, node_path=input_model.node_path, decl_name=decl_name)
                 if not prepared.ok or prepared.value is None:
-                    return ctx.complete_step(_prepare_failed(state.stage, _first_issue_message(prepared.issues, "Proof formal file preparation failed."), targets.value))
+                    return ctx.complete_step(_prepare_failed(state.stage, _first_issue_message(prepared.issues, "Proof formal file preparation failed."), target_names))
                 prepared_file_count += 1
         return ctx.complete_step(
             PrepareStageTargetsStepResult(
                 outcome="targets_ready",
                 stage=state.stage,
-                target_decl_names=targets.value,
+                target_decl_names=target_names,
+                target_metadata=targets.value,
                 prepared_file_count=prepared_file_count,
-                summary=f"Prepared {len(targets.value)} targets for {state.stage}.",
+                summary=f"Prepared {len(target_names)} targets for {state.stage}.",
             )
         )
 
@@ -832,7 +849,7 @@ def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_i
     revisions = _round_revisions(ctx, repo_root, node_path, round_id)
     if not revisions.ok or revisions.value is None:
         return graph.runtime.foundation.fail(revisions.issues)
-    targets: list[str] = []
+    targets: list[DeclStageTargetMetadata] = []
     for revision in revisions.value:
         change = revision.change
         if change is None:
@@ -845,8 +862,24 @@ def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_i
         if not decl.ok or decl.value is None:
             return graph.runtime.foundation.fail(decl.issues)
         if _stage_required(stage, decl.value.kind, revision, change.end_after_state):
-            targets.append(revision.decl_name)
-    return graph.runtime.foundation.ok(sorted(set(targets)))
+            targets.append(_decl_stage_target_metadata(revision))
+    return graph.runtime.foundation.ok(sorted(targets, key=lambda item: item.decl_name))
+
+
+def _decl_stage_target_metadata(revision: DeclRevision) -> DeclStageTargetMetadata:
+    change = revision.change
+    return DeclStageTargetMetadata(
+        decl_name=revision.decl_name,
+        change_kind=change.kind.value if change is not None else None,
+        objective=change.objective if change is not None else None,
+        start_before_state=change.start_before_state.value if change is not None and change.start_before_state is not None else None,
+        end_after_state=change.end_after_state.value if change is not None and change.end_after_state is not None else None,
+        require_target_state_satisfied=change.require_target_state_satisfied if change is not None else True,
+        current_state=revision.state.value,
+        current_revision=revision.revision,
+        known_statement_deps=list(revision.statement_deps),
+        known_proof_deps=list(revision.proof_deps),
+    )
 
 
 def _stage_required(stage: DeclStageName, kind: str, revision, end_after_state: DeclState) -> bool:
