@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from tests.unit_services_helpers import make_runtime
 
@@ -249,6 +250,57 @@ def test_mark_provider_ready_rejects_insufficient_provider_proof_availability(tm
     assert configured_provider.ok
     assert not result.ok
     assert result.issues[0].kind == "provider_proof_availability_insufficient"
+
+
+def test_mark_provider_ready_rejects_missing_requested_public_interface(tmp_path: Path) -> None:
+    runtime, _, consumer, provider = _setup_consumer_provider(tmp_path)
+    added = runtime.repo_workspace.requirement.add_requirement_interface(
+        consumer,
+        requirement_name="need_provider",
+        interface_name="main_result",
+        kind=DeclKind.THEOREM,
+        summary="Provider theorem interface.",
+    )
+    waiting = runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_provider",
+    )
+    written = runtime.repo_workspace.write_preparation_input(
+        provider,
+        input=RepoPreparationInput(
+            goal="Provide dependency.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            requirement_refs=[{"consumer_repo": "consumer", "requirement_name": "need_provider"}],
+        ),
+    )
+
+    result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider ready without exports.")
+    too_early = runtime.repo_workspace.mark_requirement_result_observed(
+        consumer,
+        requirement_name="need_provider",
+    )
+    satisfied = runtime.repo_workspace.requirement.mark_requirement_satisfied(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="provider",
+    )
+    stable = runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider stable without exports.")
+    observed = runtime.repo_workspace.mark_requirement_result_observed(
+        consumer,
+        requirement_name="need_provider",
+    )
+
+    assert added.ok
+    assert waiting.ok
+    assert written.ok
+    assert not result.ok
+    assert result.issues[0].kind == "provider_interface_missing"
+    assert not too_early.ok
+    assert too_early.issues[0].kind == "requirement_not_resumable"
+    assert satisfied.ok
+    assert stable.ok
+    assert not observed.ok
+    assert observed.issues[0].kind == "provider_interface_missing"
 
 
 def test_requirement_result_observed_removes_resume_candidate(tmp_path: Path) -> None:

@@ -101,7 +101,7 @@ def test_current_node_decl_read_tools_visible_to_content_plan_only() -> None:
     current_node_decl_tools = {"list_current_node_decls", "inspect_current_node_decl"}
     dependency_analysis_tools = {"compute_current_node_decl_dependency_closure", "preview_current_node_decl_delete_closure"}
     assert current_node_decl_tools | dependency_analysis_tools <= set(content_plan.value)
-    assert dependency_analysis_tools <= set(node_dir.value)
+    assert dependency_analysis_tools.isdisjoint(node_dir.value)
     assert current_node_decl_tools.isdisjoint(node_dir.value)
     assert current_node_decl_tools.isdisjoint(coordinator.value)
 

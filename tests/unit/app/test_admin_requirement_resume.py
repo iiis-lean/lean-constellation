@@ -6,7 +6,9 @@ from lean_constellation.app import LeanAdminApi, RequirementResumeInput, create_
 def test_admin_requirement_resume_marks_observed_and_starts_resume_flow(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     consumer = tmp_path / "Consumer"
+    provider = tmp_path / "Provider"
     assert initialize_repo_runtime(runtime, consumer).ok
+    assert initialize_repo_runtime(runtime, provider).ok
     assert runtime.repo_workspace.create_requirement_with_interfaces(
         consumer,
         name="need_provider",
@@ -25,6 +27,7 @@ def test_admin_requirement_resume_marks_observed_and_starts_resume_flow(tmp_path
         provider_repo="Provider",
         note="Provider is ready.",
     ).ok
+    assert runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.").ok
 
     result = LeanAdminApi(runtime).resume_requirement(
         RequirementResumeInput(

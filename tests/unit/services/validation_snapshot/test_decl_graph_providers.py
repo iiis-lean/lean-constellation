@@ -179,6 +179,31 @@ def _seed_declared_public_theorem(runtime: LeanRuntimeServices, repo_root: Path)
     assert committed.ok, committed.issues
 
 
+def _export_main_result_from_provider_main(runtime: LeanRuntimeServices, repo_root: Path) -> None:
+    topic_export = runtime.node.export.add_scope_export(
+        repo_root,
+        scope_path="Main.Topic",
+        decl_node=NODE_PATH,
+        decl_name="main_result",
+        revision=1,
+    )
+    assert topic_export.ok, topic_export.issues
+    topic_commit = runtime.node.commit_scope_contract(
+        repo_root,
+        scope_path="Main.Topic",
+        summary="Publish topic public declarations.",
+    )
+    assert topic_commit.ok, topic_commit.issues
+    main_export = runtime.node.export.add_scope_export(
+        repo_root,
+        scope_path="Main",
+        decl_node=NODE_PATH,
+        decl_name="main_result",
+        revision=1,
+    )
+    assert main_export.ok, main_export.issues
+
+
 def _seed_proved_public_theorem_with_provider_dep(runtime: LeanRuntimeServices, repo_root: Path, *, provider_repo: str) -> None:
     _create_content_node(runtime, repo_root)
     round_id = _create_round(runtime, repo_root)
@@ -328,6 +353,7 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     shell = runtime.repo_workspace.create_provider_repo_shell_from_group(workspace, target_repo="Provider")
     assert shell.ok, shell.issues
     _seed_declared_public_theorem(runtime, provider)
+    _export_main_result_from_provider_main(runtime, provider)
     marked = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider publishes declared theorem interface.")
     assert marked.ok, marked.issues
     assert runtime.repo_workspace.requirement.mark_requirement_result_observed(
@@ -360,6 +386,79 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     assert completion.ok and completion.value is not None
     assert completion.value.ready_to_submit is True
     assert completion.value.target_proof_availability == ProofAvailability.PROVED
+
+
+def test_cross_repo_dependency_requires_provider_public_export(tmp_path: Path) -> None:
+    workspace = tmp_path
+    consumer = workspace / "Consumer"
+    provider = workspace / "Provider"
+    consumer.mkdir()
+    provider.mkdir()
+    runtime = _runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        provider,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    ).ok
+    _seed_declared_public_theorem(runtime, provider)
+    assert runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider marked stable without Main export.").ok
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        consumer,
+        target_proof_availability=ProofAvailability.PROVED,
+        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+    ).ok
+    _seed_proved_public_theorem_with_provider_dep(runtime, consumer, provider_repo="Provider")
+
+    proof_policy = runtime.decl_graph.check_decl_proof_policy_satisfied(
+        consumer,
+        node_path=NODE_PATH,
+        decl_name="consumer_result",
+    )
+
+    assert proof_policy.ok and proof_policy.value is not None
+    assert proof_policy.value.proof_policy_satisfied is False
+    assert proof_policy.value.reason == "dependency_not_ready"
+    assert proof_policy.value.failed_dependencies == ["Provider:Main.Topic.Core:main_result"]
+
+
+def test_strict_proved_audit_does_not_downgrade_declared_provider_policy(tmp_path: Path) -> None:
+    workspace = tmp_path
+    consumer = workspace / "Consumer"
+    provider = workspace / "Provider"
+    consumer.mkdir()
+    provider.mkdir()
+    runtime = _runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        provider,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    ).ok
+    _seed_declared_public_theorem(runtime, provider)
+    _export_main_result_from_provider_main(runtime, provider)
+    assert runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider publishes declared theorem interface.").ok
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        consumer,
+        target_proof_availability=ProofAvailability.PROVED,
+        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+    ).ok
+    _seed_proved_public_theorem_with_provider_dep(runtime, consumer, provider_repo="Provider")
+
+    normal = runtime.decl_graph.check_decl_proof_policy_satisfied(
+        consumer,
+        node_path=NODE_PATH,
+        decl_name="consumer_result",
+    )
+    audit = runtime.decl_graph.run_strict_proved_audit(consumer, node_path=NODE_PATH)
+
+    assert normal.ok and normal.value is not None
+    assert normal.value.proof_policy_satisfied is True
+    assert audit.ok and audit.value is not None
+    assert audit.value.passed is False
+    assert audit.value.findings[0].kind == "strict_proved_decl_not_satisfied"
 
 
 def test_content_ready_gate_preserves_decl_graph_not_ready_issue(tmp_path: Path) -> None:

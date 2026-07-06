@@ -304,7 +304,6 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             AppGroup.NODE_VISIBILITY_READ_CURRENT,
             AppGroup.PUBLIC_DECL_READ,
             AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
-            AppGroup.DECL_DEPENDENCY_ANALYSIS_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -313,7 +312,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             (
                 "Start from the current contract and objective with `get_current_node_contract`.",
                 "Use `list_visible_nodes` and `list_imported_repos` to find visible dependency sources.",
-                "Inspect public declarations selectively with node/repo public declaration tools and use `compute_current_node_decl_dependency_closure` for current-node dependency impact.",
+                "Inspect public declarations selectively with node/repo public declaration tools before recording a visible dependency.",
                 "Add dependencies with `add_current_node_dep` only when they support the node objective and are visible.",
                 "Report unresolved needs without inventing unavailable dependencies.",
             ),

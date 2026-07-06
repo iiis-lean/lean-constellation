@@ -13,7 +13,7 @@ EXPECTED_SURFACE_COUNTS = {
     "ResourceCuratorAgent": (4, 18, 1, 4, 2),
     "CoordinatorAgent": (27, 68, 2, 4, 13),
     "ContentPlanAgent": (24, 70, 3, 6, 16),
-    "NodeDirDependencyReconAgent": (5, 15, 1, 4, 2),
+    "NodeDirDependencyReconAgent": (4, 13, 1, 4, 2),
     "MathlibReconAgent": (8, 23, 1, 4, 5),
     "ResourceReconAgent": (6, 14, 2, 5, 3),
     "StatementNLWorkerAgent": (11, 36, 1, 2, 4),

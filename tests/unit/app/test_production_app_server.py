@@ -152,6 +152,7 @@ def test_production_app_server_workspace_requirement_bootstrap_uses_provider_run
 def test_production_app_server_workspace_requirement_resume_wakes_consumer_runtime(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     consumer = _make_repo(workspace, "Consumer")
+    provider = _make_repo(workspace, "Provider")
     config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
     app_result = create_production_app_server(config)
 
@@ -159,6 +160,7 @@ def test_production_app_server_workspace_requirement_resume_wakes_consumer_runti
     registry = app_result.value.state.lean_constellation_registry
     control = registry.workspace_runtime()
     assert control.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    assert control.repo_workspace.metadata.ensure_repo_model(provider).ok
     assert control.repo_workspace.create_requirement_with_interfaces(
         consumer,
         name="need_provider",
@@ -178,6 +180,7 @@ def test_production_app_server_workspace_requirement_resume_wakes_consumer_runti
         provider_repo="Provider",
         note="Provider ready.",
     ).ok
+    assert control.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.").ok
     assert registry.try_get_loaded("Consumer") is None
 
     with TestClient(app_result.value) as client:

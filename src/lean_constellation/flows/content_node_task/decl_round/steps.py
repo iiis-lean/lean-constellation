@@ -1080,7 +1080,8 @@ def _resolve_dependency_ref(
     if ref.repo:
         foundation = getattr(ctx.app, "foundation", None)
         repo_workspace = getattr(ctx.app, "repo_workspace", None)
-        if foundation is None or repo_workspace is None:
+        node_service = getattr(ctx.app, "node", None)
+        if foundation is None or repo_workspace is None or node_service is None:
             return None
         provider_key = foundation.layout.ensure_safe_key(ref.repo)
         provider_root = Path(repo_root).parent / provider_key
@@ -1090,7 +1091,19 @@ def _resolve_dependency_ref(
         config = repo_workspace.metadata.get_repo_config(provider_root)
         if not config.ok or config.value is None:
             return None
-        return provider_root, ref.node, config.value.config.target_proof_availability
+        exports = node_service.export.list_scope_exports(provider_root, scope_path="Main")
+        if not exports.ok or exports.value is None:
+            return None
+        for exported in exports.value:
+            candidate = exported.ref
+            if (
+                candidate.node == ref.node
+                and candidate.name == ref.name
+                and candidate.revision == ref.revision
+                and exported.valid
+            ):
+                return provider_root, candidate.node, config.value.config.target_proof_availability
+        return None
     dep_node = ref.node
     if dep_node == "Main" and fallback_node_path != "Main":
         dep_node = fallback_node_path

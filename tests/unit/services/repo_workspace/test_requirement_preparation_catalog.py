@@ -9,7 +9,7 @@ from lean_constellation.domain.preparation import (
     RepoRequirementRef,
     SourceCorpusMode,
 )
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus, RepoWorkMode, WorkspaceConfig
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.repo_workspace import (
     LakeDependencyComponent,
@@ -535,6 +535,35 @@ def test_main_input_and_native_handoff_base_gate(tmp_path: Path) -> None:
     assert handoff_ok.value is not None
     assert handoff_ok.value.passed is True
     assert handoff_ok.value.issues[0].kind == "native_handoff_deferred_checks"
+
+
+def test_create_main_repo_shell_materializes_workspace_direct_repo_defaults(tmp_path: Path) -> None:
+    runtime = make_runtime(
+        workspace_config=WorkspaceConfig(
+            default_direct_repo_proof_availability=ProofAvailability.DECLARED,
+            default_direct_repo_work_mode=RepoWorkMode.DECLARED_FULL_GRAPH,
+            default_requirement_proof_availability=ProofAvailability.PROVED,
+        )
+    )
+    input_result = runtime.repo_workspace.build_main_repo_preparation_input(
+        goal="Formalize notes.",
+        source_corpus_mode=SourceCorpusMode.EXISTING,
+    )
+    assert input_result.ok and input_result.value is not None
+
+    shell = runtime.repo_workspace.create_main_repo_shell(
+        tmp_path,
+        repo_name="main_repo",
+        project_name="MainProject",
+        input=input_result.value.input,
+    )
+    config = runtime.repo_workspace.metadata.get_repo_config(tmp_path / "main_repo")
+
+    assert shell.ok
+    assert config.ok and config.value is not None
+    assert config.value.config.target_proof_availability == ProofAvailability.DECLARED
+    assert config.value.config.work_mode == RepoWorkMode.DECLARED_FULL_GRAPH
+    assert config.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
 
 
 def test_preparation_input_validation_and_missing_read(tmp_path: Path) -> None:

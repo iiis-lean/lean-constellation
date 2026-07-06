@@ -262,7 +262,7 @@ Do not rewrite Coordinator-owned node boundaries, directly fill statement or pro
 
 Inspect visible ready node boundaries and already attached provider repositories to identify useful dependencies for the current content node.
 
-Use `get_current_node_contract`, `list_visible_nodes`, `list_imported_repos`, node/repo public declaration tools, and `compute_current_node_decl_dependency_closure` to evaluate candidates. Add dependencies with `add_current_node_dep` only when they are relevant to the node objective and visible through allowed tools. Call `submit_node_dir_dependency_recon_completed` with a concise summary of dependency changes and unresolved needs.
+Use `get_current_node_contract`, `list_visible_nodes`, `list_imported_repos`, and node/repo public declaration tools to evaluate candidates. Add dependencies with `add_current_node_dep` only when they are relevant to the node objective and visible through allowed tools. Call `submit_node_dir_dependency_recon_completed` with a concise summary of dependency changes and unresolved needs.
 
 Do not perform internet/resource search, modify DeclGraph strategy, edit Lean files, or create repository requirements.""",
     "MathlibReconAgent": """## Mathlib Recon Agent

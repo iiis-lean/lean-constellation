@@ -367,6 +367,7 @@ class DeclReadinessComponent:
                 decl_name=decl_name,
                 target_proof_availability=ProofAvailability.PROVED,
                 stack=[],
+                provider_target_override=ProofAvailability.PROVED,
             )
             if not report.ok or report.value is None:
                 return self.runtime.foundation.fail(report.issues)
@@ -419,6 +420,7 @@ class DeclReadinessComponent:
         decl_name: str,
         target_proof_availability: ProofAvailability,
         stack: list[str],
+        provider_target_override: ProofAvailability | None = None,
     ) -> ServiceResult[DeclReadinessReport]:
         stack_key = f"{Path(repo_root).name}:{node_path}:{decl_name}"
         if stack_key in stack:
@@ -524,6 +526,7 @@ class DeclReadinessComponent:
                 ref=dep_ref,
                 fallback_node_path=node_path,
                 local_target=dep_target,
+                provider_target_override=provider_target_override,
             )
             if not resolved_dep.ok or resolved_dep.value is None:
                 failed.append(dep_label)
@@ -549,6 +552,7 @@ class DeclReadinessComponent:
                 node_path=dep_node,
                 decl_name=dep_ref.name,
                 target_proof_availability=effective_target,
+                provider_target_override=provider_target_override,
                 stack=[*stack, stack_key],
             )
             if not dep.ok or dep.value is None:
@@ -602,6 +606,7 @@ class DeclReadinessComponent:
         ref: DeclRef,
         fallback_node_path: str,
         local_target: ProofAvailability,
+        provider_target_override: ProofAvailability | None = None,
     ) -> ServiceResult[tuple[Path, str, ProofAvailability]]:
         if ref.repo:
             provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
@@ -622,11 +627,46 @@ class DeclReadinessComponent:
             config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
             if not config.ok or config.value is None:
                 return self.runtime.foundation.fail(config.issues)
-            return self.runtime.foundation.ok((provider_root, ref.node, config.value.config.target_proof_availability))
+            exported = self._resolve_provider_public_export(provider_root, provider_key=provider_key, ref=ref)
+            if not exported.ok or exported.value is None:
+                return self.runtime.foundation.fail(exported.issues)
+            effective_target = provider_target_override or config.value.config.target_proof_availability
+            return self.runtime.foundation.ok((provider_root, exported.value.node, effective_target))
         dep_node = ref.node
         if dep_node == "Main" and fallback_node_path != "Main":
             dep_node = fallback_node_path
         return self.runtime.foundation.ok((Path(repo_root), dep_node, local_target))
+
+    def _resolve_provider_public_export(self, provider_root: Path, *, provider_key: str, ref: DeclRef) -> ServiceResult[DeclRef]:
+        exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
+        if not exports.ok or exports.value is None:
+            return self.runtime.foundation.fail(exports.issues)
+        for exported in exports.value:
+            candidate = exported.ref
+            if candidate.name != ref.name:
+                continue
+            if candidate.node != ref.node:
+                continue
+            if candidate.revision != ref.revision:
+                continue
+            if not exported.valid:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "dependency_provider_public_decl_invalid",
+                        "Cross-repo declaration dependency is exported by the provider but is not currently valid.",
+                        object_ref=f"{provider_key}:Main:{ref.name}",
+                        details={"issues": "; ".join(issue.kind for issue in exported.issues)},
+                    )
+                )
+            return self.runtime.foundation.ok(candidate)
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "dependency_provider_decl_not_public",
+                "Cross-repo declaration dependencies must refer to the provider repo public interface.",
+                object_ref=f"{provider_key}:{ref.node}:{ref.name}",
+                expected="provider Main scope export",
+            )
+        )
 
     def _decl_ref_label(self, ref: DeclRef, *, fallback_node_path: str) -> str:
         node = ref.node

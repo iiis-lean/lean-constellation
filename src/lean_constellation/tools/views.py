@@ -183,7 +183,6 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
                 AppGroup.NODE_CONTRACT_READ_CURRENT,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
-                AppGroup.DECL_DEPENDENCY_ANALYSIS_READ,
                 AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
             ],
             _aliases("node_dir_dependency_recon", "NodeDirDependencyReconAgent"),

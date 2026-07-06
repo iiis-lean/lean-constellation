@@ -283,9 +283,6 @@ class RepoRequirementComponent:
                     object_ref=str(provider_root),
                 )
             )
-        provider_config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
-        if not provider_config.ok or provider_config.value is None:
-            return self.runtime.foundation.fail(provider_config.issues)
         candidates: list[RequirementResumeCandidateView] = []
         for repo_dir in sorted(path for path in workspace_root.iterdir() if path.is_dir()):
             ctx = FoundationContext(repo_root=repo_dir)
@@ -300,10 +297,13 @@ class RepoRequirementComponent:
                     continue
                 if self.effective_provider_repo(requirement) != provider_repo:
                     continue
-                if not proof_availability_satisfies(
-                    provider_config.value.config.target_proof_availability,
-                    requirement.required_proof_availability,
-                ):
+                valid = self.validate_requirement_provider_truth(
+                    repo_dir,
+                    requirement_name=requirement.name,
+                    provider_repo=provider_repo,
+                    require_stable=True,
+                )
+                if not valid.ok:
                     continue
                 candidates.append(
                     RequirementResumeCandidateView(
@@ -319,6 +319,150 @@ class RepoRequirementComponent:
                 )
         candidates.sort(key=lambda item: (item.consumer_repo, item.requirement_name))
         return self.runtime.foundation.ok(candidates)
+
+    def validate_requirement_provider_truth(
+        self,
+        repo_root: Path,
+        *,
+        requirement_name: str,
+        provider_repo: str | None = None,
+        require_stable: bool = True,
+    ) -> ServiceResult[None]:
+        loaded = self.get_requirement(repo_root, name=requirement_name)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        requirement = loaded.value.requirement
+        provider_key = self.runtime.foundation.layout.ensure_safe_key(
+            provider_repo or self.effective_provider_repo(requirement)
+        )
+        if self.effective_provider_repo(requirement) != provider_key:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_provider_mismatch",
+                    "Requirement provider does not match the requested provider truth check.",
+                    object_ref=requirement.name,
+                    current=provider_key,
+                    expected=self.effective_provider_repo(requirement),
+                )
+            )
+        provider_root = Path(repo_root).parent / provider_key
+        if not provider_root.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_repo_not_found",
+                    f"Provider repo not found: {provider_key}",
+                    object_ref=str(provider_root),
+                )
+            )
+        publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_root)
+        if not publication.ok or publication.value is None:
+            return self.runtime.foundation.fail(publication.issues)
+        if require_stable and publication.value.publication.status.value != "stable":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_repo_not_ready",
+                    f"Provider repo is not ready: {provider_key}",
+                    object_ref=str(provider_root),
+                    current=publication.value.publication.status.value,
+                    expected="stable",
+                )
+            )
+        provider_config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
+        if not provider_config.ok or provider_config.value is None:
+            return self.runtime.foundation.fail(provider_config.issues)
+        target = provider_config.value.config.target_proof_availability
+        if not proof_availability_satisfies(target, requirement.required_proof_availability):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_proof_availability_insufficient",
+                    "Provider repo proof availability does not satisfy the consumer requirement.",
+                    object_ref=requirement.name,
+                    current=target.value,
+                    expected=requirement.required_proof_availability.value,
+                )
+            )
+        if not requirement.interfaces:
+            return self.runtime.foundation.ok(None)
+        exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
+        if not exports.ok or exports.value is None:
+            return self.runtime.foundation.fail(
+                [
+                    self.runtime.foundation.issue(
+                        "provider_interface_missing",
+                        "Provider repo public interface is missing requested requirement interfaces.",
+                        object_ref=f"{provider_key}:Main",
+                        details={"issues": "; ".join(issue.kind for issue in exports.issues)},
+                    )
+                ]
+            )
+        issues = []
+        for interface in requirement.interfaces:
+            matches = [item for item in exports.value if item.ref.name == interface.name]
+            if not matches:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "provider_interface_missing",
+                        "Provider repo public interface is missing a requested requirement interface.",
+                        object_ref=f"{provider_key}:Main:{interface.name}",
+                        field=interface.name,
+                    )
+                )
+                continue
+            valid_match = next((item for item in matches if item.valid), None)
+            if valid_match is None:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "provider_interface_invalid",
+                        "Provider repo public interface exists but is not currently valid.",
+                        object_ref=f"{provider_key}:Main:{interface.name}",
+                        field=interface.name,
+                        details={"issues": "; ".join(issue.kind for match in matches for issue in match.issues)},
+                    )
+                )
+                continue
+            decl = self.runtime.decl_graph.get_decl(
+                provider_root,
+                node_path=valid_match.ref.node,
+                name=valid_match.ref.name,
+            )
+            if not decl.ok or decl.value is None:
+                return self.runtime.foundation.fail(decl.issues)
+            if decl.value.kind != interface.kind.value:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "provider_interface_kind_mismatch",
+                        "Provider repo public interface has a different declaration kind than requested.",
+                        object_ref=f"{provider_key}:{valid_match.ref.node}:{valid_match.ref.name}",
+                        field=interface.name,
+                        current=decl.value.kind,
+                        expected=interface.kind.value,
+                    )
+                )
+                continue
+            satisfied = self.runtime.decl_graph.check_decl_proof_policy_satisfied(
+                provider_root,
+                node_path=valid_match.ref.node,
+                decl_name=valid_match.ref.name,
+                target_proof_availability=target,
+            )
+            if not satisfied.ok or satisfied.value is None:
+                return self.runtime.foundation.fail(satisfied.issues)
+            if not satisfied.value.proof_policy_satisfied:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "provider_interface_proof_policy_unsatisfied",
+                        "Provider public interface does not satisfy the provider proof availability policy.",
+                        object_ref=f"{provider_key}:{valid_match.ref.node}:{valid_match.ref.name}",
+                        field=interface.name,
+                        details={
+                            "reason": satisfied.value.reason.value if satisfied.value.reason is not None else "unknown",
+                            **satisfied.value.details,
+                        },
+                    )
+                )
+        if issues:
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(None)
 
     def mark_requirement_result_observed(
         self,
@@ -368,6 +512,14 @@ class RepoRequirementComponent:
                     object_ref=requirement.name,
                 )
             )
+        valid = self.validate_requirement_provider_truth(
+            repo_root,
+            requirement_name=requirement.name,
+            provider_repo=self.effective_provider_repo(requirement),
+            require_stable=True,
+        )
+        if not valid.ok:
+            return self.runtime.foundation.fail(valid.issues)
         requirement.provider_repo = self.effective_provider_repo(requirement)
         requirement.provider_result_observed_at = utc_now_iso()
         requirement.note = self._strip_or_none(note) or requirement.note

@@ -47,6 +47,8 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                     payload[key] = "mathlib"
                 elif key in {"source_corpus_mode"}:
                     payload[key] = "prepare"
+                elif key in {"required_proof_availability"}:
+                    payload[key] = "declared"
                 else:
                     payload[key] = f"{key}_value"
 

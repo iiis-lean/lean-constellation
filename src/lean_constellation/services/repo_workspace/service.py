@@ -408,6 +408,14 @@ class RepoWorkspaceService:
                         expected=requirement.required_proof_availability.value,
                     )
                 )
+            provider_truth = self.requirement.validate_requirement_provider_truth(
+                consumer,
+                requirement_name=requirement_name,
+                provider_repo=provider_repo,
+                require_stable=False,
+            )
+            if not provider_truth.ok:
+                return self.runtime.foundation.fail(provider_truth.issues)
             requirement_refs.append((consumer, requirement_name))
 
         ready = self.metadata.set_provider_ready(repo_root, summary=summary)

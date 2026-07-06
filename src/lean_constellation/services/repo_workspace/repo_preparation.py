@@ -338,6 +338,9 @@ class RepoPreparationComponent:
                     current=str(target_repo),
                 )
             )
+        validation = self._validate_input(preparation_input)
+        if not validation.ok:
+            return self.runtime.foundation.fail(validation.issues)
         repo_root = Path(workspace_root) / target_repo
         if repo_root.exists():
             return self.runtime.foundation.fail(
@@ -358,12 +361,19 @@ class RepoPreparationComponent:
         created_repo_root = Path(shell.value.repo_root)
         config = self._provider_config_for_group(workspace_root, target_repo=target_repo)
         if not config.ok or config.value is None:
-            self._rollback_created_repo(created_repo_root)
-            return self.runtime.foundation.fail(config.issues)
+            if any(issue.kind == "requirement_group_empty" for issue in config.issues) and not preparation_input.requirement_refs:
+                required_proof_availability = self.workspace_config.default_requirement_proof_availability
+                provider_work_mode = self._provider_work_mode(required_proof_availability)
+            else:
+                self._rollback_created_repo(created_repo_root)
+                return self.runtime.foundation.fail(config.issues)
+        else:
+            required_proof_availability = config.value.required_proof_availability
+            provider_work_mode = config.value.provider_work_mode
         configured = self.metadata.update_repo_config(
             created_repo_root,
-            target_proof_availability=config.value.required_proof_availability,
-            work_mode=config.value.provider_work_mode,
+            target_proof_availability=required_proof_availability,
+            work_mode=provider_work_mode,
         )
         if not configured.ok or configured.value is None:
             self._rollback_created_repo(created_repo_root)
@@ -475,6 +485,14 @@ class RepoPreparationComponent:
         ensure = self.metadata.ensure_repo_model(repo_root)
         if not ensure.ok:
             return self.runtime.foundation.fail(ensure.issues)
+        configured = self.metadata.update_repo_config(
+            repo_root,
+            target_proof_availability=self.workspace_config.default_direct_repo_proof_availability,
+            work_mode=self.workspace_config.default_direct_repo_work_mode,
+            default_requirement_proof_availability=self.workspace_config.default_requirement_proof_availability,
+        )
+        if not configured.ok:
+            return self.runtime.foundation.fail(configured.issues)
         if input is not None:
             written = self.write_preparation_input(repo_root, input=input)
             if not written.ok:

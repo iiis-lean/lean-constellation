@@ -21,6 +21,7 @@ def make_runtime(
     external_overrides: dict[str, object] | None = None,
     providers: LeanProviderOverrides | None = None,
     native_lake_project_config: object | None = None,
+    workspace_config: object | None = None,
 ) -> LeanRuntimeServices:
     """Create a real Lean runtime service graph backed by real ARKServices."""
 
@@ -30,4 +31,5 @@ def make_runtime(
         external_overrides=external_overrides,
         providers=providers,
         native_lake_project_config=native_lake_project_config,
+        workspace_config=workspace_config,
     )
