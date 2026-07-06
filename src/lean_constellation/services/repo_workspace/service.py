@@ -22,7 +22,7 @@ from lean_constellation.domain.preparation import (
     SourceCorpusMode,
     UpstreamDependencyInput,
 )
-from lean_constellation.domain.repo import WorkspaceCoordinatorView
+from lean_constellation.domain.repo import WorkspaceConfig, WorkspaceCoordinatorView, proof_availability_satisfies
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.repo_workspace.lake_dependency import (
     AdapterSetupView,
@@ -64,8 +64,10 @@ class RepoWorkspaceService:
         preparation: RepoPreparationComponent | None = None,
         workspace_catalog: WorkspaceCatalogComponent | None = None,
         native_lake_project_config: NativeLakeProjectConfig | None = None,
+        workspace_config: WorkspaceConfig | None = None,
     ) -> None:
         self.runtime = runtime
+        self.workspace_config = workspace_config or WorkspaceConfig()
         self.metadata = metadata or RepoMetadataComponent(runtime)
         self.requirement = requirement or RepoRequirementComponent(runtime)
         self.lake_dependency = lake_dependency or LakeDependencyComponent(
@@ -77,6 +79,7 @@ class RepoWorkspaceService:
             runtime,
             self.metadata,
             self.requirement,
+            workspace_config=self.workspace_config,
         )
         self.workspace_catalog = workspace_catalog or WorkspaceCatalogComponent(
             runtime,
@@ -102,6 +105,7 @@ class RepoWorkspaceService:
             repo_root,
             name=name,
             target_repo=target_repo,
+            required_proof_availability=self._requirement_proof_availability_for_repo(repo_root),
             source_description=source_description,
             reason=reason,
         )
@@ -120,6 +124,12 @@ class RepoWorkspaceService:
             if not current.ok:
                 return self.runtime.foundation.fail(current.issues)
         return current
+
+    def _requirement_proof_availability_for_repo(self, repo_root: Path):
+        config = self.metadata.get_repo_config(repo_root)
+        if config.ok and config.value is not None:
+            return config.value.config.default_requirement_proof_availability
+        return self.workspace_config.default_requirement_proof_availability
 
     def create_provider_repo_shell_from_group(
         self,
@@ -329,6 +339,9 @@ class RepoWorkspaceService:
         if not prep.ok or prep.value is None:
             return self.runtime.foundation.fail(prep.issues)
         provider_repo = self.runtime.foundation.layout.ensure_safe_key(repo_root.name)
+        provider_config = self.metadata.get_repo_config(repo_root)
+        if not provider_config.ok or provider_config.value is None:
+            return self.runtime.foundation.fail(provider_config.issues)
         requirement_refs: list[tuple[Path, str]] = []
         for ref in prep.value.input.requirement_refs:
             try:
@@ -382,6 +395,19 @@ class RepoWorkspaceService:
                             expected=requirement.provider_repo,
                         )
                     )
+            if not proof_availability_satisfies(
+                provider_config.value.config.target_proof_availability,
+                requirement.required_proof_availability,
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "provider_proof_availability_insufficient",
+                        "Provider repo proof availability does not satisfy the consumer requirement.",
+                        object_ref=requirement.name,
+                        current=provider_config.value.config.target_proof_availability.value,
+                        expected=requirement.required_proof_availability.value,
+                    )
+                )
             requirement_refs.append((consumer, requirement_name))
 
         ready = self.metadata.set_provider_ready(repo_root, summary=summary)

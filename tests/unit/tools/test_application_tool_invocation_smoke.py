@@ -4,7 +4,7 @@ from pathlib import Path
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services import create_test_runtime_services
-from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
@@ -80,6 +80,31 @@ def _create_scope_with_public_decl(runtime, repo_root: Path) -> DeclRef:
     assert runtime.foundation.store.write_json_atomic(contract_path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
     assert runtime.node.commit_scope_contract(repo_root, scope_path="Main.Provider", summary="Expose helper.").ok
     return ref
+
+
+def test_get_current_repo_work_config_tool_reads_repo_config(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    updated = runtime.repo_workspace.metadata.update_repo_config(
+        repo_root,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert updated.ok
+
+    value = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(repo_root, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="get_current_repo_work_config",
+            flat_args={},
+        )
+    )
+
+    assert value["repo_key"] == "Repo"
+    assert value["target_proof_availability"] == "declared"
+    assert value["work_mode"] == "declared_interface"
 
 
 class _FakeMathlibToolkit:

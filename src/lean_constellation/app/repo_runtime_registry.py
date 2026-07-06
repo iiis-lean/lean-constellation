@@ -220,6 +220,7 @@ class RepoRuntimeRegistry:
                     external_overrides=self.external_overrides,
                     agent_providers=self.agent_providers,
                     native_lake_project_config=self.config.native_lake_project,
+                    workspace_config=self.config.workspace_config,
                     max_concurrent_flow_advances=self.config.max_concurrent_flow_advances,
                     max_concurrent_steps=self.config.max_concurrent_steps,
                     start_paused=self.config.server_start_paused,

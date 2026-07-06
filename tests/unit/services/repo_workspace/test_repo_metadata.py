@@ -3,7 +3,12 @@ from tests.unit_services_helpers import make_runtime
 from pathlib import Path
 
 from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoDependencyRequirementStatus
-from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoFormat,
+    RepoPublicationStatus,
+    RepoWorkMode,
+)
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.repo_workspace import RepoMetadataComponent
 
@@ -65,6 +70,9 @@ def test_repo_format_policy_and_state_view(tmp_path: Path) -> None:
     assert updated.value is not None
     assert updated.value.policy.max_parallel_content_node_tasks == 3
     assert updated.value.policy.readiness_policy == "declared_closure"
+    config = component.get_repo_config(tmp_path)
+    assert config.ok and config.value is not None
+    assert config.value.config.max_parallel_content_node_tasks == 3
 
     ready = component.set_provider_ready(tmp_path, summary="Ready provider summary.")
     assert ready.ok
@@ -83,7 +91,71 @@ def test_repo_format_policy_and_state_view(tmp_path: Path) -> None:
     assert state.value.repo_summary == "Ready provider summary."
     assert state.value.repo_format == RepoFormat.NATIVE
     assert state.value.provider_ready is True
+    assert state.value.publication_status == RepoPublicationStatus.STABLE
+    assert state.value.target_proof_availability == ProofAvailability.PROVED
+    assert state.value.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
     assert state.value.max_parallel_content_node_tasks == 3
+
+
+def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> None:
+    component = make_runtime().repo_workspace.metadata
+    assert component.ensure_repo_model(tmp_path).ok
+
+    default_config = component.get_repo_config(tmp_path)
+    assert default_config.ok and default_config.value is not None
+    assert default_config.value.config.target_proof_availability == ProofAvailability.PROVED
+    assert default_config.value.config.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert default_config.value.config.default_requirement_proof_availability == ProofAvailability.DECLARED
+
+    declared = component.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        default_requirement_proof_availability=ProofAvailability.PROVED,
+        max_parallel_content_node_tasks=2,
+    )
+    assert declared.ok and declared.value is not None
+    assert declared.value.config.target_proof_availability == ProofAvailability.DECLARED
+    assert declared.value.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
+    assert declared.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
+    assert declared.value.config.max_parallel_content_node_tasks == 2
+
+    work = component.get_repo_work_config(tmp_path)
+    assert work.ok and work.value is not None
+    assert work.value.repo_key == tmp_path.name
+    assert work.value.target_proof_availability == ProofAvailability.DECLARED
+    assert work.value.work_mode == RepoWorkMode.DECLARED_INTERFACE
+
+    invalid_combo = component.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.PROVED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert not invalid_combo.ok
+    assert invalid_combo.issues[0].kind == "repo_config_invalid"
+
+    developing = component.get_repo_publication(tmp_path)
+    assert developing.ok and developing.value is not None
+    assert developing.value.publication.status == RepoPublicationStatus.DEVELOPING
+    assert developing.value.publication.stable_at is None
+
+    stable = component.mark_repo_stable(tmp_path, summary="Stable declared provider.")
+    assert stable.ok and stable.value is not None
+    assert stable.value.publication.status == RepoPublicationStatus.STABLE
+    assert stable.value.publication.stable_at is not None
+
+    locked = component.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_FULL_GRAPH,
+    )
+    assert not locked.ok
+    assert locked.issues[0].kind == "repo_config_locked"
+
+    reopened = component.mark_repo_developing(tmp_path)
+    assert reopened.ok and reopened.value is not None
+    assert reopened.value.publication.status == RepoPublicationStatus.DEVELOPING
+    assert reopened.value.publication.stable_at is None
 
 
 def test_get_repo_model_missing_returns_structured_failure(tmp_path: Path) -> None:

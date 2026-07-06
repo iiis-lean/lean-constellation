@@ -13,6 +13,7 @@ from lean_constellation.app import (
     initialize_repo_runtime,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 
 
 def _make_repo(workspace: Path, name: str) -> Path:
@@ -84,6 +85,33 @@ def test_production_app_server_repo_routes_isolate_flow_state(tmp_path) -> None:
     assert repo_a_tree.json()["value"]["total_flows"] == 1
     assert repo_b_tree.status_code == 200
     assert repo_b_tree.json()["value"]["total_flows"] == 0
+
+
+def test_production_app_server_exposes_repo_config_routes(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    app_result = create_production_app_server(config)
+
+    assert app_result.ok and app_result.value is not None
+    with TestClient(app_result.value) as client:
+        default_config = client.get("/admin/repos/MainRepo/config")
+        updated = client.patch(
+            "/admin/repos/MainRepo/config",
+            json={
+                "target_proof_availability": ProofAvailability.DECLARED.value,
+                "work_mode": RepoWorkMode.DECLARED_INTERFACE.value,
+            },
+        )
+        publication = client.get("/admin/repos/MainRepo/publication")
+
+    assert default_config.status_code == 200
+    assert default_config.json()["value"]["config"]["target_proof_availability"] == "proved"
+    assert updated.status_code == 200
+    assert updated.json()["value"]["config"]["target_proof_availability"] == "declared"
+    assert updated.json()["value"]["config"]["work_mode"] == "declared_interface"
+    assert publication.status_code == 200
+    assert publication.json()["value"]["publication"]["status"] == "developing"
 
 
 def test_production_app_server_workspace_requirement_bootstrap_uses_provider_runtime(tmp_path) -> None:

@@ -6,6 +6,7 @@ from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
+from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus, RepoWorkMode
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.repo_lifecycle.submissions import (
@@ -224,6 +225,13 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     assert flow.result.bound_interface_count == 1
     assert flow.result.imported_modules_count == 1
     assert lean_runtime.repo_workspace.metadata.get_provider_ready(repo_root).value.ready is True
+    config = lean_runtime.repo_workspace.metadata.get_repo_config(repo_root)
+    publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+    assert config.ok and config.value is not None
+    assert config.value.config.target_proof_availability == ProofAvailability.PROVED
+    assert config.value.config.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert publication.ok and publication.value is not None
+    assert publication.value.publication.status == RepoPublicationStatus.STABLE
 
 
 def test_adapter_preparation_blocked_submit_finishes_blocked(tmp_path: Path) -> None:

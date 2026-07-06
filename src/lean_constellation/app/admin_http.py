@@ -20,6 +20,7 @@ from lean_constellation.app.admin_api import (
     InitializeMainNativeSkeletonInput,
     LeanAdminApi,
     MainNativeRepoBootstrapView,
+    RepoConfigUpdateInput,
     RequirementResumeInput,
     SnapshotCreateInput,
     SnapshotListInput,
@@ -120,6 +121,23 @@ def create_admin_http_routes(
         if repo_root is None:
             return _request_validation_response("Query parameter 'repo_root' is required.")
         return _service_result_response(admin.get_main_repo_status(repo_root))
+
+    async def repo_config(request: Request) -> JSONResponse:
+        query = request.query_params
+        repo_root = _query_path(query.get("repo_root"))
+        if repo_root is None:
+            return _request_validation_response("Query parameter 'repo_root' is required.")
+        return _service_result_response(admin.get_repo_config(repo_root))
+
+    async def update_repo_config(request: Request) -> JSONResponse:
+        return await _model_route(request, RepoConfigUpdateInput, admin.update_repo_config)
+
+    async def repo_publication(request: Request) -> JSONResponse:
+        query = request.query_params
+        repo_root = _query_path(query.get("repo_root"))
+        if repo_root is None:
+            return _request_validation_response("Query parameter 'repo_root' is required.")
+        return _service_result_response(admin.get_repo_publication(repo_root))
 
     async def pause(request: Request) -> JSONResponse:
         data = await _json_or_empty(request)
@@ -295,6 +313,9 @@ def create_admin_http_routes(
         Route("/admin/agents/{agent_id:str}/report-index", agent_report_index, methods=["GET"]),
         Route("/admin/external/health", external_health, methods=["GET"]),
         Route("/admin/main-repo/status", main_repo_status, methods=["GET"]),
+        Route("/admin/repo/config", repo_config, methods=["GET"]),
+        Route("/admin/repo/config", update_repo_config, methods=["PATCH"]),
+        Route("/admin/repo/publication", repo_publication, methods=["GET"]),
         Route("/admin/runtime/pause", pause, methods=["POST"]),
         Route("/admin/runtime/resume", resume, methods=["POST"]),
         Route("/admin/flows/start", start_flow, methods=["POST"]),
@@ -674,6 +695,39 @@ def create_workspace_admin_http_routes(
             )
         )
 
+    async def repo_config(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        return _service_result_response(admin_result.value.get_repo_config(record.value.repo_root))
+
+    async def repo_update_config(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        try:
+            data = await _json_or_empty(request)
+            data["repo_root"] = str(record.value.repo_root)
+            input_model = RepoConfigUpdateInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        return _service_result_response(admin_result.value.update_repo_config(input_model))
+
+    async def repo_publication(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        return _service_result_response(admin_result.value.get_repo_publication(record.value.repo_root))
+
     async def repo_agent_report_index(request: Request) -> JSONResponse:
         admin_result = repo_admin(request)
         if not admin_result.ok or admin_result.value is None:
@@ -864,6 +918,9 @@ def create_workspace_admin_http_routes(
         Route("/admin/workspace/repos/{repo_key:str}/pause", repo_pause, methods=["POST"]),
         Route("/admin/workspace/repos/{repo_key:str}/resume", repo_resume, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/runtime/status", repo_runtime_status, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/config", repo_config, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/config", repo_update_config, methods=["PATCH"]),
+        Route("/admin/repos/{repo_key:str}/publication", repo_publication, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/runtime/pause", repo_runtime_pause, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/runtime/resume", repo_runtime_resume, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/flows/tree", repo_flow_tree, methods=["GET"]),

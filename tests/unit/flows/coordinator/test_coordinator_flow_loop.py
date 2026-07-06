@@ -5,6 +5,7 @@ from pathlib import Path
 from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.repo import RepoPublicationStatus
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
@@ -322,5 +323,8 @@ def test_repo_ready_submission_marks_provider_ready_and_completes(tmp_path: Path
     assert flow.result.provider_ready_marked is True
     ready = lean_runtime.repo_workspace.metadata.get_provider_ready(repo_root)
     assert ready.ok and ready.value.ready is True
+    publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+    assert publication.ok and publication.value is not None
+    assert publication.value.publication.status == RepoPublicationStatus.STABLE
     model = lean_runtime.repo_workspace.metadata.get_repo_model(repo_root)
     assert model.ok and model.value.summary == "Repo exposes a completed small formalization."

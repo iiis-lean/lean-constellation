@@ -25,7 +25,7 @@ from lean_constellation.domain.preparation import (
     RepoRuntimeBootstrapView,
     RepoShellView,
 )
-from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode, WorkspaceConfig
 from lean_constellation.services.foundation import (
     FoundationContext,
     GateReport,
@@ -126,10 +126,12 @@ class RepoPreparationComponent:
         runtime: LeanRuntimeServices,
         metadata: RepoMetadataComponent,
         requirement: RepoRequirementComponent,
+        workspace_config: WorkspaceConfig | None = None,
     ) -> None:
         self.runtime = runtime
         self.metadata = metadata
         self.requirement = requirement
+        self.workspace_config = workspace_config or WorkspaceConfig()
 
     def write_preparation_input(
         self,
@@ -192,11 +194,18 @@ class RepoPreparationComponent:
                         )
                     )
         items.sort(key=lambda item: (item.consumer_repo, item.requirement.name))
+        required = self._required_proof_availability(items)
+        work_mode = self._provider_work_mode(required)
         return self.runtime.foundation.ok(
             RequirementGroupView(
                 target_repo=target_repo,
+                required_proof_availability=required,
+                provider_work_mode=work_mode,
                 requirements=items,
-                summary=f"Found {len(items)} open requirements for {target_repo}.",
+                summary=(
+                    f"Found {len(items)} open requirements for {target_repo}; "
+                    f"provider target is {required.value}/{work_mode.value}."
+                ),
             )
         )
 
@@ -347,6 +356,18 @@ class RepoPreparationComponent:
         if not shell.ok or shell.value is None:
             return self.runtime.foundation.fail(shell.issues)
         created_repo_root = Path(shell.value.repo_root)
+        config = self._provider_config_for_group(workspace_root, target_repo=target_repo)
+        if not config.ok or config.value is None:
+            self._rollback_created_repo(created_repo_root)
+            return self.runtime.foundation.fail(config.issues)
+        configured = self.metadata.update_repo_config(
+            created_repo_root,
+            target_proof_availability=config.value.required_proof_availability,
+            work_mode=config.value.provider_work_mode,
+        )
+        if not configured.ok or configured.value is None:
+            self._rollback_created_repo(created_repo_root)
+            return self.runtime.foundation.fail(configured.issues)
 
         input_view = self.write_preparation_input(created_repo_root, input=preparation_input)
         if not input_view.ok or input_view.value is None:
@@ -392,6 +413,13 @@ class RepoPreparationComponent:
         input_view = self.write_preparation_input(Path(shell.value.repo_root), input=draft.value.input)
         if not input_view.ok or input_view.value is None:
             return self.runtime.foundation.fail(input_view.issues)
+        configured = self.metadata.update_repo_config(
+            Path(shell.value.repo_root),
+            target_proof_availability=draft.value.requirement_group.required_proof_availability,
+            work_mode=draft.value.requirement_group.provider_work_mode,
+        )
+        if not configured.ok:
+            return self.runtime.foundation.fail(configured.issues)
         return self.runtime.foundation.ok(
             ProviderRepoShellView(
                 shell=shell.value,
@@ -460,6 +488,32 @@ class RepoPreparationComponent:
                 summary=f"Created main repo shell: {repo_name}.",
             )
         )
+
+    def _provider_config_for_group(
+        self,
+        workspace_root: Path,
+        *,
+        target_repo: str,
+    ) -> ServiceResult[RequirementGroupView]:
+        group = self.aggregate_requirement_group(workspace_root, target_repo=target_repo)
+        if not group.ok or group.value is None:
+            return self.runtime.foundation.fail(group.issues)
+        if not group.value.requirements:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_group_empty",
+                    f"No open requirements found for target repo: {target_repo}",
+                )
+            )
+        return self.runtime.foundation.ok(group.value)
+
+    def _required_proof_availability(self, items: list[RequirementGroupItem]) -> ProofAvailability:
+        if any(item.requirement.required_proof_availability == ProofAvailability.PROVED for item in items):
+            return ProofAvailability.PROVED
+        return ProofAvailability.DECLARED
+
+    def _provider_work_mode(self, required: ProofAvailability) -> RepoWorkMode:
+        return self.workspace_config.requirement_provider_work_mode_by_proof_availability[required]
 
     def validate_requirement_bootstrap_input(
         self,

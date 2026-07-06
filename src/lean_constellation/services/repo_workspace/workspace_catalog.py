@@ -14,7 +14,7 @@ from lean_constellation.domain.preparation import (
     RequirementGroupItem,
     RequirementGroupView,
 )
-from lean_constellation.domain.repo import WorkspaceCatalogView, WorkspaceCoordinatorView, WorkspaceRepoSummary
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode, WorkspaceCatalogView, WorkspaceCoordinatorView, WorkspaceRepoSummary
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
 from lean_constellation.services.repo_workspace.lake_dependency import LakeDependencyComponent, LakeDependencyEntry
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 class RequirementGroupSummaryView(StrictModel):
     target_repo: str
+    required_proof_availability: ProofAvailability = ProofAvailability.DECLARED
+    provider_work_mode: RepoWorkMode = RepoWorkMode.DECLARED_INTERFACE
     requirement_count: int
     consumer_repos: list[str] = Field(default_factory=list)
     interface_names: list[str] = Field(default_factory=list)
@@ -67,6 +69,9 @@ class WorkspaceCatalogComponent:
                     repo_root=str(repo_dir),
                     repo_summary=state.value.repo_summary,
                     repo_format=state.value.repo_format,
+                    publication_status=state.value.publication_status,
+                    target_proof_availability=state.value.target_proof_availability,
+                    work_mode=state.value.work_mode,
                     provider_ready=state.value.provider_ready,
                     open_requirement_count=state.value.open_requirement_count,
                 )
@@ -131,9 +136,12 @@ class WorkspaceCatalogComponent:
             consumer_repos = sorted({item.consumer_repo for item in items})
             interfaces = sorted({interface.name for item in items for interface in item.requirement.interfaces})
             descriptions = [item.requirement.source_description for item in items if item.requirement.source_description]
+            required = self._required_proof_availability(items)
             summaries.append(
                 RequirementGroupSummaryView(
                     target_repo=target,
+                    required_proof_availability=required,
+                    provider_work_mode=self._provider_work_mode(required),
                     requirement_count=len(items),
                     consumer_repos=consumer_repos,
                     interface_names=interfaces,
@@ -165,13 +173,27 @@ class WorkspaceCatalogComponent:
                         )
                     )
         items.sort(key=lambda item: (item.consumer_repo, item.requirement.name))
+        required = self._required_proof_availability(items)
         return self.runtime.foundation.ok(
             RequirementGroupView(
                 target_repo=target_repo,
+                required_proof_availability=required,
+                provider_work_mode=self._provider_work_mode(required),
                 requirements=items,
-                summary=f"Found {len(items)} open requirements for {target_repo}.",
+                summary=(
+                    f"Found {len(items)} open requirements for {target_repo}; "
+                    f"provider target is {required.value}/{self._provider_work_mode(required).value}."
+                ),
             )
         )
+
+    def _required_proof_availability(self, items: list[RequirementGroupItem]) -> ProofAvailability:
+        if any(item.requirement.required_proof_availability == ProofAvailability.PROVED for item in items):
+            return ProofAvailability.PROVED
+        return ProofAvailability.DECLARED
+
+    def _provider_work_mode(self, required: ProofAvailability) -> RepoWorkMode:
+        return self.runtime.repo_workspace.workspace_config.requirement_provider_work_mode_by_proof_availability[required]
 
     def list_current_lake_dependency_repos(self, repo_root: Path) -> ServiceResult[list[LakeDependencyEntry]]:
         deps = self.lake_dependency.parse_lake_dependencies(repo_root)

@@ -11,6 +11,7 @@ from agent_runtime_kit.flow.models import BaseStep, BaseStepResult, BaseStepStat
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 
 
@@ -31,6 +32,7 @@ class CoordinatorResourceRequestResultView(StrictModel):
 class CoordinatorRepoRequirementResultView(StrictModel):
     requirement_name: str
     target_repo: str
+    required_proof_availability: ProofAvailability = ProofAvailability.DECLARED
     reason: str | None = None
     source_description: str | None = None
     interface_count: int = 0

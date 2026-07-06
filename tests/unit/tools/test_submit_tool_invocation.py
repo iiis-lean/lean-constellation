@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_runtime_kit.flow.models import BaseSubmission
 
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.tools import register_submit_tooling
@@ -193,8 +194,51 @@ def test_submit_repo_requirement_records_waiting_state(tmp_path: Path) -> None:
     requirement = runtime.repo_workspace.requirement.get_requirement(tmp_path, name="need_provider")
     assert requirement.ok and requirement.value is not None
     assert requirement.value.requirement.provider_repo == "Provider"
+    assert requirement.value.requirement.required_proof_availability == ProofAvailability.DECLARED
     assert requirement.value.requirement.provider_request_submitted_at is not None
     assert requirement.value.requirement.provider_result_observed_at is None
     assert requirement.value.requirement.note == "Need provider theorem."
     assert len(gateway.accepted) == 1
     assert gateway.accepted[0].submission_type == "coordinator_repo_requirement"
+    assert gateway.accepted[0].required_proof_availability == ProofAvailability.DECLARED
+
+
+def test_submit_repo_requirement_uses_consumer_repo_default_proof_availability(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    configured = runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.PROVED,
+        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        default_requirement_proof_availability=ProofAvailability.PROVED,
+    )
+    assert configured.ok
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_repo_requirement",
+        flat_args={
+            "name": "need_proved_provider",
+            "target_repo": "Provider",
+            "summary": "Need proved provider repo.",
+            "reason": "Need provider theorem with proof availability.",
+        },
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is True
+    requirement = runtime.repo_workspace.requirement.get_requirement(tmp_path, name="need_proved_provider")
+    assert requirement.ok and requirement.value is not None
+    assert requirement.value.requirement.required_proof_availability == ProofAvailability.PROVED
+    assert gateway.accepted[0].required_proof_availability == ProofAvailability.PROVED

@@ -207,6 +207,19 @@ class NodePathArgs(StrictModel):
     node_path: str = Field(description="Node path in the current repo.")
 
 
+class NodeContractCommitArgs(NodePathArgs):
+    summary: str = Field(description="Coordinator summary to write into the committed node contract version.")
+
+
+class ContentTaskResultListArgs(StrictModel):
+    node_path: str | None = Field(default=None, description="Optional Content node path filter.")
+    limit: int = Field(default=20, ge=1, le=100, description="Maximum terminal Content task results to return.")
+
+
+class ContentTaskResultInspectArgs(NodePathArgs):
+    contract_version: int | None = Field(default=None, ge=1, description="Optional contract version filter; omit for the latest terminal result for the node.")
+
+
 class NodePathQueryArgs(NodePathArgs):
     include_public_decl_preview: bool = Field(default=False, description="Whether to include a compact public declaration preview.")
 

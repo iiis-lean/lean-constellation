@@ -49,6 +49,7 @@ def create_app_runtime_services(
     step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
     agent_providers: dict[str, object] | None = None,
     native_lake_project_config: object | None = None,
+    workspace_config: object | None = None,
     max_concurrent_flow_advances: int = 1,
     max_concurrent_steps: int = 1,
     start_paused: bool = False,
@@ -100,6 +101,7 @@ def create_app_runtime_services(
         providers=effective_providers,
         agent_type_specs=effective_agent_type_specs,
         native_lake_project_config=native_lake_project_config,
+        workspace_config=workspace_config,  # type: ignore[arg-type]
         register_application_tools=register_application_tools,
         test_control_enabled=test_control_enabled,
     )
@@ -179,6 +181,7 @@ def create_app_runtime_from_config(
             max_concurrent_steps=config.max_concurrent_steps,
             start_paused=start_paused,
             native_lake_project_config=config.native_lake_project,
+            workspace_config=config.workspace_config,
         )
     return create_app_runtime_services(
         runtime_root=runtime_root,
@@ -190,6 +193,7 @@ def create_app_runtime_from_config(
         step_type_overrides=step_type_overrides,
         agent_providers=agent_providers,
         native_lake_project_config=config.native_lake_project,
+        workspace_config=config.workspace_config,
         max_concurrent_flow_advances=config.max_concurrent_flow_advances,
         max_concurrent_steps=config.max_concurrent_steps,
         start_paused=start_paused,
@@ -225,6 +229,7 @@ def create_test_control_runtime_services(
     step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
     agent_providers: dict[str, object] | None = None,
     native_lake_project_config: object | None = None,
+    workspace_config: object | None = None,
     external_takeover_cli_type: str = "external_takeover",
     register_external_takeover_provider: bool = True,
     max_concurrent_flow_advances: int = 1,
@@ -266,6 +271,7 @@ def create_test_control_runtime_services(
         step_type_overrides=effective_step_overrides,
         agent_providers=effective_agent_providers,
         native_lake_project_config=native_lake_project_config,
+        workspace_config=workspace_config,
         max_concurrent_flow_advances=max_concurrent_flow_advances,
         max_concurrent_steps=max_concurrent_steps,
         start_paused=start_paused,

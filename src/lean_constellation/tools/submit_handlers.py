@@ -516,11 +516,15 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
         node = runtime.node.node_tree.node_store.resolve_active_node(ctx.repo_root, path=node_path)
         if not node.ok or node.value is None:
             return runtime.foundation.fail(node.issues)
+        contract = runtime.node.contract.get_open_contract(ctx.repo_root, node_path=node_path)
+        if not contract.ok or contract.value is None:
+            return runtime.foundation.fail(contract.issues)
         requests.append(build_content_node_task_request(
             repo_key=ctx.repo.repo_key,
             node_path=node_path,
             scope_id=node_scope_id(ctx.repo.repo_key, node.value.node_id),
             repo_path=str(ctx.repo_root),
+            contract_version=contract.value.version,
             task_mode=args.task_mode,
         ))
     return _prepared(
@@ -560,6 +564,7 @@ def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: Submi
             **_base_kwargs(ctx, tool_name="submit_repo_requirement", summary=args.summary),
             requirement_name=args.name,
             target_repo=args.target_repo,
+            required_proof_availability=created.value.requirement.required_proof_availability,
             source_description=args.source_description,
             reason=args.reason,
             interfaces=interfaces,

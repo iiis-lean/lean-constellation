@@ -422,6 +422,7 @@ class CoordinatorAgentStep(AgentStep):
                 repo_requirement=CoordinatorRepoRequirementResultView(
                     requirement_name=submission.requirement_name,
                     target_repo=submission.target_repo,
+                    required_proof_availability=submission.required_proof_availability,
                     reason=submission.reason,
                     source_description=submission.source_description,
                     interface_count=len(submission.interfaces),

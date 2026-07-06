@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from tests.unit_services_helpers import make_runtime
 
 
@@ -128,6 +129,42 @@ def test_requirement_resume_candidates_require_ready_provider(tmp_path: Path) ->
     assert candidates.value[0].provider_repo == "provider"
 
 
+def test_requirement_resume_candidates_require_sufficient_provider_proof_availability(tmp_path: Path) -> None:
+    runtime, workspace, consumer, provider = _setup_consumer_provider(tmp_path)
+    configured_requirement = runtime.repo_workspace.requirement.create_requirement(
+        consumer,
+        name="need_proved_provider",
+        target_repo="provider",
+        required_proof_availability=ProofAvailability.PROVED,
+        reason="Need proved provider.",
+    )
+    assert configured_requirement.ok
+    runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_proved_provider",
+    )
+    runtime.repo_workspace.requirement.mark_requirement_satisfied(
+        consumer,
+        requirement_name="need_proved_provider",
+        provider_repo="provider",
+    )
+    configured_provider = runtime.repo_workspace.metadata.update_repo_config(
+        provider,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert configured_provider.ok
+    runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider exposes declared interfaces.")
+
+    candidates = runtime.repo_workspace.list_resume_candidates_for_requirement(
+        workspace,
+        provider_repo="provider",
+    )
+
+    assert candidates.ok and candidates.value is not None
+    assert [candidate.requirement_name for candidate in candidates.value] == []
+
+
 def test_mark_provider_ready_rejects_stale_requirement_ref_without_ready_marker(tmp_path: Path) -> None:
     runtime, _, _, provider = _setup_consumer_provider(tmp_path)
     written = runtime.repo_workspace.write_preparation_input(
@@ -176,6 +213,42 @@ def test_mark_provider_ready_rejects_provider_mismatch_without_ready_marker(tmp_
     assert ready.ok
     assert ready.value is not None
     assert ready.value.ready is False
+
+
+def test_mark_provider_ready_rejects_insufficient_provider_proof_availability(tmp_path: Path) -> None:
+    runtime, _, consumer, provider = _setup_consumer_provider(tmp_path)
+    runtime.repo_workspace.requirement.create_requirement(
+        consumer,
+        name="need_proved_provider",
+        target_repo="provider",
+        required_proof_availability=ProofAvailability.PROVED,
+        reason="Need proved provider.",
+    )
+    waiting = runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_proved_provider",
+    )
+    written = runtime.repo_workspace.write_preparation_input(
+        provider,
+        input=RepoPreparationInput(
+            goal="Provide dependency.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            requirement_refs=[{"consumer_repo": "consumer", "requirement_name": "need_proved_provider"}],
+        ),
+    )
+    configured_provider = runtime.repo_workspace.metadata.update_repo_config(
+        provider,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+
+    result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider declared only.")
+
+    assert waiting.ok
+    assert written.ok
+    assert configured_provider.ok
+    assert not result.ok
+    assert result.issues[0].kind == "provider_proof_availability_insufficient"
 
 
 def test_requirement_result_observed_removes_resume_candidate(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.lake_project import NativeLakeProjectConfig
+from lean_constellation.domain.repo import WorkspaceConfig
 
 
 DEFAULT_MCP_HTTP_HOST = "127.0.0.1"
@@ -45,6 +46,7 @@ class LeanAppConfigView(StrictModel):
     scheduler_error_interval_s: float
     toolkit: "LeanToolkitAppConfig"
     native_lake_project: NativeLakeProjectConfig
+    workspace_config: WorkspaceConfig
     summary: str
 
 
@@ -149,6 +151,7 @@ class LeanAppConfig(StrictModel):
     scheduler_error_interval_s: float = 2.0
     toolkit: LeanToolkitAppConfig = Field(default_factory=LeanToolkitAppConfig)
     native_lake_project: NativeLakeProjectConfig = Field(default_factory=NativeLakeProjectConfig)
+    workspace_config: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
 
     @field_validator(
         "workspace_root",
@@ -244,6 +247,7 @@ class LeanAppConfig(StrictModel):
             scheduler_error_interval_s=self.scheduler_error_interval_s,
             toolkit=self.toolkit,
             native_lake_project=self.native_lake_project,
+            workspace_config=self.workspace_config,
             summary="Loaded Lean Constellation app config with secret-bearing file contents redacted.",
         )
 
@@ -297,6 +301,7 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
             data[field] = value
     _apply_toolkit_env(data, env)
     _apply_native_lake_env(data, env)
+    _apply_workspace_config_env(data, env)
 
 
 def _apply_toolkit_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
@@ -371,3 +376,27 @@ def _apply_native_lake_env(data: dict[str, Any], env: Mapping[str, str]) -> None
         native["local_package_cache"] = cache
     if native:
         data["native_lake_project"] = native
+
+
+def _apply_workspace_config_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
+    aliases = {
+        "default_direct_repo_proof_availability": "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_PROOF_AVAILABILITY",
+        "default_direct_repo_work_mode": "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_WORK_MODE",
+        "default_requirement_proof_availability": "LEAN_CONSTELLATION_DEFAULT_REQUIREMENT_PROOF_AVAILABILITY",
+    }
+    workspace_config: dict[str, Any] = dict(data.get("workspace_config") or {})
+    for field, env_key in aliases.items():
+        value = env.get(env_key)
+        if value is not None and str(value).strip():
+            workspace_config[field] = value
+    declared_provider_mode = env.get("LEAN_CONSTELLATION_REQUIREMENT_DECLARED_PROVIDER_WORK_MODE")
+    proved_provider_mode = env.get("LEAN_CONSTELLATION_REQUIREMENT_PROVED_PROVIDER_WORK_MODE")
+    if declared_provider_mode is not None or proved_provider_mode is not None:
+        mapping = dict(workspace_config.get("requirement_provider_work_mode_by_proof_availability") or {})
+        if declared_provider_mode is not None and declared_provider_mode.strip():
+            mapping["declared"] = declared_provider_mode
+        if proved_provider_mode is not None and proved_provider_mode.strip():
+            mapping["proved"] = proved_provider_mode
+        workspace_config["requirement_provider_work_mode_by_proof_availability"] = mapping
+    if workspace_config:
+        data["workspace_config"] = workspace_config

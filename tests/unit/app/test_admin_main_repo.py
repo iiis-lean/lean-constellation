@@ -7,12 +7,14 @@ from lean_constellation.app import (
     CreateMainRepoShellInput,
     InitializeMainNativeSkeletonInput,
     LeanAdminApi,
+    RepoConfigUpdateInput,
     StartPreparationInput,
     ValidateMainSourceCorpusInput,
     WriteMainRepoPreparationInput,
     create_app_runtime_services,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus, RepoWorkMode
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 
 
@@ -118,3 +120,33 @@ def test_admin_main_repo_bootstrap_can_skip_source_validation_for_prepare_mode(t
     assert result.value.skeleton.project_name == "MainProject"
     assert result.value.preparation_flow.flow_type == "native_repo_preparation"
     assert lake.built == [(tmp_path / "MainRepo", None)]
+
+
+def test_admin_can_read_update_repo_config_and_publication(tmp_path: Path) -> None:
+    runtime, _lake = _runtime_with_fake_lake(tmp_path)
+    admin = LeanAdminApi(runtime)
+    repo_root = tmp_path / "MainRepo"
+    repo_root.mkdir()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+
+    default_config = admin.get_repo_config(repo_root)
+    updated_config = admin.update_repo_config(
+        RepoConfigUpdateInput(
+            repo_root=repo_root,
+            target_proof_availability=ProofAvailability.DECLARED,
+            work_mode=RepoWorkMode.DECLARED_INTERFACE,
+            default_requirement_proof_availability=ProofAvailability.PROVED,
+            max_parallel_content_node_tasks=2,
+        )
+    )
+    publication = admin.get_repo_publication(repo_root)
+
+    assert default_config.ok and default_config.value is not None
+    assert default_config.value.config.target_proof_availability == ProofAvailability.PROVED
+    assert updated_config.ok and updated_config.value is not None
+    assert updated_config.value.config.target_proof_availability == ProofAvailability.DECLARED
+    assert updated_config.value.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
+    assert updated_config.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
+    assert updated_config.value.config.max_parallel_content_node_tasks == 2
+    assert publication.ok and publication.value is not None
+    assert publication.value.publication.status == RepoPublicationStatus.DEVELOPING

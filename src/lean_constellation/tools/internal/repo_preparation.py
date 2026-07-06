@@ -61,6 +61,18 @@ def build_tool_specs() -> list[ToolSpec]:
             roles=roles,
         ),
         direct_tool(
+            name="get_current_repo_work_config",
+            description="Read the current repo proof availability target and work mode.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            backing_service="repo_workspace",
+            backing_component="metadata",
+            backing_method="get_repo_work_config",
+            result_view="repo_work_config",
+            groups={AppGroup.REPO_WORK_CONFIG_READ},
+            roles={"coordinator", "plan", "admin"},
+        ),
+        direct_tool(
             name="get_preparation_start_preflight",
             description="Check whether the current repo can start native or adapter preparation.",
             args_model=ExpectedFormatArgs,

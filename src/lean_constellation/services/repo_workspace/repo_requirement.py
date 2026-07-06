@@ -14,6 +14,7 @@ from lean_constellation.domain.preparation import (
     RequirementWaitingView,
     RequirementView,
 )
+from lean_constellation.domain.repo import ProofAvailability, proof_availability_satisfies
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ class RepoRequirementComponent:
         *,
         name: str,
         target_repo: str,
+        required_proof_availability: ProofAvailability | str = ProofAvailability.DECLARED,
         source_description: str | None = None,
         reason: str | None = None,
     ) -> ServiceResult[RequirementView]:
@@ -47,6 +49,7 @@ class RepoRequirementComponent:
         requirement = RepoDependencyRequirement(
             name=safe_name,
             target_repo=safe_target,
+            required_proof_availability=ProofAvailability(required_proof_availability),
             source_description=self._strip_or_none(source_description),
             reason=self._strip_or_none(reason),
         )
@@ -280,6 +283,9 @@ class RepoRequirementComponent:
                     object_ref=str(provider_root),
                 )
             )
+        provider_config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
+        if not provider_config.ok or provider_config.value is None:
+            return self.runtime.foundation.fail(provider_config.issues)
         candidates: list[RequirementResumeCandidateView] = []
         for repo_dir in sorted(path for path in workspace_root.iterdir() if path.is_dir()):
             ctx = FoundationContext(repo_root=repo_dir)
@@ -293,6 +299,11 @@ class RepoRequirementComponent:
                 if not self.is_requirement_waiting(requirement):
                     continue
                 if self.effective_provider_repo(requirement) != provider_repo:
+                    continue
+                if not proof_availability_satisfies(
+                    provider_config.value.config.target_proof_availability,
+                    requirement.required_proof_availability,
+                ):
                     continue
                 candidates.append(
                     RequirementResumeCandidateView(

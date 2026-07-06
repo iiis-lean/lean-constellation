@@ -9,7 +9,7 @@ from lean_constellation.domain.preparation import (
     RepoRequirementRef,
     SourceCorpusMode,
 )
-from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.repo_workspace import (
     LakeDependencyComponent,
@@ -309,6 +309,7 @@ def test_workspace_catalog_requirement_groups_and_lake_dependency_wrapper(tmp_pa
         consumer_a,
         name="need_alpha",
         target_repo="alpha",
+        required_proof_availability=ProofAvailability.PROVED,
         source_description="Alpha source.",
         reason=None,
     )
@@ -347,6 +348,8 @@ def test_workspace_catalog_requirement_groups_and_lake_dependency_wrapper(tmp_pa
     assert [group.target_repo for group in groups.value] == ["alpha", "beta"]
     alpha = groups.value[0]
     assert alpha.requirement_count == 2
+    assert alpha.required_proof_availability == ProofAvailability.PROVED
+    assert alpha.provider_work_mode == RepoWorkMode.PROVED_FULL_GRAPH
     assert alpha.consumer_repos == ["consumer_a", "consumer_b"]
     assert alpha.interface_names == ["alpha_support", "alpha_theorem"]
     assert alpha.source_description_summary == "Alpha source."
@@ -355,6 +358,8 @@ def test_workspace_catalog_requirement_groups_and_lake_dependency_wrapper(tmp_pa
     assert found.ok
     assert found.value is not None
     assert [item.requirement.name for item in found.value.requirements] == ["need_alpha", "need_alpha_b"]
+    assert found.value.required_proof_availability == ProofAvailability.PROVED
+    assert found.value.provider_work_mode == RepoWorkMode.PROVED_FULL_GRAPH
 
     empty = catalog.get_requirement_group(workspace, target_repo="missing")
     assert empty.ok
@@ -414,6 +419,8 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
     assert group.ok
     assert group.value is not None
     assert [item.requirement.name for item in group.value.requirements] == ["need_metric", "need_banach"]
+    assert group.value.required_proof_availability == ProofAvailability.DECLARED
+    assert group.value.provider_work_mode == RepoWorkMode.DECLARED_INTERFACE
 
     draft = preparation.build_preparation_input_from_group(workspace, target_repo="fixed_point_provider")
     assert draft.ok
@@ -439,6 +446,10 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
     assert shell.value is not None
     assert (workspace / "fixed_point_provider" / ".lean_constellation" / "repo.json").exists()
     assert (workspace / "fixed_point_provider" / ".lean_constellation" / "preparation_input.json").exists()
+    provider_config = metadata.get_repo_config(workspace / "fixed_point_provider")
+    assert provider_config.ok and provider_config.value is not None
+    assert provider_config.value.config.target_proof_availability == ProofAvailability.DECLARED
+    assert provider_config.value.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
 
     duplicate = preparation.create_provider_repo_shell(workspace, target_repo="fixed_point_provider")
     assert not duplicate.ok
@@ -450,6 +461,44 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
     assert summaries.value is not None
     assert summaries.value[0].target_repo == "fixed_point_provider"
     assert summaries.value[0].requirement_count == 2
+
+
+def test_provider_runtime_shell_derives_strictest_required_proof_availability(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _, metadata, requirement, preparation = _components()
+    consumer_declared = workspace / "consumer_declared"
+    consumer_proved = workspace / "consumer_proved"
+    metadata.ensure_repo_model(consumer_declared)
+    metadata.ensure_repo_model(consumer_proved)
+    requirement.create_requirement(
+        consumer_declared,
+        name="need_declared",
+        target_repo="mixed_provider",
+        required_proof_availability=ProofAvailability.DECLARED,
+        reason="Declared interface is enough.",
+    )
+    requirement.create_requirement(
+        consumer_proved,
+        name="need_proved",
+        target_repo="mixed_provider",
+        required_proof_availability=ProofAvailability.PROVED,
+        reason="Need proved interface.",
+    )
+    draft = preparation.build_preparation_input_from_group(workspace, target_repo="mixed_provider")
+    assert draft.ok and draft.value is not None
+
+    prepared = preparation.prepare_provider_repo_runtime_shell(
+        workspace,
+        target_repo="mixed_provider",
+        preparation_input=draft.value.input,
+    )
+
+    assert prepared.ok and prepared.value is not None
+    config = metadata.get_repo_config(workspace / "mixed_provider")
+    assert config.ok and config.value is not None
+    assert config.value.config.target_proof_availability == ProofAvailability.PROVED
+    assert config.value.config.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert (workspace / "mixed_provider" / ".agent_runtime").is_dir()
 
 
 def test_main_input_and_native_handoff_base_gate(tmp_path: Path) -> None:

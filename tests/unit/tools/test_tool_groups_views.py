@@ -46,6 +46,45 @@ def test_resource_discovery_tools_visible_to_coordinator_and_resource_recon() ->
     assert {"search_material_text", "search_arxiv_theorems"} <= set(resource_recon.value)
 
 
+def test_repo_work_config_tool_visible_to_coordinator_and_content_plan_only() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    coordinator = runtime.tool_facade.tool_view.tool_names_for_view("native_repo_coordinator")
+    content_plan = runtime.tool_facade.tool_view.tool_names_for_view("content_plan")
+    statement_worker = runtime.tool_facade.tool_view.tool_names_for_view("statement_nl_worker")
+
+    assert coordinator.ok and coordinator.value is not None
+    assert content_plan.ok and content_plan.value is not None
+    assert statement_worker.ok and statement_worker.value is not None
+    assert "get_current_repo_work_config" in coordinator.value
+    assert "get_current_repo_work_config" in content_plan.value
+    assert "get_current_repo_work_config" not in statement_worker.value
+
+
+def test_coordinator_contract_closeout_tools_only_visible_to_coordinator() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    coordinator = runtime.tool_facade.tool_view.tool_names_for_view("native_repo_coordinator")
+    content_plan = runtime.tool_facade.tool_view.tool_names_for_view("content_plan")
+    node_dir = runtime.tool_facade.tool_view.tool_names_for_view("node_dir_dependency_recon")
+    statement_worker = runtime.tool_facade.tool_view.tool_names_for_view("statement_nl_worker")
+
+    assert coordinator.ok and coordinator.value is not None
+    assert content_plan.ok and content_plan.value is not None
+    assert node_dir.ok and node_dir.value is not None
+    assert statement_worker.ok and statement_worker.value is not None
+    closeout_tools = {
+        "list_recent_content_task_results",
+        "inspect_content_task_result",
+        "commit_content_contract",
+        "commit_scope_contract",
+    }
+    assert closeout_tools <= set(coordinator.value)
+    assert closeout_tools.isdisjoint(content_plan.value)
+    assert closeout_tools.isdisjoint(node_dir.value)
+    assert closeout_tools.isdisjoint(statement_worker.value)
+
+
 def test_decl_graph_store_write_tools_only_visible_to_content_plan() -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
 

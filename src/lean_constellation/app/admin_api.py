@@ -29,6 +29,12 @@ from lean_constellation.domain.preparation import (
     RequirementResumeCandidateView,
     SourceCorpusMode,
 )
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoConfigView,
+    RepoPublicationView,
+    RepoWorkMode,
+)
 from lean_constellation.flows.testing import (
     CONTROLLED_AGENT_OVERRIDE_KEY,
     CONTROLLED_AGENT_RECORD_KEY,
@@ -408,6 +414,19 @@ class MainNativeRepoBootstrapView(StrictModel):
     summary: str
 
 
+class RepoConfigUpdateInput(StrictModel):
+    repo_root: Path
+    target_proof_availability: ProofAvailability | None = None
+    work_mode: RepoWorkMode | None = None
+    default_requirement_proof_availability: ProofAvailability | None = None
+    max_parallel_content_node_tasks: int | None = None
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
 class StartFlowInput(StrictModel):
     flow_type: str
     scope_id: str
@@ -649,6 +668,21 @@ class LeanAdminApi:
             input_model.repo_root,
             project_name=input_model.project_name or input_model.repo_root.name,
         )
+
+    def get_repo_config(self, repo_root: Path) -> ServiceResult[RepoConfigView]:
+        return self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
+
+    def update_repo_config(self, input_model: RepoConfigUpdateInput) -> ServiceResult[RepoConfigView]:
+        return self.runtime.repo_workspace.metadata.update_repo_config(
+            input_model.repo_root,
+            target_proof_availability=input_model.target_proof_availability,
+            work_mode=input_model.work_mode,
+            default_requirement_proof_availability=input_model.default_requirement_proof_availability,
+            max_parallel_content_node_tasks=input_model.max_parallel_content_node_tasks,
+        )
+
+    def get_repo_publication(self, repo_root: Path) -> ServiceResult[RepoPublicationView]:
+        return self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
 
     def bootstrap_main_native_repo(
         self,

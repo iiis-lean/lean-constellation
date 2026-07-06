@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     ContractCoreUpdateArgs,
     ContentNodeBatchArgs,
+    ContentTaskResultInspectArgs,
+    ContentTaskResultListArgs,
     CreateContentNodeArgs,
     CreateScopeNodeArgs,
     CurrentMaterialRefAddArgs,
@@ -17,6 +21,7 @@ from lean_constellation.tools.args import (
     InterfaceNameArgs,
     InterfaceUpdateArgs,
     MaxCountArgs,
+    NodeContractCommitArgs,
     NodeDeleteArgs,
     NodePathArgs,
     NoArgs,
@@ -26,6 +31,30 @@ from lean_constellation.tools.args import (
 )
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import actor_for_write, current_node_path, direct_tool, handler_tool
+from lean_constellation.domain.common import StrictModel
+from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
+
+
+class ContentTaskResultItemView(StrictModel):
+    node_path: str
+    repo_key: str
+    outcome: str
+    contract_version: int | None = None
+    reason: str | None = None
+    summary: str | None = None
+    is_committable: bool = True
+    summary_for_agent: str
+
+
+class ContentTaskResultListView(StrictModel):
+    count: int
+    items: list[ContentTaskResultItemView]
+    summary: str
+
+
+class ContentTaskResultInspectView(StrictModel):
+    result: ContentTaskResultItemView
+    summary: str
 
 
 def _current_contract(runtime, ctx, args):
@@ -147,6 +176,168 @@ def _unbind_node_interface(runtime, ctx, args: InterfaceNameArgs):
         ctx.repo_root,
         node_path=args.node_path,
         interface_name=args.name,
+    )
+
+
+def _commit_scope_contract(runtime, ctx, args: NodeContractCommitArgs):
+    return runtime.node.commit_scope_contract(ctx.repo_root, scope_path=args.node_path, summary=args.summary)
+
+
+def _list_recent_content_task_results(runtime, ctx, args: ContentTaskResultListArgs):
+    resolved = _resolve_content_task_result_items(runtime, ctx, node_path=args.node_path)
+    if not resolved.ok or resolved.value is None:
+        return runtime.foundation.fail(resolved.issues)
+    items = resolved.value[: args.limit]
+    return runtime.foundation.ok(
+        ContentTaskResultListView(
+            count=len(items),
+            items=items,
+            summary=f"Found {len(items)} terminal Content task result(s) in the current callback context.",
+        )
+    )
+
+
+def _inspect_content_task_result(runtime, ctx, args: ContentTaskResultInspectArgs):
+    selected = _select_content_task_result_item(runtime, ctx, node_path=args.node_path, contract_version=args.contract_version)
+    if not selected.ok or selected.value is None:
+        return runtime.foundation.fail(selected.issues)
+    return runtime.foundation.ok(
+        ContentTaskResultInspectView(
+            result=selected.value,
+            summary=f"Selected terminal Content task result for {args.node_path}.",
+        )
+    )
+
+
+def _commit_content_contract(runtime, ctx, args: NodeContractCommitArgs):
+    selected = _select_content_task_result(runtime, ctx, node_path=args.node_path, contract_version=None)
+    if not selected.ok or selected.value is None:
+        return runtime.foundation.fail(selected.issues)
+    return runtime.node.finalize_content_task_result(
+        ctx.repo_root,
+        node_path=args.node_path,
+        task_result=selected.value,
+        coordinator_summary=args.summary,
+    )
+
+
+def _select_content_task_result(runtime, ctx, *, node_path: str, contract_version: int | None):
+    flow_results = _content_task_results_for_callback(runtime, ctx)
+    if not flow_results.ok or flow_results.value is None:
+        return runtime.foundation.fail(flow_results.issues)
+    matches: list[ContentNodeTaskResult] = []
+    for result in flow_results.value:
+        if result.node_path != node_path:
+            continue
+        if contract_version is not None and result.contract_version != contract_version:
+            continue
+        matches.append(result)
+    if not matches:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "content_task_result_not_found",
+                "No terminal Content task result matched the requested node path and contract version.",
+                object_ref=node_path,
+                field="contract_version" if contract_version is not None else "node_path",
+                expected=str(contract_version) if contract_version is not None else None,
+            )
+        )
+    return runtime.foundation.ok(matches[0])
+
+
+def _select_content_task_result_item(runtime, ctx, *, node_path: str, contract_version: int | None):
+    selected = _select_content_task_result(runtime, ctx, node_path=node_path, contract_version=contract_version)
+    if not selected.ok or selected.value is None:
+        return runtime.foundation.fail(selected.issues)
+    return runtime.foundation.ok(_content_task_result_item(selected.value))
+
+
+def _resolve_content_task_result_items(runtime, ctx, *, node_path: str | None):
+    flow_results = _content_task_results_for_callback(runtime, ctx)
+    if not flow_results.ok or flow_results.value is None:
+        return runtime.foundation.fail(flow_results.issues)
+    items = [
+        _content_task_result_item(result)
+        for result in flow_results.value
+        if node_path is None or result.node_path == node_path
+    ]
+    return runtime.foundation.ok(items)
+
+
+def _content_task_results_for_callback(runtime, ctx):
+    flow_service = getattr(runtime.ark, "flow_service", None)
+    if flow_service is None:
+        return runtime.foundation.fail(runtime.foundation.issue("flow_service_missing", "ARK flow service is not configured."))
+    current_step_id = ctx.runtime.step_id
+    parent_flow_id = ctx.runtime.flow_id
+    if not current_step_id or not parent_flow_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "content_task_callback_context_missing",
+                "Content task result tools require a Coordinator callback AgentStep context.",
+            )
+        )
+    try:
+        current_step = flow_service.get_step(current_step_id)
+    except Exception as exc:  # noqa: BLE001 - runtime boundary
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "content_task_callback_context_missing",
+                f"Could not read current AgentStep context: {exc}",
+                object_ref=current_step_id,
+            )
+        )
+    dispatch_step_id = getattr(getattr(current_step, "state", None), "callback_dispatch_step_id", None)
+    if not dispatch_step_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "content_task_callback_context_missing",
+                "Content task result tools require a callback AgentStep with callback_dispatch_step_id.",
+                object_ref=current_step_id,
+            )
+        )
+
+    store = getattr(flow_service, "store", None)
+    try:
+        if store is not None and hasattr(store, "list_child_flows"):
+            child_flows = list(store.list_child_flows(parent_flow_id=parent_flow_id, parent_dispatch_step_id=dispatch_step_id))
+        else:
+            child_flows = [
+                flow
+                for flow in flow_service.list_flows()
+                if flow.parent_flow_id == parent_flow_id and flow.parent_dispatch_step_id == dispatch_step_id
+            ]
+    except Exception as exc:  # noqa: BLE001 - runtime boundary
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "content_task_callback_children_unavailable",
+                f"Could not read callback child flows: {exc}",
+                object_ref=dispatch_step_id,
+            )
+        )
+
+    results: list[ContentNodeTaskResult] = []
+    for child_flow in child_flows:
+        result = getattr(child_flow, "result", None)
+        if isinstance(result, ContentNodeTaskResult):
+            results.append(result)
+    results.reverse()
+    return runtime.foundation.ok(results)
+
+
+def _content_task_result_item(result: ContentNodeTaskResult) -> ContentTaskResultItemView:
+    contract = f" contract version {result.contract_version}" if result.contract_version is not None else ""
+    reason = f" Reason: {result.reason}" if result.reason else ""
+    summary = result.summary or f"Content task {result.outcome}."
+    return ContentTaskResultItemView(
+        node_path=result.node_path,
+        repo_key=result.repo_key,
+        outcome=result.outcome,
+        contract_version=result.contract_version,
+        reason=result.reason,
+        summary=result.summary,
+        is_committable=True,
+        summary_for_agent=f"{result.node_path}{contract}: {summary}{reason}",
     )
 
 
@@ -398,6 +589,36 @@ def build_tool_specs() -> list[ToolSpec]:
             roles=coordinator_roles,
             handler=_unbind_node_interface,
         ),
+        handler_tool(
+            name="list_recent_content_task_results",
+            description="List terminal Content node task results from the current Coordinator callback context.",
+            args_model=ContentTaskResultListArgs,
+            capability=ToolCapability.READ,
+            result_view="content_task_results",
+            groups={AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE},
+            roles=coordinator_roles,
+            handler=_list_recent_content_task_results,
+        ),
+        handler_tool(
+            name="inspect_content_task_result",
+            description="Inspect one terminal Content node task result from the current Coordinator callback context.",
+            args_model=ContentTaskResultInspectArgs,
+            capability=ToolCapability.READ,
+            result_view="content_task_result",
+            groups={AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE},
+            roles=coordinator_roles,
+            handler=_inspect_content_task_result,
+        ),
+        handler_tool(
+            name="commit_content_contract",
+            description="Commit the current open Content node contract after its latest terminal task result has been reviewed.",
+            args_model=NodeContractCommitArgs,
+            capability=ToolCapability.WRITE,
+            result_view="content_task_finalize",
+            groups={AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE},
+            roles=coordinator_roles,
+            handler=_commit_content_contract,
+        ),
         direct_tool(
             name="list_scope_export_candidates",
             description="List public declarations visible for export from a Scope child boundary.",
@@ -445,6 +666,16 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="scope_exports",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
             roles=coordinator_roles,
+        ),
+        handler_tool(
+            name="commit_scope_contract",
+            description="Run the Scope close gate and commit the current open Scope contract when exports and interface bindings are stable.",
+            args_model=NodeContractCommitArgs,
+            capability=ToolCapability.WRITE,
+            result_view="node_contract",
+            groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
+            roles=coordinator_roles,
+            handler=_commit_scope_contract,
         ),
         direct_tool(
             name="get_scope_close_view",

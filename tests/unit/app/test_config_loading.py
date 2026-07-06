@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from lean_constellation.app import load_app_config
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 
 
 def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secrets(tmp_path) -> None:
@@ -94,3 +95,27 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
     assert config.native_lake_project.local_package_cache.packages_root == tmp_path / "template" / ".lake" / "packages"
     assert config.native_lake_project.local_package_cache.manifest_path == tmp_path / "template" / "lake-manifest.json"
     assert config.native_lake_project.local_package_cache.package_names == ["mathlib", "aesop"]
+
+
+def test_load_app_config_reads_workspace_repo_defaults_from_env(tmp_path) -> None:
+    config = load_app_config(
+        None,
+        env={
+            "LEAN_CONSTELLATION_WORKSPACE_ROOT": str(tmp_path / "workspace"),
+            "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_PROOF_AVAILABILITY": "declared",
+            "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_WORK_MODE": "declared_full_graph",
+            "LEAN_CONSTELLATION_DEFAULT_REQUIREMENT_PROOF_AVAILABILITY": "proved",
+            "LEAN_CONSTELLATION_REQUIREMENT_DECLARED_PROVIDER_WORK_MODE": "declared_full_graph",
+            "LEAN_CONSTELLATION_REQUIREMENT_PROVED_PROVIDER_WORK_MODE": "proved_full_graph",
+        },
+    )
+
+    assert config.workspace_config.default_direct_repo_proof_availability == ProofAvailability.DECLARED
+    assert config.workspace_config.default_direct_repo_work_mode == RepoWorkMode.DECLARED_FULL_GRAPH
+    assert config.workspace_config.default_requirement_proof_availability == ProofAvailability.PROVED
+    assert config.workspace_config.requirement_provider_work_mode_by_proof_availability[ProofAvailability.DECLARED] == (
+        RepoWorkMode.DECLARED_FULL_GRAPH
+    )
+    assert config.workspace_config.requirement_provider_work_mode_by_proof_availability[ProofAvailability.PROVED] == (
+        RepoWorkMode.PROVED_FULL_GRAPH
+    )
