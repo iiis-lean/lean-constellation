@@ -141,3 +141,33 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "submit_content_node_ready" in completion
     assert "submit_content_node_blocked" in completion
     assert "submit_content_node_failed" in completion
+
+    proved_mode = specs["content-plan-proved-full-graph-mode"].body
+    assert "Bottom-up strategy" in proved_mode
+    assert "Top-down strategy" in proved_mode
+    assert "require_target_state_satisfied=false" in proved_mode
+
+    declared_full_mode = specs["content-plan-declared-full-graph-mode"].body
+    assert "Bottom-up skeleton strategy" in declared_full_mode
+    assert "Top-down skeleton strategy" in declared_full_mode
+
+    declared_interface_mode = specs["content-plan-declared-interface-mode"].body
+    assert "smallest useful declared interface" in declared_interface_mode
+    assert "Do not create proof-only hidden helper lemmas" in declared_interface_mode
+
+
+def test_coordinator_mode_skills_spell_out_node_tree_policy() -> None:
+    specs = build_skill_specs()
+
+    proved_mode = specs["coordinator-proved-full-graph-mode"].body
+    assert "complete proof-oriented native repository" in proved_mode
+    assert "intermediate lemmas" in proved_mode
+    assert "expected proof completion" in proved_mode
+
+    declared_full_mode = specs["coordinator-declared-full-graph-mode"].body
+    assert "full declaration skeleton" in declared_full_mode
+    assert "future proved work" in declared_full_mode
+
+    declared_interface_mode = specs["coordinator-declared-interface-mode"].body
+    assert "smallest stable provider boundary" in declared_interface_mode
+    assert "Avoid creating proof-only internal lemma nodes" in declared_interface_mode
