@@ -130,11 +130,13 @@ def test_coordinator_contract_closeout_tools_only_visible_to_coordinator() -> No
     runtime = create_test_runtime_services(register_application_tools=True)
 
     coordinator = runtime.tool_facade.tool_view.tool_names_for_view("native_repo_coordinator")
+    root_interface = runtime.tool_facade.tool_view.tool_names_for_view("root_interface_prepare")
     content_plan = runtime.tool_facade.tool_view.tool_names_for_view("content_plan")
     node_dir = runtime.tool_facade.tool_view.tool_names_for_view("node_dir_dependency_recon")
     statement_worker = runtime.tool_facade.tool_view.tool_names_for_view("statement_nl_worker")
 
     assert coordinator.ok and coordinator.value is not None
+    assert root_interface.ok and root_interface.value is not None
     assert content_plan.ok and content_plan.value is not None
     assert node_dir.ok and node_dir.value is not None
     assert statement_worker.ok and statement_worker.value is not None
@@ -145,6 +147,7 @@ def test_coordinator_contract_closeout_tools_only_visible_to_coordinator() -> No
         "commit_scope_contract",
     }
     assert closeout_tools <= set(coordinator.value)
+    assert closeout_tools.isdisjoint(root_interface.value)
     assert closeout_tools.isdisjoint(content_plan.value)
     assert closeout_tools.isdisjoint(node_dir.value)
     assert closeout_tools.isdisjoint(statement_worker.value)

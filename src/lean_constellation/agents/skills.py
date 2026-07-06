@@ -466,7 +466,12 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         name="coordinator-scope-lifecycle",
         description="Guides a Coordinator through the lifecycle of one Scope node.",
         group="coordinator",
-        required_tool_groups=_groups(AppGroup.SCOPE_EXPORT_INTERFACE_READ, AppGroup.SCOPE_EXPORT_INTERFACE_WRITE, AppGroup.SCOPE_CLOSE_READ),
+        required_tool_groups=_groups(
+            AppGroup.SCOPE_EXPORT_INTERFACE_READ,
+            AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
+            AppGroup.SCOPE_CONTRACT_COORDINATOR_COMMIT,
+            AppGroup.SCOPE_CLOSE_READ,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "coordinator-scope-lifecycle",
@@ -476,7 +481,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Plan required public interfaces and child responsibilities.",
                 "Analyze children with `get_scope_close_view` when they become ready.",
                 "Use `list_scope_export_candidates`, `add_scope_export`, and `bind_node_interface` for export and binding details.",
-                "Commit scope summaries only after readiness and projection checks pass through the available scope tools.",
+                "Call `commit_scope_contract` only after readiness and projection checks pass through the available scope tools.",
             ),
             (
                 "Do not close a scope while required child work is unresolved.",
@@ -488,7 +493,12 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         name="coordinator-content-task-lifecycle",
         description="Guides a Coordinator through one content node task cycle.",
         group="coordinator",
-        required_tool_groups=_groups(SubmitGroup.COORDINATOR_SUBMIT, AppGroup.CONTENT_TASK_ADMISSION_READ, AppGroup.NODE_CONTRACT_READ_COORDINATOR),
+        required_tool_groups=_groups(
+            SubmitGroup.COORDINATOR_SUBMIT,
+            AppGroup.CONTENT_TASK_ADMISSION_READ,
+            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "coordinator-content-task-lifecycle",
@@ -497,7 +507,8 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Check that candidate content nodes are runnable with `check_content_task_admission` before dispatch.",
                 "Prepare each task contract with current objective and constraints.",
                 "Submit runnable tasks through `submit_content_node_tasks`.",
-                "Process ready, blocked, or failed callbacks against current repository truth.",
+                "After callbacks, read terminal task results with `list_recent_content_task_results` or `inspect_content_task_result`.",
+                "Call `commit_content_contract` for each reviewed ready, blocked, or failed Content task result before planning follow-up work.",
                 "Decide whether to update contracts, create follow-up tasks, call `submit_resource_request`, call `submit_repo_requirement`, or close scopes.",
             ),
             (

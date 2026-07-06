@@ -673,7 +673,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeContractCommitArgs,
             capability=ToolCapability.WRITE,
             result_view="node_contract",
-            groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
+            groups={AppGroup.SCOPE_CONTRACT_COORDINATOR_COMMIT},
             roles=coordinator_roles,
             handler=_commit_scope_contract,
         ),

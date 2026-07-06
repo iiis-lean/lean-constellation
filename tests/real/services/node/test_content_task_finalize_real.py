@@ -72,7 +72,7 @@ def test_content_task_ready_finalize_persists_and_reloads_real(tmp_path: Path) -
 
 
 @pytest.mark.real
-def test_content_task_blocked_finalize_persists_summary_without_commit_real(tmp_path: Path) -> None:
+def test_content_task_blocked_finalize_persists_committed_contract_real(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     service, ready_gate = _service_with_content_node(repo_root)
@@ -91,12 +91,43 @@ def test_content_task_blocked_finalize_persists_summary_without_commit_real(tmp_
     assert finalized.ok, finalized.issues
     assert finalized.value is not None
     assert finalized.value.contract_summary_written is True
-    assert finalized.value.contract_committed is False
+    assert finalized.value.contract_committed is True
     assert ready_gate.calls == []
 
     reloaded = make_runtime().node.contract.get_current_contract(repo_root, node_path="Main.Topic.Core")
     assert reloaded.ok, reloaded.issues
     assert reloaded.value is not None
-    assert reloaded.value.version_status.value == "open"
+    assert reloaded.value.version_status.value == "committed"
     assert reloaded.value.contract.summary == "Coordinator recorded the blocked content task."
-    assert reloaded.value.contract.committed_at is None
+    assert reloaded.value.contract.committed_at is not None
+
+
+@pytest.mark.real
+def test_content_task_failed_finalize_persists_committed_contract_real(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    service, ready_gate = _service_with_content_node(repo_root)
+
+    finalized = service.finalize_content_task_result(
+        repo_root,
+        node_path="Main.Topic.Core",
+        task_result=ContentTaskResultView(
+            outcome=ContentTaskOutcome.FAILED,
+            summary="Content task route failed.",
+            reason="The automated route exhausted its retry budget.",
+        ),
+        coordinator_summary="Coordinator recorded the failed content task.",
+    )
+
+    assert finalized.ok, finalized.issues
+    assert finalized.value is not None
+    assert finalized.value.contract_summary_written is True
+    assert finalized.value.contract_committed is True
+    assert ready_gate.calls == []
+
+    reloaded = make_runtime().node.contract.get_current_contract(repo_root, node_path="Main.Topic.Core")
+    assert reloaded.ok, reloaded.issues
+    assert reloaded.value is not None
+    assert reloaded.value.version_status.value == "committed"
+    assert reloaded.value.contract.summary == "Coordinator recorded the failed content task."
+    assert reloaded.value.contract.committed_at is not None

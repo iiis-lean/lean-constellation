@@ -46,6 +46,7 @@ class ContentTaskResultView(StrictModel):
     """Minimal ContentNodeTaskFlow result shape consumed by Coordinator finalize."""
 
     outcome: ContentTaskOutcome
+    contract_version: int | None = None
     summary: str | None = None
     reason: str | None = None
 
@@ -422,7 +423,7 @@ class NodeService:
         repo_root: Path,
         *,
         node_path: str,
-        task_result: ContentTaskResultView | dict[str, object],
+        task_result: ContentTaskResultView | dict[str, object] | object,
         coordinator_summary: str,
     ) -> ServiceResult[ContentTaskFinalizeView]:
         """Record the Coordinator callback summary for a terminal Content node task result."""
@@ -445,15 +446,30 @@ class NodeService:
                     field="task_result.reason",
                 )
             )
+        current = self.contract.get_current_contract(repo_root, node_path=node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        if (
+            parsed_result.value.contract_version is not None
+            and current.value.version is not None
+            and parsed_result.value.contract_version != current.value.version
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "content_task_contract_version_mismatch",
+                    "Content task result contract version does not match the current node contract version.",
+                    object_ref=node_path,
+                    field="task_result.contract_version",
+                    current=str(parsed_result.value.contract_version),
+                    expected=str(current.value.version),
+                )
+            )
 
         if parsed_result.value.outcome == ContentTaskOutcome.READY:
             gate = self._check_content_task_ready(repo_root, node_path=node_path)
             if not gate.ok or gate.value is None:
                 return self.runtime.foundation.fail(gate.issues)
             if not gate.value.passed:
-                current = self.contract.get_current_contract(repo_root, node_path=node_path)
-                if not current.ok or current.value is None:
-                    return self.runtime.foundation.fail(current.issues)
                 view = self._content_task_finalize_view(
                     node_path=node_path,
                     task_result=parsed_result.value,
@@ -486,22 +502,22 @@ class NodeService:
         gate_name = f"content_task_finalize_{parsed_result.value.outcome.value}"
         gate = self.runtime.foundation.gate_passed(
             gate_name,
-            summary=f"Content task {parsed_result.value.outcome.value} result is accepted for summary recording.",
+            summary=f"Content task {parsed_result.value.outcome.value} result is accepted for contract commit.",
         )
-        recorded = self.contract.record_content_contract_summary(repo_root, node_path=node_path, summary=coordinator_summary)
-        if not recorded.ok or recorded.value is None:
-            return self.runtime.foundation.fail(recorded.issues)
+        committed = self.contract.commit_content_contract(repo_root, node_path=node_path, summary=coordinator_summary)
+        if not committed.ok or committed.value is None:
+            return self.runtime.foundation.fail(committed.issues)
         return self.runtime.foundation.ok(
             self._content_task_finalize_view(
                 node_path=node_path,
                 task_result=parsed_result.value,
                 coordinator_summary=coordinator_summary.strip(),
-                contract=recorded.value,
+                contract=committed.value,
                 gate=gate,
                 finalized=True,
                 contract_summary_written=True,
-                contract_committed=False,
-                summary=f"Content task result finalized as {parsed_result.value.outcome.value}; contract remains open.",
+                contract_committed=True,
+                summary=f"Content task result finalized as {parsed_result.value.outcome.value}; contract summary was committed.",
             )
         )
 
@@ -627,10 +643,12 @@ class NodeService:
             return self.runtime.foundation.fail(synced.issues)
         return synced
 
-    def _parse_content_task_result(self, task_result: ContentTaskResultView | dict[str, object]) -> ServiceResult[ContentTaskResultView]:
+    def _parse_content_task_result(self, task_result: ContentTaskResultView | dict[str, object] | object) -> ServiceResult[ContentTaskResultView]:
         if isinstance(task_result, ContentTaskResultView):
             return self.runtime.foundation.ok(task_result)
         try:
+            if hasattr(task_result, "model_dump"):
+                return self.runtime.foundation.ok(ContentTaskResultView.model_validate(task_result.model_dump()))
             return self.runtime.foundation.ok(ContentTaskResultView.model_validate(task_result))
         except ValueError as exc:
             return self.runtime.foundation.fail(

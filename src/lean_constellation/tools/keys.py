@@ -65,6 +65,7 @@ class ApplicationToolGroupKey(StrEnum):
     RESOURCE_LIBRARY_READ = "resource_library_read"
     ROOT_INTERFACE_PREPARE_READ = "root_interface_prepare_read"
     SCOPE_CLOSE_READ = "scope_close_read"
+    SCOPE_CONTRACT_COORDINATOR_COMMIT = "scope_contract_coordinator_commit"
     SCOPE_EXPORT_INTERFACE_READ = "scope_export_interface_read"
     SCOPE_EXPORT_INTERFACE_WRITE = "scope_export_interface_write"
     SOURCE_ACQUISITION = "source_acquisition"

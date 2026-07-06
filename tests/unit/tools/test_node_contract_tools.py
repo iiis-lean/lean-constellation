@@ -28,10 +28,14 @@ def test_node_contract_tools_are_registered() -> None:
         "remove_node_interface",
         "bind_node_interface",
         "unbind_node_interface",
+        "list_recent_content_task_results",
+        "inspect_content_task_result",
+        "commit_content_contract",
         "list_scope_export_candidates",
         "list_scope_exports",
         "add_scope_export",
         "remove_scope_export",
+        "commit_scope_contract",
         "get_scope_close_view",
         "get_repo_ready_node_view",
         "check_content_task_admission",
@@ -51,6 +55,11 @@ def test_node_contract_groups_expose_expected_tools() -> None:
     assert_group_contains("node_contract_material_current_write", {"add_current_material_ref", "remove_current_material_ref"})
     assert_group_contains("scope_export_interface_read", {"list_node_interfaces", "list_scope_exports", "list_scope_export_candidates"})
     assert_group_contains("scope_export_interface_write", {"add_node_interface", "bind_node_interface", "add_scope_export"})
+    assert_group_contains("scope_contract_coordinator_commit", {"commit_scope_contract"})
+    assert_group_contains(
+        "content_task_result_coordinator_finalize",
+        {"list_recent_content_task_results", "inspect_content_task_result", "commit_content_contract"},
+    )
     assert_group_contains("scope_close_read", {"get_scope_close_view"})
     assert_group_contains("repo_ready_read", {"get_repo_ready_node_view"})
     assert_group_contains("content_task_admission_read", {"list_runnable_content_nodes", "check_content_task_admission", "check_content_node_batch"})

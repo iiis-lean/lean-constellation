@@ -3,8 +3,10 @@ from pathlib import Path
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
 from lean_constellation.services.node import ContentTaskOutcome, ContentTaskResultView, NodeService
+from lean_constellation.services.validation_snapshot.readiness_gate import ContentNodeCompletionGateView
 
 
 class FakeContentReadyGate:
@@ -12,33 +14,54 @@ class FakeContentReadyGate:
         self.passed = passed
         self.calls: list[tuple[Path, str]] = []
 
-    def check_content_node_ready(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
+    def check_content_node_completion(self, repo_root: Path, *, node_path: str) -> ServiceResult[ContentNodeCompletionGateView]:
         self.calls.append((Path(repo_root), node_path))
-        if self.passed:
-            return ServiceResult(
-                ok=True,
-                value=GateReport(
-                    gate_name="content_node_ready",
-                    passed=True,
-                    summary="Fake content readiness passed.",
-                ),
+        gate = (
+            GateReport(
+                gate_name="content_node_completion",
+                passed=True,
+                summary="Fake content completion passed.",
             )
-        return ServiceResult(
-            ok=True,
-            value=GateReport(
-                gate_name="content_node_ready",
+            if self.passed
+            else GateReport(
+                gate_name="content_node_completion",
                 passed=False,
-                summary="Fake content readiness failed.",
+                summary="Fake content completion failed.",
                 issues=[
                     ServiceIssue(
                         kind="fake_content_not_ready",
-                        message="Fake content readiness failed.",
+                        message="Fake content completion failed.",
                         object_ref=node_path,
                         suggested_action="Inspect the content task result before committing.",
                     )
                 ],
+            )
+        )
+        if self.passed:
+            return ServiceResult(
+                ok=True,
+                value=ContentNodeCompletionGateView(
+                    node_path=node_path,
+                    target_proof_availability=ProofAvailability.PROVED,
+                    gate=gate,
+                    ready_to_submit=True,
+                    summary="Fake content completion passed.",
+                ),
+            )
+        return ServiceResult(
+            ok=True,
+            value=ContentNodeCompletionGateView(
+                node_path=node_path,
+                target_proof_availability=ProofAvailability.PROVED,
+                gate=gate,
+                ready_to_submit=False,
+                blocking_issue_kinds=["fake_content_not_ready"],
+                summary="Fake content completion failed.",
             ),
         )
+
+    def check_content_node_ready(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
+        raise AssertionError("finalize_content_task_result should use check_content_node_completion when available")
 
 
 def _write_preparation_input(tmp_path: Path) -> None:
@@ -96,9 +119,10 @@ def test_finalize_ready_content_task_commits_contract(tmp_path: Path) -> None:
     assert current.value is not None
     assert current.value.version_status == "committed"
     assert current.value.contract.summary == "Coordinator verified the ready content task."
+    assert current.value.contract.committed_at is not None
 
 
-def test_finalize_blocked_content_task_records_summary_without_commit(tmp_path: Path) -> None:
+def test_finalize_blocked_content_task_commits_contract(tmp_path: Path) -> None:
     service, ready_gate = _make_service_with_content_node(tmp_path)
 
     finalized = service.finalize_content_task_result(
@@ -116,18 +140,19 @@ def test_finalize_blocked_content_task_records_summary_without_commit(tmp_path: 
     assert finalized.value is not None
     assert finalized.value.finalized is True
     assert finalized.value.contract_summary_written is True
-    assert finalized.value.contract_committed is False
-    assert finalized.value.contract_version_status == "open"
+    assert finalized.value.contract_committed is True
+    assert finalized.value.contract_version_status == "committed"
     assert ready_gate.calls == []
 
     current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert current.ok
     assert current.value is not None
-    assert current.value.version_status == "open"
+    assert current.value.version_status == "committed"
     assert current.value.contract.summary == "Coordinator recorded a blocked content task."
+    assert current.value.contract.committed_at is not None
 
 
-def test_finalize_failed_content_task_records_summary_without_commit(tmp_path: Path) -> None:
+def test_finalize_failed_content_task_commits_contract(tmp_path: Path) -> None:
     service, _ready_gate = _make_service_with_content_node(tmp_path)
 
     finalized = service.finalize_content_task_result(
@@ -144,13 +169,15 @@ def test_finalize_failed_content_task_records_summary_without_commit(tmp_path: P
     assert finalized.ok
     assert finalized.value is not None
     assert finalized.value.task_outcome == ContentTaskOutcome.FAILED
-    assert finalized.value.contract_committed is False
-    assert finalized.value.contract_version_status == "open"
+    assert finalized.value.contract_committed is True
+    assert finalized.value.contract_version_status == "committed"
 
     current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert current.ok
     assert current.value is not None
+    assert current.value.version_status == "committed"
     assert current.value.contract.summary == "Coordinator recorded a failed content task."
+    assert current.value.contract.committed_at is not None
 
 
 def test_finalize_ready_gate_failure_returns_failure_view_without_summary_write(tmp_path: Path) -> None:
@@ -199,3 +226,65 @@ def test_finalize_content_task_requires_summary_and_blocked_reason(tmp_path: Pat
     )
     assert not missing_reason.ok
     assert missing_reason.issues[0].kind == "content_task_reason_required"
+
+    missing_failed_reason = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=ContentTaskResultView(outcome=ContentTaskOutcome.FAILED, summary="Failed.", reason=" "),
+        coordinator_summary="Coordinator summary.",
+    )
+    assert not missing_failed_reason.ok
+    assert missing_failed_reason.issues[0].kind == "content_task_reason_required"
+
+
+def test_finalize_rejects_contract_version_mismatch(tmp_path: Path) -> None:
+    service, ready_gate = _make_service_with_content_node(tmp_path)
+
+    finalized = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=ContentTaskResultView(
+            outcome=ContentTaskOutcome.BLOCKED,
+            contract_version=99,
+            summary="Blocked.",
+            reason="Wrong contract version.",
+        ),
+        coordinator_summary="Coordinator summary.",
+    )
+
+    assert not finalized.ok
+    assert finalized.issues[0].kind == "content_task_contract_version_mismatch"
+    assert ready_gate.calls == []
+
+    current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
+    assert current.ok
+    assert current.value is not None
+    assert current.value.version_status == "open"
+    assert current.value.contract.summary is None
+
+
+def test_finalize_rejects_duplicate_commit_when_contract_already_committed(tmp_path: Path) -> None:
+    service, _ready_gate = _make_service_with_content_node(tmp_path)
+    task_result = ContentTaskResultView(
+        outcome=ContentTaskOutcome.BLOCKED,
+        contract_version=1,
+        summary="Blocked.",
+        reason="Need provider.",
+    )
+
+    first = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=task_result,
+        coordinator_summary="Coordinator recorded blocked task.",
+    )
+    second = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=task_result,
+        coordinator_summary="Coordinator tries duplicate commit.",
+    )
+
+    assert first.ok
+    assert not second.ok
+    assert second.issues[0].kind == "contract_not_open"

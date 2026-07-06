@@ -132,6 +132,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
                 AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE,
                 AppGroup.SCOPE_EXPORT_INTERFACE_READ,
                 AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
+                AppGroup.SCOPE_CONTRACT_COORDINATOR_COMMIT,
                 AppGroup.SCOPE_CLOSE_READ,
                 AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE,
                 AppGroup.REPO_READY_READ,

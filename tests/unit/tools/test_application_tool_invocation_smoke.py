@@ -54,6 +54,13 @@ def _unwrap_tool_result(result):
     return result.value.value
 
 
+def _unwrap_tool_failure(result):
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is False
+    return result.value.issues
+
+
 def _create_scope_with_public_decl(runtime, repo_root: Path) -> DeclRef:
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(
@@ -126,6 +133,13 @@ class _FakeCallbackStep:
         self.state = type("State", (), {"callback_dispatch_step_id": dispatch_step_id})()
 
 
+class _FakeNonCallbackStep:
+    step_type = "coordinator_agent_step"
+
+    def __init__(self) -> None:
+        self.state = type("State", (), {})()
+
+
 class _FakeChildFlow:
     flow_type = "content_node_task"
 
@@ -150,6 +164,19 @@ class _FakeCallbackFlowService:
 
     def list_flows(self):
         return list(self.flows)
+
+
+class _FakeNonCallbackFlowService:
+    def __init__(self, *, step_id: str) -> None:
+        self.step_id = step_id
+        self.step = _FakeNonCallbackStep()
+
+    def get_step(self, step_id: str):
+        assert step_id == self.step_id
+        return self.step
+
+    def list_flows(self):
+        return []
 
 
 def test_get_current_repo_work_config_tool_reads_repo_config(tmp_path: Path) -> None:
@@ -226,6 +253,53 @@ def test_coordinator_content_task_result_tools_read_callback_results(tmp_path: P
     assert inspect_value["result"]["contract_version"] == 2
 
 
+def test_coordinator_content_task_result_tools_require_callback_context(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    step_id = "step_native_repo_coordinator"
+    runtime.ark.flow_service = _FakeNonCallbackFlowService(step_id=step_id)
+
+    issues = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="list_recent_content_task_results",
+            flat_args={"limit": 5},
+        )
+    )
+
+    assert issues[0].kind == "content_task_callback_context_missing"
+
+
+def test_inspect_content_task_result_reports_missing_match(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    flow_id = "flow_native_repo_coordinator"
+    step_id = "step_native_repo_coordinator"
+    dispatch_step_id = "dispatch_content_tasks"
+    runtime.ark.flow_service = _FakeCallbackFlowService(
+        flow_id=flow_id,
+        step_id=step_id,
+        dispatch_step_id=dispatch_step_id,
+        results=[
+            ContentNodeTaskResult(
+                outcome="ready",
+                repo_key="Repo",
+                node_path="Main.Core",
+                contract_version=2,
+                summary="Core ready.",
+            )
+        ],
+    )
+
+    issues = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="inspect_content_task_result",
+            flat_args={"node_path": "Main.Core", "contract_version": 99},
+        )
+    )
+
+    assert issues[0].kind == "content_task_result_not_found"
+
+
 def test_commit_content_contract_tool_binds_latest_callback_result(tmp_path: Path, monkeypatch) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     flow_id = "flow_native_repo_coordinator"
@@ -271,6 +345,53 @@ def test_commit_content_contract_tool_binds_latest_callback_result(tmp_path: Pat
     assert captured["node_path"] == "Main.Core"
     assert captured["contract_version"] == 3
     assert value["summary"] == "Coordinator accepts core."
+
+
+def test_commit_content_contract_requires_callback_context(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    step_id = "step_native_repo_coordinator"
+    runtime.ark.flow_service = _FakeNonCallbackFlowService(step_id=step_id)
+
+    issues = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="commit_content_contract",
+            flat_args={"node_path": "Main.Core", "summary": "Coordinator accepts core."},
+        )
+    )
+
+    assert issues[0].kind == "content_task_callback_context_missing"
+
+
+def test_commit_content_contract_reports_missing_callback_result(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    flow_id = "flow_native_repo_coordinator"
+    step_id = "step_native_repo_coordinator"
+    dispatch_step_id = "dispatch_content_tasks"
+    runtime.ark.flow_service = _FakeCallbackFlowService(
+        flow_id=flow_id,
+        step_id=step_id,
+        dispatch_step_id=dispatch_step_id,
+        results=[
+            ContentNodeTaskResult(
+                outcome="ready",
+                repo_key="Repo",
+                node_path="Main.Core",
+                contract_version=2,
+                summary="Core ready.",
+            )
+        ],
+    )
+
+    issues = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="commit_content_contract",
+            flat_args={"node_path": "Main.Other", "summary": "Coordinator accepts other."},
+        )
+    )
+
+    assert issues[0].kind == "content_task_result_not_found"
 
 
 def test_commit_scope_contract_tool_invokes_node_service(tmp_path: Path) -> None:
