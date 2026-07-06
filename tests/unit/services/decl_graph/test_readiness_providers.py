@@ -269,7 +269,7 @@ def test_decl_graph_is_default_lean_projection_revision_provider(tmp_path: Path)
         nl="The main result states True.",
     ).ok
 
-    saved = runtime.lean_projection.decl_file.revision_provider.save_statement_formal_snapshot(
+    saved = runtime.lean_projection.decl_file.revision_provider.save_statement_formal_capture(
         tmp_path,
         node_path=NODE_PATH,
         decl_name="main_result",
@@ -279,8 +279,9 @@ def test_decl_graph_is_default_lean_projection_revision_provider(tmp_path: Path)
 
     assert saved.ok and saved.value is not None
     assert saved.value.state == DeclState.DECLARED
-    assert saved.value.statement_lean_check is not None
-    assert saved.value.statement_lean_check["status"] == "passed"
+    assert saved.value.statement.formal is not None
+    assert saved.value.statement.formal.check is not None
+    assert saved.value.statement.formal.check.status == "passed"
 
 
 def test_default_validation_providers_delegate_to_decl_graph(tmp_path: Path) -> None:

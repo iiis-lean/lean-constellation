@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
-from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclRoundStatus, DeclStrategyStatus
+from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclRoundStatus, DeclState, DeclStrategyStatus
 
 
 def _create_content_node(tmp_path: Path, *, node_path: str = "Main.Topic.Core") -> None:
@@ -86,11 +87,35 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
         node_path="Main.Topic.Core",
         strategy_id=strategy.value.strategy_id,
         objective="Create and prove two declarations.",
-        change_ids=["change_a", "change_b"],
     )
     assert round_record.ok and round_record.value is not None
     assert round_record.value.round_index == 1
     assert round_record.value.status == DeclRoundStatus.DRAFT
+    change_a = service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        name="supporting_lemma",
+        kind="lemma",
+        objective="Create the supporting lemma.",
+        summary="Supporting lemma.",
+        end_after_state=DeclState.DECLARED,
+    )
+    assert change_a.ok and change_a.value is not None, change_a.issues
+    change_b = service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        name="main_result",
+        kind="theorem",
+        objective="Create the target theorem.",
+        summary="Target theorem.",
+        end_after_state=DeclState.DECLARED,
+    )
+    assert change_b.ok and change_b.value is not None, change_b.issues
+    round_record = service.get_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id)
+    assert round_record.ok and round_record.value is not None
+    assert round_record.value.change_ids == [change_a.value.change_id, change_b.value.change_id]
 
     started = service.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id)
     assert started.ok and started.value is not None
@@ -100,7 +125,7 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_record.value.round_id,
-        change_id="change_a",
+        change_id=change_a.value.change_id,
         summary="Created the supporting lemma.",
     )
     assert one_summary.ok
@@ -118,7 +143,7 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_record.value.round_id,
-        change_id="change_b",
+        change_id=change_b.value.change_id,
         summary="Updated the target theorem.",
     ).ok
     assert service.write_round_summary(
@@ -136,8 +161,20 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
     )
 
     assert terminal.ok and terminal.value is not None
-    assert terminal.value.status == DeclRoundStatus.COMPLETED
+    assert terminal.value.status == DeclRoundStatus.COMMITTED
     assert terminal.value.result_kind == DeclRoundResultKind.SUCCESS
+    assert terminal.value.committed_at is not None
+    raw_round = json.loads(
+        service.graph_store.round_path(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            round_id=round_record.value.round_id,
+        ).read_text(encoding="utf-8")
+    )
+    assert raw_round["status"] == "committed"
+    assert raw_round["result_kind"] == "success"
+    assert raw_round["committed_at"] is not None
+    assert "completed_at" not in raw_round
 
     reloaded = make_runtime().decl_graph.get_round(
         tmp_path,
@@ -195,7 +232,8 @@ def test_round_terminal_requires_summary_and_blocked_reason(tmp_path: Path) -> N
         reason="Need a provider repo.",
     )
     assert blocked.ok and blocked.value is not None
-    assert blocked.value.status == DeclRoundStatus.BLOCKED
+    assert blocked.value.status == DeclRoundStatus.COMMITTED
+    assert blocked.value.result_kind == DeclRoundResultKind.BLOCKED
     assert blocked.value.result_reason == "Need a provider repo."
 
 

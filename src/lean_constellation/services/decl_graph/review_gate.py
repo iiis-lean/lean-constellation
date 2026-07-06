@@ -15,14 +15,14 @@ from lean_constellation.services.decl_graph.models import (
     StageReviewResultView,
 )
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
-from lean_constellation.services.foundation import ServiceResult, WriteMode
+from lean_constellation.services.foundation import ServiceResult
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
 class ReviewGateComponent:
-    """Persist per-decl review marks and aggregate stage review results."""
+    """Build per-decl review marks and aggregate stage review results."""
 
     _THEOREM_LIKE_KINDS = {"theorem", "lemma"}
 
@@ -51,6 +51,31 @@ class ReviewGateComponent:
         issue_kind: str | None = None,
         suggested_fix: str | None = None,
     ) -> ServiceResult[DeclReviewMarkRecord]:
+        return self.build_decl_review_mark(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            stage=stage,
+            decl_name=decl_name,
+            passed=passed,
+            summary=summary,
+            issue_kind=issue_kind,
+            suggested_fix=suggested_fix,
+        )
+
+    def build_decl_review_mark(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        stage: DeclStage | str,
+        decl_name: str,
+        passed: bool,
+        summary: str,
+        issue_kind: str | None = None,
+        suggested_fix: str | None = None,
+    ) -> ServiceResult[DeclReviewMarkRecord]:
         stage = DeclStage(stage)
         if not summary or not summary.strip():
             return self.runtime.foundation.fail(
@@ -67,34 +92,18 @@ class ReviewGateComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("review_decl_not_required", "Declaration is not required for this stage review.", object_ref=decl_name)
             )
-        mark = DeclReviewMarkRecord(
-            round_id=round_id,
-            node_path=node_path,
-            stage=stage,
-            decl_name=decl_name,
-            passed=passed,
-            summary=summary,
-            issue_kind=issue_kind.strip() if issue_kind else None,
-            suggested_fix=suggested_fix.strip() if suggested_fix else None,
-        )
-        directory = self.graph_store.stage_review_dir(repo_root, node_path=node_path, round_id=round_id, stage=stage.value)
-        ensured = self.runtime.foundation.store.ensure_dir(directory)
-        if not ensured.ok:
-            return self.runtime.foundation.fail(ensured.issues)
-        written = self.runtime.foundation.store.write_json_atomic(
-            self.graph_store.review_mark_path(
-                repo_root,
-                node_path=node_path,
+        return self.runtime.foundation.ok(
+            DeclReviewMarkRecord(
                 round_id=round_id,
-                stage=stage.value,
+                node_path=node_path,
+                stage=stage,
                 decl_name=decl_name,
-            ),
-            mark,
-            mode=WriteMode.OVERWRITE,
+                passed=passed,
+                summary=summary,
+                issue_kind=issue_kind.strip() if issue_kind else None,
+                suggested_fix=suggested_fix.strip() if suggested_fix else None,
+            )
         )
-        if not written.ok:
-            return self.runtime.foundation.fail(written.issues)
-        return self.runtime.foundation.ok(mark)
 
     def submit_stage_review(
         self,
@@ -110,13 +119,34 @@ class ReviewGateComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("stage_review_summary_required", "Stage review summary is required.", field="summary")
             )
+        return self.aggregate_stage_review_marks(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            stage=stage,
+            summary=summary,
+            marks=[],
+        )
+
+    def aggregate_stage_review_marks(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        stage: DeclStage | str,
+        summary: str,
+        marks: list[DeclReviewMarkRecord],
+    ) -> ServiceResult[StageReviewResultView]:
+        stage = DeclStage(stage)
+        if not summary or not summary.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("stage_review_summary_required", "Stage review summary is required.", field="summary")
+            )
         required = self._required_decl_names(repo_root, node_path=node_path, round_id=round_id, stage=stage)
         if not required.ok or required.value is None:
             return self.runtime.foundation.fail(required.issues)
-        marks = self._load_stage_marks(repo_root, node_path=node_path, round_id=round_id, stage=stage)
-        if not marks.ok or marks.value is None:
-            return self.runtime.foundation.fail(marks.issues)
-        mark_by_decl = {mark.decl_name: mark for mark in marks.value}
+        mark_by_decl = {mark.decl_name: mark for mark in marks}
         missing = sorted(name for name in required.value if name not in mark_by_decl)
         failed = sorted(name for name in required.value if name in mark_by_decl and not mark_by_decl[name].passed)
         reviewed = sorted(name for name in required.value if name in mark_by_decl)
@@ -158,30 +188,17 @@ class ReviewGateComponent:
                 )
             )
         names: list[str] = []
-        for change_id in round_record.value.change_ids:
-            change = self.decl_catalog.get_decl_change(repo_root, node_path=node_path, change_id=change_id)
-            if not change.ok or change.value is None:
-                return self.runtime.foundation.fail(change.issues)
-            if change.value.kind == DeclChangeKind.DELETE:
+        for ref in round_record.value.revision_refs:
+            revision = self.decl_catalog.get_decl_revision(repo_root, node_path=node_path, name=ref.decl_name, revision=ref.revision)
+            if not revision.ok or revision.value is None:
+                return self.runtime.foundation.fail(revision.issues)
+            if revision.value.change is not None and revision.value.change.kind == DeclChangeKind.DELETE:
                 continue
             if stage in {DeclStage.PROOF_NL, DeclStage.PROOF_FORMAL}:
-                decl = self.decl_catalog.get_decl(repo_root, node_path=node_path, name=change.value.decl_name)
+                decl = self.decl_catalog.get_decl(repo_root, node_path=node_path, name=ref.decl_name)
                 if not decl.ok or decl.value is None:
                     return self.runtime.foundation.fail(decl.issues)
                 if decl.value.kind not in self._THEOREM_LIKE_KINDS:
                     continue
-            names.append(change.value.decl_name)
+            names.append(ref.decl_name)
         return self.runtime.foundation.ok(sorted(set(names)))
-
-    def _load_stage_marks(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_id: str,
-        stage: DeclStage,
-    ) -> ServiceResult[list[DeclReviewMarkRecord]]:
-        directory = self.graph_store.stage_review_dir(repo_root, node_path=node_path, round_id=round_id, stage=stage.value)
-        if not directory.exists():
-            return self.runtime.foundation.ok([])
-        return self.runtime.foundation.store.list_json(directory, DeclReviewMarkRecord)

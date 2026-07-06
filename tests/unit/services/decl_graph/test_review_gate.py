@@ -55,7 +55,7 @@ def test_stage_review_passes_after_all_required_decl_marks(tmp_path: Path) -> No
     round_id = _create_running_round(tmp_path, {"main_result": "theorem", "helper_def": "definition"})
     service = make_runtime().decl_graph
 
-    assert service.record_decl_review(
+    main_mark = service.record_decl_review(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
@@ -63,8 +63,9 @@ def test_stage_review_passes_after_all_required_decl_marks(tmp_path: Path) -> No
         decl_name="main_result",
         passed=True,
         summary="Statement is clear.",
-    ).ok
-    assert service.record_decl_review(
+    )
+    assert main_mark.ok and main_mark.value is not None
+    helper_mark = service.record_decl_review(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
@@ -72,14 +73,16 @@ def test_stage_review_passes_after_all_required_decl_marks(tmp_path: Path) -> No
         decl_name="helper_def",
         passed=True,
         summary="Definition statement is clear.",
-    ).ok
+    )
+    assert helper_mark.ok and helper_mark.value is not None
 
-    result = service.submit_stage_review(
+    result = service.aggregate_stage_review_marks(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
         stage=DeclStage.STATEMENT_NL,
         summary="All statements accepted.",
+        marks=[main_mark.value, helper_mark.value],
     )
 
     assert result.ok and result.value is not None
@@ -94,7 +97,7 @@ def test_stage_review_reports_missing_and_failed_marks(tmp_path: Path) -> None:
     round_id = _create_running_round(tmp_path, {"main_result": "theorem", "helper_def": "definition"})
     service = make_runtime().decl_graph
 
-    assert service.record_decl_review(
+    mark = service.record_decl_review(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
@@ -104,14 +107,16 @@ def test_stage_review_reports_missing_and_failed_marks(tmp_path: Path) -> None:
         summary="Formal statement is too weak.",
         issue_kind="semantic_mismatch",
         suggested_fix="Strengthen the conclusion.",
-    ).ok
+    )
+    assert mark.ok and mark.value is not None
 
-    result = service.submit_stage_review(
+    result = service.aggregate_stage_review_marks(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
         stage=DeclStage.STATEMENT_FORMAL,
         summary="One formal statement failed.",
+        marks=[mark.value],
     )
 
     assert result.ok and result.value is not None
@@ -157,7 +162,7 @@ def test_proof_stage_requires_only_theorem_like_decl_marks(tmp_path: Path) -> No
     assert not skipped.ok
     assert skipped.issues[0].kind == "review_decl_not_required"
 
-    assert service.record_decl_review(
+    mark = service.record_decl_review(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
@@ -165,13 +170,15 @@ def test_proof_stage_requires_only_theorem_like_decl_marks(tmp_path: Path) -> No
         decl_name="main_result",
         passed=True,
         summary="Proof route is valid.",
-    ).ok
-    result = service.submit_stage_review(
+    )
+    assert mark.ok and mark.value is not None
+    result = service.aggregate_stage_review_marks(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
         stage=DeclStage.PROOF_NL,
         summary="Proof routes accepted.",
+        marks=[mark.value],
     )
     assert result.ok and result.value is not None
     assert result.value.passed is True

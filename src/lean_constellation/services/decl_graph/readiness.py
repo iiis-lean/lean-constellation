@@ -10,11 +10,14 @@ from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogCompo
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
 from lean_constellation.services.decl_graph.models import (
     DeclLifecycle,
+    DeclFileFormalView,
+    DeclFileNaturalLanguageView,
     DeclFileRevisionView,
+    DeclFileStageView,
     DeclReadinessReason,
     DeclReadinessReport,
-    DeclRecord,
-    DeclRevisionRecord,
+    Decl,
+    DeclRevision,
     DeclState,
 )
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult, WriteMode
@@ -30,7 +33,7 @@ class DeclReadinessComponent:
     """Compute dynamic Decl readiness and satisfy cross-service provider protocols."""
 
     _THEOREM_LIKE_KINDS = {"theorem", "lemma", "proposition", "corollary"}
-    _DECLARED_OR_HIGHER = {DeclState.DECLARED, DeclState.PROVED}
+    _DECLARED_OR_HIGHER = {DeclState.DECLARED, DeclState.PROOF_PLANNED, DeclState.PROVED}
 
     def __init__(
         self,
@@ -101,7 +104,7 @@ class DeclReadinessComponent:
         decl, revision = current.value
         return self.runtime.foundation.ok(self._decl_file_revision_view(decl, revision))
 
-    def save_statement_formal_snapshot(
+    def save_statement_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -109,27 +112,30 @@ class DeclReadinessComponent:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         current = self._current_decl_and_revision(Path(repo_root), node_path=node_path, decl_name=decl_name)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
-        _decl, revision = current.value
+        decl, revision = current.value
         if revision.version_status != "open":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_not_open",
-                    "Saving a formal statement snapshot requires the current revision to be open.",
+                    "Saving a statement formal capture requires the current revision to be open.",
                     object_ref=f"{node_path}:{decl_name}",
                     current=revision.version_status,
                     expected="open",
                 )
             )
         revision.statement_lean_code = code
-        revision.statement_lean_check = self._lean_check_dict(check)
+        revision.statement_lean_check = check
         revision.state = DeclState.DECLARED
-        return self._write_revision(Path(repo_root), node_path=node_path, revision=revision)
+        written = self._write_revision(Path(repo_root), node_path=node_path, revision=revision)
+        if not written.ok or written.value is None:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(self._decl_file_revision_view(decl, written.value))
 
-    def save_proof_formal_snapshot(
+    def save_proof_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -137,7 +143,7 @@ class DeclReadinessComponent:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         current = self._current_decl_and_revision(Path(repo_root), node_path=node_path, decl_name=decl_name)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
@@ -146,7 +152,7 @@ class DeclReadinessComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_not_theorem_like",
-                    "Saving a proof formal snapshot is only valid for theorem-like declarations.",
+                    "Saving a proof formal capture is only valid for theorem-like declarations.",
                     object_ref=f"{node_path}:{decl_name}",
                     current=decl.kind,
                     expected="theorem-like kind",
@@ -156,16 +162,19 @@ class DeclReadinessComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_not_open",
-                    "Saving a proof snapshot requires the current revision to be open.",
+                    "Saving a proof formal capture requires the current revision to be open.",
                     object_ref=f"{node_path}:{decl_name}",
                     current=revision.version_status,
                     expected="open",
                 )
             )
         revision.proof_lean_code = code
-        revision.proof_lean_check = self._lean_check_dict(check)
+        revision.proof_lean_check = check
         revision.state = DeclState.PROVED
-        return self._write_revision(Path(repo_root), node_path=node_path, revision=revision)
+        written = self._write_revision(Path(repo_root), node_path=node_path, revision=revision)
+        if not written.ok or written.value is None:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(self._decl_file_revision_view(decl, written.value))
 
     def list_active_decl_names(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[str]]:
         decls = self.decl_catalog.list_decls(Path(repo_root), node_path=node_path)
@@ -292,12 +301,12 @@ class DeclReadinessComponent:
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
         delete_names: list[str] = []
-        for change_id in round_record.value.change_ids:
-            change = self.runtime.decl_graph.get_decl_change(Path(repo_root), node_path=node_path, change_id=change_id)
-            if not change.ok or change.value is None:
-                return self.runtime.foundation.fail(change.issues)
-            if change.value.kind.value == "delete":
-                delete_names.append(change.value.decl_name)
+        changes = self.runtime.decl_graph.list_round_changes(Path(repo_root), node_path=node_path, round_id=round_id)
+        if not changes.ok or changes.value is None:
+            return self.runtime.foundation.fail(changes.issues)
+        for change in changes.value:
+            if change.kind.value == "delete":
+                delete_names.append(change.decl_name)
         if not delete_names:
             gate = self.runtime.foundation.gate_passed(
                 "decl_delete_sanity",
@@ -439,7 +448,7 @@ class DeclReadinessComponent:
         *,
         node_path: str,
         decl_name: str,
-    ) -> ServiceResult[tuple[DeclRecord, DeclRevisionRecord]]:
+    ) -> ServiceResult[tuple[Decl, DeclRevision]]:
         decl = self.decl_catalog.get_decl(repo_root, node_path=node_path, name=decl_name)
         if not decl.ok or decl.value is None:
             return self.runtime.foundation.fail(decl.issues)
@@ -453,7 +462,7 @@ class DeclReadinessComponent:
             return self.runtime.foundation.fail(revision.issues)
         return self.runtime.foundation.ok((decl.value, revision.value))
 
-    def _write_revision(self, repo_root: Path, *, node_path: str, revision: DeclRevisionRecord) -> ServiceResult[DeclRevisionRecord]:
+    def _write_revision(self, repo_root: Path, *, node_path: str, revision: DeclRevision) -> ServiceResult[DeclRevision]:
         written = self.runtime.foundation.store.write_json_atomic(
             self.decl_catalog.graph_store.revision_path(
                 repo_root,
@@ -468,31 +477,33 @@ class DeclReadinessComponent:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(revision)
 
-    def _decl_file_revision_view(self, decl: DeclRecord, revision: DeclRevisionRecord) -> DeclFileRevisionView:
-        statement: dict[str, object] = {
-            "nl": {
-                "text": revision.statement_nl,
-                "origin": revision.statement_origin,
-            },
-            "deps": revision.statement_deps,
-        }
-        if revision.statement_lean_code is not None or revision.statement_lean_check is not None:
-            statement["formal"] = {
-                "code": revision.statement_lean_code,
-                "check": revision.statement_lean_check,
-            }
-        proof: dict[str, object] = {
-            "nl": {
-                "text": revision.proof_nl,
-                "origin": revision.proof_origin,
-            },
-            "deps": revision.proof_deps,
-        }
-        if revision.proof_lean_code is not None or revision.proof_lean_check is not None:
-            proof["formal"] = {
-                "code": revision.proof_lean_code,
-                "check": revision.proof_lean_check,
-            }
+    def _decl_file_revision_view(self, decl: Decl, revision: DeclRevision) -> DeclFileRevisionView:
+        statement = DeclFileStageView(
+            nl=DeclFileNaturalLanguageView(
+                text=revision.statement_nl,
+                origin=list(revision.statement.nl.origin) if revision.statement.nl is not None else [],
+            ),
+            formal=(
+                DeclFileFormalView(code=revision.statement_lean_code, check=revision.statement.formal.check)
+                if revision.statement.formal is not None
+                else None
+            ),
+            deps=revision.statement_deps,
+        )
+        proof = None
+        if revision.proof is not None:
+            proof = DeclFileStageView(
+                nl=DeclFileNaturalLanguageView(
+                    text=revision.proof_nl,
+                    origin=list(revision.proof.nl.origin) if revision.proof.nl is not None else [],
+                ),
+                formal=(
+                    DeclFileFormalView(code=revision.proof_lean_code, check=revision.proof.formal.check)
+                    if revision.proof.formal is not None
+                    else None
+                ),
+                deps=revision.proof_deps,
+            )
         return DeclFileRevisionView(
             decl_name=revision.decl_name,
             revision=revision.revision,
@@ -502,7 +513,6 @@ class DeclReadinessComponent:
             module=revision.module or decl.module,
             statement=statement,
             proof=proof,
-            decl_deps=revision.decl_deps,
         )
 
     def _not_ready(
@@ -551,16 +561,6 @@ class DeclReadinessComponent:
             return None if self._truthy(passed) else DeclReadinessReason.LEAN_CHECK_FAILED
         return DeclReadinessReason.LEAN_CHECK_FAILED
 
-    def _lean_check_dict(self, check: LeanCheckView) -> dict[str, str]:
-        return {
-            "status": check.status,
-            "policy": check.policy,
-            "allow_sorry": str(check.allow_sorry),
-            "contains_sorry": str(check.contains_sorry),
-            "contains_axiom": str(check.contains_axiom),
-            "message": check.message,
-        }
-
     def _truthy(self, value: str | None) -> bool:
         return value is not None and value.strip().lower() in {"1", "true", "yes", "passed"}
 
@@ -572,7 +572,9 @@ class DeclReadinessComponent:
             DeclState.PLANNED: 0,
             DeclState.SPECIFIED: 1,
             DeclState.DECLARED: 2,
-            DeclState.PROVED: 3,
+            DeclState.PROOF_PLANNED: 3,
+            DeclState.PROVED: 4,
+            DeclState.OBSOLETE: -1,
         }[state]
 
     def _is_stale_reason(self, reason: DeclReadinessReason | None) -> bool:

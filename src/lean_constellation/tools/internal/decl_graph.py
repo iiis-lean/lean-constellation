@@ -59,7 +59,7 @@ def _rebuild_graph(runtime, ctx, args: NoArgs):
 
 
 def _ensure_open_strategy(runtime, ctx, args: StrategyEnsureArgs):
-    return runtime.decl_graph.ensure_open_strategy(
+    return runtime.decl_graph.ensure_open_strategy_view(
         ctx.repo_root,
         node_path=_node(ctx),
         objective=args.objective,
@@ -68,7 +68,7 @@ def _ensure_open_strategy(runtime, ctx, args: StrategyEnsureArgs):
 
 
 def _close_strategy(runtime, ctx, args: StrategyCloseArgs):
-    return runtime.decl_graph.close_strategy(
+    return runtime.decl_graph.close_strategy_view(
         ctx.repo_root,
         node_path=_node(ctx),
         strategy_id=args.strategy_id,
@@ -80,34 +80,33 @@ def _close_strategy(runtime, ctx, args: StrategyCloseArgs):
 
 def _list_strategies(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.list_strategies(ctx.repo_root, node_path=_node(ctx))
+    return runtime.decl_graph.list_strategy_views(ctx.repo_root, node_path=_node(ctx))
 
 
 def _get_strategy(runtime, ctx, args: StrategyIdArgs):
-    return runtime.decl_graph.get_strategy(ctx.repo_root, node_path=_node(ctx), strategy_id=args.strategy_id)
+    return runtime.decl_graph.get_strategy_view(ctx.repo_root, node_path=_node(ctx), strategy_id=args.strategy_id)
 
 
 def _create_round_draft(runtime, ctx, args: RoundDraftArgs):
-    return runtime.decl_graph.create_round_draft(
+    return runtime.decl_graph.create_round_draft_view(
         ctx.repo_root,
         node_path=_node(ctx),
         strategy_id=args.strategy_id,
         objective=args.objective,
-        change_ids=args.change_ids,
     )
 
 
 def _list_rounds(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.list_rounds(ctx.repo_root, node_path=_node(ctx))
+    return runtime.decl_graph.list_round_views(ctx.repo_root, node_path=_node(ctx))
 
 
 def _get_round(runtime, ctx, args: RoundIdArgs):
-    return runtime.decl_graph.get_round(ctx.repo_root, node_path=_node(ctx), round_id=_required_round_id(runtime, ctx, args.round_id))
+    return runtime.decl_graph.get_round_view(ctx.repo_root, node_path=_node(ctx), round_id=_required_round_id(runtime, ctx, args.round_id))
 
 
 def _write_change_summary(runtime, ctx, args: ChangeSummaryArgs):
-    return runtime.decl_graph.write_decl_change_summary(
+    return runtime.decl_graph.write_decl_change_summary_view(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_required_round_id(runtime, ctx, args.round_id),
@@ -117,7 +116,7 @@ def _write_change_summary(runtime, ctx, args: ChangeSummaryArgs):
 
 
 def _write_round_summary(runtime, ctx, args: RoundSummaryArgs):
-    return runtime.decl_graph.write_round_summary(
+    return runtime.decl_graph.write_round_summary_view(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_required_round_id(runtime, ctx, args.round_id),
@@ -126,7 +125,7 @@ def _write_round_summary(runtime, ctx, args: RoundSummaryArgs):
 
 
 def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
-    return runtime.decl_graph.mark_round_terminal(
+    return runtime.decl_graph.mark_round_terminal_view(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_required_round_id(runtime, ctx, args.round_id),
@@ -136,28 +135,28 @@ def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
 
 
 def _create_decl(runtime, ctx, args: DeclCreateArgs):
-    return runtime.decl_graph.create_decl(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+    return runtime.decl_graph.create_decl_revision_view(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
 
 
 def _open_decl_update(runtime, ctx, args: DeclUpdateArgs):
-    return runtime.decl_graph.open_decl_update(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+    return runtime.decl_graph.open_decl_update_revision_view(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
 
 
 def _mark_decl_delete(runtime, ctx, args: DeclDeleteArgs):
-    return runtime.decl_graph.mark_decl_delete(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+    return runtime.decl_graph.mark_decl_delete_revision_view(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
 
 
 def _list_decls(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.list_decls(ctx.repo_root, node_path=_node(ctx))
+    return runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=_node(ctx))
 
 
 def _get_decl(runtime, ctx, args: DeclNameArgs):
-    return runtime.decl_graph.get_decl(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
+    return runtime.decl_graph.get_decl_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
 
 
 def _get_decl_revision(runtime, ctx, args: DeclRevisionArgs):
-    return runtime.decl_graph.get_decl_revision(
+    return runtime.decl_graph.get_decl_revision_view(
         ctx.repo_root,
         node_path=_node(ctx),
         name=args.decl_name,
@@ -353,7 +352,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Plan creation of a declaration in the current draft round.",
             args_model=DeclCreateArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_change",
+            result_view="decl_revision",
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
             roles=plan_roles,
             handler=_create_decl,
@@ -363,7 +362,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Open a new declaration revision for an update in the current draft round.",
             args_model=DeclUpdateArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_change",
+            result_view="decl_revision",
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
             roles=plan_roles,
             handler=_open_decl_update,
@@ -373,7 +372,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Plan deletion of a declaration in the current draft round.",
             args_model=DeclDeleteArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_change",
+            result_view="decl_revision",
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
             roles=plan_roles,
             handler=_mark_decl_delete,

@@ -5,31 +5,37 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
+from lean_constellation.services.decl_graph.graph_store import DeclGraphStorageMigrationView, GraphStoreComponent
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
 from lean_constellation.services.decl_graph.models import (
-    DeclChangeRecord,
+    DeclChangeView,
     DeclDeleteClosureView,
     DeclDependencyClosureView,
     DeclFileRevisionView,
     DeclGraphIndex,
+    DeclGraphRoundView,
     DeclGraphStoreView,
+    DeclGraphStrategyView,
     DeclReviewMarkRecord,
+    DeclReviewMarkView,
     DeclReadinessReport,
-    DeclRecord,
-    DeclRevisionRecord,
-    DeclRoundRecord,
+    Decl,
+    DeclRevision,
+    DeclRevisionToolView,
+    DeclView,
+    DeclGraphRound,
     DeclRoundResultKind,
     DeclStage,
     DeclState,
-    DeclStrategyRecord,
+    DeclGraphStrategy,
     StageReviewResultView,
 )
 from lean_constellation.services.decl_graph.review_gate import ReviewGateComponent
 from lean_constellation.services.decl_graph.readiness import DeclReadinessComponent
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
 from lean_constellation.services.decl_graph.stage_mutation import StageMutationComponent
+from lean_constellation.services.decl_graph.views import DeclGraphViewMapper
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.lean_projection.lean_check import LeanCheckView
 from lean_constellation.services.node.export import DeclPublicView
@@ -53,8 +59,10 @@ class DeclGraphService:
         review_gate: ReviewGateComponent | None = None,
         dependency: DeclDependencyComponent | None = None,
         readiness: DeclReadinessComponent | None = None,
+        view_mapper: DeclGraphViewMapper | None = None,
     ) -> None:
         self.runtime = runtime
+        self.views = view_mapper or DeclGraphViewMapper()
         self.graph_store = graph_store or GraphStoreComponent(runtime)
         self.strategy_round = strategy_round or StrategyRoundComponent(runtime, self.graph_store)
         self.decl_catalog = decl_catalog or DeclCatalogComponent(runtime, self.graph_store, self.strategy_round)
@@ -85,6 +93,9 @@ class DeclGraphService:
     def rebuild_decl_graph_index(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphIndex]:
         return self.graph_store.rebuild_index(repo_root, node_path=node_path)
 
+    def migrate_legacy_decl_graph_storage(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphStorageMigrationView]:
+        return self.graph_store.migrate_legacy_decl_graph_storage(repo_root, node_path=node_path)
+
     def ensure_open_strategy(
         self,
         repo_root: Path,
@@ -92,13 +103,26 @@ class DeclGraphService:
         node_path: str,
         objective: str,
         rationale: str | None = None,
-    ) -> ServiceResult[DeclStrategyRecord]:
+    ) -> ServiceResult[DeclGraphStrategy]:
         return self.strategy_round.ensure_open_strategy(
             repo_root,
             node_path=node_path,
             objective=objective,
             rationale=rationale,
         )
+
+    def ensure_open_strategy_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        objective: str,
+        rationale: str | None = None,
+    ) -> ServiceResult[DeclGraphStrategyView]:
+        strategy = self.ensure_open_strategy(repo_root, node_path=node_path, objective=objective, rationale=rationale)
+        if not strategy.ok or strategy.value is None:
+            return self.runtime.foundation.fail(strategy.issues)
+        return self.runtime.foundation.ok(self.views.strategy_view(strategy.value))
 
     def close_strategy(
         self,
@@ -109,7 +133,7 @@ class DeclGraphService:
         summary: str,
         reason: str | None = None,
         failed: bool = False,
-    ) -> ServiceResult[DeclStrategyRecord]:
+    ) -> ServiceResult[DeclGraphStrategy]:
         return self.strategy_round.close_strategy(
             repo_root,
             node_path=node_path,
@@ -119,6 +143,28 @@ class DeclGraphService:
             failed=failed,
         )
 
+    def close_strategy_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+        summary: str,
+        reason: str | None = None,
+        failed: bool = False,
+    ) -> ServiceResult[DeclGraphStrategyView]:
+        strategy = self.close_strategy(
+            repo_root,
+            node_path=node_path,
+            strategy_id=strategy_id,
+            summary=summary,
+            reason=reason,
+            failed=failed,
+        )
+        if not strategy.ok or strategy.value is None:
+            return self.runtime.foundation.fail(strategy.issues)
+        return self.runtime.foundation.ok(self.views.strategy_view(strategy.value))
+
     def create_round_draft(
         self,
         repo_root: Path,
@@ -126,17 +172,28 @@ class DeclGraphService:
         node_path: str,
         strategy_id: str,
         objective: str,
-        change_ids: list[str] | None = None,
-    ) -> ServiceResult[DeclRoundRecord]:
+    ) -> ServiceResult[DeclGraphRound]:
         return self.strategy_round.create_round_draft(
             repo_root,
             node_path=node_path,
             strategy_id=strategy_id,
             objective=objective,
-            change_ids=change_ids,
         )
 
-    def start_round(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclRoundRecord]:
+    def create_round_draft_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+        objective: str,
+    ) -> ServiceResult[DeclGraphRoundView]:
+        round_record = self.create_round_draft(repo_root, node_path=node_path, strategy_id=strategy_id, objective=objective)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        return self.runtime.foundation.ok(self.views.round_view(round_record.value))
+
+    def start_round(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclGraphRound]:
         return self.strategy_round.start_round(repo_root, node_path=node_path, round_id=round_id)
 
     def write_decl_change_summary(
@@ -147,14 +204,34 @@ class DeclGraphService:
         round_id: str,
         change_id: str,
         summary: str,
-    ) -> ServiceResult[DeclRoundRecord]:
-        return self.strategy_round.write_decl_change_summary(
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.decl_catalog.write_decl_change_summary(
             repo_root,
             node_path=node_path,
             round_id=round_id,
             change_id=change_id,
             summary=summary,
         )
+
+    def write_decl_change_summary_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        change_id: str,
+        summary: str,
+    ) -> ServiceResult[DeclGraphRoundView]:
+        round_record = self.write_decl_change_summary(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            change_id=change_id,
+            summary=summary,
+        )
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        return self.runtime.foundation.ok(self.views.round_view(round_record.value))
 
     def write_round_summary(
         self,
@@ -163,13 +240,26 @@ class DeclGraphService:
         node_path: str,
         round_id: str,
         summary: str,
-    ) -> ServiceResult[DeclRoundRecord]:
-        return self.strategy_round.write_round_summary(
+    ) -> ServiceResult[DeclGraphRound]:
+        return self.decl_catalog.write_round_summary(
             repo_root,
             node_path=node_path,
             round_id=round_id,
             summary=summary,
         )
+
+    def write_round_summary_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        summary: str,
+    ) -> ServiceResult[DeclGraphRoundView]:
+        round_record = self.write_round_summary(repo_root, node_path=node_path, round_id=round_id, summary=summary)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        return self.runtime.foundation.ok(self.views.round_view(round_record.value))
 
     def mark_round_terminal(
         self,
@@ -179,7 +269,7 @@ class DeclGraphService:
         round_id: str,
         result_kind: DeclRoundResultKind | str,
         reason: str | None = None,
-    ) -> ServiceResult[DeclRoundRecord]:
+    ) -> ServiceResult[DeclGraphRound]:
         return self.strategy_round.mark_round_terminal(
             repo_root,
             node_path=node_path,
@@ -188,17 +278,61 @@ class DeclGraphService:
             reason=reason,
         )
 
-    def get_strategy(self, repo_root: Path, *, node_path: str, strategy_id: str) -> ServiceResult[DeclStrategyRecord]:
+    def mark_round_terminal_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        result_kind: DeclRoundResultKind | str,
+        reason: str | None = None,
+    ) -> ServiceResult[DeclGraphRoundView]:
+        round_record = self.mark_round_terminal(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            result_kind=result_kind,
+            reason=reason,
+        )
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        return self.runtime.foundation.ok(self.views.round_view(round_record.value))
+
+    def get_strategy(self, repo_root: Path, *, node_path: str, strategy_id: str) -> ServiceResult[DeclGraphStrategy]:
         return self.strategy_round.get_strategy(repo_root, node_path=node_path, strategy_id=strategy_id)
 
-    def list_strategies(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclStrategyRecord]]:
+    def get_strategy_view(self, repo_root: Path, *, node_path: str, strategy_id: str) -> ServiceResult[DeclGraphStrategyView]:
+        strategy = self.get_strategy(repo_root, node_path=node_path, strategy_id=strategy_id)
+        if not strategy.ok or strategy.value is None:
+            return self.runtime.foundation.fail(strategy.issues)
+        return self.runtime.foundation.ok(self.views.strategy_view(strategy.value))
+
+    def list_strategies(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclGraphStrategy]]:
         return self.strategy_round.list_strategies(repo_root, node_path=node_path)
 
-    def get_round(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclRoundRecord]:
+    def list_strategy_views(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclGraphStrategyView]]:
+        strategies = self.list_strategies(repo_root, node_path=node_path)
+        if not strategies.ok or strategies.value is None:
+            return self.runtime.foundation.fail(strategies.issues)
+        return self.runtime.foundation.ok([self.views.strategy_view(strategy) for strategy in strategies.value])
+
+    def get_round(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclGraphRound]:
         return self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
 
-    def list_rounds(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclRoundRecord]]:
+    def get_round_view(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclGraphRoundView]:
+        round_record = self.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        return self.runtime.foundation.ok(self.views.round_view(round_record.value))
+
+    def list_rounds(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclGraphRound]]:
         return self.strategy_round.list_rounds(repo_root, node_path=node_path)
+
+    def list_round_views(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclGraphRoundView]]:
+        rounds = self.list_rounds(repo_root, node_path=node_path)
+        if not rounds.ok or rounds.value is None:
+            return self.runtime.foundation.fail(rounds.issues)
+        return self.runtime.foundation.ok([self.views.round_view(round_record) for round_record in rounds.value])
 
     def create_decl(
         self,
@@ -213,7 +347,7 @@ class DeclGraphService:
         public: bool = False,
         end_after_state: DeclState | str = DeclState.DECLARED,
         module: str | None = None,
-    ) -> ServiceResult[DeclChangeRecord]:
+    ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.create_decl(
             repo_root,
             node_path=node_path,
@@ -227,6 +361,41 @@ class DeclGraphService:
             module=module,
         )
 
+    def create_decl_revision_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        name: str,
+        kind: str,
+        objective: str,
+        summary: str,
+        public: bool = False,
+        end_after_state: DeclState | str = DeclState.DECLARED,
+        module: str | None = None,
+    ) -> ServiceResult[DeclRevisionToolView]:
+        change = self.create_decl(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            name=name,
+            kind=kind,
+            objective=objective,
+            summary=summary,
+            public=public,
+            end_after_state=end_after_state,
+            module=module,
+        )
+        if not change.ok or change.value is None or change.value.target_revision is None:
+            return self.runtime.foundation.fail(change.issues)
+        return self.get_decl_revision_view(
+            repo_root,
+            node_path=node_path,
+            name=change.value.decl_name,
+            revision=change.value.target_revision,
+        )
+
     def open_decl_update(
         self,
         repo_root: Path,
@@ -237,7 +406,7 @@ class DeclGraphService:
         objective: str,
         end_after_state: DeclState | str,
         start_before_state: DeclState | str | None = None,
-    ) -> ServiceResult[DeclChangeRecord]:
+    ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.open_decl_update(
             repo_root,
             node_path=node_path,
@@ -248,6 +417,35 @@ class DeclGraphService:
             start_before_state=start_before_state,
         )
 
+    def open_decl_update_revision_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        name: str,
+        objective: str,
+        end_after_state: DeclState | str,
+        start_before_state: DeclState | str | None = None,
+    ) -> ServiceResult[DeclRevisionToolView]:
+        change = self.open_decl_update(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            name=name,
+            objective=objective,
+            end_after_state=end_after_state,
+            start_before_state=start_before_state,
+        )
+        if not change.ok or change.value is None or change.value.target_revision is None:
+            return self.runtime.foundation.fail(change.issues)
+        return self.get_decl_revision_view(
+            repo_root,
+            node_path=node_path,
+            name=change.value.decl_name,
+            revision=change.value.target_revision,
+        )
+
     def mark_decl_delete(
         self,
         repo_root: Path,
@@ -256,13 +454,32 @@ class DeclGraphService:
         round_id: str,
         name: str,
         objective: str,
-    ) -> ServiceResult[DeclChangeRecord]:
+    ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.mark_decl_delete(
             repo_root,
             node_path=node_path,
             round_id=round_id,
             name=name,
             objective=objective,
+        )
+
+    def mark_decl_delete_revision_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        name: str,
+        objective: str,
+    ) -> ServiceResult[DeclRevisionToolView]:
+        change = self.mark_decl_delete(repo_root, node_path=node_path, round_id=round_id, name=name, objective=objective)
+        if not change.ok or change.value is None or change.value.target_revision is None:
+            return self.runtime.foundation.fail(change.issues)
+        return self.get_decl_revision_view(
+            repo_root,
+            node_path=node_path,
+            name=change.value.decl_name,
+            revision=change.value.target_revision,
         )
 
     def commit_decl_revision(
@@ -273,7 +490,7 @@ class DeclGraphService:
         name: str,
         revision: int | None = None,
         state: DeclState | str | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         return self.decl_catalog.commit_decl_revision(
             repo_root,
             node_path=node_path,
@@ -282,11 +499,30 @@ class DeclGraphService:
             state=state,
         )
 
-    def get_decl(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[DeclRecord]:
+    def get_decl(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[Decl]:
         return self.decl_catalog.get_decl(repo_root, node_path=node_path, name=name)
 
-    def list_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclRecord]]:
+    def get_decl_view(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[DeclView]:
+        decl = self.get_decl(repo_root, node_path=node_path, name=name)
+        if not decl.ok or decl.value is None:
+            return self.runtime.foundation.fail(decl.issues)
+        revision = self.get_decl_revision(repo_root, node_path=node_path, name=name, revision=decl.value.current_revision)
+        revision_value = revision.value if revision.ok else None
+        return self.runtime.foundation.ok(self.views.decl_view(decl.value, revision_value))
+
+    def list_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[Decl]]:
         return self.decl_catalog.list_decls(repo_root, node_path=node_path)
+
+    def list_decl_views(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclView]]:
+        decls = self.list_decls(repo_root, node_path=node_path)
+        if not decls.ok or decls.value is None:
+            return self.runtime.foundation.fail(decls.issues)
+        views: list[DeclView] = []
+        for decl in decls.value:
+            revision = self.get_decl_revision(repo_root, node_path=node_path, name=decl.name, revision=decl.current_revision)
+            revision_value = revision.value if revision.ok else None
+            views.append(self.views.decl_view(decl, revision_value))
+        return self.runtime.foundation.ok(views)
 
     def get_decl_revision(
         self,
@@ -295,11 +531,39 @@ class DeclGraphService:
         node_path: str,
         name: str,
         revision: int,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         return self.decl_catalog.get_decl_revision(repo_root, node_path=node_path, name=name, revision=revision)
 
-    def get_decl_change(self, repo_root: Path, *, node_path: str, change_id: str) -> ServiceResult[DeclChangeRecord]:
+    def get_decl_revision_view(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        name: str,
+        revision: int,
+    ) -> ServiceResult[DeclRevisionToolView]:
+        decl = self.get_decl(repo_root, node_path=node_path, name=name)
+        if not decl.ok or decl.value is None:
+            return self.runtime.foundation.fail(decl.issues)
+        revision_result = self.get_decl_revision(repo_root, node_path=node_path, name=name, revision=revision)
+        if not revision_result.ok or revision_result.value is None:
+            return self.runtime.foundation.fail(revision_result.issues)
+        return self.runtime.foundation.ok(self.views.revision_tool_view(decl=decl.value, revision=revision_result.value))
+
+    def current_decl_revision_view(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[DeclRevisionToolView]:
+        decl = self.get_decl(repo_root, node_path=node_path, name=name)
+        if not decl.ok or decl.value is None:
+            return self.runtime.foundation.fail(decl.issues)
+        return self.get_decl_revision_view(repo_root, node_path=node_path, name=name, revision=decl.value.current_revision)
+
+    def get_decl_change(self, repo_root: Path, *, node_path: str, change_id: str) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.get_decl_change(repo_root, node_path=node_path, change_id=change_id)
+
+    def list_round_changes(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[list[DeclChangeView]]:
+        return self.decl_catalog.list_round_changes(repo_root, node_path=node_path, round_id=round_id)
+
+    def list_round_revisions(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[list[DeclRevision]]:
+        return self.decl_catalog.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
 
     def compute_delete_closure(
         self,
@@ -323,7 +587,7 @@ class DeclGraphService:
         nl: str,
         origin: list[dict[str, object]] | None = None,
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         return self.stage_mutation.write_statement_nl(
             repo_root,
             node_path=node_path,
@@ -344,7 +608,7 @@ class DeclGraphService:
         lean_code: str,
         lean_check: dict[str, object],
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         return self.stage_mutation.write_statement_formal(
             repo_root,
             node_path=node_path,
@@ -365,7 +629,7 @@ class DeclGraphService:
         nl: str,
         origin: list[dict[str, object]] | None = None,
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         return self.stage_mutation.write_proof_nl(
             repo_root,
             node_path=node_path,
@@ -386,7 +650,7 @@ class DeclGraphService:
         lean_code: str,
         lean_check: dict[str, object],
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         return self.stage_mutation.write_proof_formal(
             repo_root,
             node_path=node_path,
@@ -422,6 +686,34 @@ class DeclGraphService:
             suggested_fix=suggested_fix,
         )
 
+    def review_mark_view(self, mark: DeclReviewMarkRecord) -> DeclReviewMarkView:
+        return self.views.review_mark_view(mark)
+
+    def build_decl_review_mark(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        stage: DeclStage | str,
+        decl_name: str,
+        passed: bool,
+        summary: str,
+        issue_kind: str | None = None,
+        suggested_fix: str | None = None,
+    ) -> ServiceResult[DeclReviewMarkRecord]:
+        return self.review_gate.build_decl_review_mark(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            stage=stage,
+            decl_name=decl_name,
+            passed=passed,
+            summary=summary,
+            issue_kind=issue_kind,
+            suggested_fix=suggested_fix,
+        )
+
     def submit_stage_review(
         self,
         repo_root: Path,
@@ -437,6 +729,25 @@ class DeclGraphService:
             round_id=round_id,
             stage=stage,
             summary=summary,
+        )
+
+    def aggregate_stage_review_marks(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        stage: DeclStage | str,
+        summary: str,
+        marks: list[DeclReviewMarkRecord],
+    ) -> ServiceResult[StageReviewResultView]:
+        return self.review_gate.aggregate_stage_review_marks(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            stage=stage,
+            summary=summary,
+            marks=marks,
         )
 
     def compute_dependency_closure(
@@ -476,7 +787,7 @@ class DeclGraphService:
     def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         return self.readiness.get_current_decl_revision(repo_root, node_path=node_path, decl_name=decl_name)
 
-    def save_statement_formal_snapshot(
+    def save_statement_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -484,8 +795,8 @@ class DeclGraphService:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[DeclRevisionRecord]:
-        return self.readiness.save_statement_formal_snapshot(
+    ) -> ServiceResult[DeclRevision]:
+        return self.readiness.save_statement_formal_capture(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -493,7 +804,7 @@ class DeclGraphService:
             check=check,
         )
 
-    def save_proof_formal_snapshot(
+    def save_proof_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -501,8 +812,8 @@ class DeclGraphService:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[DeclRevisionRecord]:
-        return self.readiness.save_proof_formal_snapshot(
+    ) -> ServiceResult[DeclRevision]:
+        return self.readiness.save_proof_formal_capture(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,

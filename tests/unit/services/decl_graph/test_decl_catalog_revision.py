@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.decl_graph import DeclChangeKind, DeclRoundResultKind, DeclState
-from lean_constellation.services.decl_graph.models import DeclRevisionRecord
+from lean_constellation.services.decl_graph.models import DeclRevision
 from lean_constellation.services.foundation import WriteMode
 
 
@@ -40,7 +41,7 @@ def _create_round(tmp_path: Path, *, objective: str = "Plan a round.") -> tuple[
     return strategy.value.strategy_id, round_record.value.round_id
 
 
-def _write_revision(tmp_path: Path, revision: DeclRevisionRecord) -> None:
+def _write_revision(tmp_path: Path, revision: DeclRevision) -> None:
     runtime = make_runtime()
     path = runtime.decl_graph.graph_store.revision_path(
         tmp_path,
@@ -115,6 +116,22 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     round_record = service.get_round(tmp_path, node_path="Main.Topic.Core", round_id=round_id)
     assert round_record.ok and round_record.value is not None
     assert round_record.value.change_ids == [change.value.change_id]
+    raw_round = json.loads(
+        service.graph_store.round_path(tmp_path, node_path="Main.Topic.Core", round_id=round_id).read_text(encoding="utf-8")
+    )
+    assert raw_round["revision_refs"] == [{"change_id": change.value.change_id, "decl_name": "main_result", "revision": 1}]
+    assert "change_ids" not in raw_round
+    raw_revision = json.loads(
+        service.graph_store.revision_path(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            decl_name="main_result",
+            revision=1,
+        ).read_text(encoding="utf-8")
+    )
+    assert raw_revision["change"]["kind"] == "create"
+    assert not (service.graph_store.graph_root(tmp_path, node_path="Main.Topic.Core") / "changes").exists()
+    assert not (service.graph_store.graph_root(tmp_path, node_path="Main.Topic.Core") / "reviews").exists()
 
     index = service.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
     assert index.ok and index.value is not None

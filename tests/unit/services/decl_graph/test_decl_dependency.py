@@ -3,7 +3,7 @@ from pathlib import Path
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.decl_graph import DeclState
-from lean_constellation.services.decl_graph.models import DeclRevisionRecord
+from lean_constellation.services.decl_graph.models import DeclRevision
 from lean_constellation.services.foundation import WriteMode
 
 
@@ -40,7 +40,7 @@ def _create_round(tmp_path: Path, *, objective: str = "Plan a round.") -> str:
     return round_record.value.round_id
 
 
-def _write_revision(tmp_path: Path, revision: DeclRevisionRecord) -> None:
+def _write_revision(tmp_path: Path, revision: DeclRevision) -> None:
     runtime = make_runtime()
     path = runtime.decl_graph.graph_store.revision_path(
         tmp_path,

@@ -33,16 +33,6 @@ class RepoRequirementRef(StrictModel):
     requirement_name: str
 
 
-class RequirementWaitingState(StrictModel):
-    waiting: bool = False
-    provider_repo: str | None = None
-    reason: str | None = None
-    submitted_at: str | None = None
-    result_observed: bool = False
-    result_observed_at: str | None = None
-    result_note: str | None = None
-
-
 class RepoDependencyRequirement(StrictModel):
     name: str
     target_repo: str
@@ -52,8 +42,9 @@ class RepoDependencyRequirement(StrictModel):
     status: RepoDependencyRequirementStatus = RepoDependencyRequirementStatus.OPEN
     satisfaction_mode: RepoDependencySatisfactionMode = RepoDependencySatisfactionMode.REPO_READY
     provider_repo: str | None = None
+    provider_request_submitted_at: str | None = None
+    provider_result_observed_at: str | None = None
     note: str | None = None
-    waiting_state: RequirementWaitingState = Field(default_factory=RequirementWaitingState)
 
 
 class RepoPreparationInput(StrictModel):

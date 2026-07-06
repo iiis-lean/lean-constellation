@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
@@ -79,7 +80,12 @@ def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Pa
     )
     assert statement_formal.ok and statement_formal.value is not None
     assert statement_formal.value.state == DeclState.DECLARED
-    assert statement_formal.value.statement_lean_check == {"contains_sorry": "True", "passed": "True"}
+    assert statement_formal.value.statement.formal is not None
+    assert statement_formal.value.statement.formal.check is not None
+    assert statement_formal.value.statement.formal.check.contains_sorry is True
+    assert statement_formal.value.statement_lean_check is not None
+    assert statement_formal.value.statement_lean_check["status"] == "passed"
+    assert statement_formal.value.statement_lean_check["contains_sorry"] == "True"
 
     proof_nl = service.write_proof_nl(
         tmp_path,
@@ -90,7 +96,7 @@ def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Pa
         deps=["supporting_lemma", "proof_helper"],
     )
     assert proof_nl.ok and proof_nl.value is not None
-    assert proof_nl.value.state == DeclState.DECLARED
+    assert proof_nl.value.state == DeclState.PROOF_PLANNED
     assert proof_nl.value.decl_deps == ["proof_helper", "supporting_lemma"]
 
     proof_formal = service.write_proof_formal(
@@ -106,6 +112,50 @@ def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Pa
     assert proof_formal.value.state == DeclState.PROVED
     assert proof_formal.value.proof_lean_code == "by trivial"
     assert proof_formal.value.decl_deps == ["proof_helper", "supporting_lemma"]
+
+    revision_path = service.graph_store.revision_path(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        revision=proof_formal.value.revision,
+    )
+    payload = json.loads(revision_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "open"
+    assert payload["change"]["kind"] == "create"
+    assert payload["statement"]["nl"]["text"] == "The main result states True."
+    assert payload["statement"]["formal"]["code"] == "theorem main_result : True := by sorry"
+    assert payload["statement"]["deps"] == [
+        {
+            "kind": "repo_decl",
+            "reason": None,
+            "ref": {"name": "supporting_lemma", "node": "Main", "repo": None, "revision": 1},
+        }
+    ]
+    assert payload["proof"]["nl"]["text"] == "The proof is by triviality."
+    assert payload["proof"]["formal"]["code"] == "by trivial"
+    assert payload["proof"]["deps"] == [
+        {
+            "kind": "repo_decl",
+            "reason": None,
+            "ref": {"name": "proof_helper", "node": "Main", "repo": None, "revision": 1},
+        }
+    ]
+    for legacy_field in [
+        "version_status",
+        "change_kind",
+        "statement_nl",
+        "statement_origin",
+        "statement_deps",
+        "statement_lean_code",
+        "statement_lean_check",
+        "proof_nl",
+        "proof_origin",
+        "proof_deps",
+        "proof_lean_code",
+        "proof_lean_check",
+        "decl_deps",
+    ]:
+        assert legacy_field not in payload
 
 
 def test_statement_formal_requires_statement_nl(tmp_path: Path) -> None:

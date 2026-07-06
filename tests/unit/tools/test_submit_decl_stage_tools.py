@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.services.tool_facade import (
     ActorContext,
@@ -27,10 +28,20 @@ def test_decl_stage_submit_tools_registered() -> None:
 class _ReviewResult:
     def __init__(self, *, passed: bool) -> None:
         self.passed = passed
+        self.reviewed_decl_names = ["main_result"]
+        self.failed_decl_names = [] if passed else ["main_result"]
+        self.missing_decl_names = []
+        self.feedback = []
 
     def model_dump(self, mode: str = "python"):
         del mode
-        return {"passed": self.passed}
+        return {
+            "passed": self.passed,
+            "reviewed_decl_names": self.reviewed_decl_names,
+            "failed_decl_names": self.failed_decl_names,
+            "missing_decl_names": self.missing_decl_names,
+            "feedback": self.feedback,
+        }
 
 
 class _FakeDeclGraph:
@@ -38,9 +49,45 @@ class _FakeDeclGraph:
         self.foundation = foundation
         self.passed = passed
 
-    def submit_stage_review(self, repo_root, *, node_path: str, round_id: str, stage: str, summary: str):
+    def aggregate_stage_review_marks(self, repo_root, *, node_path: str, round_id: str, stage: str, summary: str, marks: list):
         del repo_root, node_path, round_id, stage, summary
+        assert marks
         return self.foundation.ok(_ReviewResult(passed=self.passed))
+
+
+class _FakeStep:
+    step_id = "step_1"
+    step_type = "decl_stage_reviewer_agent_step"
+
+    def __init__(self) -> None:
+        self.state = DeclStageReviewerStepState(
+            agent_role="statement_nl_reviewer",
+            agent_type="StatementNLReviewerAgent",
+            review_marks=[
+                {
+                    "round_id": "round_1",
+                    "node_path": "Main.Core",
+                    "stage": "statement_nl",
+                    "decl_name": "main_result",
+                    "passed": True,
+                    "summary": "mark",
+                }
+            ],
+        )
+
+
+class _FakeStepStore:
+    def __init__(self) -> None:
+        self.step = _FakeStep()
+
+    def get_step(self, step_id: str):
+        assert step_id == "step_1"
+        return self.step
+
+
+class _FakeStepService:
+    def __init__(self) -> None:
+        self.store = _FakeStepStore()
 
 
 def _ctx(repo_root: Path) -> ToolExecutionContext:
@@ -70,6 +117,7 @@ def _ctx(repo_root: Path) -> ToolExecutionContext:
 def test_stage_review_submission_maps_passed_to_accepted_and_retry(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
     runtime.app.decl_graph = _FakeDeclGraph(runtime.foundation, passed=True)
+    runtime.ark.step_service = _FakeStepService()
 
     accepted = submit_stage_review(runtime, _ctx(tmp_path), SubmitStageReviewArgs(summary="accepted"))
 
@@ -79,6 +127,7 @@ def test_stage_review_submission_maps_passed_to_accepted_and_retry(tmp_path: Pat
     assert accepted.value.submission.retry_required is False
 
     runtime.app.decl_graph = _FakeDeclGraph(runtime.foundation, passed=False)
+    runtime.ark.step_service = _FakeStepService()
     rejected = submit_stage_review(runtime, _ctx(tmp_path), SubmitStageReviewArgs(summary="retry"))
 
     assert rejected.ok

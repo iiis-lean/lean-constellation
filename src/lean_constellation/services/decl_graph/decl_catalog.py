@@ -9,12 +9,15 @@ from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
-    DeclChangeRecord,
+    DeclChangeView,
     DeclDeleteClosureView,
     DeclLifecycle,
-    DeclRecord,
-    DeclRevisionRecord,
-    DeclRoundRecord,
+    Decl,
+    DeclRevisionChange,
+    DeclRevisionRef,
+    DeclRevision,
+    DeclRevisionStatus,
+    DeclGraphRound,
     DeclRoundStatus,
     DeclState,
 )
@@ -53,7 +56,7 @@ class DeclCatalogComponent:
         public: bool = False,
         end_after_state: DeclState | str = DeclState.DECLARED,
         module: str | None = None,
-    ) -> ServiceResult[DeclChangeRecord]:
+    ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(end_after_state)
         if end_state is None:
             return self._unsupported_end_state(str(end_after_state))
@@ -69,7 +72,7 @@ class DeclCatalogComponent:
                 self.runtime.foundation.issue("duplicate_decl", "Declaration already exists.", object_ref=name)
             )
 
-        decl = DeclRecord(
+        decl = Decl(
             name=name,
             node_path=node_path,
             kind=kind,
@@ -79,28 +82,14 @@ class DeclCatalogComponent:
             module=module.strip() if module else None,
             summary=summary,
         )
-        revision = DeclRevisionRecord(
+        revision = DeclRevision(
             decl_name=name,
             revision=1,
             state=DeclState.PLANNED,
-            version_status="open",
-            change_kind=DeclChangeKind.CREATE,
+            status=DeclRevisionStatus.OPEN,
+            change=DeclRevisionChange(kind=DeclChangeKind.CREATE, end_after_state=end_state, objective=objective),
             module=module.strip() if module else None,
         )
-        change = self._new_change(
-            repo_root,
-            node_path=node_path,
-            round_id=round_id,
-            kind=DeclChangeKind.CREATE,
-            decl_name=name,
-            start_before_state=None,
-            end_after_state=end_state,
-            objective=objective,
-            target_revision=1,
-        )
-        if not change.ok or change.value is None:
-            return self.runtime.foundation.fail(change.issues)
-
         ensured = self.runtime.foundation.store.ensure_dir(
             self.graph_store.decl_revisions_dir(repo_root, node_path=node_path, decl_name=name)
         )
@@ -120,13 +109,13 @@ class DeclCatalogComponent:
         )
         if not written_revision.ok:
             return self.runtime.foundation.fail(written_revision.issues)
-        attached = self._attach_change_to_round(repo_root, node_path=node_path, round_id=round_id, change=change.value)
+        attached = self._attach_revision_to_round(repo_root, node_path=node_path, round_id=round_id, revision=revision)
         if not attached.ok:
             return self.runtime.foundation.fail(attached.issues)
         rebuilt = self.graph_store.rebuild_index(repo_root, node_path=node_path)
         if not rebuilt.ok:
             return self.runtime.foundation.fail(rebuilt.issues)
-        return self.runtime.foundation.ok(change.value)
+        return self.runtime.foundation.ok(self._change_view_from_revision(node_path=node_path, round_id=round_id, revision=revision))
 
     def open_decl_update(
         self,
@@ -138,7 +127,7 @@ class DeclCatalogComponent:
         objective: str,
         end_after_state: DeclState | str,
         start_before_state: DeclState | str | None = None,
-    ) -> ServiceResult[DeclChangeRecord]:
+    ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(end_after_state)
         if end_state is None:
             return self._unsupported_end_state(str(end_after_state))
@@ -169,27 +158,19 @@ class DeclCatalogComponent:
         next_revision_id = max(decl.value.revision_ids) + 1
         next_revision = latest.value.model_copy(deep=True)
         next_revision.revision = next_revision_id
-        next_revision.version_status = "open"
-        next_revision.change_kind = DeclChangeKind.UPDATE
+        next_revision.status = DeclRevisionStatus.OPEN
+        next_revision.change = DeclRevisionChange(
+            kind=DeclChangeKind.UPDATE,
+            start_before_state=start_state,
+            end_after_state=end_state,
+            objective=objective,
+        )
         next_revision.updated_at = utc_now_iso()
         self._reset_revision_to_state(next_revision, start_state)
 
         decl.value.current_revision = next_revision_id
         decl.value.revision_ids.append(next_revision_id)
         decl.value.updated_at = utc_now_iso()
-        change = self._new_change(
-            repo_root,
-            node_path=node_path,
-            round_id=round_id,
-            kind=DeclChangeKind.UPDATE,
-            decl_name=name,
-            start_before_state=start_state,
-            end_after_state=end_state,
-            objective=objective,
-            target_revision=next_revision_id,
-        )
-        if not change.ok or change.value is None:
-            return self.runtime.foundation.fail(change.issues)
         written_revision = self.runtime.foundation.store.write_json_atomic(
             self.graph_store.revision_path(repo_root, node_path=node_path, decl_name=name, revision=next_revision_id),
             next_revision,
@@ -200,10 +181,10 @@ class DeclCatalogComponent:
         decl_write = self._write_decl(repo_root, node_path=node_path, decl=decl.value)
         if not decl_write.ok:
             return self.runtime.foundation.fail(decl_write.issues)
-        attached = self._attach_change_to_round(repo_root, node_path=node_path, round_id=round_id, change=change.value)
+        attached = self._attach_revision_to_round(repo_root, node_path=node_path, round_id=round_id, revision=next_revision)
         if not attached.ok:
             return self.runtime.foundation.fail(attached.issues)
-        return self.runtime.foundation.ok(change.value)
+        return self.runtime.foundation.ok(self._change_view_from_revision(node_path=node_path, round_id=round_id, revision=next_revision))
 
     def mark_decl_delete(
         self,
@@ -213,7 +194,7 @@ class DeclCatalogComponent:
         round_id: str,
         name: str,
         objective: str,
-    ) -> ServiceResult[DeclChangeRecord]:
+    ) -> ServiceResult[DeclChangeView]:
         preflight = self._round_for_planning(repo_root, node_path=node_path, round_id=round_id)
         if not preflight.ok:
             return self.runtime.foundation.fail(preflight.issues)
@@ -228,23 +209,35 @@ class DeclCatalogComponent:
         )
         if not latest.ok or latest.value is None:
             return self.runtime.foundation.fail(latest.issues)
-        change = self._new_change(
-            repo_root,
-            node_path=node_path,
-            round_id=round_id,
+        next_revision_id = max(decl.value.revision_ids) + 1
+        next_revision = latest.value.model_copy(deep=True)
+        next_revision.revision = next_revision_id
+        next_revision.status = DeclRevisionStatus.OPEN
+        next_revision.state = DeclState.OBSOLETE
+        next_revision.change = DeclRevisionChange(
             kind=DeclChangeKind.DELETE,
-            decl_name=name,
             start_before_state=latest.value.state,
-            end_after_state=None,
+            end_after_state=DeclState.OBSOLETE,
             objective=objective,
-            target_revision=latest.value.revision,
         )
-        if not change.ok or change.value is None:
-            return self.runtime.foundation.fail(change.issues)
-        attached = self._attach_change_to_round(repo_root, node_path=node_path, round_id=round_id, change=change.value)
+        next_revision.updated_at = utc_now_iso()
+        decl.value.current_revision = next_revision_id
+        decl.value.revision_ids.append(next_revision_id)
+        decl.value.updated_at = utc_now_iso()
+        written_revision = self.runtime.foundation.store.write_json_atomic(
+            self.graph_store.revision_path(repo_root, node_path=node_path, decl_name=name, revision=next_revision_id),
+            next_revision,
+            mode=WriteMode.CREATE_ONLY,
+        )
+        if not written_revision.ok:
+            return self.runtime.foundation.fail(written_revision.issues)
+        decl_write = self._write_decl(repo_root, node_path=node_path, decl=decl.value)
+        if not decl_write.ok:
+            return self.runtime.foundation.fail(decl_write.issues)
+        attached = self._attach_revision_to_round(repo_root, node_path=node_path, round_id=round_id, revision=next_revision)
         if not attached.ok:
             return self.runtime.foundation.fail(attached.issues)
-        return self.runtime.foundation.ok(change.value)
+        return self.runtime.foundation.ok(self._change_view_from_revision(node_path=node_path, round_id=round_id, revision=next_revision))
 
     def commit_decl_revision(
         self,
@@ -254,7 +247,7 @@ class DeclCatalogComponent:
         name: str,
         revision: int | None = None,
         state: DeclState | str | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         decl = self.get_decl(repo_root, node_path=node_path, name=name)
         if not decl.ok or decl.value is None:
             return self.runtime.foundation.fail(decl.issues)
@@ -277,24 +270,24 @@ class DeclCatalogComponent:
         record.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=record.value)
 
-    def get_decl(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[DeclRecord]:
+    def get_decl(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[Decl]:
         ensured = self.graph_store.ensure_graph(repo_root, node_path=node_path)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
         return self.runtime.foundation.store.read_json(
             self.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=name),
-            DeclRecord,
+            Decl,
         )
 
-    def list_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclRecord]]:
+    def list_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[Decl]]:
         ensured = self.graph_store.ensure_graph(repo_root, node_path=node_path)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
         graph_root = self.graph_store.graph_root(repo_root, node_path=node_path)
-        decls: list[DeclRecord] = []
+        decls: list[Decl] = []
         issues = []
         for decl_json in sorted((graph_root / "decls").glob("*/decl.json")):
-            loaded = self.runtime.foundation.store.read_json(decl_json, DeclRecord)
+            loaded = self.runtime.foundation.store.read_json(decl_json, Decl)
             if loaded.ok and loaded.value is not None:
                 decls.append(loaded.value)
             else:
@@ -310,10 +303,10 @@ class DeclCatalogComponent:
         node_path: str,
         name: str,
         revision: int,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         return self.runtime.foundation.store.read_json(
             self.graph_store.revision_path(repo_root, node_path=node_path, decl_name=name, revision=revision),
-            DeclRevisionRecord,
+            DeclRevision,
         )
 
     def get_decl_change(
@@ -322,11 +315,109 @@ class DeclCatalogComponent:
         *,
         node_path: str,
         change_id: str,
-    ) -> ServiceResult[DeclChangeRecord]:
-        return self.runtime.foundation.store.read_json(
-            self.graph_store.change_path(repo_root, node_path=node_path, change_id=change_id),
-            DeclChangeRecord,
+    ) -> ServiceResult[DeclChangeView]:
+        located = self._locate_change_revision(repo_root, node_path=node_path, change_id=change_id)
+        if not located.ok or located.value is None:
+            return self.runtime.foundation.fail(located.issues)
+        round_id, revision = located.value
+        return self.runtime.foundation.ok(self._change_view_from_revision(node_path=node_path, round_id=round_id, revision=revision))
+
+    def list_round_changes(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[list[DeclChangeView]]:
+        revisions = self.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
+        if not revisions.ok or revisions.value is None:
+            return self.runtime.foundation.fail(revisions.issues)
+        return self.runtime.foundation.ok(
+            [
+                self._change_view_from_revision(node_path=node_path, round_id=round_id, revision=revision)
+                for revision in revisions.value
+            ]
         )
+
+    def list_round_revisions(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[list[DeclRevision]]:
+        round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        revisions: list[DeclRevision] = []
+        issues = []
+        for ref in round_record.value.revision_refs:
+            revision = self.get_decl_revision(repo_root, node_path=node_path, name=ref.decl_name, revision=ref.revision)
+            if not revision.ok or revision.value is None:
+                issues.extend(revision.issues)
+                continue
+            if revision.value.change is None:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "round_revision_missing_change",
+                        "Round revision ref points to a revision without embedded change metadata.",
+                        object_ref=ref.change_id,
+                    )
+                )
+            revisions.append(revision.value)
+        if issues:
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(revisions)
+
+    def write_decl_change_summary(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        change_id: str,
+        summary: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        if not summary or not summary.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("change_summary_required", "Decl change summary is required.", field="summary")
+            )
+        located = self._locate_change_revision(repo_root, node_path=node_path, change_id=change_id, round_id=round_id)
+        if not located.ok or located.value is None:
+            return self.runtime.foundation.fail(located.issues)
+        _round_id, revision = located.value
+        if revision.change is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("round_revision_missing_change", "Decl revision has no embedded change metadata.", object_ref=change_id)
+            )
+        revision.change.summary = summary.strip()
+        revision.updated_at = utc_now_iso()
+        written = self._write_revision(repo_root, node_path=node_path, revision=revision)
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        return self.runtime.foundation.ok(round_record.value)
+
+    def write_round_summary(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        summary: str,
+    ) -> ServiceResult[DeclGraphRound]:
+        if not summary or not summary.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("round_summary_required", "Round summary is required.", field="summary")
+            )
+        changes = self.list_round_changes(repo_root, node_path=node_path, round_id=round_id)
+        if not changes.ok or changes.value is None:
+            return self.runtime.foundation.fail(changes.issues)
+        missing = [change.change_id for change in changes.value if not change.summary]
+        if missing:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_change_summary_missing",
+                    "Every round change must have its own summary before writing the round summary.",
+                    object_ref=round_id,
+                    current=", ".join(missing),
+                )
+            )
+        round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        round_record.value.summary = summary.strip()
+        return self.strategy_round._write_round(repo_root, node_path=node_path, round_record=round_record.value)
 
     def compute_delete_closure(
         self,
@@ -368,23 +459,22 @@ class DeclCatalogComponent:
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
         issues = []
-        changes: list[DeclChangeRecord] = []
-        for change_id in round_record.value.change_ids:
-            change = self.get_decl_change(repo_root, node_path=node_path, change_id=change_id)
-            if not change.ok or change.value is None:
-                issues.extend(change.issues)
-            else:
-                changes.append(change.value)
+        changes = self.list_round_changes(repo_root, node_path=node_path, round_id=round_id)
+        if not changes.ok or changes.value is None:
+            issues.extend(changes.issues)
+            changes_value: list[DeclChangeView] = []
+        else:
+            changes_value = changes.value
         if issues:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed("decl_round_draft", issues, summary="Round change records are invalid.")
             )
 
-        create_names = [change.decl_name for change in changes if change.kind == DeclChangeKind.CREATE]
+        create_names = [change.decl_name for change in changes_value if change.kind == DeclChangeKind.CREATE]
         if len(set(create_names)) != len(create_names):
             issues.append(self.runtime.foundation.issue("duplicate_create_change", "Round has duplicate create changes."))
-        changed_names = {change.decl_name for change in changes}
-        delete_names = [change.decl_name for change in changes if change.kind == DeclChangeKind.DELETE]
+        changed_names = {change.decl_name for change in changes_value}
+        delete_names = [change.decl_name for change in changes_value if change.kind == DeclChangeKind.DELETE]
         if delete_names:
             closure = self.compute_delete_closure(repo_root, node_path=node_path, decl_names=delete_names)
             if not closure.ok or closure.value is None:
@@ -400,7 +490,7 @@ class DeclCatalogComponent:
                             current=", ".join(missing_from_round),
                         )
                     )
-        change_kind_by_decl = {change.decl_name: change.kind for change in changes}
+        change_kind_by_decl = {change.decl_name: change.kind for change in changes_value}
         for decl_name in sorted(changed_names):
             decl = self.get_decl(repo_root, node_path=node_path, name=decl_name)
             if not decl.ok or decl.value is None:
@@ -438,7 +528,7 @@ class DeclCatalogComponent:
             self.runtime.foundation.gate_passed("decl_round_draft", summary="Round draft is valid.")
         )
 
-    def _round_for_planning(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclRoundRecord]:
+    def _round_for_planning(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclGraphRound]:
         round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
@@ -454,69 +544,100 @@ class DeclCatalogComponent:
             )
         return self.runtime.foundation.ok(round_record.value)
 
-    def _new_change(
+    def _attach_revision_to_round(
         self,
         repo_root: Path,
         *,
         node_path: str,
         round_id: str,
-        kind: DeclChangeKind,
-        decl_name: str,
-        start_before_state: DeclState | None,
-        end_after_state: DeclState | None,
-        objective: str,
-        target_revision: int | None,
-    ) -> ServiceResult[DeclChangeRecord]:
-        if not objective or not objective.strip():
+        revision: DeclRevision,
+    ) -> ServiceResult[DeclRevisionRef]:
+        if revision.change is None:
             return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("decl_change_objective_required", "Decl change objective is required.", field="objective")
+                self.runtime.foundation.issue(
+                    "decl_revision_change_required",
+                    "Round revisions must include embedded change metadata.",
+                    object_ref=revision.decl_name,
+                )
             )
-        allocated = self.runtime.foundation.store.allocate_uuid(
-            lambda candidate: self.graph_store.change_path(repo_root, node_path=node_path, change_id=candidate).exists(),
-            prefix="change",
-        )
-        if not allocated.ok or allocated.value is None:
-            return self.runtime.foundation.fail(allocated.issues)
-        return self.runtime.foundation.ok(
-            DeclChangeRecord(
-                change_id=allocated.value,
-                node_path=node_path,
-                round_id=round_id,
-                kind=kind,
-                decl_name=decl_name,
-                start_before_state=start_before_state,
-                end_after_state=end_after_state,
-                objective=objective,
-                target_revision=target_revision,
-            )
-        )
-
-    def _attach_change_to_round(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_id: str,
-        change: DeclChangeRecord,
-    ) -> ServiceResult[DeclChangeRecord]:
-        written = self.runtime.foundation.store.write_json_atomic(
-            self.graph_store.change_path(repo_root, node_path=node_path, change_id=change.change_id),
-            change,
-            mode=WriteMode.CREATE_ONLY,
-        )
-        if not written.ok:
-            return self.runtime.foundation.fail(written.issues)
         round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
-        if change.change_id not in round_record.value.change_ids:
-            round_record.value.change_ids.append(change.change_id)
+        ref = self._revision_ref(revision)
+        if ref.change_id not in round_record.value.change_ids:
+            round_record.value.revision_refs.append(ref)
         round_write = self.strategy_round._write_round(repo_root, node_path=node_path, round_record=round_record.value)
         if not round_write.ok:
             return self.runtime.foundation.fail(round_write.issues)
-        return self.runtime.foundation.ok(change)
+        return self.runtime.foundation.ok(ref)
 
-    def _write_decl(self, repo_root: Path, *, node_path: str, decl: DeclRecord) -> ServiceResult[DeclRecord]:
+    def _locate_change_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        change_id: str,
+        round_id: str | None = None,
+    ) -> ServiceResult[tuple[str, DeclRevision]]:
+        if not change_id or not change_id.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("change_id_required", "Decl change id is required.", field="change_id")
+            )
+        if round_id:
+            round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
+            if not round_record.ok or round_record.value is None:
+                return self.runtime.foundation.fail(round_record.issues)
+            rounds = [round_record.value]
+        else:
+            rounds = None
+        if rounds is None:
+            loaded_rounds = self.strategy_round.list_rounds(repo_root, node_path=node_path)
+            if not loaded_rounds.ok or loaded_rounds.value is None:
+                return self.runtime.foundation.fail(loaded_rounds.issues)
+            rounds = loaded_rounds.value
+        for round_record in rounds:
+            if round_record is None:
+                continue
+            for ref in round_record.revision_refs:
+                if ref.change_id != change_id:
+                    continue
+                revision = self.get_decl_revision(repo_root, node_path=node_path, name=ref.decl_name, revision=ref.revision)
+                if not revision.ok or revision.value is None:
+                    return self.runtime.foundation.fail(revision.issues)
+                return self.runtime.foundation.ok((round_record.round_id, revision.value))
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue("decl_change_not_found", "Decl change was not found in round revision refs.", object_ref=change_id)
+        )
+
+    def _revision_ref(self, revision: DeclRevision) -> DeclRevisionRef:
+        return DeclRevisionRef(
+            change_id=self._change_id_for_revision(revision.decl_name, revision.revision),
+            decl_name=revision.decl_name,
+            revision=revision.revision,
+        )
+
+    def _change_id_for_revision(self, decl_name: str, revision: int) -> str:
+        return f"{decl_name}@rev:{revision}"
+
+    def _change_view_from_revision(self, *, node_path: str, round_id: str, revision: DeclRevision) -> DeclChangeView:
+        if revision.change is None:
+            raise ValueError(f"Revision {revision.decl_name}@{revision.revision} has no embedded change metadata.")
+        return DeclChangeView(
+            change_id=self._change_id_for_revision(revision.decl_name, revision.revision),
+            node_path=node_path,
+            round_id=round_id,
+            kind=revision.change.kind,
+            decl_name=revision.decl_name,
+            start_before_state=revision.change.start_before_state,
+            end_after_state=revision.change.end_after_state,
+            objective=revision.change.objective or "",
+            summary=revision.change.summary,
+            target_revision=revision.revision,
+            created_at=revision.updated_at,
+            updated_at=revision.updated_at,
+        )
+
+    def _write_decl(self, repo_root: Path, *, node_path: str, decl: Decl) -> ServiceResult[Decl]:
         written = self.runtime.foundation.store.write_json_atomic(
             self.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=decl.name),
             decl,
@@ -531,8 +652,8 @@ class DeclCatalogComponent:
         repo_root: Path,
         *,
         node_path: str,
-        revision: DeclRevisionRecord,
-    ) -> ServiceResult[DeclRevisionRecord]:
+        revision: DeclRevision,
+    ) -> ServiceResult[DeclRevision]:
         written = self.runtime.foundation.store.write_json_atomic(
             self.graph_store.revision_path(
                 repo_root,
@@ -547,7 +668,7 @@ class DeclCatalogComponent:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(revision)
 
-    def _reset_revision_to_state(self, revision: DeclRevisionRecord, state: DeclState) -> None:
+    def _reset_revision_to_state(self, revision: DeclRevision, state: DeclState) -> None:
         revision.state = state
         if state == DeclState.PLANNED:
             revision.statement_nl = None
@@ -560,7 +681,6 @@ class DeclCatalogComponent:
             revision.proof_deps = []
             revision.proof_lean_code = None
             revision.proof_lean_check = None
-            revision.decl_deps = []
         elif state == DeclState.SPECIFIED:
             revision.statement_lean_code = None
             revision.statement_lean_check = None
@@ -569,23 +689,19 @@ class DeclCatalogComponent:
             revision.proof_deps = []
             revision.proof_lean_code = None
             revision.proof_lean_check = None
-            revision.decl_deps = sorted(set(revision.statement_deps))
         elif state == DeclState.DECLARED:
             revision.proof_nl = None
             revision.proof_origin = []
             revision.proof_deps = []
             revision.proof_lean_code = None
             revision.proof_lean_check = None
-            revision.decl_deps = sorted(set(revision.statement_deps))
-        else:
-            revision.decl_deps = sorted(set(revision.statement_deps) | set(revision.proof_deps))
 
     def _reverse_dependency_map(
         self,
         repo_root: Path,
         *,
         node_path: str,
-        decls: dict[str, DeclRecord],
+        decls: dict[str, Decl],
     ) -> dict[str, set[str]]:
         reverse: dict[str, set[str]] = {}
         for decl_name, decl in decls.items():
@@ -610,7 +726,7 @@ class DeclCatalogComponent:
             return None
         return state
 
-    def _unsupported_end_state(self, value: str) -> ServiceResult[DeclChangeRecord]:
+    def _unsupported_end_state(self, value: str) -> ServiceResult[DeclChangeView]:
         return self.runtime.foundation.fail(
             self.runtime.foundation.issue(
                 "unsupported_end_after_state",

@@ -45,11 +45,15 @@ def test_ensure_decl_graph_creates_empty_content_node_store(tmp_path: Path) -> N
     assert ensured.value.strategy_count == 0
     assert Path(ensured.value.graph_root).is_dir()
     assert Path(ensured.value.index_path).is_file()
+    node = runtime.node.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Topic.Core")
+    assert node.ok and node.value is not None
+    assert Path(ensured.value.graph_root) == runtime.node.node_tree.node_store.decl_graph_dir(tmp_path, node_id=node.value.node_id)
 
     index = runtime.decl_graph.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
     assert index.ok
     assert index.value is not None
     assert index.value == DeclGraphIndex(
+        node_id=node.value.node_id,
         node_path="Main.Topic.Core",
         summary="Empty DeclGraph index for Content node Main.Topic.Core.",
         updated_at=index.value.updated_at,

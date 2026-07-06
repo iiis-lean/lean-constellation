@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import DeclNameArgs, DeclReviewMarkArgs, DeclStageFileCheckArgs, DeclStageNlArgs, NoArgs
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
@@ -35,7 +36,7 @@ def _write_statement_nl(runtime, ctx, args: DeclStageNlArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
     if not allowed.ok:
         return allowed
-    return runtime.decl_graph.write_statement_nl(
+    written = runtime.decl_graph.write_statement_nl(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_round_id(ctx, args.round_id),
@@ -44,13 +45,16 @@ def _write_statement_nl(runtime, ctx, args: DeclStageNlArgs):
         origin=args.origin,
         deps=args.deps,
     )
+    if not written.ok:
+        return written
+    return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
 
 
 def _write_proof_nl(runtime, ctx, args: DeclStageNlArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="proof_nl", decl_name=args.decl_name)
     if not allowed.ok:
         return allowed
-    return runtime.decl_graph.write_proof_nl(
+    written = runtime.decl_graph.write_proof_nl(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_round_id(ctx, args.round_id),
@@ -59,6 +63,9 @@ def _write_proof_nl(runtime, ctx, args: DeclStageNlArgs):
         origin=args.origin,
         deps=args.deps,
     )
+    if not written.ok:
+        return written
+    return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
 
 
 def _prepare_statement_file(runtime, ctx, args: DeclNameArgs):
@@ -89,7 +96,7 @@ def _capture_proof_file(runtime, ctx, args: DeclNameArgs):
     return runtime.lean_projection.capture_proof_formal(ctx.repo_root, node_path=_node(ctx), decl_name=args.decl_name)
 
 
-def _check_file_snapshot_sync(runtime, ctx, args: DeclStageFileCheckArgs):
+def _check_file_capture_sync(runtime, ctx, args: DeclStageFileCheckArgs):
     return runtime.lean_projection.check_decl_file_snapshot_sync(
         ctx.repo_root,
         node_path=_node(ctx),
@@ -116,7 +123,7 @@ def _check_formal_stage_consistency(runtime, ctx, args: DeclStageFileCheckArgs):
 
 
 def _record_decl_review(runtime, ctx, args: DeclReviewMarkArgs):
-    return runtime.decl_graph.record_decl_review(
+    mark = runtime.decl_graph.build_decl_review_mark(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_round_id(ctx, args.round_id),
@@ -127,6 +134,44 @@ def _record_decl_review(runtime, ctx, args: DeclReviewMarkArgs):
         issue_kind=args.issue_kind,
         suggested_fix=args.suggested_fix,
     )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    step_id = ctx.runtime.step_id
+    if not step_id:
+        return runtime.foundation.fail(runtime.foundation.issue("review_step_context_missing", "Review mark recording requires current ARK step_id."))
+    step_service = getattr(runtime.ark, "step_service", None)
+    if step_service is None:
+        return runtime.foundation.fail(runtime.foundation.issue("step_service_missing", "ARK step service is not available."))
+    try:
+        current_step = step_service.store.get_step(step_id)
+    except Exception as exc:
+        return runtime.foundation.fail(runtime.foundation.issue("review_step_not_found", f"Cannot load current reviewer step: {exc}", object_ref=step_id))
+    if current_step.step_type != "decl_stage_reviewer_agent_step" or not isinstance(current_step.state, DeclStageReviewerStepState):
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "review_step_state_invalid",
+                "Review marks can only be recorded on a DeclStageReviewerAgentStep with DeclStageReviewerStepState.",
+                object_ref=step_id,
+                current=f"{current_step.step_type}:{type(current_step.state).__name__}",
+            )
+        )
+
+    def update_review_marks(step) -> None:
+        state = step.state
+        state.review_marks = [
+            item
+            for item in state.review_marks
+            if not (item.stage == mark.value.stage and item.decl_name == mark.value.decl_name)
+        ]
+        state.review_marks.append(mark.value)
+
+    try:
+        step_service.store.update_step_record(step_id, update_review_marks)
+    except Exception as exc:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("review_step_update_failed", f"Cannot persist review mark on step state: {exc}", object_ref=step_id)
+        )
+    return runtime.foundation.ok(runtime.decl_graph.review_mark_view(mark.value))
 
 
 def _run_round_local_audit(runtime, ctx, args: NoArgs):
@@ -176,7 +221,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="capture_statement_formal_file",
-            description="Run capture checks on the statement formal Lean file and save the accepted statement formal snapshot into the current DeclRevision.",
+            description="Run capture checks on the statement formal Lean file and save the accepted statement formal capture into the current DeclRevision.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="formal_capture",
@@ -196,7 +241,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="capture_proof_formal_file",
-            description="Run capture checks on the proof formal Lean file and save the accepted proof formal snapshot into the current DeclRevision.",
+            description="Run capture checks on the proof formal Lean file and save the accepted proof formal capture into the current DeclRevision.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="formal_capture",
@@ -206,17 +251,17 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="check_decl_file_snapshot_sync",
-            description="Check whether a declaration-owned Lean file still matches the captured formal snapshot stored in the DeclRevision.",
+            description="Check whether a declaration-owned Lean file still matches the captured formal file stored in the DeclRevision.",
             args_model=DeclStageFileCheckArgs,
             capability=ToolCapability.READ,
             result_view="gate_report",
             groups={AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE, AppGroup.DECL_STAGE_PROOF_FORMAL_FILE},
             roles=read_roles,
-            handler=_check_file_snapshot_sync,
+            handler=_check_file_capture_sync,
         ),
         handler_tool(
             name="sync_decl_file_after_revision_reset",
-            description="Restore a declaration-owned Lean file from the current DeclRevision snapshot after an update reset.",
+            description="Restore a declaration-owned Lean file from the current DeclRevision formal capture after an update reset.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="mutation",

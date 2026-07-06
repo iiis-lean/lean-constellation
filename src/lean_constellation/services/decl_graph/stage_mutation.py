@@ -8,12 +8,7 @@ from typing import TYPE_CHECKING, Any
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
-from lean_constellation.services.decl_graph.models import (
-    DeclChangeKind,
-    DeclRevisionRecord,
-    DeclRoundStatus,
-    DeclState,
-)
+from lean_constellation.services.decl_graph.models import DeclChangeKind, DeclRevision, DeclRoundStatus, DeclState
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
 from lean_constellation.services.foundation import ServiceResult, WriteMode
 
@@ -48,7 +43,7 @@ class StageMutationComponent:
         nl: str,
         origin: list[dict[str, Any]] | None = None,
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         if not nl or not nl.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("statement_nl_required", "Statement NL text is required.", field="nl")
@@ -59,7 +54,6 @@ class StageMutationComponent:
         revision.value.statement_nl = nl.strip()
         revision.value.statement_origin = self._normalize_origin(origin)
         revision.value.statement_deps = self._normalize_deps(deps)
-        revision.value.decl_deps = sorted(set(revision.value.statement_deps))
         revision.value.state = DeclState.SPECIFIED
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
@@ -74,7 +68,7 @@ class StageMutationComponent:
         lean_code: str,
         lean_check: dict[str, Any],
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         if not lean_code or not lean_code.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("statement_formal_code_required", "Statement formal Lean code is required.", field="lean_code")
@@ -89,7 +83,6 @@ class StageMutationComponent:
         revision.value.statement_lean_code = lean_code.strip()
         revision.value.statement_lean_check = self._normalize_check(lean_check)
         revision.value.statement_deps = self._normalize_deps(deps if deps is not None else revision.value.statement_deps)
-        revision.value.decl_deps = sorted(set(revision.value.statement_deps))
         revision.value.state = DeclState.DECLARED
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
@@ -104,7 +97,7 @@ class StageMutationComponent:
         nl: str,
         origin: list[dict[str, Any]] | None = None,
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         if not nl or not nl.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("proof_nl_required", "Proof NL text is required.", field="nl")
@@ -122,8 +115,7 @@ class StageMutationComponent:
         revision.value.proof_nl = nl.strip()
         revision.value.proof_origin = self._normalize_origin(origin)
         revision.value.proof_deps = self._normalize_deps(deps)
-        revision.value.decl_deps = sorted(set(revision.value.statement_deps) | set(revision.value.proof_deps))
-        revision.value.state = DeclState.DECLARED
+        revision.value.state = DeclState.PROOF_PLANNED
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 
@@ -137,7 +129,7 @@ class StageMutationComponent:
         lean_code: str,
         lean_check: dict[str, Any],
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         if not lean_code or not lean_code.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("proof_formal_code_required", "Proof formal Lean code is required.", field="lean_code")
@@ -155,7 +147,6 @@ class StageMutationComponent:
         revision.value.proof_lean_code = lean_code.strip()
         revision.value.proof_lean_check = self._normalize_check(lean_check)
         revision.value.proof_deps = self._normalize_deps(deps if deps is not None else revision.value.proof_deps)
-        revision.value.decl_deps = sorted(set(revision.value.statement_deps) | set(revision.value.proof_deps))
         revision.value.state = DeclState.PROVED
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
@@ -167,7 +158,7 @@ class StageMutationComponent:
         node_path: str,
         round_id: str,
         decl_name: str,
-    ) -> ServiceResult[DeclRevisionRecord]:
+    ) -> ServiceResult[DeclRevision]:
         round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
@@ -182,17 +173,17 @@ class StageMutationComponent:
                 )
             )
         target_revision: int | None = None
-        for change_id in round_record.value.change_ids:
-            change = self.decl_catalog.get_decl_change(repo_root, node_path=node_path, change_id=change_id)
-            if not change.ok or change.value is None:
-                return self.runtime.foundation.fail(change.issues)
-            if change.value.decl_name != decl_name:
+        for ref in round_record.value.revision_refs:
+            if ref.decl_name != decl_name:
                 continue
-            if change.value.kind == DeclChangeKind.DELETE:
+            revision = self.decl_catalog.get_decl_revision(repo_root, node_path=node_path, name=ref.decl_name, revision=ref.revision)
+            if not revision.ok or revision.value is None:
+                return self.runtime.foundation.fail(revision.issues)
+            if revision.value.change is not None and revision.value.change.kind == DeclChangeKind.DELETE:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue("decl_change_is_delete", "Delete changes cannot receive stage mutations.", object_ref=decl_name)
                 )
-            target_revision = change.value.target_revision
+            target_revision = ref.revision
             break
         if target_revision is None:
             return self.runtime.foundation.fail(
@@ -238,8 +229,8 @@ class StageMutationComponent:
         repo_root: Path,
         *,
         node_path: str,
-        revision: DeclRevisionRecord,
-    ) -> ServiceResult[DeclRevisionRecord]:
+        revision: DeclRevision,
+    ) -> ServiceResult[DeclRevision]:
         written = self.runtime.foundation.store.write_json_atomic(
             self.graph_store.revision_path(
                 repo_root,
