@@ -192,9 +192,9 @@ def test_submit_repo_requirement_records_waiting_state(tmp_path: Path) -> None:
     assert result.value.ok is True
     requirement = runtime.repo_workspace.requirement.get_requirement(tmp_path, name="need_provider")
     assert requirement.ok and requirement.value is not None
-    state = requirement.value.requirement.waiting_state
-    assert state.waiting is True
-    assert state.provider_repo == "Provider"
-    assert state.reason == "Need provider theorem."
+    assert requirement.value.requirement.provider_repo == "Provider"
+    assert requirement.value.requirement.provider_request_submitted_at is not None
+    assert requirement.value.requirement.provider_result_observed_at is None
+    assert requirement.value.requirement.note == "Need provider theorem."
     assert len(gateway.accepted) == 1
     assert gateway.accepted[0].submission_type == "coordinator_repo_requirement"

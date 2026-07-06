@@ -171,7 +171,6 @@ def test_business_agent_step_state_and_result_roundtrip_through_registry() -> No
     registry = StepTypeRegistry()
     register_lean_flow_step_types(step_registry=registry)
 
-    state_payload = AgentStepState(agent_role="unit_role").model_dump(mode="json")
     result_payload = {
         "result_type": "agent_step_submission",
         "outcome": "submitted",
@@ -183,6 +182,8 @@ def test_business_agent_step_state_and_result_roundtrip_through_registry() -> No
     }
 
     for step_cls in BUSINESS_AGENT_STEP_TYPES:
+        state_cls = getattr(step_cls, "State", AgentStepState)
+        state_payload = state_cls(agent_role="unit_role").model_dump(mode="json")
         assert isinstance(registry.parse_state(step_cls.step_type, state_payload), AgentStepState)
         parsed_result = registry.parse_result(step_cls.step_type, result_payload)
         assert parsed_result is not None

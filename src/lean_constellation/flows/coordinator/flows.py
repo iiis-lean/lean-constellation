@@ -373,12 +373,19 @@ def _record_stable_repo_snapshot(
 ) -> None:
     effective_node_paths = list(node_paths or [])
     repo_key = _repo_scope_key(ctx.flow.scope_id, repo_root)
+    scope_ids = [ctx.flow.scope_id]
+    for path in effective_node_paths:
+        node = ctx.app.node.node_tree.node_store.resolve_active_node(repo_root, path=path)
+        if not node.ok or node.value is None:
+            _mark_flow_failed_from_stable_snapshot(ctx, failure_type, node.issues)
+            return
+        scope_ids.append(node_scope_id(repo_key, node.value.node_id))
     snapshot = ctx.app.validation_snapshot.create_repo_stable_point_snapshot(
         repo_root,
         checkpoint_kind=checkpoint_kind,
         label=label,
         node_paths=effective_node_paths,
-        scope_ids=[ctx.flow.scope_id, *(node_scope_id(repo_key, path) for path in effective_node_paths)],
+        scope_ids=scope_ids,
     )
     if not snapshot.ok or snapshot.value is None:
         _mark_flow_failed_from_stable_snapshot(ctx, failure_type, snapshot.issues)

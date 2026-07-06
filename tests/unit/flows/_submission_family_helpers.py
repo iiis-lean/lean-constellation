@@ -65,6 +65,8 @@ def instantiate_submission(cls, **overrides):
     for key, value in defaults.items():
         if key in fields:
             payload[key] = value
+    if "feedback" in fields and "reviewed_decl_names" in fields:
+        payload["feedback"] = []
     payload.update(overrides)
     return cls.model_validate(payload)
 

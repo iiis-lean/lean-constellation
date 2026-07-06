@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import Field
 
 from lean_constellation.flows.common.submissions import LeanBaseSubmission, LeanDispatchSubmission
+from lean_constellation.services.decl_graph.models import DeclReviewMarkRecord
 
 
 class DeclRoundDispatchSubmission(LeanDispatchSubmission):
@@ -37,3 +38,7 @@ class DeclStageReviewSubmittedSubmission(LeanBaseSubmission):
     round_id: str
     accepted: bool
     retry_required: bool
+    reviewed_decl_names: list[str] = Field(default_factory=list)
+    failed_decl_names: list[str] = Field(default_factory=list)
+    missing_decl_names: list[str] = Field(default_factory=list)
+    feedback: list[DeclReviewMarkRecord] = Field(default_factory=list)

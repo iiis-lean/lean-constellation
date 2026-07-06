@@ -4,8 +4,11 @@ from pathlib import Path
 import shutil
 from typing import Any
 
+from agent_runtime_kit.flow.models import FlowRequest
 import pytest
 
+from lean_constellation.flows.common.agent_steps import DeclStageReviewerAgentStep
+from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.mcp import create_mcp_server
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
@@ -150,7 +153,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         {"decl_name": round_fixture.decl_name, "stage": "statement"},
         runtime_context=statement_formal_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Statement file snapshot sync gate passed.",
+        assertion_summary="Statement file capture sync gate passed.",
     )
     assert _field(statement_sync.value, "passed") is True
 
@@ -173,6 +176,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         role="reviewer",
         stage="statement_nl_review",
     )
+    reviewer_ctx = _attach_reviewer_step(ws, reviewer_ctx, round_fixture)
     review_mark = call_tool_with_evidence(
         server,
         "statement_nl_reviewer",
@@ -206,6 +210,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         assertion_summary="Proof NL was written through the stage worker view.",
     )
     assert _field(proof_revision.value, "proof_nl") == "Use triviality."
+    assert _field(proof_revision.value, "proof_deps") == []
 
     proof_formal_ctx = _ctx(ws, round_fixture, view="proof_formal_worker", agent_type="ProofFormalWorkerAgent", stage="proof_formal")
     prepared_proof = call_tool_with_evidence(
@@ -264,7 +269,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         {"decl_name": round_fixture.decl_name, "stage": "proof"},
         runtime_context=proof_formal_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Proof file snapshot sync gate passed.",
+        assertion_summary="Proof file capture sync gate passed.",
     )
     assert _field(proof_sync.value, "passed") is True
 
@@ -298,7 +303,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         {"decl_name": round_fixture.decl_name},
         runtime_context=proof_formal_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Decl-owned file was synchronized back to the captured proof snapshot.",
+        assertion_summary="Decl-owned file was synchronized back to the captured proof capture.",
     )
     assert _field(synced.value, "changed") is True
     assert "-- local drift before sync" not in proof_path.read_text(encoding="utf-8")
@@ -363,6 +368,40 @@ def _ctx(
         current_decl=round_fixture.decl_name,
         decl_kind="theorem",
     )
+
+
+def _attach_reviewer_step(
+    ws: RuntimeMatrixWorkspace,
+    ctx: RuntimeToolContext,
+    round_fixture: DeclRoundFixture,
+) -> RuntimeToolContext:
+    scope_id = f"repo:Provider:node:{round_fixture.node_path}"
+    flow_id = ws.runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="content_node_task",
+            scope_id=scope_id,
+            params={
+                "repo_key": "Provider",
+                "repo_path": str(ws.provider_repo),
+                "node_path": round_fixture.node_path,
+                "contract_version": 1,
+                "task_mode": "run",
+            },
+        ),
+        enqueue=False,
+    )
+    step_id = "strict_runtime_matrix_statement_nl_reviewer_step"
+    step = DeclStageReviewerAgentStep(
+        step_id=step_id,
+        flow_id=flow_id,
+        scope_id=scope_id,
+        state=DeclStageReviewerStepState(
+            agent_role="statement_nl_reviewer",
+            agent_type="StatementNLReviewerAgent",
+        ),
+    )
+    ws.runtime.ark.step_service.create_step(step, enqueue=False)
+    return ctx.model_copy(update={"flow_id": flow_id, "step_id": step_id, "scope_id": scope_id})
 
 
 def _field(value: Any, *path: str) -> Any:

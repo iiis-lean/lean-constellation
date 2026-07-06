@@ -215,7 +215,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     restored_requirement = unwrap(
         ws.runtime.repo_workspace.requirement.get_requirement(ws.consumer_repo, name="need_provider")
     )
-    assert restored_requirement.requirement.waiting_state.result_observed is False
+    assert restored_requirement.requirement.provider_result_observed_at is None
 
     node_ctx = _ctx(ws.provider_repo, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
     plan_ctx = _ctx(ws.provider_repo, view="content_plan", agent_type="ContentPlanAgent", role="plan", node_path="Main.Topic.Core")
@@ -1590,7 +1590,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Support adapter declaration was finalized.",
     )
-    assert finalized_support.value["record"]["finalized"] is True
+    assert finalized_support.value["finalized"] is True
 
     created_main = call_tool_with_evidence(
         server,
@@ -1606,7 +1606,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter declaration was created.",
     )
-    assert created_main.value["record"]["name"] == "main_result"
+    assert created_main.value["name"] == "main_result"
 
     statement_formal = call_tool_with_evidence(
         server,
@@ -1621,7 +1621,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter formal statement was written.",
     )
-    assert statement_formal.value["record"]["statement"]["formal"]["code"]
+    assert statement_formal.value["revision"]["statement"]["formal"]["code"]
 
     statement_nl = call_tool_with_evidence(
         server,
@@ -1636,7 +1636,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter natural-language statement was written.",
     )
-    assert statement_nl.value["record"]["statement"]["nl"]["summary"]
+    assert statement_nl.value["revision"]["statement"]["nl"]["text"]
 
     statement_origin = call_tool_with_evidence(
         server,
@@ -1651,7 +1651,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Statement origin text was recorded.",
     )
-    assert statement_origin.value["record"]["statement"]["origins"]
+    assert statement_origin.value["revision"]["statement"]["nl"]["origin"]
 
     statement_dep = call_tool_with_evidence(
         server,
@@ -1662,7 +1662,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Statement dependency was added.",
     )
-    assert "support" in str(statement_dep.value["record"]["statement"]["deps"])
+    assert "support" in str(statement_dep.value["revision"]["statement"]["deps"])
 
     removed_statement_dep = call_tool_with_evidence(
         server,
@@ -1673,7 +1673,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Statement dependency was removed.",
     )
-    assert "support" not in str(removed_statement_dep.value["record"]["statement"]["deps"])
+    assert "support" not in str(removed_statement_dep.value["revision"]["statement"]["deps"])
 
     proof_formal = call_tool_with_evidence(
         server,
@@ -1688,7 +1688,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter formal proof was written.",
     )
-    assert proof_formal.value["record"]["proof"]["formal"]["code"]
+    assert proof_formal.value["revision"]["proof"]["formal"]["code"]
 
     proof_nl = call_tool_with_evidence(
         server,
@@ -1699,7 +1699,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter natural-language proof was written.",
     )
-    assert proof_nl.value["record"]["proof"]["nl"]["summary"]
+    assert proof_nl.value["revision"]["proof"]["nl"]["text"]
 
     proof_origin = call_tool_with_evidence(
         server,
@@ -1710,7 +1710,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Proof origin text was recorded.",
     )
-    assert proof_origin.value["record"]["proof"]["origins"]
+    assert proof_origin.value["revision"]["proof"]["nl"]["origin"]
 
     proof_dep = call_tool_with_evidence(
         server,
@@ -1721,7 +1721,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Proof dependency was added.",
     )
-    assert "support" in str(proof_dep.value["record"]["proof"]["deps"])
+    assert "support" in str(proof_dep.value["revision"]["proof"]["deps"])
 
     removed_proof_dep = call_tool_with_evidence(
         server,
@@ -1732,7 +1732,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Proof dependency was removed.",
     )
-    assert "support" not in str(removed_proof_dep.value["record"]["proof"]["deps"])
+    assert "support" not in str(removed_proof_dep.value["revision"]["proof"]["deps"])
 
     decls = call_tool_with_evidence(
         server,
@@ -1754,7 +1754,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Adapter declaration inspection returned main_result.",
     )
-    assert inspected_decl.value["record"]["name"] == "main_result"
+    assert inspected_decl.value["name"] == "main_result"
 
     modules = call_tool_with_evidence(
         server,
@@ -1787,7 +1787,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter declaration was finalized.",
     )
-    assert finalized_main.value["record"]["finalized"] is True
+    assert finalized_main.value["finalized"] is True
 
     unbound_before = call_tool_with_evidence(
         server,
@@ -1949,7 +1949,7 @@ def _create_complete_adapter_decl(
         recorder=recorder,
         assertion_summary=f"Adapter declaration {name} was created.",
     )
-    assert created.value["record"]["name"] == name
+    assert created.value["name"] == name
     assert call_tool_with_evidence(
         server,
         "adapter_repo_import",

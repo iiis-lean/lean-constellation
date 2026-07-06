@@ -16,6 +16,7 @@ from lean_constellation.flows.content_node_task.decl_round.steps import (
     BuildRoundResultStepResult,
     BuildRoundResultStepState,
     DeclStageName,
+    DeclStageReviewerStepState,
     DeclStageReviewerStepResult,
     DeclStageWorkerStepResult,
     DeleteAndNormalizeStep,
@@ -487,7 +488,7 @@ def _stage_reviewer_step(flow: DeclGraphRoundFlow, input_model: DeclGraphRoundIn
         step_id=new_decl_round_step_id(f"{stage}_reviewer"),
         flow_id=flow.flow_id,
         scope_id=flow.scope_id,
-        state=AgentStepState(
+        state=DeclStageReviewerStepState(
             agent_role=f"{stage}_reviewer",
             agent_type=REVIEWER_AGENT_TYPES[stage],
             create_agent_if_missing=True,

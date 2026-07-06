@@ -11,8 +11,8 @@ def repo_scope_id(repo_key: str, fallback_scope_id: str | None = None) -> str:
     return fallback_scope_id or f"repo:{repo_key}"
 
 
-def node_scope_id(repo_key: str, node_path: str, fallback_scope_id: str | None = None) -> str:
-    return fallback_scope_id or f"repo:{repo_key}:node:{node_path}"
+def node_scope_id(repo_key: str, node_id: str, fallback_scope_id: str | None = None) -> str:
+    return fallback_scope_id or f"repo:{repo_key}:node:{node_id}"
 
 
 def build_resource_curation_request(

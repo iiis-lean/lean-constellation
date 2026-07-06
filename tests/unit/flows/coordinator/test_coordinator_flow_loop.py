@@ -109,6 +109,21 @@ def _start_coordinator(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
     )
 
 
+def _ensure_main_core_node(lean_runtime, repo_root: Path) -> str:
+    repo_root.mkdir(parents=True, exist_ok=True)
+    assert lean_runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    created = lean_runtime.node.create_content_node(
+        repo_root,
+        path="Main.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    )
+    assert created.ok and created.value is not None
+    return created.value.node_id
+
+
 def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:
     step_id = runtime.flow_service.advance_flow(flow_id)
     assert step_id is not None
@@ -128,9 +143,10 @@ def _complete_child_flow(runtime: FakeLeanFlowRuntime, child_flow_id: str, resul
 
 
 def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> None:
-    runtime, _, runtime_stability, ark_snapshot = _runtime(tmp_path)
+    runtime, lean_runtime, runtime_stability, ark_snapshot = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
     flow_id = _start_coordinator(runtime, repo_root)
+    node_id = _ensure_main_core_node(lean_runtime, repo_root)
 
     runtime.agent_service.queue_submission(
         CoordinatorContentTasksSubmission(
@@ -139,7 +155,7 @@ def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> 
             tool_name="submit_content_node_tasks",
             repo_key="Repo",
             node_paths=["Main.Core"],
-            requests=[build_content_node_task_request(repo_key="Repo", node_path="Main.Core", scope_id="repo:Repo:node:Main.Core")],
+            requests=[build_content_node_task_request(repo_key="Repo", node_path="Main.Core", scope_id=f"repo:Repo:node:{node_id}")],
             continuation="wait_for_callback",
             summary="Run Main.Core.",
         )
@@ -171,8 +187,8 @@ def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> 
         (RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH, ["Main.Core"]),
         (RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL, ["Main.Core"]),
     ]
-    assert ark_snapshot.created[0][0] == ["repo:Repo", "repo:Repo:node:Main.Core"]
-    assert ark_snapshot.created[1][0] == ["repo:Repo", "repo:Repo:node:Main.Core"]
+    assert ark_snapshot.created[0][0] == ["repo:Repo", f"repo:Repo:node:{node_id}"]
+    assert ark_snapshot.created[1][0] == ["repo:Repo", f"repo:Repo:node:{node_id}"]
 
     runtime.agent_service.queue_submission(
         CoordinatorRepoRequirementSubmission(

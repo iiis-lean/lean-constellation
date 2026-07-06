@@ -1201,7 +1201,7 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         tool_name="check_decl_file_snapshot_sync",
         status="implemented",
         category="decl_stage_formal_file_read",
-        reason="Statement and proof snapshot sync gates covered by strict real Lake DeclStage ToolSweep.",
+        reason="Statement and proof capture sync gates covered by strict real Lake DeclStage ToolSweep.",
         view_key="statement_formal_worker",
         agent_type="StatementFormalWorkerAgent",
     ),

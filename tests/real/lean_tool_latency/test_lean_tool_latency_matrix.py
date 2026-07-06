@@ -663,7 +663,7 @@ def _setup_decl_round(runtime, repo_root: Path) -> str:
         goal="Core goal.",
         boundary="Core declarations only.",
         objective="Run Lean latency capture/check.",
-        success_criteria="Statement and proof snapshots are checked by real diagnostics.",
+        success_criteria="Statement and proof captures are checked by real diagnostics.",
     )
     if not created_content.ok:
         assert any(issue.kind == "node_path_exists" for issue in created_content.issues), created_content.issues

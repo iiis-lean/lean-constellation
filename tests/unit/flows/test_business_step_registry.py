@@ -33,6 +33,8 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                     continue
                 if key.endswith("_names") or key.endswith("_deps") or key.endswith("_refs") or key in {"interfaces", "attempted_targets", "missing_materials", "missing_interfaces", "details", "missing_targets", "added_modules", "added_decls", "node_paths"}:
                     payload[key] = []
+                elif key == "feedback" and "reviewed_decl_names" in fields:
+                    payload[key] = []
                 elif key in {"approved", "accepted", "retry_required"}:
                     payload[key] = True
                 elif key in {"round_index"}:

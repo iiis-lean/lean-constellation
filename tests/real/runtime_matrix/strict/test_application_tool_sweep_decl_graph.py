@@ -196,7 +196,11 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         recorder=evidence_recorder,
         assertion_summary="Declaration round was loaded.",
     )
-    assert set(_field(round_lookup.value, "change_ids")) == {create_change_id, update_change_id, delete_change_id}
+    assert {item["change_id"] for item in _field(round_lookup.value, "revision_refs")} == {
+        create_change_id,
+        update_change_id,
+        delete_change_id,
+    }
 
     decls = call_tool_with_evidence(
         server,
@@ -329,7 +333,17 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
             recorder=evidence_recorder,
             assertion_summary=f"Decl change summary was written for {change_id}.",
         )
-        assert change_id in _field(summarized.value, "change_summaries")
+        assert _field(summarized.value, "round_id") == round_id
+        summarized_change = call_tool_with_evidence(
+            server,
+            "content_plan",
+            "get_decl_change",
+            {"change_id": change_id},
+            runtime_context=plan_ctx,
+            recorder=evidence_recorder,
+            assertion_summary=f"Decl change summary was read for {change_id}.",
+        )
+        assert _field(summarized_change.value, "summary") == f"Strict ToolSweep summarized {change_id}."
 
     round_summary = call_tool_with_evidence(
         server,
@@ -351,7 +365,8 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         recorder=evidence_recorder,
         assertion_summary="Decl round was marked terminal success.",
     )
-    assert _field(terminal.value, "status") == "completed"
+    assert _field(terminal.value, "status") == "committed"
+    assert _field(terminal.value, "result_kind") == "success"
 
     closed_strategy = call_tool_with_evidence(
         server,
@@ -470,12 +485,14 @@ def _seed_ready_decl(ws: RuntimeMatrixWorkspace, name: str, *, public: bool) -> 
         summary=f"{name} proof accepted.",
     )
     assert reviewed.ok, reviewed.issues
-    submitted = ws.runtime.decl_graph.submit_stage_review(
+    assert reviewed.value is not None
+    submitted = ws.runtime.decl_graph.aggregate_stage_review_marks(
         ws.provider_repo,
         node_path=CONTENT_NODE_PATH,
         round_id=round_record.value.round_id,
         stage=DeclStage.PROOF_FORMAL,
         summary=f"{name} proof stage accepted.",
+        marks=[reviewed.value],
     )
     assert submitted.ok, submitted.issues
     committed = ws.runtime.decl_graph.commit_decl_revision(ws.provider_repo, node_path=CONTENT_NODE_PATH, name=name, state=DeclState.PROVED)

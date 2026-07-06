@@ -16,6 +16,7 @@ from lean_constellation.flows.common.flow_requests import (
     repo_scope_id,
 )
 from lean_constellation.flows.common.submissions import new_submission_id, submission_agent_id
+from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.flows.content_node_task.decl_round.submissions import (
     DeclRoundDispatchSubmission,
     DeclStageReviewSubmittedSubmission,
@@ -510,16 +511,18 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
     passed = _gate_or_fail(runtime, gate_result.value)
     if not passed.ok:
         return runtime.foundation.fail(passed.issues)
-    requests = [
-        build_content_node_task_request(
+    requests = []
+    for node_path in args.node_paths:
+        node = runtime.node.node_tree.node_store.resolve_active_node(ctx.repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            return runtime.foundation.fail(node.issues)
+        requests.append(build_content_node_task_request(
             repo_key=ctx.repo.repo_key,
             node_path=node_path,
-            scope_id=node_scope_id(ctx.repo.repo_key, node_path),
+            scope_id=node_scope_id(ctx.repo.repo_key, node.value.node_id),
             repo_path=str(ctx.repo_root),
             task_mode=args.task_mode,
-        )
-        for node_path in args.node_paths
-    ]
+        ))
     return _prepared(
         runtime,
         CoordinatorContentTasksSubmission(
@@ -592,7 +595,7 @@ def submit_content_preparation_recon(runtime: Any, ctx: ToolExecutionContext, ar
         recon_kind=args.recon_kind,
         repo_key=ctx.repo.repo_key,
         node_path=node.value,
-        scope_id=node_scope_id(ctx.repo.repo_key, node.value, ctx.runtime.scope_id),
+        scope_id=ctx.runtime.scope_id,
         repo_path=str(ctx.repo_root),
         contract_version=ctx.node.contract_version if ctx.node else None,
         objective=args.objective,
@@ -621,7 +624,7 @@ def submit_current_decl_round(runtime: Any, ctx: ToolExecutionContext, args: Sub
     request = build_decl_round_request(
         repo_key=ctx.repo.repo_key,
         node_path=node.value,
-        scope_id=node_scope_id(ctx.repo.repo_key, node.value, ctx.runtime.scope_id),
+        scope_id=ctx.runtime.scope_id,
         strategy_id=args.strategy_id,
         round_id=args.round_id,
         repo_path=str(ctx.repo_root),
@@ -772,7 +775,26 @@ def submit_stage_review(runtime: Any, ctx: ToolExecutionContext, args: SubmitSta
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
     stage_name, round_id = stage.value
-    review = runtime.decl_graph.submit_stage_review(ctx.repo_root, node_path=node.value, round_id=round_id, stage=stage_name, summary=args.summary)
+    step_id = ctx.runtime.step_id
+    if not step_id:
+        return _fail(runtime, "review_step_context_missing", "Stage review submit requires current ARK step_id.")
+    step_service = getattr(runtime.ark, "step_service", None)
+    if step_service is None:
+        return _fail(runtime, "step_service_missing", "ARK step service is not available.")
+    try:
+        current_step = step_service.store.get_step(step_id)
+    except Exception as exc:
+        return _fail(runtime, "review_step_not_found", f"Cannot load current reviewer step: {exc}")
+    if current_step.step_type != "decl_stage_reviewer_agent_step" or not isinstance(current_step.state, DeclStageReviewerStepState):
+        return _fail(runtime, "review_step_state_invalid", "Stage review submit requires a DeclStageReviewerAgentStep state.")
+    review = runtime.decl_graph.aggregate_stage_review_marks(
+        ctx.repo_root,
+        node_path=node.value,
+        round_id=round_id,
+        stage=stage_name,
+        summary=args.summary,
+        marks=list(current_step.state.review_marks),
+    )
     if not review.ok or review.value is None:
         return runtime.foundation.fail(review.issues)
     accepted = bool(getattr(review.value, "passed", False))
@@ -785,6 +807,10 @@ def submit_stage_review(runtime: Any, ctx: ToolExecutionContext, args: SubmitSta
             round_id=round_id,
             accepted=accepted,
             retry_required=retry_required,
+            reviewed_decl_names=list(review.value.reviewed_decl_names),
+            failed_decl_names=list(review.value.failed_decl_names),
+            missing_decl_names=list(review.value.missing_decl_names),
+            feedback=list(review.value.feedback),
         ),
         agent_view=review.value.model_dump(mode="json"),
     )

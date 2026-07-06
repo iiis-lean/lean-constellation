@@ -8,12 +8,14 @@ import uuid
 
 from agent_runtime_kit.flow.contexts import StepRunContext
 from agent_runtime_kit.flow.models import BaseStep, BaseStepResult, BaseStepState, FlowStepValidationError, StepTerminalReceipt
+from agent_runtime_kit.flow.standard_steps.agent_step import AgentStepState
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
+    DeclReviewMarkRecord,
     DeclRoundStatus,
     DeclStage,
     DeclState,
@@ -153,6 +155,10 @@ class DeclStageReviewerStepResult(LeanRenderableStepResult):
     round_id: str | None = None
     accepted: bool | None = None
     retry_required: bool | None = None
+    reviewed_decl_names: list[str] = Field(default_factory=list)
+    failed_decl_names: list[str] = Field(default_factory=list)
+    missing_decl_names: list[str] = Field(default_factory=list)
+    feedback: list[DeclReviewMarkRecord] = Field(default_factory=list)
     incomplete_reason: str | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -162,8 +168,17 @@ class DeclStageReviewerStepResult(LeanRenderableStepResult):
             "round_id": self.round_id,
             "accepted": self.accepted,
             "retry_required": self.retry_required,
+            "reviewed_decl_names": list(self.reviewed_decl_names),
+            "failed_decl_names": list(self.failed_decl_names),
+            "missing_decl_names": list(self.missing_decl_names),
+            "feedback": [item.model_dump(mode="json") for item in self.feedback],
             "incomplete_reason": self.incomplete_reason,
         }
+
+
+class DeclStageReviewerStepState(AgentStepState):
+    state_type: Literal["decl_stage_reviewer_agent_step"] = "decl_stage_reviewer_agent_step"
+    review_marks: list[DeclReviewMarkRecord] = Field(default_factory=list)
 
 
 class StageGateAndAuditStepResult(LeanRenderableStepResult):
@@ -281,7 +296,7 @@ class RoundStartValidationStep(BaseStep):
         else:
             return ctx.complete_step(_invalid_start(input_model, f"Round is not draft or running: {round_record.value.status.value}."))
 
-        counts = _round_change_counts(ctx, repo_root, input_model.node_path, round_record_value.change_ids)
+        counts = _round_change_counts(ctx, repo_root, input_model.node_path, input_model.round_id)
         if counts["change_count"] == 0:
             return ctx.complete_step(_invalid_start(input_model, "Round has no changes."))
         return ctx.complete_step(
@@ -316,9 +331,9 @@ class DeleteAndNormalizeStep(BaseStep):
         repo_root = _repo_root(input_model)
         if repo_root is None:
             return ctx.complete_step(_delete_normalize_failed("DeclGraphRoundFlow requires repo_path in Flow input."))
-        changes = _round_changes(ctx, repo_root, input_model.node_path, input_model.round_id)
-        if not changes.ok or changes.value is None:
-            return ctx.complete_step(_delete_normalize_failed(_first_issue_message(changes.issues, "Cannot load round changes.")))
+        revisions = _round_revisions(ctx, repo_root, input_model.node_path, input_model.round_id)
+        if not revisions.ok or revisions.value is None:
+            return ctx.complete_step(_delete_normalize_failed(_first_issue_message(revisions.issues, "Cannot load round revisions.")))
 
         deleted_count = 0
         created_count = 0
@@ -326,22 +341,25 @@ class DeleteAndNormalizeStep(BaseStep):
         reset_count = 0
         projection_updates = 0
         projection = _lean_projection(ctx)
-        for change in changes.value:
+        for revision in revisions.value:
+            change = revision.change
+            if change is None:
+                return ctx.complete_step(_delete_normalize_failed(f"Round revision {revision.decl_name}@{revision.revision} has no change metadata."))
             if change.kind == DeclChangeKind.DELETE:
-                removed = projection.remove_decl_file_for_delete(repo_root, node_path=input_model.node_path, decl_name=change.decl_name)
+                removed = projection.remove_decl_file_for_delete(repo_root, node_path=input_model.node_path, decl_name=revision.decl_name)
                 if not removed.ok or removed.value is None:
                     return ctx.complete_step(_delete_normalize_failed(_first_issue_message(removed.issues, "Delete projection sync failed.")))
                 deleted_count += 1
                 projection_updates += int(bool(getattr(removed.value, "changed", False)))
             elif change.kind == DeclChangeKind.CREATE:
-                synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=change.decl_name)
+                synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=revision.decl_name)
                 if not synced.ok or synced.value is None:
                     return ctx.complete_step(_delete_normalize_failed(_first_issue_message(synced.issues, "Create projection sync failed.")))
                 created_count += 1
                 reset_count += 1
                 projection_updates += int(bool(getattr(synced.value, "changed", False)))
             elif change.kind == DeclChangeKind.UPDATE:
-                synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=change.decl_name)
+                synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=revision.decl_name)
                 if not synced.ok or synced.value is None:
                     return ctx.complete_step(_delete_normalize_failed(_first_issue_message(synced.issues, "Update projection sync failed.")))
                 updated_count += 1
@@ -368,7 +386,11 @@ class DeleteAndNormalizeStep(BaseStep):
                     error=RoundTerminalReason(
                         code="projection_sync_failed",
                         message=audit.value.summary,
-                        affected_decl_names=[change.decl_name for change in changes.value if change.kind == DeclChangeKind.DELETE],
+                        affected_decl_names=[
+                            revision.decl_name
+                            for revision in revisions.value
+                            if revision.change is not None and revision.change.kind == DeclChangeKind.DELETE
+                        ],
                         suggested_plan_action="Re-open planning and repair the delete closure before running this round.",
                     ),
                     summary=audit.value.summary,
@@ -382,7 +404,7 @@ class DeleteAndNormalizeStep(BaseStep):
                 updated_count=updated_count,
                 reset_count=reset_count,
                 projection_updates=projection_updates,
-                summary=f"Round delete/normalize completed for {len(changes.value)} changes.",
+                summary=f"Round delete/normalize completed for {len(revisions.value)} revisions.",
             )
         )
 
@@ -557,26 +579,26 @@ class RoundFinalAuditStep(BaseStep):
         repo_root = _repo_root(input_model)
         if repo_root is None:
             return ctx.complete_step(_final_audit_failed("DeclGraphRoundFlow requires repo_path in Flow input."))
-        changes = _round_changes(ctx, repo_root, input_model.node_path, input_model.round_id)
-        if not changes.ok or changes.value is None:
-            return ctx.complete_step(_final_audit_failed(_first_issue_message(changes.issues, "Cannot load round changes.")))
+        revisions = _round_revisions(ctx, repo_root, input_model.node_path, input_model.round_id)
+        if not revisions.ok or revisions.value is None:
+            return ctx.complete_step(_final_audit_failed(_first_issue_message(revisions.issues, "Cannot load round revisions.")))
         reached: list[str] = []
         missing: list[str] = []
-        for change in changes.value:
+        for revision in revisions.value:
+            change = revision.change
+            if change is None:
+                missing.append(revision.decl_name)
+                continue
             if change.kind == DeclChangeKind.DELETE:
-                reached.append(change.decl_name)
+                reached.append(revision.decl_name)
                 continue
-            if change.target_revision is None or change.end_after_state is None:
-                missing.append(change.decl_name)
+            if change.end_after_state is None:
+                missing.append(revision.decl_name)
                 continue
-            revision = _decl_graph(ctx).get_decl_revision(repo_root, node_path=input_model.node_path, name=change.decl_name, revision=change.target_revision)
-            if not revision.ok or revision.value is None:
-                missing.append(change.decl_name)
-                continue
-            if _state_reaches(revision.value.state, change.end_after_state):
-                reached.append(change.decl_name)
+            if _state_reaches(revision.state, change.end_after_state):
+                reached.append(revision.decl_name)
             else:
-                missing.append(change.decl_name)
+                missing.append(revision.decl_name)
         if missing:
             return ctx.complete_step(
                 RoundFinalAuditStepResult(
@@ -745,59 +767,53 @@ def _final_audit_failed(message: str) -> RoundFinalAuditStepResult:
     )
 
 
-def _round_change_counts(ctx: StepRunContext, repo_root: Path, node_path: str, change_ids: list[str]) -> dict[str, int]:
+def _round_change_counts(ctx: StepRunContext, repo_root: Path, node_path: str, round_id: str) -> dict[str, int]:
     counts = {"change_count": 0, "create_count": 0, "update_count": 0, "delete_count": 0, "theorem_like_count": 0}
     graph = _decl_graph(ctx)
-    for change_id in change_ids:
-        change = graph.get_decl_change(repo_root, node_path=node_path, change_id=change_id)
-        if not change.ok or change.value is None:
+    revisions = graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
+    if not revisions.ok or revisions.value is None:
+        return counts
+    for revision in revisions.value:
+        change = revision.change
+        if change is None:
             continue
         counts["change_count"] += 1
-        if change.value.kind == DeclChangeKind.CREATE:
+        if change.kind == DeclChangeKind.CREATE:
             counts["create_count"] += 1
-        elif change.value.kind == DeclChangeKind.UPDATE:
+        elif change.kind == DeclChangeKind.UPDATE:
             counts["update_count"] += 1
-        elif change.value.kind == DeclChangeKind.DELETE:
+        elif change.kind == DeclChangeKind.DELETE:
             counts["delete_count"] += 1
-        decl = graph.get_decl(repo_root, node_path=node_path, name=change.value.decl_name)
+        decl = graph.get_decl(repo_root, node_path=node_path, name=revision.decl_name)
         if decl.ok and decl.value is not None and _is_theorem_like(decl.value.kind):
             counts["theorem_like_count"] += 1
     return counts
 
 
-def _round_changes(ctx: StepRunContext, repo_root: Path, node_path: str, round_id: str):
+def _round_revisions(ctx: StepRunContext, repo_root: Path, node_path: str, round_id: str):
     graph = _decl_graph(ctx)
-    round_record = graph.get_round(repo_root, node_path=node_path, round_id=round_id)
-    if not round_record.ok or round_record.value is None:
-        return graph.runtime.foundation.fail(round_record.issues)
-    changes = []
-    for change_id in round_record.value.change_ids:
-        change = graph.get_decl_change(repo_root, node_path=node_path, change_id=change_id)
-        if not change.ok or change.value is None:
-            return graph.runtime.foundation.fail(change.issues)
-        changes.append(change.value)
-    return graph.runtime.foundation.ok(changes)
+    return graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
 
 
 def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_id: str, stage: DeclStageName):
     graph = _decl_graph(ctx)
-    changes = _round_changes(ctx, repo_root, node_path, round_id)
-    if not changes.ok or changes.value is None:
-        return graph.runtime.foundation.fail(changes.issues)
+    revisions = _round_revisions(ctx, repo_root, node_path, round_id)
+    if not revisions.ok or revisions.value is None:
+        return graph.runtime.foundation.fail(revisions.issues)
     targets: list[str] = []
-    for change in changes.value:
+    for revision in revisions.value:
+        change = revision.change
+        if change is None:
+            continue
         if change.kind == DeclChangeKind.DELETE:
             continue
-        if change.target_revision is None or change.end_after_state is None:
+        if change.end_after_state is None:
             continue
-        decl = graph.get_decl(repo_root, node_path=node_path, name=change.decl_name)
+        decl = graph.get_decl(repo_root, node_path=node_path, name=revision.decl_name)
         if not decl.ok or decl.value is None:
             return graph.runtime.foundation.fail(decl.issues)
-        revision = graph.get_decl_revision(repo_root, node_path=node_path, name=change.decl_name, revision=change.target_revision)
-        if not revision.ok or revision.value is None:
-            return graph.runtime.foundation.fail(revision.issues)
-        if _stage_required(stage, decl.value.kind, revision.value, change.end_after_state):
-            targets.append(change.decl_name)
+        if _stage_required(stage, decl.value.kind, revision, change.end_after_state):
+            targets.append(revision.decl_name)
     return graph.runtime.foundation.ok(sorted(set(targets)))
 
 
@@ -850,10 +866,12 @@ def _is_theorem_like(kind: str) -> bool:
 
 def _state_rank(state: DeclState) -> int:
     return {
+        DeclState.OBSOLETE: -1,
         DeclState.PLANNED: 0,
         DeclState.SPECIFIED: 1,
         DeclState.DECLARED: 2,
-        DeclState.PROVED: 3,
+        DeclState.PROOF_PLANNED: 3,
+        DeclState.PROVED: 4,
     }[DeclState(state)]
 
 

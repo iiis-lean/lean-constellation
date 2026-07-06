@@ -178,7 +178,8 @@ def test_coordinator_requirement_waiting_checkpoint_policy() -> None:
 def test_before_dispatch_snapshot(tmp_path: Path) -> None:
     runtime, repo_root, stability, ark_snapshot = _runtime(tmp_path)
     flow_id = _start_coordinator(runtime, repo_root)
-    _queue_content_task_dispatch(runtime)
+    node_id = _ensure_main_core_node(runtime.app, repo_root)
+    _queue_content_task_dispatch(runtime, node_id=node_id)
 
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "before_content_task_dispatch_snapshot"
@@ -189,7 +190,7 @@ def test_before_dispatch_snapshot(tmp_path: Path) -> None:
     assert snapshot_step.result.outcome == "snapshot_created"
     assert snapshot_step.result.checkpoint_kind == "before_content_task_dispatch"
     assert stability.calls == [(RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH, ["Main.Core"])]
-    assert ark_snapshot.created == [(["repo:Repo", "repo:Repo:node:Main.Core"], "before_content_task_dispatch for Repo")]
+    assert ark_snapshot.created == [(["repo:Repo", f"repo:Repo:node:{node_id}"], "before_content_task_dispatch for Repo")]
 
     dispatch_step_id = runtime.flow_service.advance_flow(flow_id)
     assert dispatch_step_id is not None
@@ -200,7 +201,8 @@ def test_before_dispatch_snapshot(tmp_path: Path) -> None:
 def test_after_child_batch_snapshot(tmp_path: Path) -> None:
     runtime, repo_root, stability, ark_snapshot = _runtime(tmp_path)
     flow_id = _start_coordinator(runtime, repo_root)
-    _queue_content_task_dispatch(runtime)
+    node_id = _ensure_main_core_node(runtime.app, repo_root)
+    _queue_content_task_dispatch(runtime, node_id=node_id)
 
     _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
@@ -229,8 +231,8 @@ def test_after_child_batch_snapshot(tmp_path: Path) -> None:
         (RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL, ["Main.Core"]),
     ]
     assert ark_snapshot.created == [
-        (["repo:Repo", "repo:Repo:node:Main.Core"], "before_content_task_dispatch for Repo"),
-        (["repo:Repo", "repo:Repo:node:Main.Core"], "after_content_task_batch_terminal for Repo"),
+        (["repo:Repo", f"repo:Repo:node:{node_id}"], "before_content_task_dispatch for Repo"),
+        (["repo:Repo", f"repo:Repo:node:{node_id}"], "after_content_task_batch_terminal for Repo"),
     ]
 
 
@@ -291,6 +293,21 @@ def _start_coordinator(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
         },
         scope_id="repo:Repo",
     )
+
+
+def _ensure_main_core_node(lean_runtime, repo_root: Path) -> str:
+    repo_root.mkdir(parents=True, exist_ok=True)
+    assert lean_runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    created = lean_runtime.node.create_content_node(
+        repo_root,
+        path="Main.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    )
+    assert created.ok and created.value is not None
+    return created.value.node_id
 
 
 def _prepare_adapter_repo(lean_runtime, repo_root: Path) -> None:
@@ -387,7 +404,7 @@ def _complete_adapter_catalog(lean_runtime, repo_root: Path) -> None:
     ).ok
 
 
-def _queue_content_task_dispatch(runtime: FakeLeanFlowRuntime) -> None:
+def _queue_content_task_dispatch(runtime: FakeLeanFlowRuntime, *, node_id: str) -> None:
     runtime.agent_service.queue_submission(
         CoordinatorContentTasksSubmission(
             submission_id=new_submission_id("sub"),
@@ -395,7 +412,7 @@ def _queue_content_task_dispatch(runtime: FakeLeanFlowRuntime) -> None:
             tool_name="submit_content_node_tasks",
             repo_key="Repo",
             node_paths=["Main.Core"],
-            requests=[build_content_node_task_request(repo_key="Repo", node_path="Main.Core", scope_id="repo:Repo:node:Main.Core")],
+            requests=[build_content_node_task_request(repo_key="Repo", node_path="Main.Core", scope_id=f"repo:Repo:node:{node_id}")],
             continuation="wait_for_callback",
             summary="Run Main.Core.",
         )

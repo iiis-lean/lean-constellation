@@ -14,6 +14,7 @@ from lean_constellation.flows.content_node_task.decl_round.submissions import (
     DeclStageWorkerCompletedSubmission,
 )
 from lean_constellation.flows.content_node_task.decl_round.steps import (
+    DeclStageReviewerStepState,
     DeclStageReviewerStepResult,
     DeclStageWorkerStepResult,
 )
@@ -696,6 +697,7 @@ class DeclStageWorkerAgentStep(AgentStep):
 
 class DeclStageReviewerAgentStep(AgentStep):
     step_type: ClassVar[str] = "decl_stage_reviewer_agent_step"
+    State: ClassVar[type] = DeclStageReviewerStepState
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "decl_stage_reviewer": DeclStageReviewerStepResult,
@@ -714,6 +716,10 @@ class DeclStageReviewerAgentStep(AgentStep):
                 round_id=submission.round_id,
                 accepted=submission.accepted,
                 retry_required=submission.retry_required,
+                reviewed_decl_names=list(submission.reviewed_decl_names),
+                failed_decl_names=list(submission.failed_decl_names),
+                missing_decl_names=list(submission.missing_decl_names),
+                feedback=list(submission.feedback),
                 summary=submission.summary or f"{submission.stage} review submitted.",
             )
         return super().build_result_from_submission(ctx, agent_id, turn_result)

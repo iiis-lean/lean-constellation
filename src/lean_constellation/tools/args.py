@@ -418,7 +418,6 @@ class StrategyCloseArgs(StrictModel):
 class RoundDraftArgs(StrictModel):
     strategy_id: str = Field(description="Open strategy id for this round.")
     objective: str = Field(description="Round objective.")
-    change_ids: list[str] | None = Field(default=None, description="Optional change ids to include in the draft.")
 
 
 class RoundIdArgs(StrictModel):

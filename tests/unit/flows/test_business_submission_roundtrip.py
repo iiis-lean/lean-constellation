@@ -71,6 +71,8 @@ def _sample_payload(cls):
     for key, value in extras.items():
         if key in fields:
             base[key] = value
+    if "feedback" in fields and "reviewed_decl_names" in fields:
+        base["feedback"] = []
     return base
 
 

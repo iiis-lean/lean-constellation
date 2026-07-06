@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services import create_test_runtime_services
+from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
@@ -66,7 +68,7 @@ def _create_scope_with_public_decl(runtime, repo_root: Path) -> DeclRef:
         objective="Use provider.",
         success_criteria="Consumer is ready.",
     ).ok
-    contract_path = runtime.foundation.layout.node_contract_path(
+    contract_path = runtime.foundation.node_contract_path(
         FoundationContext(repo_root=repo_root),
         "Main.Provider",
         1,
@@ -89,6 +91,36 @@ class _FakeMathlibToolkit:
         if tool_name == "lsp.run_snippet":
             return {"diagnostics": []}
         raise KeyError(tool_name)
+
+
+class _FakeReviewerStep:
+    step_type = "decl_stage_reviewer_agent_step"
+
+    def __init__(self) -> None:
+        self.state = DeclStageReviewerStepState(
+            agent_role="statement_nl_reviewer",
+            agent_type="StatementNLReviewerAgent",
+        )
+
+
+class _FakeStepStore:
+    def __init__(self, *, step_id: str) -> None:
+        self.step_id = step_id
+        self.step = _FakeReviewerStep()
+
+    def get_step(self, step_id: str):
+        assert step_id == self.step_id
+        return self.step
+
+    def update_step_record(self, step_id: str, mutator):
+        assert step_id == self.step_id
+        mutator(self.step)
+        return self.step
+
+
+class _FakeStepService:
+    def __init__(self, *, step_id: str) -> None:
+        self.store = _FakeStepStore(step_id=step_id)
 
 
 def test_source_corpus_tool_invokes_material_service(tmp_path: Path) -> None:
@@ -301,7 +333,9 @@ def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) 
 
     assert view["state"] == "specified"
     assert view["statement_origin"] == [{"kind": "source", "ref": "notes.md"}]
-    assert view["decl_deps"] == ["helper"]
+    assert view["statement_deps"] == ["helper"]
+    assert "statement" not in view
+    assert "decl_deps" not in view
 
 
 def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: Path) -> None:
@@ -343,6 +377,7 @@ def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: 
         nl="The main result states True.",
     ).ok
 
+    runtime.ark.step_service = _FakeStepService(step_id="step_statement_nl_reviewer")
     view = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             _raw(
@@ -368,12 +403,14 @@ def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: 
 
     assert view["decl_name"] == "main_result"
     assert view["passed"] is True
-    review = runtime.decl_graph.submit_stage_review(
+    step = runtime.ark.step_service.store.get_step("step_statement_nl_reviewer")
+    review = runtime.decl_graph.aggregate_stage_review_marks(
         tmp_path,
         node_path="Main.Topic",
         round_id=round_record.value.round_id,
         stage="statement_nl",
         summary="All statements accepted.",
+        marks=list(step.state.review_marks),
     )
     assert review.ok and review.value is not None
     assert review.value.passed is True
@@ -381,6 +418,12 @@ def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: 
 
 def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.repo_workspace.metadata.set_repo_format(
+        tmp_path,
+        repo_format=RepoFormat.ADAPTER,
+        reason="adapter tool smoke",
+    ).ok
 
     created = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
@@ -395,7 +438,8 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
         )
     )
 
-    assert created["record"]["name"] == "main_result"
+    assert created["name"] == "main_result"
+    assert created["decl"]["name"] == "main_result"
     inspected = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             _raw(tmp_path, view="adapter_repo_import", agent_type="adapter_repo_import"),
@@ -403,4 +447,5 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
             flat_args={"name": "main_result"},
         )
     )
-    assert inspected["record"]["module"] == "Upstream.Basic"
+    assert inspected["module"] == "Upstream.Basic"
+    assert inspected["revision"]["module"] == "Upstream.Basic"
