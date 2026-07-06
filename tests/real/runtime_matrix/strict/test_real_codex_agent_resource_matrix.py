@@ -16,6 +16,7 @@ from lean_constellation.app import (
     ExternalTakeoverToolListInput,
     SetAgentStepOverrideInput,
 )
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
 from lean_constellation.flows.testing import ControlledAgentOverrideSpec
@@ -261,6 +262,120 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
         instruction_marker_seen=data["developer_marker_seen"] == developer_marker,
         skill_markers_seen=list(data["skill_keys_seen"]),
         tools_called=[*sorted(tools_called), "submit_local_resource_created"],
+    )
+
+
+def test_strict_real_codex_content_plan_work_config_and_completion_gate_smoke(
+    tmp_path: Path,
+    evidence_recorder: EvidenceRecorder,
+) -> None:
+    config_home = require_real_codex()
+    base_config_path = write_noninteractive_codex_base_config(config_home, tmp_path)
+    agent_type = "ContentPlanControlledTestAgent"
+    agent_specs = strict_controlled_agent_specs("ContentPlanAgent")
+    ws = create_runtime_matrix_workspace(tmp_path, include_codex_provider=True)
+    ws.setup_content_node()
+    updated = ws.runtime.repo_workspace.metadata.update_repo_config(
+        ws.provider_repo,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert updated.ok, updated.issues
+    home_root = materialize_strict_codex_home(
+        ws,
+        agent_type=agent_type,
+        config_home=config_home,
+        base_config_path=base_config_path,
+        agent_type_specs=agent_specs,
+    )
+
+    prompt_marker = "RTCODEX_PROMPT_MARKER_CONTENT_PLAN_MATURITY_SMOKE_20260706"
+    developer_marker_prefix = "RTCODEX_DEV_MARKER_CONTENT_PLAN_MATURITY_SMOKE_"
+    developer_marker = f"{developer_marker_prefix}20260706"
+    artifact_path = ws.provider_repo / ".lean_constellation" / "runtime_matrix_artifacts" / "content_plan_maturity_smoke.json"
+    flow_id = _start_content_task(ws)
+    admission_step_id = run_next_created_step(ws.admin, flow_id, timeout_s=20)
+    assert ws.runtime.ark.flow_service.get_step(admission_step_id).result.outcome == "accepted"
+    step_id = run_until_step_created(ws.admin, flow_id, "content_plan_agent_step")
+    view = unwrap(
+        ws.admin.set_agent_step_override(
+            SetAgentStepOverrideInput(
+                step_id=step_id,
+                override=ControlledAgentOverrideSpec(
+                    strategy="fresh_test_agent_type",
+                    agent_type_override=agent_type,
+                    cli_type_override="codex",
+                    prompt_overlay=_content_plan_maturity_probe_prompt(prompt_marker),
+                    developer_instructions_overlay=(
+                        "\n\nRuntime Matrix content plan maturity smoke developer marker:\n"
+                        f"{developer_marker}\n"
+                        "When asked for a developer marker, copy this exact marker from developer instructions.\n"
+                    ),
+                    env_overrides={
+                        "LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH": str(artifact_path),
+                    },
+                    metadata={"runtime_matrix_case": "strict_real_codex_content_plan_maturity_smoke"},
+                ),
+            )
+        )
+    )
+    assert view.override is not None
+
+    real_step_timeout = float(os.environ.get("LEAN_CONSTELLATION_REAL_CODEX_STEP_TIMEOUT", "300"))
+    started = unwrap(ws.admin.start_step_once(AdminStepStartInput(step_id=step_id, wait=True, timeout_s=real_step_timeout)))
+    assert started.status == "completed", started
+    step = ws.runtime.ark.flow_service.get_step(step_id)
+    assert step.submission is not None
+    assert step.submission.tool_name == "submit_content_node_blocked"
+
+    data = _read_artifact(artifact_path)
+    assert data["prompt_marker_seen"] == prompt_marker
+    assert data["developer_marker_seen"] == developer_marker
+    assert data["artifact_home_root"] == str(home_root)
+    assert "content-plan-declared-interface-mode" in data["skill_keys_seen"]
+    tools_called = set(data["application_tools_called"])
+    assert {"get_current_repo_work_config", "check_current_content_node_completion"}.issubset(tools_called)
+    assert data["submit_tool_called"] == "submit_content_node_blocked"
+    tool_results = data["tool_results"]
+    assert isinstance(tool_results, dict)
+    work_config = tool_results["get_current_repo_work_config"]
+    assert work_config["target_proof_availability"] == "declared"
+    assert work_config["work_mode"] == "declared_interface"
+    completion = tool_results["check_current_content_node_completion"]
+    assert completion["target_proof_availability"] == "declared"
+
+    evidence_recorder.record_runtime_state(ws.runtime)
+    for tool_name in sorted(tools_called):
+        evidence_recorder.record_tool_call(
+            tool_name=tool_name,
+            view_key="content_plan",
+            view_kind="application",
+            agent_type=agent_type,
+            step_id=step_id,
+            ok=True,
+            assertion_summary="Called by real Codex controlled ContentPlan maturity smoke.",
+        )
+    evidence_recorder.record_tool_call(
+        tool_name="submit_content_node_blocked",
+        view_key="content_plan_submit",
+        view_kind="submit",
+        agent_type=agent_type,
+        step_id=step_id,
+        ok=True,
+        assertion_summary="Accepted from real Codex controlled ContentPlan maturity smoke.",
+    )
+    _record_real_codex_artifact(
+        evidence_recorder,
+        ws=ws,
+        agent_type=agent_type,
+        step_id=step_id,
+        artifact_path=artifact_path,
+        started=started,
+        data=data,
+        prompt_marker_seen=data["prompt_marker_seen"] == prompt_marker,
+        instruction_marker_seen=data["developer_marker_seen"] == developer_marker,
+        skill_markers_seen=list(data["skill_keys_seen"]),
+        tools_called=[*sorted(tools_called), "submit_content_node_blocked"],
     )
 
 
@@ -968,6 +1083,29 @@ Keep the final response short and mention the artifact path.
 """.strip()
 
 
+def _content_plan_maturity_probe_prompt(prompt_marker: str) -> str:
+    return f"""
+Runtime Matrix strict real Codex ContentPlan maturity smoke.
+
+Prompt marker: {prompt_marker}
+
+You are inside a controlled ContentPlan AgentStep. This is a repo maturity/resource wiring test, not an autonomous planning task.
+
+Do these exact actions:
+1. Read the developer instructions and find the first token that starts with RTCODEX_DEV_MARKER_CONTENT_PLAN_MATURITY_SMOKE_.
+2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report the actual skill key "content-plan-declared-interface-mode" only if it exists on disk.
+3. Call application MCP tool "get_current_repo_work_config".
+4. Call application MCP tool "check_current_content_node_completion".
+5. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
+   prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, tool_results.
+   Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
+   tool_results must be an object with entries for get_current_repo_work_config and check_current_content_node_completion. For get_current_repo_work_config include target_proof_availability and work_mode. For check_current_content_node_completion include at least ok, ready_to_submit, target_proof_availability, and summary.
+6. Call submit tool "submit_content_node_blocked" with reason "Strict real Codex ContentPlan maturity smoke stops after config and completion gate probe."
+
+Keep the final response short and mention the artifact path.
+""".strip()
+
+
 def _proof_formal_probe_prompt(prompt_marker: str, decl_name: str) -> str:
     return f"""
 Runtime Matrix strict real Codex proof formal worker probe.
@@ -1284,6 +1422,22 @@ def _start_resource_curation(ws: RuntimeMatrixWorkspace, *, target_kind: str, ta
                 "requested_by": "content_plan",
                 "context_summary": "Strict Runtime Matrix real Codex ResourceCurator resource test.",
                 "node_path": "Main.Core",
+            },
+        )
+    )
+
+
+def _start_content_task(ws: RuntimeMatrixWorkspace) -> str:
+    return ws.runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="content_node_task",
+            scope_id="repo:Provider:node:Main.Topic.Core",
+            params={
+                "repo_key": "Provider",
+                "repo_path": str(ws.provider_repo),
+                "node_path": "Main.Topic.Core",
+                "contract_version": 1,
+                "task_mode": "run",
             },
         )
     )
