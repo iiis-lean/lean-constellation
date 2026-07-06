@@ -137,7 +137,7 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "mark_decl_round_terminal" in closeout
 
     completion = specs["content-node-completion-decision"].body
-    assert "check_content_node_ready" in completion
+    assert "check_current_content_node_completion" in completion
     assert "submit_content_node_ready" in completion
     assert "submit_content_node_blocked" in completion
     assert "submit_content_node_failed" in completion

@@ -324,6 +324,11 @@ def _check_content_ready(runtime, ctx, args: NoArgs):
     return runtime.decl_graph.check_content_node_ready(ctx.repo_root, node_path=_node(ctx))
 
 
+def _check_content_completion(runtime, ctx, args: NoArgs):
+    del args
+    return runtime.decl_graph.check_content_node_ready(ctx.repo_root, node_path=_node(ctx))
+
+
 def build_tool_specs() -> list[ToolSpec]:
     roles = {"coordinator", "plan", "worker", "reviewer", "admin"}
     plan_roles = {"plan", "admin"}
@@ -733,5 +738,15 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_READINESS_READ},
             roles={"plan", "admin"},
             handler=_check_content_ready,
+        ),
+        handler_tool(
+            name="check_current_content_node_completion",
+            description="Check whether the current content node satisfies the current completion gate.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="gate_report",
+            groups={AppGroup.CONTENT_COMPLETION_GATE_READ},
+            roles={"plan", "admin"},
+            handler=_check_content_completion,
         ),
     ]

@@ -178,9 +178,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         group="node",
         required_tool_groups=_groups(
             AppGroup.NODE_CONTRACT_READ_CURRENT,
-            AppGroup.NODE_BOUNDARY_READ_CURRENT,
+            AppGroup.NODE_VISIBILITY_READ_CURRENT,
+            AppGroup.PUBLIC_DECL_READ,
             AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
-            AppGroup.DECL_READINESS_READ,
+            AppGroup.DECL_DEPENDENCY_ANALYSIS_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -188,8 +189,8 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill when inspecting ready same-repository boundaries or already attached provider boundaries and adding current-node dependencies when justified.",
             (
                 "Start from the current contract and objective with `get_current_node_contract`.",
-                "Inspect same-repository ready boundaries before provider boundaries with `list_current_visible_node_boundaries`.",
-                "Inspect public declarations selectively with `list_content_public_decls` and `compute_decl_dependency_closure`.",
+                "Use `list_visible_nodes` and `list_imported_repos` to find visible dependency sources.",
+                "Inspect public declarations selectively with node/repo public declaration tools and use `compute_current_node_decl_dependency_closure` for current-node dependency impact.",
                 "Add dependencies with `add_current_node_dep` only when they support the node objective and are visible.",
                 "Report unresolved needs without inventing unavailable dependencies.",
             ),
@@ -724,7 +725,7 @@ Use `mark_decl_round_terminal` only after the change summaries and round summary
         name="content-node-completion-decision",
         description="Use when the ContentPlanAgent decides whether the current content node task should end as ready, blocked, or failed.",
         group="content_plan",
-        required_tool_groups=_groups(SubmitGroup.CONTENT_COMPLETION_SUBMIT, AppGroup.DECL_READINESS_READ),
+        required_tool_groups=_groups(SubmitGroup.CONTENT_COMPLETION_SUBMIT, AppGroup.CONTENT_COMPLETION_GATE_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Content Node Completion Decision
 
@@ -736,11 +737,11 @@ A natural-language claim is not enough. Use the available readiness and submit t
 
 ## Ready
 
-Before ready, call `check_content_node_ready`. Use the returned gate report as the authority for whether the current node satisfies its contract, declaration readiness, dependencies, interfaces, and unresolved callback requirements.
+Before ready, call `check_current_content_node_completion`. Use the returned gate report as the authority for whether the current node satisfies its contract, declaration readiness, dependencies, interfaces, and unresolved callback requirements.
 
 Call `submit_content_node_ready` only when the current tools show the node satisfies its contract. After an accepted ready submit, stop.
 
-If `check_content_node_ready` rejects readiness, do not force ready. Fix issues within your authority, run another round, dispatch allowed preparation, or choose blocked/failed when appropriate.
+If `check_current_content_node_completion` rejects readiness, do not force ready. Fix issues within your authority, run another round, dispatch allowed preparation, or choose blocked/failed when appropriate.
 
 ## Blocked
 
@@ -771,14 +772,14 @@ After an accepted failed submit, stop.
         name="decl-dependency-origin-curation",
         description="Curate source/resource origins and declaration dependencies for Lean Constellation declaration stage artifacts.",
         group="decl_stage",
-        required_tool_groups=_groups(AppGroup.DECL_DETAIL_READ),
+        required_tool_groups=_groups(AppGroup.CURRENT_NODE_DECL_READ, AppGroup.PUBLIC_DECL_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "decl-dependency-origin-curation",
             "Use this skill when a declaration worker or reviewer must connect a statement or proof idea to evidence, visible project declarations, Mathlib declarations, and blocked follow-up needs.",
             (
-                "Start from the declaration task and stage objective with `get_decl`.",
-                "Search source, resources, visible declarations, and Mathlib with `search_material_text`, `list_content_public_decls`, and Mathlib index tools in the right order.",
+                "Start from the declaration task and stage objective with `inspect_current_node_decl`.",
+                "Search source, resources, visible public declarations, and Mathlib with the available material, public declaration, and Mathlib index tools in the right order.",
                 "Choose origins that actually support the statement or proof.",
                 "Choose project and Mathlib dependencies for real mathematical use.",
                 "Differentiate statement dependencies from proof dependencies.",

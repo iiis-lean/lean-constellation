@@ -85,7 +85,7 @@ def test_public_decl_read_tools_visible_to_coordinator_plan_and_recon() -> None:
     assert visibility_tools | public_decl_tools <= set(coordinator.value)
     assert visibility_tools | public_decl_tools <= set(content_plan.value)
     assert visibility_tools | public_decl_tools <= set(node_dir.value)
-    assert public_decl_tools.isdisjoint(statement_worker.value)
+    assert visibility_tools | public_decl_tools <= set(statement_worker.value)
 
 
 def test_current_node_decl_read_tools_visible_to_content_plan_only() -> None:
@@ -104,6 +104,26 @@ def test_current_node_decl_read_tools_visible_to_content_plan_only() -> None:
     assert dependency_analysis_tools <= set(node_dir.value)
     assert current_node_decl_tools.isdisjoint(node_dir.value)
     assert current_node_decl_tools.isdisjoint(coordinator.value)
+
+
+def test_legacy_decl_readiness_tools_are_not_in_production_views() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    legacy_tools = {
+        "check_decl_ready",
+        "check_content_node_ready",
+        "list_content_public_decls",
+        "list_current_visible_node_boundaries",
+        "list_current_decls",
+        "get_decl",
+        "get_decl_revision",
+        "get_decl_change",
+        "compute_decl_dependency_closure",
+    }
+
+    for view_key in sorted(runtime.tool_facade.tool_view._views):
+        expanded = runtime.tool_facade.tool_view.tool_names_for_view(view_key)
+        assert expanded.ok and expanded.value is not None
+        assert legacy_tools.isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
 
 
 def test_coordinator_contract_closeout_tools_only_visible_to_coordinator() -> None:

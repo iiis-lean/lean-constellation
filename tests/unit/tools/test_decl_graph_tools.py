@@ -45,6 +45,7 @@ def test_decl_graph_tools_are_registered() -> None:
         "inspect_repo_public_decl",
         "list_active_decl_names",
         "check_content_node_ready",
+        "check_current_content_node_completion",
         "run_decl_round_local_audit",
     }
 
@@ -71,3 +72,4 @@ def test_decl_graph_groups_expose_expected_tools() -> None:
         "public_decl_read",
         {"list_current_node_public_decls", "inspect_current_node_public_decl", "list_node_public_decls", "inspect_node_public_decl"},
     )
+    assert_group_contains("content_completion_gate_read", {"check_current_content_node_completion"})
