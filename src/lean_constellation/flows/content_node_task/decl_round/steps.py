@@ -12,12 +12,14 @@ from agent_runtime_kit.flow.standard_steps.agent_step import AgentStepState
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
     DeclReviewMarkRecord,
     DeclRevision,
+    DeclRoundResultKind,
     DeclRoundStatus,
     DeclStage,
     DeclState,
@@ -695,6 +697,66 @@ class BuildRoundResultStep(BaseStep):
 
     def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
         state = _build_result_state(self.state)
+        flow = _load_decl_round_flow(ctx)
+        input_model = _require_decl_round_input(flow.input)
+        repo_root = _repo_root(input_model)
+        if repo_root is not None:
+            round_record = _decl_graph(ctx).get_round(repo_root, node_path=input_model.node_path, round_id=input_model.round_id)
+            if not round_record.ok or round_record.value is None:
+                raise FlowStepValidationError(_first_issue_message(round_record.issues, "Failed to load DeclGraph round."))
+            if state.flow_outcome == "completed":
+                revisions = _decl_graph(ctx).list_round_revisions(repo_root, node_path=input_model.node_path, round_id=input_model.round_id)
+                if not revisions.ok or revisions.value is None:
+                    raise FlowStepValidationError(_first_issue_message(revisions.issues, "Failed to load round revisions."))
+                for revision in revisions.value:
+                    if revision.change is not None and revision.change.kind == DeclChangeKind.DELETE:
+                        continue
+                    if revision.version_status != "open":
+                        continue
+                    committed = _decl_graph(ctx).commit_decl_revision(
+                        repo_root,
+                        node_path=input_model.node_path,
+                        name=revision.decl_name,
+                        revision=revision.revision,
+                        state=revision.state,
+                    )
+                    if not committed.ok:
+                        raise FlowStepValidationError(_first_issue_message(committed.issues, "Failed to commit round revision."))
+            for change_id in round_record.value.change_ids:
+                if change_id in round_record.value.change_summaries:
+                    continue
+                summarized = _decl_graph(ctx).write_decl_change_summary(
+                    repo_root,
+                    node_path=input_model.node_path,
+                    round_id=input_model.round_id,
+                    change_id=change_id,
+                    summary=f"DeclGraphRoundFlow {state.flow_outcome} for change {change_id}.",
+                )
+                if not summarized.ok:
+                    raise FlowStepValidationError(_first_issue_message(summarized.issues, "Failed to write decl change summary."))
+            if not round_record.value.summary:
+                summarized_round = _decl_graph(ctx).write_round_summary(
+                    repo_root,
+                    node_path=input_model.node_path,
+                    round_id=input_model.round_id,
+                    summary=f"DeclGraphRoundFlow finished with {state.flow_outcome}.",
+                )
+                if not summarized_round.ok:
+                    raise FlowStepValidationError(_first_issue_message(summarized_round.issues, "Failed to write round summary."))
+            result_kind = {
+                "completed": DeclRoundResultKind.SUCCESS,
+                "blocked": DeclRoundResultKind.BLOCKED,
+                "failed": DeclRoundResultKind.FAILED,
+            }[state.flow_outcome]
+            marked = _decl_graph(ctx).mark_round_terminal(
+                repo_root,
+                node_path=input_model.node_path,
+                round_id=input_model.round_id,
+                result_kind=result_kind,
+                reason=f"DeclGraphRoundFlow finished with {state.flow_outcome}.",
+            )
+            if not marked.ok:
+                raise FlowStepValidationError(_first_issue_message(marked.issues, "Failed to mark DeclGraph round terminal."))
         return ctx.complete_step(
             BuildRoundResultStepResult(
                 flow_outcome=state.flow_outcome,
@@ -960,8 +1022,9 @@ def _round_revision_satisfies_proof_policy(
 ) -> tuple[bool, str | None]:
     stack = stack or []
     decl_name = revision.decl_name
-    if decl_name in stack:
-        return False, f"Dependency cycle detected: {' -> '.join([*stack, decl_name])}."
+    stack_key = f"{Path(repo_root).name}:{node_path}:{decl_name}"
+    if stack_key in stack:
+        return False, f"Dependency cycle detected: {' -> '.join([*stack, stack_key])}."
     decl_result = _decl_graph(ctx).get_decl(repo_root, node_path=node_path, name=decl_name)
     if not decl_result.ok or decl_result.value is None:
         return False, _first_issue_message(decl_result.issues, f"Declaration {decl_name} is missing.")
@@ -974,13 +1037,18 @@ def _round_revision_satisfies_proof_policy(
     if not _lean_check_passed(check):
         return False, f"{decl_name} does not have an acceptable {stage} Lean check."
 
-    requirements = _decl_graph(ctx).dependency_requirements_for_proof_policy(
+    requirements = _decl_graph(ctx).dependency_ref_requirements_for_proof_policy(
         decl,
         revision,
         target_proof_availability=target_proof_availability,
     )
-    for dep_name, dep_target in requirements:
-        round_dep = round_revisions.get(dep_name)
+    for dep_ref, dep_target in requirements:
+        dep_label = _decl_ref_label(dep_ref, fallback_node_path=node_path)
+        resolved = _resolve_dependency_ref(ctx, repo_root, ref=dep_ref, fallback_node_path=node_path, local_target=dep_target)
+        if resolved is None:
+            return False, f"Dependency {dep_label} could not be resolved or its provider is not stable."
+        dep_root, dep_node, effective_target = resolved
+        round_dep = round_revisions.get(dep_ref.name) if dep_root == repo_root and dep_node == node_path else None
         if round_dep is not None:
             satisfied, reason = _round_revision_satisfies_proof_policy(
                 ctx,
@@ -988,23 +1056,60 @@ def _round_revision_satisfies_proof_policy(
                 node_path=node_path,
                 round_revisions=round_revisions,
                 revision=round_dep,
-                target_proof_availability=dep_target,
-                stack=[*stack, decl_name],
+                target_proof_availability=effective_target,
+                stack=[*stack, stack_key],
             )
             if not satisfied:
                 return False, reason
             continue
         dep_report = _decl_graph(ctx).check_decl_proof_policy_satisfied(
-            repo_root,
-            node_path=node_path,
-            decl_name=dep_name,
-            target_proof_availability=dep_target,
+            dep_root,
+            node_path=dep_node,
+            decl_name=dep_ref.name,
+            target_proof_availability=effective_target,
         )
         if not dep_report.ok or dep_report.value is None:
-            return False, _first_issue_message(dep_report.issues, f"Dependency {dep_name} proof policy check failed.")
+            return False, _first_issue_message(dep_report.issues, f"Dependency {dep_label} proof policy check failed.")
         if not dep_report.value.proof_policy_satisfied:
             return False, dep_report.value.summary
     return True, None
+
+
+def _resolve_dependency_ref(
+    ctx: StepRunContext,
+    repo_root: Path,
+    *,
+    ref: DeclRef,
+    fallback_node_path: str,
+    local_target: ProofAvailability,
+) -> tuple[Path, str, ProofAvailability] | None:
+    if ref.repo:
+        foundation = getattr(ctx.app, "foundation", None)
+        repo_workspace = getattr(ctx.app, "repo_workspace", None)
+        if foundation is None or repo_workspace is None:
+            return None
+        provider_key = foundation.layout.ensure_safe_key(ref.repo)
+        provider_root = Path(repo_root).parent / provider_key
+        publication = repo_workspace.metadata.get_repo_publication(provider_root)
+        if not publication.ok or publication.value is None or publication.value.publication.status.value != "stable":
+            return None
+        config = repo_workspace.metadata.get_repo_config(provider_root)
+        if not config.ok or config.value is None:
+            return None
+        return provider_root, ref.node, config.value.config.target_proof_availability
+    dep_node = ref.node
+    if dep_node == "Main" and fallback_node_path != "Main":
+        dep_node = fallback_node_path
+    return Path(repo_root), dep_node, local_target
+
+
+def _decl_ref_label(ref: DeclRef, *, fallback_node_path: str) -> str:
+    node = ref.node
+    if ref.repo is None and node == "Main" and fallback_node_path != "Main":
+        node = fallback_node_path
+    if ref.repo:
+        return f"{ref.repo}:{node}:{ref.name}"
+    return ref.name if node == fallback_node_path else f"{node}:{ref.name}"
 
 
 def _required_state_for_proof_availability(kind: str, target: ProofAvailability) -> DeclState:

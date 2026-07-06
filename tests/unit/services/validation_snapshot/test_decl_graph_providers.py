@@ -5,10 +5,12 @@ from typing import Any
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.decl_graph.models import RepoDeclDep
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
-from lean_constellation.services.foundation import GateReport, ServiceResult
+from lean_constellation.services.foundation import GateReport, ServiceResult, WriteMode
 from lean_constellation.services.runtime import LeanRuntimeServices
 from lean_constellation.services.validation_snapshot.readiness_gate import ReadinessGateComponent
 
@@ -177,6 +179,70 @@ def _seed_declared_public_theorem(runtime: LeanRuntimeServices, repo_root: Path)
     assert committed.ok, committed.issues
 
 
+def _seed_proved_public_theorem_with_provider_dep(runtime: LeanRuntimeServices, repo_root: Path, *, provider_repo: str) -> None:
+    _create_content_node(runtime, repo_root)
+    round_id = _create_round(runtime, repo_root)
+    _create_decl(runtime, repo_root, round_id=round_id, name="consumer_result", public=True)
+    assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
+    assert runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="consumer_result",
+        nl="The consumer result states True.",
+        deps=[],
+    ).ok
+    assert runtime.decl_graph.write_statement_formal(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="consumer_result",
+        lean_code="theorem consumer_result : True := by\n  sorry",
+        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        deps=[],
+    ).ok
+    assert runtime.decl_graph.write_proof_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="consumer_result",
+        nl="Use the declared provider theorem as an accepted external interface.",
+        deps=[],
+    ).ok
+    assert runtime.decl_graph.write_proof_formal(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="consumer_result",
+        lean_code="theorem consumer_result : True := by\n  trivial",
+        lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+        deps=[],
+    ).ok
+    revision = runtime.decl_graph.get_decl_revision(repo_root, node_path=NODE_PATH, name="consumer_result", revision=1)
+    assert revision.ok and revision.value is not None, revision.issues
+    assert revision.value.proof is not None
+    revision.value.proof.deps = [
+        RepoDeclDep(
+            ref=DeclRef(
+                repo=provider_repo,
+                node=NODE_PATH,
+                name="main_result",
+                revision=1,
+            ),
+            reason="Provider publishes this theorem at declared proof availability.",
+        )
+    ]
+    path = runtime.decl_graph.graph_store.revision_path(
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name="consumer_result",
+        revision=1,
+    )
+    assert runtime.foundation.store.write_json_atomic(path, revision.value, mode=WriteMode.UPDATE_EXISTING).ok
+    committed = runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name="consumer_result", state=DeclState.PROVED)
+    assert committed.ok, committed.issues
+
+
 def test_content_ready_gate_uses_default_decl_graph_provider_pass(tmp_path: Path) -> None:
     runtime = _runtime()
     _seed_ready_public_theorem(runtime, tmp_path)
@@ -234,6 +300,66 @@ def test_content_completion_rejects_declared_theorem_under_proved_target(tmp_pat
     assert completion.value.ready_to_submit is False
     assert completion.value.target_proof_availability == ProofAvailability.PROVED
     assert "content_decl_proof_policy_unsatisfied" in completion.value.blocking_issue_kinds
+
+
+def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path: Path) -> None:
+    workspace = tmp_path
+    consumer = workspace / "Consumer"
+    provider = workspace / "Provider"
+    consumer.mkdir()
+    runtime = _runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    created = runtime.repo_workspace.create_requirement_with_interfaces(
+        consumer,
+        name="need_provider_result",
+        target_repo="Provider",
+        source_description="Consumer proof uses Provider.main_result as an external interface.",
+        reason="Provider theorem is intentionally requested at declared availability.",
+        interfaces=[{"name": "main_result", "kind": "theorem", "summary": "Provider theorem interface."}],
+    )
+    assert created.ok, created.issues
+    waiting = runtime.repo_workspace.requirement.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_provider_result",
+        provider_repo="Provider",
+        reason="Coordinator submitted the declared provider request.",
+    )
+    assert waiting.ok, waiting.issues
+    shell = runtime.repo_workspace.create_provider_repo_shell_from_group(workspace, target_repo="Provider")
+    assert shell.ok, shell.issues
+    _seed_declared_public_theorem(runtime, provider)
+    marked = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider publishes declared theorem interface.")
+    assert marked.ok, marked.issues
+    assert runtime.repo_workspace.requirement.mark_requirement_result_observed(
+        consumer,
+        requirement_name="need_provider_result",
+        note="Consumer resumes from stable declared provider.",
+    ).ok
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        consumer,
+        target_proof_availability=ProofAvailability.PROVED,
+        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+    ).ok
+    _seed_proved_public_theorem_with_provider_dep(runtime, consumer, provider_repo="Provider")
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    proof_policy = runtime.decl_graph.check_decl_proof_policy_satisfied(
+        consumer,
+        node_path=NODE_PATH,
+        decl_name="consumer_result",
+    )
+    completion = gate.check_content_node_completion(consumer, node_path=NODE_PATH)
+
+    assert proof_policy.ok and proof_policy.value is not None
+    assert proof_policy.value.proof_policy_satisfied is True
+    assert proof_policy.value.dependencies_checked == ["Provider:Main.Topic.Core:main_result"]
+    assert completion.ok and completion.value is not None
+    assert completion.value.ready_to_submit is True
+    assert completion.value.target_proof_availability == ProofAvailability.PROVED
 
 
 def test_content_ready_gate_preserves_decl_graph_not_ready_issue(tmp_path: Path) -> None:

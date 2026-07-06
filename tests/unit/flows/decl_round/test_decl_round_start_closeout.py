@@ -14,6 +14,7 @@ from tests.unit.flows.decl_round._helpers import (
     queue_review,
     queue_worker_completed,
     record_passed_review,
+    seed_committed_theorem,
     start_decl_round_flow,
 )
 
@@ -180,6 +181,57 @@ def test_decl_round_final_audit_allows_unsatisfied_target_when_opted_out(tmp_pat
     final_audit_step_id = advance_and_run(runtime, flow_id)
     final_audit_step = runtime.flow_service.get_step(final_audit_step_id)
     assert final_audit_step.result.outcome == "passed"
+
+
+def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path: Path) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        end_after_state=DeclState.PROVED,
+        require_target_state_satisfied=False,
+    )
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+    )
+
+    _run_main_result_theorem_stages(
+        runtime,
+        lean_runtime,
+        repo_root,
+        flow_id=flow_id,
+        round_id=round_id,
+        proof_deps=["missing_helper"],
+    )
+    final_audit_step_id = advance_and_run(runtime, flow_id)
+    final_audit_step = runtime.flow_service.get_step(final_audit_step_id)
+    assert final_audit_step.result.outcome == "passed"
+    build_step_id = advance_and_run(runtime, flow_id)
+    build_step = runtime.flow_service.get_step(build_step_id)
+    assert build_step.result.flow_outcome == "completed"
+    before_helper = lean_runtime.decl_graph.check_decl_proof_policy_satisfied(
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name="main_result",
+    )
+    assert before_helper.ok and before_helper.value is not None
+    assert before_helper.value.proof_policy_satisfied is False
+    assert before_helper.value.failed_dependencies == ["missing_helper"]
+
+    seed_committed_theorem(lean_runtime, repo_root, decl_name="missing_helper")
+    after_helper = lean_runtime.decl_graph.check_decl_proof_policy_satisfied(
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name="main_result",
+    )
+
+    assert after_helper.ok and after_helper.value is not None
+    assert after_helper.value.proof_policy_satisfied is True
+    assert after_helper.value.dependencies_checked == ["missing_helper"]
 
 
 def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> None:

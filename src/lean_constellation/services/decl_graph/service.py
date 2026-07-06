@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph.graph_store import DeclGraphStorageMigrationView, GraphStoreComponent
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
@@ -810,6 +811,19 @@ class DeclGraphService:
         target_proof_availability: ProofAvailability,
     ) -> list[tuple[str, ProofAvailability]]:
         return self.dependency.dependency_requirements_for_proof_policy(
+            decl,
+            revision,
+            target_proof_availability=target_proof_availability,
+        )
+
+    def dependency_ref_requirements_for_proof_policy(
+        self,
+        decl: Decl,
+        revision: DeclRevision,
+        *,
+        target_proof_availability: ProofAvailability,
+    ) -> list[tuple[DeclRef, ProofAvailability]]:
+        return self.dependency.dependency_ref_requirements_for_proof_policy(
             decl,
             revision,
             target_proof_availability=target_proof_availability,

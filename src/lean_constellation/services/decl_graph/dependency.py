@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from lean_constellation.domain.repo import ProofAvailability, proof_availability_satisfies
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph.models import Decl, DeclDep, DeclDependencyClosureView, DeclLifecycle, DeclRevision
 from lean_constellation.services.foundation import GateReport, ServiceResult
 
@@ -146,13 +147,42 @@ class DeclDependencyComponent:
         *,
         target_proof_availability: ProofAvailability,
     ) -> list[tuple[str, ProofAvailability]]:
-        requirements: dict[str, ProofAvailability] = {}
-        for name in self.statement_dependency_names(revision):
-            requirements[name] = self._stricter_requirement(requirements.get(name), ProofAvailability.DECLARED)
+        return [
+            (ref.name, required)
+            for ref, required in self.dependency_ref_requirements_for_proof_policy(
+                decl,
+                revision,
+                target_proof_availability=target_proof_availability,
+            )
+        ]
+
+    def dependency_ref_requirements_for_proof_policy(
+        self,
+        decl: Decl,
+        revision: DeclRevision,
+        *,
+        target_proof_availability: ProofAvailability,
+    ) -> list[tuple[DeclRef, ProofAvailability]]:
+        requirements: dict[tuple[str, str, str, int], tuple[DeclRef, ProofAvailability]] = {}
+        for dep in self._repo_decl_deps(revision.statement.deps):
+            self._merge_ref_requirement(requirements, dep.ref, ProofAvailability.DECLARED)
         if target_proof_availability == ProofAvailability.PROVED and self._is_theorem_like(decl.kind):
-            for name in self.proof_dependency_names(revision):
-                requirements[name] = self._stricter_requirement(requirements.get(name), ProofAvailability.PROVED)
-        return sorted(requirements.items())
+            for dep in self._repo_decl_deps(revision.proof.deps if revision.proof is not None else []):
+                self._merge_ref_requirement(requirements, dep.ref, ProofAvailability.PROVED)
+        return [requirements[key] for key in sorted(requirements)]
+
+    def _merge_ref_requirement(
+        self,
+        requirements: dict[tuple[str, str, str, int], tuple[DeclRef, ProofAvailability]],
+        ref: DeclRef,
+        candidate: ProofAvailability,
+    ) -> None:
+        key = (ref.repo or "", ref.node, ref.name, ref.revision)
+        current = requirements.get(key)
+        requirements[key] = (ref, self._stricter_requirement(current[1] if current is not None else None, candidate))
+
+    def _repo_decl_deps(self, deps: list[DeclDep]) -> list:
+        return sorted([dep for dep in deps if dep.kind == "repo_decl"], key=lambda dep: (dep.ref.repo or "", dep.ref.node, dep.ref.name, dep.ref.revision))
 
     def _repo_decl_dep_names(self, deps: list[DeclDep]) -> list[str]:
         return sorted({dep.ref.name for dep in deps if dep.kind == "repo_decl"})

@@ -2,9 +2,10 @@ from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph import DeclState
-from lean_constellation.services.decl_graph.models import DeclRevision
+from lean_constellation.services.decl_graph.models import DeclRevision, RepoDeclDep
 from lean_constellation.services.foundation import WriteMode
 
 
@@ -113,10 +114,13 @@ def test_dependency_helpers_split_statement_and_proof_policy_requirements(tmp_pa
     assert revision.ok and revision.value is not None
     revision.value.statement_deps = ["StatementDep"]
     revision.value.proof_deps = ["ProofDep", "StatementDep"]
+    revision.value.proof.deps.append(
+        RepoDeclDep(ref=DeclRef(repo="Provider", node="Main.Core", name="ExternalDep", revision=1))
+    )
 
     assert service.statement_dependency_names(revision.value) == ["StatementDep"]
-    assert service.proof_dependency_names(revision.value) == ["ProofDep", "StatementDep"]
-    assert service.all_dependency_names(revision.value) == ["ProofDep", "StatementDep"]
+    assert service.proof_dependency_names(revision.value) == ["ExternalDep", "ProofDep", "StatementDep"]
+    assert service.all_dependency_names(revision.value) == ["ExternalDep", "ProofDep", "StatementDep"]
     assert service.dependency_requirements_for_proof_policy(
         decl.value,
         revision.value,
@@ -126,7 +130,21 @@ def test_dependency_helpers_split_statement_and_proof_policy_requirements(tmp_pa
         decl.value,
         revision.value,
         target_proof_availability=ProofAvailability.PROVED,
-    ) == [("ProofDep", ProofAvailability.PROVED), ("StatementDep", ProofAvailability.PROVED)]
+    ) == [
+        ("ProofDep", ProofAvailability.PROVED),
+        ("StatementDep", ProofAvailability.PROVED),
+        ("ExternalDep", ProofAvailability.PROVED),
+    ]
+    ref_requirements = service.dependency_ref_requirements_for_proof_policy(
+        decl.value,
+        revision.value,
+        target_proof_availability=ProofAvailability.PROVED,
+    )
+    assert [(ref.repo, ref.node, ref.name, required) for ref, required in ref_requirements] == [
+        (None, "Main", "ProofDep", ProofAvailability.PROVED),
+        (None, "Main", "StatementDep", ProofAvailability.PROVED),
+        ("Provider", "Main.Core", "ExternalDep", ProofAvailability.PROVED),
+    ]
 
 
 def test_delete_preflight_requires_downstream_closure(tmp_path: Path) -> None:

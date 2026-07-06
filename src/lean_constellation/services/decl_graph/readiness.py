@@ -420,8 +420,9 @@ class DeclReadinessComponent:
         target_proof_availability: ProofAvailability,
         stack: list[str],
     ) -> ServiceResult[DeclReadinessReport]:
-        if decl_name in stack:
-            cycle = [*stack, decl_name]
+        stack_key = f"{Path(repo_root).name}:{node_path}:{decl_name}"
+        if stack_key in stack:
+            cycle = [*stack, stack_key]
             return self.runtime.foundation.ok(
                 self._not_ready(
                     node_path=node_path,
@@ -510,24 +511,50 @@ class DeclReadinessComponent:
 
         checked: list[str] = []
         failed: list[str] = []
-        dep_requirements = self.dependency.dependency_requirements_for_proof_policy(
+        dep_requirements = self.dependency.dependency_ref_requirements_for_proof_policy(
             decl,
             revision,
             target_proof_availability=target_proof_availability,
         )
-        for dep_name, dep_target in dep_requirements:
-            checked.append(dep_name)
-            dep = self._check_decl_proof_policy_satisfied(
+        for dep_ref, dep_target in dep_requirements:
+            dep_label = self._decl_ref_label(dep_ref, fallback_node_path=node_path)
+            checked.append(dep_label)
+            resolved_dep = self._resolve_dependency_ref(
                 repo_root,
-                node_path=node_path,
-                decl_name=dep_name,
-                target_proof_availability=dep_target,
-                stack=[*stack, decl_name],
+                ref=dep_ref,
+                fallback_node_path=node_path,
+                local_target=dep_target,
+            )
+            if not resolved_dep.ok or resolved_dep.value is None:
+                failed.append(dep_label)
+                return self.runtime.foundation.ok(
+                    self._not_ready(
+                        node_path=node_path,
+                        decl_name=decl_name,
+                        revision=revision.revision,
+                        reason=DeclReadinessReason.DEPENDENCY_NOT_READY,
+                        target_proof_availability=target_proof_availability,
+                        details={
+                            "dependency": dep_label,
+                            "dependency_reason": "; ".join(issue.kind for issue in resolved_dep.issues) or "dependency resolution failed",
+                            "dependency_required_proof_availability": dep_target.value,
+                        },
+                        dependencies_checked=checked,
+                        failed_dependencies=failed,
+                    )
+                )
+            dep_root, dep_node, effective_target = resolved_dep.value
+            dep = self._check_decl_proof_policy_satisfied(
+                dep_root,
+                node_path=dep_node,
+                decl_name=dep_ref.name,
+                target_proof_availability=effective_target,
+                stack=[*stack, stack_key],
             )
             if not dep.ok or dep.value is None:
                 return self.runtime.foundation.fail(dep.issues)
             if not dep.value.ready:
-                failed.append(dep_name)
+                failed.append(dep_label)
                 reason = (
                     DeclReadinessReason.CYCLE_DETECTED
                     if dep.value.reason == DeclReadinessReason.CYCLE_DETECTED
@@ -543,9 +570,9 @@ class DeclReadinessComponent:
                         reason=reason,
                         target_proof_availability=target_proof_availability,
                         details={
-                            "dependency": dep_name,
+                            "dependency": dep_label,
                             "dependency_reason": dep.value.reason.value if dep.value.reason else "unknown",
-                            "dependency_required_proof_availability": dep_target.value,
+                            "dependency_required_proof_availability": effective_target.value,
                         },
                         dependencies_checked=checked,
                         failed_dependencies=failed,
@@ -567,6 +594,47 @@ class DeclReadinessComponent:
                 ),
             )
         )
+
+    def _resolve_dependency_ref(
+        self,
+        repo_root: Path,
+        *,
+        ref: DeclRef,
+        fallback_node_path: str,
+        local_target: ProofAvailability,
+    ) -> ServiceResult[tuple[Path, str, ProofAvailability]]:
+        if ref.repo:
+            provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
+            provider_root = Path(repo_root).parent / provider_key
+            publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_root)
+            if not publication.ok or publication.value is None:
+                return self.runtime.foundation.fail(publication.issues)
+            if publication.value.publication.status.value != "stable":
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "dependency_provider_not_stable",
+                        "Cross-repo declaration dependency provider is not stable.",
+                        object_ref=provider_key,
+                        current=publication.value.publication.status.value,
+                        expected="stable",
+                    )
+                )
+            config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
+            if not config.ok or config.value is None:
+                return self.runtime.foundation.fail(config.issues)
+            return self.runtime.foundation.ok((provider_root, ref.node, config.value.config.target_proof_availability))
+        dep_node = ref.node
+        if dep_node == "Main" and fallback_node_path != "Main":
+            dep_node = fallback_node_path
+        return self.runtime.foundation.ok((Path(repo_root), dep_node, local_target))
+
+    def _decl_ref_label(self, ref: DeclRef, *, fallback_node_path: str) -> str:
+        node = ref.node
+        if ref.repo is None and node == "Main" and fallback_node_path != "Main":
+            node = fallback_node_path
+        if ref.repo:
+            return f"{ref.repo}:{node}:{ref.name}"
+        return ref.name if node == fallback_node_path else f"{node}:{ref.name}"
 
     def _resolve_target_proof_availability(
         self,
