@@ -9,6 +9,7 @@ from lean_constellation.services.validation_snapshot.admin_repair import AdminRe
 from lean_constellation.services.validation_snapshot.audit import AuditComponent, AuditReport, DeclGraphAuditProvider
 from lean_constellation.services.validation_snapshot.consistency_check import ConsistencyCheckComponent, FormalStageConsistencyProvider
 from lean_constellation.services.validation_snapshot.readiness_gate import (
+    ContentNodeCompletionGateView,
     ContentReadinessProvider,
     ContentReadyGateView,
     ReadinessGateComponent,
@@ -118,6 +119,9 @@ class ValidationSnapshotService:
 
     def check_content_node_ready(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         return self.readiness_gate.check_content_node_ready(repo_root, node_path=node_path)
+
+    def check_content_node_completion(self, repo_root: Path, *, node_path: str) -> ServiceResult[ContentNodeCompletionGateView]:
+        return self.readiness_gate.check_content_node_completion(repo_root, node_path=node_path)
 
     def get_content_ready_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[ContentReadyGateView]:
         return self.readiness_gate.get_content_ready_view(repo_root, node_path=node_path)

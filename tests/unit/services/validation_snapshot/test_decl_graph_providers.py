@@ -5,6 +5,7 @@ from typing import Any
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
 from lean_constellation.services.foundation import GateReport, ServiceResult
@@ -94,6 +95,7 @@ def _create_decl(
     round_id: str,
     name: str,
     public: bool = True,
+    end_after_state: DeclState = DeclState.PROVED,
 ) -> Any:
     created = runtime.decl_graph.create_decl(
         repo_root,
@@ -104,7 +106,7 @@ def _create_decl(
         objective=f"Create {name}.",
         summary=f"{name} summary.",
         public=public,
-        end_after_state=DeclState.PROVED,
+        end_after_state=end_after_state,
     )
     assert created.ok and created.value is not None, created.issues
     return created.value
@@ -148,6 +150,33 @@ def _seed_ready_public_theorem(runtime: LeanRuntimeServices, repo_root: Path) ->
     assert projection.ok, projection.issues
 
 
+def _seed_declared_public_theorem(runtime: LeanRuntimeServices, repo_root: Path) -> None:
+    _create_content_node(runtime, repo_root)
+    round_id = _create_round(runtime, repo_root)
+    _create_decl(runtime, repo_root, round_id=round_id, name="main_result", public=True, end_after_state=DeclState.DECLARED)
+    assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
+    assert runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+        origin=[{"kind": "unit_test"}],
+        deps=[],
+    ).ok
+    assert runtime.decl_graph.write_statement_formal(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="main_result",
+        lean_code="theorem main_result : True := by\n  sorry",
+        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        deps=[],
+    ).ok
+    committed = runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name="main_result", state=DeclState.DECLARED)
+    assert committed.ok, committed.issues
+
+
 def test_content_ready_gate_uses_default_decl_graph_provider_pass(tmp_path: Path) -> None:
     runtime = _runtime()
     _seed_ready_public_theorem(runtime, tmp_path)
@@ -158,6 +187,53 @@ def test_content_ready_gate_uses_default_decl_graph_provider_pass(tmp_path: Path
     assert ready.value is not None
     assert ready.value.passed is True
     assert runtime.validation_snapshot.readiness_gate.content_readiness_provider is runtime.decl_graph
+
+
+def test_content_completion_accepts_declared_theorem_under_declared_target(tmp_path: Path) -> None:
+    runtime = _runtime()
+    _seed_declared_public_theorem(runtime, tmp_path)
+    configured = runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert configured.ok
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    completion = gate.check_content_node_completion(tmp_path, node_path=NODE_PATH)
+
+    assert completion.ok and completion.value is not None
+    assert completion.value.ready_to_submit is True
+    assert completion.value.target_proof_availability == ProofAvailability.DECLARED
+    assert completion.value.checked_decl_count == 1
+    assert completion.value.gate.gate_name == "content_node_completion"
+
+
+def test_content_completion_rejects_declared_theorem_under_proved_target(tmp_path: Path) -> None:
+    runtime = _runtime()
+    _seed_declared_public_theorem(runtime, tmp_path)
+    configured = runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        target_proof_availability=ProofAvailability.PROVED,
+        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+    )
+    assert configured.ok
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    completion = gate.check_content_node_completion(tmp_path, node_path=NODE_PATH)
+
+    assert completion.ok and completion.value is not None
+    assert completion.value.ready_to_submit is False
+    assert completion.value.target_proof_availability == ProofAvailability.PROVED
+    assert "content_decl_proof_policy_unsatisfied" in completion.value.blocking_issue_kinds
 
 
 def test_content_ready_gate_preserves_decl_graph_not_ready_issue(tmp_path: Path) -> None:

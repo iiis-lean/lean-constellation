@@ -21,6 +21,7 @@ from lean_constellation.services.validation_snapshot.consistency_check import (
     ProjectionSyncSummaryView,
 )
 from lean_constellation.services.validation_snapshot.readiness_gate import (
+    ContentNodeCompletionGateView,
     ContentReadinessProvider,
     ContentReadyGateView,
     ReadinessGateComponent,
@@ -51,6 +52,7 @@ __all__ = [
     "AuditScope",
     "ConsistencyCheckComponent",
     "ConsistencyCheckScope",
+    "ContentNodeCompletionGateView",
     "ContentReadinessProvider",
     "ContentReadyGateView",
     "DeclGraphAuditProvider",

@@ -639,6 +639,12 @@ class NodeService:
 
     def _check_content_task_ready(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         provider = self._content_ready_gate or self.runtime.validation_snapshot
+        completion = getattr(provider, "check_content_node_completion", None)
+        if callable(completion):
+            view = completion(repo_root, node_path=node_path)
+            if not view.ok or view.value is None:
+                return self.runtime.foundation.fail(view.issues)
+            return self.runtime.foundation.ok(view.value.gate)
         return provider.check_content_node_ready(repo_root, node_path=node_path)
 
     def _scope_child_close_views(self, repo_root: Path, *, scope_path: str) -> ServiceResult[list[ScopeChildCloseView]]:

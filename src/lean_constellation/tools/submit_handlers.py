@@ -653,16 +653,16 @@ def submit_content_node_ready(runtime: Any, ctx: ToolExecutionContext, args: Sub
     node = _require_node(runtime, ctx)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
-    gate = runtime.validation_snapshot.check_content_node_ready(ctx.repo_root, node_path=node.value)
-    if not gate.ok or gate.value is None:
-        return runtime.foundation.fail(gate.issues)
-    passed = _gate_or_fail(runtime, gate.value)
+    completion = runtime.validation_snapshot.check_content_node_completion(ctx.repo_root, node_path=node.value)
+    if not completion.ok or completion.value is None:
+        return runtime.foundation.fail(completion.issues)
+    passed = _gate_or_fail(runtime, completion.value.gate)
     if not passed.ok:
         return runtime.foundation.fail(passed.issues)
     return _prepared(
         runtime,
         ContentNodeReadySubmission(**_base_kwargs(ctx, tool_name="submit_content_node_ready", summary=args.summary)),
-        agent_view={"gate": gate.value.model_dump(mode="json")},
+        agent_view={"completion": completion.value.model_dump(mode="json")},
     )
 
 

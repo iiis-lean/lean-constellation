@@ -429,7 +429,7 @@ def _check_content_ready(runtime, ctx, args: NoArgs):
 
 def _check_content_completion(runtime, ctx, args: NoArgs):
     del args
-    return runtime.decl_graph.check_content_node_ready(ctx.repo_root, node_path=_node(ctx))
+    return runtime.validation_snapshot.check_content_node_completion(ctx.repo_root, node_path=_node(ctx))
 
 
 def build_tool_specs() -> list[ToolSpec]:

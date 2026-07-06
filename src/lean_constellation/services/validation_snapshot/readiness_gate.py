@@ -9,6 +9,8 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
+from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.node import ContractVersionStatus, NodeKind, NodeService
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.validation_snapshot.consistency_check import ConsistencyCheckComponent
@@ -56,6 +58,20 @@ class ContentReadyGateView(StrictModel):
     contract_version_status: ContractVersionStatus | None = None
     gate: GateReport
     ready_to_submit: bool
+    summary: str
+
+
+class ContentNodeCompletionGateView(StrictModel):
+    """Submit-oriented view for Content node completion checks."""
+
+    node_path: str
+    target_proof_availability: ProofAvailability
+    contract_version: int | None = None
+    contract_version_status: ContractVersionStatus | None = None
+    gate: GateReport
+    ready_to_submit: bool
+    checked_decl_count: int = 0
+    blocking_issue_kinds: list[str] = Field(default_factory=list)
     summary: str
 
 
@@ -234,6 +250,98 @@ class ReadinessGateComponent:
         reports.append(projection.value)
         return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports("content_node_ready", reports))
 
+    def check_content_node_completion(self, repo_root: Path, *, node_path: str) -> ServiceResult[ContentNodeCompletionGateView]:
+        repo_root = Path(repo_root)
+        contract = self.node.contract.get_current_contract(repo_root, node_path=node_path)
+        if not contract.ok or contract.value is None:
+            return self.runtime.foundation.fail(contract.issues)
+
+        config = self.repo_workspace.metadata.get_repo_config(repo_root)
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        target = config.value.config.target_proof_availability
+
+        reports: list[GateReport] = []
+        interface_issues = []
+        decl_refs: dict[tuple[str | None, str, str], DeclRef] = {}
+        for interface in contract.value.contract.interfaces:
+            if interface.bound_decl is None:
+                interface_issues.append(
+                    self.runtime.foundation.issue(
+                        "content_interface_unbound",
+                        f"Content interface is not bound: {interface.name}",
+                        object_ref=node_path,
+                        field=f"interfaces.{interface.name}.bound_decl",
+                    )
+                )
+                continue
+            decl_refs[self._decl_ref_key(interface.bound_decl)] = interface.bound_decl
+        reports.append(
+            self.runtime.foundation.gate_failed("content_interfaces_bound", interface_issues, summary=f"{len(interface_issues)} content interfaces are unbound.")
+            if interface_issues
+            else self.runtime.foundation.gate_passed("content_interfaces_bound", summary="Content interfaces are bound.")
+        )
+
+        public_decls = self.runtime.decl_graph.list_content_public_decls(repo_root, node_path=node_path)
+        if not public_decls.ok or public_decls.value is None:
+            return self.runtime.foundation.fail(public_decls.issues)
+        for public in public_decls.value:
+            if public.public:
+                decl_refs[self._decl_ref_key(public.ref)] = public.ref
+
+        decl_issues = []
+        for ref in decl_refs.values():
+            checked = self._check_decl_ref_proof_policy(repo_root, ref=ref, fallback_node_path=node_path)
+            if not checked.ok or checked.value is None:
+                return self.runtime.foundation.fail(checked.issues)
+            if not checked.value.proof_policy_satisfied:
+                decl_issues.append(
+                    self.runtime.foundation.issue(
+                        "content_decl_proof_policy_unsatisfied",
+                        f"Declaration does not satisfy current proof availability policy: {ref.name}",
+                        object_ref=f"{ref.repo + ':' if ref.repo else ''}{ref.node}:{ref.name}",
+                        details={
+                            "target_proof_availability": target.value,
+                            "summary": checked.value.summary,
+                        },
+                    )
+                )
+        reports.append(
+            self.runtime.foundation.gate_failed(
+                "content_decl_proof_policy_satisfied",
+                decl_issues,
+                summary=f"{len(decl_issues)} public/interface declarations do not satisfy proof policy.",
+            )
+            if decl_issues
+            else self.runtime.foundation.gate_passed(
+                "content_decl_proof_policy_satisfied",
+                summary=f"{len(decl_refs)} public/interface declarations satisfy proof policy.",
+                warnings=public_decls.issues,
+            )
+        )
+
+        projection = self.consistency.check_projection_sync(repo_root, scope=node_path)
+        if not projection.ok or projection.value is None:
+            return self.runtime.foundation.fail(projection.issues)
+        reports.append(projection.value)
+
+        gate = self.runtime.foundation.merge_gate_reports("content_node_completion", reports)
+        blocking_issue_kinds = sorted({issue.kind for issue in gate.issues if self.runtime.foundation.result_error.is_error_issue(issue)})
+        return self.runtime.foundation.ok(
+            ContentNodeCompletionGateView(
+                node_path=node_path,
+                target_proof_availability=target,
+                contract_version=contract.value.version,
+                contract_version_status=contract.value.version_status,
+                gate=gate,
+                ready_to_submit=gate.passed,
+                checked_decl_count=len(decl_refs),
+                blocking_issue_kinds=blocking_issue_kinds,
+                summary=("Content node is complete." if gate.passed else "Content node completion gate has blocking issues."),
+            ),
+            warnings=[*contract.issues, *public_decls.issues],
+        )
+
     def get_content_ready_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[ContentReadyGateView]:
         contract = self.node.contract.get_current_contract(Path(repo_root), node_path=node_path)
         if not contract.ok or contract.value is None:
@@ -252,6 +360,19 @@ class ReadinessGateComponent:
             ),
             warnings=contract.issues,
         )
+
+    def _check_decl_ref_proof_policy(self, repo_root: Path, *, ref: DeclRef, fallback_node_path: str):
+        if ref.repo:
+            provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
+            provider_root = repo_root.parent / provider_key
+            node_path = ref.node
+        else:
+            provider_root = repo_root
+            node_path = ref.node or fallback_node_path
+        return self.runtime.decl_graph.check_decl_proof_policy_satisfied(provider_root, node_path=node_path, decl_name=ref.name)
+
+    def _decl_ref_key(self, ref: DeclRef) -> tuple[str | None, str, str]:
+        return (ref.repo, ref.node, ref.name)
 
     def check_content_node_blocked_submit(self, repo_root: Path, *, node_path: str, reason: str) -> ServiceResult[GateReport]:
         issues = []
