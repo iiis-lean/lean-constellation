@@ -61,6 +61,20 @@ def test_runtime_instruction_output_is_english() -> None:
     assert "## Proof Formal Worker" in text
 
 
+def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> None:
+    text = render_agent_instruction("ContentPlanAgent")
+
+    assert "After every callback, re-read current truth" in text
+    assert "submit_content_preparation_recon" in text
+    assert "write_decl_change_summary" in text
+    assert "mark_decl_round_terminal" in text
+    assert "validate_decl_round_draft" in text
+    assert "submit_current_decl_round" in text
+    assert "check_content_node_ready" in text
+    assert "submit_content_node_ready" in text
+    assert "Do not replace NodeDirDependencyReconFlow, MathlibReconFlow, or ResourceReconFlow" in text
+
+
 def test_all_runtime_instructions_are_english_and_tool_refs_resolve() -> None:
     for spec in build_agent_type_specs():
         text = render_agent_instruction(spec)

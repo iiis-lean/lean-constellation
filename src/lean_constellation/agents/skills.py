@@ -160,8 +160,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill when a content plan, recon agent, declaration worker, or reviewer must understand a node goal, boundary, objective, materials, dependencies, Mathlib references, and interfaces before acting.",
             (
                 "Read the current content contract first with `get_current_node_contract`.",
+                "After a child-flow callback or reviewer callback, re-read the current contract and relevant state before deciding the next action.",
                 "Separate owned material from context material.",
-                "Use `list_current_node_deps`, `list_node_material_refs`, and `get_current_node_mathlib_hints` as the allowed working context when those tools are visible.",
+                "Use current-node dependency reads, material refs, and role-appropriate hint tools as working context when those tools are visible.",
                 "Keep local changes inside the current task authority.",
                 "Block or return feedback when the contract is unclear or inconsistent.",
             ),
@@ -209,13 +210,13 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "scope-export-interface-curation",
-            "Use this skill when closing a scope node, selecting public declarations from ready children, binding scope interfaces, checking projection/readiness, or committing a scope contract summary.",
+            "Use this skill when closing a scope node, selecting public declarations from ready children, binding scope interfaces, checking projection/readiness, or preparing a scope contract commit.",
             (
-                "Check child readiness before curating exports.",
+                "Inspect child readiness and scope-close issues with `get_scope_close_view` before curating exports.",
                 "Read required interfaces and current export candidates with `list_node_interfaces`, `list_scope_export_candidates`, and `list_scope_exports`.",
                 "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
-                "Run `check_content_node_ready` or available projection checks before submit.",
+                "Use the scope-close view to confirm that exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
             ),
             (
                 "Do not export unstable private implementation details.",
@@ -281,7 +282,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Check existing material before submitting a request.",
                 "Call `submit_resource_request` only for precise targets with a clear reason.",
                 "After a duplicate result, use the returned existing reference when relevant.",
-                "After a local resource result, decide whether the current node should attach it with `add_current_material_ref` when that tool is visible.",
+                "After a local resource result, decide whether your current role should attach it through visible node material or contract tools, or report it for the role that owns that attachment.",
                 "After an external repository result, decide whether the current task must return to Coordinator-level handling.",
             ),
             (
@@ -392,7 +393,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "mathlib-index-first-recon",
             "Use this skill when finding Mathlib modules or declarations for a Lean Constellation node while avoiding repeated global search.",
             (
-                "Read current node Mathlib hints first with `get_current_node_mathlib_hints`.",
+                "Read node-local Mathlib hints first when current-node hint tools are visible.",
                 "Translate the node objective into search directions.",
                 "Search the repo MathlibIndex with `search_mathlib_index` before external search.",
                 "Identify index gaps explicitly.",
@@ -476,21 +477,63 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         group="content_plan",
         required_tool_groups=_groups(SubmitGroup.CONTENT_PLAN_SUBMIT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "Content Preparation Orchestration",
-            "Use this skill when the current content node needs preparation before a declaration round.",
-            (
-                "Read current contract, DeclGraph state, source/resource context, dependencies, and Mathlib hints.",
-                "Decide whether node dependency, Mathlib, or resource recon is actually needed.",
-                "Call `submit_content_preparation_recon` with only objective and context_summary for each child flow.",
-                "Run each preparation kind at most once per content task.",
-                "After callback, update the plan or proceed to declaration round planning.",
-            ),
-            (
-                "Do not dispatch preparation flows just to gather vague context.",
-                "Do not place full contracts or graph dumps into child prompts.",
-            ),
-        ),
+        body="""# Content Preparation Orchestration
+
+## Purpose
+
+Use this skill when the current content node task may need preparation before entering or continuing DeclGraph work.
+
+Preparation recon is delegated work. Your job is to decide whether a child flow is needed, give it a focused objective, and interpret its callback result. Do not do broad dependency, Mathlib, or resource recon inside the ContentPlanAgent context when a dedicated child flow should do it.
+
+## Recommended Order
+
+For a first task on a content node, consider preparation in this order:
+
+1. Visible node dependency recon.
+2. Mathlib recon.
+3. Resource recon.
+
+For a follow-up task, use the same order as a decision checklist, but each step is optional. Skip a preparation kind when current truth already gives enough context for strategy or round planning.
+
+## Child Flow Submit
+
+Call `submit_content_preparation_recon` only when handing off to a preparation child flow. Provide:
+
+- `objective`: the concrete question or gap for that specific recon flow.
+- context summary: short background about current progress, previous callback results, or why this recon is needed now.
+
+Do not pass full contract JSON, full DeclGraph state, complete source text, or large previous results. The child flow can query detailed state through its own tools.
+
+If `submit_content_preparation_recon` is accepted, stop. The runtime will run the child flow and callback this planning agent when it completes.
+
+## One Run Per Kind
+
+In one content node task, dispatch each preparation kind at most once:
+
+- node directory dependency recon;
+- Mathlib recon;
+- resource recon.
+
+If a kind has already run, interpret the callback result, perform only targeted current-node corrections when justified, and then continue planning.
+
+## After Callback
+
+After a preparation child flow returns:
+
+1. Re-read current node truth with `get_current_node_contract`.
+2. Re-read relevant DeclGraph, dependency, Mathlib, source, or resource state through available tools.
+3. Decide whether the result is sufficient.
+4. If only a small correction is needed, use current-node scoped mutation tools.
+5. Do not rerun the same preparation kind in the same task.
+6. Continue the preparation checklist, start strategy planning, or complete/block/fail the task.
+
+## Boundaries
+
+- Do not dispatch preparation flows just to gather vague context.
+- Do not ask one preparation flow to perform a different preparation kind.
+- Do not place full contracts or graph dumps into child prompts.
+- Do not use current-node correction tools as a substitute for broad child-flow recon.
+""",
     ),
     SkillKey.DECL_STRATEGY_PLANNING.value: LeanSkillDefinition(
         name="decl-strategy-planning",
@@ -498,21 +541,73 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         group="content_plan",
         required_tool_groups=_groups(AppGroup.DECL_GRAPH_READ_CURRENT, AppGroup.DECL_STRATEGY_WRITE),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "Decl Strategy Planning",
-            "Use this skill to maintain the current plan for how the content node will make mathematical progress.",
-            (
-                "Read current truth with `get_current_decl_graph_store`, `list_decl_strategies`, and `get_decl_strategy` before changing strategy.",
-                "Analyze node objective, existing declarations, dependencies, resource gaps, and round history.",
-                "Create a strategy with `ensure_open_decl_strategy` and a clear purpose.",
-                "Close or supersede a strategy with `close_decl_strategy` based on actual results.",
-                "Keep targeted supplements small and justified.",
-            ),
-            (
-                "Do not keep an obsolete strategy open after it has failed or been replaced.",
-                "Do not encode vague aspirations as actionable strategy.",
-            ),
-        ),
+        body="""# Decl Strategy Planning
+
+## Purpose
+
+Use this skill before preparing a new DeclGraph round, after a preparation callback, or after a previous round has completed, blocked, or failed.
+
+A strategy is a high-level route for making progress inside the current content node. It may target the whole node, one required interface, a proof decomposition, a bottom-up foundation segment, or an intermediate theorem. It is not itself a statement, proof, or Lean artifact.
+
+## Read Current Truth First
+
+Before creating or changing a strategy, read current state with:
+
+- `get_current_node_contract` for the current task boundary and objective;
+- DeclGraph read tools for graph state, active declarations, and round history;
+- strategy read tools for existing strategy state.
+
+Do not rely on conversation memory when tools can show current truth.
+
+## What To Analyze
+
+Analyze:
+
+- the current node goal, boundary, objective, materials, dependencies, and interfaces;
+- which required interfaces or useful public declarations are not ready;
+- which previous rounds succeeded, blocked, failed, or changed the graph;
+- whether the current route should be bottom-up, top-down, helper-decomposition based, or a small repair route;
+- whether missing support should first be handled through node dependencies, Mathlib, resources, or Coordinator escalation.
+
+## Creating Or Continuing A Strategy
+
+Use `ensure_open_decl_strategy` when no viable open strategy exists or when the current route needs to be made explicit. The strategy objective should name the mathematical route, not just say continue work.
+
+Continue an open strategy only if it still explains the next useful round. If the strategy remains valid after a blocked or failed round, close out that round first, repair prerequisites if possible, and then continue under the same strategy.
+
+## Closing Or Replacing A Strategy
+
+Use `close_decl_strategy` when:
+
+- the strategy achieved its intended graph state;
+- the route is no longer viable;
+- a better strategy supersedes it;
+- the content node is ready, blocked, or failed.
+
+Rounds belonging to the strategy should be summarized and committed before closing the strategy.
+
+## Targeted Supplement
+
+During strategy planning, you may do targeted supplement to answer a concrete planning question:
+
+- inspect visible boundaries and public declarations;
+- inspect current node dependencies and material refs;
+- search the repo MathlibIndex;
+- use Mathlib semantic search or navigation for a narrow concept;
+- inspect source or resource material;
+- request one explicit resource target when necessary.
+
+Do not turn strategy planning into broad recon when a preparation child flow should do that work.
+
+## Boundaries
+
+- Do not write statement or proof artifacts.
+- Do not edit Lean files.
+- Do not bind scope exports.
+- Do not create repository requirements.
+- Do not keep an obsolete strategy open after it has failed or been replaced.
+- Do not encode vague aspirations as actionable strategy.
+""",
     ),
     SkillKey.DECL_ROUND_CHANGE_PLANNING.value: LeanSkillDefinition(
         name="decl-round-change-planning",
@@ -520,21 +615,57 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         group="content_plan",
         required_tool_groups=_groups(AppGroup.DECL_ROUND_CHANGE_WRITE, SubmitGroup.CONTENT_PLAN_SUBMIT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "Decl Round Change Planning",
-            "Use this skill when preparing the concrete declaration changes for the next DeclGraphRoundFlow.",
-            (
-                "Choose a small independent batch aligned with the current strategy.",
-                "Write create changes with `plan_create_decl` and clear mathematical objectives.",
-                "Write update changes with `plan_update_decl` and the stage that should be repaired.",
-                "Preview delete closure with `preview_decl_delete_closure` before `plan_delete_decl`.",
-                "Call `validate_decl_round_draft` before `submit_current_decl_round`.",
-            ),
-            (
-                "Do not choose ready as a planned declaration state.",
-                "Do not hide important helper lemmas as untracked local code.",
-            ),
-        ),
+        body="""# Decl Round Change Planning
+
+## Purpose
+
+Use this skill when an open strategy exists and you need to prepare the next DeclGraphRoundFlow.
+
+Prepare a round by editing graph truth with small tools. Do not submit one large nested round object, and do not ask workers to infer hidden graph changes from prose.
+
+## Round Setup
+
+Before planning changes:
+
+1. Re-read the current node contract with `get_current_node_contract`.
+2. Re-read graph, round history, and strategy state with the available DeclGraph read tools.
+3. Ensure the next batch is small, coherent, and aligned with the open strategy.
+4. Create or reuse the draft round with `create_decl_round_draft`.
+
+## Create Changes
+
+Use `plan_create_decl` for new declarations. Each create change should have:
+
+- a clear declaration name and kind;
+- visibility appropriate for the node contract;
+- a concise mathematical objective;
+- an end-after state such as declared or proved.
+
+Helper lemmas that matter to later work should be tracked as their own declarations. Do not hide important helper lemmas as untracked local Lean code.
+
+## Update Changes
+
+Use `plan_update_decl` when an existing declaration needs a targeted repair or stage advancement. Say which part should be repaired or advanced, such as statement meaning, formal statement, proof idea, proof dependencies, or formal proof.
+
+Do not use an update change to silently change a previously accepted mathematical meaning.
+
+## Delete Changes
+
+Before deleting a declaration, call `preview_decl_delete_closure`. Use `plan_delete_decl` only when the closure is acceptable and the deletion is part of the current strategy.
+
+## Validation And Submit
+
+Call `validate_decl_round_draft` before submitting. If validation rejects the draft, fix the draft or choose a different next action.
+
+Call `submit_current_decl_round` only when the draft is valid and ready for DeclGraphRoundFlow execution. After an accepted submit, stop.
+
+## Boundaries
+
+- Do not choose ready as a planned declaration state.
+- Do not write statement text, formal statements, proof text, or Lean proof code yourself.
+- Do not bypass reviewer stages by encoding accepted artifacts in the round plan.
+- Do not submit a broad unfocused batch when a smaller independent batch is available.
+""",
     ),
     SkillKey.DECL_ROUND_CLOSEOUT.value: LeanSkillDefinition(
         name="decl-round-closeout",
@@ -542,21 +673,52 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         group="content_plan",
         required_tool_groups=_groups(AppGroup.DECL_ROUND_CLOSEOUT_WRITE, AppGroup.DECL_GRAPH_READ_CURRENT),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "Decl Round Closeout",
-            "Use this skill before planning the next action after a round terminal callback.",
-            (
-                "Read the terminal context and changed declarations.",
-                "Write change summaries one by one with `write_decl_change_summary`.",
-                "Write the round summary with `write_decl_round_summary` and success, blocked, or failed meaning.",
-                "Commit terminal closeout with `mark_decl_round_terminal`.",
-                "Decide whether to plan another round, run preparation, or complete the content task.",
-            ),
-            (
-                "Do not start a new round before closeout is recorded.",
-                "Do not hide blocked causes in a generic summary.",
-            ),
-        ),
+        body="""# Decl Round Closeout
+
+## Purpose
+
+Use this skill after a DeclGraphRoundFlow terminal callback and before planning the next action.
+
+Round closeout records what happened. It is a synchronous state update sequence, not a submit action. After closeout, re-read truth and continue planning unless a submit action is the next justified step.
+
+## Required Order
+
+1. Read the terminal callback result.
+2. Re-read the current round, changed declarations, and relevant graph state.
+3. Write one summary per changed declaration with `write_decl_change_summary`.
+4. Write the round summary with `write_decl_round_summary`.
+5. Commit terminal closeout with `mark_decl_round_terminal`.
+6. Re-read current truth.
+7. Decide whether to plan another round, run preparation, complete ready, report blocked, or fail.
+
+Do not start a new round before closeout is recorded.
+
+## Change Summaries
+
+Use `write_decl_change_summary` to record what happened to each declaration in the round. Mention the intended change, the terminal outcome, accepted state changes, and concrete blocker or failure details when relevant.
+
+Do not hide an important blocked cause inside a generic success or failure summary.
+
+## Round Summary
+
+Use `write_decl_round_summary` to summarize the whole round. The round summary should explain:
+
+- whether the strategy made progress;
+- which declarations became usable under the current readiness policy;
+- which declarations still need work;
+- whether the next step is another round, preparation, completion, blocked, or failed.
+
+## Terminal Commit
+
+Use `mark_decl_round_terminal` only after the change summaries and round summary are written. After marking terminal, read current truth again before any new planning action.
+
+## Boundaries
+
+- Do not start a new round before closeout is recorded.
+- Do not change statement or proof artifacts during closeout.
+- Do not use closeout tools as a substitute for worker or reviewer results.
+- Do not hide blocked causes in a generic summary.
+""",
     ),
     SkillKey.CONTENT_NODE_COMPLETION_DECISION.value: LeanSkillDefinition(
         name="content-node-completion-decision",
@@ -564,21 +726,46 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         group="content_plan",
         required_tool_groups=_groups(SubmitGroup.CONTENT_COMPLETION_SUBMIT, AppGroup.DECL_READINESS_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "Content Node Completion Decision",
-            "Use this skill when deciding whether to submit ready, blocked, or failed for a content node task.",
-            (
-                "Check contract satisfaction, declaration readiness, dependencies, interfaces, and unresolved callbacks with `check_content_node_ready`.",
-                "Call `submit_content_node_ready` only when current tools show the node satisfies its contract.",
-                "Call `submit_content_node_blocked` when upstream Coordinator action or external prerequisite is required.",
-                "Call `submit_content_node_failed` when the current automated route is exhausted under the allowed strategy.",
-                "Stop state-changing work after an accepted completion submit.",
-            ),
-            (
-                "Do not mark ready based only on the PlanAgent's narrative.",
-                "Do not use failed for missing external prerequisites that should be blocked.",
-            ),
-        ),
+        body="""# Content Node Completion Decision
+
+## Purpose
+
+Use this skill when deciding whether the current content node task should end as ready, blocked, or failed.
+
+A natural-language claim is not enough. Use the available readiness and submit tools to complete the task through the workflow.
+
+## Ready
+
+Before ready, call `check_content_node_ready`. Use the returned gate report as the authority for whether the current node satisfies its contract, declaration readiness, dependencies, interfaces, and unresolved callback requirements.
+
+Call `submit_content_node_ready` only when the current tools show the node satisfies its contract. After an accepted ready submit, stop.
+
+If `check_content_node_ready` rejects readiness, do not force ready. Fix issues within your authority, run another round, dispatch allowed preparation, or choose blocked/failed when appropriate.
+
+## Blocked
+
+Call `submit_content_node_blocked` when the current task cannot responsibly continue because it needs action outside the ContentPlanAgent authority. Typical blocked reasons include:
+
+- Coordinator must revise the node boundary, objective, interfaces, or node tree;
+- an external provider repository is required;
+- source or resource material is missing and cannot be acquired from this task;
+- a proof route requires higher-level decomposition;
+- preparation found a prerequisite that this content node cannot create.
+
+State the concrete blocker, what you checked, why it is necessary, and what action would unblock the task. After an accepted blocked submit, stop.
+
+## Failed
+
+Call `submit_content_node_failed` only when the current automated route is exhausted and the reason is not an external prerequisite or Coordinator action. A failed result should explain the route that was tried, why it cannot continue, and why blocked is not the correct outcome.
+
+After an accepted failed submit, stop.
+
+## Boundaries
+
+- Do not mark ready based only on the PlanAgent's narrative.
+- Do not use failed for missing external prerequisites that should be blocked.
+- Do not continue state-changing work after an accepted terminal submit.
+""",
     ),
     SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION.value: LeanSkillDefinition(
         name="decl-dependency-origin-curation",

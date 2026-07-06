@@ -132,8 +132,8 @@ def test_high_priority_tool_descriptions_explain_runtime_boundaries() -> None:
     assert "accessible from the current repo" in specs["record_mathlib_decl"].description
     assert "without saving captured formal state" in specs["check_statement_formal_policy"].description
     assert "without saving captured proof state" in specs["check_proof_formal_policy"].description
-    assert "save the accepted statement formal snapshot" in specs["capture_statement_formal_file"].description
-    assert "save the accepted proof formal snapshot" in specs["capture_proof_formal_file"].description
+    assert "save the accepted statement formal capture" in specs["capture_statement_formal_file"].description
+    assert "save the accepted proof formal capture" in specs["capture_proof_formal_file"].description
     assert "coherent metadata" in specs["check_resource_draft"].description
 
 

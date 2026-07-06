@@ -34,6 +34,18 @@ def test_representative_agent_type_resolves_expected_view() -> None:
     assert statement_worker.value.key == "statement_nl_worker"
 
 
+def test_resource_discovery_tools_visible_to_coordinator_and_resource_recon() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    coordinator = runtime.tool_facade.tool_view.tool_names_for_view("native_repo_coordinator")
+    resource_recon = runtime.tool_facade.tool_view.tool_names_for_view("resource_recon")
+
+    assert coordinator.ok and coordinator.value is not None
+    assert resource_recon.ok and resource_recon.value is not None
+    assert {"search_material_text", "search_arxiv_theorems"} <= set(coordinator.value)
+    assert {"search_material_text", "search_arxiv_theorems"} <= set(resource_recon.value)
+
+
 def test_decl_graph_store_write_tools_only_visible_to_content_plan() -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
 
