@@ -121,6 +121,67 @@ def test_decl_round_runs_full_theorem_stage_sequence(tmp_path: Path) -> None:
     assert revision.value.state is DeclState.PROVED
 
 
+def test_decl_round_final_audit_rejects_unsatisfied_target_by_default(tmp_path: Path) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        end_after_state=DeclState.PROVED,
+    )
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+    )
+
+    _run_main_result_theorem_stages(
+        runtime,
+        lean_runtime,
+        repo_root,
+        flow_id=flow_id,
+        round_id=round_id,
+        proof_deps=["missing_helper"],
+    )
+
+    final_audit_step_id = advance_and_run(runtime, flow_id)
+    final_audit_step = runtime.flow_service.get_step(final_audit_step_id)
+    assert final_audit_step.result.outcome == "failed"
+    assert final_audit_step.result.error.affected_decl_names == ["main_result"]
+    assert "did not satisfy proof policy" in final_audit_step.result.error.message
+
+
+def test_decl_round_final_audit_allows_unsatisfied_target_when_opted_out(tmp_path: Path) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        end_after_state=DeclState.PROVED,
+        require_target_state_satisfied=False,
+    )
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+    )
+
+    _run_main_result_theorem_stages(
+        runtime,
+        lean_runtime,
+        repo_root,
+        flow_id=flow_id,
+        round_id=round_id,
+        proof_deps=["missing_helper"],
+    )
+
+    final_audit_step_id = advance_and_run(runtime, flow_id)
+    final_audit_step = runtime.flow_service.get_step(final_audit_step_id)
+    assert final_audit_step.result.outcome == "passed"
+
+
 def test_decl_round_stale_contract_fails_before_mutation(tmp_path: Path) -> None:
     runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
     strategy_id, round_id, round_index = create_round_with_decl(lean_runtime, repo_root)
@@ -143,6 +204,73 @@ def test_decl_round_stale_contract_fails_before_mutation(tmp_path: Path) -> None
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "failed"
     assert flow.result.terminal_reason.code == "invalid_round_state"
+
+
+def _run_main_result_theorem_stages(
+    runtime,
+    lean_runtime,
+    repo_root: Path,
+    *,
+    flow_id: str,
+    round_id: str,
+    proof_deps: list[str] | None = None,
+) -> None:
+    start_step_id = advance_and_run(runtime, flow_id)
+    start_step = runtime.flow_service.get_step(start_step_id)
+    assert start_step.result.outcome == "valid"
+    advance_and_run(runtime, flow_id)
+    _run_stage(
+        runtime,
+        lean_runtime,
+        repo_root,
+        flow_id=flow_id,
+        round_id=round_id,
+        stage="statement_nl",
+        review_stage=DeclStage.STATEMENT_NL,
+        mutate=lambda: lean_runtime.decl_graph.write_statement_nl(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            decl_name="main_result",
+            nl="The main result states True.",
+        ),
+    )
+    _run_stage(
+        runtime,
+        lean_runtime,
+        repo_root,
+        flow_id=flow_id,
+        round_id=round_id,
+        stage="statement_formal",
+        review_stage=DeclStage.STATEMENT_FORMAL,
+        mutate=lambda: _write_statement_formal(lean_runtime, repo_root, round_id),
+    )
+    _run_stage(
+        runtime,
+        lean_runtime,
+        repo_root,
+        flow_id=flow_id,
+        round_id=round_id,
+        stage="proof_nl",
+        review_stage=DeclStage.PROOF_NL,
+        mutate=lambda: lean_runtime.decl_graph.write_proof_nl(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            decl_name="main_result",
+            nl="Use triviality.",
+        ),
+    )
+    _run_stage(
+        runtime,
+        lean_runtime,
+        repo_root,
+        flow_id=flow_id,
+        round_id=round_id,
+        stage="proof_formal",
+        review_stage=DeclStage.PROOF_FORMAL,
+        mutate=lambda: _write_proof_formal(lean_runtime, repo_root, round_id, deps=proof_deps),
+    )
 
 
 def _run_stage(
@@ -205,7 +333,7 @@ def _write_statement_formal(lean_runtime, repo_root: Path, round_id: str):
     )
 
 
-def _write_proof_formal(lean_runtime, repo_root: Path, round_id: str):
+def _write_proof_formal(lean_runtime, repo_root: Path, round_id: str, *, deps: list[str] | None = None):
     path_view = lean_runtime.lean_projection.decl_file.derive_decl_file_path(
         repo_root,
         node_path=NODE_PATH,
@@ -221,4 +349,5 @@ def _write_proof_formal(lean_runtime, repo_root: Path, round_id: str):
         decl_name="main_result",
         lean_code=lean_code,
         lean_check={"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+        deps=deps,
     )

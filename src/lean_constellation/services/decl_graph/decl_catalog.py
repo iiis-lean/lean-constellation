@@ -55,6 +55,7 @@ class DeclCatalogComponent:
         summary: str,
         public: bool = False,
         end_after_state: DeclState | str = DeclState.DECLARED,
+        require_target_state_satisfied: bool = True,
         module: str | None = None,
     ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(end_after_state)
@@ -87,7 +88,12 @@ class DeclCatalogComponent:
             revision=1,
             state=DeclState.PLANNED,
             status=DeclRevisionStatus.OPEN,
-            change=DeclRevisionChange(kind=DeclChangeKind.CREATE, end_after_state=end_state, objective=objective),
+            change=DeclRevisionChange(
+                kind=DeclChangeKind.CREATE,
+                end_after_state=end_state,
+                require_target_state_satisfied=require_target_state_satisfied,
+                objective=objective,
+            ),
             module=module.strip() if module else None,
         )
         ensured = self.runtime.foundation.store.ensure_dir(
@@ -127,6 +133,7 @@ class DeclCatalogComponent:
         objective: str,
         end_after_state: DeclState | str,
         start_before_state: DeclState | str | None = None,
+        require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(end_after_state)
         if end_state is None:
@@ -163,6 +170,7 @@ class DeclCatalogComponent:
             kind=DeclChangeKind.UPDATE,
             start_before_state=start_state,
             end_after_state=end_state,
+            require_target_state_satisfied=require_target_state_satisfied,
             objective=objective,
         )
         next_revision.updated_at = utc_now_iso()
@@ -630,6 +638,7 @@ class DeclCatalogComponent:
             decl_name=revision.decl_name,
             start_before_state=revision.change.start_before_state,
             end_after_state=revision.change.end_after_state,
+            require_target_state_satisfied=revision.change.require_target_state_satisfied,
             objective=revision.change.objective or "",
             summary=revision.change.summary,
             target_revision=revision.revision,

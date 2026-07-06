@@ -347,6 +347,7 @@ class DeclGraphService:
         summary: str,
         public: bool = False,
         end_after_state: DeclState | str = DeclState.DECLARED,
+        require_target_state_satisfied: bool = True,
         module: str | None = None,
     ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.create_decl(
@@ -359,6 +360,7 @@ class DeclGraphService:
             summary=summary,
             public=public,
             end_after_state=end_after_state,
+            require_target_state_satisfied=require_target_state_satisfied,
             module=module,
         )
 
@@ -374,6 +376,7 @@ class DeclGraphService:
         summary: str,
         public: bool = False,
         end_after_state: DeclState | str = DeclState.DECLARED,
+        require_target_state_satisfied: bool = True,
         module: str | None = None,
     ) -> ServiceResult[DeclRevisionToolView]:
         change = self.create_decl(
@@ -386,6 +389,7 @@ class DeclGraphService:
             summary=summary,
             public=public,
             end_after_state=end_after_state,
+            require_target_state_satisfied=require_target_state_satisfied,
             module=module,
         )
         if not change.ok or change.value is None or change.value.target_revision is None:
@@ -407,6 +411,7 @@ class DeclGraphService:
         objective: str,
         end_after_state: DeclState | str,
         start_before_state: DeclState | str | None = None,
+        require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.open_decl_update(
             repo_root,
@@ -416,6 +421,7 @@ class DeclGraphService:
             objective=objective,
             end_after_state=end_after_state,
             start_before_state=start_before_state,
+            require_target_state_satisfied=require_target_state_satisfied,
         )
 
     def open_decl_update_revision_view(
@@ -428,6 +434,7 @@ class DeclGraphService:
         objective: str,
         end_after_state: DeclState | str,
         start_before_state: DeclState | str | None = None,
+        require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclRevisionToolView]:
         change = self.open_decl_update(
             repo_root,
@@ -437,6 +444,7 @@ class DeclGraphService:
             objective=objective,
             end_after_state=end_after_state,
             start_before_state=start_before_state,
+            require_target_state_satisfied=require_target_state_satisfied,
         )
         if not change.ok or change.value is None or change.value.target_revision is None:
             return self.runtime.foundation.fail(change.issues)

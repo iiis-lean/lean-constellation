@@ -58,6 +58,7 @@ def create_round_with_decl(
     decl_name: str = "main_result",
     kind: str = "theorem",
     end_after_state: DeclState = DeclState.PROVED,
+    require_target_state_satisfied: bool = True,
     public: bool = False,
 ) -> tuple[str, str, int]:
     strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Strategy objective.")
@@ -79,6 +80,7 @@ def create_round_with_decl(
         summary=f"{decl_name} summary.",
         public=public,
         end_after_state=end_after_state,
+        require_target_state_satisfied=require_target_state_satisfied,
     )
     assert created.ok, created.issues
     return strategy.value.strategy_id, round_record.value.round_id, round_record.value.round_index

@@ -12,10 +12,12 @@ from agent_runtime_kit.flow.standard_steps.agent_step import AgentStepState
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
     DeclReviewMarkRecord,
+    DeclRevision,
     DeclRoundStatus,
     DeclStage,
     DeclState,
@@ -584,6 +586,8 @@ class RoundFinalAuditStep(BaseStep):
             return ctx.complete_step(_final_audit_failed(_first_issue_message(revisions.issues, "Cannot load round revisions.")))
         reached: list[str] = []
         missing: list[str] = []
+        unsatisfied: list[str] = []
+        round_revisions = {revision.decl_name: revision for revision in revisions.value}
         for revision in revisions.value:
             change = revision.change
             if change is None:
@@ -599,6 +603,19 @@ class RoundFinalAuditStep(BaseStep):
                 reached.append(revision.decl_name)
             else:
                 missing.append(revision.decl_name)
+                continue
+            if change.require_target_state_satisfied:
+                target = _proof_availability_for_target_state(change.end_after_state)
+                satisfied, _reason = _round_revision_satisfies_proof_policy(
+                    ctx,
+                    repo_root,
+                    node_path=input_model.node_path,
+                    round_revisions=round_revisions,
+                    revision=revision,
+                    target_proof_availability=target,
+                )
+                if not satisfied:
+                    unsatisfied.append(revision.decl_name)
         if missing:
             return ctx.complete_step(
                 RoundFinalAuditStepResult(
@@ -614,9 +631,24 @@ class RoundFinalAuditStep(BaseStep):
                     summary=f"Round final audit failed: {len(missing)} declarations did not reach their target state.",
                 )
             )
-        readiness = _decl_graph(ctx).check_content_node_ready(repo_root, node_path=input_model.node_path)
-        if not readiness.ok or readiness.value is None:
-            return ctx.complete_step(_final_audit_failed(_first_issue_message(readiness.issues, "Content readiness report failed.")))
+        if unsatisfied:
+            return ctx.complete_step(
+                RoundFinalAuditStepResult(
+                    outcome="failed",
+                    reached_target_decl_names=sorted(reached),
+                    missing_target_decl_names=sorted(unsatisfied),
+                    error=RoundTerminalReason(
+                        code="final_audit_failed",
+                        message=f"{len(unsatisfied)} declarations reached target state but did not satisfy proof policy.",
+                        affected_decl_names=sorted(unsatisfied),
+                        suggested_plan_action=(
+                            "Inspect dependencies and either prove missing dependencies or plan an intermediate round with "
+                            "require_target_state_satisfied=false when appropriate."
+                        ),
+                    ),
+                    summary=f"Round final audit failed: {len(unsatisfied)} declarations did not satisfy proof policy.",
+                )
+            )
         projection = _lean_projection(ctx).refresh_node_projection(repo_root, node_path=input_model.node_path)
         if not projection.ok or projection.value is None:
             return ctx.complete_step(_final_audit_failed(_first_issue_message(projection.issues, "Projection refresh failed.")))
@@ -624,7 +656,7 @@ class RoundFinalAuditStep(BaseStep):
             RoundFinalAuditStepResult(
                 outcome="passed",
                 reached_target_decl_names=sorted(reached),
-                readiness_summary=readiness.value.summary,
+                readiness_summary="Round target states and required proof-policy satisfaction checks passed.",
                 projection_summary=projection.value.summary,
                 summary="Decl round final audit passed.",
             )
@@ -877,6 +909,105 @@ def _state_rank(state: DeclState) -> int:
 
 def _state_reaches(current: DeclState, target: DeclState) -> bool:
     return _state_rank(current) >= _state_rank(target)
+
+
+def _proof_availability_for_target_state(target: DeclState) -> ProofAvailability:
+    return ProofAvailability.PROVED if target == DeclState.PROVED else ProofAvailability.DECLARED
+
+
+def _round_revision_satisfies_proof_policy(
+    ctx: StepRunContext,
+    repo_root: Path,
+    *,
+    node_path: str,
+    round_revisions: dict[str, DeclRevision],
+    revision: DeclRevision,
+    target_proof_availability: ProofAvailability,
+    stack: list[str] | None = None,
+) -> tuple[bool, str | None]:
+    stack = stack or []
+    decl_name = revision.decl_name
+    if decl_name in stack:
+        return False, f"Dependency cycle detected: {' -> '.join([*stack, decl_name])}."
+    decl_result = _decl_graph(ctx).get_decl(repo_root, node_path=node_path, name=decl_name)
+    if not decl_result.ok or decl_result.value is None:
+        return False, _first_issue_message(decl_result.issues, f"Declaration {decl_name} is missing.")
+    decl = decl_result.value
+    required_state = _required_state_for_proof_availability(decl.kind, target_proof_availability)
+    if not _state_reaches(revision.state, required_state):
+        return False, f"{decl_name} is {revision.state.value}, expected at least {required_state.value}."
+    stage = _required_formal_stage_for_proof_availability(decl.kind, target_proof_availability)
+    check = revision.proof_lean_check if stage == "proof" else revision.statement_lean_check
+    if not _lean_check_passed(check):
+        return False, f"{decl_name} does not have an acceptable {stage} Lean check."
+
+    requirements = _decl_graph(ctx).dependency_requirements_for_proof_policy(
+        decl,
+        revision,
+        target_proof_availability=target_proof_availability,
+    )
+    for dep_name, dep_target in requirements:
+        round_dep = round_revisions.get(dep_name)
+        if round_dep is not None:
+            satisfied, reason = _round_revision_satisfies_proof_policy(
+                ctx,
+                repo_root,
+                node_path=node_path,
+                round_revisions=round_revisions,
+                revision=round_dep,
+                target_proof_availability=dep_target,
+                stack=[*stack, decl_name],
+            )
+            if not satisfied:
+                return False, reason
+            continue
+        dep_report = _decl_graph(ctx).check_decl_proof_policy_satisfied(
+            repo_root,
+            node_path=node_path,
+            decl_name=dep_name,
+            target_proof_availability=dep_target,
+        )
+        if not dep_report.ok or dep_report.value is None:
+            return False, _first_issue_message(dep_report.issues, f"Dependency {dep_name} proof policy check failed.")
+        if not dep_report.value.proof_policy_satisfied:
+            return False, dep_report.value.summary
+    return True, None
+
+
+def _required_state_for_proof_availability(kind: str, target: ProofAvailability) -> DeclState:
+    if target == ProofAvailability.DECLARED:
+        return DeclState.DECLARED
+    return DeclState.PROVED if _is_theorem_like(kind) else DeclState.DECLARED
+
+
+def _required_formal_stage_for_proof_availability(kind: str, target: ProofAvailability) -> str:
+    if target == ProofAvailability.PROVED and _is_theorem_like(kind):
+        return "proof"
+    return "statement"
+
+
+def _lean_check_passed(check: dict[str, str] | None) -> bool:
+    if check is None:
+        return False
+    if _truthy(check.get("contains_axiom")) or _truthy(check.get("contains_admit")) or _truthy(check.get("contains_opaque")) or _truthy(check.get("contains_unsafe")):
+        return False
+    if _truthy(check.get("contains_sorry")) and not _truthy(check.get("allow_sorry")):
+        return False
+    status = (check.get("status") or "").strip().lower()
+    if status:
+        return status == "passed"
+    passed = check.get("passed")
+    if passed is not None:
+        return _truthy(passed)
+    return False
+
+
+def _truthy(value: str | None) -> bool:
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "passed"}
+
+
+def _is_theorem_like(kind: str) -> bool:
+    return kind.strip().lower() in {"theorem", "lemma"}
 
 
 def _prepare_stage_state(state: BaseStepState) -> PrepareStageTargetsStepState:

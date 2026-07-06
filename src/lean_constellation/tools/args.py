@@ -471,6 +471,10 @@ class DeclCreateArgs(StrictModel):
     summary: str = Field(description="Plan summary for the new declaration.")
     public: bool = Field(default=False, description="Whether the declaration should be public.")
     end_after_state: str = Field(default="declared", description="Target state after this round: declared or proved.")
+    require_target_state_satisfied: bool = Field(
+        default=True,
+        description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
+    )
     module: str | None = Field(default=None, description="Optional upstream/native module override.")
 
 
@@ -480,6 +484,10 @@ class DeclUpdateArgs(StrictModel):
     objective: str = Field(description="Objective for this update.")
     end_after_state: str = Field(description="Target state after this update: declared or proved.")
     start_before_state: str | None = Field(default=None, description="Expected state before the update, if constrained.")
+    require_target_state_satisfied: bool = Field(
+        default=True,
+        description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
+    )
 
 
 class DeclDeleteArgs(StrictModel):

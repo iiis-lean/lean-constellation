@@ -96,6 +96,7 @@ class DeclGraphViewMapper:
             change_summary=change.summary if change is not None else None,
             start_before_state=change.start_before_state if change is not None else None,
             end_after_state=change.end_after_state if change is not None else None,
+            require_target_state_satisfied=change.require_target_state_satisfied if change is not None else True,
             statement_nl=revision.statement_nl,
             statement_origin=statement_origin,
             statement_deps=revision.statement_deps,

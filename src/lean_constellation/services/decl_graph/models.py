@@ -205,6 +205,7 @@ class DeclRevisionChange(StrictModel):
     kind: DeclChangeKind
     start_before_state: DeclState | None = None
     end_after_state: DeclState | None = None
+    require_target_state_satisfied: bool = True
     objective: str | None = None
     summary: str | None = None
 
@@ -743,6 +744,7 @@ class DeclRevisionToolView(StrictModel):
     change_summary: str | None = None
     start_before_state: DeclState | None = None
     end_after_state: DeclState | None = None
+    require_target_state_satisfied: bool = True
     statement_nl: str | None = None
     statement_origin: list[DeclOriginRef] = Field(default_factory=list)
     statement_deps: list[str] = Field(default_factory=list)
@@ -778,6 +780,7 @@ class DeclChangeView(StrictModel):
     decl_name: str
     start_before_state: DeclState | None = None
     end_after_state: DeclState | None = None
+    require_target_state_satisfied: bool = True
     objective: str
     summary: str | None = None
     status: DeclChangeStatus = DeclChangeStatus.PLANNED

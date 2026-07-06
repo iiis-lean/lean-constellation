@@ -101,6 +101,7 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     assert change.ok and change.value is not None
     assert change.value.kind == DeclChangeKind.CREATE
     assert change.value.end_after_state == DeclState.PROVED
+    assert change.value.require_target_state_satisfied is True
     assert change.value.target_revision == 1
 
     decl = service.get_decl(tmp_path, node_path="Main.Topic.Core", name="main_result")
@@ -112,6 +113,8 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     assert revision.ok and revision.value is not None
     assert revision.value.state == DeclState.PLANNED
     assert revision.value.version_status == "open"
+    assert revision.value.change is not None
+    assert revision.value.change.require_target_state_satisfied is True
 
     round_record = service.get_round(tmp_path, node_path="Main.Topic.Core", round_id=round_id)
     assert round_record.ok and round_record.value is not None
@@ -136,6 +139,31 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     index = service.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
     assert index.ok and index.value is not None
     assert index.value.decl_names == ["main_result"]
+
+
+def test_create_decl_revision_view_records_relaxed_satisfaction_target(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    service = make_runtime().decl_graph
+
+    view = service.create_decl_revision_view(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        name="main_result",
+        kind="theorem",
+        objective="Create a top-down theorem shell.",
+        summary="The proof may depend on helper lemmas planned later.",
+        end_after_state=DeclState.PROVED,
+        require_target_state_satisfied=False,
+    )
+
+    assert view.ok and view.value is not None
+    assert view.value.require_target_state_satisfied is False
+    revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
+    assert revision.ok and revision.value is not None
+    assert revision.value.change is not None
+    assert revision.value.change.require_target_state_satisfied is False
 
 
 def test_duplicate_create_decl_fails(tmp_path: Path) -> None:
