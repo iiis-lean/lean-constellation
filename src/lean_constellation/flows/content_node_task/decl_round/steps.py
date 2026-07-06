@@ -385,11 +385,6 @@ class DeleteAndNormalizeStep(BaseStep):
                 reset_count += 1
                 projection_updates += int(bool(getattr(synced.value, "changed", False)))
 
-        refreshed = projection.refresh_node_projection(repo_root, node_path=input_model.node_path)
-        if not refreshed.ok or refreshed.value is None:
-            return ctx.complete_step(_delete_normalize_failed(_first_issue_message(refreshed.issues, "Node projection refresh failed.")))
-        projection_updates += len(getattr(refreshed.value, "actions", []) or [])
-
         audit = _validation_snapshot(ctx).run_delete_sanity_audit(repo_root, node_path=input_model.node_path, round_id=input_model.round_id)
         if not audit.ok or audit.value is None:
             return ctx.complete_step(_delete_normalize_failed(_first_issue_message(audit.issues, "Delete sanity audit failed.")))
@@ -668,15 +663,11 @@ class RoundFinalAuditStep(BaseStep):
                     summary=f"Round final audit failed: {len(unsatisfied)} declarations did not satisfy proof policy.",
                 )
             )
-        projection = _lean_projection(ctx).refresh_node_projection(repo_root, node_path=input_model.node_path)
-        if not projection.ok or projection.value is None:
-            return ctx.complete_step(_final_audit_failed(_first_issue_message(projection.issues, "Projection refresh failed.")))
         return ctx.complete_step(
             RoundFinalAuditStepResult(
                 outcome="passed",
                 reached_target_decl_names=sorted(reached),
                 readiness_summary="Round target states and required proof-policy satisfaction checks passed.",
-                projection_summary=projection.value.summary,
                 summary="Decl round final audit passed.",
             )
         )
@@ -722,6 +713,9 @@ class BuildRoundResultStep(BaseStep):
                     )
                     if not committed.ok:
                         raise FlowStepValidationError(_first_issue_message(committed.issues, "Failed to commit round revision."))
+                projection = _lean_projection(ctx).refresh_node_projection(repo_root, node_path=input_model.node_path)
+                if not projection.ok or projection.value is None:
+                    raise FlowStepValidationError(_first_issue_message(projection.issues, "Projection refresh failed."))
             for change_id in round_record.value.change_ids:
                 if change_id in round_record.value.change_summaries:
                     continue
