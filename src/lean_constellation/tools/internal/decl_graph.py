@@ -8,12 +8,17 @@ from lean_constellation.tools.args import (
     ChangeSummaryArgs,
     DeclCreateArgs,
     DeclDeleteArgs,
+    DeclInspectArgs,
     DeclNameArgs,
     DeclNamesArgs,
     DeclReadyArgs,
     DeclRevisionArgs,
     DeclUpdateArgs,
+    NodePublicDeclInspectArgs,
+    NodePublicDeclListArgs,
     NoArgs,
+    RepoPublicDeclInspectArgs,
+    RepoPublicDeclListArgs,
     RoundDraftArgs,
     RoundIdArgs,
     RoundSummaryArgs,
@@ -28,6 +33,15 @@ from lean_constellation.tools.specs import current_node_path, handler_tool
 
 def _node(ctx) -> str:
     return current_node_path(ctx)
+
+
+def _maybe_node(ctx) -> str | None:
+    return ctx.node.node_path if ctx.node is not None else None
+
+
+def _actor_role(ctx) -> str:
+    role = ctx.actor.role
+    return role.value if hasattr(role, "value") else str(role)
 
 
 def _required_round_id(runtime, ctx, round_id: str | None) -> str:
@@ -164,6 +178,12 @@ def _get_decl_revision(runtime, ctx, args: DeclRevisionArgs):
     )
 
 
+def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):
+    if args.revision is None:
+        return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
+    return runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name, revision=args.revision)
+
+
 def _get_decl_change(runtime, ctx, args: ChangeIdArgs):
     return runtime.decl_graph.get_decl_change(ctx.repo_root, node_path=_node(ctx), change_id=args.change_id)
 
@@ -184,6 +204,10 @@ def _compute_dependency_closure(runtime, ctx, args: DeclNamesArgs):
     return runtime.decl_graph.compute_dependency_closure(ctx.repo_root, node_path=_node(ctx), decl_names=args.decl_names)
 
 
+def _preview_delete_closure(runtime, ctx, args: DeclNamesArgs):
+    return runtime.decl_graph.compute_delete_closure(ctx.repo_root, node_path=_node(ctx), decl_names=args.decl_names)
+
+
 def _check_decl_ready(runtime, ctx, args: DeclReadyArgs):
     return runtime.decl_graph.check_decl_ready(ctx.repo_root, node_path=_node(ctx), decl_name=args.decl_name, policy=args.policy)
 
@@ -191,6 +215,103 @@ def _check_decl_ready(runtime, ctx, args: DeclReadyArgs):
 def _list_content_public_decls(runtime, ctx, args: NoArgs):
     del args
     return runtime.decl_graph.list_content_public_decls(ctx.repo_root, node_path=_node(ctx))
+
+
+def _list_visible_nodes(runtime, ctx, args: NoArgs):
+    del args
+    return runtime.node.public_decl_access.list_visible_nodes(
+        ctx.repo_root,
+        actor_role=_actor_role(ctx),
+        current_node_path=_maybe_node(ctx),
+    )
+
+
+def _list_imported_repos(runtime, ctx, args: NoArgs):
+    del args
+    return runtime.node.public_decl_access.list_imported_repos(
+        ctx.repo_root,
+        actor_role=_actor_role(ctx),
+        current_node_path=_maybe_node(ctx),
+    )
+
+
+def _list_current_node_public_decls(runtime, ctx, args: NoArgs):
+    del args
+    return runtime.node.public_decl_access.list_node_public_decls(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        actor_role=_actor_role(ctx),
+        current_node_path=_maybe_node(ctx),
+    )
+
+
+def _list_node_public_decls(runtime, ctx, args: NodePublicDeclListArgs):
+    return runtime.node.public_decl_access.list_node_public_decls(
+        ctx.repo_root,
+        node_path=args.node_path,
+        actor_role=_actor_role(ctx),
+        current_node_path=_maybe_node(ctx),
+    )
+
+
+def _list_repo_public_decls(runtime, ctx, args: RepoPublicDeclListArgs):
+    return runtime.node.public_decl_access.list_repo_public_decls(
+        ctx.repo_root,
+        repo_key=args.repo_key,
+        actor_role=_actor_role(ctx),
+        current_node_path=_maybe_node(ctx),
+    )
+
+
+def _inspect_current_node_public_decl(runtime, ctx, args: DeclInspectArgs):
+    node_args = NodePublicDeclInspectArgs(node_path=_node(ctx), **args.model_dump())
+    return _inspect_node_public_decl(runtime, ctx, node_args)
+
+
+def _inspect_node_public_decl(runtime, ctx, args: NodePublicDeclInspectArgs):
+    public = runtime.node.public_decl_access.list_node_public_decls(
+        ctx.repo_root,
+        node_path=args.node_path,
+        actor_role=_actor_role(ctx),
+        current_node_path=_maybe_node(ctx),
+    )
+    if not public.ok or public.value is None:
+        return runtime.foundation.fail(public.issues)
+    ref = next((decl.ref for decl in public.value if decl.ref.name == args.decl_name), None)
+    if ref is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "public_decl_not_found",
+                "No public declaration with the requested name is visible on the node.",
+                object_ref=f"{args.node_path}:{args.decl_name}",
+            )
+        )
+    revision = args.revision or ref.revision
+    return runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=ref.node, name=ref.name, revision=revision)
+
+
+def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
+    repo_key = runtime.foundation.layout.ensure_safe_key(args.repo_key)
+    public = runtime.node.public_decl_access.list_repo_public_decls(
+        ctx.repo_root,
+        repo_key=repo_key,
+        actor_role=_actor_role(ctx),
+        current_node_path=_maybe_node(ctx),
+    )
+    if not public.ok or public.value is None:
+        return runtime.foundation.fail(public.issues)
+    ref = next((decl.ref for decl in public.value if decl.ref.name == args.decl_name), None)
+    if ref is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "public_decl_not_found",
+                "No public declaration with the requested name is visible on the repo public interface.",
+                object_ref=f"{repo_key}:{args.decl_name}",
+            )
+        )
+    provider_root = ctx.repo_root.parent / repo_key
+    revision = args.revision or ref.revision
+    return runtime.decl_graph.get_decl_revision_view(provider_root, node_path=ref.node, name=ref.name, revision=revision)
 
 
 def _list_active_decl_names(runtime, ctx, args: NoArgs):
@@ -388,6 +509,16 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_list_decls,
         ),
         handler_tool(
+            name="list_current_node_decls",
+            description="List declarations in the current content node.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_list",
+            groups={AppGroup.CURRENT_NODE_DECL_READ},
+            roles=roles,
+            handler=_list_decls,
+        ),
+        handler_tool(
             name="get_decl",
             description="Inspect a declaration catalog entry in the current content node.",
             args_model=DeclNameArgs,
@@ -396,6 +527,16 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_DETAIL_READ},
             roles=roles,
             handler=_get_decl,
+        ),
+        handler_tool(
+            name="inspect_current_node_decl",
+            description="Inspect a declaration revision in the current content node.",
+            args_model=DeclInspectArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_revision",
+            groups={AppGroup.CURRENT_NODE_DECL_READ},
+            roles=roles,
+            handler=_inspect_current_node_decl,
         ),
         handler_tool(
             name="get_decl_revision",
@@ -448,6 +589,26 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_compute_dependency_closure,
         ),
         handler_tool(
+            name="compute_current_node_decl_dependency_closure",
+            description="Compute upstream and downstream dependency closure for current-node declarations.",
+            args_model=DeclNamesArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_dependency_closure",
+            groups={AppGroup.DECL_DEPENDENCY_ANALYSIS_READ},
+            roles=roles,
+            handler=_compute_dependency_closure,
+        ),
+        handler_tool(
+            name="preview_current_node_decl_delete_closure",
+            description="Preview the downstream declaration closure affected by deleting current-node declarations.",
+            args_model=DeclNamesArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_delete_closure",
+            groups={AppGroup.DECL_DEPENDENCY_ANALYSIS_READ},
+            roles=roles,
+            handler=_preview_delete_closure,
+        ),
+        handler_tool(
             name="check_decl_ready",
             description="Check dynamic readiness of a declaration under the repo policy.",
             args_model=DeclReadyArgs,
@@ -466,6 +627,92 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_READINESS_READ},
             roles=roles,
             handler=_list_content_public_decls,
+        ),
+        handler_tool(
+            name="list_visible_nodes",
+            description="List current-repo nodes whose public boundary is visible in the current context.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="visible_nodes",
+            groups={AppGroup.NODE_VISIBILITY_READ_CURRENT},
+            roles=roles,
+            handler=_list_visible_nodes,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="list_imported_repos",
+            description="List imported provider repos whose public interface is visible in the current context.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="imported_repos",
+            groups={AppGroup.NODE_VISIBILITY_READ_CURRENT},
+            roles=roles,
+            handler=_list_imported_repos,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="list_current_node_public_decls",
+            description="List public declarations exposed by the current node.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="public_decls",
+            groups={AppGroup.PUBLIC_DECL_READ},
+            roles=roles,
+            handler=_list_current_node_public_decls,
+        ),
+        handler_tool(
+            name="inspect_current_node_public_decl",
+            description="Inspect one public declaration exposed by the current node.",
+            args_model=DeclInspectArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_revision",
+            groups={AppGroup.PUBLIC_DECL_READ},
+            roles=roles,
+            handler=_inspect_current_node_public_decl,
+        ),
+        handler_tool(
+            name="list_node_public_decls",
+            description="List public declarations exposed by a visible current-repo node.",
+            args_model=NodePublicDeclListArgs,
+            capability=ToolCapability.READ,
+            result_view="public_decls",
+            groups={AppGroup.PUBLIC_DECL_READ},
+            roles=roles,
+            handler=_list_node_public_decls,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="inspect_node_public_decl",
+            description="Inspect one public declaration exposed by a visible current-repo node.",
+            args_model=NodePublicDeclInspectArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_revision",
+            groups={AppGroup.PUBLIC_DECL_READ},
+            roles=roles,
+            handler=_inspect_node_public_decl,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="list_repo_public_decls",
+            description="List public declarations exposed by a visible imported repo interface.",
+            args_model=RepoPublicDeclListArgs,
+            capability=ToolCapability.READ,
+            result_view="public_decls",
+            groups={AppGroup.PUBLIC_DECL_READ},
+            roles=roles,
+            handler=_list_repo_public_decls,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="inspect_repo_public_decl",
+            description="Inspect one public declaration exposed by a visible imported repo interface.",
+            args_model=RepoPublicDeclInspectArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_revision",
+            groups={AppGroup.PUBLIC_DECL_READ},
+            roles=roles,
+            handler=_inspect_repo_public_decl,
+            required_context={"repo"},
         ),
         handler_tool(
             name="list_active_decl_names",

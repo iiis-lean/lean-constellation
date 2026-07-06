@@ -61,6 +61,51 @@ def test_repo_work_config_tool_visible_to_coordinator_and_content_plan_only() ->
     assert "get_current_repo_work_config" not in statement_worker.value
 
 
+def test_public_decl_read_tools_visible_to_coordinator_plan_and_recon() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    coordinator = runtime.tool_facade.tool_view.tool_names_for_view("native_repo_coordinator")
+    content_plan = runtime.tool_facade.tool_view.tool_names_for_view("content_plan")
+    node_dir = runtime.tool_facade.tool_view.tool_names_for_view("node_dir_dependency_recon")
+    statement_worker = runtime.tool_facade.tool_view.tool_names_for_view("statement_nl_worker")
+
+    assert coordinator.ok and coordinator.value is not None
+    assert content_plan.ok and content_plan.value is not None
+    assert node_dir.ok and node_dir.value is not None
+    assert statement_worker.ok and statement_worker.value is not None
+    visibility_tools = {"list_visible_nodes", "list_imported_repos"}
+    public_decl_tools = {
+        "list_current_node_public_decls",
+        "inspect_current_node_public_decl",
+        "list_node_public_decls",
+        "inspect_node_public_decl",
+        "list_repo_public_decls",
+        "inspect_repo_public_decl",
+    }
+    assert visibility_tools | public_decl_tools <= set(coordinator.value)
+    assert visibility_tools | public_decl_tools <= set(content_plan.value)
+    assert visibility_tools | public_decl_tools <= set(node_dir.value)
+    assert public_decl_tools.isdisjoint(statement_worker.value)
+
+
+def test_current_node_decl_read_tools_visible_to_content_plan_only() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    content_plan = runtime.tool_facade.tool_view.tool_names_for_view("content_plan")
+    node_dir = runtime.tool_facade.tool_view.tool_names_for_view("node_dir_dependency_recon")
+    coordinator = runtime.tool_facade.tool_view.tool_names_for_view("native_repo_coordinator")
+
+    assert content_plan.ok and content_plan.value is not None
+    assert node_dir.ok and node_dir.value is not None
+    assert coordinator.ok and coordinator.value is not None
+    current_node_decl_tools = {"list_current_node_decls", "inspect_current_node_decl"}
+    dependency_analysis_tools = {"compute_current_node_decl_dependency_closure", "preview_current_node_decl_delete_closure"}
+    assert current_node_decl_tools | dependency_analysis_tools <= set(content_plan.value)
+    assert dependency_analysis_tools <= set(node_dir.value)
+    assert current_node_decl_tools.isdisjoint(node_dir.value)
+    assert current_node_decl_tools.isdisjoint(coordinator.value)
+
+
 def test_coordinator_contract_closeout_tools_only_visible_to_coordinator() -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
 

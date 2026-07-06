@@ -38,6 +38,10 @@ class ProviderRepoArgs(StrictModel):
     provider_repo: str = Field(description="Provider repo key inside the current workspace.")
 
 
+class RepoKeyArgs(StrictModel):
+    repo_key: str = Field(description="Repo key inside the current workspace.")
+
+
 class RepoRelativeFileArgs(StrictModel):
     file_path: str = Field(description="File path relative to the current repo root.")
 
@@ -490,6 +494,30 @@ class DeclNameArgs(StrictModel):
 
 class DeclRevisionArgs(DeclNameArgs):
     revision: int = Field(ge=1, description="Revision number to inspect.")
+
+
+class DeclInspectArgs(DeclNameArgs):
+    revision: int | None = Field(default=None, ge=1, description="Optional revision number; omit to inspect the current revision.")
+    include_statement_nl: bool = Field(default=False, description="Whether to include natural-language statement content.")
+    include_statement_formal: bool = Field(default=False, description="Whether to include formal statement code and check.")
+    include_proof_nl: bool = Field(default=False, description="Whether to include natural-language proof content.")
+    include_proof_formal: bool = Field(default=False, description="Whether to include formal proof code and check.")
+
+
+class NodePublicDeclListArgs(NodePathArgs):
+    pass
+
+
+class NodePublicDeclInspectArgs(NodePathArgs, DeclInspectArgs):
+    pass
+
+
+class RepoPublicDeclListArgs(RepoKeyArgs):
+    pass
+
+
+class RepoPublicDeclInspectArgs(RepoKeyArgs, DeclInspectArgs):
+    pass
 
 
 class DeclNamesArgs(StrictModel):

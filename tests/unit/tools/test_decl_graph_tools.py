@@ -23,14 +23,26 @@ def test_decl_graph_tools_are_registered() -> None:
         "plan_update_decl",
         "plan_delete_decl",
         "list_current_decls",
+        "list_current_node_decls",
         "get_decl",
+        "inspect_current_node_decl",
         "get_decl_revision",
         "get_decl_change",
         "preview_decl_delete_closure",
         "validate_decl_round_draft",
         "compute_decl_dependency_closure",
+        "compute_current_node_decl_dependency_closure",
+        "preview_current_node_decl_delete_closure",
         "check_decl_ready",
         "list_content_public_decls",
+        "list_visible_nodes",
+        "list_imported_repos",
+        "list_current_node_public_decls",
+        "inspect_current_node_public_decl",
+        "list_node_public_decls",
+        "inspect_node_public_decl",
+        "list_repo_public_decls",
+        "inspect_repo_public_decl",
         "list_active_decl_names",
         "check_content_node_ready",
         "run_decl_round_local_audit",
@@ -49,3 +61,13 @@ def test_decl_graph_groups_expose_expected_tools() -> None:
     assert_group_contains("decl_detail_read", {"list_current_decls", "get_decl"})
     assert_group_contains("decl_history_read", {"get_decl_revision", "get_decl_change"})
     assert_group_contains("decl_readiness_read", {"compute_decl_dependency_closure", "check_decl_ready", "check_content_node_ready"})
+    assert_group_contains("current_node_decl_read", {"list_current_node_decls", "inspect_current_node_decl"})
+    assert_group_contains(
+        "decl_dependency_analysis_read",
+        {"compute_current_node_decl_dependency_closure", "preview_current_node_decl_delete_closure"},
+    )
+    assert_group_contains("node_visibility_read_current", {"list_visible_nodes", "list_imported_repos"})
+    assert_group_contains(
+        "public_decl_read",
+        {"list_current_node_public_decls", "inspect_current_node_public_decl", "list_node_public_decls", "inspect_node_public_decl"},
+    )

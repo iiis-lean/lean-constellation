@@ -7,10 +7,11 @@ from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResu
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
-from lean_constellation.services.foundation import FoundationContext, WriteMode
-from lean_constellation.services.node import NodeContractSnapshot
+from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
+from lean_constellation.services.node import DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 
 
@@ -81,6 +82,41 @@ def _create_scope_with_public_decl(runtime, repo_root: Path) -> DeclRef:
     assert runtime.foundation.store.write_json_atomic(contract_path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
     assert runtime.node.commit_scope_contract(repo_root, scope_path="Main.Provider", summary="Expose helper.").ok
     return ref
+
+
+class _FakePublicDeclProvider:
+    def __init__(self, runtime, decls: dict[tuple[str, str], list[DeclPublicView]]) -> None:
+        self.runtime = runtime
+        self.decls = decls
+
+    def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
+        return self.runtime.foundation.ok(self.decls.get((str(Path(repo_root)), node_path), []))
+
+
+def _create_public_decl(runtime, repo_root: Path, *, node_path: str, name: str, kind: str = "definition"):
+    assert runtime.decl_graph.ensure_decl_graph(repo_root, node_path=node_path).ok
+    strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=node_path, objective=f"Create {name}.")
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        repo_root,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        objective=f"Create {name}.",
+    )
+    assert round_record.ok and round_record.value is not None
+    created = runtime.decl_graph.create_decl_revision_view(
+        repo_root,
+        node_path=node_path,
+        round_id=round_record.value.round_id,
+        name=name,
+        kind=kind,
+        objective=f"Create {name}.",
+        summary=f"{name} summary.",
+        public=True,
+        end_after_state=DeclState.DECLARED,
+    )
+    assert created.ok and created.value is not None
+    return created.value
 
 
 class _FakeCallbackStep:
@@ -377,6 +413,157 @@ def test_current_node_and_decl_graph_tools_invoke_context_handlers(tmp_path: Pat
     assert graph.ok
     assert graph.value is not None
     assert graph.value.ok is True
+
+
+def test_current_node_decl_read_tools_invoke_decl_graph(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal.",
+        boundary="Topic boundary.",
+        objective="Plan topic decls.",
+        success_criteria="Ready content.",
+    ).ok
+    _create_public_decl(runtime, tmp_path, node_path="Main.Topic", name="topic_def")
+    raw = _raw(tmp_path, view="content_plan", agent_type="content_plan", role="plan", node_path="Main.Topic")
+
+    listed = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_current_node_decls", flat_args={}))
+    inspected = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="inspect_current_node_decl",
+            flat_args={"decl_name": "topic_def"},
+        )
+    )
+
+    assert [decl.name for decl in listed["items"]] == ["topic_def"]
+    assert inspected["decl_name"] == "topic_def"
+    assert inspected["public"] is True
+
+
+def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Provider",
+        goal="Provider scope goal.",
+        boundary="Provider scope boundary.",
+    ).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Provider.Core",
+        goal="Provider goal.",
+        boundary="Provider boundary.",
+        objective="Expose helper.",
+        success_criteria="Provider ready.",
+    ).ok
+    contract_path = runtime.foundation.node_contract_path(
+        FoundationContext(repo_root=tmp_path),
+        "Main.Provider",
+        1,
+    )
+    loaded = runtime.foundation.store.read_json(contract_path, NodeContractSnapshot)
+    assert loaded.ok and loaded.value is not None
+    loaded.value.exports = [DeclRef(repo=None, node="Main.Provider.Core", name="helper", revision=1)]
+    assert runtime.foundation.store.write_json_atomic(contract_path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Consumer",
+        goal="Consumer goal.",
+        boundary="Consumer boundary.",
+        objective="Use helper.",
+        success_criteria="Consumer ready.",
+    ).ok
+    _create_public_decl(runtime, tmp_path, node_path="Main.Provider.Core", name="helper")
+    assert runtime.node.commit_scope_contract(tmp_path, scope_path="Main.Provider", summary="Expose helper.").ok
+    assert runtime.node.add_current_node_dep(
+        tmp_path,
+        node_path="Main.Consumer",
+        target_node="Main.Provider",
+        expected_public_decl_names=["helper"],
+        reason="Use provider helper.",
+        actor="coordinator",
+    ).ok
+    raw = _raw(tmp_path, view="content_plan", agent_type="content_plan", role="plan", node_path="Main.Consumer")
+
+    visible = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_visible_nodes", flat_args={}))
+    current_public = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_current_node_public_decls", flat_args={}))
+    provider_public = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="list_node_public_decls",
+            flat_args={"node_path": "Main.Provider"},
+        )
+    )
+    inspected = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="inspect_node_public_decl",
+            flat_args={"node_path": "Main.Provider", "decl_name": "helper"},
+        )
+    )
+
+    assert {node["node_path"] for node in visible["nodes"]} == {"Main.Consumer", "Main.Provider"}
+    assert current_public["items"] == []
+    assert provider_public["items"][0].ref.name == "helper"
+    assert inspected["decl_name"] == "helper"
+
+
+def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> None:
+    workspace = tmp_path
+    consumer = workspace / "Consumer"
+    provider = workspace / "Provider"
+    consumer.mkdir()
+    provider.mkdir()
+    base_runtime = create_test_runtime_services(register_application_tools=False)
+    assert base_runtime.node.node_tree.ensure_root_scope_node(consumer).ok
+    assert base_runtime.node.node_tree.ensure_root_scope_node(provider).ok
+    assert base_runtime.node.create_content_node(
+        provider,
+        path="Main.Core",
+        goal="Provider core goal.",
+        boundary="Provider core boundary.",
+        objective="Expose provider result.",
+        success_criteria="Provider ready.",
+    ).ok
+    _create_public_decl(base_runtime, provider, node_path="Main.Core", name="provider_result", kind="theorem")
+    provider_decl = DeclPublicView(
+        ref=DeclRef(repo=None, node="Main.Core", name="provider_result", revision=1),
+        kind="theorem",
+        summary="Provider result.",
+        ready=True,
+        stale=False,
+        source="test_provider",
+    )
+    runtime = create_test_runtime_services(
+        register_application_tools=True,
+        providers=LeanProviderOverrides(
+            content_public_decl_provider=_FakePublicDeclProvider(base_runtime, {(str(provider), "Main.Core"): [provider_decl]})
+        ),
+    )
+    assert runtime.node.export.add_scope_export(provider, scope_path="Main", decl_node="Main.Core", decl_name="provider_result").ok
+    assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
+    assert runtime.repo_workspace.metadata.mark_repo_stable(provider, summary="Provider stable.").ok
+    raw = _raw(consumer, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
+
+    imported = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_imported_repos", flat_args={}))
+    public = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_repo_public_decls", flat_args={"repo_key": "Provider"})
+    )
+    inspected = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="inspect_repo_public_decl",
+            flat_args={"repo_key": "Provider", "decl_name": "provider_result"},
+        )
+    )
+
+    assert [repo["repo_key"] for repo in imported["repos"]] == ["Provider"]
+    assert public["items"][0].ref.repo == "Provider"
+    assert inspected["decl_name"] == "provider_result"
 
 
 def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp_path: Path) -> None:
