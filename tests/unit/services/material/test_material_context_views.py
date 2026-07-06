@@ -163,6 +163,6 @@ def test_material_context_view_failure_gates(tmp_path: Path) -> None:
     assert not bad_regex.ok
     assert bad_regex.issues[0].kind == "invalid_search_regex"
     assert not unknown_node.ok
-    assert unknown_node.issues[0].kind in {"missing_file", "node_not_found", "node_contract_not_found"}
+    assert unknown_node.issues[0].kind in {"missing_file", "node_missing", "node_not_found", "node_contract_not_found"}
     assert not stale_ref.ok
     assert stale_ref.issues[0].kind == "node_material_ref_invalid"

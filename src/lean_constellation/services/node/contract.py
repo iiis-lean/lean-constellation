@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -20,43 +19,65 @@ from lean_constellation.services.foundation import (
     ServiceResult,
     WriteMode,
 )
-from lean_constellation.services.node.node_tree import NodeContractSnapshot, NodeKind, NodeLifecycle, NodeMetadata, NodeTreeComponent
+from lean_constellation.services.node.node_tree import (
+    NodeContract,
+    NodeContractStatus,
+    NodeKind,
+    NodeLifecycle,
+    NodeMetadata,
+    NodeTreeComponent,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
-class ContractVersionStatus(StrEnum):
-    OPEN = "open"
-    COMMITTED = "committed"
+ContractVersionStatus = NodeContractStatus
 
 
-class ScopeNodeContract(NodeContractSnapshot):
+class ScopeNodeContract(NodeContract):
     contract_kind: Literal[NodeKind.SCOPE] = NodeKind.SCOPE
     exports: list[DeclRef] = Field(default_factory=list)
 
 
-class ContentNodeContract(NodeContractSnapshot):
+class ContentNodeContract(NodeContract):
     contract_kind: Literal[NodeKind.CONTENT] = NodeKind.CONTENT
+
+
+class NodeContractSummaryView(StrictModel):
+    node_path: str
+    node_id: str
+    version: int
+    status: NodeContractStatus
+    is_open: bool
+    is_active: bool
+    created_at: str
+    committed_at: str | None = None
+    summary: str
 
 
 class NodeContractView(StrictModel):
     node_path: str
+    node_id: str
     node_kind: NodeKind
     version: int
+    status: NodeContractStatus
     version_status: ContractVersionStatus
     is_open: bool
-    contract: NodeContractSnapshot
+    active_contract_version: int | None = None
+    open_contract_version: int | None = None
+    contract: NodeContract
     summary: str
 
 
 class OpenContractView(StrictModel):
     node_path: str
+    node_id: str
     node_kind: NodeKind
     version: int
     created_new_open: bool
     path: str
-    contract: NodeContractSnapshot
+    contract: NodeContract
     summary: str
 
 
@@ -70,19 +91,67 @@ class ContractComponent:
         self.node_tree = node_tree or NodeTreeComponent(runtime)
 
     def get_current_contract(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeContractView]:
+        return self.get_edit_contract(repo_root, node_path=node_path)
+
+    def get_edit_contract(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeContractView]:
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
-        contract = self._select_current_contract(repo_root, node.value)
+        contract = self._select_edit_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
         return self.runtime.foundation.ok(self._contract_view(node.value, contract.value))
+
+    def get_open_contract(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeContractView]:
+        node = self._load_active_node(repo_root, node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        contract = self._load_open_contract(repo_root, node.value)
+        if not contract.ok or contract.value is None:
+            return self.runtime.foundation.fail(contract.issues)
+        return self.runtime.foundation.ok(self._contract_view(node.value, contract.value))
+
+    def get_committed_contract(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeContractView]:
+        return self.get_visible_contract(repo_root, node_path=node_path)
+
+    def get_visible_contract(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeContractView]:
+        node = self._load_active_node(repo_root, node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        contract = self._load_active_contract(repo_root, node.value)
+        if not contract.ok or contract.value is None:
+            return self.runtime.foundation.fail(contract.issues)
+        return self.runtime.foundation.ok(self._contract_view(node.value, contract.value))
+
+    def list_contract_versions(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[NodeContractSummaryView]]:
+        node = self._load_active_node(repo_root, node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        contracts = self._list_contracts_for_node(repo_root, node.value)
+        if not contracts.ok or contracts.value is None:
+            return self.runtime.foundation.fail(contracts.issues)
+        return self.runtime.foundation.ok(
+            [
+                NodeContractSummaryView(
+                    node_path=node.value.path,
+                    node_id=node.value.node_id,
+                    version=contract.version,
+                    status=contract.status,
+                    is_open=contract.status == NodeContractStatus.OPEN,
+                    is_active=node.value.active_contract_version == contract.version,
+                    created_at=contract.created_at,
+                    committed_at=contract.committed_at,
+                    summary=f"{node.value.path} contract v{contract.version} is {contract.status.value}.",
+                )
+                for contract in contracts.value
+            ]
+        )
 
     def ensure_open_contract(self, repo_root: Path, *, node_path: str) -> ServiceResult[OpenContractView]:
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
-        latest = self._select_current_contract(repo_root, node.value)
+        latest = self._select_edit_contract(repo_root, node.value)
         if not latest.ok or latest.value is None:
             return self.runtime.foundation.fail(latest.issues)
         ensured = self.runtime.foundation.store.ensure_open_version(
@@ -94,11 +163,8 @@ class ContractComponent:
             return self.runtime.foundation.fail(ensured.issues)
         if ensured.value.created_new_open:
             node.value.current_contract_version = ensured.value.version
-            saved = self.runtime.foundation.store.write_json_atomic(
-                self._node_file(repo_root, node.value.path),
-                node.value,
-                mode=WriteMode.UPDATE_EXISTING,
-            )
+            node.value.open_contract_version = ensured.value.version
+            saved = self.node_tree.node_store.save_node(repo_root, node.value, mode=WriteMode.UPDATE_EXISTING)
             if not saved.ok:
                 return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._open_view(node.value, ensured.value))
@@ -250,7 +316,7 @@ class ContractComponent:
         contract = self._load_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
-        if contract.value.version_status != ContractVersionStatus.OPEN.value:
+        if contract.value.status != ContractVersionStatus.OPEN:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("contract_not_open", "Only an open contract can be committed.", object_ref=node_path)
             )
@@ -272,13 +338,13 @@ class ContractComponent:
         contract = self._load_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
-        if contract.value.version_status != ContractVersionStatus.OPEN.value:
+        if contract.value.status != ContractVersionStatus.OPEN:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("contract_not_open", "Only an open contract can record a task summary.", object_ref=node_path)
             )
         contract.value.summary = summary.strip()
         saved = self.runtime.foundation.store.write_json_atomic(
-            self._contract_file(repo_root, node.value.path, contract.value.version),
+            self._contract_file_for_node(repo_root, node.value, contract.value.version),
             contract.value,
             mode=WriteMode.UPDATE_EXISTING,
         )
@@ -315,13 +381,13 @@ class ContractComponent:
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
         self._collect_contract_required_field_issues(contract.value, issues)
-        if contract.value.version_status != ContractVersionStatus.OPEN.value:
+        if contract.value.status != ContractVersionStatus.OPEN:
             issues.append(
                 self.runtime.foundation.issue(
                     "contract_not_open",
                     "Content node task admission requires an open contract.",
                     object_ref=node_path,
-                    current=contract.value.version_status,
+                    current=contract.value.status.value,
                     expected=ContractVersionStatus.OPEN.value,
                 )
             )
@@ -364,13 +430,13 @@ class ContractComponent:
         contract = self._load_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
-        if contract.value.version_status != ContractVersionStatus.OPEN.value:
+        if contract.value.status != ContractVersionStatus.OPEN:
             issues.append(
                 self.runtime.foundation.issue(
                     "contract_not_open",
                     "Only an open Scope contract can be committed.",
                     object_ref=scope_path,
-                    current=contract.value.version_status,
+                    current=contract.value.status.value,
                     expected=ContractVersionStatus.OPEN.value,
                 )
             )
@@ -411,20 +477,27 @@ class ContractComponent:
         self,
         repo_root: Path,
         node: NodeMetadata,
-        contract: NodeContractSnapshot,
+        contract: NodeContract,
         *,
         summary: str,
     ) -> ServiceResult[NodeContractView]:
         contract.summary = summary.strip()
-        contract.version_status = ContractVersionStatus.COMMITTED.value
+        contract.status = ContractVersionStatus.COMMITTED
         contract.committed_at = utc_now_iso()
         saved = self.runtime.foundation.store.write_json_atomic(
-            self._contract_file(repo_root, node.path, contract.version),
+            self._contract_file_for_node(repo_root, node, contract.version),
             contract,
             mode=WriteMode.UPDATE_EXISTING,
         )
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
+        node.current_contract_version = contract.version
+        node.active_contract_version = contract.version
+        if node.open_contract_version == contract.version:
+            node.open_contract_version = None
+        saved_node = self.node_tree.node_store.save_node(repo_root, node, mode=WriteMode.UPDATE_EXISTING)
+        if not saved_node.ok:
+            return self.runtime.foundation.fail(saved_node.issues)
         return self.runtime.foundation.ok(self._contract_view(node, contract))
 
     def _validate_summary(self, summary: str) -> ServiceResult[None]:
@@ -432,16 +505,16 @@ class ContractComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("contract_summary_required", "Contract summary is required.", field="summary"))
         return self.runtime.foundation.ok(None)
 
-    def _copy_committed_contract(self, latest: NodeContractSnapshot) -> NodeContractSnapshot:
+    def _copy_committed_contract(self, latest: NodeContract) -> NodeContract:
         new_contract = deepcopy(latest)
         new_contract.version = latest.version + 1
-        new_contract.version_status = ContractVersionStatus.OPEN.value
+        new_contract.status = ContractVersionStatus.OPEN
         new_contract.summary = None
         new_contract.committed_at = None
         new_contract.created_at = utc_now_iso()
         return new_contract
 
-    def _collect_contract_required_field_issues(self, contract: NodeContractSnapshot, issues: list[object]) -> None:
+    def _collect_contract_required_field_issues(self, contract: NodeContract, issues: list[object]) -> None:
         for field_name in ["goal", "boundary", "objective", "success_criteria"]:
             value = getattr(contract, field_name)
             if not isinstance(value, str) or not value.strip():
@@ -453,23 +526,10 @@ class ContractComponent:
                     )
                 )
 
-    def _collect_dep_issues(self, repo_root: Path, contract: NodeContractSnapshot, issues: list[object]) -> None:
+    def _collect_dep_issues(self, repo_root: Path, contract: NodeContract, issues: list[object]) -> None:
         for index, dep in enumerate(contract.deps):
-            if not isinstance(dep, dict):
-                issues.append(self.runtime.foundation.issue("contract_dep_invalid", "Contract dependency entry must be an object.", field=f"deps.{index}"))
-                continue
-            target = dep.get("target")
-            if not isinstance(target, dict):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "contract_dep_target_invalid",
-                        "Contract dependency target must be an object.",
-                        field=f"deps.{index}.target",
-                    )
-                )
-                continue
-            repo = target.get("repo")
-            node_path = target.get("node")
+            repo = dep.target.repo
+            node_path = dep.target.node
             if repo is None and (not isinstance(node_path, str) or not node_path.strip()):
                 issues.append(
                     self.runtime.foundation.issue(
@@ -500,29 +560,83 @@ class ContractComponent:
             )
         return loaded
 
-    def _select_current_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContractSnapshot]:
-        contracts = self._list_contracts(repo_root, node.path)
+    def _select_edit_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContract]:
+        contracts = self._list_contracts_for_node(repo_root, node)
         if not contracts.ok or contracts.value is None:
             return self.runtime.foundation.fail(contracts.issues)
         if not contracts.value:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("node_contract_missing", "Node has no contract versions.", object_ref=node.path))
-        open_contracts = [contract for contract in contracts.value if contract.version_status == ContractVersionStatus.OPEN.value]
+        if node.open_contract_version is not None:
+            for contract in contracts.value:
+                if contract.version == node.open_contract_version:
+                    return self.runtime.foundation.ok(contract)
+        open_contracts = [contract for contract in contracts.value if contract.status == ContractVersionStatus.OPEN]
         if open_contracts:
             return self.runtime.foundation.ok(max(open_contracts, key=lambda item: item.version))
+        if node.active_contract_version is not None:
+            for contract in contracts.value:
+                if contract.version == node.active_contract_version:
+                    return self.runtime.foundation.ok(contract)
         if node.current_contract_version is not None:
             for contract in contracts.value:
                 if contract.version == node.current_contract_version:
                     return self.runtime.foundation.ok(contract)
         return self.runtime.foundation.ok(max(contracts.value, key=lambda item: item.version))
 
-    def _list_contracts(self, repo_root: Path, node_path: str) -> ServiceResult[list[NodeContractSnapshot]]:
-        contracts_dir = self._contract_file(repo_root, node_path, 1).parent
+    def _load_open_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContract]:
+        if node.open_contract_version is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("node_open_contract_missing", "Node has no open contract version.", object_ref=node.path)
+            )
+        loaded = self.runtime.foundation.store.read_json(
+            self._contract_file_for_node(repo_root, node, node.open_contract_version),
+            NodeContract,
+        )
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        if loaded.value.status != ContractVersionStatus.OPEN:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "node_open_contract_invalid",
+                    "Node open_contract_version does not point to an open contract.",
+                    object_ref=node.path,
+                    current=loaded.value.status.value,
+                    expected=ContractVersionStatus.OPEN.value,
+                )
+            )
+        return loaded
+
+    def _load_active_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContract]:
+        if node.active_contract_version is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("node_committed_contract_missing", "Node has no active committed contract version.", object_ref=node.path)
+            )
+        loaded = self.runtime.foundation.store.read_json(
+            self._contract_file_for_node(repo_root, node, node.active_contract_version),
+            NodeContract,
+        )
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        if loaded.value.status != ContractVersionStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "node_committed_contract_invalid",
+                    "Node active_contract_version does not point to a committed contract.",
+                    object_ref=node.path,
+                    current=loaded.value.status.value,
+                    expected=ContractVersionStatus.COMMITTED.value,
+                )
+            )
+        return loaded
+
+    def _list_contracts_for_node(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[list[NodeContract]]:
+        contracts_dir = self._contract_file_for_node(repo_root, node, 1).parent
         if not contracts_dir.exists():
             return self.runtime.foundation.ok([])
-        contracts: list[NodeContractSnapshot] = []
+        contracts: list[NodeContract] = []
         issues = []
         for path in sorted(contracts_dir.glob("*.json")):
-            loaded = self.runtime.foundation.store.read_json(path, NodeContractSnapshot)
+            loaded = self.runtime.foundation.store.read_json(path, NodeContract)
             if loaded.ok and loaded.value is not None:
                 contracts.append(loaded.value)
             else:
@@ -532,11 +646,11 @@ class ContractComponent:
         contracts.sort(key=lambda item: item.version)
         return self.runtime.foundation.ok(contracts)
 
-    def _load_current_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContractSnapshot]:
-        return self._select_current_contract(repo_root, node)
+    def _load_current_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContract]:
+        return self._select_edit_contract(repo_root, node)
 
     def _load_active_node(self, repo_root: Path, node_path: str) -> ServiceResult[NodeMetadata]:
-        loaded = self.runtime.foundation.store.read_json(self._node_file(repo_root, node_path), NodeMetadata)
+        loaded = self.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
         if loaded.value.lifecycle != NodeLifecycle.ACTIVE:
@@ -544,28 +658,42 @@ class ContractComponent:
         return loaded
 
     def _node_file(self, repo_root: Path, node_path: str) -> Path:
-        return self.runtime.foundation.layout.node_metadata_dir(FoundationContext(repo_root=Path(repo_root)), node_path) / "node.json"
+        node = self.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            raise ValueError(f"Cannot resolve active node path: {node_path}")
+        return self.node_tree.node_store.node_file(repo_root, node_id=node.value.node_id)
 
     def _contract_file(self, repo_root: Path, node_path: str, version: int) -> Path:
-        return self.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), node_path, version)
+        node = self.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            raise ValueError(f"Cannot resolve active node path: {node_path}")
+        return self._contract_file_for_node(repo_root, node.value, version)
 
-    def _contract_view(self, node: NodeMetadata, contract: NodeContractSnapshot) -> NodeContractView:
+    def _contract_file_for_node(self, repo_root: Path, node: NodeMetadata, version: int) -> Path:
+        return self.node_tree.node_store.contract_path(repo_root, node_id=node.node_id, version=version)
+
+    def _contract_view(self, node: NodeMetadata, contract: NodeContract) -> NodeContractView:
         return NodeContractView(
             node_path=node.path,
+            node_id=node.node_id,
             node_kind=node.kind,
             version=contract.version,
-            version_status=ContractVersionStatus(contract.version_status),
-            is_open=contract.version_status == ContractVersionStatus.OPEN.value,
+            status=contract.status,
+            version_status=ContractVersionStatus(contract.status),
+            is_open=contract.status == ContractVersionStatus.OPEN,
+            active_contract_version=node.active_contract_version,
+            open_contract_version=node.open_contract_version,
             contract=contract,
-            summary=f"{node.path} contract v{contract.version} is {contract.version_status}.",
+            summary=f"{node.path} contract v{contract.version} is {contract.status.value}.",
         )
 
     def _open_view(self, node: NodeMetadata, result: OpenVersionResult[object]) -> OpenContractView:
         contract = result.value
-        if not isinstance(contract, NodeContractSnapshot):
-            raise TypeError("open contract value must be NodeContractSnapshot")
+        if not isinstance(contract, NodeContract):
+            raise TypeError("open contract value must be NodeContract")
         return OpenContractView(
             node_path=node.path,
+            node_id=node.node_id,
             node_kind=node.kind,
             version=result.version,
             created_new_open=result.created_new_open,

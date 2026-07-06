@@ -61,7 +61,7 @@ def _create_content_node(tmp_path: Path, path: str) -> None:
 
 def _contract_path(tmp_path: Path, node_path: str, version: int = 1) -> Path:
     foundation = make_runtime().foundation
-    return foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), node_path, version)
+    return foundation.node_contract_path(FoundationContext(repo_root=tmp_path), node_path, version)
 
 
 def _load_contract(tmp_path: Path, node_path: str, version: int = 1) -> NodeContractSnapshot:
@@ -304,7 +304,7 @@ def test_protected_root_interface_modified_gate_fails(tmp_path: Path) -> None:
     protected = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Main theorem.")
     _init_main(tmp_path, interfaces=[protected])
     foundation = make_runtime().foundation
-    path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main", 1)
+    path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     loaded.value.interfaces[0].summary = "Modified summary."
@@ -348,7 +348,7 @@ def test_remove_bound_interface_requires_unbind_first(tmp_path: Path) -> None:
     )
     assert added.ok
     foundation = make_runtime().foundation
-    path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main", 1)
+    path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     loaded.value.interfaces[0].bound_decl = DeclRef(node="Main.Topic.Core", name="supplement")

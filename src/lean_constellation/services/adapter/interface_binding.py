@@ -76,22 +76,22 @@ class InterfaceBindingComponent:
         decl = self.adapter_decl_catalog.inspect_adapter_decl(repo_root, name=decl_name)
         if not decl.ok or decl.value is None:
             return self.runtime.foundation.fail(decl.issues)
-        record = decl.value.record
-        if not record.active or not record.finalized:
+        view = decl.value
+        if not view.finalized:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("adapter_decl_not_finalized", "Adapter interface can only bind to finalized active decls.", object_ref=decl_name)
             )
-        if not self._kind_compatible(interface.kind, record.kind):
+        if not self._kind_compatible(interface.kind, view.kind):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "adapter_interface_kind_mismatch",
                     "Adapter decl kind does not satisfy interface kind.",
                     object_ref=interface_name,
-                    current=record.kind.value,
+                    current=view.kind.value,
                     expected=interface.kind.value,
                 )
             )
-        new_ref = DeclRef(repo=None, node="Main", name=record.name, revision=1)
+        new_ref = DeclRef(repo=None, node="Main", name=view.name, revision=view.revision.revision)
         changed = interface.bound_decl != new_ref or interface.note != binding_summary.strip()
         interface.bound_decl = new_ref
         interface.note = binding_summary.strip()
@@ -107,7 +107,7 @@ class InterfaceBindingComponent:
             InterfaceBindingView(
                 interface_name=interface.name,
                 bound_decl=interface.bound_decl,
-                decl_kind=record.kind,
+                decl_kind=view.kind,
                 binding_summary=interface.note,
                 changed=changed,
                 summary=("Bound adapter interface." if changed else "Adapter interface binding was already current."),
@@ -191,23 +191,23 @@ class InterfaceBindingComponent:
                     )
                 )
                 continue
-            record = decl.value.record
-            if not record.active or not record.finalized:
+            view = decl.value
+            if not view.finalized:
                 issues.append(
                     self.runtime.foundation.issue(
                         "adapter_interface_target_not_finalized",
                         "Adapter interface binding target is not finalized.",
                         object_ref=interface.name,
-                        current=record.name,
+                        current=view.name,
                     )
                 )
-            if not self._kind_compatible(interface.kind, record.kind):
+            if not self._kind_compatible(interface.kind, view.kind):
                 issues.append(
                     self.runtime.foundation.issue(
                         "adapter_interface_kind_mismatch",
                         "Adapter interface binding target kind is incompatible.",
                         object_ref=interface.name,
-                        current=record.kind.value,
+                        current=view.kind.value,
                         expected=interface.kind.value,
                     )
                 )
@@ -227,9 +227,10 @@ class InterfaceBindingComponent:
         )
 
     def _contract_path(self, repo_root: Path, version: int) -> Path:
-        from lean_constellation.services.foundation import FoundationContext
-
-        return self.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), "Main", version)
+        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path="Main")
+        if node.ok and node.value is not None:
+            return self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=version)
+        raise ValueError("Cannot resolve active adapter root node: Main")
 
     def _kind_compatible(self, required: DeclKind, actual: DeclKind) -> bool:
         if required == actual:

@@ -8,6 +8,7 @@ from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus, RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.refs import NodeRef
 from lean_constellation.services.adapter import AdapterDeclCompletenessView
 from lean_constellation.services.adapter.adapter_decl_catalog import AdapterModuleSummaryItem, AdapterModuleSummaryView
 from lean_constellation.services.foundation import (
@@ -18,6 +19,7 @@ from lean_constellation.services.foundation import (
     IndexMetadata,
 )
 from lean_constellation.services.material import MaterialService
+from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 from lean_constellation.services.repo_workspace import RepoWorkspaceService
 from lean_constellation.services.validation_snapshot import (
     AuditComponent,
@@ -294,10 +296,10 @@ class FakeLeanProjectionForConsistency:
         repo_projection_passed: bool = True,
         prelude_passed: bool = True,
         interfaces_passed: bool = True,
-        formal_snapshot_passed: bool = True,
+        formal_capture_passed: bool = True,
     ) -> None:
         self.foundation = foundation
-        self.formal_snapshot_passed = formal_snapshot_passed
+        self.formal_capture_passed = formal_capture_passed
         self.repair = FakeRepairForConsistency(foundation, passed=repo_projection_passed)
         self.node_projection = FakeNodeProjectionForConsistency(
             foundation,
@@ -307,23 +309,23 @@ class FakeLeanProjectionForConsistency:
 
     def check_decl_file_snapshot_sync(self, repo_root: Path, *, node_path: str, decl_name: str, stage: str):
         del repo_root
-        if self.formal_snapshot_passed:
+        if self.formal_capture_passed:
             return self.foundation.ok(
                 self.foundation.gate_passed(
-                    "decl_file_snapshot_sync",
-                    summary=f"{stage} formal snapshot is synchronized for {node_path}:{decl_name}.",
+                    "decl_file_capture_sync",
+                    summary=f"{stage} formal capture is synchronized for {node_path}:{decl_name}.",
                 )
             )
         return self.foundation.ok(
             self.foundation.gate_failed(
-                "decl_file_snapshot_sync",
+                "decl_file_capture_sync",
                 self.foundation.issue(
-                    "decl_file_snapshot_stale",
-                    "Fake formal snapshot is stale.",
+                    "decl_file_capture_stale",
+                    "Fake formal capture is stale.",
                     object_ref=f"{node_path}:{decl_name}",
                     field=stage,
                 ),
-                summary="Fake formal snapshot is stale.",
+                summary="Fake formal capture is stale.",
             )
         )
 
@@ -726,6 +728,25 @@ def test_repo_stable_point_snapshot_rejects_empty_explicit_scope_id(tmp_path: Pa
 def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    node_service = foundation.runtime.node
+    assert node_service.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert node_service.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
+    assert node_service.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    ).ok
+    assert node_service.create_content_node(
+        tmp_path,
+        path="Main.Topic.Consumer",
+        goal="Consumer goal",
+        boundary="Consumer boundary",
+        objective="Use core.",
+        success_criteria="Consumer ready.",
+    ).ok
     ark = FakeArkSnapshotProvider(foundation)
     service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
@@ -741,13 +762,19 @@ def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) 
 
     assert created.ok
     assert created.value is not None
+    core = node_service.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Topic.Core")
+    consumer = node_service.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Topic.Consumer")
+    assert core.ok and core.value is not None
+    assert consumer.ok and consumer.value is not None
     expected_scopes = [
         f"repo:{tmp_path.name}",
-        f"repo:{tmp_path.name}:node:Main.Topic.Core",
-        f"repo:{tmp_path.name}:node:Main.Topic.Consumer",
+        f"repo:{tmp_path.name}:node:{core.value.node_id}",
+        f"repo:{tmp_path.name}:node:{consumer.value.node_id}",
     ]
     assert created.value.refreshed_scope_ids == expected_scopes
-    assert created.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
+    assert [ref.path for ref in created.value.node_refs] == ["Main.Topic.Core", "Main.Topic.Consumer"]
+    assert [ref.node_id for ref in created.value.node_refs] == [core.value.node_id, consumer.value.node_id]
+    assert [ref.scope_id for ref in created.value.node_refs] == expected_scopes[1:]
     assert ark.created == [(expected_scopes, "content batch finished")]
     manifest = foundation.store.read_json(
         Path(created.value.root) / "snapshot.json",
@@ -756,12 +783,35 @@ def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) 
     assert manifest.ok
     assert manifest.value is not None
     assert manifest.value.refreshed_scope_ids == expected_scopes
-    assert manifest.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
+    assert [ref.path for ref in manifest.value.node_refs] == ["Main.Topic.Core", "Main.Topic.Consumer"]
+    assert [ref.node_id for ref in manifest.value.node_refs] == [core.value.node_id, consumer.value.node_id]
 
 
-def test_content_task_checkpoint_normalizes_node_paths(tmp_path: Path) -> None:
+def test_content_task_checkpoint_normalizes_node_paths_and_accepts_node_ids(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    node_service = foundation.runtime.node
+    assert node_service.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert node_service.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
+    assert node_service.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    ).ok
+    assert node_service.create_content_node(
+        tmp_path,
+        path="Main.Topic.Consumer",
+        goal="Consumer goal",
+        boundary="Consumer boundary",
+        objective="Use core.",
+        success_criteria="Consumer ready.",
+    ).ok
+    core = node_service.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Topic.Core").value
+    consumer = node_service.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Topic.Consumer").value
+    assert core is not None and consumer is not None
     ark = FakeArkSnapshotProvider(foundation)
     runtime = FakeRuntimeStabilityProvider(foundation)
     service = ValidationSnapshotService(
@@ -774,16 +824,17 @@ def test_content_task_checkpoint_normalizes_node_paths(tmp_path: Path) -> None:
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
         label="before dispatch",
-        node_paths=[" Main.Topic.Core ", "Main.Topic.Core", "Main.Topic.Consumer"],
+        node_paths=[" Main.Topic.Core ", "Main.Topic.Core"],
+        node_ids=[consumer.node_id, consumer.node_id],
     )
 
     assert created.ok
     assert created.value is not None
-    assert created.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
+    assert [ref.path for ref in created.value.node_refs] == ["Main.Topic.Core", "Main.Topic.Consumer"]
     expected_scopes = [
         f"repo:{tmp_path.name}",
-        f"repo:{tmp_path.name}:node:Main.Topic.Core",
-        f"repo:{tmp_path.name}:node:Main.Topic.Consumer",
+        f"repo:{tmp_path.name}:node:{core.node_id}",
+        f"repo:{tmp_path.name}:node:{consumer.node_id}",
     ]
     assert created.value.refreshed_scope_ids == expected_scopes
     assert runtime.calls == [
@@ -802,6 +853,56 @@ def test_content_task_checkpoint_normalizes_node_paths(tmp_path: Path) -> None:
 
     assert not invalid.ok
     assert invalid.issues[0].kind == "checkpoint_node_path_required"
+
+    missing = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
+        node_paths=["Main.Topic.Missing"],
+    )
+
+    assert not missing.ok
+    assert missing.issues[0].kind == "node_missing"
+
+
+def test_content_task_checkpoint_rejects_conflicting_node_path_and_node_id(tmp_path: Path) -> None:
+    foundation = make_runtime().foundation
+    (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    node_service = foundation.runtime.node
+    assert node_service.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert node_service.create_content_node(
+        tmp_path,
+        path="Main.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    ).ok
+    original = node_service.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Core").value
+    assert original is not None
+    assert node_service.node_tree.mark_node_deleted(tmp_path, path="Main.Core", reason="replace").ok
+    assert node_service.create_content_node(
+        tmp_path,
+        path="Main.Core",
+        goal="Core replacement goal",
+        boundary="Core replacement boundary",
+        objective="Build replacement core.",
+        success_criteria="Replacement core ready.",
+    ).ok
+    service = ValidationSnapshotService(
+        foundation.runtime,
+        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+    )
+
+    created = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
+        node_paths=["Main.Core"],
+        node_ids=[original.node_id],
+    )
+
+    assert not created.ok
+    assert created.issues[0].kind == "checkpoint_node_ref_conflict"
 
 
 def test_restore_missing_ark_provider_fails_without_touching_files(tmp_path: Path) -> None:
@@ -833,6 +934,15 @@ def test_snapshot_stable_point_kind_branches(tmp_path: Path) -> None:
     _write_preparation_input(tmp_path)
     node_service = ValidationSnapshotService(foundation.runtime).node
     assert node_service.ensure_native_root_main_contract(tmp_path).ok
+    assert node_service.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
+    assert node_service.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    ).ok
     runtime = FakeRuntimeStabilityProvider(foundation)
 
     requirement_component = ValidationSnapshotService(foundation.runtime,
@@ -983,6 +1093,59 @@ def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
     }
 
 
+def test_restore_rebuilds_node_and_decl_graph_indexes_from_truth(tmp_path: Path) -> None:
+    foundation = make_runtime().foundation
+    _write_preparation_input(tmp_path)
+    (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    node_service = foundation.runtime.node
+    assert node_service.node_tree.ensure_root_scope_node(tmp_path).ok
+    created_node = node_service.create_content_node(
+        tmp_path,
+        path="Main.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    )
+    assert created_node.ok and created_node.value is not None
+    node_id = created_node.value.node_id
+    graph = foundation.runtime.decl_graph.ensure_decl_graph(tmp_path, node_path="Main.Core")
+    assert graph.ok and graph.value is not None
+    service = ValidationSnapshotService(
+        foundation.runtime,
+        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+    )
+    snapshot = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
+    )
+    assert snapshot.ok and snapshot.value is not None
+    snapshot_root = Path(snapshot.value.root)
+    (snapshot_root / "files" / "lean_constellation" / "index" / "nodes.json").write_text("{bad-index", encoding="utf-8")
+    (
+        snapshot_root
+        / "files"
+        / "lean_constellation"
+        / "nodes"
+        / node_id
+        / "decl_graph"
+        / "index.json"
+    ).write_text("{bad-decl-graph-index", encoding="utf-8")
+
+    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=snapshot.value.snapshot_id)
+
+    assert restored.ok
+    assert restored.value is not None
+    node_index = node_service.node_tree.node_store.read_index(tmp_path)
+    assert node_index.ok and node_index.value is not None
+    assert node_index.value.active_path_to_node_id["Main.Core"] == node_id
+    decl_index = foundation.runtime.decl_graph.get_decl_graph_index(tmp_path, node_path="Main.Core")
+    assert decl_index.ok and decl_index.value is not None
+    assert decl_index.value.node_id == node_id
+    assert decl_index.value.node_path == "Main.Core"
+
+
 def test_restore_can_prune_extra_snapshot_managed_files(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
@@ -1022,6 +1185,17 @@ def test_snapshot_list_filters_sorts_and_skips_malformed_manifests(tmp_path: Pat
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    node_service = foundation.runtime.node
+    assert node_service.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert node_service.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
+    assert node_service.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    ).ok
     service = ValidationSnapshotService(foundation.runtime,
         runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
         ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
@@ -1117,13 +1291,13 @@ def test_consistency_contract_directly_reports_bad_dep_and_warning(tmp_path: Pat
     opened = service.node.contract.ensure_open_contract(tmp_path, node_path="Main.Topic.Core")
     assert opened.ok and opened.value is not None
     opened.value.contract.deps = [
-        {
-            "dep_id": "dep_missing",
-            "target": {"repo": None, "node": "Main.Topic.Missing"},
-            "expected_decl_refs": [],
-            "reason": "Bad dep inserted to verify consistency detection.",
-            "added_by": "coordinator",
-        }
+        NodeDep(
+            dep_id="dep_missing",
+            target=NodeRef(repo=None, node="Main.Topic.Missing"),
+            expected_decl_refs=[],
+            reason="Bad dep inserted to verify consistency detection.",
+            added_by=NodeDepActor.COORDINATOR,
+        )
     ]
     saved = foundation.store.write_json_atomic(
         service.node.contract._contract_file(tmp_path, "Main.Topic.Core", opened.value.version),  # noqa: SLF001
@@ -1242,7 +1416,7 @@ def test_consistency_projection_sync_dispatches_by_scope(tmp_path: Path) -> None
     assert node.value.passed is False
     assert node.value.issues[0].kind == "interfaces_projection_stale"
     assert not missing_node.ok
-    assert missing_node.issues[0].kind == "missing_file"
+    assert missing_node.issues[0].kind == "node_missing"
 
 
 def test_readiness_native_handoff_reports_missing_source_index(tmp_path: Path) -> None:
@@ -1377,7 +1551,7 @@ def test_readiness_scope_commit_base_and_projection_branches(tmp_path: Path) -> 
     assert missing_summary.value.passed is False
     assert missing_summary.value.issues[0].kind == "scope_summary_required"
     assert not wrong_kind.ok
-    assert wrong_kind.issues[0].kind == "missing_file"
+    assert wrong_kind.issues[0].kind == "node_missing"
     assert stale.ok
     assert stale.value is not None
     assert stale.value.passed is False

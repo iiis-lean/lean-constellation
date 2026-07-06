@@ -360,7 +360,7 @@ class RepoWorkspaceService:
                         expected=f"{RepoDependencyRequirementStatus.OPEN.value}|{RepoDependencyRequirementStatus.SATISFIED.value}",
                     )
                 )
-            expected_provider = requirement.waiting_state.provider_repo if requirement.waiting_state.waiting else requirement.target_repo
+            expected_provider = self.requirement.effective_provider_repo(requirement)
             if expected_provider != provider_repo:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(

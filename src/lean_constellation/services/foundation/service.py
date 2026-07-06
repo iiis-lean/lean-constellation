@@ -90,7 +90,17 @@ class FoundationService:
         return self.layout.resource_dir(ctx, resource_key)
 
     def node_contract_path(self, ctx: FoundationContext, node_path: str, version: int) -> Path:
+        node_service = getattr(self.runtime, "node", None)
+        node_tree = getattr(node_service, "node_tree", None)
+        node_store = getattr(node_tree, "node_store", None)
+        if node_store is not None:
+            node = node_store.resolve_active_node(ctx.repo_root, path=node_path)
+            if node.ok and node.value is not None:
+                return node_store.contract_path(ctx.repo_root, node_id=node.value.node_id, version=version)
         return self.layout.node_contract_path(ctx, node_path, version)
+
+    def node_contract_path_by_id(self, ctx: FoundationContext, node_id: str, version: int) -> Path:
+        return self.layout.node_contract_path_by_id(ctx, node_id, version)
 
     def prelude_path(self, ctx: FoundationContext, node_path: str) -> Path:
         return self.layout.prelude_path(ctx, node_path)

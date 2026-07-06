@@ -112,6 +112,26 @@ class LayoutComponent:
     def nodes_root(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / "nodes"
 
+    def node_index_path(self, ctx: FoundationContext) -> Path:
+        return self.constellation_root(ctx) / "index" / "nodes.json"
+
+    def node_dir_by_id(self, ctx: FoundationContext, node_id: str) -> Path:
+        return self.nodes_root(ctx) / self.ensure_safe_key(node_id)
+
+    def node_metadata_path_by_id(self, ctx: FoundationContext, node_id: str) -> Path:
+        return self.node_dir_by_id(ctx, node_id) / "node.json"
+
+    def node_contracts_dir_by_id(self, ctx: FoundationContext, node_id: str) -> Path:
+        return self.node_dir_by_id(ctx, node_id) / "contracts"
+
+    def node_contract_path_by_id(self, ctx: FoundationContext, node_id: str, version: int) -> Path:
+        if version < 1:
+            raise ValueError("version must be >= 1")
+        return self.node_contracts_dir_by_id(ctx, node_id) / f"{version}.json"
+
+    def node_decl_graph_dir_by_id(self, ctx: FoundationContext, node_id: str) -> Path:
+        return self.node_dir_by_id(ctx, node_id) / "decl_graph"
+
     def node_dir(self, ctx: FoundationContext, node_path: str) -> Path:
         return self.node_metadata_dir(ctx, node_path)
 

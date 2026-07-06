@@ -74,6 +74,28 @@ def test_s1_s3_checkpoint_scope_policy_and_manifest(tmp_path: Path) -> None:
     (repo_root / ".agent_runtime" / "state.json").write_text("do not snapshot", encoding="utf-8")
 
     foundation = make_runtime().foundation
+    node_service = foundation.runtime.node
+    assert node_service.node_tree.ensure_root_scope_node(repo_root).ok
+    assert node_service.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
+    assert node_service.create_content_node(
+        repo_root,
+        path="Main.Topic.Core",
+        goal="Core goal",
+        boundary="Core boundary",
+        objective="Build core.",
+        success_criteria="Core ready.",
+    ).ok
+    assert node_service.create_content_node(
+        repo_root,
+        path="Main.Topic.Consumer",
+        goal="Consumer goal",
+        boundary="Consumer boundary",
+        objective="Use core.",
+        success_criteria="Consumer ready.",
+    ).ok
+    core = node_service.node_tree.node_store.resolve_active_node(repo_root, path="Main.Topic.Core").value
+    consumer = node_service.node_tree.node_store.resolve_active_node(repo_root, path="Main.Topic.Consumer").value
+    assert core is not None and consumer is not None
     runtime_stability = RecordingRuntimeStabilityProvider(foundation)
     ark = RecordingArkSnapshotProvider(foundation)
     service = ValidationSnapshotService(
@@ -104,8 +126,8 @@ def test_s1_s3_checkpoint_scope_policy_and_manifest(tmp_path: Path) -> None:
         (RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL, ["Main.Topic.Core", "Main.Topic.Consumer"]),
     ]
     assert ark.created == [
-        (["repo", "node:Main.Topic.Core"], "S1 before dispatch"),
-        (["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"], "S3 after batch"),
+        (["repo:repo", f"repo:repo:node:{core.node_id}"], "S1 before dispatch"),
+        (["repo:repo", f"repo:repo:node:{core.node_id}", f"repo:repo:node:{consumer.node_id}"], "S3 after batch"),
     ]
 
     before_manifest = foundation.store.read_json(
@@ -118,10 +140,16 @@ def test_s1_s3_checkpoint_scope_policy_and_manifest(tmp_path: Path) -> None:
     )
     assert before_manifest.ok and before_manifest.value is not None
     assert after_manifest.ok and after_manifest.value is not None
-    assert before_manifest.value.refreshed_scope_ids == ["repo", "node:Main.Topic.Core"]
-    assert before_manifest.value.node_paths == ["Main.Topic.Core"]
-    assert after_manifest.value.refreshed_scope_ids == ["repo", "node:Main.Topic.Core", "node:Main.Topic.Consumer"]
-    assert after_manifest.value.node_paths == ["Main.Topic.Core", "Main.Topic.Consumer"]
+    assert before_manifest.value.refreshed_scope_ids == ["repo:repo", f"repo:repo:node:{core.node_id}"]
+    assert [ref.path for ref in before_manifest.value.node_refs] == ["Main.Topic.Core"]
+    assert [ref.node_id for ref in before_manifest.value.node_refs] == [core.node_id]
+    assert after_manifest.value.refreshed_scope_ids == [
+        "repo:repo",
+        f"repo:repo:node:{core.node_id}",
+        f"repo:repo:node:{consumer.node_id}",
+    ]
+    assert [ref.path for ref in after_manifest.value.node_refs] == ["Main.Topic.Core", "Main.Topic.Consumer"]
+    assert [ref.node_id for ref in after_manifest.value.node_refs] == [core.node_id, consumer.node_id]
 
     files_manifest = foundation.store.read_json(
         Path(after_batch.value.root) / "files_manifest.json",

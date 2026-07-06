@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -20,21 +19,10 @@ from lean_constellation.services.foundation import (
     WriteMode,
 )
 from lean_constellation.services.node.contract import ContractComponent, NodeContractView
+from lean_constellation.services.node.contract_fields import ContractMaterialRef, MaterialRefActor
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
-
-
-class MaterialRefActor(StrEnum):
-    COORDINATOR = "coordinator"
-    WORKER = "worker"
-
-
-class ContractMaterialRef(StrictModel):
-    ref_id: str
-    ref: MaterialRef
-    reason: str | None = None
-    added_by: MaterialRefActor = MaterialRefActor.COORDINATOR
 
 
 class NodeMaterialRefView(StrictModel):
@@ -261,7 +249,7 @@ class MaterialRefComponent:
         )
         item = self._deduplicate_ref_id(item, current.value)
         current.value.append(item)
-        setattr(opened.value.contract, field_name, [entry.model_dump(mode="json") for entry in current.value])
+        setattr(opened.value.contract, field_name, list(current.value))
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
@@ -315,7 +303,7 @@ class MaterialRefComponent:
         setattr(
             opened.value.contract,
             field_name,
-            [item.model_dump(mode="json") for item_index, item in enumerate(current.value) if item_index != index],
+            [item for item_index, item in enumerate(current.value) if item_index != index],
         )
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
@@ -441,13 +429,13 @@ class MaterialRefComponent:
             raise RuntimeError("MaterialService is not initialized.")
         return material
 
-    def _normalize_ref_list(self, refs: list[dict[str, Any]]) -> ServiceResult[list[ContractMaterialRef]]:
+    def _normalize_ref_list(self, refs: list[ContractMaterialRef]) -> ServiceResult[list[ContractMaterialRef]]:
         values: list[ContractMaterialRef] = []
         issues: list[ServiceIssue] = []
         adapter = TypeAdapter(ContractMaterialRef)
         for index, item in enumerate(refs):
             try:
-                normalized = adapter.validate_python(self._upgrade_legacy_ref_dict(item))
+                normalized = adapter.validate_python(item)
             except Exception as exc:  # noqa: BLE001 - pydantic validation details are returned to caller.
                 issues.append(
                     self.runtime.foundation.issue(
@@ -461,37 +449,6 @@ class MaterialRefComponent:
         if issues:
             return self.runtime.foundation.fail(issues)
         return self.runtime.foundation.ok(values)
-
-    def _upgrade_legacy_ref_dict(self, item: dict[str, Any]) -> dict[str, Any]:
-        if "ref_id" in item and "ref" in item:
-            return item
-        kind = item.get("kind") or item.get("ref_kind")
-        if kind == "source":
-            ref = {
-                "kind": "source",
-                "ref": {
-                    "path": item.get("path") or item.get("locator"),
-                    "start_line": item.get("start_line"),
-                    "end_line": item.get("end_line"),
-                },
-            }
-        elif kind == "resource":
-            ref = {
-                "kind": "resource",
-                "ref": {
-                    "resource_key": item.get("resource_key") or item.get("locator"),
-                    "start_line": item.get("start_line"),
-                    "end_line": item.get("end_line"),
-                },
-            }
-        else:
-            ref = item.get("ref")
-        return {
-            "ref_id": item.get("ref_id") or self._stable_ref_id(TypeAdapter(MaterialRef).validate_python(ref)),
-            "ref": ref,
-            "reason": item.get("reason"),
-            "added_by": item.get("added_by", MaterialRefActor.COORDINATOR.value),
-        }
 
     def _normalize_actor(self, actor: str | MaterialRefActor) -> ServiceResult[MaterialRefActor]:
         try:
@@ -507,11 +464,10 @@ class MaterialRefComponent:
             )
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        path = self.runtime.foundation.layout.node_contract_path(
-            FoundationContext(repo_root=Path(repo_root)),
-            node_path,
-            getattr(contract, "version"),
-        )
+        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
         return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
 
     def _stable_ref_id(self, ref: MaterialRef) -> str:

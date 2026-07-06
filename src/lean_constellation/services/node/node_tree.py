@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field, field_validator
 
@@ -18,6 +18,13 @@ from lean_constellation.services.foundation import (
     ServiceResult,
     WriteMode,
 )
+from lean_constellation.services.node.contract_fields import (
+    ContractMaterialRef,
+    NodeDep,
+    NodeMathlibDeclUse,
+    NodeMathlibModuleUse,
+)
+from lean_constellation.services.node.node_store import NodeStore
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -33,33 +40,46 @@ class NodeLifecycle(StrEnum):
     OBSOLETE = "obsolete"
 
 
+class NodeContractStatus(StrEnum):
+    OPEN = "open"
+    COMMITTED = "committed"
+
+
 class NodeMetadata(StrictModel):
     node_id: str
     path: str
     kind: NodeKind
     lifecycle: NodeLifecycle = NodeLifecycle.ACTIVE
     current_contract_version: int | None = None
+    active_contract_version: int | None = None
+    open_contract_version: int | None = None
 
 
-class NodeContractSnapshot(StrictModel):
+class NodeContract(StrictModel):
     contract_kind: NodeKind
     version: int = 1
-    version_status: Literal["open", "committed"] = "open"
+    status: NodeContractStatus = NodeContractStatus.OPEN
     goal: str
     boundary: str
     objective: str | None = None
     summary: str | None = None
     success_criteria: str | None = None
     constraints: str | None = None
-    owned_refs: list[dict[str, Any]] = Field(default_factory=list)
-    context_refs: list[dict[str, Any]] = Field(default_factory=list)
+    owned_refs: list[ContractMaterialRef] = Field(default_factory=list)
+    context_refs: list[ContractMaterialRef] = Field(default_factory=list)
     interfaces: list[DeclInterface] = Field(default_factory=list)
-    deps: list[Any] = Field(default_factory=list)
-    mathlib_modules: list[Any] = Field(default_factory=list)
-    mathlib_decls: list[Any] = Field(default_factory=list)
+    deps: list[NodeDep] = Field(default_factory=list)
+    mathlib_modules: list[NodeMathlibModuleUse] = Field(default_factory=list)
+    mathlib_decls: list[NodeMathlibDeclUse] = Field(default_factory=list)
     exports: list[DeclRef] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now_iso)
     committed_at: str | None = None
+
+    @property
+    def version_status(self) -> NodeContractStatus:
+        """Legacy read alias while callers migrate to `status`."""
+
+        return self.status
 
     @field_validator("goal", "boundary")
     @classmethod
@@ -76,12 +96,17 @@ class NodeContractSnapshot(StrictModel):
         return value
 
 
+NodeContractSnapshot = NodeContract
+
+
 class NodeView(StrictModel):
     path: str
     node_id: str
     kind: NodeKind
     lifecycle: NodeLifecycle
     current_contract_version: int | None = None
+    active_contract_version: int | None = None
+    open_contract_version: int | None = None
     contract_status: str | None = None
     parent_path: str | None = None
     child_count: int = 0
@@ -119,6 +144,7 @@ class NodeTreeComponent:
 
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
+        self.node_store = NodeStore(runtime)
 
     def create_scope_node(
         self,
@@ -287,7 +313,7 @@ class NodeTreeComponent:
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
         node.value.lifecycle = NodeLifecycle.OBSOLETE
-        saved = self.runtime.foundation.store.write_json_atomic(self._node_file(repo_root, path), node.value, mode=WriteMode.UPDATE_EXISTING)
+        saved = self.node_store.save_node(repo_root, node.value, mode=WriteMode.UPDATE_EXISTING)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(
@@ -357,8 +383,7 @@ class NodeTreeComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("node_boundary_required", "Node boundary is required.", field="boundary"))
         existing = self._load_node(repo_root, path)
         if existing.ok and existing.value is not None:
-            issue_kind = "node_already_exists" if existing.value.lifecycle == NodeLifecycle.ACTIVE else "node_path_obsolete"
-            return self.runtime.foundation.fail(self.runtime.foundation.issue(issue_kind, f"Node path already has metadata: {path}", object_ref=path))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_already_exists", f"Node path already has active metadata: {path}", object_ref=path))
         if path != "Main":
             parent_path = self._parent_path(path)
             if parent_path is None:
@@ -393,11 +418,13 @@ class NodeTreeComponent:
             kind=kind,
             lifecycle=NodeLifecycle.ACTIVE,
             current_contract_version=1,
+            active_contract_version=None,
+            open_contract_version=1,
         )
-        contract = NodeContractSnapshot(
+        contract = NodeContract(
             contract_kind=kind,
             version=1,
-            version_status="open",
+            status=NodeContractStatus.OPEN,
             goal=goal,
             boundary=boundary,
             objective=objective.strip() if objective else None,
@@ -409,27 +436,29 @@ class NodeTreeComponent:
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
         with self.runtime.foundation.store.mutation("create_node") as mutation:
-            mutation.stage_json(self._node_file(repo_root, path), node, mode=WriteMode.CREATE_ONLY)
-            mutation.stage_json(self._contract_file(repo_root, path, 1), contract, mode=WriteMode.CREATE_ONLY)
+            mutation.stage_json(self._node_file_by_id(repo_root, node.node_id), node, mode=WriteMode.CREATE_ONLY)
+            mutation.stage_json(self._contract_file_by_id(repo_root, node.node_id, 1), contract, mode=WriteMode.CREATE_ONLY)
             committed = mutation.commit()
         if not committed.ok:
             return self.runtime.foundation.fail(committed.issues)
+        rebuilt = self.node_store.rebuild_index(repo_root)
+        if not rebuilt.ok:
+            return self.runtime.foundation.fail(rebuilt.issues)
         nodes = self._load_all_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
             return self.runtime.foundation.fail(nodes.issues)
         return self.runtime.foundation.ok(self._node_view(repo_root, node, nodes.value))
 
-    def _content_admission_issue(self, contract: NodeContractSnapshot, active_paths: set[str]) -> str | None:
-        if contract.version_status != "open":
+    def _content_admission_issue(self, contract: NodeContract, active_paths: set[str]) -> str | None:
+        if contract.status != NodeContractStatus.OPEN:
             return "contract_not_open"
         for field_name in ["goal", "boundary", "objective", "success_criteria"]:
             value = getattr(contract, field_name)
             if not isinstance(value, str) or not value.strip():
                 return f"{field_name}_missing"
         for dep in contract.deps:
-            target = dep.get("target") if isinstance(dep, dict) else None
-            node_path = target.get("node") if isinstance(target, dict) else None
-            repo = target.get("repo") if isinstance(target, dict) else None
+            node_path = dep.target.node
+            repo = dep.target.repo
             if repo is None and node_path and node_path not in active_paths:
                 return f"dep_missing:{node_path}"
         return None
@@ -444,6 +473,8 @@ class NodeTreeComponent:
             kind=node.kind,
             lifecycle=node.lifecycle,
             current_contract_version=node.current_contract_version,
+            active_contract_version=node.active_contract_version,
+            open_contract_version=node.open_contract_version,
             contract_status=status,
             parent_path=self._parent_path(node.path),
             child_count=child_count,
@@ -451,7 +482,7 @@ class NodeTreeComponent:
         )
 
     def _load_node(self, repo_root: Path, path: str) -> ServiceResult[NodeMetadata]:
-        return self.runtime.foundation.store.read_json(self._node_file(repo_root, path), NodeMetadata)
+        return self.node_store.resolve_active_node(repo_root, path=path)
 
     def _load_active_node(self, repo_root: Path, path: str) -> ServiceResult[NodeMetadata]:
         node = self._load_node(repo_root, path)
@@ -462,32 +493,33 @@ class NodeTreeComponent:
         return node
 
     def _load_all_nodes(self, repo_root: Path) -> ServiceResult[list[NodeMetadata]]:
-        ctx = FoundationContext(repo_root=Path(repo_root))
-        root = self.runtime.foundation.layout.nodes_root(ctx)
-        if not root.exists():
-            return self.runtime.foundation.ok([])
-        nodes: list[NodeMetadata] = []
-        issues = []
-        for node_json in sorted(root.glob("*/node.json")):
-            result = self.runtime.foundation.store.read_json(node_json, NodeMetadata)
-            if result.ok and result.value is not None:
-                nodes.append(result.value)
-            else:
-                issues.extend(result.issues)
-        if issues:
-            return self.runtime.foundation.fail(issues)
-        return self.runtime.foundation.ok(nodes)
+        return self.node_store.list_nodes(repo_root)
 
-    def _load_current_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContractSnapshot]:
+    def _load_current_contract(self, repo_root: Path, node: NodeMetadata) -> ServiceResult[NodeContract]:
         if node.current_contract_version is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("node_contract_missing", "Node has no current contract version.", object_ref=node.path))
-        return self.runtime.foundation.store.read_json(self._contract_file(repo_root, node.path, node.current_contract_version), NodeContractSnapshot)
+        return self.runtime.foundation.store.read_json(self._contract_file_for_node(repo_root, node, node.current_contract_version), NodeContract)
 
     def _node_file(self, repo_root: Path, path: str) -> Path:
-        return self.runtime.foundation.layout.node_metadata_dir(FoundationContext(repo_root=Path(repo_root)), path) / "node.json"
+        node = self.node_store.resolve_active_node(repo_root, path=path)
+        if not node.ok or node.value is None:
+            raise ValueError(f"Cannot resolve active node path: {path}")
+        return self._node_file_by_id(repo_root, node.value.node_id)
+
+    def _node_file_by_id(self, repo_root: Path, node_id: str) -> Path:
+        return self.node_store.node_file(repo_root, node_id=node_id)
 
     def _contract_file(self, repo_root: Path, path: str, version: int) -> Path:
-        return self.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), path, version)
+        node = self.node_store.resolve_active_node(repo_root, path=path)
+        if not node.ok or node.value is None:
+            raise ValueError(f"Cannot resolve active node path: {path}")
+        return self._contract_file_by_id(repo_root, node.value.node_id, version)
+
+    def _contract_file_by_id(self, repo_root: Path, node_id: str, version: int) -> Path:
+        return self.node_store.contract_path(repo_root, node_id=node_id, version=version)
+
+    def _contract_file_for_node(self, repo_root: Path, node: NodeMetadata, version: int) -> Path:
+        return self._contract_file_by_id(repo_root, node.node_id, version)
 
     def _all_node_ids(self, repo_root: Path) -> set[str]:
         nodes = self._load_all_nodes(repo_root)
@@ -537,7 +569,7 @@ class NodeTreeComponent:
         if not nodes.ok or nodes.value is None:
             return None
         for node in nodes.value:
-            if self._contract_file(repo_root, node.path, node.current_contract_version or 1).parent == contract_path.parent:
+            if self._contract_file_for_node(repo_root, node, node.current_contract_version or 1).parent == contract_path.parent:
                 return node.path
         return None
 

@@ -41,7 +41,8 @@ def test_admin_requirement_resume_marks_observed_and_starts_resume_flow(tmp_path
     assert flow.flow_type == "native_repo_coordinator"
     assert flow.input.start_mode == "requirement_resume"
     waiting = runtime.repo_workspace.requirement.get_requirement(consumer, name="need_provider")
-    assert waiting.value.requirement.waiting_state.result_observed is True
+    assert waiting.value.requirement.provider_result_observed_at is not None
+    assert waiting.value.requirement.note == "Resume after provider ready."
 
 
 def test_admin_requirement_resume_rejects_provider_mismatch(tmp_path) -> None:
@@ -78,5 +79,5 @@ def test_admin_requirement_resume_rejects_provider_mismatch(tmp_path) -> None:
     assert not result.ok
     assert result.issues[0].kind == "requirement_provider_mismatch"
     waiting = runtime.repo_workspace.requirement.get_requirement(consumer, name="need_provider")
-    assert waiting.value.requirement.waiting_state.result_observed is False
+    assert waiting.value.requirement.provider_result_observed_at is None
     assert runtime.ark.flow_service.list_flows(flow_type="native_repo_coordinator") == []

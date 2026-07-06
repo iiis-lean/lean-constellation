@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
+from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.foundation import FoundationService, ServiceResult
 from lean_constellation.services.lean_projection import AdapterModuleListView, LeanCheckView, LeanProjectionService
 from lean_constellation.services.lean_projection.repair import ProjectionRepairView
@@ -46,14 +47,14 @@ class FakeRevisionProvider:
         self.foundation = foundation
         self.revisions = revisions
 
-    def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[Any]:
+    def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions.get((node_path, decl_name))
         if revision is None:
             return self.foundation.fail(self.foundation.issue("decl_revision_missing", "Decl revision missing.", object_ref=f"{node_path}:{decl_name}"))
-        return self.foundation.ok(revision)
+        return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
-    def save_statement_formal_snapshot(
+    def save_statement_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -61,13 +62,14 @@ class FakeRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
-        revision.setdefault("statement", {})["formal"] = {"code": code, "check": check.model_dump(mode="python")}
-        return self.foundation.ok(revision)
+        revision.setdefault("statement", {})["formal"] = {"code": code, "check": _compact_check(check)}
+        revision["state"] = "declared"
+        return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
-    def save_proof_formal_snapshot(
+    def save_proof_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -75,11 +77,12 @@ class FakeRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
-        revision.setdefault("proof", {})["formal"] = {"code": code, "check": check.model_dump(mode="python")}
-        return self.foundation.ok(revision)
+        revision.setdefault("proof", {})["formal"] = {"code": code, "check": _compact_check(check)}
+        revision["state"] = "proved"
+        return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
 
 class FakeRepairDeclProvider:
@@ -116,10 +119,24 @@ class FakeRepairComponent:
 
 def _revision() -> dict[str, Any]:
     return {
-        "name": "main_result",
+        "decl_name": "main_result",
+        "revision": 1,
         "kind": "theorem",
+        "state": "specified",
+        "version_status": "open",
         "statement": {"nl": {"text": "The statement is true."}, "deps": []},
         "proof": {"nl": {"text": "Use triviality."}, "deps": []},
+    }
+
+
+def _compact_check(check: LeanCheckView) -> dict[str, str]:
+    return {
+        "status": check.status,
+        "policy": check.policy,
+        "allow_sorry": str(check.allow_sorry),
+        "contains_sorry": str(check.contains_sorry),
+        "contains_axiom": str(check.contains_axiom),
+        "message": check.message,
     }
 
 
@@ -167,7 +184,7 @@ def test_lean_projection_service_composes_components_and_stage_wrappers(tmp_path
     assert captured_proof.value is not None
     proof_check = revisions[("Main.Topic.Core", "main_result")]["proof"]["formal"]["check"]
     assert proof_check["policy"] == "proof_formal"
-    assert proof_check["allow_sorry"] is False
+    assert proof_check["allow_sorry"] == "False"
 
 
 def test_lean_projection_service_refresh_wrappers(tmp_path: Path) -> None:

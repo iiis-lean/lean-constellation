@@ -1,10 +1,12 @@
-from tests.unit_services_helpers import make_runtime
+import json
 
 from pathlib import Path
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import DeclRef, NodeRef
 from lean_constellation.services.foundation import FoundationContext, FoundationService, WriteMode
 from lean_constellation.services.node import (
     ContractComponent,
@@ -15,6 +17,7 @@ from lean_constellation.services.node import (
     NodeMetadata,
     NodeTreeComponent,
 )
+from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 
 
 def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface] | None = None) -> None:
@@ -46,8 +49,10 @@ def _create_topic_content(tmp_path: Path) -> None:
 
 
 def _contract_path(tmp_path: Path, node_path: str, version: int = 1) -> Path:
-    foundation = make_runtime().foundation
-    return foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), node_path, version)
+    runtime = make_runtime()
+    node = runtime.node.node_tree.node_store.resolve_active_node(tmp_path, path=node_path)
+    assert node.ok and node.value is not None
+    return runtime.node.node_tree.node_store.contract_path(tmp_path, node_id=node.value.node_id, version=version)
 
 
 def _load_contract(tmp_path: Path, node_path: str, version: int = 1) -> NodeContractSnapshot:
@@ -70,16 +75,20 @@ def _write_contract(tmp_path: Path, node_path: str, contract: NodeContractSnapsh
 def _write_node_without_contract(tmp_path: Path, node_path: str) -> None:
     foundation = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path)
-    node_dir = foundation.layout.node_metadata_dir(ctx, node_path)
+    node_id = "manual_missing_contract"
+    node_dir = foundation.layout.node_dir_by_id(ctx, node_id)
     metadata = NodeMetadata(
-        node_id="manual-missing-contract",
+        node_id=node_id,
         path=node_path,
         kind=NodeKind.CONTENT,
         lifecycle=NodeLifecycle.ACTIVE,
         current_contract_version=1,
+        open_contract_version=1,
     )
     saved = foundation.store.write_json_atomic(node_dir / "node.json", metadata)
     assert saved.ok
+    rebuilt = make_runtime().node.node_tree.node_store.rebuild_index(tmp_path)
+    assert rebuilt.ok
 
 
 def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path: Path) -> None:
@@ -95,20 +104,56 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     committed = component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary="Initial core contract complete.")
     assert committed.ok
     assert committed.value is not None
+    assert committed.value.status == ContractVersionStatus.COMMITTED
     assert committed.value.version_status == ContractVersionStatus.COMMITTED
+    assert committed.value.active_contract_version == 1
+    assert committed.value.open_contract_version is None
+
+    visible = component.get_visible_contract(tmp_path, node_path="Main.Topic.Core")
+    assert visible.ok and visible.value is not None
+    assert visible.value.version == 1
+    assert visible.value.status == ContractVersionStatus.COMMITTED
+
+    missing_open = component.get_open_contract(tmp_path, node_path="Main.Topic.Core")
+    assert not missing_open.ok
+    assert missing_open.issues[0].kind == "node_open_contract_missing"
 
     opened = component.ensure_open_contract(tmp_path, node_path="Main.Topic.Core")
     assert opened.ok
     assert opened.value is not None
     assert opened.value.created_new_open is True
     assert opened.value.version == 2
-    assert opened.value.contract.version_status == ContractVersionStatus.OPEN.value
+    assert opened.value.node_id == committed.value.node_id
+    assert opened.value.contract.status == ContractVersionStatus.OPEN
+    assert opened.value.contract.version_status == ContractVersionStatus.OPEN
     assert opened.value.contract.summary is None
 
     latest = component.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert latest.ok
     assert latest.value is not None
     assert latest.value.version == 2
+    assert latest.value.status == ContractVersionStatus.OPEN
+    assert latest.value.active_contract_version == 1
+    assert latest.value.open_contract_version == 2
+
+    open_view = component.get_open_contract(tmp_path, node_path="Main.Topic.Core")
+    assert open_view.ok and open_view.value is not None
+    assert open_view.value.version == 2
+
+    visible_after_open = component.get_visible_contract(tmp_path, node_path="Main.Topic.Core")
+    assert visible_after_open.ok and visible_after_open.value is not None
+    assert visible_after_open.value.version == 1
+    assert visible_after_open.value.status == ContractVersionStatus.COMMITTED
+
+    versions = component.list_contract_versions(tmp_path, node_path="Main.Topic.Core")
+    assert versions.ok and versions.value is not None
+    assert [(item.version, item.status, item.is_active, item.is_open) for item in versions.value] == [
+        (1, ContractVersionStatus.COMMITTED, True, False),
+        (2, ContractVersionStatus.OPEN, False, True),
+    ]
+    persisted = _contract_path(tmp_path, "Main.Topic.Core", 2).read_text(encoding="utf-8")
+    assert '"status"' in persisted
+    assert '"version_status"' not in persisted
 
 
 def test_get_current_contract_reports_missing_node_and_missing_contract_versions(tmp_path: Path) -> None:
@@ -309,7 +354,7 @@ def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path
     assert unbound.issues[0].kind == "interface_unbound"
 
     foundation = make_runtime().foundation
-    path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main", 1)
+    path = _contract_path(tmp_path, "Main", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     ref = DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1)
@@ -365,10 +410,17 @@ def test_content_task_admission_reports_missing_local_dependency(tmp_path: Path)
     _create_topic_content(tmp_path)
     component = make_runtime().node.contract
     foundation = make_runtime().foundation
-    path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1)
+    path = _contract_path(tmp_path, "Main.Topic.Core", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
-    loaded.value.deps.append({"target": {"repo": None, "node": "Main.Topic.Missing"}, "reason": "Need missing node."})
+    loaded.value.deps.append(
+        NodeDep(
+            dep_id="dep_missing",
+            target=NodeRef(repo=None, node="Main.Topic.Missing"),
+            reason="Need missing node.",
+            added_by=NodeDepActor.COORDINATOR,
+        )
+    )
     assert foundation.store.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
 
     admission = component.check_content_task_admission(tmp_path, node_path="Main.Topic.Core")
@@ -383,25 +435,18 @@ def test_content_task_admission_reports_invalid_dep_shapes(tmp_path: Path) -> No
     _create_topic_content(tmp_path)
     component = make_runtime().node.contract
     contract = _load_contract(tmp_path, "Main.Topic.Core")
-    contract.deps.extend(
-        [
-            "not an object",
-            {"target": "not an object", "reason": "Malformed target."},
-            {"target": {"repo": None}, "reason": "Missing local node."},
-        ]
-    )
-    _write_contract(tmp_path, "Main.Topic.Core", contract)
+    payload = contract.model_dump(mode="json")
+    payload["deps"] = [
+        "not an object",
+        {"target": "not an object", "reason": "Malformed target."},
+        {"target": {"repo": None}, "reason": "Missing local node."},
+    ]
+    _contract_path(tmp_path, "Main.Topic.Core").write_text(json.dumps(payload), encoding="utf-8")
 
     admission = component.check_content_task_admission(tmp_path, node_path="Main.Topic.Core")
 
-    assert admission.ok
-    assert admission.value is not None
-    assert admission.value.passed is False
-    assert [issue.kind for issue in admission.value.issues] == [
-        "contract_dep_invalid",
-        "contract_dep_target_invalid",
-        "contract_dep_target_invalid",
-    ]
+    assert not admission.ok
+    assert admission.issues[0].kind == "schema_validation_failed"
 
 
 def test_content_task_admission_reports_wrong_kind_missing_required_fields_and_committed_contract(tmp_path: Path) -> None:

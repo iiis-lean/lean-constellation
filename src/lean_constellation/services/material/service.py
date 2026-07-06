@@ -27,6 +27,7 @@ from lean_constellation.services.material.resource_library import (
     ResourceLibraryComponent,
     ResourceMetadataInput,
     ResourceSummaryView,
+    ResourceTarget,
     ResourceTargetView,
     ResourceView,
 )
@@ -238,7 +239,7 @@ class MaterialService:
     def normalize_resource_target(self, target: str) -> ServiceResult[ResourceTargetView]:
         return self.resource_library.normalize_resource_target(target)
 
-    def find_duplicate_resource(self, repo_root: Path, *, target: ResourceTargetView) -> ServiceResult[ResourceDuplicateView]:
+    def find_duplicate_resource(self, repo_root: Path, *, target: ResourceTarget | ResourceTargetView) -> ServiceResult[ResourceDuplicateView]:
         return self.resource_library.find_duplicate_resource(repo_root, target=target)
 
     def get_material_context_view(
@@ -349,7 +350,7 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        target: str | ResourceTargetView,
+        target: str | ResourceTarget | ResourceTargetView,
         resource_kind: str | None = None,
         title_hint: str | None = None,
     ) -> ServiceResult[ResourceDraftView]:
@@ -440,7 +441,7 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        target: ResourceTargetView,
+        target: ResourceTarget | ResourceTargetView,
         temp_dir: Path,
         metadata: ResourceMetadataInput,
     ) -> ServiceResult[ResourceView]:

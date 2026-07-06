@@ -68,9 +68,9 @@ def test_add_source_and_resource_refs_and_list_view(tmp_path: Path) -> None:
     assert owned.value is not None
     assert len(owned.value.contract.owned_refs) == 1
     owned_ref = owned.value.contract.owned_refs[0]
-    assert owned_ref["added_by"] == "coordinator"
-    assert owned_ref["reason"] == "Primary statement source."
-    assert owned_ref["ref"]["ref"]["path"] == "notes.md"
+    assert owned_ref.added_by == MaterialRefActor.COORDINATOR
+    assert owned_ref.reason == "Primary statement source."
+    assert owned_ref.ref.ref.path == "notes.md"
 
     context = component.add_context_resource_ref(
         tmp_path,
@@ -83,8 +83,8 @@ def test_add_source_and_resource_refs_and_list_view(tmp_path: Path) -> None:
     )
     assert context.ok
     assert context.value is not None
-    assert context.value.contract.context_refs[0]["added_by"] == "worker"
-    assert context.value.contract.context_refs[0]["ref"]["ref"]["start_line"] == 2
+    assert context.value.contract.context_refs[0].added_by == MaterialRefActor.WORKER
+    assert context.value.contract.context_refs[0].ref.ref.start_line == 2
 
     listed = component.list_node_material_refs(tmp_path, node_path="Main.Topic.Core")
     assert listed.ok
@@ -114,7 +114,7 @@ def test_invalid_range_is_rejected_before_contract_write(tmp_path: Path) -> None
     assert not result.ok
     assert result.issues[0].kind == "source_ref_range_invalid"
     foundation = make_runtime().foundation
-    path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1)
+    path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     assert loaded.value.owned_refs == []

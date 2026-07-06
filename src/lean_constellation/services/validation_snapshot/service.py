@@ -161,8 +161,14 @@ class ValidationSnapshotService:
         *,
         checkpoint_kind: RepoCheckpointKind | str,
         node_paths: list[str] | None = None,
+        node_ids: list[str] | None = None,
     ) -> ServiceResult[GateReport]:
-        return self.snapshot_restore.check_repo_stable_point(repo_root, checkpoint_kind=checkpoint_kind, node_paths=node_paths)
+        return self.snapshot_restore.check_repo_stable_point(
+            repo_root,
+            checkpoint_kind=checkpoint_kind,
+            node_paths=node_paths,
+            node_ids=node_ids,
+        )
 
     def create_repo_stable_point_snapshot(
         self,
@@ -171,6 +177,7 @@ class ValidationSnapshotService:
         checkpoint_kind: RepoCheckpointKind | str,
         label: str | None = None,
         node_paths: list[str] | None = None,
+        node_ids: list[str] | None = None,
         scope_ids: list[str] | None = None,
     ) -> ServiceResult[RepoCheckpointSnapshotView]:
         return self.snapshot_restore.create_repo_stable_point_snapshot(
@@ -178,6 +185,7 @@ class ValidationSnapshotService:
             checkpoint_kind=checkpoint_kind,
             label=label,
             node_paths=node_paths,
+            node_ids=node_ids,
             scope_ids=scope_ids,
         )
 

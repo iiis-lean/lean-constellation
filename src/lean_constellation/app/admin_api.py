@@ -288,6 +288,7 @@ class ManualCheckpointInput(StrictModel):
     scope_ids: list[str]
     label: str | None = None
     node_paths: list[str] = Field(default_factory=list)
+    node_ids: list[str] = Field(default_factory=list)
 
     @field_validator("repo_root", mode="before")
     @classmethod
@@ -419,6 +420,7 @@ class SnapshotCreateInput(StrictModel):
     checkpoint_kind: str = "requirement_bootstrap_terminal"
     label: str | None = None
     node_paths: list[str] = Field(default_factory=list)
+    node_ids: list[str] = Field(default_factory=list)
     scope_ids: list[str] | None = None
 
     @field_validator("repo_root", mode="before")
@@ -851,10 +853,9 @@ class LeanAdminApi:
                     return self.runtime.foundation.fail(listed.issues)
                 for view in listed.value:
                     requirement = view.requirement
-                    state = requirement.waiting_state
-                    if not state.waiting or state.result_observed:
+                    if not self.runtime.repo_workspace.requirement.is_requirement_waiting(requirement):
                         continue
-                    resolved_provider = state.provider_repo or requirement.provider_repo or requirement.target_repo
+                    resolved_provider = self.runtime.repo_workspace.requirement.effective_provider_repo(requirement)
                     if provider_key is not None and resolved_provider != provider_key:
                         continue
                     items.append(
@@ -865,11 +866,11 @@ class LeanAdminApi:
                             target_repo=requirement.target_repo,
                             provider_repo=resolved_provider,
                             status=requirement.status,
-                            waiting=state.waiting,
-                            result_observed=state.result_observed,
-                            submitted_at=state.submitted_at,
-                            result_observed_at=state.result_observed_at,
-                            reason=state.reason,
+                            waiting=True,
+                            result_observed=False,
+                            submitted_at=requirement.provider_request_submitted_at,
+                            result_observed_at=requirement.provider_result_observed_at,
+                            reason=requirement.reason,
                             summary=f"{root.name}/{requirement.name} is waiting for provider {resolved_provider}.",
                         )
                     )
@@ -1283,6 +1284,7 @@ class LeanAdminApi:
             checkpoint_kind="manual_test_stable_point",
             label=input_model.label,
             node_paths=input_model.node_paths,
+            node_ids=input_model.node_ids,
             scope_ids=input_model.scope_ids,
         )
 
@@ -1298,6 +1300,7 @@ class LeanAdminApi:
             checkpoint_kind=input_model.checkpoint_kind,
             label=input_model.label,
             node_paths=input_model.node_paths,
+            node_ids=input_model.node_ids,
             scope_ids=input_model.scope_ids,
         )
 
@@ -1319,7 +1322,7 @@ class LeanAdminApi:
             return self.runtime.foundation.fail(loaded.issues)
         requirement = loaded.value.requirement
         expected_provider = self.runtime.foundation.layout.ensure_safe_key(input_model.provider_repo)
-        waiting_provider = requirement.waiting_state.provider_repo or requirement.provider_repo or requirement.target_repo
+        waiting_provider = self.runtime.repo_workspace.requirement.effective_provider_repo(requirement)
         if waiting_provider != expected_provider:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(

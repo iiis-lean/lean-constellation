@@ -30,7 +30,7 @@ def _create_node_tree(tmp_path: Path, service: NodeService) -> None:
 
 
 def _commit_provider_scope(tmp_path: Path, service: NodeService) -> DeclRef:
-    path = service.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Provider", 1)
+    path = service.runtime.foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Provider", 1)
     loaded = service.runtime.foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     ref = DeclRef(repo=None, node="Main.Topic.Provider", name="helper", revision=1)
@@ -67,7 +67,7 @@ def test_current_contract_view_aggregates_deps_material_and_mathlib(tmp_path: Pa
     assert view.value.contract.node_path == "Main.Topic.Consumer"
     assert view.value.deps.deps == []
     assert view.value.material_refs.owned_refs == []
-    assert view.value.mathlib_modules[0]["module"] == "Mathlib.Data.Nat.Basic"
+    assert view.value.mathlib_modules[0].module == "Mathlib.Data.Nat.Basic"
 
 
 def test_current_node_dep_wrapper_resolves_expected_public_decl_and_removes(tmp_path: Path) -> None:
@@ -88,7 +88,7 @@ def test_current_node_dep_wrapper_resolves_expected_public_decl_and_removes(tmp_
     assert added.value is not None
     assert len(added.value.deps.deps) == 1
     assert added.value.deps.deps[0].expected_decl_refs == [ref]
-    assert added.value.contract.contract.deps[0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
+    assert added.value.contract.contract.deps[0].expected_decl_refs == [ref]
 
     removed = service.remove_current_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=0, actor="coordinator")
     assert removed.ok
@@ -139,7 +139,7 @@ def test_current_material_ref_wrapper_adds_and_removes_refs(tmp_path: Path) -> N
     assert added.value is not None
     assert len(added.value.material_refs.owned_refs) == 1
     assert added.value.material_refs.owned_refs[0].path == "notes.md"
-    assert added.value.contract.contract.owned_refs[0]["reason"] == "Primary source lines."
+    assert added.value.contract.contract.owned_refs[0].reason == "Primary source lines."
 
     removed = service.remove_current_material_ref(
         tmp_path,

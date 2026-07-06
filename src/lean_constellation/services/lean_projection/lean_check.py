@@ -5,65 +5,25 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from pydantic import Field
-
-from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.lean_check import (
+    LeanCheck,
+    LeanCheckView,
+    LeanDiagnosticItem,
+    LeanDiagnosticItemView,
+    LeanDiagnostics,
+    LeanDiagnosticsView,
+    SorryAxiomOccurrence,
+    SorryAxiomOccurrenceView,
+    SorryAxiomScan,
+    SorryAxiomScanView,
+    compact_lean_check,
+)
 from lean_constellation.services.foundation import ServiceResult
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
-
-
-class LeanDiagnosticItemView(StrictModel):
-    severity: str
-    message: str
-    line: int | None = None
-    column: int | None = None
-
-
-class LeanDiagnosticsView(StrictModel):
-    repo_root: str
-    file_path: str | None = None
-    passed: bool
-    diagnostics: list[LeanDiagnosticItemView] = Field(default_factory=list)
-    summary: str
-    raw_excerpt: str | None = None
-
-
-class SorryAxiomOccurrenceView(StrictModel):
-    kind: Literal["sorry", "admit", "axiom", "opaque", "unsafe"]
-    line: int
-    column: int
-    excerpt: str
-
-
-class SorryAxiomScanView(StrictModel):
-    contains_sorry: bool
-    contains_admit: bool
-    contains_axiom: bool
-    contains_opaque: bool
-    contains_unsafe: bool
-    sorry_count: int
-    admit_count: int
-    axiom_count: int
-    opaque_count: int
-    unsafe_count: int
-    occurrences: list[SorryAxiomOccurrenceView] = Field(default_factory=list)
-    summary: str
-    limitation: str
-
-
-class LeanCheckView(StrictModel):
-    status: Literal["passed", "failed"]
-    policy: str
-    allow_sorry: bool
-    contains_sorry: bool
-    contains_axiom: bool
-    message: str
-    diagnostics: LeanDiagnosticsView
-    scan: SorryAxiomScanView
 
 
 class LeanCheckComponent:

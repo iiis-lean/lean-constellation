@@ -24,6 +24,7 @@ from lean_constellation.services.material.resource_library import (
     ResourceMetadata,
     ResourceMetadataInput,
     ResourceSummaryView,
+    ResourceTarget,
     ResourceTargetView,
     ResourceView,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "ResourceMetadata",
     "ResourceMetadataInput",
     "ResourceSummaryView",
+    "ResourceTarget",
     "ResourceTargetView",
     "ResourceView",
     "SourceAcquisitionView",

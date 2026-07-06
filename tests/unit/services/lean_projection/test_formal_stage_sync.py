@@ -57,7 +57,7 @@ def _setup_theorem_round(repo_root: Path, runtime: LeanRuntimeServices) -> str:
         goal="Core goal.",
         boundary="Core declarations only.",
         objective="Verify formal stage projection sync.",
-        success_criteria="Statement and proof formal snapshots sync with DeclGraph revisions.",
+        success_criteria="Statement and proof formal captures sync with DeclGraph revisions.",
     )
     assert content.ok, content.issues
     strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Projection sync strategy.")
@@ -143,7 +143,7 @@ def test_statement_capture_writes_decl_graph_snapshot_and_sync_gate(tmp_path: Pa
 
     assert stale.ok and stale.value is not None
     assert not stale.value.passed
-    assert stale.value.issues[0].kind == "decl_file_snapshot_stale"
+    assert stale.value.issues[0].kind == "decl_file_capture_stale"
 
 
 def test_proof_restore_capture_and_strict_sync_use_decl_graph_snapshot(tmp_path: Path) -> None:
@@ -205,4 +205,4 @@ def test_proof_restore_capture_and_strict_sync_use_decl_graph_snapshot(tmp_path:
     )
     assert stale.ok and stale.value is not None
     assert not stale.value.passed
-    assert stale.value.issues[0].kind == "decl_file_snapshot_stale"
+    assert stale.value.issues[0].kind == "decl_file_capture_stale"

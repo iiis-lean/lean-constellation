@@ -1,23 +1,28 @@
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.lean_projection import AnnotationComponent
 
 
-def _revision() -> dict:
-    return {
-        "name": "foo_bar",
-        "statement": {
+def _revision() -> DeclFileRevisionView:
+    return DeclFileRevisionView(
+        decl_name="foo_bar",
+        revision=1,
+        kind="theorem",
+        state="specified",
+        version_status="open",
+        statement={
             "nl": {
                 "text": "For every natural number n, n equals itself.",
-                "origin": {"kind": "source", "path": "chapter.md", "start_line": 10, "end_line": 12},
+                "origin": [{"kind": "source", "ref": "chapter.md:10-12"}],
             },
-            "deps": [{"decl": "Nat", "reason": "domain"}],
+            "deps": ["Nat"],
         },
-        "proof": {
-            "nl": {"text": "Use reflexivity.", "origin": {"kind": "source", "path": "chapter.md", "start_line": 13}},
-            "deps": [{"decl": "rfl", "reason": "reflexivity"}],
+        proof={
+            "nl": {"text": "Use reflexivity.", "origin": [{"kind": "source", "ref": "chapter.md:13"}]},
+            "deps": ["rfl"],
         },
-    }
+    )
 
 
 def test_render_statement_and_proof_docstrings_include_marker_and_refs() -> None:
@@ -29,7 +34,7 @@ def test_render_statement_and_proof_docstrings_include_marker_and_refs() -> None
     assert "lean-constellation target: foo_bar" in statement.value
     assert "statement.nl:" in statement.value
     assert "chapter.md" in statement.value
-    assert '"decl": "Nat"' in statement.value
+    assert "- Nat" in statement.value
 
     proof = component.render_proof_docstring(_revision())
     assert proof.ok
@@ -37,7 +42,7 @@ def test_render_statement_and_proof_docstrings_include_marker_and_refs() -> None
     assert "stage: proof" in proof.value
     assert "proof.nl:" in proof.value
     assert "Use reflexivity." in proof.value
-    assert '"decl": "rfl"' in proof.value
+    assert "- rfl" in proof.value
 
 
 def test_parse_target_marker_missing_duplicate_and_found() -> None:

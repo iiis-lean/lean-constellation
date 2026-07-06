@@ -140,7 +140,7 @@ def test_snapshot_restore_real_filesystem_checkpoint_roundtrip(tmp_path: Path) -
     )
     assert created.ok
     assert created.value is not None
-    assert ark.created == [(["repo"], "real filesystem checkpoint")]
+    assert ark.created == [(["repo:repo"], "real filesystem checkpoint")]
 
     (repo_root / "Main.lean").write_text("-- modified after checkpoint\n", encoding="utf-8")
     (repo_root / "Extra.lean").write_text("-- extra file should survive restore\n", encoding="utf-8")

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
+from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.foundation import FoundationService, ServiceResult
 from lean_constellation.services.lean_projection import DeclFileComponent, LeanCheckView
 
@@ -47,7 +48,7 @@ class FakeRevisionProvider:
         self.foundation = foundation
         self.revisions = revisions
 
-    def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[Any]:
+    def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions.get((node_path, decl_name))
         if revision is None:
@@ -58,9 +59,9 @@ class FakeRevisionProvider:
                     object_ref=f"{node_path}:{decl_name}",
                 )
             )
-        return self.foundation.ok(revision)
+        return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
-    def save_statement_formal_snapshot(
+    def save_statement_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -68,17 +69,17 @@ class FakeRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
         revision.setdefault("statement", {})["formal"] = {
             "code": code,
-            "check": check.model_dump(mode="python"),
+            "check": _compact_check(check),
         }
         revision["state"] = "declared"
-        return self.foundation.ok(revision)
+        return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
-    def save_proof_formal_snapshot(
+    def save_proof_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -86,15 +87,15 @@ class FakeRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
         revision.setdefault("proof", {})["formal"] = {
             "code": code,
-            "check": check.model_dump(mode="python"),
+            "check": _compact_check(check),
         }
         revision["state"] = "proved"
-        return self.foundation.ok(revision)
+        return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
 
 class FailingSaveRevisionProvider(FakeRevisionProvider):
@@ -110,16 +111,16 @@ class FailingSaveRevisionProvider(FakeRevisionProvider):
         self.fail_statement = fail_statement
         self.fail_proof = fail_proof
 
-    def _save_failure(self, *, node_path: str, decl_name: str) -> ServiceResult[Any]:
+    def _save_failure(self, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         return self.foundation.fail(
             self.foundation.issue(
                 "decl_revision_save_failed",
-                "DeclRevision provider rejected the formal snapshot save.",
+                "DeclRevision provider rejected the formal capture save.",
                 object_ref=f"{node_path}:{decl_name}",
             )
         )
 
-    def save_statement_formal_snapshot(
+    def save_statement_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -127,10 +128,10 @@ class FailingSaveRevisionProvider(FakeRevisionProvider):
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         if self.fail_statement:
             return self._save_failure(node_path=node_path, decl_name=decl_name)
-        return super().save_statement_formal_snapshot(
+        return super().save_statement_formal_capture(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -138,7 +139,7 @@ class FailingSaveRevisionProvider(FakeRevisionProvider):
             check=check,
         )
 
-    def save_proof_formal_snapshot(
+    def save_proof_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -146,10 +147,10 @@ class FailingSaveRevisionProvider(FakeRevisionProvider):
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         if self.fail_proof:
             return self._save_failure(node_path=node_path, decl_name=decl_name)
-        return super().save_proof_formal_snapshot(
+        return super().save_proof_formal_capture(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -160,17 +161,30 @@ class FailingSaveRevisionProvider(FakeRevisionProvider):
 
 def _revision(kind: str = "theorem") -> dict[str, Any]:
     return {
-        "name": "main_result",
+        "decl_name": "main_result",
+        "revision": 1,
         "kind": kind,
         "state": "specified",
+        "version_status": "open",
         "statement": {
-            "nl": {"text": "The main result is true.", "origin": {"kind": "generated"}},
+            "nl": {"text": "The main result is true.", "origin": [{"kind": "generated"}]},
             "deps": [],
         },
         "proof": {
-            "nl": {"text": "Use triviality.", "origin": {"kind": "generated"}},
+            "nl": {"text": "Use triviality.", "origin": [{"kind": "generated"}]},
             "deps": [],
         },
+    }
+
+
+def _compact_check(check: LeanCheckView) -> dict[str, str]:
+    return {
+        "status": check.status,
+        "policy": check.policy,
+        "allow_sorry": str(check.allow_sorry),
+        "contains_sorry": str(check.contains_sorry),
+        "contains_axiom": str(check.contains_axiom),
+        "message": check.message,
     }
 
 
@@ -375,7 +389,7 @@ def test_check_snapshot_sync_detects_missing_and_changed_file(tmp_path: Path) ->
     assert missing_snapshot.ok
     assert missing_snapshot.value is not None
     assert not missing_snapshot.value.passed
-    assert missing_snapshot.value.issues[0].kind == "formal_snapshot_missing"
+    assert missing_snapshot.value.issues[0].kind == "formal_capture_missing"
 
     assert component.prepare_statement_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result").ok
     assert component.capture_statement_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result").ok
@@ -391,7 +405,7 @@ def test_check_snapshot_sync_detects_missing_and_changed_file(tmp_path: Path) ->
     assert stale.ok
     assert stale.value is not None
     assert not stale.value.passed
-    assert stale.value.issues[0].kind == "decl_file_snapshot_stale"
+    assert stale.value.issues[0].kind == "decl_file_capture_stale"
 
 
 def test_sync_after_revision_reset_and_remove_for_delete(tmp_path: Path) -> None:

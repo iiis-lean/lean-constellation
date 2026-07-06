@@ -147,12 +147,14 @@ def _complete_theorem_round(
         summary=f"{decl_name} proof formal review passed.",
     )
     assert reviewed.ok, reviewed.issues
-    stage_review = runtime.decl_graph.submit_stage_review(
+    assert reviewed.value is not None
+    stage_review = runtime.decl_graph.aggregate_stage_review_marks(
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
         stage=DeclStage.PROOF_FORMAL,
         summary="Proof formal stage accepted.",
+        marks=[reviewed.value],
     )
     assert stage_review.ok, stage_review.issues
     assert stage_review.value is not None
@@ -184,7 +186,8 @@ def _complete_theorem_round(
     )
     assert terminal.ok, terminal.issues
     assert terminal.value is not None
-    assert terminal.value.status.value == "completed"
+    assert terminal.value.status.value == "committed"
+    assert terminal.value.result_kind == DeclRoundResultKind.SUCCESS
 
 
 @pytest.mark.real
@@ -239,7 +242,8 @@ def test_decl_graph_file_backed_content_node_lifecycle_real(tmp_path: Path) -> N
     assert [strategy.strategy_id for strategy in strategies.value] == [strategy_id]
     assert rounds.ok and rounds.value is not None
     assert [round_record.round_id for round_record in rounds.value] == [helper_round_id, main_round_id]
-    assert all(round_record.status.value == "completed" for round_record in rounds.value)
+    assert all(round_record.status.value == "committed" for round_record in rounds.value)
+    assert all(round_record.result_kind == DeclRoundResultKind.SUCCESS for round_record in rounds.value)
     assert main_decl.ok and main_decl.value is not None
     assert main_decl.value.public is True
     assert main_revision.ok and main_revision.value is not None

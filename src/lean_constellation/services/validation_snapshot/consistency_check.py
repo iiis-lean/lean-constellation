@@ -175,22 +175,22 @@ class ConsistencyCheckComponent:
         if any(issue.kind == "formal_stage_provider_missing" for issue in provider.value.issues):
             return self.runtime.foundation.ok(provider.value)
 
-        snapshot = self._current_file_snapshot_gate(
+        capture = self._current_file_capture_gate(
             Path(repo_root),
             node_path=node_path,
             decl_name=decl_name,
             stage=str(stage),
         )
-        if not snapshot.ok or snapshot.value is None:
-            return self.runtime.foundation.fail(snapshot.issues)
+        if not capture.ok or capture.value is None:
+            return self.runtime.foundation.fail(capture.issues)
         return self.runtime.foundation.ok(
             self.runtime.foundation.merge_gate_reports(
                 "formal_stage_consistency",
-                [provider.value, snapshot.value],
+                [provider.value, capture.value],
             )
         )
 
-    def _current_file_snapshot_gate(
+    def _current_file_capture_gate(
         self,
         repo_root: Path,
         *,
@@ -210,10 +210,10 @@ class ConsistencyCheckComponent:
             if self._proof_formal_code(revision.value):
                 return self.runtime.foundation.ok(
                     self.runtime.foundation.gate_passed(
-                        "decl_file_snapshot_sync",
+                        "decl_file_capture_sync",
                         summary=(
                             "Statement formal metadata is checked against DeclGraph; current Lean file "
-                            "sync is checked at proof stage because a proof snapshot supersedes the "
+                            "sync is checked at proof stage because a proof capture supersedes the "
                             "statement-stage working file."
                         ),
                     )
@@ -230,6 +230,10 @@ class ConsistencyCheckComponent:
         if proof_lean_code:
             return str(proof_lean_code)
         proof = getattr(revision, "proof", None)
+        formal = getattr(proof, "formal", None)
+        code = getattr(formal, "code", None)
+        if code:
+            return str(code)
         if isinstance(proof, dict):
             formal = proof.get("formal")
             if isinstance(formal, dict):

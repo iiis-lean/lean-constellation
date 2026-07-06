@@ -1,10 +1,13 @@
-from tests.unit_services_helpers import make_runtime
+import json
 
 from pathlib import Path
+
+from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
 from lean_constellation.services.mathlib import MathlibService, NodeMathlibUseComponent
 from lean_constellation.services.node import NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.services.node.contract_fields import MathlibUseActor, NodeMathlibDeclUse, NodeMathlibModuleUse
 
 
 def _create_content_node(tmp_path: Path, service: MathlibService) -> None:
@@ -50,11 +53,11 @@ def test_add_mathlib_module_use_refreshes_prelude_and_dedupes(tmp_path: Path) ->
     assert added.ok
     assert added.value is not None
     assert added.value.contract.mathlib_modules == [
-        {
-            "module": "Mathlib.Data.Finset.Basic",
-            "reason": "Finite sums.",
-            "added_by": "coordinator",
-        }
+        NodeMathlibModuleUse(
+            module="Mathlib.Data.Finset.Basic",
+            reason="Finite sums.",
+            added_by=MathlibUseActor.COORDINATOR,
+        )
     ]
     prelude_path = _prelude_path(tmp_path, service)
     assert "import Mathlib.Data.Finset.Basic" in prelude_path.read_text(encoding="utf-8")
@@ -111,7 +114,7 @@ def test_worker_can_only_remove_worker_added_mathlib_module_use(tmp_path: Path) 
     )
     assert removed.ok
     assert removed.value is not None
-    assert all(item["module"] != "Mathlib.Algebra.Group.Basic" for item in removed.value.contract.mathlib_modules)
+    assert all(item.module != "Mathlib.Algebra.Group.Basic" for item in removed.value.contract.mathlib_modules)
 
 
 def test_module_use_missing_invalid_and_coordinator_remove_branches(tmp_path: Path) -> None:
@@ -214,13 +217,13 @@ def test_add_mathlib_decl_use_records_hint_without_prelude_import(tmp_path: Path
     assert added.ok
     assert added.value is not None
     assert added.value.contract.mathlib_decls == [
-        {
-            "name": "Finset.sum_congr",
-            "module": "Mathlib.Data.Finset.Basic",
-            "kind": "theorem",
-            "reason": "Candidate theorem for formal proof.",
-            "added_by": "worker",
-        }
+        NodeMathlibDeclUse(
+            name="Finset.sum_congr",
+            module="Mathlib.Data.Finset.Basic",
+            kind="theorem",
+            reason="Candidate theorem for formal proof.",
+            added_by=MathlibUseActor.WORKER,
+        )
     ]
     assert not _prelude_path(tmp_path, service).exists()
 
@@ -336,7 +339,7 @@ def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_
     contract_path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Core", 1)
     loaded = foundation.read_json(contract_path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
-    loaded.value.mathlib_modules.append({"module": "Bad Module", "added_by": "coordinator"})
+    loaded.value.mathlib_modules.append(NodeMathlibModuleUse(module="Bad Module", added_by=MathlibUseActor.COORDINATOR))
     saved = foundation.write_json_atomic(contract_path, loaded.value, mode=WriteMode.UPDATE_EXISTING)
     assert saved.ok
 
@@ -376,7 +379,7 @@ def test_validate_node_mathlib_uses_warning_policy_for_missing_index_entries(tmp
     ]
 
 
-def test_validate_node_mathlib_uses_detects_duplicates_and_legacy_shapes(tmp_path: Path) -> None:
+def test_validate_node_mathlib_uses_detects_duplicates_and_rejects_legacy_shapes(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
@@ -394,12 +397,12 @@ def test_validate_node_mathlib_uses_detects_duplicates_and_legacy_shapes(tmp_pat
     loaded = foundation.read_json(contract_path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     loaded.value.mathlib_modules = [
-        "Mathlib.Data.Finset.Basic",
-        {"module_name": "Mathlib.Data.Finset.Basic", "added_by": "worker"},
+        NodeMathlibModuleUse(module="Mathlib.Data.Finset.Basic", added_by=MathlibUseActor.COORDINATOR),
+        NodeMathlibModuleUse(module="Mathlib.Data.Finset.Basic", added_by=MathlibUseActor.WORKER),
     ]
     loaded.value.mathlib_decls = [
-        {"ref": {"name": "Finset.sum_congr", "module": "Mathlib.Data.Finset.Basic"}, "added_by": "worker"},
-        "Finset.sum_congr",
+        NodeMathlibDeclUse(name="Finset.sum_congr", module="Mathlib.Data.Finset.Basic", added_by=MathlibUseActor.WORKER),
+        NodeMathlibDeclUse(name="Finset.sum_congr", module="Mathlib.Data.Finset.Basic", added_by=MathlibUseActor.COORDINATOR),
     ]
     assert foundation.write_json_atomic(contract_path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
 
@@ -412,3 +415,11 @@ def test_validate_node_mathlib_uses_detects_duplicates_and_legacy_shapes(tmp_pat
         "mathlib_module_use_duplicate",
         "mathlib_decl_use_duplicate",
     ]
+
+    payload = loaded.value.model_dump(mode="json")
+    payload["mathlib_modules"] = ["Mathlib.Data.Finset.Basic"]
+    contract_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    legacy = service.validate_node_mathlib_uses(tmp_path, node_path="Main.Topic.Core")
+    assert not legacy.ok
+    assert legacy.issues[0].kind == "schema_validation_failed"

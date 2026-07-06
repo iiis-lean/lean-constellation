@@ -6,7 +6,7 @@ import hashlib
 import shutil
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field
@@ -26,6 +26,13 @@ class ResourceTargetView(StrictModel):
     summary: str
 
 
+class ResourceTarget(StrictModel):
+    kind: Literal["arxiv", "web_url", "local_file", "local_dir"]
+    target: str
+    canonical_locator: str
+    version: str | None = None
+
+
 class ResourceMetadataInput(StrictModel):
     title: str | None = None
     source_url: str | None = None
@@ -34,7 +41,7 @@ class ResourceMetadataInput(StrictModel):
 
 class ResourceMetadata(StrictModel):
     resource_key: str
-    target: ResourceTargetView
+    target: ResourceTarget
     title: str | None = None
     source_url: str | None = None
     notes: str | None = None
@@ -53,7 +60,7 @@ class ResourceDraftStatus(StrEnum):
 class ResourceDraft(StrictModel):
     draft_id: str
     status: ResourceDraftStatus = ResourceDraftStatus.ALLOCATED
-    target: ResourceTargetView
+    target: ResourceTarget
     resource_kind: str | None = None
     title_hint: str | None = None
     allocated_at: str = Field(default_factory=utc_now_iso)
@@ -104,7 +111,7 @@ class ResourceLibraryComponent:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
 
-    def normalize_resource_target(self, target: str) -> ServiceResult[ResourceTargetView]:
+    def normalize_resource_target_model(self, target: str) -> ServiceResult[ResourceTarget]:
         try:
             normalized = self.runtime.external.material.normalize_target(target)
         except Exception as exc:  # noqa: BLE001
@@ -116,55 +123,65 @@ class ResourceLibraryComponent:
         else:
             locator = f"{normalized.kind}:{Path(normalized.value).expanduser().resolve(strict=False)}"
         return self.runtime.foundation.ok(
-            ResourceTargetView(
+            ResourceTarget(
                 kind=normalized.kind,
                 target=normalized.value,
                 canonical_locator=locator,
                 version=normalized.version,
-                summary=f"Normalized resource target as {normalized.kind}.",
             )
         )
+
+    def normalize_resource_target(self, target: str) -> ServiceResult[ResourceTargetView]:
+        normalized = self.normalize_resource_target_model(target)
+        if not normalized.ok or normalized.value is None:
+            return self.runtime.foundation.fail(normalized.issues)
+        return self.runtime.foundation.ok(self._target_view(normalized.value))
 
     def find_duplicate_resource(
         self,
         repo_root: Path,
         *,
-        target: ResourceTargetView,
+        target: ResourceTarget | ResourceTargetView,
     ) -> ServiceResult[ResourceDuplicateView]:
+        normalized_target = self._coerce_target_model(target)
+        if not normalized_target.ok or normalized_target.value is None:
+            return self.runtime.foundation.fail(normalized_target.issues)
+        target_model = normalized_target.value
+        target_view = self._target_view(target_model)
         listed = self.list_resources(repo_root)
         if not listed.ok or listed.value is None:
             return self.runtime.foundation.fail(listed.issues)
         for item in listed.value:
-            if item.canonical_locator == target.canonical_locator:
+            if item.canonical_locator == target_model.canonical_locator:
                 return self.runtime.foundation.ok(
                     ResourceDuplicateView(
                         duplicate=True,
-                        target=target,
+                        target=target_view,
                         resource_key=item.resource_key,
                         summary=f"Duplicate resource found: {item.resource_key}.",
                     )
                 )
             resource = self.get_resource(repo_root, resource_key=item.resource_key)
-            if resource.ok and resource.value and self._resource_metadata_matches_target(resource.value.resource, target):
+            if resource.ok and resource.value and self._resource_metadata_matches_target(resource.value.resource, target_model):
                 return self.runtime.foundation.ok(
                     ResourceDuplicateView(
                         duplicate=True,
-                        target=target,
+                        target=target_view,
                         resource_key=item.resource_key,
                         summary=f"Duplicate resource metadata matched target: {item.resource_key}.",
                     )
                 )
-        return self.runtime.foundation.ok(ResourceDuplicateView(duplicate=False, target=target, summary="No duplicate resource found."))
+        return self.runtime.foundation.ok(ResourceDuplicateView(duplicate=False, target=target_view, summary="No duplicate resource found."))
 
     def allocate_resource_draft(
         self,
         repo_root: Path,
         *,
-        target: str | ResourceTargetView,
+        target: str | ResourceTarget | ResourceTargetView,
         resource_kind: str | None = None,
         title_hint: str | None = None,
     ) -> ServiceResult[ResourceDraftView]:
-        normalized = self._coerce_target(target)
+        normalized = self._coerce_target_model(target)
         if not normalized.ok or normalized.value is None:
             return self.runtime.foundation.fail(normalized.issues)
         duplicate = self.find_duplicate_resource(repo_root, target=normalized.value)
@@ -352,11 +369,15 @@ class ResourceLibraryComponent:
         self,
         repo_root: Path,
         *,
-        target: ResourceTargetView,
+        target: ResourceTarget | ResourceTargetView,
         temp_dir: Path,
         metadata: ResourceMetadataInput,
     ) -> ServiceResult[ResourceView]:
-        duplicate = self.find_duplicate_resource(repo_root, target=target)
+        normalized = self._coerce_target_model(target)
+        if not normalized.ok or normalized.value is None:
+            return self.runtime.foundation.fail(normalized.issues)
+        target_model = normalized.value
+        duplicate = self.find_duplicate_resource(repo_root, target=target_model)
         if duplicate.ok and duplicate.value and duplicate.value.duplicate:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -376,7 +397,7 @@ class ResourceLibraryComponent:
                     object_ref=str(temp_dir),
                 )
             )
-        resource_key = self._resource_key(target)
+        resource_key = self._resource_key(target_model)
         ctx = FoundationContext(repo_root=Path(repo_root))
         dest = self.runtime.foundation.layout.resource_dir(ctx, resource_key)
         if dest.exists():
@@ -388,7 +409,7 @@ class ResourceLibraryComponent:
         dest_entry = dest / entry.relative_to(temp_dir)
         resource = ResourceMetadata(
             resource_key=resource_key,
-            target=target,
+            target=target_model,
             title=metadata.title,
             source_url=metadata.source_url,
             notes=metadata.notes,
@@ -510,10 +531,29 @@ class ResourceLibraryComponent:
             return self.runtime.foundation.fail(resource.issues)
         return self.runtime.foundation.ok(Path(resource.value.resource_root) / resource.value.resource.normalized_entry)
 
-    def _coerce_target(self, target: str | ResourceTargetView) -> ServiceResult[ResourceTargetView]:
-        if isinstance(target, ResourceTargetView):
+    def _coerce_target_model(self, target: str | ResourceTarget | ResourceTargetView) -> ServiceResult[ResourceTarget]:
+        if isinstance(target, ResourceTarget):
             return self.runtime.foundation.ok(target)
-        return self.normalize_resource_target(target)
+        if isinstance(target, ResourceTargetView):
+            return self.runtime.foundation.ok(
+                ResourceTarget(
+                    kind=target.kind,
+                    target=target.target,
+                    canonical_locator=target.canonical_locator,
+                    version=target.version,
+                )
+            )
+        return self.normalize_resource_target_model(target)
+
+    @staticmethod
+    def _target_view(target: ResourceTarget) -> ResourceTargetView:
+        return ResourceTargetView(
+            kind=target.kind,
+            target=target.target,
+            canonical_locator=target.canonical_locator,
+            version=target.version,
+            summary=f"Normalized resource target as {target.kind}.",
+        )
 
     def _drafts_root(self, repo_root: Path) -> Path:
         return self.runtime.foundation.layout.resources_root(FoundationContext(repo_root=Path(repo_root))) / ".drafts"
@@ -626,11 +666,11 @@ class ResourceLibraryComponent:
             return 0
 
     @staticmethod
-    def _resource_key(target: ResourceTargetView) -> str:
+    def _resource_key(target: ResourceTarget) -> str:
         digest = hashlib.sha256(target.canonical_locator.encode("utf-8")).hexdigest()[:16]
         return f"r_{digest}"
 
-    def _resource_metadata_matches_target(self, resource: ResourceMetadata, target: ResourceTargetView) -> bool:
+    def _resource_metadata_matches_target(self, resource: ResourceMetadata, target: ResourceTarget) -> bool:
         if resource.source_url:
             normalized = self.normalize_resource_target(resource.source_url)
             if normalized.ok and normalized.value and normalized.value.canonical_locator == target.canonical_locator:

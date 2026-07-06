@@ -62,7 +62,7 @@ def _setup_decl_round(runtime: LeanRuntimeServices, repo_root: Path) -> str:
         goal="Core goal.",
         boundary="Core declarations only.",
         objective="Run real Decl-owned file capture/check.",
-        success_criteria="Statement and proof snapshots are checked by real Lake diagnostics.",
+        success_criteria="Statement and proof captures are checked by real Lake diagnostics.",
     )
     assert content.ok, content.issues
     strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Real capture strategy.")

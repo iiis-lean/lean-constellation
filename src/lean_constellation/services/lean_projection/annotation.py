@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, field_validator
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.foundation import GateReport, ServiceResult
 
 if TYPE_CHECKING:
@@ -81,23 +82,13 @@ class AnnotationComponent:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
 
-    def render_statement_docstring(self, revision: Any) -> ServiceResult[str]:
-        decl_name = self._decl_name(revision)
-        if decl_name is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "decl_name_missing",
-                    "Cannot render statement docstring without a Decl name.",
-                    field="revision.name",
-                )
-            )
-        statement = self._get_path(revision, ("statement",))
-        nl_text = self._nl_text(self._get_path(statement, ("nl",)))
-        origin = self._get_path(self._get_path(statement, ("nl",)), ("origin",))
-        deps = self._as_list(self._get_path(statement, ("deps",)))
+    def render_statement_docstring(self, revision: DeclFileRevisionView) -> ServiceResult[str]:
+        nl_text = self._nl_text(revision.statement.nl.text)
+        origin = revision.statement.nl.origin
+        deps = revision.statement.deps
         return self.runtime.foundation.ok(
             self._render_docstring(
-                decl_name=decl_name,
+                decl_name=revision.decl_name,
                 stage="statement",
                 sections=[
                     ("statement.nl", nl_text),
@@ -107,31 +98,23 @@ class AnnotationComponent:
             )
         )
 
-    def render_proof_docstring(self, revision: Any) -> ServiceResult[str]:
-        decl_name = self._decl_name(revision)
-        if decl_name is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "decl_name_missing",
-                    "Cannot render proof docstring without a Decl name.",
-                    field="revision.name",
-                )
-            )
-        statement = self._get_path(revision, ("statement",))
-        proof = self._get_path(revision, ("proof",))
-        statement_nl = self._nl_text(self._get_path(statement, ("nl",)))
-        proof_nl = self._nl_text(self._get_path(proof, ("nl",)))
-        proof_origin = self._get_path(self._get_path(proof, ("nl",)), ("origin",))
+    def render_proof_docstring(self, revision: DeclFileRevisionView) -> ServiceResult[str]:
+        proof = revision.proof
+        statement_nl = self._nl_text(revision.statement.nl.text)
+        proof_nl = self._nl_text(proof.nl.text if proof is not None else None)
+        proof_origin = proof.nl.origin if proof is not None else []
+        statement_deps = revision.statement.deps
+        proof_deps = proof.deps if proof is not None else []
         return self.runtime.foundation.ok(
             self._render_docstring(
-                decl_name=decl_name,
+                decl_name=revision.decl_name,
                 stage="proof",
                 sections=[
                     ("statement.nl", statement_nl),
-                    ("statement.deps", self._format_list(self._as_list(self._get_path(statement, ("deps",))))),
+                    ("statement.deps", self._format_list(statement_deps)),
                     ("proof.nl", proof_nl),
                     ("proof.origin", self._format_optional(proof_origin)),
-                    ("proof.deps", self._format_list(self._as_list(self._get_path(proof, ("deps",))))),
+                    ("proof.deps", self._format_list(proof_deps)),
                 ],
             )
         )
@@ -388,65 +371,21 @@ class AnnotationComponent:
             return by_match.start()
         return None
 
-    def _decl_name(self, value: Any) -> str | None:
-        for path in (("decl_name",), ("name",), ("decl", "name"), ("ref", "name")):
-            text = self._text_or_none(self._get_path(value, path))
-            if text:
-                return text
-        return None
-
-    def _nl_text(self, value: Any) -> str:
-        text = self._text_or_none(self._get_path(value, ("text",)))
-        if text:
-            return text
-        text = self._text_or_none(value)
+    def _nl_text(self, value: str | None) -> str:
+        text = value.strip() if value is not None else ""
         return text or "None"
 
-    def _get_path(self, value: Any, path: Sequence[str]) -> Any:
-        current = value
-        for key in path:
-            if current is None:
-                return None
-            current = self._get_one(current, key)
-        return current
-
-    def _get_one(self, value: Any, key: str) -> Any:
-        if isinstance(value, Mapping):
-            return value.get(key)
-        if hasattr(value, "model_dump"):
-            dumped = value.model_dump(mode="python")
-            if isinstance(dumped, Mapping):
-                return dumped.get(key)
-        return getattr(value, key, None)
-
-    def _as_list(self, value: Any) -> list[Any]:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        if isinstance(value, tuple):
-            return list(value)
-        return [value]
-
-    def _text_or_none(self, value: Any) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            stripped = value.strip()
-            return stripped or None
-        return None
-
-    def _format_optional(self, value: Any) -> str:
+    def _format_optional(self, value: object | None) -> str:
         if value is None:
             return "None"
         return self._format_value(value)
 
-    def _format_list(self, values: Sequence[Any]) -> str:
+    def _format_list(self, values: Sequence[object]) -> str:
         if not values:
             return "- None"
         return "\n".join(f"- {self._format_value(value)}" for value in values)
 
-    def _format_value(self, value: Any) -> str:
+    def _format_value(self, value: object) -> str:
         if value is None:
             return "None"
         if isinstance(value, str):

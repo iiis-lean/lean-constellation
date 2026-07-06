@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.services.decl_graph.models import DeclFileRevisionView
 from lean_constellation.services.foundation import (
     DeclFileKey,
     FoundationContext,
     GateReport,
     MutationSummaryView,
+    ServiceIssue,
     ServiceResult,
 )
 from lean_constellation.services.lean_projection.annotation import AnnotationComponent
@@ -56,7 +58,7 @@ class FormalCaptureView(StrictModel):
     summary: str
 
 
-class DeclFileSnapshotView(StrictModel):
+class DeclFileCaptureSyncView(StrictModel):
     node_path: str
     decl_name: str
     stage: DeclFileStage
@@ -70,10 +72,10 @@ class DeclFileSnapshotView(StrictModel):
 class DeclFileRevisionProvider(Protocol):
     """Minimal DeclGraph-facing provider used by DeclFileComponent."""
 
-    def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[Any]:
+    def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         ...
 
-    def save_statement_formal_snapshot(
+    def save_statement_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -81,10 +83,10 @@ class DeclFileRevisionProvider(Protocol):
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         ...
 
-    def save_proof_formal_snapshot(
+    def save_proof_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -92,7 +94,7 @@ class DeclFileRevisionProvider(Protocol):
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         ...
 
 
@@ -100,7 +102,7 @@ class _MissingDeclFileRevisionProvider:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
 
-    def _missing(self, *, node_path: str, decl_name: str) -> ServiceResult[Any]:
+    def _missing(self, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         return self.runtime.foundation.fail(
             self.runtime.foundation.issue(
                 "decl_revision_provider_missing",
@@ -109,11 +111,11 @@ class _MissingDeclFileRevisionProvider:
             )
         )
 
-    def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[Any]:
+    def get_current_decl_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         return self._missing(node_path=node_path, decl_name=decl_name)
 
-    def save_statement_formal_snapshot(
+    def save_statement_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -121,11 +123,11 @@ class _MissingDeclFileRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root, code, check
         return self._missing(node_path=node_path, decl_name=decl_name)
 
-    def save_proof_formal_snapshot(
+    def save_proof_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -133,7 +135,7 @@ class _MissingDeclFileRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
-    ) -> ServiceResult[Any]:
+    ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root, code, check
         return self._missing(node_path=node_path, decl_name=decl_name)
 
@@ -290,8 +292,8 @@ class DeclFileComponent:
         if statement_code is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "statement_formal_snapshot_missing",
-                    "Proof formal preparation requires a captured statement formal snapshot.",
+                    "statement_formal_capture_missing",
+                    "Proof formal preparation requires a captured statement formal file.",
                     object_ref=f"{node_path}:{decl_name}",
                     field="statement.formal.code",
                 )
@@ -305,7 +307,7 @@ class DeclFileComponent:
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
             return self.runtime.foundation.fail(path_view.issues)
-        return self._write_file_view(Path(path_view.value.path), replaced.value, path_view.value, "proof", changed_summary="Prepared proof formal Lean file from statement snapshot.")
+        return self._write_file_view(Path(path_view.value.path), replaced.value, path_view.value, "proof", changed_summary="Prepared proof formal Lean file from statement capture.")
 
     def capture_statement_formal_file(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[FormalCaptureView]:
         revision = self._load_revision(repo_root, node_path=node_path, decl_name=decl_name)
@@ -339,7 +341,7 @@ class DeclFileComponent:
             return self.runtime.foundation.fail(check.issues)
         if check.value.status != "passed":
             return self.runtime.foundation.fail(self._lean_check_failed_issue(node_path, decl_name, "statement", check.value))
-        saved = self.revision_provider.save_statement_formal_snapshot(
+        saved = self.revision_provider.save_statement_formal_capture(
             Path(repo_root),
             node_path=node_path,
             decl_name=decl_name,
@@ -357,7 +359,7 @@ class DeclFileComponent:
                 module=path_view.value.module,
                 line_count=len(file_text.value.splitlines()),
                 check=check.value,
-                summary="Captured statement formal whole-file snapshot.",
+                summary="Captured statement formal file.",
             )
         )
 
@@ -381,8 +383,8 @@ class DeclFileComponent:
         if statement_code is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "statement_formal_snapshot_missing",
-                    "Proof capture requires a captured statement formal snapshot.",
+                    "statement_formal_capture_missing",
+                    "Proof capture requires a captured statement formal file.",
                     object_ref=f"{node_path}:{decl_name}",
                     field="statement.formal.code",
                 )
@@ -411,7 +413,7 @@ class DeclFileComponent:
             return self.runtime.foundation.fail(check.issues)
         if check.value.status != "passed":
             return self.runtime.foundation.fail(self._lean_check_failed_issue(node_path, decl_name, "proof", check.value))
-        saved = self.revision_provider.save_proof_formal_snapshot(
+        saved = self.revision_provider.save_proof_formal_capture(
             Path(repo_root),
             node_path=node_path,
             decl_name=decl_name,
@@ -429,7 +431,7 @@ class DeclFileComponent:
                 module=path_view.value.module,
                 line_count=len(file_text.value.splitlines()),
                 check=check.value,
-                summary="Captured proof formal whole-file snapshot.",
+                summary="Captured proof formal file.",
             )
         )
 
@@ -453,25 +455,25 @@ class DeclFileComponent:
         path_view = self.derive_decl_file_path(repo_root, node_path=node_path, decl_name=decl_name, kind=kind)
         if not path_view.ok or path_view.value is None:
             return self.runtime.foundation.fail(path_view.issues)
-        snapshot = self._formal_code(revision.value, normalized_stage)
-        if snapshot is None:
+        captured_code = self._formal_code(revision.value, normalized_stage)
+        if captured_code is None:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed(
-                    "decl_file_snapshot_sync",
+                    "decl_file_capture_sync",
                     self.runtime.foundation.issue(
-                        "formal_snapshot_missing",
-                        "No captured formal snapshot exists for the requested stage.",
+                        "formal_capture_missing",
+                        "No captured formal file exists for the requested stage.",
                         object_ref=f"{node_path}:{decl_name}",
                         field=f"{normalized_stage}.formal.code",
                     ),
-                    summary="Formal snapshot is missing.",
+                    summary="Formal file capture is missing.",
                 )
             )
         path = Path(path_view.value.path)
         if not path.exists():
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed(
-                    "decl_file_snapshot_sync",
+                    "decl_file_capture_sync",
                     self.runtime.foundation.issue(
                         "decl_file_missing",
                         "Decl-owned Lean file is missing.",
@@ -484,12 +486,12 @@ class DeclFileComponent:
         file_text = self._read_lean_file(path, object_ref=f"{node_path}:{decl_name}")
         if not file_text.ok or file_text.value is None:
             return self.runtime.foundation.fail(file_text.issues)
-        if file_text.value != snapshot:
+        if file_text.value != captured_code:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed(
-                    "decl_file_snapshot_sync",
+                    "decl_file_capture_sync",
                     self.runtime.foundation.issue(
-                        "decl_file_snapshot_stale",
+                        "decl_file_capture_stale",
                         "Decl-owned Lean file was modified after the latest capture.",
                         object_ref=f"{node_path}:{decl_name}",
                         details={"path": str(path), "stage": normalized_stage},
@@ -499,7 +501,7 @@ class DeclFileComponent:
             )
         return self.runtime.foundation.ok(
             self.runtime.foundation.gate_passed(
-                "decl_file_snapshot_sync",
+                "decl_file_capture_sync",
                 summary=f"{normalized_stage} formal file is synchronized with captured metadata.",
             )
         )
@@ -525,7 +527,7 @@ class DeclFileComponent:
                 self.runtime.foundation.mutation_view(
                     object_ref=f"{node_path}:{decl_name}",
                     changed=write.value,
-                    summary="Synchronized Decl-owned file to proof formal snapshot.",
+                    summary="Synchronized Decl-owned file to proof formal capture.",
                     changed_items=[str(path)] if write.value else [],
                 )
             )
@@ -537,7 +539,7 @@ class DeclFileComponent:
                 self.runtime.foundation.mutation_view(
                     object_ref=f"{node_path}:{decl_name}",
                     changed=write.value,
-                    summary="Synchronized Decl-owned file to statement formal snapshot.",
+                    summary="Synchronized Decl-owned file to statement formal capture.",
                     changed_items=[str(path)] if write.value else [],
                 )
             )
@@ -558,7 +560,7 @@ class DeclFileComponent:
             self.runtime.foundation.mutation_view(
                 object_ref=f"{node_path}:{decl_name}",
                 changed=changed,
-                summary="Removed Decl-owned Lean file because the current revision has no formal snapshot.",
+                summary="Removed Decl-owned Lean file because the current revision has no formal capture.",
                 changed_items=[str(path)] if changed else [],
             )
         )
@@ -594,7 +596,7 @@ class DeclFileComponent:
             )
         )
 
-    def _load_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[Any]:
+    def _load_revision(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[DeclFileRevisionView]:
         return self.revision_provider.get_current_decl_revision(Path(repo_root), node_path=node_path, decl_name=decl_name)
 
     def _render_statement_file(self, *, node_path: str, decl_name: str, kind: str, docstring: str) -> str:
@@ -691,28 +693,20 @@ class DeclFileComponent:
                 self.runtime.foundation.issue("decl_file_read_failed", f"Failed to read Decl-owned Lean file: {exc}", object_ref=object_ref, details={"path": str(path)})
             )
 
-    def _formal_code(self, revision: Any, stage: DeclFileStage) -> str | None:
-        value = self._get_path(revision, (stage, "formal", "code"))
-        if not isinstance(value, str):
-            value = self._get_path(revision, (f"{stage}_formal", "code"))
-        if not isinstance(value, str):
-            value = self._get_path(revision, (f"{stage}_formal_code",))
-        if isinstance(value, str) and value.strip():
+    def _formal_code(self, revision: DeclFileRevisionView, stage: DeclFileStage) -> str | None:
+        stage_view = revision.statement if stage == "statement" else revision.proof
+        value = stage_view.formal.code if stage_view is not None and stage_view.formal is not None else None
+        if value is not None and value.strip():
             return value
         return None
 
-    def _decl_kind(self, revision: Any) -> str | None:
-        for path in (("kind",), ("decl_kind",), ("decl", "kind")):
-            value = self._text_or_none(self._get_path(revision, path))
-            if value:
-                return value
-        return None
+    def _decl_kind(self, revision: DeclFileRevisionView) -> str | None:
+        return revision.kind.strip() if revision.kind.strip() else None
 
-    def _require_nl_text(self, revision: Any, stage: DeclFileStage, *, node_path: str, decl_name: str) -> Any | None:
-        value = self._get_path(revision, (stage, "nl", "text"))
-        if not (isinstance(value, str) and value.strip()):
-            value = self._get_path(revision, (f"{stage}_nl",))
-        if isinstance(value, str) and value.strip():
+    def _require_nl_text(self, revision: DeclFileRevisionView, stage: DeclFileStage, *, node_path: str, decl_name: str) -> ServiceIssue | None:
+        stage_view = revision.statement if stage == "statement" else revision.proof
+        value = stage_view.nl.text if stage_view is not None else None
+        if value is not None and value.strip():
             return None
         return self.runtime.foundation.issue(
             f"{stage}_nl_missing",
@@ -736,9 +730,9 @@ class DeclFileComponent:
             )
         return self.runtime.foundation.ok(None)
 
-    def _require_open_revision(self, revision: Any, *, node_path: str, decl_name: str) -> Any | None:
-        version_status = self._text_or_none(self._get_path(revision, ("version_status",)))
-        if version_status is None or version_status == "open":
+    def _require_open_revision(self, revision: DeclFileRevisionView, *, node_path: str, decl_name: str) -> ServiceIssue | None:
+        version_status = revision.version_status
+        if version_status == "open":
             return None
         return self.runtime.foundation.issue(
             "decl_revision_not_open",
@@ -749,7 +743,7 @@ class DeclFileComponent:
             expected="open",
         )
 
-    def _supported_kind_issue(self, kind: str, *, node_path: str, decl_name: str) -> Any | None:
+    def _supported_kind_issue(self, kind: str, *, node_path: str, decl_name: str) -> ServiceIssue | None:
         normalized = self._normalize_kind(kind)
         if normalized in self._KIND_DIRS:
             return None
@@ -762,7 +756,7 @@ class DeclFileComponent:
             expected=", ".join(sorted(self._KIND_DIRS)),
         )
 
-    def _lean_check_failed_issue(self, node_path: str, decl_name: str, stage: DeclFileStage, check: LeanCheckView) -> Any:
+    def _lean_check_failed_issue(self, node_path: str, decl_name: str, stage: DeclFileStage, check: LeanCheckView) -> ServiceIssue:
         return self.runtime.foundation.issue(
             f"{stage}_lean_check_failed",
             check.message,
@@ -770,7 +764,7 @@ class DeclFileComponent:
             details={"policy": check.policy},
         )
 
-    def _missing_field_issue(self, node_path: str, decl_name: str, field: str) -> Any:
+    def _missing_field_issue(self, node_path: str, decl_name: str, field: str) -> ServiceIssue:
         return self.runtime.foundation.issue(
             "decl_revision_field_missing",
             f"DeclRevision is missing required field: {field}.",
@@ -778,7 +772,7 @@ class DeclFileComponent:
             field=field,
         )
 
-    def _invalid_stage_issue(self, stage: object) -> Any:
+    def _invalid_stage_issue(self, stage: object) -> ServiceIssue:
         return self.runtime.foundation.issue(
             "decl_file_stage_invalid",
             "Decl file stage must be statement or proof.",
@@ -800,28 +794,3 @@ class DeclFileComponent:
 
     def _normalize_kind(self, kind: str) -> str:
         return kind.strip().lower().replace("-", "_")
-
-    def _get_path(self, value: Any, path: tuple[str, ...]) -> Any:
-        current = value
-        for key in path:
-            if current is None:
-                return None
-            current = self._get_one(current, key)
-        return current
-
-    def _get_one(self, value: Any, key: str) -> Any:
-        if isinstance(value, dict):
-            return value.get(key)
-        if hasattr(value, "model_dump"):
-            dumped = value.model_dump(mode="python")
-            if isinstance(dumped, dict):
-                return dumped.get(key)
-        return getattr(value, key, None)
-
-    def _text_or_none(self, value: Any) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            stripped = value.strip()
-            return stripped or None
-        return str(value)

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
+from lean_constellation.services.node.contract_fields import NodeMathlibDeclUse, NodeMathlibModuleUse
 from lean_constellation.services.node.dependency import DependencyComponent, NodeDepsView
 from lean_constellation.services.node.export import (
     ContentPublicDeclProvider,
@@ -77,8 +78,8 @@ class CurrentNodeContractView(StrictModel):
     contract: NodeContractView
     deps: NodeDepsView
     material_refs: NodeMaterialRefsView
-    mathlib_modules: list[Any] = Field(default_factory=list)
-    mathlib_decls: list[Any] = Field(default_factory=list)
+    mathlib_modules: list[NodeMathlibModuleUse] = Field(default_factory=list)
+    mathlib_decls: list[NodeMathlibDeclUse] = Field(default_factory=list)
     summary: str
 
 
@@ -639,16 +640,24 @@ class NodeService:
             return self.runtime.foundation.fail(children.issues)
         views: list[ScopeChildCloseView] = []
         for child in children.value:
-            contract = self.contract.get_current_contract(repo_root, node_path=child.path)
-            if not contract.ok or contract.value is None:
-                return self.runtime.foundation.fail(contract.issues)
-            ready = contract.value.version_status == ContractVersionStatus.COMMITTED
+            contract = self.contract.get_visible_contract(repo_root, node_path=child.path)
+            if contract.ok and contract.value is not None:
+                ready = True
+                contract_version = contract.value.version
+                contract_status = contract.value.version_status
+            else:
+                edit_contract = self.contract.get_current_contract(repo_root, node_path=child.path)
+                if not edit_contract.ok or edit_contract.value is None:
+                    return self.runtime.foundation.fail(edit_contract.issues)
+                ready = False
+                contract_version = edit_contract.value.version
+                contract_status = edit_contract.value.version_status
             views.append(
                 ScopeChildCloseView(
                     path=child.path,
                     node_kind=child.kind,
-                    contract_version=contract.value.version,
-                    contract_version_status=contract.value.version_status,
+                    contract_version=contract_version,
+                    contract_version_status=contract_status,
                     ready_for_scope_close=ready,
                     summary=(
                         f"{child.kind.value} child {child.path} is committed."

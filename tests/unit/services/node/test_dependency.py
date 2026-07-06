@@ -1,10 +1,14 @@
-from tests.unit_services_helpers import make_runtime
+import json
 
 from pathlib import Path
 
+from tests.unit_services_helpers import make_runtime
+
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import NodeRef
 from lean_constellation.services.foundation import FoundationContext, FoundationService, WriteMode
-from lean_constellation.services.node import ContractComponent, DependencyComponent, NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.services.node import ContractComponent, ContractVersionStatus, DependencyComponent, NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 from lean_constellation.services.repo_workspace import RepoWorkspaceService
 
 
@@ -82,6 +86,29 @@ def test_list_visible_node_boundaries_only_shows_committed_boundaries(tmp_path: 
     assert visible.value.boundaries[0].exported_decl_refs[0].name == "helper"
 
 
+def test_visible_node_boundaries_use_active_committed_contract_not_open_draft(tmp_path: Path) -> None:
+    _create_base_tree(tmp_path)
+    _commit_provider_scope(tmp_path)
+    contract = make_runtime().node.contract
+    opened = contract.ensure_open_contract(tmp_path, node_path="Main.Topic.Provider")
+    assert opened.ok and opened.value is not None
+    opened.value.contract.exports = []
+    saved = make_runtime().foundation.write_json_atomic(
+        make_runtime().foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Provider", opened.value.version),
+        opened.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    )
+    assert saved.ok
+    component = make_runtime().node.dependency
+
+    visible = component.list_visible_node_boundaries(tmp_path, node_path="Main.Topic.Consumer")
+
+    assert visible.ok
+    assert visible.value is not None
+    assert [item.node_path for item in visible.value.boundaries] == ["Main.Topic.Provider"]
+    assert visible.value.boundaries[0].exported_decl_refs[0].name == "helper"
+
+
 def test_list_visible_node_boundaries_includes_lake_dependency_boundaries(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     (tmp_path / "lakefile.toml").write_text(
@@ -118,9 +145,9 @@ def test_add_node_dep_resolves_expected_decl_and_refreshes_prelude(tmp_path: Pat
     assert added.value is not None
     assert len(added.value.contract.deps) == 1
     dep = added.value.contract.deps[0]
-    assert dep["target"] == {"repo": None, "node": "Main.Topic.Provider"}
-    assert dep["expected_decl_refs"] == [ref.model_dump(mode="json")]
-    assert dep["added_by"] == "coordinator"
+    assert dep.target == NodeRef(repo=None, node="Main.Topic.Provider")
+    assert dep.expected_decl_refs == [ref]
+    assert dep.added_by == NodeDepActor.COORDINATOR
     listed = component.list_node_deps(tmp_path, node_path="Main.Topic.Consumer")
     assert listed.ok
     assert listed.value is not None
@@ -150,7 +177,7 @@ def test_add_node_dep_from_visible_candidate_uses_display_index(tmp_path: Path) 
     )
     assert added.ok, added.issues
     assert added.value is not None
-    assert added.value.contract.deps[0]["target"] == {"repo": None, "node": "Main.Topic.Provider"}
+    assert added.value.contract.deps[0].target == NodeRef(repo=None, node="Main.Topic.Provider")
 
     missing = component.add_node_dep_from_visible_candidate(
         tmp_path,
@@ -255,7 +282,7 @@ def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator
         actor="coordinator",
     )
     assert first.ok and first.value is not None
-    dep_id = first.value.contract.deps[0]["dep_id"]
+    dep_id = first.value.contract.deps[0].dep_id
 
     duplicate = component.add_node_dep(
         tmp_path,
@@ -268,7 +295,7 @@ def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator
     assert duplicate.ok
     assert duplicate.issues[0].kind == "node_dep_duplicate"
     assert duplicate.value is not None
-    assert duplicate.value.contract.deps[0]["dep_id"] == dep_id
+    assert duplicate.value.contract.deps[0].dep_id == dep_id
 
     updated = component.add_node_dep(
         tmp_path,
@@ -279,7 +306,7 @@ def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator
         actor="coordinator",
     )
     assert updated.ok and updated.value is not None
-    assert updated.value.contract.deps[0]["reason"] == "Updated reason."
+    assert updated.value.contract.deps[0].reason == "Updated reason."
 
     denied = component.add_node_dep(
         tmp_path,
@@ -331,7 +358,7 @@ def test_worker_can_only_remove_worker_added_node_dep(tmp_path: Path) -> None:
     removed = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=worker_index, actor="worker")
     assert removed.ok
     assert removed.value is not None
-    assert all(dep["target"]["node"] != "Main.Topic.B" for dep in removed.value.contract.deps)
+    assert all(dep.target.node != "Main.Topic.B" for dep in removed.value.contract.deps)
 
 
 def test_remove_node_dep_reports_missing_dep_and_allows_coordinator_remove(tmp_path: Path) -> None:
@@ -383,7 +410,14 @@ def test_validate_node_deps_reports_cycle_and_batch_dependency(tmp_path: Path) -
     path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.B", 1)
     loaded = foundation.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
-    loaded.value.deps.append({"target": {"repo": None, "node": "Main.Topic.A"}, "reason": "B uses A."})
+    loaded.value.deps.append(
+        NodeDep(
+            dep_id="dep_cycle_to_a",
+            target=NodeRef(repo=None, node="Main.Topic.A"),
+            reason="B uses A.",
+            added_by=NodeDepActor.COORDINATOR,
+        )
+    )
     assert foundation.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
 
     validation = component.validate_node_deps(tmp_path, node_path="Main.Topic.A")
@@ -416,24 +450,24 @@ def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_
     consumer_path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Consumer", 1)
     consumer = foundation.read_json(consumer_path, NodeContractSnapshot)
     assert consumer.ok and consumer.value is not None
-    consumer.value.deps.append("bad dependency entry")
-    assert foundation.write_json_atomic(consumer_path, consumer.value, mode=WriteMode.UPDATE_EXISTING).ok
+    consumer_payload = consumer.value.model_dump(mode="json")
+    consumer_payload["deps"].append("bad dependency entry")
+    consumer_path.write_text(json.dumps(consumer_payload), encoding="utf-8")
 
     invalid = component.validate_node_deps(tmp_path, node_path="Main.Topic.Consumer")
-    assert invalid.ok
-    assert invalid.value is not None
-    assert invalid.value.passed is False
-    assert invalid.value.issues[0].kind == "node_dep_invalid"
+    assert not invalid.ok
+    assert invalid.issues[0].kind == "schema_validation_failed"
 
-    consumer.value.deps = [
+    consumer_payload["deps"] = [
         {
+            "dep_id": "dep_provider_helper",
             "target": {"repo": None, "node": "Main.Topic.Provider"},
             "expected_decl_refs": [ref.model_dump(mode="json")],
             "reason": "Use provider helper.",
             "added_by": "coordinator",
         }
     ]
-    assert foundation.write_json_atomic(consumer_path, consumer.value, mode=WriteMode.UPDATE_EXISTING).ok
+    consumer_path.write_text(json.dumps(consumer_payload), encoding="utf-8")
     provider_path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic.Provider", 1)
     provider = foundation.read_json(provider_path, NodeContractSnapshot)
     assert provider.ok and provider.value is not None
@@ -446,15 +480,16 @@ def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_
     assert expected_missing.value.passed is False
     assert expected_missing.value.issues[0].kind == "node_dep_expected_decl_not_public"
 
-    consumer.value.deps = [
+    consumer_payload["deps"] = [
         {
+            "dep_id": "dep_provider_open",
             "target": {"repo": None, "node": "Main.Topic.Provider"},
             "reason": "Provider open again.",
             "added_by": "coordinator",
         }
     ]
-    assert foundation.write_json_atomic(consumer_path, consumer.value, mode=WriteMode.UPDATE_EXISTING).ok
-    provider.value.version_status = "open"
+    consumer_path.write_text(json.dumps(consumer_payload), encoding="utf-8")
+    provider.value.status = ContractVersionStatus.OPEN
     assert foundation.write_json_atomic(provider_path, provider.value, mode=WriteMode.UPDATE_EXISTING).ok
 
     unready = component.validate_node_deps(tmp_path, node_path="Main.Topic.Consumer")
@@ -463,14 +498,15 @@ def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_
     assert unready.value.passed is False
     assert unready.value.issues[0].kind == "node_dep_target_not_ready"
 
-    consumer.value.deps = [
+    consumer_payload["deps"] = [
         {
+            "dep_id": "dep_external_provider",
             "target": {"repo": "ProviderRepo", "node": "Main"},
             "reason": "External provider.",
             "added_by": "coordinator",
         }
     ]
-    assert foundation.write_json_atomic(consumer_path, consumer.value, mode=WriteMode.UPDATE_EXISTING).ok
+    consumer_path.write_text(json.dumps(consumer_payload), encoding="utf-8")
 
     external = component.validate_node_deps(tmp_path, node_path="Main.Topic.Consumer")
     assert external.ok

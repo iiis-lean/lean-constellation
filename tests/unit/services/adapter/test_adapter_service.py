@@ -168,6 +168,7 @@ def _service(
         repo_format=RepoFormat.ADAPTER,
         reason="unit test adapter repo",
     ).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     (tmp_path / "lakefile.toml").write_text(
         'name = "Adapter"\n\n[[require]]\nname = "upstream"\ngit = "https://github.com/example/upstream"\n',
         encoding="utf-8",
@@ -467,6 +468,13 @@ def test_adapter_decl_catalog_finalize_and_completeness(tmp_path: Path) -> None:
         plan_summary="Expose the upstream main theorem.",
     )
     assert created.ok
+    common_decl = service.runtime.decl_graph.get_decl(tmp_path, node_path="Main", name="main_result")
+    assert common_decl.ok and common_decl.value is not None
+    assert common_decl.value.name == "main_result"
+    root_node = service.runtime.node.node_tree.node_store.resolve_active_node(tmp_path, path="Main")
+    assert root_node.ok and root_node.value is not None
+    legacy_flat_path = service.runtime.node.node_tree.node_store.node_dir(tmp_path, node_id=root_node.value.node_id) / "decls" / "main_result.json"
+    assert not legacy_flat_path.exists()
 
     incomplete = service.check_adapter_decl_completeness(tmp_path, name="main_result")
     assert incomplete.ok
@@ -505,8 +513,10 @@ def test_adapter_decl_catalog_finalize_and_completeness(tmp_path: Path) -> None:
     finalized = service.finalize_adapter_decl(tmp_path, name="main_result")
     assert finalized.ok
     assert finalized.value is not None
-    assert finalized.value.record.finalized is True
-    assert finalized.value.record.state == "proved"
+    assert finalized.value.finalized is True
+    assert finalized.value.state == "proved"
+    assert finalized.value.decl.public is True
+    assert finalized.value.revision.status.value == "committed"
 
     modules = service.list_registered_adapter_modules(tmp_path)
     assert modules.ok
@@ -683,8 +693,9 @@ def test_adapter_decl_catalog_non_theorem_and_filters(tmp_path: Path) -> None:
     inspected = service.inspect_adapter_decl(tmp_path, name="adapter_true")
     assert inspected.ok
     assert inspected.value is not None
-    assert inspected.value.record.revision == 1
-    assert inspected.value.record.node == "Main"
+    assert inspected.value.revision.revision == 1
+    assert inspected.value.node_path == "Main"
+    assert inspected.value.decl.node_path == "Main"
 
     modules = service.list_registered_adapter_modules(tmp_path)
     assert modules.ok

@@ -54,6 +54,12 @@ class SnapshotFilesManifest(StrictModel):
     summary: str
 
 
+class SnapshotNodeRef(StrictModel):
+    node_id: str
+    path: str
+    scope_id: str
+
+
 class RepoCheckpointSnapshotManifest(StrictModel):
     snapshot_id: str
     checkpoint_kind: RepoCheckpointKind
@@ -62,7 +68,7 @@ class RepoCheckpointSnapshotManifest(StrictModel):
     repo_root: str
     ark_runtime_snapshot_id: str
     refreshed_scope_ids: list[str] = Field(default_factory=list)
-    node_paths: list[str] = Field(default_factory=list)
+    node_refs: list[SnapshotNodeRef] = Field(default_factory=list)
     files_manifest_relpath: str
     summary: str
 
@@ -74,7 +80,7 @@ class RepoCheckpointSnapshotView(StrictModel):
     root: str
     ark_runtime_snapshot_id: str
     refreshed_scope_ids: list[str] = Field(default_factory=list)
-    node_paths: list[str] = Field(default_factory=list)
+    node_refs: list[SnapshotNodeRef] = Field(default_factory=list)
     file_count: int
     summary: str
 
@@ -256,18 +262,20 @@ class SnapshotRestoreComponent:
         *,
         checkpoint_kind: RepoCheckpointKind | str,
         node_paths: list[str] | None = None,
+        node_ids: list[str] | None = None,
     ) -> ServiceResult[GateReport]:
         kind = RepoCheckpointKind(checkpoint_kind)
         policy = self.checkpoint_policies()[kind]
-        normalized_node_paths = self._normalize_checkpoint_node_paths(kind, node_paths or [])
-        if not normalized_node_paths.ok or normalized_node_paths.value is None:
-            return self.runtime.foundation.fail(normalized_node_paths.issues)
+        node_refs = self._node_refs_for(Path(repo_root), kind, node_paths=node_paths or [], node_ids=node_ids or [])
+        if not node_refs.ok or node_refs.value is None:
+            return self.runtime.foundation.fail(node_refs.issues)
+        stable_node_paths = [ref.path for ref in node_refs.value]
         reports: list[GateReport] = []
 
         runtime = self.runtime_stability_provider.check_repo_stable_point(
             Path(repo_root),
             checkpoint_kind=kind,
-            node_paths=normalized_node_paths.value,
+            node_paths=stable_node_paths,
         )
         if not runtime.ok or runtime.value is None:
             return self.runtime.foundation.fail(runtime.issues)
@@ -302,17 +310,23 @@ class SnapshotRestoreComponent:
         checkpoint_kind: RepoCheckpointKind | str,
         label: str | None = None,
         node_paths: list[str] | None = None,
+        node_ids: list[str] | None = None,
         scope_ids: list[str] | None = None,
     ) -> ServiceResult[RepoCheckpointSnapshotView]:
         repo_root = Path(repo_root)
         kind = RepoCheckpointKind(checkpoint_kind)
-        normalized_node_paths = self._normalize_checkpoint_node_paths(kind, node_paths or [])
-        if not normalized_node_paths.ok or normalized_node_paths.value is None:
-            return self.runtime.foundation.fail(normalized_node_paths.issues)
+        node_refs = self._node_refs_for(repo_root, kind, node_paths=node_paths or [], node_ids=node_ids or [])
+        if not node_refs.ok or node_refs.value is None:
+            return self.runtime.foundation.fail(node_refs.issues)
         normalized_scope_ids = self._normalize_checkpoint_scope_ids(scope_ids)
         if not normalized_scope_ids.ok:
             return self.runtime.foundation.fail(normalized_scope_ids.issues)
-        gate = self.check_repo_stable_point(repo_root, checkpoint_kind=kind, node_paths=normalized_node_paths.value)
+        gate = self.check_repo_stable_point(
+            repo_root,
+            checkpoint_kind=kind,
+            node_paths=[ref.path for ref in node_refs.value],
+            node_ids=[ref.node_id for ref in node_refs.value],
+        )
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
         if not gate.value.passed:
@@ -333,7 +347,7 @@ class SnapshotRestoreComponent:
         effective_scope_ids = normalized_scope_ids.value or self._scope_ids_for(
             repo_root,
             kind,
-            normalized_node_paths.value,
+            node_refs.value,
         )
         ark = self.ark_snapshot_provider.create_runtime_snapshot(repo_root, scope_ids=effective_scope_ids, label=label)
         if not ark.ok or ark.value is None:
@@ -367,7 +381,7 @@ class SnapshotRestoreComponent:
             repo_root=str(repo_root),
             ark_runtime_snapshot_id=ark.value,
             refreshed_scope_ids=effective_scope_ids,
-            node_paths=normalized_node_paths.value,
+            node_refs=node_refs.value,
             files_manifest_relpath="files_manifest.json",
             summary=gate.value.summary or f"Created repo checkpoint snapshot {snapshot_id}.",
         )
@@ -387,7 +401,7 @@ class SnapshotRestoreComponent:
                 root=str(snapshot_root),
                 ark_runtime_snapshot_id=ark.value,
                 refreshed_scope_ids=effective_scope_ids,
-                node_paths=normalized_node_paths.value,
+                node_refs=node_refs.value,
                 file_count=len(entries),
                 summary=f"Created {kind.value} checkpoint snapshot with {len(entries)} files.",
             )
@@ -472,10 +486,13 @@ class SnapshotRestoreComponent:
 
     def rebuild_after_restore(self, repo_root: Path) -> ServiceResult[MutationSummaryView]:
         ctx = FoundationContext(repo_root=Path(repo_root), caller="validation_snapshot.rebuild_after_restore")
+        node_index = self.runtime.node.node_tree.node_store.rebuild_index(repo_root)
+        if not node_index.ok:
+            return self.runtime.foundation.fail(node_index.issues)
         metadata = self.runtime.foundation.index.list_index_metadata(ctx)
         if not metadata.ok or metadata.value is None:
             return self.runtime.foundation.fail(metadata.issues)
-        rebuilt: list[str] = []
+        rebuilt: list[str] = ["node:index"]
         warnings = []
         for item in metadata.value:
             result = self.runtime.foundation.index.rebuild_index(ctx, item.index_name, reason="restore")
@@ -484,6 +501,19 @@ class SnapshotRestoreComponent:
                 warnings.extend(result.issues)
             else:
                 return self.runtime.foundation.fail(result.issues)
+        nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
+        if not nodes.ok or nodes.value is None:
+            return self.runtime.foundation.fail(nodes.issues)
+        for node in nodes.value:
+            if node.lifecycle.value != "active" or node.kind.value != "content":
+                continue
+            graph_root = self.runtime.node.node_tree.node_store.decl_graph_dir(repo_root, node_id=node.node_id)
+            if not graph_root.exists():
+                continue
+            decl_graph = self.runtime.decl_graph.rebuild_decl_graph_index(repo_root, node_path=node.path)
+            if not decl_graph.ok:
+                return self.runtime.foundation.fail(decl_graph.issues)
+            rebuilt.append(f"decl_graph:{node.node_id}")
         return self.runtime.foundation.ok(
             self.runtime.foundation.mutation_view(
                 object_ref=str(repo_root),
@@ -525,7 +555,7 @@ class SnapshotRestoreComponent:
                         root=str(child),
                         ark_runtime_snapshot_id=loaded.value.ark_runtime_snapshot_id,
                         refreshed_scope_ids=loaded.value.refreshed_scope_ids,
-                        node_paths=loaded.value.node_paths,
+                        node_refs=loaded.value.node_refs,
                         file_count=file_count,
                         summary=loaded.value.summary,
                     ),
@@ -550,12 +580,12 @@ class SnapshotRestoreComponent:
     def _snapshot_dir(self, repo_root: Path, snapshot_id: str) -> Path:
         return self._snapshot_root(repo_root) / self.runtime.foundation.layout.ensure_safe_key(snapshot_id)
 
-    def _scope_ids_for(self, repo_root: Path, checkpoint_kind: RepoCheckpointKind, node_paths: list[str]) -> list[str]:
+    def _scope_ids_for(self, repo_root: Path, checkpoint_kind: RepoCheckpointKind, node_refs: list[SnapshotNodeRef]) -> list[str]:
         policy = self.checkpoint_policies()[checkpoint_kind]
         repo_key = Path(repo_root).name
         scope_ids = [f"repo:{repo_key}"]
         if policy.include_node_scopes:
-            scope_ids.extend(f"repo:{repo_key}:node:{path}" for path in node_paths)
+            scope_ids.extend(ref.scope_id for ref in node_refs)
         return scope_ids
 
     def _normalize_checkpoint_scope_ids(self, scope_ids: list[str] | None) -> ServiceResult[list[str] | None]:
@@ -612,6 +642,114 @@ class SnapshotRestoreComponent:
                 normalized.append(path)
                 seen.add(path)
         return self.runtime.foundation.ok(normalized)
+
+    def _normalize_checkpoint_node_ids(
+        self,
+        checkpoint_kind: RepoCheckpointKind,
+        node_ids: list[str],
+    ) -> ServiceResult[list[str]]:
+        policy = self.checkpoint_policies()[checkpoint_kind]
+        if not policy.include_node_scopes:
+            return self.runtime.foundation.ok([])
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for index, raw_node_id in enumerate(node_ids):
+            node_id = raw_node_id.strip()
+            if not node_id:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "checkpoint_node_id_required",
+                        "Content task checkpoint node_ids cannot contain an empty node id.",
+                        field=f"node_ids[{index}]",
+                        suggested_action="Remove the empty entry or provide a valid content node id.",
+                    )
+                )
+            if node_id not in seen:
+                normalized.append(node_id)
+                seen.add(node_id)
+        return self.runtime.foundation.ok(normalized)
+
+    def _node_refs_for(
+        self,
+        repo_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+        *,
+        node_paths: list[str],
+        node_ids: list[str],
+    ) -> ServiceResult[list[SnapshotNodeRef]]:
+        normalized_paths = self._normalize_checkpoint_node_paths(checkpoint_kind, node_paths)
+        if not normalized_paths.ok or normalized_paths.value is None:
+            return self.runtime.foundation.fail(normalized_paths.issues)
+        normalized_ids = self._normalize_checkpoint_node_ids(checkpoint_kind, node_ids)
+        if not normalized_ids.ok or normalized_ids.value is None:
+            return self.runtime.foundation.fail(normalized_ids.issues)
+        if not self.checkpoint_policies()[checkpoint_kind].include_node_scopes:
+            return self.runtime.foundation.ok([])
+
+        repo_key = Path(repo_root).name
+        refs_by_node_id: dict[str, SnapshotNodeRef] = {}
+        refs_by_path: dict[str, SnapshotNodeRef] = {}
+
+        def add_ref(ref: SnapshotNodeRef, *, field: str) -> ServiceResult[None]:
+            existing_by_node = refs_by_node_id.get(ref.node_id)
+            if existing_by_node is not None:
+                if existing_by_node.path != ref.path or existing_by_node.scope_id != ref.scope_id:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "checkpoint_node_ref_conflict",
+                            "Checkpoint node references contain conflicting entries for the same node id.",
+                            object_ref=ref.node_id,
+                            field=field,
+                            details={"existing_path": existing_by_node.path, "incoming_path": ref.path},
+                        )
+                    )
+                return self.runtime.foundation.ok(None)
+            existing_by_path = refs_by_path.get(ref.path)
+            if existing_by_path is not None and existing_by_path.node_id != ref.node_id:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "checkpoint_node_ref_conflict",
+                        "Checkpoint node references contain conflicting active node ids for the same node path.",
+                        object_ref=ref.path,
+                        field=field,
+                        details={"existing_node_id": existing_by_path.node_id, "incoming_node_id": ref.node_id},
+                    )
+                )
+            refs_by_node_id[ref.node_id] = ref
+            refs_by_path[ref.path] = ref
+            return self.runtime.foundation.ok(None)
+
+        for path in normalized_paths.value:
+            node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=path)
+            if not node.ok or node.value is None:
+                return self.runtime.foundation.fail(node.issues)
+            added = add_ref(
+                SnapshotNodeRef(
+                    node_id=node.value.node_id,
+                    path=node.value.path,
+                    scope_id=f"repo:{repo_key}:node:{node.value.node_id}",
+                ),
+                field="node_paths",
+            )
+            if not added.ok:
+                return self.runtime.foundation.fail(added.issues)
+
+        for node_id in normalized_ids.value:
+            node = self.runtime.node.node_tree.node_store.load_node_by_id(repo_root, node_id=node_id)
+            if not node.ok or node.value is None:
+                return self.runtime.foundation.fail(node.issues)
+            added = add_ref(
+                SnapshotNodeRef(
+                    node_id=node.value.node_id,
+                    path=node.value.path,
+                    scope_id=f"repo:{repo_key}:node:{node.value.node_id}",
+                ),
+                field="node_ids",
+            )
+            if not added.ok:
+                return self.runtime.foundation.fail(added.issues)
+
+        return self.runtime.foundation.ok(list(refs_by_node_id.values()))
 
     def _copy_constellation_truth(self, repo_root: Path, archive_root: Path) -> list[SnapshotFileEntry]:
         source = self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root))

@@ -43,7 +43,7 @@ class DictRevisionProvider:
             )
         return self.foundation.ok(revision)
 
-    def save_statement_formal_snapshot(
+    def save_statement_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -61,7 +61,7 @@ class DictRevisionProvider:
         revision["state"] = "declared"
         return self.foundation.ok(revision)
 
-    def save_proof_formal_snapshot(
+    def save_proof_formal_capture(
         self,
         repo_root: Path,
         *,
@@ -114,7 +114,7 @@ def _create_content_node(repo_root: Path) -> None:
         goal="Core goal",
         boundary="Core boundary",
         objective="Build the real LeanProjection smoke theorem.",
-        success_criteria="The statement and proof formal snapshots compile through Lake.",
+        success_criteria="The statement and proof formal captures compile through Lake.",
     ).ok
 
 

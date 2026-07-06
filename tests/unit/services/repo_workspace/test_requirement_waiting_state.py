@@ -48,10 +48,10 @@ def test_requirement_waiting_state_write_read_and_duplicate_idempotent(tmp_path:
     assert "already waiting" in repeated.value.summary
     assert loaded.ok
     assert loaded.value is not None
-    assert loaded.value.requirement.waiting_state.waiting is True
-    assert loaded.value.requirement.waiting_state.provider_repo == "provider"
-    assert loaded.value.requirement.waiting_state.reason == "Submitted by Coordinator."
-    assert loaded.value.requirement.waiting_state.submitted_at is not None
+    assert loaded.value.requirement.provider_repo == "provider"
+    assert loaded.value.requirement.provider_request_submitted_at is not None
+    assert loaded.value.requirement.provider_result_observed_at is None
+    assert loaded.value.requirement.note == "Submitted by Coordinator."
 
 
 def test_requirement_waiting_conflict_and_obsolete_failure(tmp_path: Path) -> None:
@@ -219,6 +219,10 @@ def test_requirement_result_observed_removes_resume_candidate(tmp_path: Path) ->
     assert observed.ok
     assert observed.value is not None
     assert observed.value.result_observed is True
+    loaded = runtime.repo_workspace.requirement.get_requirement(consumer, name="need_provider")
+    assert loaded.ok and loaded.value is not None
+    assert loaded.value.requirement.provider_result_observed_at is not None
+    assert loaded.value.requirement.note == "Coordinator resume gate consumed the provider result."
     assert after.ok and after.value == []
     assert repeated.ok
     assert repeated.value is not None

@@ -11,6 +11,7 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
+from lean_constellation.services.node.contract_fields import NodeDep, NodeMathlibModuleUse
 from lean_constellation.services.node.export import ExportComponent, ScopeExportCandidate
 from lean_constellation.services.node.node_tree import NodeKind
 
@@ -323,7 +324,7 @@ class NodeProjectionComponent:
                 imports.add(self._decl_owned_module(ref, candidate.kind))
         return self.runtime.foundation.ok(sorted(imports), warnings=candidates.issues)
 
-    def _prelude_imports(self, node_path: str, deps: list[dict[str, Any]], mathlib_modules: list[dict[str, Any]]) -> list[str]:
+    def _prelude_imports(self, node_path: str, deps: list[NodeDep], mathlib_modules: list[NodeMathlibModuleUse]) -> list[str]:
         imports: set[str] = set()
         for dep in deps:
             provider = self._provider_interfaces_module(node_path, dep)
@@ -335,46 +336,18 @@ class NodeProjectionComponent:
                 imports.add(module)
         return sorted(imports)
 
-    def _provider_interfaces_module(self, node_path: str, dep: dict[str, Any]) -> str | None:
-        if not isinstance(dep, dict):
-            return None
-        target = dep.get("target") or dep.get("node") or dep.get("provider")
-        repo: str | None = None
-        provider_node: str | None = None
-        if isinstance(target, dict):
-            repo_value = target.get("repo")
-            node_value = target.get("node") or target.get("path")
-            repo = str(repo_value).strip() if repo_value is not None and str(repo_value).strip() else None
-            provider_node = str(node_value).strip() if node_value is not None and str(node_value).strip() else None
-        elif isinstance(target, str):
-            provider_node = target.strip()
-        if provider_node is None:
-            provider_node = self._optional_text(dep.get("node_path") or dep.get("provider_node") or dep.get("provider_node_path"))
-        if provider_node is None:
+    def _provider_interfaces_module(self, node_path: str, dep: NodeDep) -> str | None:
+        repo = dep.target.repo
+        provider_node = dep.target.node.strip() if dep.target.node else ""
+        if not provider_node:
             return None
         if repo is None and provider_node == node_path:
             return None
         boundary = provider_node or "Main"
         return f"{repo}.{boundary}.Interfaces" if repo else f"{boundary}.Interfaces"
 
-    def _mathlib_module_name(self, item: dict[str, Any] | str) -> str | None:
-        if isinstance(item, str):
-            return item.strip() or None
-        if not isinstance(item, dict):
-            return None
-        candidates = [
-            item.get("module"),
-            item.get("name"),
-            item.get("module_name"),
-        ]
-        ref = item.get("ref")
-        if isinstance(ref, dict):
-            candidates.extend([ref.get("module"), ref.get("name")])
-        for candidate in candidates:
-            text = self._optional_text(candidate)
-            if text:
-                return text
-        return None
+    def _mathlib_module_name(self, item: NodeMathlibModuleUse) -> str | None:
+        return item.module.strip() or None
 
     def _optional_text(self, value: Any) -> str | None:
         if value is None:

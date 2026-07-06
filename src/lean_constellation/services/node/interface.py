@@ -654,7 +654,10 @@ class InterfaceComponent:
         return loaded
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        path = self.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), node_path, getattr(contract, "version"))
+        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
         return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
 
     @staticmethod

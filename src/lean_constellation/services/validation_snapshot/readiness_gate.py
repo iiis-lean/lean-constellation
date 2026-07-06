@@ -379,16 +379,14 @@ class ReadinessGateComponent:
                     expected="0 open requirements",
                 )
             )
-        main = self.node.contract.get_current_contract(Path(repo_root), node_path="Main")
+        main = self.node.contract.get_visible_contract(Path(repo_root), node_path="Main")
         if not main.ok or main.value is None:
-            return self.runtime.foundation.fail(main.issues)
-        if main.value.version_status != ContractVersionStatus.COMMITTED:
             issues.append(
                 self.runtime.foundation.issue(
                     "main_scope_not_committed",
                     "Repo ready requires Main scope contract to be committed.",
                     object_ref="Main",
-                    current=main.value.version_status.value,
+                    current="missing_or_uncommitted",
                     expected=ContractVersionStatus.COMMITTED.value,
                 )
             )

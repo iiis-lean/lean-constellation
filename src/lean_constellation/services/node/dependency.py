@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,24 +20,12 @@ from lean_constellation.services.foundation import (
     WriteMode,
 )
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
+from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
     from lean_constellation.services.runtime import LeanRuntimeServices
-
-
-class NodeDepActor(StrEnum):
-    COORDINATOR = "coordinator"
-    WORKER = "worker"
-
-
-class NodeDep(StrictModel):
-    dep_id: str
-    target: NodeRef
-    expected_decl_refs: list[DeclRef] = Field(default_factory=list)
-    reason: str | None = None
-    added_by: NodeDepActor = NodeDepActor.COORDINATOR
 
 
 class NodeDepView(StrictModel):
@@ -104,11 +91,8 @@ class DependencyComponent:
         for node in tree.value.nodes:
             if node.path == node_path:
                 continue
-            contract = self.contract.get_current_contract(repo_root, node_path=node.path)
+            contract = self.contract.get_visible_contract(repo_root, node_path=node.path)
             if not contract.ok or contract.value is None:
-                return self.runtime.foundation.fail(contract.issues)
-            ready = contract.value.version_status == ContractVersionStatus.COMMITTED
-            if not ready:
                 continue
             boundaries.append(
                 VisibleNodeBoundaryItem(
@@ -281,7 +265,7 @@ class DependencyComponent:
                 added_by=actor,
             )
         )
-        opened.value.contract.deps = [item.model_dump(mode="json") for item in current.value]
+        opened.value.contract.deps = list(current.value)
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
@@ -320,7 +304,7 @@ class DependencyComponent:
         permission = self._check_remove_permission(node_path, target.added_by, normalized_actor.value)
         if not permission.ok:
             return self.runtime.foundation.fail(permission.issues)
-        opened.value.contract.deps = [item.model_dump(mode="json") for item_index, item in enumerate(current.value) if item_index != index]
+        opened.value.contract.deps = [item for item_index, item in enumerate(current.value) if item_index != index]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
@@ -365,8 +349,8 @@ class DependencyComponent:
             if dep.target.node == node_path:
                 issues.append(self.runtime.foundation.issue("node_dep_self_dependency", "A node cannot depend on itself.", object_ref=node_path, field=dep_field))
                 continue
-            target_contract = self.contract.get_current_contract(repo_root, node_path=dep.target.node)
-            if not target_contract.ok or target_contract.value is None:
+            target_node = self.node_tree.get_node(repo_root, path=dep.target.node)
+            if not target_node.ok or target_node.value is None:
                 issues.append(
                     self.runtime.foundation.issue(
                         "node_dep_target_missing",
@@ -376,17 +360,19 @@ class DependencyComponent:
                     )
                 )
                 continue
-            if target_contract.value.version_status != ContractVersionStatus.COMMITTED:
+            target_contract = self.contract.get_visible_contract(repo_root, node_path=dep.target.node)
+            if not target_contract.ok or target_contract.value is None:
                 issues.append(
                     self.runtime.foundation.issue(
                         "node_dep_target_not_ready",
-                        f"Node dependency target is not a committed ready boundary: {dep.target.node}",
+                        f"Node dependency target is missing, inactive, or not a committed ready boundary: {dep.target.node}",
                         object_ref=node_path,
                         field=dep_field,
-                        current=target_contract.value.version_status.value,
+                        current="missing_or_uncommitted",
                         expected=ContractVersionStatus.COMMITTED.value,
                     )
                 )
+                continue
             public_refs = {self._decl_ref_key(ref) for ref in self._public_decl_refs(target_contract.value.contract)}
             for ref in dep.expected_decl_refs:
                 if self._decl_ref_key(ref) not in public_refs:
@@ -512,7 +498,7 @@ class DependencyComponent:
             if not view.ok:
                 return self.runtime.foundation.fail(view.issues)
             return self.runtime.foundation.ok(view.value, warnings=warnings)
-        setattr(contract, "deps", [item.model_dump(mode="json") for item in deps])
+        setattr(contract, "deps", list(deps))
         saved = self._save_contract(repo_root, node_path, contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
@@ -550,13 +536,13 @@ class DependencyComponent:
             return self.runtime.foundation.fail(issues)
         return self.runtime.foundation.ok(resolved)
 
-    def _normalize_deps(self, values: list[dict[str, Any]]) -> ServiceResult[list[NodeDep]]:
+    def _normalize_deps(self, values: list[NodeDep]) -> ServiceResult[list[NodeDep]]:
         adapter = TypeAdapter(NodeDep)
         normalized: list[NodeDep] = []
         issues: list[ServiceIssue] = []
         for index, value in enumerate(values):
             try:
-                item = adapter.validate_python(self._upgrade_dep(value))
+                item = adapter.validate_python(value)
             except Exception as exc:  # noqa: BLE001 - validation details are returned to caller.
                 issues.append(self.runtime.foundation.issue("node_dep_invalid", f"Node dependency entry is invalid: {exc}", field=f"deps.{index}"))
                 continue
@@ -569,22 +555,6 @@ class DependencyComponent:
         if issues:
             return self.runtime.foundation.fail(issues)
         return self.runtime.foundation.ok(normalized)
-
-    def _upgrade_dep(self, value: Any) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            return {"target": value}
-        target = value.get("target")
-        if target is None:
-            target = {"repo": value.get("repo"), "node": value.get("node") or value.get("node_path") or value.get("target_node")}
-        elif isinstance(target, str):
-            target = {"repo": value.get("repo"), "node": target}
-        return {
-            "dep_id": value.get("dep_id") or self._stable_dep_id_from_any(target),
-            "target": target,
-            "expected_decl_refs": value.get("expected_decl_refs", []),
-            "reason": value.get("reason"),
-            "added_by": value.get("added_by", NodeDepActor.COORDINATOR.value),
-        }
 
     def _normalize_node_ref(self, ref: NodeRef, *, field: str) -> ServiceResult[NodeRef]:
         repo = ref.repo.strip() if isinstance(ref.repo, str) and ref.repo.strip() else None
@@ -718,7 +688,10 @@ class DependencyComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("node_dep_actor_invalid", "actor must be coordinator or worker.", field="actor"))
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        path = self.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=Path(repo_root)), node_path, getattr(contract, "version"))
+        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
         return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
 
     def _stable_dep_id(self, target: NodeRef) -> str:

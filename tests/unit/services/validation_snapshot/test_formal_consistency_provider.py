@@ -49,7 +49,7 @@ def _runtime() -> LeanRuntimeServices:
     return make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
 
 
-def _setup_formal_snapshots(runtime: LeanRuntimeServices, repo_root: Path) -> Path:
+def _setup_formal_captures(runtime: LeanRuntimeServices, repo_root: Path) -> Path:
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     content = runtime.node.create_content_node(
@@ -58,7 +58,7 @@ def _setup_formal_snapshots(runtime: LeanRuntimeServices, repo_root: Path) -> Pa
         goal="Core goal.",
         boundary="Core declarations only.",
         objective="Validate formal stage consistency.",
-        success_criteria="Formal snapshots and working files stay synchronized.",
+        success_criteria="Formal captures and working files stay synchronized.",
     )
     assert content.ok, content.issues
     strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Formal consistency strategy.")
@@ -131,7 +131,7 @@ def _write_revision(runtime: LeanRuntimeServices, repo_root: Path, revision) -> 
 
 def test_formal_consistency_passes_when_decl_graph_and_snapshot_sync(tmp_path: Path) -> None:
     runtime = _runtime()
-    _setup_formal_snapshots(runtime, tmp_path)
+    _setup_formal_captures(runtime, tmp_path)
 
     statement = runtime.validation_snapshot.check_formal_stage_consistency(
         tmp_path,
@@ -154,7 +154,7 @@ def test_formal_consistency_passes_when_decl_graph_and_snapshot_sync(tmp_path: P
 
 def test_formal_consistency_reports_stale_working_file(tmp_path: Path) -> None:
     runtime = _runtime()
-    path = _setup_formal_snapshots(runtime, tmp_path)
+    path = _setup_formal_captures(runtime, tmp_path)
     path.write_text(path.read_text(encoding="utf-8") + "\n-- stale edit\n", encoding="utf-8")
 
     gate = runtime.validation_snapshot.check_formal_stage_consistency(
@@ -166,16 +166,27 @@ def test_formal_consistency_reports_stale_working_file(tmp_path: Path) -> None:
 
     assert gate.ok and gate.value is not None
     assert gate.value.passed is False
-    assert any(issue.kind == "decl_file_snapshot_stale" for issue in gate.value.issues)
+    assert any(issue.kind == "decl_file_capture_stale" for issue in gate.value.issues)
 
 
 def test_formal_consistency_reports_failed_decl_graph_lean_check(tmp_path: Path) -> None:
     runtime = _runtime()
-    _setup_formal_snapshots(runtime, tmp_path)
+    _setup_formal_captures(runtime, tmp_path)
     revision = _current_revision(runtime, tmp_path)
-    assert revision.proof_lean_check is not None
-    revision.proof_lean_check["status"] = "failed"
-    revision.proof_lean_check["contains_sorry"] = "True"
+    assert revision.proof is not None
+    assert revision.proof.formal is not None
+    assert revision.proof.formal.check is not None
+    revision.proof.formal = revision.proof.formal.model_copy(
+        update={
+            "check": revision.proof.formal.check.model_copy(
+                update={
+                    "status": "failed",
+                    "contains_sorry": True,
+                    "scan": revision.proof.formal.check.scan.model_copy(update={"contains_sorry": True, "sorry_count": 1}),
+                }
+            )
+        }
+    )
     _write_revision(runtime, tmp_path, revision)
 
     gate = runtime.validation_snapshot.check_formal_stage_consistency(

@@ -130,7 +130,7 @@ def test_node_service_get_public_boundary_for_content_and_scope(tmp_path: Path) 
     assert content.value is not None
     assert [decl.ref.name for decl in content.value.public_decls] == ["main_result"]
 
-    path = foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic", 1)
+    path = foundation.node_contract_path(FoundationContext(repo_root=tmp_path), "Main.Topic", 1)
     loaded = foundation.store.read_json(path, NodeContractSnapshot)
     assert loaded.ok and loaded.value is not None
     loaded.value.exports = [DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1)]

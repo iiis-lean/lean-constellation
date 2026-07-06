@@ -76,7 +76,7 @@ def test_default_decl_graph_revision_provider_prepares_statement_file(tmp_path: 
     provider_view = runtime.decl_graph.get_current_decl_revision(tmp_path, node_path=NODE_PATH, decl_name="main_result")
     assert provider_view.ok and provider_view.value is not None
     assert provider_view.value.kind == "theorem"
-    assert provider_view.value.statement["nl"]["text"] == "main_result states True."
+    assert provider_view.value.statement.nl.text == "main_result states True."
     assert runtime.lean_projection.decl_file.revision_provider is runtime.decl_graph
 
     prepared = runtime.lean_projection.prepare_statement_formal_stage_file(

@@ -2,12 +2,13 @@ from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
 
-from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import DeclRef, NodeRef
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.foundation import FoundationContext, FoundationService, WriteMode
 from lean_constellation.services.lean_projection import NodeProjectionComponent
 from lean_constellation.services.node import DeclPublicView, ExportComponent, NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.services.node.contract_fields import MathlibUseActor, NodeDep, NodeDepActor, NodeMathlibModuleUse
 
 
 class FakePublicDeclProvider:
@@ -57,16 +58,31 @@ def _update_core_contract(tmp_path: Path) -> None:
     assert loaded.ok and loaded.value is not None
     loaded.value.deps.extend(
         [
-            {"target": {"repo": None, "node": "Main.Topic.Provider"}, "reason": "Use provider boundary."},
-            {"target": {"repo": "OtherRepo", "node": "Main"}, "reason": "Use external repo boundary."},
-            {"target": {"repo": None, "node": "Main.Topic.Core"}, "reason": "Self dependency should not import self."},
+            NodeDep(
+                dep_id="dep_provider",
+                target=NodeRef(repo=None, node="Main.Topic.Provider"),
+                reason="Use provider boundary.",
+                added_by=NodeDepActor.COORDINATOR,
+            ),
+            NodeDep(
+                dep_id="dep_other_repo",
+                target=NodeRef(repo="OtherRepo", node="Main"),
+                reason="Use external repo boundary.",
+                added_by=NodeDepActor.COORDINATOR,
+            ),
+            NodeDep(
+                dep_id="dep_self",
+                target=NodeRef(repo=None, node="Main.Topic.Core"),
+                reason="Self dependency should not import self.",
+                added_by=NodeDepActor.COORDINATOR,
+            ),
         ]
     )
     loaded.value.mathlib_modules.extend(
         [
-            {"module": "Mathlib.Data.Finset.Basic", "reason": "Finite sums."},
-            {"ref": {"module": "Mathlib.Topology.Basic"}, "reason": "Topology."},
-            {"module": "Mathlib.Data.Finset.Basic", "reason": "Duplicate."},
+            NodeMathlibModuleUse(module="Mathlib.Data.Finset.Basic", reason="Finite sums.", added_by=MathlibUseActor.COORDINATOR),
+            NodeMathlibModuleUse(module="Mathlib.Topology.Basic", reason="Topology.", added_by=MathlibUseActor.COORDINATOR),
+            NodeMathlibModuleUse(module="Mathlib.Data.Finset.Basic", reason="Duplicate.", added_by=MathlibUseActor.COORDINATOR),
         ]
     )
     saved = foundation.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING)
@@ -115,7 +131,7 @@ def test_render_prelude_from_node_deps_and_mathlib_modules(tmp_path: Path) -> No
 def test_render_prelude_rejects_invalid_import_module(tmp_path: Path) -> None:
     _create_nodes(tmp_path)
     snapshot = _core_contract(tmp_path)
-    snapshot.mathlib_modules.append({"module": "Bad Module", "reason": "Invalid import."})
+    snapshot.mathlib_modules.append(NodeMathlibModuleUse(module="Bad Module", reason="Invalid import.", added_by=MathlibUseActor.COORDINATOR))
     _save_core_contract(tmp_path, snapshot)
     component = make_runtime().lean_projection.node_projection
 

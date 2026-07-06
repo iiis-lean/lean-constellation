@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,29 +18,11 @@ from lean_constellation.services.foundation import (
 )
 from lean_constellation.services.mathlib.mathlib_index import MathlibDeclEntryView, MathlibIndexComponent
 from lean_constellation.services.node import ContractComponent, NodeContractView
+from lean_constellation.services.node.contract_fields import MathlibUseActor, NodeMathlibDeclUse, NodeMathlibModuleUse
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection import NodeProjectionComponent
     from lean_constellation.services.runtime import LeanRuntimeServices
-
-
-class MathlibUseActor(StrEnum):
-    COORDINATOR = "coordinator"
-    WORKER = "worker"
-
-
-class NodeMathlibModuleUse(StrictModel):
-    module: str
-    reason: str | None = None
-    added_by: MathlibUseActor = MathlibUseActor.COORDINATOR
-
-
-class NodeMathlibDeclUse(StrictModel):
-    name: str
-    module: str | None = None
-    kind: str | None = None
-    reason: str | None = None
-    added_by: MathlibUseActor = MathlibUseActor.COORDINATOR
 
 
 class NodeMathlibHintView(StrictModel):
@@ -129,7 +110,7 @@ class NodeMathlibUseComponent:
                 added_by=normalized_actor.value,
             )
         )
-        opened.value.contract.mathlib_modules = [item.model_dump(mode="json") for item in current.value]
+        opened.value.contract.mathlib_modules = list(current.value)
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
@@ -312,9 +293,7 @@ class NodeMathlibUseComponent:
         if not permission.ok:
             return self.runtime.foundation.fail(permission.issues)
 
-        opened.value.contract.mathlib_modules = [
-            item.model_dump(mode="json") for item in current.value if item.module != normalized_module.value
-        ]
+        opened.value.contract.mathlib_modules = [item for item in current.value if item.module != normalized_module.value]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
@@ -375,7 +354,7 @@ class NodeMathlibUseComponent:
                 added_by=normalized_actor.value,
             )
         )
-        opened.value.contract.mathlib_decls = [item.model_dump(mode="json") for item in current.value]
+        opened.value.contract.mathlib_decls = list(current.value)
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
@@ -418,7 +397,7 @@ class NodeMathlibUseComponent:
         if not permission.ok:
             return self.runtime.foundation.fail(permission.issues)
 
-        opened.value.contract.mathlib_decls = [item.model_dump(mode="json") for item in current.value if item.name != normalized_decl.value]
+        opened.value.contract.mathlib_decls = [item for item in current.value if item.name != normalized_decl.value]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
@@ -524,13 +503,13 @@ class NodeMathlibUseComponent:
             )
         )
 
-    def _normalize_module_uses(self, values: list[dict[str, Any]]) -> ServiceResult[list[NodeMathlibModuleUse]]:
+    def _normalize_module_uses(self, values: list[NodeMathlibModuleUse]) -> ServiceResult[list[NodeMathlibModuleUse]]:
         adapter = TypeAdapter(NodeMathlibModuleUse)
         normalized: list[NodeMathlibModuleUse] = []
         issues: list[ServiceIssue] = []
         for index, value in enumerate(values):
             try:
-                item = adapter.validate_python(self._upgrade_module_use(value))
+                item = adapter.validate_python(value)
             except Exception as exc:  # noqa: BLE001 - validation details are returned to caller.
                 issues.append(
                     self.runtime.foundation.issue(
@@ -549,13 +528,13 @@ class NodeMathlibUseComponent:
             return self.runtime.foundation.fail(issues)
         return self.runtime.foundation.ok(normalized)
 
-    def _normalize_decl_uses(self, values: list[dict[str, Any]]) -> ServiceResult[list[NodeMathlibDeclUse]]:
+    def _normalize_decl_uses(self, values: list[NodeMathlibDeclUse]) -> ServiceResult[list[NodeMathlibDeclUse]]:
         adapter = TypeAdapter(NodeMathlibDeclUse)
         normalized: list[NodeMathlibDeclUse] = []
         issues: list[ServiceIssue] = []
         for index, value in enumerate(values):
             try:
-                item = adapter.validate_python(self._upgrade_decl_use(value))
+                item = adapter.validate_python(value)
             except Exception as exc:  # noqa: BLE001 - validation details are returned to caller.
                 issues.append(
                     self.runtime.foundation.issue(
@@ -589,40 +568,6 @@ class NodeMathlibUseComponent:
         if issues:
             return self.runtime.foundation.fail(issues)
         return self.runtime.foundation.ok(normalized)
-
-    def _upgrade_module_use(self, value: Any) -> dict[str, Any]:
-        if isinstance(value, str):
-            return {"module": value, "added_by": MathlibUseActor.COORDINATOR.value}
-        if not isinstance(value, dict):
-            return {"module": value}
-        ref = value.get("ref")
-        module = value.get("module") or value.get("module_name") or value.get("name")
-        if isinstance(ref, dict):
-            module = module or ref.get("module") or ref.get("name")
-        return {
-            "module": module,
-            "reason": value.get("reason"),
-            "added_by": value.get("added_by", MathlibUseActor.COORDINATOR.value),
-        }
-
-    def _upgrade_decl_use(self, value: Any) -> dict[str, Any]:
-        if isinstance(value, str):
-            return {"name": value, "added_by": MathlibUseActor.COORDINATOR.value}
-        if not isinstance(value, dict):
-            return {"name": value}
-        ref = value.get("ref")
-        name = value.get("name") or value.get("decl_name") or value.get("declaration")
-        module = value.get("module")
-        if isinstance(ref, dict):
-            name = name or ref.get("name") or ref.get("decl_name") or ref.get("declaration")
-            module = module or ref.get("module")
-        return {
-            "name": name,
-            "module": module,
-            "kind": value.get("kind"),
-            "reason": value.get("reason"),
-            "added_by": value.get("added_by", MathlibUseActor.COORDINATOR.value),
-        }
 
     def _module_index_warnings(self, repo_root: Path, module: str) -> ServiceResult[list[ServiceIssue]]:
         entry = self.mathlib_index.get_mathlib_module_entry(repo_root, module=module)
@@ -744,11 +689,10 @@ class NodeMathlibUseComponent:
         return self.runtime.foundation.ok(normalized)
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        path = self.runtime.foundation.layout.node_contract_path(
-            FoundationContext(repo_root=Path(repo_root)),
-            node_path,
-            getattr(contract, "version"),
-        )
+        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
         return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
 
     def _refresh_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[object]:

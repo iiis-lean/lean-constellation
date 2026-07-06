@@ -2,14 +2,17 @@ from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
 
-from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import DeclRef, NodeRef
 from lean_constellation.services.foundation import FoundationContext, FoundationService, WriteMode
-from lean_constellation.services.node import NodeContractSnapshot, NodeKind, NodeLifecycle, NodeMetadata, NodeTreeComponent
+from lean_constellation.services.node import ContractVersionStatus, NodeContractSnapshot, NodeKind, NodeLifecycle, NodeMetadata, NodeTreeComponent
+from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 
 
 def _contract_path(tmp_path: Path, node_path: str, version: int = 1) -> Path:
-    foundation = make_runtime().foundation
-    return foundation.layout.node_contract_path(FoundationContext(repo_root=tmp_path), node_path, version)
+    runtime = make_runtime()
+    node = runtime.node.node_tree.node_store.resolve_active_node(tmp_path, path=node_path)
+    assert node.ok and node.value is not None
+    return runtime.node.node_tree.node_store.contract_path(tmp_path, node_id=node.value.node_id, version=version)
 
 
 def _load_contract(tmp_path: Path, node_path: str, version: int = 1) -> NodeContractSnapshot:
@@ -133,9 +136,11 @@ def test_node_tree_children_delete_preview_and_soft_delete(tmp_path: Path) -> No
     deleted = component.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="No longer needed.")
     assert deleted.ok
     core = component.get_node(tmp_path, path="Main.Topic.Core")
-    assert core.ok
-    assert core.value is not None
-    assert core.value.lifecycle == NodeLifecycle.OBSOLETE
+    assert not core.ok
+    assert core.issues[0].kind == "node_missing"
+    nodes = component.node_store.list_nodes(tmp_path)
+    assert nodes.ok and nodes.value is not None
+    assert any(node.path == "Main.Topic.Core" and node.lifecycle == NodeLifecycle.OBSOLETE for node in nodes.value)
 
 
 def test_get_node_missing_and_tree_hides_obsolete_nodes(tmp_path: Path) -> None:
@@ -153,7 +158,7 @@ def test_get_node_missing_and_tree_hides_obsolete_nodes(tmp_path: Path) -> None:
 
     missing = component.get_node(tmp_path, path="Main.Topic.Missing")
     assert not missing.ok
-    assert missing.issues[0].kind == "missing_file"
+    assert missing.issues[0].kind == "node_missing"
 
     deleted = component.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="Hide from active tree.")
     assert deleted.ok
@@ -180,7 +185,7 @@ def test_list_children_rejects_missing_and_content_nodes(tmp_path: Path) -> None
 
     missing = component.list_children(tmp_path, scope_path="Main.Missing")
     assert not missing.ok
-    assert missing.issues[0].kind == "missing_file"
+    assert missing.issues[0].kind == "node_missing"
 
     content = component.list_children(tmp_path, scope_path="Main.Topic.Core")
     assert not content.ok
@@ -208,7 +213,14 @@ def test_preview_delete_detects_contract_inbound_refs(tmp_path: Path) -> None:
         success_criteria="Ready.",
     ).ok
     consumer = _load_contract(tmp_path, "Main.Topic.Consumer")
-    consumer.deps.append({"target": {"repo": None, "node": "Main.Topic.Core"}, "reason": "Need core."})
+    consumer.deps.append(
+        NodeDep(
+            dep_id="dep_core",
+            target=NodeRef(repo=None, node="Main.Topic.Core"),
+            reason="Need core.",
+            added_by=NodeDepActor.COORDINATOR,
+        )
+    )
     _write_contract(tmp_path, "Main.Topic.Consumer", consumer)
     topic = _load_contract(tmp_path, "Main.Topic")
     topic.exports = [DeclRef(repo=None, node="Main.Topic.Core", name="core_result", revision=1)]
@@ -277,7 +289,7 @@ def test_runnable_content_candidates_reports_invalid_and_skipped_reasons(tmp_pat
         success_criteria="Ready.",
     ).ok
     committed = _load_contract(tmp_path, "Main.Topic.Committed")
-    committed.version_status = "committed"
+    committed.status = ContractVersionStatus.COMMITTED
     _write_contract(tmp_path, "Main.Topic.Committed", committed)
     assert component.create_content_node(
         tmp_path,
@@ -299,7 +311,14 @@ def test_runnable_content_candidates_reports_invalid_and_skipped_reasons(tmp_pat
         success_criteria="Ready.",
     ).ok
     missing_dep = _load_contract(tmp_path, "Main.Topic.MissingDep")
-    missing_dep.deps.append({"target": {"repo": None, "node": "Main.Topic.Absent"}, "reason": "Need absent node."})
+    missing_dep.deps.append(
+        NodeDep(
+            dep_id="dep_absent",
+            target=NodeRef(repo=None, node="Main.Topic.Absent"),
+            reason="Need absent node.",
+            added_by=NodeDepActor.COORDINATOR,
+        )
+    )
     _write_contract(tmp_path, "Main.Topic.MissingDep", missing_dep)
 
     invalid = component.list_runnable_content_candidates(tmp_path, max_count=0)
@@ -318,7 +337,7 @@ def test_runnable_content_candidates_reports_invalid_and_skipped_reasons(tmp_pat
 def test_ensure_root_rejects_existing_wrong_kind(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path)
-    node_dir = foundation.layout.node_metadata_dir(ctx, "Main")
+    node_dir = foundation.layout.node_dir_by_id(ctx, "node_bad")
     node_dir.mkdir(parents=True)
     foundation.store.write_json_atomic(
         node_dir / "node.json",
@@ -343,6 +362,7 @@ def test_ensure_root_rejects_invalid_path_and_obsolete_root(tmp_path: Path) -> N
     deleted = component.mark_node_deleted(tmp_path, path="Main", reason="Exercise obsolete root branch.")
     assert deleted.ok
 
-    obsolete = component.ensure_root_scope_node(tmp_path)
-    assert not obsolete.ok
-    assert obsolete.issues[0].kind == "root_node_deleted"
+    recreated = component.ensure_root_scope_node(tmp_path)
+    assert recreated.ok
+    assert recreated.value is not None
+    assert recreated.value.path == "Main"

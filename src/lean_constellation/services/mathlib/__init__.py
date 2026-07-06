@@ -9,13 +9,11 @@ from lean_constellation.services.mathlib.mathlib_index import (
     MathlibSearchView,
 )
 from lean_constellation.services.mathlib.node_mathlib_use import (
-    MathlibUseActor,
     NodeMathlibHintMutationView,
     NodeMathlibHintView,
-    NodeMathlibDeclUse,
-    NodeMathlibModuleUse,
     NodeMathlibUseComponent,
 )
+from lean_constellation.services.node.contract_fields import MathlibUseActor, NodeMathlibDeclUse, NodeMathlibModuleUse
 from lean_constellation.services.mathlib.service import MathlibService
 from lean_constellation.services.mathlib.toolkit_ingestion import (
     MathlibAccessCheckView,

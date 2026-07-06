@@ -11,7 +11,6 @@ from lean_constellation.domain.preparation import (
     RepoDependencyRequirement,
     RepoDependencyRequirementStatus,
     RequirementResumeCandidateView,
-    RequirementWaitingState,
     RequirementWaitingView,
     RequirementView,
 )
@@ -218,8 +217,9 @@ class RepoRequirementComponent:
                 )
             )
         provider = self.runtime.foundation.layout.ensure_safe_key(provider_repo or requirement.target_repo)
-        state = requirement.waiting_state
-        if state.waiting and state.provider_repo == provider and not state.result_observed:
+        waiting = self.is_requirement_waiting(requirement)
+        current_provider = self.effective_provider_repo(requirement)
+        if waiting and current_provider == provider and not self.is_requirement_result_observed(requirement):
             return self.runtime.foundation.ok(
                 self._waiting_view(
                     repo_root,
@@ -227,25 +227,20 @@ class RepoRequirementComponent:
                     summary=f"Requirement {requirement.name} is already waiting for provider {provider}.",
                 )
             )
-        if state.waiting and state.provider_repo != provider and not state.result_observed:
+        if waiting and current_provider != provider and not self.is_requirement_result_observed(requirement):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "requirement_waiting_conflict",
                     "Requirement is already waiting for a different provider repo.",
-                    current=state.provider_repo,
+                    current=current_provider,
                     expected=provider,
                     object_ref=requirement.name,
                 )
             )
-        requirement.waiting_state = RequirementWaitingState(
-            waiting=True,
-            provider_repo=provider,
-            reason=self._strip_or_none(reason),
-            submitted_at=state.submitted_at or utc_now_iso(),
-            result_observed=False,
-            result_observed_at=None,
-            result_note=None,
-        )
+        requirement.provider_repo = provider
+        requirement.provider_request_submitted_at = requirement.provider_request_submitted_at or utc_now_iso()
+        requirement.provider_result_observed_at = None
+        requirement.note = self._strip_or_none(reason) or requirement.note
         saved = self._save(repo_root, requirement)
         if not saved.ok or saved.value is None:
             return self.runtime.foundation.fail(saved.issues)
@@ -295,10 +290,9 @@ class RepoRequirementComponent:
                 return self.runtime.foundation.fail(listed.issues)
             for view in listed.value:
                 requirement = view.requirement
-                state = requirement.waiting_state
-                if not state.waiting or state.result_observed:
+                if not self.is_requirement_waiting(requirement):
                     continue
-                if (requirement.provider_repo or state.provider_repo) != provider_repo:
+                if self.effective_provider_repo(requirement) != provider_repo:
                     continue
                 candidates.append(
                     RequirementResumeCandidateView(
@@ -308,7 +302,7 @@ class RepoRequirementComponent:
                         target_repo=requirement.target_repo,
                         provider_repo=provider_repo,
                         status=requirement.status,
-                        result_observed=state.result_observed,
+                        result_observed=self.is_requirement_result_observed(requirement),
                         summary=f"{repo_dir.name}/{requirement.name} can resume from provider {provider_repo}.",
                     )
                 )
@@ -334,8 +328,15 @@ class RepoRequirementComponent:
                     object_ref=requirement.name,
                 )
             )
-        state = requirement.waiting_state
-        if not state.waiting:
+        if self.is_requirement_result_observed(requirement):
+            return self.runtime.foundation.ok(
+                self._waiting_view(
+                    repo_root,
+                    requirement,
+                    summary=f"Requirement {requirement.name} result was already observed.",
+                )
+            )
+        if not self.is_requirement_waiting(requirement):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "requirement_not_waiting",
@@ -356,23 +357,9 @@ class RepoRequirementComponent:
                     object_ref=requirement.name,
                 )
             )
-        if state.result_observed:
-            return self.runtime.foundation.ok(
-                self._waiting_view(
-                    repo_root,
-                    requirement,
-                    summary=f"Requirement {requirement.name} result was already observed.",
-                )
-            )
-        requirement.waiting_state = RequirementWaitingState(
-            waiting=state.waiting,
-            provider_repo=state.provider_repo or requirement.provider_repo or requirement.target_repo,
-            reason=state.reason,
-            submitted_at=state.submitted_at,
-            result_observed=True,
-            result_observed_at=utc_now_iso(),
-            result_note=self._strip_or_none(note),
-        )
+        requirement.provider_repo = self.effective_provider_repo(requirement)
+        requirement.provider_result_observed_at = utc_now_iso()
+        requirement.note = self._strip_or_none(note) or requirement.note
         saved = self._save(repo_root, requirement)
         if not saved.ok or saved.value is None:
             return self.runtime.foundation.fail(saved.issues)
@@ -451,6 +438,23 @@ class RepoRequirementComponent:
     def _view(self, repo_root: Path, requirement: RepoDependencyRequirement) -> RequirementView:
         return RequirementView(repo_root=str(Path(repo_root)), requirement=requirement)
 
+    def effective_provider_repo(self, requirement: RepoDependencyRequirement) -> str:
+        return requirement.provider_repo or requirement.target_repo
+
+    def is_requirement_waiting(self, requirement: RepoDependencyRequirement) -> bool:
+        return (
+            requirement.provider_request_submitted_at is not None
+            and requirement.provider_result_observed_at is None
+            and requirement.status
+            not in {
+                RepoDependencyRequirementStatus.HANDLED,
+                RepoDependencyRequirementStatus.OBSOLETE,
+            }
+        )
+
+    def is_requirement_result_observed(self, requirement: RepoDependencyRequirement) -> bool:
+        return requirement.provider_result_observed_at is not None
+
     def _waiting_view(
         self,
         repo_root: Path,
@@ -458,15 +462,15 @@ class RepoRequirementComponent:
         *,
         summary: str,
     ) -> RequirementWaitingView:
-        provider = requirement.waiting_state.provider_repo or requirement.provider_repo or requirement.target_repo
+        provider = self.effective_provider_repo(requirement)
         return RequirementWaitingView(
             repo_root=str(Path(repo_root)),
             requirement_name=requirement.name,
             target_repo=requirement.target_repo,
             provider_repo=provider,
             status=requirement.status,
-            waiting=requirement.waiting_state.waiting,
-            result_observed=requirement.waiting_state.result_observed,
+            waiting=self.is_requirement_waiting(requirement),
+            result_observed=self.is_requirement_result_observed(requirement),
             summary=summary,
         )
 

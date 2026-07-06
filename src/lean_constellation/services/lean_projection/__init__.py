@@ -13,7 +13,7 @@ from lean_constellation.services.lean_projection.annotation import (
 from lean_constellation.services.lean_projection.decl_file import (
     DeclFileComponent,
     DeclFileRevisionProvider,
-    DeclFileSnapshotView,
+    DeclFileCaptureSyncView,
     FormalCaptureView,
     LeanFileView,
     LeanPathView,
@@ -46,7 +46,7 @@ __all__ = [
     "AnnotationComponent",
     "DeclFileComponent",
     "DeclFileRevisionProvider",
-    "DeclFileSnapshotView",
+    "DeclFileCaptureSyncView",
     "FormalCaptureView",
     "LeanFileView",
     "LeanPathView",
