@@ -295,31 +295,6 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     )
     assert _field(audit.value, "passed") is True
 
-    proof_path.write_text(proof_path.read_text(encoding="utf-8") + "\n-- local drift before sync\n", encoding="utf-8")
-    synced = call_tool_with_evidence(
-        server,
-        "proof_formal_worker",
-        "sync_decl_file_after_revision_reset",
-        {"decl_name": round_fixture.decl_name},
-        runtime_context=proof_formal_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Decl-owned file was synchronized back to the captured proof capture.",
-    )
-    assert _field(synced.value, "changed") is True
-    assert "-- local drift before sync" not in proof_path.read_text(encoding="utf-8")
-
-    removed = call_tool_with_evidence(
-        server,
-        "proof_formal_worker",
-        "remove_decl_file_for_delete",
-        {"decl_name": round_fixture.decl_name},
-        runtime_context=proof_formal_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Decl-owned file removal deleted the projected Lean file.",
-    )
-    assert _field(removed.value, "changed") is True
-    assert not proof_path.exists()
-
     restore_with_evidence(
         ws.admin,
         ws.provider_repo,

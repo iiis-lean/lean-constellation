@@ -180,8 +180,6 @@ def test_formal_reviewer_views_do_not_expose_worker_file_write_tools() -> None:
         "capture_statement_formal_file",
         "prepare_proof_formal_file",
         "capture_proof_formal_file",
-        "sync_decl_file_after_revision_reset",
-        "remove_decl_file_for_delete",
     }
 
     statement_worker = runtime.tool_facade.tool_view.tool_names_for_view("statement_formal_worker")
@@ -196,17 +194,17 @@ def test_formal_reviewer_views_do_not_expose_worker_file_write_tools() -> None:
     assert {
         "prepare_statement_formal_file",
         "capture_statement_formal_file",
-        "sync_decl_file_after_revision_reset",
-        "remove_decl_file_for_delete",
     } <= set(statement_worker.value)
     assert {
         "prepare_proof_formal_file",
         "capture_proof_formal_file",
-        "sync_decl_file_after_revision_reset",
-        "remove_decl_file_for_delete",
     } <= set(proof_worker.value)
     assert worker_write_tools.isdisjoint(statement_reviewer.value)
     assert worker_write_tools.isdisjoint(proof_reviewer.value)
+    assert "sync_decl_file_after_revision_reset" not in statement_worker.value
+    assert "remove_decl_file_for_delete" not in statement_worker.value
+    assert "sync_decl_file_after_revision_reset" not in proof_worker.value
+    assert "remove_decl_file_for_delete" not in proof_worker.value
 
 
 def test_group_queries_return_registered_tools() -> None:

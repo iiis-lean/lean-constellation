@@ -81,6 +81,8 @@ def test_alignment_related_shared_skill_tool_refs_are_visible_to_all_users() -> 
     reports = build_agent_surface_reports()
     skill_keys = {
         "content-contract-reading",
+        "decl-dependency-origin-curation",
+        "decl-owned-lean-file-capture-check",
         "external-resource-discovery",
         "mathlib-index-first-recon",
         "mathlib-semantic-search-navigation",
@@ -164,6 +166,46 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     declared_interface_mode = specs["content-plan-declared-interface-mode"].body
     assert "smallest useful declared interface" in declared_interface_mode
     assert "Do not create proof-only hidden helper lemmas" in declared_interface_mode
+
+
+def test_decl_stage_common_skills_keep_stage_specific_tools_out_of_shared_skill() -> None:
+    specs = build_skill_specs()
+
+    shared = specs["decl-owned-lean-file-capture-check"].body
+    assert "prepare_statement_formal_file" not in shared
+    assert "prepare_proof_formal_file" not in shared
+    assert "check_statement_formal_policy" not in shared
+    assert "check_proof_formal_policy" not in shared
+    assert "capture_statement_formal_file" not in shared
+    assert "capture_proof_formal_file" not in shared
+    assert "uncaptured working-file edits" in shared
+
+    statement = specs["lean-statement-formalization"].body
+    assert "prepare_statement_formal_file" in statement
+    assert "check_statement_formal_policy" in statement
+    assert "capture_statement_formal_file" in statement
+    assert "prepare_proof_formal_file" not in statement
+    assert "check_proof_formal_policy" not in statement
+    assert "capture_proof_formal_file" not in statement
+
+    proof = specs["lean-proof-formalization"].body
+    assert "prepare_proof_formal_file" in proof
+    assert "check_proof_formal_policy" in proof
+    assert "capture_proof_formal_file" in proof
+    assert "prepare_statement_formal_file" not in proof
+    assert "check_statement_formal_policy" not in proof
+    assert "capture_statement_formal_file" not in proof
+
+
+def test_decl_dependency_origin_curation_spells_out_stability_rules() -> None:
+    body = build_skill_specs()["decl-dependency-origin-curation"].body
+
+    assert "stable evidence" in body
+    assert "not a stable origin" in body
+    assert "external theorem discovery only as discovery" in body
+    assert "statement dependencies and proof dependencies separate" in body
+    assert "unfinished same-round declarations" in body
+    assert "blocked needs" in body
 
 
 def test_coordinator_mode_skills_spell_out_node_tree_policy() -> None:

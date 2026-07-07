@@ -1213,24 +1213,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="statement_formal_worker",
         agent_type="StatementFormalWorkerAgent",
     ),
-    "sync_decl_file_after_revision_reset": ToolCase(
-        tool_name="sync_decl_file_after_revision_reset",
-        status="implemented",
-        category="decl_stage_formal_file_write",
-        reason="Checkpointed formal file resync covered by strict real Lake DeclStage ToolSweep.",
-        view_key="proof_formal_worker",
-        agent_type="ProofFormalWorkerAgent",
-        restore_policy="checkpoint",
-    ),
-    "remove_decl_file_for_delete": ToolCase(
-        tool_name="remove_decl_file_for_delete",
-        status="implemented",
-        category="decl_stage_formal_file_write",
-        reason="Checkpointed Decl-owned file removal covered by strict real Lake DeclStage ToolSweep.",
-        view_key="proof_formal_worker",
-        agent_type="ProofFormalWorkerAgent",
-        restore_policy="checkpoint",
-    ),
     "check_formal_stage_consistency": ToolCase(
         tool_name="check_formal_stage_consistency",
         status="implemented",
@@ -1259,7 +1241,7 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     "run_lean_file_diagnostics": ToolCase(
         tool_name="run_lean_file_diagnostics",
         status="implemented",
-        category="formal_diagnostics_read",
+        category="statement_formal_diagnostics_read",
         reason="Real Lake diagnostics covered by strict real Lake DeclStage ToolSweep.",
         view_key="statement_formal_worker",
         agent_type="StatementFormalWorkerAgent",
@@ -1267,7 +1249,7 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     "scan_lean_sorry_axiom": ToolCase(
         tool_name="scan_lean_sorry_axiom",
         status="implemented",
-        category="formal_diagnostics_read",
+        category="statement_formal_diagnostics_read",
         reason="Formal policy token scan covered by strict real Lake DeclStage ToolSweep.",
         view_key="statement_formal_worker",
         agent_type="StatementFormalWorkerAgent",
@@ -1275,7 +1257,7 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     "check_statement_formal_policy": ToolCase(
         tool_name="check_statement_formal_policy",
         status="implemented",
-        category="formal_diagnostics_read",
+        category="statement_formal_diagnostics_read",
         reason="Statement formal policy check covered by strict real Lake DeclStage ToolSweep.",
         view_key="statement_formal_worker",
         agent_type="StatementFormalWorkerAgent",
@@ -1283,7 +1265,7 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     "check_proof_formal_policy": ToolCase(
         tool_name="check_proof_formal_policy",
         status="implemented",
-        category="formal_diagnostics_read",
+        category="proof_formal_diagnostics_read",
         reason="Proof formal policy check covered by strict real Lake DeclStage ToolSweep.",
         view_key="proof_formal_worker",
         agent_type="ProofFormalWorkerAgent",

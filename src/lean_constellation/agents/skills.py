@@ -968,41 +968,52 @@ After an accepted failed submit, stop.
         group="decl_stage",
         required_tool_groups=_groups(AppGroup.CURRENT_NODE_DECL_READ, AppGroup.PUBLIC_DECL_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "decl-dependency-origin-curation",
-            "Use this skill when a declaration worker or reviewer must connect a statement or proof idea to evidence, visible project declarations, Mathlib declarations, and blocked follow-up needs.",
-            (
-                "Start from the declaration task and stage objective with `inspect_current_node_decl`.",
-                "Search source, resources, visible public declarations, and Mathlib with the available material, public declaration, and Mathlib index tools in the right order.",
-                "Choose origins that actually support the statement or proof.",
-                "Choose project and Mathlib dependencies for real mathematical use.",
-                "Differentiate statement dependencies from proof dependencies.",
-            ),
-            (
-                "Do not invent source support for generated ideas.",
-                "Do not dispatch new resource curation from declaration worker stages in the first version.",
-            ),
-        ),
+        body="""# decl-dependency-origin-curation
+
+## Purpose
+
+Use this skill when a declaration worker or reviewer must connect a statement or proof artifact to stable evidence, visible project declarations, Mathlib declarations, and concrete blocked follow-up needs.
+
+## Workflow
+
+1. Start from the current declaration truth with `inspect_current_node_decl`, then read the current node contract as the boundary and material authority.
+2. Treat the DeclRevision, change objective, target state, declaration kind, visibility, current stage, and previous revision as the first source of truth for what may be written or reviewed.
+3. Prefer stable evidence in the source corpus, resource library, visible public declarations, and recorded Mathlib index before broader semantic search.
+4. Use semantic search or external theorem discovery only as discovery. A search hit is not a stable origin until it is already represented in source corpus or resource library truth.
+5. Record origins only for source/resource ranges that actually support the statement or proof. Generated or agent-authored text may have no origin; do not overclaim support.
+6. Keep statement dependencies and proof dependencies separate. Statement dependencies are only the project or Mathlib declarations needed to express the statement; proof-only helper lemmas belong to proof dependencies.
+7. Do not use unfinished same-round declarations as stable dependencies unless the current truth already marks them accepted and suitable for this stage.
+8. Before submit, self-check that origins are stable, dependencies are visible, source support is not invented, and blocked needs name the missing material, dependency, helper declaration, resource, provider repo, or planning change.
+
+## Boundaries
+
+- Do not invent source support for generated ideas.
+- Do not write external search hits directly as origins.
+- Do not mix proof-only dependencies into statement dependency fields.
+- Do not add dependencies on same-round declarations that are not accepted or satisfied for the current need.
+- Do not mutate node contracts, dispatch resource curation, or create helper declarations from declaration worker stages; block or return the gap to planning instead.
+""",
     ),
     SkillKey.DECL_OWNED_LEAN_FILE_CAPTURE_CHECK.value: LeanSkillDefinition(
         name="decl-owned-lean-file-capture-check",
         description="Work safely with Lean Constellation declaration-owned Lean files, manual Lean checks, and capture/check tools.",
         group="lean",
-        required_tool_groups=_groups(AppGroup.FORMAL_DIAGNOSTICS_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "decl-owned-lean-file-capture-check",
             "Use this skill when a formal worker edits a tracked declaration file or when a reviewer needs to understand formal capture semantics.",
             (
-                "Use `prepare_statement_formal_file` or `prepare_proof_formal_file` before editing and stay inside the assigned declaration-owned file.",
-                "Keep system markers and prepared structure intact.",
-                "Use `run_lean_file_diagnostics`, `check_statement_formal_policy`, or `check_proof_formal_policy` for debugging and policy checks.",
-                "Capture formal code through `capture_statement_formal_file` or `capture_proof_formal_file` after editing.",
-                "Use `check_formal_stage_consistency` before worker submit when it is available.",
+                "Use the current stage's prepare tool to generate or recover the legal declaration-owned working file.",
+                "Treat prepare as destructive for uncaptured working-file edits; use it at stage start or to recover damaged markers, docstrings, or file structure.",
+                "Edit only the region that the current formal stage owns and keep system markers and prepared structure intact.",
+                "Use the current stage's diagnostics and policy check while iterating.",
+                "Use the current stage's capture tool to save durable formal state after editing.",
+                "Use the current stage's consistency gate before worker submit when it is available.",
                 "Respect safety policy before worker submit.",
             ),
             (
                 "Do not rely on uncaptured edits as accepted formal content.",
+                "Do not let reviewers prepare, capture, or mutate formal files; reviewers record review marks and submit review results.",
                 "Do not use sorry, admit, axiom, or equivalent shortcuts in completed work.",
             ),
         ),
@@ -1014,7 +1025,7 @@ After an accepted failed submit, stop.
         required_tool_groups=_groups(
             AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE,
             AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE_WRITE,
-            AppGroup.FORMAL_DIAGNOSTICS_READ,
+            AppGroup.STATEMENT_FORMAL_DIAGNOSTICS_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -1024,7 +1035,8 @@ After an accepted failed submit, stop.
                 "Start from the accepted statement and declared objective.",
                 "Map variables, assumptions, definitions, and conclusions to Lean deliberately.",
                 "Search dependencies in visible project context and Mathlib before adding imports or hints.",
-                "Prepare and edit the declaration-owned file with `prepare_statement_formal_file`, then run `run_lean_file_diagnostics` and `check_statement_formal_policy`.",
+                "Prepare the declaration-owned file with `prepare_statement_formal_file` at stage start, or to recover damaged scaffold, marker, or docstring structure. Do not call it casually after valid uncaptured edits because it rewrites the working file.",
+                "Edit only the statement formalization area, then run `run_lean_file_diagnostics` and `check_statement_formal_policy`.",
                 "Capture with `capture_statement_formal_file`, check consistency with `check_formal_stage_consistency`, and refine dependencies before `submit_stage_worker_completed`.",
             ),
             (
@@ -1040,7 +1052,7 @@ After an accepted failed submit, stop.
         required_tool_groups=_groups(
             AppGroup.DECL_STAGE_PROOF_FORMAL_FILE,
             AppGroup.DECL_STAGE_PROOF_FORMAL_FILE_WRITE,
-            AppGroup.FORMAL_DIAGNOSTICS_READ,
+            AppGroup.PROOF_FORMAL_DIAGNOSTICS_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -1049,7 +1061,8 @@ After an accepted failed submit, stop.
             (
                 "Start from the frozen statement and reviewed proof route.",
                 "Search formal dependencies in visible project context and Mathlib.",
-                "Prepare the assigned file with `prepare_proof_formal_file` and edit the proof body without changing the accepted statement.",
+                "Prepare the assigned file with `prepare_proof_formal_file` at stage start, or to recover damaged frozen statement, marker, docstring, or file structure. It restores from the accepted statement formal capture and discards uncaptured proof edits.",
+                "Edit the proof body without changing the accepted statement.",
                 "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` iteratively, then capture at the durable boundary with `capture_proof_formal_file`.",
                 "Use `check_formal_stage_consistency` before submit, and call `submit_stage_worker_blocked` when the route needs planning changes.",
             ),

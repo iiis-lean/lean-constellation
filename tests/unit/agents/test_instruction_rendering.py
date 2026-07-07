@@ -87,6 +87,29 @@ def test_all_runtime_instructions_are_english_and_tool_refs_resolve() -> None:
         assert not _unknown_tool_refs(text), spec.agent_type
 
 
+def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> None:
+    statement_worker = render_agent_instruction("StatementFormalWorkerAgent")
+    statement_reviewer = render_agent_instruction("StatementFormalReviewerAgent")
+    proof_worker = render_agent_instruction("ProofFormalWorkerAgent")
+    proof_reviewer = render_agent_instruction("ProofFormalReviewerAgent")
+
+    assert "rewrites the working file" in statement_worker
+    assert "check_statement_formal_policy" in statement_worker
+    assert "check_proof_formal_policy" not in statement_worker
+    assert "prepare_statement_formal_file" not in statement_reviewer
+    assert "capture_statement_formal_file" not in statement_reviewer
+    assert "check_statement_formal_policy" in statement_reviewer
+    assert "check_proof_formal_policy" not in statement_reviewer
+
+    assert "discards uncaptured proof edits" in proof_worker
+    assert "check_proof_formal_policy" in proof_worker
+    assert "check_statement_formal_policy" not in proof_worker
+    assert "prepare_proof_formal_file" not in proof_reviewer
+    assert "capture_proof_formal_file" not in proof_reviewer
+    assert "check_proof_formal_policy" in proof_reviewer
+    assert "check_statement_formal_policy" not in proof_reviewer
+
+
 def test_runtime_instruction_tool_refs_are_visible_to_each_agent() -> None:
     reports = build_agent_surface_reports()
 

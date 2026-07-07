@@ -18,12 +18,12 @@ EXPECTED_SURFACE_COUNTS = {
     "ResourceReconAgent": (8, 16, 2, 3, 3),
     "StatementNLWorkerAgent": (11, 36, 1, 2, 4),
     "StatementNLReviewerAgent": (9, 30, 1, 1, 2),
-    "StatementFormalWorkerAgent": (14, 50, 1, 2, 8),
-    "StatementFormalReviewerAgent": (9, 31, 1, 1, 2),
+    "StatementFormalWorkerAgent": (14, 47, 1, 2, 8),
+    "StatementFormalReviewerAgent": (9, 30, 1, 1, 2),
     "ProofNLWorkerAgent": (11, 36, 1, 2, 4),
     "ProofNLReviewerAgent": (9, 30, 1, 1, 2),
-    "ProofFormalWorkerAgent": (14, 50, 1, 2, 8),
-    "ProofFormalReviewerAgent": (9, 31, 1, 1, 2),
+    "ProofFormalWorkerAgent": (14, 47, 1, 2, 8),
+    "ProofFormalReviewerAgent": (9, 30, 1, 1, 2),
 }
 
 
@@ -46,11 +46,25 @@ def test_agent_surface_reports_cover_every_production_agent() -> None:
 
 def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
     reports = build_agent_surface_reports()
+    statement_worker_tools = {tool.name for tool in reports["StatementFormalWorkerAgent"].application_tools}
+    statement_reviewer_tools = {tool.name for tool in reports["StatementFormalReviewerAgent"].application_tools}
+    proof_worker_tools = {tool.name for tool in reports["ProofFormalWorkerAgent"].application_tools}
+    proof_reviewer_tools = {tool.name for tool in reports["ProofFormalReviewerAgent"].application_tools}
 
-    assert "capture_statement_formal_file" in {tool.name for tool in reports["StatementFormalWorkerAgent"].application_tools}
-    assert "capture_statement_formal_file" not in {tool.name for tool in reports["StatementFormalReviewerAgent"].application_tools}
-    assert "capture_proof_formal_file" in {tool.name for tool in reports["ProofFormalWorkerAgent"].application_tools}
-    assert "capture_proof_formal_file" not in {tool.name for tool in reports["ProofFormalReviewerAgent"].application_tools}
+    assert "capture_statement_formal_file" in statement_worker_tools
+    assert "capture_statement_formal_file" not in statement_reviewer_tools
+    assert "capture_proof_formal_file" in proof_worker_tools
+    assert "capture_proof_formal_file" not in proof_reviewer_tools
+    assert "check_statement_formal_policy" in statement_worker_tools
+    assert "check_statement_formal_policy" in statement_reviewer_tools
+    assert "check_statement_formal_policy" not in proof_worker_tools
+    assert "check_statement_formal_policy" not in proof_reviewer_tools
+    assert "check_proof_formal_policy" in proof_worker_tools
+    assert "check_proof_formal_policy" in proof_reviewer_tools
+    assert "check_proof_formal_policy" not in statement_worker_tools
+    assert "check_proof_formal_policy" not in statement_reviewer_tools
+    assert "sync_decl_file_after_revision_reset" not in statement_worker_tools | proof_worker_tools
+    assert "remove_decl_file_for_delete" not in statement_worker_tools | proof_worker_tools
 
 
 def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:

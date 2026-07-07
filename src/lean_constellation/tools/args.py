@@ -597,7 +597,7 @@ class DeclStageFileArgs(DeclNameArgs):
 
 
 class DeclStageFileCheckArgs(DeclNameArgs):
-    stage: str = Field(description="Formal stage to check, such as statement_formal or proof_formal.")
+    stage: str = Field(description="Formal capture stage to check: statement or proof.")
 
 
 class DeclReviewMarkArgs(StrictModel):

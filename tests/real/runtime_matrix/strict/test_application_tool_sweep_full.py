@@ -25,9 +25,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 202
-    assert len(implemented_tool_cases()) == 176
-    assert len(pending_tool_cases()) == 26
+    assert len(cases) == 208
+    assert len(implemented_tool_cases()) == 174
+    assert len(pending_tool_cases()) == 34
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 

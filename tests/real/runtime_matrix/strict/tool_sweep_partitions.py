@@ -14,8 +14,6 @@ DECL_STAGE_FORMAL_TOOL_SWEEP_NAMES = frozenset(
         "prepare_proof_formal_file",
         "capture_proof_formal_file",
         "check_decl_file_snapshot_sync",
-        "sync_decl_file_after_revision_reset",
-        "remove_decl_file_for_delete",
         "check_formal_stage_consistency",
         "record_decl_review",
         "run_decl_round_local_audit",

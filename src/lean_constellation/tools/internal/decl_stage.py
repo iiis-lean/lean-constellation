@@ -32,6 +32,71 @@ def _assert_stage(runtime, ctx, *, expected_stage: str, decl_name: str):
     return runtime.foundation.ok(None)
 
 
+def _normalize_formal_check_stage(stage: str) -> str | None:
+    normalized = stage.strip().lower()
+    if normalized in {"statement", "statement_formal"}:
+        return "statement"
+    if normalized in {"proof", "proof_formal"}:
+        return "proof"
+    return None
+
+
+def _assert_formal_read_stage(runtime, ctx, *, requested_stage: str, decl_name: str):
+    if ctx.decl_stage is None:
+        return runtime.foundation.fail(runtime.foundation.issue("decl_stage_context_missing", "Current context has no decl stage."))
+    current_stage = ctx.decl_stage.stage
+    stage_map = {
+        "statement_formal": "statement",
+        "statement_formal_review": "statement",
+        "proof_formal": "proof",
+        "proof_formal_review": "proof",
+    }
+    expected_stage = stage_map.get(current_stage)
+    if expected_stage is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_stage_formal_read_rejected",
+                "Formal file checks are only available in current formal worker or reviewer stages.",
+                object_ref=decl_name,
+                current=current_stage,
+                expected="statement_formal,statement_formal_review,proof_formal,proof_formal_review",
+            )
+        )
+    normalized_requested = _normalize_formal_check_stage(requested_stage)
+    if normalized_requested is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_stage_formal_read_rejected",
+                "Formal check stage must be statement or proof.",
+                object_ref=decl_name,
+                field="stage",
+                current=requested_stage,
+                expected="statement or proof",
+            )
+        )
+    if normalized_requested != expected_stage:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_stage_formal_read_rejected",
+                "Formal check stage does not match the current decl stage.",
+                object_ref=decl_name,
+                field="stage",
+                current=normalized_requested,
+                expected=expected_stage,
+            )
+        )
+    if ctx.decl_stage.batch_decls and decl_name not in ctx.decl_stage.batch_decls:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_stage_formal_read_rejected",
+                "Decl is not in the current stage batch.",
+                object_ref=decl_name,
+                expected=",".join(ctx.decl_stage.batch_decls),
+            )
+        )
+    return runtime.foundation.ok(normalized_requested)
+
+
 def _write_statement_nl(runtime, ctx, args: DeclStageNlArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
     if not allowed.ok:
@@ -97,28 +162,26 @@ def _capture_proof_file(runtime, ctx, args: DeclNameArgs):
 
 
 def _check_file_capture_sync(runtime, ctx, args: DeclStageFileCheckArgs):
+    allowed = _assert_formal_read_stage(runtime, ctx, requested_stage=args.stage, decl_name=args.decl_name)
+    if not allowed.ok or allowed.value is None:
+        return allowed
     return runtime.lean_projection.check_decl_file_snapshot_sync(
         ctx.repo_root,
         node_path=_node(ctx),
         decl_name=args.decl_name,
-        stage=args.stage,
+        stage=allowed.value,
     )
 
 
-def _sync_file_after_reset(runtime, ctx, args: DeclNameArgs):
-    return runtime.lean_projection.sync_decl_file_after_revision_reset(ctx.repo_root, node_path=_node(ctx), decl_name=args.decl_name)
-
-
-def _remove_decl_file(runtime, ctx, args: DeclNameArgs):
-    return runtime.lean_projection.remove_decl_file_for_delete(ctx.repo_root, node_path=_node(ctx), decl_name=args.decl_name)
-
-
 def _check_formal_stage_consistency(runtime, ctx, args: DeclStageFileCheckArgs):
+    allowed = _assert_formal_read_stage(runtime, ctx, requested_stage=args.stage, decl_name=args.decl_name)
+    if not allowed.ok or allowed.value is None:
+        return allowed
     return runtime.decl_graph.check_formal_stage_consistency(
         ctx.repo_root,
         node_path=_node(ctx),
         decl_name=args.decl_name,
-        stage=args.stage,
+        stage=allowed.value,
     )
 
 
@@ -258,26 +321,6 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE, AppGroup.DECL_STAGE_PROOF_FORMAL_FILE},
             roles=read_roles,
             handler=_check_file_capture_sync,
-        ),
-        handler_tool(
-            name="sync_decl_file_after_revision_reset",
-            description="Restore a declaration-owned Lean file from the current DeclRevision formal capture after an update reset.",
-            args_model=DeclNameArgs,
-            capability=ToolCapability.WRITE,
-            result_view="mutation",
-            groups={AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_FILE_WRITE},
-            roles=worker_roles,
-            handler=_sync_file_after_reset,
-        ),
-        handler_tool(
-            name="remove_decl_file_for_delete",
-            description="Remove the declaration-owned Lean file for a declaration that is being deleted by the current planned round.",
-            args_model=DeclNameArgs,
-            capability=ToolCapability.WRITE,
-            result_view="mutation",
-            groups={AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_FILE_WRITE},
-            roles=worker_roles,
-            handler=_remove_decl_file,
         ),
         handler_tool(
             name="check_formal_stage_consistency",
