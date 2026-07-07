@@ -10,17 +10,17 @@ EXPECTED_SURFACE_COUNTS = {
     "SourceIndexReviewerAgent": (3, 7, 1, 1, 0),
     "RootInterfacePrepareAgent": (6, 17, 1, 1, 1),
     "AdapterDeclCatalogAgent": (12, 40, 1, 2, 0),
-    "ResourceCuratorAgent": (4, 18, 1, 4, 2),
-    "CoordinatorAgent": (28, 68, 2, 4, 13),
-    "ContentPlanAgent": (24, 70, 3, 6, 16),
-    "NodeDirDependencyReconAgent": (4, 13, 1, 4, 2),
-    "MathlibReconAgent": (8, 23, 1, 4, 5),
-    "ResourceReconAgent": (6, 14, 2, 5, 3),
+    "ResourceCuratorAgent": (5, 18, 1, 4, 2),
+    "CoordinatorAgent": (34, 79, 2, 4, 13),
+    "ContentPlanAgent": (25, 70, 3, 6, 16),
+    "NodeDirDependencyReconAgent": (4, 13, 1, 1, 2),
+    "MathlibReconAgent": (7, 22, 1, 1, 5),
+    "ResourceReconAgent": (8, 16, 2, 3, 3),
     "StatementNLWorkerAgent": (11, 36, 1, 2, 4),
     "StatementNLReviewerAgent": (9, 30, 1, 1, 2),
     "StatementFormalWorkerAgent": (14, 50, 1, 2, 8),
     "StatementFormalReviewerAgent": (9, 31, 1, 1, 2),
-    "ProofNLWorkerAgent": (12, 37, 1, 2, 4),
+    "ProofNLWorkerAgent": (11, 36, 1, 2, 4),
     "ProofNLReviewerAgent": (9, 30, 1, 1, 2),
     "ProofFormalWorkerAgent": (14, 50, 1, 2, 8),
     "ProofFormalReviewerAgent": (9, 31, 1, 1, 2),
@@ -51,3 +51,29 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
     assert "capture_statement_formal_file" not in {tool.name for tool in reports["StatementFormalReviewerAgent"].application_tools}
     assert "capture_proof_formal_file" in {tool.name for tool in reports["ProofFormalWorkerAgent"].application_tools}
     assert "capture_proof_formal_file" not in {tool.name for tool in reports["ProofFormalReviewerAgent"].application_tools}
+
+
+def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
+    reports = build_agent_surface_reports()
+    coordinator_tools = {tool.name for tool in reports["CoordinatorAgent"].application_tools}
+    content_plan_tools = {tool.name for tool in reports["ContentPlanAgent"].application_tools}
+    mathlib_recon_tools = {tool.name for tool in reports["MathlibReconAgent"].application_tools}
+
+    assert {
+        "get_source_index",
+        "get_source_index_coverage",
+        "add_node_dep",
+        "remove_node_dep",
+        "add_node_material_ref",
+        "remove_node_material_ref",
+        "add_node_mathlib_module_hint",
+        "add_node_mathlib_decl_hint",
+        "list_node_public_decls",
+        "inspect_node_public_decl",
+    } <= coordinator_tools
+    assert "list_current_node_public_decls" not in coordinator_tools
+    assert "inspect_current_node_public_decl" not in coordinator_tools
+    assert "add_node_dep" not in content_plan_tools
+    assert "add_node_mathlib_module_hint" not in mathlib_recon_tools
+    assert "search_arxiv_theorems" not in mathlib_recon_tools
+    assert "search_arxiv_theorems" not in {tool.name for tool in reports["ProofNLWorkerAgent"].application_tools}

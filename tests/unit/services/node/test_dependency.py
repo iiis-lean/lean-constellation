@@ -157,39 +157,6 @@ def test_add_node_dep_resolves_expected_decl_and_refreshes_prelude(tmp_path: Pat
     assert "import Main.Topic.Provider.Interfaces" in _prelude_text(tmp_path, "Main.Topic.Consumer")
 
 
-def test_add_node_dep_from_visible_candidate_uses_display_index(tmp_path: Path) -> None:
-    _create_base_tree(tmp_path)
-    _commit_provider_scope(tmp_path)
-    component = make_runtime().node.dependency
-
-    visible = component.list_visible_node_boundaries(tmp_path, node_path="Main.Topic.Consumer")
-    assert visible.ok
-    assert visible.value is not None
-    assert visible.value.boundaries[0].index == 0
-
-    added = component.add_node_dep_from_visible_candidate(
-        tmp_path,
-        node_path="Main.Topic.Consumer",
-        candidate_index=0,
-        expected_decl_names=["helper"],
-        reason="Use provider from visible boundary list.",
-        actor="coordinator",
-    )
-    assert added.ok, added.issues
-    assert added.value is not None
-    assert added.value.contract.deps[0].target == NodeRef(repo=None, node="Main.Topic.Provider")
-
-    missing = component.add_node_dep_from_visible_candidate(
-        tmp_path,
-        node_path="Main.Topic.Consumer",
-        candidate_index=99,
-        reason="Use missing candidate.",
-        actor="coordinator",
-    )
-    assert not missing.ok
-    assert missing.issues[0].kind == "node_dep_candidate_index_out_of_range"
-
-
 def test_add_node_dep_rejects_unready_target_and_missing_expected_decl(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     component = make_runtime().node.dependency

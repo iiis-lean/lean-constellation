@@ -216,6 +216,19 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(index.issues)
         return self.runtime.foundation.ok(self._to_index_view(repo_root, index.value))
 
+    def get_committed_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
+        index = self.get_source_index_model(repo_root)
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.fail(index.issues)
+        if index.value.status != "committed":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_index_not_committed",
+                    "Committed SourceIndex read requires a committed SourceIndex.",
+                )
+            )
+        return self.runtime.foundation.ok(self._to_index_view(repo_root, index.value))
+
     def get_source_index_model(self, repo_root: Path) -> ServiceResult[SourceIndex]:
         path = self._index_path(repo_root)
         if not path.exists():
@@ -645,8 +658,24 @@ class SourceIndexComponent:
         index = self.get_source_index_model(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
-        blocks = [block for block in index.value.blocks.values() if block.active and block.block_id != index.value.root_block_id]
-        files = list(index.value.files.values())
+        return self._source_index_coverage(index.value)
+
+    def get_committed_source_index_coverage(self, repo_root: Path) -> ServiceResult[SourceIndexCoverageView]:
+        index = self.get_source_index_model(repo_root)
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.fail(index.issues)
+        if index.value.status != "committed":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_index_not_committed",
+                    "Committed SourceIndex coverage read requires a committed SourceIndex.",
+                )
+            )
+        return self._source_index_coverage(index.value)
+
+    def _source_index_coverage(self, index: SourceIndex) -> ServiceResult[SourceIndexCoverageView]:
+        blocks = [block for block in index.blocks.values() if block.active and block.block_id != index.root_block_id]
+        files = list(index.files.values())
         unfinished = [block.block_id for block in blocks if block.lifecycle_status != "completed"]
         pending = [
             file.path
@@ -660,7 +689,7 @@ class SourceIndexComponent:
             block_count=len(blocks),
             completed_block_count=sum(1 for block in blocks if block.lifecycle_status == "completed"),
             ref_count=sum(len(block.refs) for block in blocks),
-            link_count=len(index.value.links),
+            link_count=len(index.links),
             unfinished_block_ids=unfinished,
             pending_file_paths=pending,
             summary=f"{len(blocks) - len(unfinished)}/{len(blocks)} blocks completed; {len(files) - len(pending)}/{len(files)} files non-pending.",

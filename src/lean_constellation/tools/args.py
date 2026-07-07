@@ -315,6 +315,21 @@ class CurrentNodeDependencyAddArgs(StrictModel):
     )
 
 
+class NodeDependencyAddArgs(NodePathArgs):
+    target_node: str = Field(description="Provider node path to add as a dependency of the target node.")
+    reason: str = Field(description="Why the target node needs this dependency.")
+    target_repo: str | None = Field(default=None, description="Provider repo key; omit for current repo.")
+    expected_public_decl_names: list[str] | None = Field(
+        default=None,
+        description="Names of provider public declarations expected to be used.",
+    )
+
+
+class NodeDependencyRemoveArgs(NodePathArgs):
+    index: int = Field(ge=0, description="0-based dependency index from list_node_deps or get_node_contract.")
+    reason: str | None = Field(default=None, description="Optional reason for removing this dependency.")
+
+
 class IndexReasonArgs(StrictModel):
     index: int = Field(ge=0, description="0-based index from the most recent list view.")
     reason: str | None = Field(default=None, description="Optional reason for this removal.")
@@ -332,6 +347,21 @@ class CurrentMaterialRefAddArgs(StrictModel):
 class CurrentMaterialRefRemoveArgs(StrictModel):
     ref_scope: Literal["owned", "context"] = Field(description="Which material ref list to remove from.")
     index: int = Field(ge=0, description="0-based index from the current material ref list.")
+    reason: str | None = Field(default=None, description="Optional removal reason.")
+
+
+class NodeMaterialRefAddArgs(NodePathArgs):
+    ref_scope: Literal["owned", "context"] = Field(description="Whether to add the material to owned_refs or context_refs.")
+    material_kind: Literal["source", "resource"] = Field(description="Whether locator identifies source text or a resource.")
+    locator: str = Field(description="Source path or resource key.")
+    start_line: int | None = Field(default=None, ge=1, description="Optional first line, 1-based.")
+    end_line: int | None = Field(default=None, ge=1, description="Optional last line, inclusive.")
+    reason: str | None = Field(default=None, description="Why this material is relevant to the target node.")
+
+
+class NodeMaterialRefRemoveArgs(NodePathArgs):
+    ref_scope: Literal["owned", "context"] = Field(description="Which material ref list to remove from.")
+    index: int = Field(ge=0, description="0-based index from the target node material ref list.")
     reason: str | None = Field(default=None, description="Optional removal reason.")
 
 
@@ -418,6 +448,16 @@ class CurrentMathlibModuleUseArgs(StrictModel):
 class CurrentMathlibDeclUseArgs(StrictModel):
     decl_name: str = Field(description="Recorded Mathlib declaration name to add to or remove from the current node contract hints.")
     reason: str | None = Field(default=None, description="Why this declaration is useful for the current node objective.")
+
+
+class NodeMathlibModuleHintArgs(NodePathArgs):
+    module: str = Field(description="Recorded Mathlib module name to add to or remove from the target node contract hints.")
+    reason: str | None = Field(default=None, description="Why this module is useful for the target node objective.")
+
+
+class NodeMathlibDeclHintArgs(NodePathArgs):
+    decl_name: str = Field(description="Recorded Mathlib declaration name to add to or remove from the target node contract hints.")
+    reason: str | None = Field(default=None, description="Why this declaration is useful for the target node objective.")
 
 
 class StrategyEnsureArgs(StrictModel):

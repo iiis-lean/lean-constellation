@@ -535,6 +535,9 @@ class MaterialService:
     def get_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         return self.source_index.get_source_index(repo_root)
 
+    def get_committed_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
+        return self.source_index.get_committed_source_index(repo_root)
+
     def set_source_index_overview(self, repo_root: Path, *, overview: str) -> ServiceResult[SourceIndexView]:
         return self.source_index.set_source_index_overview(repo_root, overview=overview)
 
@@ -695,6 +698,9 @@ class MaterialService:
 
     def get_source_index_coverage(self, repo_root: Path) -> ServiceResult[SourceIndexCoverageView]:
         return self.source_index.get_source_index_coverage(repo_root)
+
+    def get_committed_source_index_coverage(self, repo_root: Path) -> ServiceResult[SourceIndexCoverageView]:
+        return self.source_index.get_committed_source_index_coverage(repo_root)
 
     def submit_source_index_builder_round(self, repo_root: Path, *, summary: str, ctx: object | None = None) -> ServiceResult[SubmissionView]:
         return self.source_index.submit_source_index_builder_round(repo_root, summary=summary, ctx=ctx)

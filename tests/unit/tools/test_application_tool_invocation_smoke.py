@@ -752,6 +752,147 @@ def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp
     assert material["material_refs"]["owned_refs"][0]["path"] == "notes.md"
 
 
+def test_coordinator_node_contract_write_tools_invoke_path_based_mutation_wrappers(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    ref = _create_scope_with_public_decl(runtime, tmp_path)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "notes.md").write_text("line 1\nline 2\n", encoding="utf-8")
+    assert runtime.mathlib.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Nat.Basic").ok
+    assert runtime.mathlib.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Nat.succ_eq_add_one",
+        module="Mathlib.Data.Nat.Basic",
+        kind="theorem",
+        summary="Successor as adding one.",
+    ).ok
+    raw = _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
+
+    added_dep = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="add_node_dep",
+            flat_args={
+                "node_path": "Main.Consumer",
+                "target_node": "Main.Provider",
+                "expected_public_decl_names": ["helper"],
+                "reason": "Need the provider helper.",
+            },
+        )
+    )
+    added_material = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="add_node_material_ref",
+            flat_args={
+                "node_path": "Main.Consumer",
+                "ref_scope": "context",
+                "material_kind": "source",
+                "locator": "notes.md",
+                "start_line": 1,
+                "end_line": 2,
+                "reason": "Use source notes.",
+            },
+        )
+    )
+    added_hint = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="add_node_mathlib_module_hint",
+            flat_args={
+                "node_path": "Main.Consumer",
+                "module": "Mathlib.Data.Nat.Basic",
+                "reason": "Natural number facts.",
+            },
+        )
+    )
+    added_decl_hint = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="add_node_mathlib_decl_hint",
+            flat_args={
+                "node_path": "Main.Consumer",
+                "decl_name": "Nat.succ_eq_add_one",
+                "reason": "Successor rewrite.",
+            },
+        )
+    )
+
+    assert added_dep["deps"]["deps"][0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
+    assert added_material["material_refs"]["context_refs"][0]["path"] == "notes.md"
+    assert added_hint["hints"]["modules"][0]["module"] == "Mathlib.Data.Nat.Basic"
+    assert added_decl_hint["hints"]["declarations"][0]["name"] == "Nat.succ_eq_add_one"
+
+    removed_material = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="remove_node_material_ref",
+            flat_args={"node_path": "Main.Consumer", "ref_scope": "context", "index": 0, "reason": "No longer needed."},
+        )
+    )
+    removed_dep = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="remove_node_dep",
+            flat_args={"node_path": "Main.Consumer", "index": 0, "reason": "No longer needed."},
+        )
+    )
+    removed_module_hint = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="remove_node_mathlib_module_hint",
+            flat_args={"node_path": "Main.Consumer", "module": "Mathlib.Data.Nat.Basic", "reason": "No longer needed."},
+        )
+    )
+    removed_decl_hint = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="remove_node_mathlib_decl_hint",
+            flat_args={"node_path": "Main.Consumer", "decl_name": "Nat.succ_eq_add_one", "reason": "No longer needed."},
+        )
+    )
+
+    assert removed_material["material_refs"]["context_refs"] == []
+    assert removed_dep["deps"]["deps"] == []
+    assert removed_module_hint["hints"]["modules"] == []
+    assert removed_decl_hint["hints"]["declarations"] == []
+
+
+def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "notes.md").write_text("source notes\n", encoding="utf-8")
+    assert runtime.material.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="notes.md",
+        overview="Source overview.",
+        preparation_summary="Prepared source.",
+    ).ok
+    draft = runtime.material.create_draft_source_index(tmp_path)
+    assert draft.ok and draft.value is not None
+    assert draft.value.status == "draft"
+
+    raw = _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
+    draft_read = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_source_index",
+            flat_args={},
+        )
+    )
+    coverage_read = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_source_index_coverage",
+            flat_args={},
+        )
+    )
+
+    assert draft_read[0].kind == "source_index_not_committed"
+    assert coverage_read[0].kind == "source_index_not_committed"
+
+
 def test_resource_draft_and_mathlib_write_tools_invoke_services(tmp_path: Path) -> None:
     dispatcher = _FakeMathlibToolkit()
     runtime = create_test_runtime_services(

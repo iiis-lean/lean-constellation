@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
+from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
     DraftIdArgs,
     DraftIdReasonArgs,
@@ -30,7 +30,32 @@ from lean_constellation.tools.args import (
     SourceRangeArgs,
 )
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
-from lean_constellation.tools.specs import direct_tool
+from lean_constellation.tools.keys import ApplicationToolViewKey as AppView
+from lean_constellation.tools.specs import direct_tool, handler_tool
+
+
+_COMMITTED_SOURCE_INDEX_VIEWS = {
+    AppView.ROOT_INTERFACE_PREPARE.value,
+    AppView.NATIVE_REPO_COORDINATOR.value,
+    AppView.CONTENT_PLAN.value,
+    AppView.RESOURCE_RECON.value,
+}
+
+
+def _requires_committed_source_index(ctx: ToolExecutionContext) -> bool:
+    return ctx.expected_view_key in _COMMITTED_SOURCE_INDEX_VIEWS
+
+
+def _get_source_index(runtime, ctx: ToolExecutionContext, _args: NoArgs):
+    if _requires_committed_source_index(ctx):
+        return runtime.material.get_committed_source_index(ctx.repo_root)
+    return runtime.material.get_source_index(ctx.repo_root)
+
+
+def _get_source_index_coverage(runtime, ctx: ToolExecutionContext, _args: NoArgs):
+    if _requires_committed_source_index(ctx):
+        return runtime.material.get_committed_source_index_coverage(ctx.repo_root)
+    return runtime.material.get_source_index_coverage(ctx.repo_root)
 
 
 def build_source_index_tool_specs() -> list[ToolSpec]:
@@ -48,16 +73,15 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="get_source_index",
-            description="Read the current SourceIndex view for the repo.",
+            description="Read the SourceIndex view for the repo. Draft SourceIndex views return the draft; committed SourceIndex views require committed state.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
-            backing_service="material",
-            backing_method="get_source_index",
             result_view="source_index",
             groups={AppGroup.SOURCE_INDEX_DRAFT_READ, AppGroup.SOURCE_INDEX_COMMITTED_READ},
             roles=read_roles,
+            handler=_get_source_index,
         ),
         direct_tool(
             name="set_source_index_overview",
@@ -191,16 +215,15 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.SOURCE_INDEX_DRAFT_READ},
             roles=read_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="get_source_index_coverage",
-            description="Read SourceIndex coverage status for source files and semantic blocks.",
+            description="Read SourceIndex coverage status for source files and semantic blocks. Committed SourceIndex views require committed state.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
-            backing_service="material",
-            backing_method="get_source_index_coverage",
             result_view="source_index_coverage",
             groups={AppGroup.SOURCE_INDEX_DRAFT_READ, AppGroup.SOURCE_INDEX_COMMITTED_READ},
             roles=read_roles,
+            handler=_get_source_index_coverage,
         ),
     ]
 

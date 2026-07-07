@@ -23,6 +23,10 @@ from lean_constellation.tools.args import (
     MaxCountArgs,
     NodeContractCommitArgs,
     NodeDeleteArgs,
+    NodeDependencyAddArgs,
+    NodeDependencyRemoveArgs,
+    NodeMaterialRefAddArgs,
+    NodeMaterialRefRemoveArgs,
     NodePathArgs,
     NoArgs,
     ScopeExportAddArgs,
@@ -72,6 +76,11 @@ def _current_node_deps(runtime, ctx, args):
     return runtime.node.dependency.list_node_deps(ctx.repo_root, node_path=current_node_path(ctx))
 
 
+def _current_material_refs(runtime, ctx, args):
+    del args
+    return runtime.node.material_ref.list_node_material_refs(ctx.repo_root, node_path=current_node_path(ctx))
+
+
 def _get_node(runtime, ctx, args: NodePathArgs):
     return runtime.node.node_tree.get_node(ctx.repo_root, path=args.node_path)
 
@@ -105,6 +114,27 @@ def _remove_current_node_dep(runtime, ctx, args: IndexArgs):
     )
 
 
+def _add_node_dep(runtime, ctx, args: NodeDependencyAddArgs):
+    return runtime.node.add_current_node_dep(
+        ctx.repo_root,
+        node_path=args.node_path,
+        target_node=args.target_node,
+        reason=args.reason,
+        actor="coordinator",
+        expected_public_decl_names=args.expected_public_decl_names,
+        target_repo=args.target_repo,
+    )
+
+
+def _remove_node_dep(runtime, ctx, args: NodeDependencyRemoveArgs):
+    return runtime.node.remove_current_node_dep(
+        ctx.repo_root,
+        node_path=args.node_path,
+        index=args.index,
+        actor="coordinator",
+    )
+
+
 def _add_current_material_ref(runtime, ctx, args: CurrentMaterialRefAddArgs):
     return runtime.node.add_current_material_ref(
         ctx.repo_root,
@@ -126,6 +156,30 @@ def _remove_current_material_ref(runtime, ctx, args: CurrentMaterialRefRemoveArg
         ref_scope=args.ref_scope,
         index=args.index,
         actor=actor_for_write(ctx),
+    )
+
+
+def _add_node_material_ref(runtime, ctx, args: NodeMaterialRefAddArgs):
+    return runtime.node.add_current_material_ref(
+        ctx.repo_root,
+        node_path=args.node_path,
+        ref_scope=args.ref_scope,
+        material_kind=args.material_kind,
+        locator=args.locator,
+        start_line=args.start_line,
+        end_line=args.end_line,
+        reason=args.reason,
+        actor="coordinator",
+    )
+
+
+def _remove_node_material_ref(runtime, ctx, args: NodeMaterialRefRemoveArgs):
+    return runtime.node.remove_current_material_ref(
+        ctx.repo_root,
+        node_path=args.node_path,
+        ref_scope=args.ref_scope,
+        index=args.index,
+        actor="coordinator",
     )
 
 
@@ -496,6 +550,26 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_remove_current_node_dep,
         ),
         handler_tool(
+            name="add_node_dep",
+            description="Add a visible ready node boundary as a dependency of the target node contract.",
+            args_model=NodeDependencyAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="current_node_contract",
+            groups={AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE},
+            roles=coordinator_roles,
+            handler=_add_node_dep,
+        ),
+        handler_tool(
+            name="remove_node_dep",
+            description="Remove a dependency from the target node contract by list index when the coordinator is allowed to remove it.",
+            args_model=NodeDependencyRemoveArgs,
+            capability=ToolCapability.WRITE,
+            result_view="current_node_contract",
+            groups={AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE},
+            roles=coordinator_roles,
+            handler=_remove_node_dep,
+        ),
+        handler_tool(
             name="add_current_material_ref",
             description="Add a source or resource ref to the current node contract.",
             args_model=CurrentMaterialRefAddArgs,
@@ -515,6 +589,36 @@ def build_tool_specs() -> list[ToolSpec]:
             roles=write_roles,
             handler=_remove_current_material_ref,
         ),
+        handler_tool(
+            name="add_node_material_ref",
+            description="Add a source or resource ref to the target node contract.",
+            args_model=NodeMaterialRefAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="current_node_contract",
+            groups={AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE},
+            roles=coordinator_roles,
+            handler=_add_node_material_ref,
+        ),
+        handler_tool(
+            name="remove_node_material_ref",
+            description="Remove a material ref from the target node contract by list index.",
+            args_model=NodeMaterialRefRemoveArgs,
+            capability=ToolCapability.WRITE,
+            result_view="current_node_contract",
+            groups={AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE},
+            roles=coordinator_roles,
+            handler=_remove_node_material_ref,
+        ),
+        handler_tool(
+            name="list_current_node_material_refs",
+            description="List owned/context material refs for the current node contract.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="node_material_refs",
+            groups={AppGroup.NODE_CONTRACT_READ_CURRENT},
+            roles=all_roles,
+            handler=_current_material_refs,
+        ),
         direct_tool(
             name="list_node_material_refs",
             description="List owned/context material refs for a node contract.",
@@ -524,7 +628,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_component="material_ref",
             backing_method="list_node_material_refs",
             result_view="node_material_refs",
-            groups={AppGroup.NODE_CONTRACT_READ_CURRENT},
+            groups={AppGroup.NODE_CONTRACT_READ_COORDINATOR},
             roles=all_roles,
         ),
         direct_tool(

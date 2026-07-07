@@ -74,18 +74,21 @@ def test_public_decl_read_tools_visible_to_coordinator_plan_and_recon() -> None:
     assert node_dir.ok and node_dir.value is not None
     assert statement_worker.ok and statement_worker.value is not None
     visibility_tools = {"list_visible_nodes", "list_imported_repos"}
-    public_decl_tools = {
+    current_public_decl_tools = {
         "list_current_node_public_decls",
         "inspect_current_node_public_decl",
+    }
+    path_public_decl_tools = {
         "list_node_public_decls",
         "inspect_node_public_decl",
         "list_repo_public_decls",
         "inspect_repo_public_decl",
     }
-    assert visibility_tools | public_decl_tools <= set(coordinator.value)
-    assert visibility_tools | public_decl_tools <= set(content_plan.value)
-    assert visibility_tools | public_decl_tools <= set(node_dir.value)
-    assert visibility_tools | public_decl_tools <= set(statement_worker.value)
+    assert visibility_tools | path_public_decl_tools <= set(coordinator.value)
+    assert current_public_decl_tools.isdisjoint(coordinator.value)
+    assert visibility_tools | current_public_decl_tools | path_public_decl_tools <= set(content_plan.value)
+    assert visibility_tools | current_public_decl_tools | path_public_decl_tools <= set(node_dir.value)
+    assert visibility_tools | current_public_decl_tools | path_public_decl_tools <= set(statement_worker.value)
 
 
 def test_current_node_decl_read_tools_visible_to_content_plan_only() -> None:

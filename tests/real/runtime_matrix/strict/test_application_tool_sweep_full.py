@@ -25,9 +25,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 183
-    assert len(implemented_tool_cases()) == 175
-    assert len(pending_tool_cases()) == 8
+    assert len(cases) == 202
+    assert len(implemented_tool_cases()) == 176
+    assert len(pending_tool_cases()) == 26
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -416,13 +416,24 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     material_refs = call_tool_with_evidence(
         server,
         "content_plan",
-        "list_node_material_refs",
-        {"node_path": "Main.Topic.Core"},
+        "list_current_node_material_refs",
+        {},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Node material refs returned added resource ref.",
     )
     assert material_refs.value["owned_refs"][0]["resource_key"] == active_resource_key
+
+    coordinator_material_refs = call_tool_with_evidence(
+        server,
+        "native_repo_coordinator",
+        "list_node_material_refs",
+        {"node_path": "Main.Topic.Core"},
+        runtime_context=node_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Coordinator node material refs returned added resource ref.",
+    )
+    assert coordinator_material_refs.value["owned_refs"][0]["resource_key"] == active_resource_key
 
     removed_material = call_tool_with_evidence(
         server,

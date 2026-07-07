@@ -121,6 +121,13 @@ def test_source_index_lifecycle_submit_and_commit(tmp_path: Path) -> None:
     assert coverage.value.completed_block_count == 1
     assert coverage.value.pending_file_paths == []
 
+    committed_before_commit = service.get_committed_source_index(tmp_path)
+    assert not committed_before_commit.ok
+    assert committed_before_commit.issues[0].kind == "source_index_not_committed"
+    committed_coverage_before_commit = service.get_committed_source_index_coverage(tmp_path)
+    assert not committed_coverage_before_commit.ok
+    assert committed_coverage_before_commit.issues[0].kind == "source_index_not_committed"
+
     builder_submit = service.submit_source_index_builder_round(tmp_path, summary="Builder completed the source index.")
     assert builder_submit.ok
     assert builder_submit.value is not None
@@ -140,6 +147,14 @@ def test_source_index_lifecycle_submit_and_commit(tmp_path: Path) -> None:
     assert committed.ok
     assert committed.value is not None
     assert committed.value.status == "committed"
+    committed_read = service.get_committed_source_index(tmp_path)
+    assert committed_read.ok
+    assert committed_read.value is not None
+    assert committed_read.value.status == "committed"
+    committed_coverage = service.get_committed_source_index_coverage(tmp_path)
+    assert committed_coverage.ok
+    assert committed_coverage.value is not None
+    assert committed_coverage.value.completed_block_count == 1
 
     mutation = service.set_source_index_overview(tmp_path, overview="Should fail.")
     assert not mutation.ok

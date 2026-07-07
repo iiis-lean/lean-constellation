@@ -29,9 +29,10 @@ def test_resource_groups_expose_expected_tools() -> None:
         "resource_curation_context_read",
         {"get_material_context", "normalize_resource_target", "find_duplicate_resource"},
     )
+    assert_group_contains("material_context_read", {"get_material_context"})
     assert_group_contains(
-        "external_resource_discovery",
-        {"get_material_context", "normalize_resource_target", "find_duplicate_resource"},
+        "resource_target_preflight_read",
+        {"normalize_resource_target", "find_duplicate_resource"},
     )
     assert_group_contains(
         "material_acquisition",

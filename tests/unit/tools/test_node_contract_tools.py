@@ -19,8 +19,13 @@ def test_node_contract_tools_are_registered() -> None:
         "list_current_node_deps",
         "add_current_node_dep",
         "remove_current_node_dep",
+        "add_node_dep",
+        "remove_node_dep",
         "add_current_material_ref",
         "remove_current_material_ref",
+        "add_node_material_ref",
+        "remove_node_material_ref",
+        "list_current_node_material_refs",
         "list_node_material_refs",
         "list_node_interfaces",
         "add_node_interface",
@@ -46,13 +51,18 @@ def test_node_contract_tools_are_registered() -> None:
 
 
 def test_node_contract_groups_expose_expected_tools() -> None:
-    assert_group_contains("node_contract_read_current", {"get_current_node_contract", "list_current_node_deps", "list_node_material_refs"})
-    assert_group_contains("node_contract_read_coordinator", {"get_node_contract"})
+    assert_group_contains(
+        "node_contract_read_current",
+        {"get_current_node_contract", "list_current_node_deps", "list_current_node_material_refs"},
+    )
+    assert_group_contains("node_contract_read_coordinator", {"get_node_contract", "list_node_material_refs"})
     assert_group_contains("node_tree_coordinator_read", {"get_node_tree", "get_node"})
     assert_group_contains("node_tree_coordinator_write", {"create_scope_node", "create_content_node", "preview_delete_node", "delete_node"})
     assert_group_contains("node_contract_core_coordinator_write", {"update_node_contract_text"})
     assert_group_contains("node_contract_dependency_current_write", {"add_current_node_dep", "remove_current_node_dep"})
     assert_group_contains("node_contract_material_current_write", {"add_current_material_ref", "remove_current_material_ref"})
+    assert_group_contains("node_contract_dependency_coordinator_write", {"add_node_dep", "remove_node_dep"})
+    assert_group_contains("node_contract_material_coordinator_write", {"add_node_material_ref", "remove_node_material_ref"})
     assert_group_contains("scope_export_interface_read", {"list_node_interfaces", "list_scope_exports", "list_scope_export_candidates"})
     assert_group_contains("scope_export_interface_write", {"add_node_interface", "bind_node_interface", "add_scope_export"})
     assert_group_contains("scope_contract_coordinator_commit", {"commit_scope_contract"})

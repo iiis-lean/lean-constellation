@@ -184,42 +184,6 @@ class DependencyComponent:
             actor=normalized_actor.value,
         )
 
-    def add_node_dep_from_visible_candidate(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        candidate_index: int,
-        reason: str,
-        actor: str | NodeDepActor,
-        expected_decl_names: list[str] | None = None,
-    ) -> ServiceResult[NodeContractView]:
-        normalized_actor = self._normalize_actor(actor)
-        if not normalized_actor.ok or normalized_actor.value is None:
-            return self.runtime.foundation.fail(normalized_actor.issues)
-        if not reason or not reason.strip():
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_dep_reason_required", "Node dependency reason is required.", field="reason"))
-        visible = self.list_visible_node_boundaries(repo_root, node_path=node_path)
-        if not visible.ok or visible.value is None:
-            return self.runtime.foundation.fail(visible.issues)
-        if candidate_index < 0 or candidate_index >= len(visible.value.boundaries):
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "node_dep_candidate_index_out_of_range",
-                    f"Visible node boundary candidate index is out of range: {candidate_index}",
-                    object_ref=node_path,
-                    field="candidate_index",
-                )
-            )
-        return self._add_node_dep_from_boundary(
-            repo_root,
-            node_path=node_path,
-            boundary=visible.value.boundaries[candidate_index],
-            expected_decl_names=expected_decl_names or [],
-            reason=reason,
-            actor=normalized_actor.value,
-        )
-
     def _add_node_dep_from_boundary(
         self,
         repo_root: Path,

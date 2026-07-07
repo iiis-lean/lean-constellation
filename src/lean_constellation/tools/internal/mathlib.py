@@ -18,6 +18,8 @@ from lean_constellation.tools.args import (
     MathlibModuleArgs,
     MathlibModuleDeclArgs,
     MathlibModuleRecordArgs,
+    NodeMathlibDeclHintArgs,
+    NodeMathlibModuleHintArgs,
     MathlibSemanticSearchArgs,
     NoArgs,
 )
@@ -71,6 +73,44 @@ def _remove_current_decl_hint(runtime, ctx, args: CurrentMathlibDeclUseArgs):
 def _validate_current_mathlib_hints(runtime, ctx, args):
     del args
     return runtime.mathlib.validate_node_mathlib_uses(ctx.repo_root, node_path=current_node_path(ctx))
+
+
+def _add_node_module_hint(runtime, ctx, args: NodeMathlibModuleHintArgs):
+    return runtime.mathlib.add_node_mathlib_module_hint(
+        ctx.repo_root,
+        node_path=args.node_path,
+        module=args.module,
+        reason=args.reason,
+        actor="coordinator",
+    )
+
+
+def _remove_node_module_hint(runtime, ctx, args: NodeMathlibModuleHintArgs):
+    return runtime.mathlib.remove_node_mathlib_module_hint(
+        ctx.repo_root,
+        node_path=args.node_path,
+        module=args.module,
+        actor="coordinator",
+    )
+
+
+def _add_node_decl_hint(runtime, ctx, args: NodeMathlibDeclHintArgs):
+    return runtime.mathlib.add_node_mathlib_decl_hint(
+        ctx.repo_root,
+        node_path=args.node_path,
+        decl_name=args.decl_name,
+        reason=args.reason,
+        actor="coordinator",
+    )
+
+
+def _remove_node_decl_hint(runtime, ctx, args: NodeMathlibDeclHintArgs):
+    return runtime.mathlib.remove_node_mathlib_decl_hint(
+        ctx.repo_root,
+        node_path=args.node_path,
+        decl_name=args.decl_name,
+        actor="coordinator",
+    )
 
 
 def _search_arxiv_theorems(runtime, ctx, args: ArxivTheoremSearchArgs):
@@ -237,7 +277,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ArxivTheoremSearchArgs,
             capability=ToolCapability.READ,
             result_view="arxiv_theorem_search",
-            groups={AppGroup.EXTERNAL_THEOREM_SEARCH},
+            groups={AppGroup.EXTERNAL_RESOURCE_DISCOVERY},
             roles=roles,
             handler=_search_arxiv_theorems,
             required_context=set(),
@@ -301,5 +341,45 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.NODE_MATHLIB_HINT_READ},
             roles=roles,
             handler=_validate_current_mathlib_hints,
+        ),
+        handler_tool(
+            name="add_node_mathlib_module_hint",
+            description="Add a recorded Mathlib module as a hint on the target node contract.",
+            args_model=NodeMathlibModuleHintArgs,
+            capability=ToolCapability.WRITE,
+            result_view="node_mathlib_hint_mutation",
+            groups={AppGroup.NODE_CONTRACT_MATHLIB_COORDINATOR_WRITE},
+            roles={"coordinator", "admin"},
+            handler=_add_node_module_hint,
+        ),
+        handler_tool(
+            name="remove_node_mathlib_module_hint",
+            description="Remove a Mathlib module hint from the target node contract.",
+            args_model=NodeMathlibModuleHintArgs,
+            capability=ToolCapability.WRITE,
+            result_view="node_mathlib_hint_mutation",
+            groups={AppGroup.NODE_CONTRACT_MATHLIB_COORDINATOR_WRITE},
+            roles={"coordinator", "admin"},
+            handler=_remove_node_module_hint,
+        ),
+        handler_tool(
+            name="add_node_mathlib_decl_hint",
+            description="Add a recorded Mathlib declaration as a hint on the target node contract.",
+            args_model=NodeMathlibDeclHintArgs,
+            capability=ToolCapability.WRITE,
+            result_view="node_mathlib_hint_mutation",
+            groups={AppGroup.NODE_CONTRACT_MATHLIB_COORDINATOR_WRITE},
+            roles={"coordinator", "admin"},
+            handler=_add_node_decl_hint,
+        ),
+        handler_tool(
+            name="remove_node_mathlib_decl_hint",
+            description="Remove a Mathlib declaration hint from the target node contract.",
+            args_model=NodeMathlibDeclHintArgs,
+            capability=ToolCapability.WRITE,
+            result_view="node_mathlib_hint_mutation",
+            groups={AppGroup.NODE_CONTRACT_MATHLIB_COORDINATOR_WRITE},
+            roles={"coordinator", "admin"},
+            handler=_remove_node_decl_hint,
         ),
     ]

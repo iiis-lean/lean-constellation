@@ -75,16 +75,26 @@ def test_shared_resource_request_skill_does_not_reference_content_plan_only_atta
     assert "visible node material or contract tools" in body
 
 
-def test_selected_shared_skill_tool_refs_are_visible_to_all_users() -> None:
+def test_alignment_related_shared_skill_tool_refs_are_visible_to_all_users() -> None:
     specs = build_skill_specs()
     registered = _registered_tool_names()
     reports = build_agent_surface_reports()
+    skill_keys = {
+        "content-contract-reading",
+        "external-resource-discovery",
+        "mathlib-index-first-recon",
+        "mathlib-semantic-search-navigation",
+        "resource-request-handling",
+        "scope-export-interface-curation",
+        "visible-node-dependency-recon",
+    }
 
-    for skill_key in ["external-resource-discovery", "mathlib-index-first-recon"]:
+    for skill_key in skill_keys:
+        users = [agent_spec for agent_spec in build_agent_type_specs() if skill_key in agent_spec.skill_keys]
+        if len(users) < 2:
+            continue
         refs = _tool_refs(specs[skill_key].body) & registered
-        for agent_spec in build_agent_type_specs():
-            if skill_key not in agent_spec.skill_keys:
-                continue
+        for agent_spec in users:
             report = reports[agent_spec.agent_type]
             visible = {tool.name for tool in report.application_tools} | {tool.name for tool in report.submit_tools}
             assert refs <= visible, f"{skill_key}: {report.agent_type}"

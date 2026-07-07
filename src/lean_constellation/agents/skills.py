@@ -251,6 +251,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         required_tool_groups=_groups(
             AppGroup.NODE_CONTRACT_READ_COORDINATOR,
             AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE,
+            AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE,
+            AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE,
+            AppGroup.NODE_CONTRACT_MATHLIB_COORDINATOR_WRITE,
             AppGroup.NODE_TREE_COORDINATOR_WRITE,
             AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
         ),
@@ -263,6 +266,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Write goals and boundaries in mathematical terms rather than file-layout terms.",
                 "Make sibling boundaries explicit and avoid duplicate ownership.",
                 "Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for durable contract changes.",
+                "Attach durable source or resource context to a target node with `add_node_material_ref` or remove stale entries with `remove_node_material_ref`.",
+                "Record visible same-repo or provider node dependencies with `add_node_dep`, and remove stale dependency entries with `remove_node_dep`.",
+                "Record target-node Mathlib module or declaration hints with `add_node_mathlib_module_hint` and `add_node_mathlib_decl_hint` after the candidates are verified or recorded in the repo MathlibIndex.",
                 "Prepare content tasks with enough objective, material, dependency, and interface context for node-local work.",
                 "Check previews such as `preview_delete_node` before destructive node changes.",
             ),
@@ -335,11 +341,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "scope-export-interface-curation",
             "Use this skill when closing a scope node, selecting public declarations from ready children, binding scope interfaces, checking projection/readiness, or preparing a scope contract commit.",
             (
-                "Inspect child readiness and scope-close issues with `get_scope_close_view` before curating exports.",
                 "Read required interfaces and current export candidates with `list_node_interfaces`, `list_scope_export_candidates`, and `list_scope_exports`.",
                 "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
-                "Use the scope-close view to confirm that exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
+                "When your role has scope-close read tools, use the available scope close/readiness view to confirm exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
             ),
             (
                 "Do not export unstable private implementation details.",
@@ -374,13 +379,13 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         name="external-resource-discovery",
         description="Guides agents that are allowed to discover new external material targets before submitting explicit resource requests.",
         group="resource",
-        required_tool_groups=(),
+        required_tool_groups=_groups(AppGroup.EXTERNAL_RESOURCE_DISCOVERY),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "external-resource-discovery",
             "Use this skill when existing source and resource material is insufficient and the agent must find a precise arXiv, web, or local-file target without broad duplicate searching.",
             (
-                "Start from existing source, resources, Mathlib, and visible dependencies with `get_material_context`, `search_material_text`, and available Mathlib index tools.",
+                "Use external discovery only after the current source, resources, visible dependencies, and Mathlib context are not enough for the task.",
                 "Keep search narrow and tied to the current mathematical need.",
                 "Prefer reliable mathematical sources and stable URLs.",
                 "Use `search_arxiv_theorems` only for arXiv theorem-like candidates, and choose one accurate target rather than a broad search result list.",
@@ -444,13 +449,15 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             AppGroup.NODE_TREE_COORDINATOR_READ,
             AppGroup.NODE_TREE_COORDINATOR_WRITE,
             AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.SOURCE_CORPUS_READ,
+            AppGroup.SOURCE_INDEX_COMMITTED_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "coordinator-node-decomposition",
             "Use this skill when deciding whether to create or revise a Scope node or Content node, splitting mathematical regions, assigning sibling boundaries, or repairing an over-broad or over-fragmented node structure.",
             (
-                "Start from root interfaces, source index structure, current tree from `get_node_tree`, and stable provider context from `list_ready_provider_repos`.",
+                "Start from repo work config, preparation input, root interfaces, SourceCorpus, committed SourceIndex, current tree from `get_node_tree`, and stable provider context from `list_ready_provider_repos`.",
                 "Choose scope nodes for broad mathematical areas and content nodes for focused declaration work.",
                 "Write node contracts through `create_scope_node`, `create_content_node`, and `update_node_contract_text`.",
                 "Use `preview_delete_node` before deleting or replacing tree structure.",
@@ -570,10 +577,10 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "mathlib-semantic-search-navigation",
             "Use this skill after current node hints and repo-level MathlibIndex are insufficient.",
             (
-                "Use `search_mathlib_declarations` for mathematical concepts and `search_external_mathlib` when additional toolkit-backed backends are appropriate.",
+                "Use `search_mathlib_declarations` for mathematical concepts before considering any additional toolkit-backed search backend that is visible to your role.",
                 "Inspect candidate declarations and modules with `inspect_mathlib_search_candidate`, `inspect_mathlib_declaration`, and `inspect_mathlib_module` before relying on them.",
                 "Confirm namespace, assumptions, typeclasses, imports, and theorem direction.",
-                "Record useful candidates later through `ingest_mathlib_candidate`, `record_mathlib_decl`, or `record_mathlib_module` when write tools are visible.",
+                "When your role has MathlibIndex write permissions, record verified candidates through the dedicated MathlibIndex curation workflow rather than treating search results as committed truth.",
                 "Report unresolved directions when search is inconclusive.",
             ),
             (
