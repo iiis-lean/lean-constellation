@@ -557,8 +557,10 @@ class NodeDirDependencyReconAgentStep(AgentStep):
                 outcome="completed",
                 repo_key=submission.repo_key,
                 node_path=submission.node_path,
-                added_node_deps=list(submission.added_node_deps),
-                removed_node_deps=list(submission.removed_node_deps),
+                dependency_change_summary=submission.dependency_change_summary,
+                checked_boundary_summary=submission.checked_boundary_summary,
+                useful_findings=list(submission.useful_findings),
+                unresolved_within_visible_boundaries=list(submission.unresolved_within_visible_boundaries),
                 summary=submission.summary or "Node dependency recon completed.",
             )
         return super().build_result_from_submission(ctx, agent_id, turn_result)
@@ -586,8 +588,10 @@ class MathlibReconAgentStep(AgentStep):
                 outcome="completed",
                 repo_key=submission.repo_key,
                 node_path=submission.node_path,
-                added_modules=list(submission.added_modules),
-                added_decls=list(submission.added_decls),
+                index_update_summary=submission.index_update_summary,
+                node_mathlib_hint_summary=submission.node_mathlib_hint_summary,
+                useful_findings=list(submission.useful_findings),
+                unresolved_in_mathlib=list(submission.unresolved_in_mathlib),
                 summary=submission.summary or "Mathlib recon completed.",
             )
         return super().build_result_from_submission(ctx, agent_id, turn_result)
@@ -621,8 +625,10 @@ class ResourceReconAgentStep(AgentStep):
                 outcome="completed",
                 repo_key=submission.repo_key,
                 node_path=submission.node_path,
-                added_owned_refs=list(submission.added_owned_refs),
-                added_context_refs=list(submission.added_context_refs),
+                material_change_summary=submission.material_change_summary,
+                checked_material_summary=submission.checked_material_summary,
+                useful_findings=list(submission.useful_findings),
+                unresolved_material_needs=list(submission.unresolved_material_needs),
                 summary=submission.summary or "Resource recon completed.",
             )
         if isinstance(submission, ResourceReconBlockedSubmission):

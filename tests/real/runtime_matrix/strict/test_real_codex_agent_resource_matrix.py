@@ -919,8 +919,8 @@ def test_strict_real_codex_mathlib_recon_resources_tools_and_submit(
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result is not None
     assert flow.result.outcome == "completed"
-    assert "Init" in flow.result.added_modules
-    assert "True.intro" in flow.result.added_decls
+    assert "Init" in flow.result.index_update_summary
+    assert "True.intro" in flow.result.useful_findings
 
     data = _read_artifact(artifact_path)
     assert data["prompt_marker_seen"] == prompt_marker
@@ -1190,7 +1190,7 @@ Do these exact actions:
     prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, tool_results.
     Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
     tool_results must include every application tool listed above with at least ok and summary. For validate_current_node_mathlib_hints also include passed.
-14. If every application tool listed above has ok true and validate_current_node_mathlib_hints passed is true, set submit_tool_called in the JSON artifact to "submit_mathlib_recon_completed", then call submit tool "submit_mathlib_recon_completed" with summary "Strict real Codex MathlibRecon probe completed local index and hint wiring.", added_modules ["Init"], and added_decls ["True.intro"]. If any application tool fails, do not call submit_mathlib_recon_completed; instead write the artifact with submit_tool_called false and the failed tool result, then stop.
+14. If every application tool listed above has ok true and validate_current_node_mathlib_hints passed is true, set submit_tool_called in the JSON artifact to "submit_mathlib_recon_completed", then call submit tool "submit_mathlib_recon_completed" with summary "Strict real Codex MathlibRecon probe completed local index and hint wiring.", index_update_summary "Recorded Init and True.intro in the local Mathlib index.", node_mathlib_hint_summary "Recorded Init and True.intro as current-node Mathlib hints.", useful_findings ["Init", "True.intro"], and unresolved_in_mathlib []. If any application tool fails, do not call submit_mathlib_recon_completed; instead write the artifact with submit_tool_called false and the failed tool result, then stop.
 
 Keep the final response short and mention the artifact path.
 """.strip()

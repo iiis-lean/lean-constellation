@@ -56,17 +56,25 @@ def _prepare_content_repo(lean_runtime, repo_root: Path) -> None:
 
 
 def _start_content_task(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
+    return _start_content_task_for_node(runtime, repo_root, "Main.Core")
+
+
+def _start_content_task_for_node(runtime: FakeLeanFlowRuntime, repo_root: Path, node_path: str) -> str:
     return runtime.start_flow(
         "content_node_task",
         {
             "repo_key": repo_root.name,
             "repo_path": str(repo_root),
-            "node_path": "Main.Core",
+            "node_path": node_path,
             "contract_version": 1,
             "task_mode": "run",
         },
-        scope_id=f"repo:{repo_root.name}:node:Main.Core",
+        scope_id=f"repo:{repo_root.name}:node:{node_path}",
     )
+
+
+def _expected_node_workdir(repo_root: Path, node_path: str = "Main.Core") -> str:
+    return str(repo_root.joinpath(*node_path.split(".")))
 
 
 def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:
@@ -139,7 +147,10 @@ def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(
             outcome="completed",
             repo_key=repo_root.name,
             node_path="Main.Core",
-            added_node_deps=["Main.Base"],
+            dependency_change_summary="Added Main.Base.",
+            checked_boundary_summary="Checked same-repo visible node boundaries.",
+            useful_findings=["Main.Base"],
+            unresolved_within_visible_boundaries=[],
             summary="Node deps found.",
         ),
     )
@@ -164,6 +175,8 @@ def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(
     assert flow.result.outcome == "blocked"
     assert len(runtime.agent_service.start_records) == 2
     assert runtime.agent_service.start_records[0].agent_id == runtime.agent_service.start_records[1].agent_id
+    assert runtime.agent_service.start_records[0].workdir == _expected_node_workdir(repo_root)
+    assert runtime.agent_service.start_records[1].workdir == _expected_node_workdir(repo_root)
     assert "Node deps found." in (runtime.agent_service.start_records[1].prompt or "")
 
 
@@ -192,6 +205,137 @@ def test_content_node_task_rejects_duplicate_preparation_dispatch(tmp_path: Path
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "failed"
     assert "already been used" in flow.result.reason
+
+
+def test_content_node_task_reuses_content_plan_agent_from_prior_same_node_task(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+
+    first_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, first_flow_id)
+    assert runtime.flow_service.get_flow(first_flow_id).state.position.phase == "plan_agent"
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Stop first task.",
+            summary="Stop first task.",
+        )
+    )
+    _advance_and_run(runtime, first_flow_id)
+    first_agent_id = runtime.agent_service.start_records[-1].agent_id
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(repo_root)
+    assert runtime.flow_service.get_flow(first_flow_id).status is FlowStatus.COMPLETED
+
+    second_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, second_flow_id)
+    assert runtime.flow_service.get_flow(second_flow_id).state.position.phase == "plan_agent"
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Stop second task.",
+            summary="Stop second task.",
+        )
+    )
+    _advance_and_run(runtime, second_flow_id)
+    second_agent_id = runtime.agent_service.start_records[-1].agent_id
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(repo_root)
+
+    assert second_agent_id == first_agent_id
+    second_flow = runtime.flow_service.get_flow(second_flow_id)
+    assert second_flow.agent_bindings.get("content_plan") == first_agent_id
+
+
+def test_content_node_task_does_not_inherit_content_plan_agent_from_different_node_scope(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    created_other = lean_runtime.node.create_content_node(
+        repo_root,
+        path="Main.Other",
+        goal="Formalize other facts.",
+        boundary="Other facts only.",
+        objective="Prove the other facts.",
+        success_criteria="The other facts are proved.",
+    )
+    assert created_other.ok
+
+    first_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, first_flow_id)
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Stop first task.",
+            summary="Stop first task.",
+        )
+    )
+    _advance_and_run(runtime, first_flow_id)
+    first_agent_id = runtime.agent_service.start_records[-1].agent_id
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(repo_root)
+
+    other_flow_id = _start_content_task_for_node(runtime, repo_root, "Main.Other")
+    _advance_and_run(runtime, other_flow_id)
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Other",
+            reason="Stop other task.",
+            summary="Stop other task.",
+        )
+    )
+    _advance_and_run(runtime, other_flow_id)
+    other_agent_id = runtime.agent_service.start_records[-1].agent_id
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(repo_root, "Main.Other")
+
+    assert other_agent_id != first_agent_id
+
+
+def test_content_node_task_existing_content_plan_binding_is_not_overwritten(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+
+    prior_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, prior_flow_id)
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Stop prior task.",
+            summary="Stop prior task.",
+        )
+    )
+    _advance_and_run(runtime, prior_flow_id)
+
+    current_flow_id = _start_content_task(runtime, repo_root)
+    runtime.flow_service.store.update_flow_record(
+        current_flow_id,
+        lambda flow: flow.agent_bindings.by_role.__setitem__("content_plan", "agent_explicit"),
+    )
+    _advance_and_run(runtime, current_flow_id)
+    step_id = runtime.flow_service.advance_flow(current_flow_id)
+    assert step_id is not None
+
+    current_flow = runtime.flow_service.get_flow(current_flow_id)
+    assert current_flow.agent_bindings.get("content_plan") == "agent_explicit"
 
 
 def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Path) -> None:

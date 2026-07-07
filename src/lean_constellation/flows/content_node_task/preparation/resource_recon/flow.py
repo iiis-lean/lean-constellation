@@ -17,6 +17,7 @@ from lean_constellation.flows.content_node_task.preparation.common import (
     PreparationReconInput,
     PreparationReconParams,
     PreparationReconState,
+    content_node_workdir,
 )
 
 
@@ -37,8 +38,10 @@ class ResourceReconResult(LeanRenderableFlowResult):
     outcome: Literal["completed", "blocked"]
     repo_key: str
     node_path: str
-    added_owned_refs: list[str] = Field(default_factory=list)
-    added_context_refs: list[str] = Field(default_factory=list)
+    material_change_summary: str | None = None
+    checked_material_summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_material_needs: list[str] = Field(default_factory=list)
     reason: str | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -46,8 +49,10 @@ class ResourceReconResult(LeanRenderableFlowResult):
             "outcome": self.outcome,
             "repo_key": self.repo_key,
             "node_path": self.node_path,
-            "added_owned_refs": self.added_owned_refs,
-            "added_context_refs": self.added_context_refs,
+            "material_change_summary": self.material_change_summary,
+            "checked_material_summary": self.checked_material_summary,
+            "useful_findings": list(self.useful_findings),
+            "unresolved_material_needs": list(self.unresolved_material_needs),
             "reason": self.reason,
         }
 
@@ -134,8 +139,10 @@ class ResourceReconFlow(LeanBusinessFlow):
                 outcome="completed",
                 repo_key=input_model.repo_key,
                 node_path=input_model.node_path,
-                added_owned_refs=list(result.added_owned_refs),
-                added_context_refs=list(result.added_context_refs),
+                material_change_summary=result.material_change_summary,
+                checked_material_summary=result.checked_material_summary,
+                useful_findings=list(result.useful_findings),
+                unresolved_material_needs=list(result.unresolved_material_needs),
                 summary=result.summary,
             )
             return
@@ -203,7 +210,7 @@ def _resource_recon_agent_step(flow: ResourceReconFlow, input_model: ResourceRec
                 "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "resource_recon",
                 "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "resource_recon_submit",
             },
-            workdir_override=input_model.repo_path,
+            workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
             max_auto_continue_turns=1,
         ),
     )
@@ -267,5 +274,8 @@ def _recon_prompt(kind: str, input_model: PreparationReconInput) -> str:
         parts.append(f"Objective: {input_model.objective}.")
     if input_model.context_summary:
         parts.append(f"Context: {input_model.context_summary}.")
-    parts.append("Use tools for current truth and submit completed, blocked, or a resource request.")
+    parts.append(
+        "Use tools for current truth, then call `submit_resource_recon_completed`, "
+        "`submit_resource_recon_blocked`, or `submit_resource_request`."
+    )
     return "\n".join(parts)

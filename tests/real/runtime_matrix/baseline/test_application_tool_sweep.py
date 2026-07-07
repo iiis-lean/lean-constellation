@@ -206,7 +206,7 @@ def _classify_tool(spec: ToolSpec) -> ToolCoverageMode:
         "upstream_navigation",
         "mathlib_semantic_search",
         "mathlib_navigation",
-        "external_theorem_search",
+        "external_resource_discovery",
         "upstream_repo_search",
         "source_acquisition",
         "material_acquisition",

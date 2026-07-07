@@ -12,6 +12,7 @@ from pydantic import Field
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
+from lean_constellation.flows.content_node_task.preparation.common import content_node_workdir
 from lean_constellation.flows.content_node_task.steps import (
     ContentPlanStepResult,
     ContentTaskAdmissionStep,
@@ -132,8 +133,10 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
                 )
             )
         if state.position.phase == "plan_agent":
+            _inherit_content_plan_binding_from_prior_task(ctx, self)
             return ctx.create_step(_content_plan_agent_step(self, input_model, state, callback=False))
         if state.position.phase == "callback_plan_agent":
+            _inherit_content_plan_binding_from_prior_task(ctx, self)
             return ctx.create_step(_content_plan_agent_step(self, input_model, state, callback=True))
         if state.position.phase == "ensure_stage_agents":
             return ctx.create_step(
@@ -339,7 +342,7 @@ def _content_plan_agent_step(
                 "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "content_plan",
                 "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "content_plan_submit",
             },
-            workdir_override=input_model.repo_path,
+            workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
             max_auto_continue_turns=1,
         ),
     )
@@ -348,6 +351,7 @@ def _content_plan_agent_step(
 def _content_plan_initial_prompt(input_model: ContentNodeTaskInput) -> str:
     parts = [
         f"Run the content node task for {input_model.node_path}.",
+        f"Repository: {input_model.repo_key}.",
         f"Task mode: {input_model.task_mode}.",
     ]
     if input_model.contract_version is not None:
@@ -357,6 +361,25 @@ def _content_plan_initial_prompt(input_model: ContentNodeTaskInput) -> str:
         "preparation recon, resource request, decl round, ready, blocked, or failed."
     )
     return "\n".join(parts)
+
+
+def _inherit_content_plan_binding_from_prior_task(ctx: FlowContext, flow: ContentNodeTaskFlow) -> None:
+    if flow.agent_bindings.get("content_plan") is not None:
+        return
+    flow_service = ctx.ark.flow_service
+    if flow_service is None:
+        return
+    prior_flows = [
+        prior
+        for prior in flow_service.list_flows(scope_id=flow.scope_id, flow_type=flow.flow_type)
+        if prior.flow_id != flow.flow_id and prior.agent_bindings.get("content_plan") is not None
+    ]
+    if not prior_flows:
+        return
+    prior_flows.sort(key=lambda prior: (prior.created_at, prior.flow_id))
+    inherited_agent_id = prior_flows[-1].agent_bindings.get("content_plan")
+    if inherited_agent_id is not None:
+        flow.agent_bindings.by_role["content_plan"] = inherited_agent_id
 
 
 def _dispatch_step_from_pending(ctx: FlowContext, flow: ContentNodeTaskFlow, state: ContentNodeTaskState) -> DispatchStep:

@@ -31,7 +31,19 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
             for key in fields:
                 if key in payload or key in {"submitted_by_agent_id", "submitted_at", "repo_key", "node_path", "arxiv_version", "summary", "continuation"}:
                     continue
-                if key.endswith("_names") or key.endswith("_deps") or key.endswith("_refs") or key in {"interfaces", "attempted_targets", "missing_materials", "missing_interfaces", "details", "missing_targets", "added_modules", "added_decls", "node_paths"}:
+                if key.endswith("_names") or key.endswith("_deps") or key.endswith("_refs") or key in {
+                    "interfaces",
+                    "attempted_targets",
+                    "missing_materials",
+                    "missing_interfaces",
+                    "details",
+                    "missing_targets",
+                    "node_paths",
+                    "useful_findings",
+                    "unresolved_within_visible_boundaries",
+                    "unresolved_in_mathlib",
+                    "unresolved_material_needs",
+                }:
                     payload[key] = []
                 elif key == "feedback" and "reviewed_decl_names" in fields:
                     payload[key] = []

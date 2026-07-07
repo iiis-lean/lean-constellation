@@ -222,8 +222,10 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
                     "submit_node_dir_dependency_recon_completed",
                     {
                         "summary": "Strict node dependency child recon completed.",
-                        "added_node_deps": [],
-                        "removed_node_deps": [],
+                        "dependency_change_summary": "No node dependency changes.",
+                        "checked_boundary_summary": "Checked current visible node boundaries.",
+                        "useful_findings": [],
+                        "unresolved_within_visible_boundaries": [],
                     },
                 )
             ],
@@ -355,8 +357,10 @@ def test_strict_recon_completed_blocked_and_resource_callback_evidence(
                     "submit_node_dir_dependency_recon_completed",
                     {
                         "summary": "Strict node dependencies reconciled.",
-                        "added_node_deps": ["Main.Topic.Helper"],
-                        "removed_node_deps": [],
+                        "dependency_change_summary": "Added Main.Topic.Helper.",
+                        "checked_boundary_summary": "Checked same-repo visible node boundaries.",
+                        "useful_findings": ["Main.Topic.Helper"],
+                        "unresolved_within_visible_boundaries": [],
                     },
                 )
             ],
@@ -365,8 +369,10 @@ def test_strict_recon_completed_blocked_and_resource_callback_evidence(
                     "submit_mathlib_recon_completed",
                     {
                         "summary": "Strict Mathlib dependencies reconciled.",
-                        "added_modules": ["Mathlib.Data.Nat.Basic"],
-                        "added_decls": ["Nat.add_comm"],
+                        "index_update_summary": "Recorded Mathlib.Data.Nat.Basic and Nat.add_comm.",
+                        "node_mathlib_hint_summary": "Added current-node Mathlib hints.",
+                        "useful_findings": ["Mathlib.Data.Nat.Basic", "Nat.add_comm"],
+                        "unresolved_in_mathlib": [],
                     },
                 )
             ],
@@ -375,8 +381,10 @@ def test_strict_recon_completed_blocked_and_resource_callback_evidence(
                     "submit_resource_recon_completed",
                     {
                         "summary": "Strict resource recon completed.",
-                        "added_owned_refs": ["resource:local_note"],
-                        "added_context_refs": [],
+                        "material_change_summary": "Attached resource:local_note.",
+                        "checked_material_summary": "Checked local material refs.",
+                        "useful_findings": ["resource:local_note"],
+                        "unresolved_material_needs": [],
                     },
                 ),
                 (
@@ -399,8 +407,10 @@ def test_strict_recon_completed_blocked_and_resource_callback_evidence(
                     "submit_resource_recon_completed",
                     {
                         "summary": "Strict resource recon completed after callback.",
-                        "added_owned_refs": [],
-                        "added_context_refs": ["web:runtime-matrix-resource"],
+                        "material_change_summary": "Attached web:runtime-matrix-resource.",
+                        "checked_material_summary": "Checked resource callback result.",
+                        "useful_findings": ["web:runtime-matrix-resource"],
+                        "unresolved_material_needs": [],
                     },
                 ),
             ],

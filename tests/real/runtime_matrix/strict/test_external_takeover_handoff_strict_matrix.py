@@ -117,7 +117,7 @@ def test_strict_external_takeover_handoff_payload_for_repo_coordinator_resource_
         content_step_id,
         agent_type="ContentPlanControlledTestAgent",
         marker="strict-handoff-content-plan",
-        expected_workdir=content_ws.provider_repo,
+        expected_workdir=content_ws.provider_repo / "Main" / "Topic" / "Core",
         app_view="content_plan",
         submit_view="content_plan_submit",
         app_call=("get_current_node_contract", {}),
@@ -162,11 +162,20 @@ def test_strict_external_takeover_handoff_payload_for_adapter_and_mathlib(
         mathlib_step_id,
         agent_type="MathlibReconControlledTestAgent",
         marker="strict-handoff-mathlib-recon",
-        expected_workdir=mathlib_ws.provider_repo,
+        expected_workdir=mathlib_ws.provider_repo / "Main" / "Topic" / "Core",
         app_view="mathlib_recon",
         submit_view="mathlib_recon_submit",
         app_call=("get_current_node_mathlib_hints", {}),
-        submit_call=("submit_mathlib_recon_completed", {"summary": "Strict handoff Mathlib recon completed.", "added_modules": [], "added_decls": []}),
+        submit_call=(
+            "submit_mathlib_recon_completed",
+            {
+                "summary": "Strict handoff Mathlib recon completed.",
+                "index_update_summary": "No Mathlib index changes.",
+                "node_mathlib_hint_summary": "Inspected current-node hints.",
+                "useful_findings": [],
+                "unresolved_in_mathlib": [],
+            },
+        ),
         recorder=evidence_recorder,
     )
 

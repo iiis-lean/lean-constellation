@@ -214,12 +214,16 @@ def test_recon_agent_step_business_results(tmp_path: Path) -> None:
             tool_name="submit_node_dir_dependency_recon_completed",
             repo_key="Repo",
             node_path="Main.Core",
-            added_node_deps=["Main.Base"],
+            dependency_change_summary="Added Main.Base.",
+            checked_boundary_summary="Checked same-repo visible node boundaries.",
+            useful_findings=["Main.Base"],
+            unresolved_within_visible_boundaries=[],
             summary="Deps found.",
         ),
     )
     assert isinstance(node_dir.result, NodeDirDependencyReconStepResult)
-    assert node_dir.result.added_node_deps == ["Main.Base"]
+    assert node_dir.result.dependency_change_summary == "Added Main.Base."
+    assert node_dir.result.useful_findings == ["Main.Base"]
 
     mathlib = _run_step(
         runtime,
@@ -235,12 +239,16 @@ def test_recon_agent_step_business_results(tmp_path: Path) -> None:
             tool_name="submit_mathlib_recon_completed",
             repo_key="Repo",
             node_path="Main.Core",
-            added_modules=["Mathlib.Data.Nat.Basic"],
+            index_update_summary="Recorded Mathlib.Data.Nat.Basic.",
+            node_mathlib_hint_summary="Added current-node Mathlib hints.",
+            useful_findings=["Mathlib.Data.Nat.Basic"],
+            unresolved_in_mathlib=[],
             summary="Mathlib hints added.",
         ),
     )
     assert isinstance(mathlib.result, MathlibReconStepResult)
-    assert mathlib.result.added_modules == ["Mathlib.Data.Nat.Basic"]
+    assert mathlib.result.index_update_summary == "Recorded Mathlib.Data.Nat.Basic."
+    assert mathlib.result.useful_findings == ["Mathlib.Data.Nat.Basic"]
 
     resource_completed = _run_step(
         runtime,
@@ -256,7 +264,10 @@ def test_recon_agent_step_business_results(tmp_path: Path) -> None:
             tool_name="submit_resource_recon_completed",
             repo_key="Repo",
             node_path="Main.Core",
-            added_context_refs=["res_1"],
+            material_change_summary="Attached res_1.",
+            checked_material_summary="Checked existing material refs.",
+            useful_findings=["res_1"],
+            unresolved_material_needs=[],
             summary="Resources found.",
         ),
     )

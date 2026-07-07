@@ -700,8 +700,10 @@ def submit_node_dir_dependency_recon_completed(runtime: Any, ctx: ToolExecutionC
         runtime,
         NodeDirDependencyReconCompletedSubmission(
             **_base_kwargs(ctx, tool_name="submit_node_dir_dependency_recon_completed", summary=args.summary),
-            added_node_deps=args.added_node_deps,
-            removed_node_deps=args.removed_node_deps,
+            dependency_change_summary=args.dependency_change_summary,
+            checked_boundary_summary=args.checked_boundary_summary,
+            useful_findings=list(args.useful_findings),
+            unresolved_within_visible_boundaries=list(args.unresolved_within_visible_boundaries),
         ),
     )
 
@@ -711,8 +713,10 @@ def submit_mathlib_recon_completed(runtime: Any, ctx: ToolExecutionContext, args
         runtime,
         MathlibReconCompletedSubmission(
             **_base_kwargs(ctx, tool_name="submit_mathlib_recon_completed", summary=args.summary),
-            added_modules=args.added_modules,
-            added_decls=args.added_decls,
+            index_update_summary=args.index_update_summary,
+            node_mathlib_hint_summary=args.node_mathlib_hint_summary,
+            useful_findings=list(args.useful_findings),
+            unresolved_in_mathlib=list(args.unresolved_in_mathlib),
         ),
     )
 
@@ -722,8 +726,10 @@ def submit_resource_recon_completed(runtime: Any, ctx: ToolExecutionContext, arg
         runtime,
         ResourceReconCompletedSubmission(
             **_base_kwargs(ctx, tool_name="submit_resource_recon_completed", summary=args.summary),
-            added_owned_refs=args.added_owned_refs,
-            added_context_refs=args.added_context_refs,
+            material_change_summary=args.material_change_summary,
+            checked_material_summary=args.checked_material_summary,
+            useful_findings=list(args.useful_findings),
+            unresolved_material_needs=list(args.unresolved_material_needs),
         ),
     )
 

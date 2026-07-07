@@ -11,5 +11,7 @@ from lean_constellation.flows.common.submissions import LeanBaseSubmission
 
 class NodeDirDependencyReconCompletedSubmission(LeanBaseSubmission):
     submission_type: Literal["node_dir_dependency_recon_completed"] = "node_dir_dependency_recon_completed"
-    added_node_deps: list[str] = Field(default_factory=list)
-    removed_node_deps: list[str] = Field(default_factory=list)
+    dependency_change_summary: str | None = None
+    checked_boundary_summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_within_visible_boundaries: list[str] = Field(default_factory=list)

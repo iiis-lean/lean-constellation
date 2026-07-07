@@ -16,6 +16,7 @@ from lean_constellation.flows.content_node_task.preparation.common import (
     PreparationReconInput,
     PreparationReconParams,
     PreparationReconState,
+    content_node_workdir,
 )
 
 
@@ -35,16 +36,20 @@ class NodeDirDependencyReconResult(LeanRenderableFlowResult):
     outcome: Literal["completed"]
     repo_key: str
     node_path: str
-    added_node_deps: list[str] = Field(default_factory=list)
-    removed_node_deps: list[str] = Field(default_factory=list)
+    dependency_change_summary: str | None = None
+    checked_boundary_summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_within_visible_boundaries: list[str] = Field(default_factory=list)
 
     def agent_fields(self) -> dict[str, object]:
         return {
             "outcome": self.outcome,
             "repo_key": self.repo_key,
             "node_path": self.node_path,
-            "added_node_deps": self.added_node_deps,
-            "removed_node_deps": self.removed_node_deps,
+            "dependency_change_summary": self.dependency_change_summary,
+            "checked_boundary_summary": self.checked_boundary_summary,
+            "useful_findings": list(self.useful_findings),
+            "unresolved_within_visible_boundaries": list(self.unresolved_within_visible_boundaries),
         }
 
 
@@ -99,7 +104,7 @@ class NodeDirDependencyReconFlow(LeanBusinessFlow):
                             "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "node_dir_dependency_recon",
                             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "node_dir_dependency_recon_submit",
                         },
-                        workdir_override=input_model.repo_path,
+                        workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
                         max_auto_continue_turns=1,
                     ),
                 )
@@ -129,8 +134,10 @@ class NodeDirDependencyReconFlow(LeanBusinessFlow):
                 outcome="completed",
                 repo_key=input_model.repo_key,
                 node_path=input_model.node_path,
-                added_node_deps=list(result.added_node_deps),
-                removed_node_deps=list(result.removed_node_deps),
+                dependency_change_summary=result.dependency_change_summary,
+                checked_boundary_summary=result.checked_boundary_summary,
+                useful_findings=list(result.useful_findings),
+                unresolved_within_visible_boundaries=list(result.unresolved_within_visible_boundaries),
                 summary=result.summary,
             )
         else:
@@ -159,5 +166,5 @@ def _recon_prompt(kind: str, input_model: PreparationReconInput) -> str:
         parts.append(f"Objective: {input_model.objective}.")
     if input_model.context_summary:
         parts.append(f"Context: {input_model.context_summary}.")
-    parts.append("Use tools for current truth and submit the completed recon result.")
+    parts.append("Use tools for current truth, then call `submit_node_dir_dependency_recon_completed`.")
     return "\n".join(parts)

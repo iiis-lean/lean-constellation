@@ -16,4 +16,8 @@ def test_preparation_recon_submit_tools_registered() -> None:
     )
     specs = submit_specs()
     assert specs
+    assert specs["submit_node_dir_dependency_recon_completed"].tool_groups == {"node_dir_dependency_recon_submit"}
+    assert specs["submit_mathlib_recon_completed"].tool_groups == {"mathlib_recon_submit"}
+    assert specs["submit_resource_recon_completed"].tool_groups == {"resource_recon_submit"}
+    assert specs["submit_resource_recon_blocked"].tool_groups == {"resource_recon_submit"}
     assert specs["submit_resource_request"].submit_behavior == SubmitBehavior.DISPATCH_CHILD_FLOWS

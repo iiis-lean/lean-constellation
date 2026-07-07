@@ -1371,7 +1371,10 @@ def test_semireal_content_plan_dispatch_preparation_flow_and_callback(tmp_path: 
                     "submit_node_dir_dependency_recon_completed",
                     {
                         "summary": "Node deps found.",
-                        "added_node_deps": ["Main.Base"],
+                        "dependency_change_summary": "Added Main.Base.",
+                        "checked_boundary_summary": "Checked current content node boundaries.",
+                        "useful_findings": ["Main.Base"],
+                        "unresolved_within_visible_boundaries": [],
                     },
                 )
             ],

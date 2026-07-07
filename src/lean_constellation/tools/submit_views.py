@@ -47,9 +47,9 @@ def build_submit_tool_views(group_specs: Iterable[ToolGroupSpec] | None = None) 
             [SubmitGroup.CONTENT_PLAN_SUBMIT, SubmitGroup.CONTENT_COMPLETION_SUBMIT, SubmitGroup.RESOURCE_REQUEST_SUBMIT],
             _aliases("content_plan", "ContentPlanAgent", "plan"),
         ),
-        _view(SubmitView.NODE_DIR_DEPENDENCY_RECON_SUBMIT, [SubmitGroup.PREPARATION_RECON_SUBMIT], _aliases("node_dir_dependency_recon", "NodeDirDependencyReconAgent")),
-        _view(SubmitView.MATHLIB_RECON_SUBMIT, [SubmitGroup.PREPARATION_RECON_SUBMIT], _aliases("mathlib_recon", "MathlibReconAgent")),
-        _view(SubmitView.RESOURCE_RECON_SUBMIT, [SubmitGroup.PREPARATION_RECON_SUBMIT, SubmitGroup.RESOURCE_REQUEST_SUBMIT], _aliases("resource_recon", "ResourceReconAgent")),
+        _view(SubmitView.NODE_DIR_DEPENDENCY_RECON_SUBMIT, [SubmitGroup.NODE_DIR_DEPENDENCY_RECON_SUBMIT], _aliases("node_dir_dependency_recon", "NodeDirDependencyReconAgent")),
+        _view(SubmitView.MATHLIB_RECON_SUBMIT, [SubmitGroup.MATHLIB_RECON_SUBMIT], _aliases("mathlib_recon", "MathlibReconAgent")),
+        _view(SubmitView.RESOURCE_RECON_SUBMIT, [SubmitGroup.RESOURCE_RECON_SUBMIT, SubmitGroup.RESOURCE_REQUEST_SUBMIT], _aliases("resource_recon", "ResourceReconAgent")),
         _view(
             SubmitView.DECL_STAGE_WORKER_SUBMIT,
             [SubmitGroup.DECL_STAGE_WORKER_SUBMIT],

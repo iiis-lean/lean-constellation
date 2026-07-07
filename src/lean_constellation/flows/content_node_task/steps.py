@@ -83,8 +83,10 @@ class NodeDirDependencyReconStepResult(LeanRenderableStepResult):
     outcome: Literal["completed", "incomplete"]
     repo_key: str | None = None
     node_path: str | None = None
-    added_node_deps: list[str] = Field(default_factory=list)
-    removed_node_deps: list[str] = Field(default_factory=list)
+    dependency_change_summary: str | None = None
+    checked_boundary_summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_within_visible_boundaries: list[str] = Field(default_factory=list)
     incomplete_reason: str | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -92,8 +94,10 @@ class NodeDirDependencyReconStepResult(LeanRenderableStepResult):
             "outcome": self.outcome,
             "repo_key": self.repo_key,
             "node_path": self.node_path,
-            "added_node_deps": list(self.added_node_deps),
-            "removed_node_deps": list(self.removed_node_deps),
+            "dependency_change_summary": self.dependency_change_summary,
+            "checked_boundary_summary": self.checked_boundary_summary,
+            "useful_findings": list(self.useful_findings),
+            "unresolved_within_visible_boundaries": list(self.unresolved_within_visible_boundaries),
             "incomplete_reason": self.incomplete_reason,
         }
 
@@ -103,8 +107,10 @@ class MathlibReconStepResult(LeanRenderableStepResult):
     outcome: Literal["completed", "incomplete"]
     repo_key: str | None = None
     node_path: str | None = None
-    added_modules: list[str] = Field(default_factory=list)
-    added_decls: list[str] = Field(default_factory=list)
+    index_update_summary: str | None = None
+    node_mathlib_hint_summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_in_mathlib: list[str] = Field(default_factory=list)
     incomplete_reason: str | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -112,8 +118,10 @@ class MathlibReconStepResult(LeanRenderableStepResult):
             "outcome": self.outcome,
             "repo_key": self.repo_key,
             "node_path": self.node_path,
-            "added_modules": list(self.added_modules),
-            "added_decls": list(self.added_decls),
+            "index_update_summary": self.index_update_summary,
+            "node_mathlib_hint_summary": self.node_mathlib_hint_summary,
+            "useful_findings": list(self.useful_findings),
+            "unresolved_in_mathlib": list(self.unresolved_in_mathlib),
             "incomplete_reason": self.incomplete_reason,
         }
 
@@ -123,8 +131,10 @@ class ResourceReconStepResult(LeanRenderableStepResult):
     outcome: Literal["completed", "blocked", "resource_request", "incomplete"]
     repo_key: str | None = None
     node_path: str | None = None
-    added_owned_refs: list[str] = Field(default_factory=list)
-    added_context_refs: list[str] = Field(default_factory=list)
+    material_change_summary: str | None = None
+    checked_material_summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_material_needs: list[str] = Field(default_factory=list)
     missing_targets: list[str] = Field(default_factory=list)
     reason: str | None = None
     resource_request: ContentResourceRequestResultView | None = None
@@ -135,8 +145,10 @@ class ResourceReconStepResult(LeanRenderableStepResult):
             "outcome": self.outcome,
             "repo_key": self.repo_key,
             "node_path": self.node_path,
-            "added_owned_refs": list(self.added_owned_refs),
-            "added_context_refs": list(self.added_context_refs),
+            "material_change_summary": self.material_change_summary,
+            "checked_material_summary": self.checked_material_summary,
+            "useful_findings": list(self.useful_findings),
+            "unresolved_material_needs": list(self.unresolved_material_needs),
             "missing_targets": list(self.missing_targets),
             "reason": self.reason,
             "resource_target": f"{self.resource_request.target_kind}:{self.resource_request.target}"

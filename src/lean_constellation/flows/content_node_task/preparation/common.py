@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from agent_runtime_kit.flow.models import BaseFlowState, FlowPosition
@@ -9,6 +10,7 @@ from pydantic import Field
 
 from lean_constellation.flows.common.business_flows import LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput
+from lean_constellation.services.foundation import FoundationContext, LayoutComponent
 
 
 PreparationKind = Literal["node_dir_dependency", "mathlib", "resource"]
@@ -44,3 +46,10 @@ class PreparationReconInput(LeanRenderableFlowInput):
 class PreparationReconState(BaseFlowState):
     position: FlowPosition = Field(default_factory=lambda: FlowPosition(phase="recon_agent"))
     waiting_dispatch_step_id: str | None = None
+
+
+def content_node_workdir(repo_path: str | None, node_path: str) -> str | None:
+    if repo_path is None:
+        return None
+    ctx = FoundationContext(repo_root=Path(repo_path))
+    return str(LayoutComponent().node_projection_dir(ctx, node_path))

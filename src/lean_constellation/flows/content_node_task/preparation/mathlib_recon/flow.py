@@ -16,6 +16,7 @@ from lean_constellation.flows.content_node_task.preparation.common import (
     PreparationReconInput,
     PreparationReconParams,
     PreparationReconState,
+    content_node_workdir,
 )
 
 
@@ -35,16 +36,20 @@ class MathlibReconResult(LeanRenderableFlowResult):
     outcome: Literal["completed"]
     repo_key: str
     node_path: str
-    added_modules: list[str] = Field(default_factory=list)
-    added_decls: list[str] = Field(default_factory=list)
+    index_update_summary: str | None = None
+    node_mathlib_hint_summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_in_mathlib: list[str] = Field(default_factory=list)
 
     def agent_fields(self) -> dict[str, object]:
         return {
             "outcome": self.outcome,
             "repo_key": self.repo_key,
             "node_path": self.node_path,
-            "added_modules": self.added_modules,
-            "added_decls": self.added_decls,
+            "index_update_summary": self.index_update_summary,
+            "node_mathlib_hint_summary": self.node_mathlib_hint_summary,
+            "useful_findings": list(self.useful_findings),
+            "unresolved_in_mathlib": list(self.unresolved_in_mathlib),
         }
 
 
@@ -94,7 +99,7 @@ class MathlibReconFlow(LeanBusinessFlow):
                             "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "mathlib_recon",
                             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "mathlib_recon_submit",
                         },
-                        workdir_override=input_model.repo_path,
+                        workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
                         max_auto_continue_turns=1,
                     ),
                 )
@@ -121,8 +126,10 @@ class MathlibReconFlow(LeanBusinessFlow):
                 outcome="completed",
                 repo_key=input_model.repo_key,
                 node_path=input_model.node_path,
-                added_modules=list(result.added_modules),
-                added_decls=list(result.added_decls),
+                index_update_summary=result.index_update_summary,
+                node_mathlib_hint_summary=result.node_mathlib_hint_summary,
+                useful_findings=list(result.useful_findings),
+                unresolved_in_mathlib=list(result.unresolved_in_mathlib),
                 summary=result.summary,
             )
         else:
@@ -148,5 +155,5 @@ def _recon_prompt(kind: str, input_model: PreparationReconInput) -> str:
         parts.append(f"Objective: {input_model.objective}.")
     if input_model.context_summary:
         parts.append(f"Context: {input_model.context_summary}.")
-    parts.append("Use tools for current truth and submit the completed recon result.")
+    parts.append("Use tools for current truth, then call `submit_mathlib_recon_completed`.")
     return "\n".join(parts)

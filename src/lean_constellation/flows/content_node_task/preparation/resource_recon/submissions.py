@@ -11,8 +11,10 @@ from lean_constellation.flows.common.submissions import LeanBaseSubmission, Lean
 
 class ResourceReconCompletedSubmission(LeanBaseSubmission):
     submission_type: Literal["resource_recon_completed"] = "resource_recon_completed"
-    added_owned_refs: list[str] = Field(default_factory=list)
-    added_context_refs: list[str] = Field(default_factory=list)
+    material_change_summary: str | None = None
+    checked_material_summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_material_needs: list[str] = Field(default_factory=list)
 
 
 class ResourceReconBlockedSubmission(LeanBaseSubmission):

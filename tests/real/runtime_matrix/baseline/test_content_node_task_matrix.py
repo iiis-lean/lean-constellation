@@ -78,8 +78,10 @@ def test_content_node_task_preparation_dispatch_callback_branch(
                     "submit_node_dir_dependency_recon_completed",
                     {
                         "summary": "Node dependency child recon completed.",
-                        "added_node_deps": [],
-                        "removed_node_deps": [],
+                        "dependency_change_summary": "No node dependency changes.",
+                        "checked_boundary_summary": "Checked current visible node boundaries.",
+                        "useful_findings": [],
+                        "unresolved_within_visible_boundaries": [],
                     },
                 )
             ],

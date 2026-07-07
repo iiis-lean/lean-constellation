@@ -24,8 +24,10 @@ def test_node_dir_and_mathlib_recon_completed_branches(
                     "submit_node_dir_dependency_recon_completed",
                     {
                         "summary": "Node dependencies reconciled.",
-                        "added_node_deps": ["Main.Topic.Helper"],
-                        "removed_node_deps": [],
+                        "dependency_change_summary": "Added Main.Topic.Helper.",
+                        "checked_boundary_summary": "Checked same-repo visible node boundaries.",
+                        "useful_findings": ["Main.Topic.Helper"],
+                        "unresolved_within_visible_boundaries": [],
                     },
                 )
             ],
@@ -34,8 +36,10 @@ def test_node_dir_and_mathlib_recon_completed_branches(
                     "submit_mathlib_recon_completed",
                     {
                         "summary": "Mathlib dependencies reconciled.",
-                        "added_modules": ["Mathlib.Data.Nat.Basic"],
-                        "added_decls": ["Nat.add_comm"],
+                        "index_update_summary": "Recorded Mathlib.Data.Nat.Basic and Nat.add_comm.",
+                        "node_mathlib_hint_summary": "Added current-node Mathlib hints.",
+                        "useful_findings": ["Mathlib.Data.Nat.Basic", "Nat.add_comm"],
+                        "unresolved_in_mathlib": [],
                     },
                 )
             ],
@@ -53,9 +57,9 @@ def test_node_dir_and_mathlib_recon_completed_branches(
     node_flow = ws.runtime.ark.flow_service.get_flow(node_flow_id)
     mathlib_flow = ws.runtime.ark.flow_service.get_flow(mathlib_flow_id)
     assert node_flow.result.outcome == "completed"
-    assert node_flow.result.added_node_deps == ["Main.Topic.Helper"]
+    assert node_flow.result.dependency_change_summary == "Added Main.Topic.Helper."
     assert mathlib_flow.result.outcome == "completed"
-    assert mathlib_flow.result.added_modules == ["Mathlib.Data.Nat.Basic"]
+    assert mathlib_flow.result.index_update_summary == "Recorded Mathlib.Data.Nat.Basic and Nat.add_comm."
 
 
 def test_resource_recon_completed_and_blocked_branches(
@@ -71,8 +75,10 @@ def test_resource_recon_completed_and_blocked_branches(
                     "submit_resource_recon_completed",
                     {
                         "summary": "Resource recon completed.",
-                        "added_owned_refs": ["resource:local_note"],
-                        "added_context_refs": [],
+                        "material_change_summary": "Attached resource:local_note.",
+                        "checked_material_summary": "Checked local material refs.",
+                        "useful_findings": ["resource:local_note"],
+                        "unresolved_material_needs": [],
                     },
                 ),
                 (
@@ -97,7 +103,7 @@ def test_resource_recon_completed_and_blocked_branches(
     completed = ws.runtime.ark.flow_service.get_flow(completed_flow_id)
     blocked = ws.runtime.ark.flow_service.get_flow(blocked_flow_id)
     assert completed.result.outcome == "completed"
-    assert completed.result.added_owned_refs == ["resource:local_note"]
+    assert completed.result.material_change_summary == "Attached resource:local_note."
     assert blocked.result.outcome == "blocked"
     assert blocked.result.reason == "Runtime Matrix resource recon blocked."
 
@@ -124,8 +130,10 @@ def test_resource_recon_request_resource_callback_branch(
                     "submit_resource_recon_completed",
                     {
                         "summary": "Resource recon completed after callback.",
-                        "added_owned_refs": [],
-                        "added_context_refs": ["web:runtime-matrix-resource"],
+                        "material_change_summary": "Attached web:runtime-matrix-resource.",
+                        "checked_material_summary": "Checked resource callback result.",
+                        "useful_findings": ["web:runtime-matrix-resource"],
+                        "unresolved_material_needs": [],
                     },
                 ),
             ],

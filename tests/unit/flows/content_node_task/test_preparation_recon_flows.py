@@ -38,6 +38,10 @@ def _start_recon(runtime: FakeLeanFlowRuntime, flow_type: str, tmp_path: Path) -
     )
 
 
+def _expected_node_workdir(tmp_path: Path) -> str:
+    return str(tmp_path / "Repo" / "Main" / "Core")
+
+
 def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:
     step_id = runtime.flow_service.advance_flow(flow_id)
     assert step_id is not None
@@ -67,7 +71,10 @@ def test_node_dir_dependency_recon_flow_completed_result(tmp_path: Path) -> None
             tool_name="submit_node_dir_dependency_recon_completed",
             repo_key="Repo",
             node_path="Main.Core",
-            added_node_deps=["Main.Base"],
+            dependency_change_summary="Added Main.Base.",
+            checked_boundary_summary="Checked same-repo visible node boundaries.",
+            useful_findings=["Main.Base"],
+            unresolved_within_visible_boundaries=[],
             summary="Node deps completed.",
         )
     )
@@ -76,7 +83,8 @@ def test_node_dir_dependency_recon_flow_completed_result(tmp_path: Path) -> None
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "completed"
-    assert flow.result.added_node_deps == ["Main.Base"]
+    assert flow.result.dependency_change_summary == "Added Main.Base."
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(tmp_path)
 
 
 def test_mathlib_recon_flow_completed_result(tmp_path: Path) -> None:
@@ -90,8 +98,10 @@ def test_mathlib_recon_flow_completed_result(tmp_path: Path) -> None:
             tool_name="submit_mathlib_recon_completed",
             repo_key="Repo",
             node_path="Main.Core",
-            added_modules=["Mathlib.Data.Nat.Basic"],
-            added_decls=["Nat.succ_ne_zero"],
+            index_update_summary="Recorded Mathlib.Data.Nat.Basic and Nat.succ_ne_zero.",
+            node_mathlib_hint_summary="Added current-node hints.",
+            useful_findings=["Mathlib.Data.Nat.Basic", "Nat.succ_ne_zero"],
+            unresolved_in_mathlib=[],
             summary="Mathlib completed.",
         )
     )
@@ -100,7 +110,8 @@ def test_mathlib_recon_flow_completed_result(tmp_path: Path) -> None:
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "completed"
-    assert flow.result.added_modules == ["Mathlib.Data.Nat.Basic"]
+    assert flow.result.index_update_summary == "Recorded Mathlib.Data.Nat.Basic and Nat.succ_ne_zero."
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(tmp_path)
 
 
 def test_resource_recon_flow_blocked_and_completed_results(tmp_path: Path) -> None:
@@ -122,6 +133,7 @@ def test_resource_recon_flow_blocked_and_completed_results(tmp_path: Path) -> No
     blocked = runtime.flow_service.get_flow(blocked_flow_id)
     assert blocked.status is FlowStatus.COMPLETED
     assert blocked.result.outcome == "blocked"
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(tmp_path)
 
     completed_flow_id = _start_recon(runtime, "resource_recon", tmp_path)
     runtime.agent_service.queue_submission(
@@ -131,7 +143,10 @@ def test_resource_recon_flow_blocked_and_completed_results(tmp_path: Path) -> No
             tool_name="submit_resource_recon_completed",
             repo_key="Repo",
             node_path="Main.Core",
-            added_owned_refs=["source:README.md"],
+            material_change_summary="Attached source:README.md.",
+            checked_material_summary="Checked local source refs.",
+            useful_findings=["source:README.md"],
+            unresolved_material_needs=[],
             summary="Resources completed.",
         )
     )
@@ -139,7 +154,8 @@ def test_resource_recon_flow_blocked_and_completed_results(tmp_path: Path) -> No
     completed = runtime.flow_service.get_flow(completed_flow_id)
     assert completed.status is FlowStatus.COMPLETED
     assert completed.result.outcome == "completed"
-    assert completed.result.added_owned_refs == ["source:README.md"]
+    assert completed.result.material_change_summary == "Attached source:README.md."
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(tmp_path)
 
 
 def test_resource_recon_flow_resource_request_callback(tmp_path: Path) -> None:
@@ -197,7 +213,10 @@ def test_resource_recon_flow_resource_request_callback(tmp_path: Path) -> None:
             tool_name="submit_resource_recon_completed",
             repo_key="Repo",
             node_path="Main.Core",
-            added_context_refs=["res_existing"],
+            material_change_summary="Attached duplicate resource res_existing.",
+            checked_material_summary="Checked duplicate resource callback.",
+            useful_findings=["res_existing"],
+            unresolved_material_needs=[],
             summary="Resource recon completed after curation.",
         )
     )
@@ -206,5 +225,7 @@ def test_resource_recon_flow_resource_request_callback(tmp_path: Path) -> None:
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "completed"
-    assert flow.result.added_context_refs == ["res_existing"]
+    assert flow.result.material_change_summary == "Attached duplicate resource res_existing."
     assert "Duplicate resource." in (runtime.agent_service.start_records[1].prompt or "")
+    assert runtime.agent_service.start_records[0].workdir == _expected_node_workdir(tmp_path)
+    assert runtime.agent_service.start_records[1].workdir == _expected_node_workdir(tmp_path)

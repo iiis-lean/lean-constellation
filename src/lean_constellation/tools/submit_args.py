@@ -134,7 +134,7 @@ class SubmitRepoReadyArgs(SummarySubmitArgs):
 
 class SubmitContentPreparationReconArgs(SummarySubmitArgs):
     recon_kind: Literal["node_dir_dependency", "mathlib", "resource"] = Field(description="Preparation recon child flow kind to dispatch for the current content node.")
-    objective: str | None = Field(default=None, description="Optional objective for the preparation recon child flow.")
+    objective: str = Field(description="Focused objective for the preparation recon child flow.")
     context_summary: str | None = Field(default=None, description="Optional context summary to pass to the preparation recon child flow.")
 
 
@@ -157,18 +157,24 @@ class SubmitContentNodeFailedArgs(ReasonSubmitArgs):
 
 
 class SubmitNodeDirDependencyReconCompletedArgs(SummarySubmitArgs):
-    added_node_deps: list[str] = Field(default_factory=list, description="Current-node dependency paths added during node directory dependency recon.")
-    removed_node_deps: list[str] = Field(default_factory=list, description="Current-node dependency paths removed during node directory dependency recon.")
+    dependency_change_summary: str | None = Field(default=None, description="Summary of node dependency additions, removals, or confirmation that no changes were needed.")
+    checked_boundary_summary: str | None = Field(default=None, description="Summary of visible same-repo or provider boundaries checked during recon.")
+    useful_findings: list[str] = Field(default_factory=list, description="Useful dependency findings or candidate declarations found during recon.")
+    unresolved_within_visible_boundaries: list[str] = Field(default_factory=list, description="Relevant dependency questions still unresolved within the visible boundaries.")
 
 
 class SubmitMathlibReconCompletedArgs(SummarySubmitArgs):
-    added_modules: list[str] = Field(default_factory=list, description="Mathlib module hints added to the current node during recon.")
-    added_decls: list[str] = Field(default_factory=list, description="Mathlib declaration hints added to the current node during recon.")
+    index_update_summary: str | None = Field(default=None, description="Summary of MathlibIndex records created, reused, or confirmed during recon.")
+    node_mathlib_hint_summary: str | None = Field(default=None, description="Summary of current-node Mathlib module or declaration hint changes.")
+    useful_findings: list[str] = Field(default_factory=list, description="Useful Mathlib modules, declarations, or search findings from recon.")
+    unresolved_in_mathlib: list[str] = Field(default_factory=list, description="Mathlib questions or candidate searches that remain unresolved.")
 
 
 class SubmitResourceReconCompletedArgs(SummarySubmitArgs):
-    added_owned_refs: list[str] = Field(default_factory=list, description="Material/resource references added as owned requirements of the current node.")
-    added_context_refs: list[str] = Field(default_factory=list, description="Material/resource references added as contextual support for the current node.")
+    material_change_summary: str | None = Field(default=None, description="Summary of material references attached to the current node or confirmation that no changes were needed.")
+    checked_material_summary: str | None = Field(default=None, description="Summary of source/resource material checked during recon.")
+    useful_findings: list[str] = Field(default_factory=list, description="Useful source/resource findings from recon.")
+    unresolved_material_needs: list[str] = Field(default_factory=list, description="Material needs still unresolved after recon.")
 
 
 class SubmitResourceReconBlockedArgs(ReasonSubmitArgs):
