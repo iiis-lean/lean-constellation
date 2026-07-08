@@ -268,6 +268,11 @@ class RuntimeMatrixWorkspace:
         _write_resource_draft_files(Path(draft.value.draft_root), "runtime matrix resource text\n")
         return draft.value.draft.draft_id
 
+    def fill_resource_draft(self, draft_id: str, text: str = "runtime matrix resource text\n") -> None:
+        draft = self.runtime.material.get_resource_draft(self.provider_repo, draft_id=draft_id)
+        assert draft.ok and draft.value is not None, draft.issues
+        _write_resource_draft_files(Path(draft.value.draft_root), text)
+
     def create_active_resource(self, *, target_kind: str, target: str) -> str:
         draft_id = self.allocate_resource_branch_draft(target_kind=target_kind, target=target)
         flow_input = self.runtime.material.submit_resource_request(

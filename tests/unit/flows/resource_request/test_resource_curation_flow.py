@@ -9,6 +9,7 @@ from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_
 from lean_constellation.flows.resource_request.submissions import (
     ExternalRepoRequiredSubmission,
     LocalResourceCreatedSubmission,
+    ResourceDuplicateSubmission,
 )
 from tests.unit_services_helpers import make_runtime
 
@@ -68,7 +69,7 @@ def _create_local_resource(lean_runtime, repo_root: Path, *, target_kind: str, t
     return promoted.value.resource_key
 
 
-def test_resource_curation_preflight_duplicate_completes_without_agent(tmp_path: Path) -> None:
+def test_resource_curation_preflight_duplicate_hint_continues_to_agent(tmp_path: Path) -> None:
     runtime, lean_runtime = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
     repo_root.mkdir(parents=True)
@@ -79,11 +80,34 @@ def test_resource_curation_preflight_duplicate_completes_without_agent(tmp_path:
     _advance_and_run(runtime, flow_id)
 
     flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.RUNNING
+    assert flow.state.position.phase == "curator_agent"
+    assert flow.state.active_resource_draft_key is not None
+    assert flow.state.resource_duplicate_hint.existing_resource_key == resource_key
+    assert runtime.agent_service.start_records == []
+
+    runtime.agent_service.queue_submission(
+        ResourceDuplicateSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="resource_duplicate",
+            tool_name="submit_resource_duplicate",
+            repo_key=repo_root.name,
+            target_kind="web",
+            target=target,
+            existing_kind="resource",
+            duplicate_reason="Already curated.",
+            existing_resource_key=resource_key,
+            summary="Duplicate.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result is not None
     assert flow.result.outcome == "duplicate"
     assert flow.result.existing_resource_key == resource_key
-    assert runtime.agent_service.start_records == []
+    assert flow.state.active_resource_draft_key is None
 
 
 def test_resource_curation_local_resource_created_result(tmp_path: Path) -> None:

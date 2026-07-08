@@ -13,7 +13,6 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
-from lean_constellation.services.foundation import FoundationContext
 
 
 class ResourceDuplicateResultView(StrictModel):
@@ -48,13 +47,15 @@ class ResourceRejectedResultView(StrictModel):
 
 class ResourceCurationPreflightStepResult(LeanRenderableStepResult):
     result_type: Literal["resource_curation_preflight"] = "resource_curation_preflight"
-    outcome: Literal["continue_to_curator", "duplicate", "rejected"]
+    outcome: Literal["continue_to_curator", "rejected"]
     repo_key: str | None = None
     target_summary: str | None = None
     normalized_target_summary: str | None = None
     canonical_locator: str | None = None
-    duplicate: ResourceDuplicateResultView | None = None
+    resource_duplicate_hint: ResourceDuplicateResultView | None = None
+    source_duplicate_hint: ResourceDuplicateResultView | None = None
     rejected: ResourceRejectedResultView | None = None
+    draft_id: str | None = None
     draft_root: str | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -64,7 +65,9 @@ class ResourceCurationPreflightStepResult(LeanRenderableStepResult):
             "target_summary": self.target_summary,
             "normalized_target_summary": self.normalized_target_summary,
             "canonical_locator": self.canonical_locator,
-            "duplicate": self.duplicate.ref_summary if self.duplicate else None,
+            "resource_duplicate_hint": self.resource_duplicate_hint.ref_summary if self.resource_duplicate_hint else None,
+            "source_duplicate_hint": self.source_duplicate_hint.ref_summary if self.source_duplicate_hint else None,
+            "draft_id": self.draft_id,
             "rejected_reason": self.rejected.reason if self.rejected else None,
         }
 
@@ -152,53 +155,38 @@ class ResourceCurationPreflightStep(BaseStep):
                     summary=reason,
                 )
             )
+        resource_duplicate_hint = None
         if duplicate.value.duplicate:
-            view = ResourceDuplicateResultView(
+            resource_duplicate_hint = ResourceDuplicateResultView(
                 existing_kind="resource",
                 ref_summary=f"Resource {duplicate.value.resource_key}",
                 duplicate_reason=duplicate.value.summary,
                 existing_resource_key=duplicate.value.resource_key,
             )
-            return ctx.complete_step(
-                ResourceCurationPreflightStepResult(
-                    outcome="duplicate",
-                    repo_key=input_model.repo_key,
-                    target_summary=input_model.target.target,
-                    normalized_target_summary=normalized.summary,
-                    canonical_locator=normalized.canonical_locator,
-                    duplicate=view,
-                    summary=duplicate.value.summary,
-                )
-            )
 
+        source_duplicate_hint = None
         source_duplicate = material.source_corpus.check_target_in_source_corpus(
             repo_root,
             canonical_locator=normalized.canonical_locator,
         )
         if source_duplicate.ok and source_duplicate.value is not None and source_duplicate.value.duplicate:
             existing_path = source_duplicate.value.matching_paths[0] if source_duplicate.value.matching_paths else None
-            view = ResourceDuplicateResultView(
+            source_duplicate_hint = ResourceDuplicateResultView(
                 existing_kind="source",
                 ref_summary=f"Source corpus material {existing_path or normalized.canonical_locator}",
                 duplicate_reason=source_duplicate.value.summary,
                 existing_source_path=existing_path,
             )
-            return ctx.complete_step(
-                ResourceCurationPreflightStepResult(
-                    outcome="duplicate",
-                    repo_key=input_model.repo_key,
-                    target_summary=input_model.target.target,
-                    normalized_target_summary=normalized.summary,
-                    canonical_locator=normalized.canonical_locator,
-                    duplicate=view,
-                    summary=source_duplicate.value.summary,
-                )
-            )
 
-        draft_root = _resource_drafts_root(ctx, repo_root)
-        ensured = ctx.app.foundation.store.ensure_dir(draft_root)
-        if not ensured.ok:
-            reason = _issue_summary(ensured.issues) or "Resource draft root could not be prepared."
+        draft = material.allocate_resource_draft(
+            repo_root,
+            target=normalized,
+            resource_kind=normalized.kind,
+            title_hint=normalized.target,
+            allow_duplicate=True,
+        )
+        if not draft.ok or draft.value is None:
+            reason = _issue_summary(draft.issues) or "Resource draft could not be prepared."
             return ctx.complete_step(
                 ResourceCurationPreflightStepResult(
                     outcome="rejected",
@@ -217,8 +205,15 @@ class ResourceCurationPreflightStep(BaseStep):
                 target_summary=input_model.target.target,
                 normalized_target_summary=normalized.summary,
                 canonical_locator=normalized.canonical_locator,
-                draft_root=str(draft_root),
-                summary="Resource target passed deterministic preflight.",
+                resource_duplicate_hint=resource_duplicate_hint,
+                source_duplicate_hint=source_duplicate_hint,
+                draft_id=draft.value.draft.draft_id,
+                draft_root=draft.value.draft_root,
+                summary=(
+                    "Resource target passed deterministic preflight with duplicate hints."
+                    if resource_duplicate_hint or source_duplicate_hint
+                    else "Resource target passed deterministic preflight."
+                ),
             )
         )
 
@@ -254,10 +249,6 @@ def _material(ctx: StepRunContext):
     if material is None:
         raise ValueError("MaterialService is not registered")
     return material
-
-
-def _resource_drafts_root(ctx: StepRunContext, repo_root: Path) -> Path:
-    return ctx.app.foundation.layout.resources_root(FoundationContext(repo_root=repo_root)) / ".drafts"
 
 
 def _issue_summary(issues) -> str | None:

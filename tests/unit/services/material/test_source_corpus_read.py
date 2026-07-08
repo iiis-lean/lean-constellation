@@ -9,6 +9,7 @@ from lean_constellation.services.external_clients import (
     MaterialTarget,
 )
 from lean_constellation.services.material import MaterialService
+from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 
 
 class FakeMaterialClient:
@@ -118,6 +119,33 @@ def _fake_material_service() -> tuple[MaterialService, FakeMaterialClient]:
     fake = FakeMaterialClient()
     runtime = make_runtime(external_overrides={"material_acquisition": fake})
     return runtime.material, fake
+
+
+def test_source_acquisition_uses_current_preparation_relpath(tmp_path: Path) -> None:
+    fake = FakeMaterialClient()
+    runtime = make_runtime(external_overrides={"material_acquisition": fake})
+    written = runtime.repo_workspace.preparation.write_preparation_input(
+        tmp_path,
+        input=RepoPreparationInput(
+            goal="Use a custom source root.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            source_corpus_relpath="custom_sources",
+        ),
+    )
+    assert written.ok
+    local = tmp_path / "note.md"
+    local.write_text("custom source\n", encoding="utf-8")
+
+    imported = runtime.material.import_source_material(tmp_path, source_path=str(local), as_name="raw.md")
+    normalized = runtime.material.normalize_source_text_material(tmp_path, material_ref="original/raw.md")
+    gate = runtime.material.check_source_corpus_draft(tmp_path, entry_path="original/raw.md")
+
+    assert imported.ok and imported.value is not None, imported.issues
+    assert normalized.ok and normalized.value is not None, normalized.issues
+    assert gate.ok and gate.value is not None and gate.value.passed
+    assert (tmp_path / "custom_sources" / "original" / "raw.md").is_file()
+    assert (tmp_path / "custom_sources" / "normalized" / "raw.txt").is_file()
+    assert not (tmp_path / ".lean_constellation" / "source" / "original" / "raw.md").exists()
 
 
 def _write_source(repo_root: Path) -> None:

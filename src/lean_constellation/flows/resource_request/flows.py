@@ -80,8 +80,10 @@ class ResourceCurationState(BaseFlowState):
     position: FlowPosition = Field(default_factory=lambda: FlowPosition(phase="preflight"))
     normalized_target_summary: str | None = None
     canonical_locator: str | None = None
-    preflight_outcome: Literal["pending", "continue_to_curator", "duplicate", "rejected"] = "pending"
+    preflight_outcome: Literal["pending", "continue_to_curator", "rejected"] = "pending"
     duplicate_kind: Literal["resource", "source", "requirement"] | None = None
+    resource_duplicate_hint: ResourceDuplicateResultView | None = None
+    source_duplicate_hint: ResourceDuplicateResultView | None = None
     active_resource_draft_key: str | None = None
     draft_root: str | None = None
 
@@ -179,12 +181,15 @@ class ResourceCurationFlow(LeanBusinessFlow):
                             "target": input_model.target.target,
                             "caller_kind": input_model.caller_context.caller_kind,
                             "node_path": input_model.caller_context.node_path,
+                            "resource_draft_id": state.active_resource_draft_key,
+                            "resource_draft_root": state.draft_root,
                         },
                         prompt_override=_resource_curator_prompt(input_model, state),
                         env_overrides={
                             "LEAN_CONSTELLATION_AGENT_TYPE": "ResourceCuratorAgent",
                             "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "resource_curator",
                             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "resource_curator_submit",
+                            **({"LEAN_CONSTELLATION_RESOURCE_DRAFT_ID": state.active_resource_draft_key} if state.active_resource_draft_key else {}),
                         },
                         workdir_override=state.draft_root or _resource_draft_workdir(input_model),
                         max_auto_continue_turns=1,
@@ -209,7 +214,7 @@ class ResourceCurationFlow(LeanBusinessFlow):
         if isinstance(result, ResourceCurationPreflightStepResult):
             self._consume_preflight_result(state, input_model, result)
         elif ctx.step.step_type == "resource_curator_agent_step":
-            self._consume_curator_result(state, input_model, result)
+            self._consume_curator_result(ctx, state, input_model, result)
         super().on_step_terminal(ctx)
 
     def _consume_preflight_result(
@@ -221,21 +226,24 @@ class ResourceCurationFlow(LeanBusinessFlow):
         state.normalized_target_summary = result.normalized_target_summary
         state.canonical_locator = result.canonical_locator
         state.preflight_outcome = result.outcome
+        state.active_resource_draft_key = result.draft_id
         state.draft_root = result.draft_root
-        if result.duplicate is not None:
-            state.duplicate_kind = result.duplicate.existing_kind
+        state.resource_duplicate_hint = result.resource_duplicate_hint
+        state.source_duplicate_hint = result.source_duplicate_hint
+        if result.resource_duplicate_hint is not None:
+            state.duplicate_kind = result.resource_duplicate_hint.existing_kind
+        elif result.source_duplicate_hint is not None:
+            state.duplicate_kind = result.source_duplicate_hint.existing_kind
         if result.outcome == "continue_to_curator":
             state.position = FlowPosition(phase="curator_agent")
             return
         state.position = FlowPosition(phase="completed")
-        if result.outcome == "duplicate" and result.duplicate is not None:
-            self.result = _result_from_duplicate(input_model, result.duplicate, summary=result.summary)
-            return
         rejected = result.rejected or ResourceRejectedResultView(reason=result.summary or "Resource target rejected.")
         self.result = _result_from_rejected(input_model, rejected, summary=result.summary)
 
     def _consume_curator_result(
         self,
+        ctx: FlowStepContext,
         state: ResourceCurationState,
         input_model: ResourceCurationInput,
         result: object | None,
@@ -255,6 +263,7 @@ class ResourceCurationFlow(LeanBusinessFlow):
             return
         if result.outcome == "duplicate" and result.duplicate is not None:
             self.result = _result_from_duplicate(input_model, result.duplicate, summary=result.summary)
+            _abandon_active_draft(ctx, input_model, state, reason=result.summary or result.duplicate.duplicate_reason)
             return
         if result.outcome == "local_resource_created" and result.local_resource is not None:
             self.result = ResourceCurationResult(
@@ -276,11 +285,13 @@ class ResourceCurationFlow(LeanBusinessFlow):
                 external_repo=result.external_repo,
                 summary=result.summary or result.external_repo.reason,
             )
+            _abandon_active_draft(ctx, input_model, state, reason=result.summary or result.external_repo.reason)
             return
         rejected = result.rejected or ResourceRejectedResultView(
             reason=result.incomplete_reason or result.summary or "Resource target rejected.",
         )
         self.result = _result_from_rejected(input_model, rejected, summary=result.summary or rejected.reason)
+        _abandon_active_draft(ctx, input_model, state, reason=result.summary or rejected.reason)
 
 
 def _caller_kind(requested_by: str | None) -> ResourceCallerKind:
@@ -324,11 +335,31 @@ def _resource_curator_prompt(input_model: ResourceCurationInput, state: Resource
         parts.append(f"Preflight normalized target: {state.normalized_target_summary}.")
     if state.canonical_locator:
         parts.append(f"Canonical locator: {state.canonical_locator}.")
+    if state.active_resource_draft_key:
+        parts.append(f"Current resource draft id: {state.active_resource_draft_key}.")
+        parts.append("Work in the current draft directory.")
+    if state.resource_duplicate_hint:
+        parts.append(f"Preflight resource duplicate hint: {state.resource_duplicate_hint.ref_summary}. Re-check before submitting.")
+    if state.source_duplicate_hint:
+        parts.append(f"Preflight source duplicate hint: {state.source_duplicate_hint.ref_summary}. Re-check before submitting.")
     parts.append(
         "Submit exactly one outcome: duplicate, local_resource_created, external_repo_required, or rejected. "
         "Do not modify node contracts or repository requirements."
     )
     return "\n".join(parts)
+
+
+def _abandon_active_draft(ctx: FlowStepContext, input_model: ResourceCurationInput, state: ResourceCurationState, *, reason: str) -> None:
+    if not state.active_resource_draft_key:
+        return
+    if not input_model.repo_root:
+        return
+    material = getattr(ctx.app, "material", None)
+    if material is None:
+        return
+    abandoned = material.abandon_resource_draft(Path(input_model.repo_root), draft_id=state.active_resource_draft_key, reason=reason)
+    if abandoned.ok:
+        state.active_resource_draft_key = None
 
 
 def _result_from_duplicate(

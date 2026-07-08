@@ -172,6 +172,39 @@ class MaterialService:
     def normalize_source_text_material(self, repo_root: Path, *, material_ref: str) -> ServiceResult[SourceExtractionView]:
         return self.source_corpus.normalize_source_text_material(repo_root, material_ref=material_ref)
 
+    def acquire_resource_material(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        target: str,
+        preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None = None,
+    ) -> ServiceResult[SourceAcquisitionView]:
+        return self.resource_curation.acquire_resource_material(repo_root, draft_id=draft_id, target=target, preferred_kind=preferred_kind)
+
+    def import_resource_material(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        source_path: str,
+        as_name: str | None = None,
+    ) -> ServiceResult[SourceAcquisitionView]:
+        return self.resource_curation.import_resource_material(repo_root, draft_id=draft_id, source_path=source_path, as_name=as_name)
+
+    def extract_resource_artifact(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        artifact_ref: str,
+        extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None,
+    ) -> ServiceResult[SourceExtractionView]:
+        return self.resource_curation.extract_resource_artifact(repo_root, draft_id=draft_id, artifact_ref=artifact_ref, extraction_kind=extraction_kind)
+
+    def normalize_resource_text_material(self, repo_root: Path, *, draft_id: str, material_ref: str) -> ServiceResult[SourceExtractionView]:
+        return self.resource_curation.normalize_resource_text_material(repo_root, draft_id=draft_id, material_ref=material_ref)
+
     def check_source_corpus_draft(
         self,
         repo_root: Path,
@@ -353,12 +386,14 @@ class MaterialService:
         target: str | ResourceTarget | ResourceTargetView,
         resource_kind: str | None = None,
         title_hint: str | None = None,
+        allow_duplicate: bool = False,
     ) -> ServiceResult[ResourceDraftView]:
         return self.resource_library.allocate_resource_draft(
             repo_root,
             target=target,
             resource_kind=resource_kind,
             title_hint=title_hint,
+            allow_duplicate=allow_duplicate,
         )
 
     def check_resource_draft(self, repo_root: Path, *, draft_id: str) -> ServiceResult[GateReport]:

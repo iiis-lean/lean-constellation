@@ -205,6 +205,7 @@ class _ExternalTakeoverMcpController:
         last_tool_name: str | None = None
         for view_kind, tool_name, arguments in actions:
             view_key = env["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] if view_kind == "application" else env["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"]
+            arguments = self._resolve_arguments(dict(arguments), env)
             called = call_external_takeover_tool(
                 self.runtime,
                 self.runtime_root,
@@ -235,6 +236,15 @@ class _ExternalTakeoverMcpController:
                 thread_id=f"external-thread-{handoff['handoff_id']}",
             ),
         )
+
+    def _resolve_arguments(self, value: Any, env: dict[str, str]) -> Any:
+        if isinstance(value, dict):
+            return {key: self._resolve_arguments(item, env) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._resolve_arguments(item, env) for item in value]
+        if isinstance(value, str) and value.startswith("$"):
+            return env[value[1:]]
+        return value
 
 
 class _FakeLakeClient:
@@ -660,19 +670,16 @@ def test_semireal_external_takeover_resource_local_created(tmp_path: Path) -> No
     repo_root.mkdir(parents=True)
     local_source = repo_root / "source.md"
     local_source.write_text("local source material\n", encoding="utf-8")
-    flow_input = runtime.material.submit_resource_request(
-        {"repo_root": repo_root},
-        target_kind="local_file",
-        target=str(local_source),
-    )
-    assert flow_input.ok and flow_input.value is not None
-    draft = runtime.material.allocate_resource_draft(
-        repo_root,
-        target=flow_input.value.normalized_target,
-        title_hint="Local source",
-    )
-    assert draft.ok and draft.value is not None
-    _write_resource_draft_files(Path(draft.value.draft_root), local_source.read_text(encoding="utf-8"))
+    _create_homes(runtime, "ResourceCuratorAgent")
+    flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="local_file", target=str(local_source))
+    preflight_step_id = runtime.ark.flow_service.advance_flow(flow_id)
+    assert preflight_step_id is not None
+    runtime.ark.step_service.run_step(preflight_step_id)
+    active_draft_id = runtime.ark.flow_service.get_flow(flow_id).state.active_resource_draft_key
+    assert active_draft_id is not None
+    active_draft = runtime.material.get_resource_draft(repo_root, draft_id=active_draft_id)
+    assert active_draft.ok and active_draft.value is not None, active_draft.issues
+    _write_resource_draft_files(Path(active_draft.value.draft_root), local_source.read_text(encoding="utf-8"))
     controller = _ExternalTakeoverMcpController(
         runtime,
         runtime_root,
@@ -684,14 +691,12 @@ def test_semireal_external_takeover_resource_local_created(tmp_path: Path) -> No
                         "summary": "Created local resource through external takeover.",
                         "target_kind": "local_file",
                         "target": str(local_source),
-                        "draft_id": draft.value.draft.draft_id,
+                        "draft_id": active_draft_id,
                     },
                 )
             ]
         },
     )
-    _create_homes(runtime, "ResourceCuratorAgent")
-    flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="local_file", target=str(local_source))
 
     _schedule_external_until(runtime, controller, lambda: runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED)
 
@@ -1103,25 +1108,17 @@ def test_semireal_admin_manual_checkpoint_restore_reuses_agent_step_branch(tmp_p
     repo_root = tmp_path / "workspace" / "Repo"
     repo_root.mkdir(parents=True)
     (repo_root / "README.md").write_text("repo for checkpoint branch test\n", encoding="utf-8")
-    flow_input = runtime.material.submit_resource_request(
-        {"repo_root": repo_root},
-        target_kind="web",
-        target="https://example.com/branch",
-    )
-    assert flow_input.ok and flow_input.value is not None
-    draft = runtime.material.allocate_resource_draft(
-        repo_root,
-        target=flow_input.value.normalized_target,
-        title_hint="Branch resource",
-    )
-    assert draft.ok and draft.value is not None
-    _write_resource_draft_files(Path(draft.value.draft_root), "branch resource text\n")
     flow_id = _start_resource_curation_flow(runtime, repo_root, target_kind="web", target="https://example.com/branch")
 
     preflight = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id))
     assert preflight.ok and preflight.value is not None and preflight.value.created_step_id is not None
     preflight_run = admin.start_step_once(AdminStepStartInput(step_id=preflight.value.created_step_id, wait=True, timeout_s=5))
     assert preflight_run.ok, preflight_run.issues
+    active_draft_id = runtime.ark.flow_service.get_flow(flow_id).state.active_resource_draft_key
+    assert active_draft_id is not None
+    active_draft = runtime.material.get_resource_draft(repo_root, draft_id=active_draft_id)
+    assert active_draft.ok and active_draft.value is not None, active_draft.issues
+    _write_resource_draft_files(Path(active_draft.value.draft_root), "branch resource text\n")
     agent_step = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id))
     assert agent_step.ok and agent_step.value is not None and agent_step.value.created_step_id is not None
     agent_step_id = agent_step.value.created_step_id
@@ -1236,7 +1233,7 @@ def test_semireal_admin_manual_checkpoint_restore_reuses_agent_step_branch(tmp_p
             "summary": "Third branch creates a local resource.",
             "target_kind": "web",
             "target": "https://example.com/branch",
-            "draft_id": draft.value.draft.draft_id,
+            "draft_id": active_draft_id,
         },
     )
     third_flow = runtime.ark.flow_service.get_flow(flow_id)
@@ -1859,7 +1856,6 @@ def test_real_lean_decl_stage_worker_submit_gate_env_gated(tmp_path: Path) -> No
                         {
                             "decl_name": "main_result",
                             "nl": "The main result states True.",
-                            "origin": [{"kind": "real_test", "ref": "tiny_true"}],
                             "deps": [],
                         },
                     ),
@@ -1868,7 +1864,6 @@ def test_real_lean_decl_stage_worker_submit_gate_env_gated(tmp_path: Path) -> No
                         "submit_stage_worker_completed",
                         {
                             "summary": "Statement NL completed.",
-                            "completed_decl_names": ["main_result"],
                         },
                     ),
                 ]
@@ -1877,12 +1872,9 @@ def test_real_lean_decl_stage_worker_submit_gate_env_gated(tmp_path: Path) -> No
                 [
                     (
                         "application",
-                        "record_decl_review",
+                        "record_statement_nl_review_passed",
                         {
-                            "round_id": round_id,
-                            "stage": "statement_nl",
                             "decl_name": "main_result",
-                            "passed": True,
                             "summary": "Statement NL is acceptable.",
                         },
                     ),
@@ -1917,7 +1909,6 @@ def test_real_lean_decl_stage_worker_submit_gate_env_gated(tmp_path: Path) -> No
                         "submit_stage_worker_completed",
                         {
                             "summary": "Statement formal completed after real Lean capture.",
-                            "completed_decl_names": ["main_result"],
                         },
                     ),
                 ]

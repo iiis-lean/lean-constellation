@@ -143,6 +143,23 @@ def _prepare_native_repo(
     assert initialized.ok
 
 
+def _prepare_native_repo_for_source_prepare(lean_runtime, repo_root: Path, *, source_corpus_relpath: str) -> None:
+    repo_root.mkdir(parents=True, exist_ok=True)
+    lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root)
+    written = lean_runtime.repo_workspace.preparation.write_preparation_input(
+        repo_root,
+        input=RepoPreparationInput(
+            goal="Prepare source corpus in a custom root.",
+            source_corpus_mode=SourceCorpusMode.PREPARE,
+            source_corpus_relpath=source_corpus_relpath,
+            interface_inputs=[],
+        ),
+    )
+    assert written.ok
+    initialized = lean_runtime.repo_workspace.initialize_repo_as_native(repo_root, project_name=repo_root.name)
+    assert initialized.ok
+
+
 def _start_native(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
     return runtime.start_flow(
         "native_repo_preparation",
@@ -246,6 +263,19 @@ def test_native_preparation_existing_source_handoff_dispatches_coordinator(tmp_p
     coordinator_flows = runtime.flow_service.list_flows(flow_type="native_repo_coordinator")
     assert len(coordinator_flows) == 1
     assert coordinator_flows[0].input.start_mode == "native_preparation_handoff"
+
+
+def test_native_preparation_source_prepare_workdir_uses_preparation_relpath(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo_for_source_prepare(lean_runtime, repo_root, source_corpus_relpath="custom_sources")
+    flow_id = _start_native(runtime, repo_root)
+
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_corpus"
+    _advance_and_run(runtime, flow_id)
+
+    assert runtime.agent_service.start_records[-1].workdir == str(repo_root / "custom_sources")
 
 
 def test_native_preparation_rejected_review_reuses_builder_agent(tmp_path: Path) -> None:

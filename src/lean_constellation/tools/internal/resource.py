@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
+from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
     DraftIdArgs,
     DraftIdReasonArgs,
@@ -46,6 +46,76 @@ def _find_duplicate_resource(runtime, ctx, args: ResourceTargetArgs):
     return runtime.material.find_duplicate_resource(ctx.repo_root, target=normalized.value)
 
 
+def _active_resource_draft_id(runtime, ctx: ToolExecutionContext):
+    if not ctx.runtime.flow_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("resource_curation_context_missing", "Resource acquisition requires current ResourceCurationFlow context.")
+        )
+    flow = runtime.get_flow(ctx.runtime.flow_id)
+    if getattr(flow, "flow_type", None) != "resource_curation":
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "resource_curation_context_missing",
+                "Resource acquisition tools are only available inside ResourceCurationFlow.",
+                current=getattr(flow, "flow_type", None),
+                expected="resource_curation",
+            )
+        )
+    draft_id = getattr(getattr(flow, "state", None), "active_resource_draft_key", None)
+    if not draft_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("resource_active_draft_missing", "Resource acquisition requires an active resource draft.")
+        )
+    return runtime.foundation.ok(draft_id)
+
+
+def _acquire_resource_material(runtime, ctx: ToolExecutionContext, args: SourceMaterialAcquireArgs):
+    draft_id = _active_resource_draft_id(runtime, ctx)
+    if not draft_id.ok or draft_id.value is None:
+        return draft_id
+    return runtime.material.acquire_resource_material(
+        ctx.repo_root,
+        draft_id=draft_id.value,
+        target=args.target,
+        preferred_kind=args.preferred_kind,
+    )
+
+
+def _extract_resource_artifact(runtime, ctx: ToolExecutionContext, args: SourceArtifactExtractArgs):
+    draft_id = _active_resource_draft_id(runtime, ctx)
+    if not draft_id.ok or draft_id.value is None:
+        return draft_id
+    return runtime.material.extract_resource_artifact(
+        ctx.repo_root,
+        draft_id=draft_id.value,
+        artifact_ref=args.artifact_ref,
+        extraction_kind=args.extraction_kind,
+    )
+
+
+def _import_resource_material(runtime, ctx: ToolExecutionContext, args: SourceMaterialImportArgs):
+    draft_id = _active_resource_draft_id(runtime, ctx)
+    if not draft_id.ok or draft_id.value is None:
+        return draft_id
+    return runtime.material.import_resource_material(
+        ctx.repo_root,
+        draft_id=draft_id.value,
+        source_path=args.source_path,
+        as_name=args.as_name,
+    )
+
+
+def _normalize_resource_text_material(runtime, ctx: ToolExecutionContext, args: SourceMaterialNormalizeArgs):
+    draft_id = _active_resource_draft_id(runtime, ctx)
+    if not draft_id.ok or draft_id.value is None:
+        return draft_id
+    return runtime.material.normalize_resource_text_material(
+        ctx.repo_root,
+        draft_id=draft_id.value,
+        material_ref=args.material_ref,
+    )
+
+
 def build_tool_specs() -> list[ToolSpec]:
     roles = {"coordinator", "plan", "worker", "reviewer", "admin"}
     curator_roles = {"worker", "admin"}
@@ -73,7 +143,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="find_duplicate_resource",
-            description="Check whether a normalized resource target duplicates existing source corpus material or a registered resource in the current repo.",
+            description="Check whether a normalized resource target duplicates a registered resource in the current repo resource library.",
             args_model=ResourceTargetArgs,
             capability=ToolCapability.READ,
             result_view="resource_duplicate",
@@ -81,49 +151,45 @@ def build_tool_specs() -> list[ToolSpec]:
             roles=roles,
             handler=_find_duplicate_resource,
         ),
-        direct_tool(
-            name="acquire_material_resource",
-            description="Acquire raw resource material such as arXiv source, PDF, web page, or local target into the current material draft area.",
+        handler_tool(
+            name="acquire_resource_material",
+            description="Acquire raw resource material such as arXiv source, PDF, web page, or local target into the current active resource draft acquisition area.",
             args_model=SourceMaterialAcquireArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="acquire_source_material",
             result_view="source_acquisition",
-            groups={AppGroup.MATERIAL_ACQUISITION},
+            groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
+            handler=_acquire_resource_material,
         ),
-        direct_tool(
-            name="extract_material_artifact",
-            description="Extract readable text or project files from an acquired material artifact for resource draft curation.",
+        handler_tool(
+            name="extract_resource_artifact",
+            description="Extract readable text or project files from an active resource draft artifact into the resource draft normalized area.",
             args_model=SourceArtifactExtractArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="extract_source_artifact",
             result_view="source_extraction",
-            groups={AppGroup.MATERIAL_ACQUISITION},
+            groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
+            handler=_extract_resource_artifact,
         ),
-        direct_tool(
-            name="import_material_file",
-            description="Import a local file or directory into the current material draft area for resource curation.",
+        handler_tool(
+            name="import_resource_material",
+            description="Import a local file into the current active resource draft original material area.",
             args_model=SourceMaterialImportArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="import_source_material",
             result_view="source_acquisition",
-            groups={AppGroup.MATERIAL_ACQUISITION},
+            groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
+            handler=_import_resource_material,
         ),
-        direct_tool(
-            name="normalize_material_text",
-            description="Normalize a draft material reference into readable text for README summaries, resource notes, and downstream line-range reads.",
+        handler_tool(
+            name="normalize_resource_text_material",
+            description="Normalize a resource draft material reference into readable text for README summaries, resource notes, and downstream line-range reads.",
             args_model=SourceMaterialNormalizeArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="normalize_source_text_material",
             result_view="source_extraction",
-            groups={AppGroup.MATERIAL_ACQUISITION},
+            groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
+            handler=_normalize_resource_text_material,
         ),
         direct_tool(
             name="read_resource_range",

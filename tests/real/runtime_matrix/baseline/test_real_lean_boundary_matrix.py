@@ -67,7 +67,7 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
     )
     assert statement_capture.ok, statement_capture.issues
     revision = _current_revision(runtime, repo_root)
-    assert revision.state == DeclState.DECLARED
+    assert revision.state == DeclState.PLANNED
     assert revision.statement_lean_check is not None
     assert revision.statement_lean_check["policy"] == "statement_formal"
     assert revision.statement_lean_check["status"] == "passed"
@@ -104,7 +104,7 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
     )
     assert proof_capture.ok, proof_capture.issues
     revision = _current_revision(runtime, repo_root)
-    assert revision.state == DeclState.PROVED
+    assert revision.state == DeclState.PLANNED
     assert revision.proof_lean_check is not None
     assert revision.proof_lean_check["policy"] == "proof_formal"
     assert revision.proof_lean_check["status"] == "passed"

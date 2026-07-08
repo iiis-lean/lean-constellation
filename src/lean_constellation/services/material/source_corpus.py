@@ -96,7 +96,7 @@ class SourceCorpusDuplicateView(StrictModel):
 
 
 class SourceCorpusComponent:
-    """Manage `.lean_constellation/source` and its manifest."""
+    """Manage the configured source corpus root and its manifest."""
 
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
@@ -110,6 +110,7 @@ class SourceCorpusComponent:
         entry_path: str | None = None,
         created_from_mode: str = "scan",
     ) -> ServiceResult[SourceCorpusManifestView]:
+        relpath = self._effective_relpath(repo_root, relpath)
         ctx = FoundationContext(repo_root=Path(repo_root))
         root = self.runtime.foundation.layout.source_corpus_root(ctx, relpath)
         if not root.exists() or not root.is_dir():
@@ -251,6 +252,7 @@ class SourceCorpusComponent:
         relpath: str = ".lean_constellation/source",
         entry_path: str | None = None,
     ) -> ServiceResult[GateReport]:
+        relpath = self._effective_relpath(repo_root, relpath)
         scan = self.scan_source_corpus(repo_root, relpath=relpath, entry_path=entry_path)
         if not scan.ok or scan.value is None:
             return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("source_corpus_draft", scan.issues, summary="Source corpus scan failed."))
@@ -292,6 +294,7 @@ class SourceCorpusComponent:
         preparation_summary: str,
         relpath: str = ".lean_constellation/source",
     ) -> ServiceResult[SourceCorpusPreparedView]:
+        relpath = self._effective_relpath(repo_root, relpath)
         if not overview.strip() or not preparation_summary.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_summary", "overview and preparation_summary are required."))
         gate = self.check_source_corpus_draft(repo_root, relpath=relpath, entry_path=entry_path)
@@ -346,7 +349,7 @@ class SourceCorpusComponent:
         path = self._manifest_path(repo_root)
         if path.exists():
             return self.runtime.foundation.store.read_json(path, SourceCorpusManifestView)
-        return self.scan_source_corpus(repo_root, relpath=".lean_constellation/source")
+        return self.scan_source_corpus(repo_root, relpath=self._source_relpath(repo_root))
 
     def validate_source_ref(
         self,
@@ -401,7 +404,19 @@ class SourceCorpusComponent:
         )
 
     def _source_root(self, repo_root: Path) -> Path:
-        return self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)))
+        repo_root = Path(repo_root)
+        return self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=repo_root), self._source_relpath(repo_root))
+
+    def _source_relpath(self, repo_root: Path) -> str:
+        preparation = self.runtime.repo_workspace.preparation.get_preparation_input(Path(repo_root))
+        if preparation.ok and preparation.value is not None:
+            return preparation.value.input.source_corpus_relpath or ".lean_constellation/source"
+        return ".lean_constellation/source"
+
+    def _effective_relpath(self, repo_root: Path, relpath: str) -> str:
+        if relpath == ".lean_constellation/source":
+            return self._source_relpath(repo_root)
+        return relpath
 
     def _manifest_path(self, repo_root: Path) -> Path:
         return self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=Path(repo_root))) / "source_corpus" / "manifest.json"

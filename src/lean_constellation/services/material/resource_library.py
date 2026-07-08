@@ -180,6 +180,7 @@ class ResourceLibraryComponent:
         target: str | ResourceTarget | ResourceTargetView,
         resource_kind: str | None = None,
         title_hint: str | None = None,
+        allow_duplicate: bool = False,
     ) -> ServiceResult[ResourceDraftView]:
         normalized = self._coerce_target_model(target)
         if not normalized.ok or normalized.value is None:
@@ -187,7 +188,7 @@ class ResourceLibraryComponent:
         duplicate = self.find_duplicate_resource(repo_root, target=normalized.value)
         if not duplicate.ok or duplicate.value is None:
             return self.runtime.foundation.fail(duplicate.issues)
-        if duplicate.value.duplicate:
+        if duplicate.value.duplicate and not allow_duplicate:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "resource_duplicate",

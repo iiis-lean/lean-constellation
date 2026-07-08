@@ -38,7 +38,10 @@ _COMMITTED_SOURCE_INDEX_VIEWS = {
     AppView.ROOT_INTERFACE_PREPARE.value,
     AppView.NATIVE_REPO_COORDINATOR.value,
     AppView.CONTENT_PLAN.value,
+    AppView.RESOURCE_CURATOR.value,
     AppView.RESOURCE_RECON.value,
+    AppView.STATEMENT_NL_WORKER.value,
+    AppView.STATEMENT_NL_REVIEWER.value,
 }
 
 
@@ -289,7 +292,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="acquire_source_material",
             result_view="source_acquisition",
-            groups={AppGroup.SOURCE_ACQUISITION, AppGroup.MATERIAL_ACQUISITION},
+            groups={AppGroup.SOURCE_ACQUISITION},
             roles={"worker", "admin"},
         ),
         direct_tool(
@@ -300,7 +303,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="extract_source_artifact",
             result_view="source_extraction",
-            groups={AppGroup.SOURCE_ACQUISITION, AppGroup.MATERIAL_ACQUISITION},
+            groups={AppGroup.SOURCE_ACQUISITION},
             roles={"worker", "admin"},
         ),
         direct_tool(
@@ -311,7 +314,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="import_source_material",
             result_view="source_acquisition",
-            groups={AppGroup.SOURCE_ACQUISITION, AppGroup.MATERIAL_ACQUISITION},
+            groups={AppGroup.SOURCE_ACQUISITION},
             roles={"worker", "admin"},
         ),
         direct_tool(
@@ -322,7 +325,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="normalize_source_text_material",
             result_view="source_extraction",
-            groups={AppGroup.SOURCE_ACQUISITION, AppGroup.MATERIAL_ACQUISITION},
+            groups={AppGroup.SOURCE_ACQUISITION},
             roles={"worker", "admin"},
         ),
     ]

@@ -131,7 +131,6 @@ def test_resource_curator_duplicate_local_external_and_rejected_branches_restore
     ws.create_home("ResourceCuratorControlledTestAgent")
     ws.provider_repo.mkdir(parents=True, exist_ok=True)
     target = ws.resources.web_url
-    local_draft_id = ws.allocate_resource_branch_draft(target_kind="web", target=target)
     existing_resource_key = ws.create_active_resource(
         target_kind="local_file",
         target=str(ws.resources.local_file),
@@ -142,6 +141,10 @@ def test_resource_curator_duplicate_local_external_and_rejected_branches_restore
     preflight = ws.runtime.ark.step_service.store.get_step(preflight_step_id)
     assert preflight.step_type == "resource_curation_preflight_step"
     assert preflight.result.outcome == "continue_to_curator"
+    flow = ws.runtime.ark.flow_service.get_flow(flow_id)
+    local_draft_id = flow.state.active_resource_draft_key
+    assert local_draft_id
+    ws.fill_resource_draft(local_draft_id)
 
     agent_advanced = unwrap(ws.admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id)))
     assert agent_advanced.created_step_id is not None
@@ -215,7 +218,6 @@ def test_resource_curator_duplicate_local_external_and_rejected_branches_restore
         agent_step_id=agent_step_id,
         tool_name="submit_resource_duplicate",
         arguments={
-            "reason": "The target duplicates an already curated local resource.",
             "target_kind": "web",
             "target": target,
             "existing_kind": "resource",
@@ -228,10 +230,11 @@ def test_resource_curator_duplicate_local_external_and_rejected_branches_restore
     )
 
 
-def test_resource_curation_preflight_duplicate_completes_without_curator_agent(
+def test_resource_curation_preflight_duplicate_hint_runs_curator_agent(
     runtime_matrix_workspace: RuntimeMatrixWorkspace,
 ) -> None:
     ws = runtime_matrix_workspace
+    ws.create_home("ResourceCuratorControlledTestAgent")
     ws.provider_repo.mkdir(parents=True, exist_ok=True)
     target = str(ws.resources.local_file)
     resource_key = ws.create_active_resource(target_kind="local_file", target=target)
@@ -240,10 +243,26 @@ def test_resource_curation_preflight_duplicate_completes_without_curator_agent(
     preflight_step_id = run_next_created_step(ws.admin, flow_id)
     preflight = ws.runtime.ark.step_service.store.get_step(preflight_step_id)
     assert preflight.step_type == "resource_curation_preflight_step"
-    assert preflight.result.outcome == "duplicate"
-    flow = assert_flow_completed(ws.runtime, flow_id, outcome="duplicate")
+    assert preflight.result.outcome == "continue_to_curator"
+    assert preflight.result.resource_duplicate_hint.existing_resource_key == resource_key
+    agent_advanced = unwrap(ws.admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id)))
+    assert agent_advanced.created_step_id is not None
+    _run_resource_branch(
+        ws,
+        flow_id=flow_id,
+        agent_step_id=agent_advanced.created_step_id,
+        tool_name="submit_resource_duplicate",
+        arguments={
+            "existing_kind": "resource",
+            "duplicate_reason": "The local file target is already registered.",
+            "existing_resource_key": resource_key,
+        },
+        expected_outcome="duplicate",
+        expected_submission="resource_duplicate",
+    )
+    flow = ws.runtime.ark.flow_service.get_flow(flow_id)
     assert flow.result.existing_resource_key == resource_key
-    assert ws.runtime.ark.flow_service.list_steps(flow_id=flow_id, step_type="resource_curator_agent_step") == []
+    assert ws.runtime.ark.flow_service.list_steps(flow_id=flow_id, step_type="resource_curator_agent_step") != []
 
 
 def _start_resource_flow(ws: RuntimeMatrixWorkspace, *, target_kind: str, target: str) -> str:

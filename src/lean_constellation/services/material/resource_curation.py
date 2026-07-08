@@ -17,7 +17,7 @@ from lean_constellation.services.material.resource_library import (
     ResourceTargetView,
     ResourceView,
 )
-from lean_constellation.services.material.source_corpus import SourceCorpusComponent
+from lean_constellation.services.material.source_corpus import SourceAcquisitionView, SourceCorpusComponent, SourceExtractionView
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -440,6 +440,149 @@ class ResourceCurationComponent:
             )
         )
 
+    def acquire_resource_material(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        target: str,
+        preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None = None,
+    ) -> ServiceResult[SourceAcquisitionView]:
+        draft_root = self._active_draft_root(repo_root, draft_id)
+        if not draft_root.ok or draft_root.value is None:
+            return self.runtime.foundation.fail(draft_root.issues)
+        root = draft_root.value
+        acquisition_root = root / "acquisition"
+        ensured = self.runtime.foundation.store.ensure_dir(acquisition_root)
+        if not ensured.ok:
+            return self.runtime.foundation.fail(ensured.issues)
+        try:
+            normalized = self.runtime.external.material.normalize_target(target)
+        except Exception as exc:  # noqa: BLE001
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_material_target", str(exc)))
+
+        mismatch = self._preferred_kind_mismatch(preferred_kind, normalized.kind)
+        if mismatch is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "preferred_kind_target_mismatch",
+                    f"preferred_kind={preferred_kind} cannot be used with target kind {normalized.kind}.",
+                    details={"preferred_kind": str(preferred_kind), "target_kind": normalized.kind},
+                )
+            )
+
+        if preferred_kind == "arxiv_source" or (preferred_kind is None and normalized.kind == "arxiv"):
+            result = self.runtime.external.material.fetch_arxiv_source(normalized.value, normalized.version, output_root=acquisition_root)
+        elif preferred_kind == "arxiv_pdf":
+            result = self.runtime.external.material.fetch_arxiv_pdf(normalized.value, normalized.version, output_root=acquisition_root)
+        elif preferred_kind == "web_page" or (preferred_kind is None and normalized.kind == "web_url"):
+            result = self.runtime.external.material.fetch_web_page(normalized.value, output_root=acquisition_root)
+        elif preferred_kind == "local_dir" or normalized.kind == "local_dir":
+            result = self.runtime.external.material.import_local_dir(Path(normalized.value), acquisition_root)
+        else:
+            result = self.runtime.external.material.import_local_file(source_path=Path(normalized.value), output_root=acquisition_root)
+        view = self._source_acquisition_view(target, result, root)
+        if not result.ok:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(result.issue_code or "resource_acquisition_failed", result.summary or "Resource acquisition failed")
+            )
+        return self.runtime.foundation.ok(view)
+
+    def import_resource_material(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        source_path: str,
+        as_name: str | None = None,
+    ) -> ServiceResult[SourceAcquisitionView]:
+        draft_root = self._active_draft_root(repo_root, draft_id)
+        if not draft_root.ok or draft_root.value is None:
+            return self.runtime.foundation.fail(draft_root.issues)
+        root = draft_root.value
+        source = Path(source_path).expanduser().resolve(strict=False)
+        if not source.exists() or not source.is_file():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("missing_local_file", f"Local resource material not found: {source}")
+            )
+        try:
+            dest_name = self.runtime.foundation.layout.ensure_safe_key(as_name) if as_name else self._safe_material_filename(source.name)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("unsafe_resource_filename", str(exc)))
+        dest = root / "original" / dest_name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+
+        shutil.copy2(source, dest)
+        result = AcquiredArtifactResult(
+            ok=True,
+            target=self.runtime.external.material.normalize_target(str(source)),
+            artifact_paths=[str(dest)],
+            primary_artifact_path=str(dest),
+            metadata={"source_path": str(source)},
+            content_hash=self._hash_file(dest),
+            summary="Imported local resource material.",
+        )
+        return self.runtime.foundation.ok(self._source_acquisition_view(str(source), result, root))
+
+    def extract_resource_artifact(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        artifact_ref: str,
+        extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None,
+    ) -> ServiceResult[SourceExtractionView]:
+        draft_root = self._active_draft_root(repo_root, draft_id)
+        if not draft_root.ok or draft_root.value is None:
+            return self.runtime.foundation.fail(draft_root.issues)
+        root = draft_root.value
+        try:
+            artifact = self._resolve_inside(root, artifact_ref)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_artifact_ref_invalid", str(exc)))
+        output_root = root / "normalized"
+        ensured = self.runtime.foundation.store.ensure_dir(output_root)
+        if not ensured.ok:
+            return self.runtime.foundation.fail(ensured.issues)
+        if extraction_kind is None:
+            extraction_kind = self._guess_extraction_kind(artifact)
+        if extraction_kind == "pdf_text":
+            result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=output_root)
+        elif extraction_kind == "html_main_text":
+            result = self.runtime.external.material.extract_web_main_text(html_path=artifact, output_root=output_root)
+        elif extraction_kind == "tex_source":
+            result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=output_root)
+        else:
+            result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=output_root)
+        view = self._source_extraction_view(artifact_ref, result, root)
+        if not result.ok:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(result.issue_code or "resource_extraction_failed", result.summary or "Resource extraction failed")
+            )
+        return self.runtime.foundation.ok(view)
+
+    def normalize_resource_text_material(self, repo_root: Path, *, draft_id: str, material_ref: str) -> ServiceResult[SourceExtractionView]:
+        draft_root = self._active_draft_root(repo_root, draft_id)
+        if not draft_root.ok or draft_root.value is None:
+            return self.runtime.foundation.fail(draft_root.issues)
+        root = draft_root.value
+        try:
+            source = self._resolve_inside(root, material_ref)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_material_ref_invalid", str(exc)))
+        output_root = root / "normalized"
+        ensured = self.runtime.foundation.store.ensure_dir(output_root)
+        if not ensured.ok:
+            return self.runtime.foundation.fail(ensured.issues)
+        result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=output_root)
+        view = self._source_extraction_view(material_ref, result, root)
+        if not result.ok:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(result.issue_code or "resource_text_normalization_failed", result.summary or "Resource text normalization failed")
+            )
+        return self.runtime.foundation.ok(view)
+
     def curate_local_resource(
         self,
         repo_root: Path,
@@ -467,6 +610,17 @@ class ResourceCurationComponent:
             return self.runtime.foundation.ok(None)
         return self.source_corpus.check_target_in_source_corpus(Path(repo_root), canonical_locator=target.canonical_locator)
 
+    def _active_draft_root(self, repo_root: Path, draft_id: str) -> ServiceResult[Path]:
+        draft = self.resource_library.get_resource_draft(repo_root, draft_id=draft_id)
+        if not draft.ok or draft.value is None:
+            return self.runtime.foundation.fail(draft.issues)
+        root = Path(draft.value.draft_root)
+        try:
+            self.runtime.foundation.layout.assert_within(Path(repo_root), root)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_draft_path_escape", str(exc), object_ref=draft_id))
+        return self.runtime.foundation.ok(root)
+
     def _artifact_view(self, target: ResourceTargetView, result: AcquiredArtifactResult) -> ResourceArtifactView:
         return ResourceArtifactView(
             ok=result.ok,
@@ -492,6 +646,30 @@ class ResourceCurationComponent:
             issue_code=result.issue_code,
         )
 
+    def _source_acquisition_view(self, target: str, result: AcquiredArtifactResult, root: Path) -> SourceAcquisitionView:
+        return SourceAcquisitionView(
+            ok=result.ok,
+            target=target,
+            artifact_refs=[self._rel_or_abs(root, Path(path)) for path in result.artifact_paths],
+            primary_artifact_ref=self._rel_or_abs(root, Path(result.primary_artifact_path)) if result.primary_artifact_path else None,
+            metadata=result.metadata,
+            content_hash=result.content_hash,
+            summary=result.summary or "",
+            issue_code=result.issue_code,
+        )
+
+    def _source_extraction_view(self, artifact_ref: str, result: ExtractedMaterialResult, root: Path) -> SourceExtractionView:
+        return SourceExtractionView(
+            ok=result.ok,
+            artifact_ref=artifact_ref,
+            material_refs=[self._rel_or_abs(root, Path(path)) for path in result.extracted_paths],
+            primary_material_ref=self._rel_or_abs(root, Path(result.primary_text_path)) if result.primary_text_path else None,
+            preview=result.text_preview,
+            metadata=result.metadata,
+            summary=result.summary or "",
+            issue_code=result.issue_code,
+        )
+
     @staticmethod
     def _target_to_normalizable_string(target_kind: str, target: str, arxiv_version: str | None) -> str:
         target = target.strip()
@@ -503,6 +681,71 @@ class ResourceCurationComponent:
         if target_kind in {"local_file", "local_dir"}:
             return target
         raise ValueError(f"unsupported target_kind: {target_kind}")
+
+    def _resolve_inside(self, root: Path, ref: str) -> Path:
+        relative = self.runtime.foundation.layout.ensure_relative_path(ref)
+        path = root / relative
+        self.runtime.foundation.layout.assert_within(root, path)
+        return path
+
+    def _safe_material_filename(self, filename: str) -> str:
+        import hashlib
+        import re
+
+        try:
+            return self.runtime.foundation.layout.ensure_safe_key(filename)
+        except ValueError:
+            sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename.strip())
+            sanitized = sanitized.strip("._-")
+            if not sanitized:
+                sanitized = f"resource_{hashlib.sha256(filename.encode('utf-8')).hexdigest()[:12]}"
+            if not sanitized[0].isalnum():
+                sanitized = f"resource_{sanitized}"
+            return self.runtime.foundation.layout.ensure_safe_key(sanitized)
+
+    @staticmethod
+    def _guess_extraction_kind(path: Path) -> Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"]:
+        suffix = path.suffix.lower()
+        if suffix == ".pdf":
+            return "pdf_text"
+        if suffix in {".html", ".htm"}:
+            return "html_main_text"
+        if suffix in {".tex", ".gz", ".zip", ".tar"}:
+            return "tex_source"
+        return "text_normalize"
+
+    @staticmethod
+    def _preferred_kind_mismatch(
+        preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None,
+        target_kind: str,
+    ) -> str | None:
+        if preferred_kind is None:
+            return None
+        expected = {
+            "arxiv_source": "arxiv",
+            "arxiv_pdf": "arxiv",
+            "web_page": "web_url",
+            "local_file": "local_file",
+            "local_dir": "local_dir",
+        }[preferred_kind]
+        return None if expected == target_kind else expected
+
+    @staticmethod
+    def _rel_or_abs(root: Path, path: Path) -> str:
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            return str(path)
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        import hashlib
+
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _ctx_value(ctx: Any, name: str) -> str | None:

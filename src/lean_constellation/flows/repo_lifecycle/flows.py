@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar, Literal
 
 from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowStepContext, StableStepTerminalContext
@@ -404,7 +405,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 )
             from lean_constellation.flows.common.agent_steps import SourceCorpusPrepareAgentStep
 
-            source_root = str(repo_root / ".lean_constellation" / "source")
+            source_root = _source_corpus_workdir(ctx, repo_root)
             return ctx.create_step(
                 SourceCorpusPrepareAgentStep(
                     step_id=new_repo_lifecycle_step_id("source_corpus_prepare"),
@@ -419,7 +420,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                         variables={"repo_key": input_model.repo_key},
                         prompt_override=_source_corpus_prepare_prompt(input_model),
                         env_overrides=_agent_env("SourceCorpusPrepareAgent", "source_corpus_prepare", "source_corpus_prepare_submit"),
-                        workdir_override=source_root,
+                        workdir_override=str(source_root),
                     ),
                 )
             )
@@ -1223,6 +1224,15 @@ def _agent_env(agent_type: str, app_view: str, submit_view: str) -> dict[str, st
         "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": app_view,
         "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": submit_view,
     }
+
+
+def _source_corpus_workdir(ctx: FlowContext, repo_root: Path) -> Path:
+    relpath = ".lean_constellation/source"
+    preparation = ctx.app.repo_workspace.preparation.get_preparation_input(repo_root)
+    if preparation.ok and preparation.value is not None:
+        relpath = preparation.value.input.source_corpus_relpath or relpath
+    path = Path(relpath)
+    return path if path.is_absolute() else repo_root / path
 
 
 def _source_corpus_prepare_prompt(input_model: NativeRepoPreparationInput) -> str:
