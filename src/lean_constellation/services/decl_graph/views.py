@@ -122,6 +122,8 @@ class DeclGraphViewMapper:
             summary=mark.summary,
             issue_kind=mark.issue_kind,
             suggested_fix=mark.suggested_fix,
+            issue_categories=list(mark.issue_categories),
+            required_changes=list(mark.required_changes),
             created_at=mark.created_at,
         )
 

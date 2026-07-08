@@ -392,7 +392,7 @@ def test_decl_graph_is_default_lean_projection_revision_provider(tmp_path: Path)
     )
 
     assert saved.ok and saved.value is not None
-    assert saved.value.state == DeclState.DECLARED
+    assert saved.value.state == DeclState.PLANNED
     assert saved.value.statement.formal is not None
     assert saved.value.statement.formal.check is not None
     assert saved.value.statement.formal.check.status == "passed"

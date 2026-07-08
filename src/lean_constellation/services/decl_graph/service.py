@@ -671,6 +671,23 @@ class DeclGraphService:
             deps=deps,
         )
 
+    def advance_stage_state(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        stage: str,
+        decl_names: list[str],
+    ) -> ServiceResult[list[str]]:
+        return self.stage_mutation.advance_stage_state(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            stage=stage,
+            decl_names=decl_names,
+        )
+
     def record_decl_review(
         self,
         repo_root: Path,
@@ -683,6 +700,8 @@ class DeclGraphService:
         summary: str,
         issue_kind: str | None = None,
         suggested_fix: str | None = None,
+        issue_categories: list[str] | None = None,
+        required_changes: list[str] | None = None,
     ) -> ServiceResult[DeclReviewMarkRecord]:
         return self.review_gate.record_decl_review(
             repo_root,
@@ -694,6 +713,8 @@ class DeclGraphService:
             summary=summary,
             issue_kind=issue_kind,
             suggested_fix=suggested_fix,
+            issue_categories=issue_categories,
+            required_changes=required_changes,
         )
 
     def review_mark_view(self, mark: DeclReviewMarkRecord) -> DeclReviewMarkView:
@@ -711,6 +732,8 @@ class DeclGraphService:
         summary: str,
         issue_kind: str | None = None,
         suggested_fix: str | None = None,
+        issue_categories: list[str] | None = None,
+        required_changes: list[str] | None = None,
     ) -> ServiceResult[DeclReviewMarkRecord]:
         return self.review_gate.build_decl_review_mark(
             repo_root,
@@ -722,6 +745,8 @@ class DeclGraphService:
             summary=summary,
             issue_kind=issue_kind,
             suggested_fix=suggested_fix,
+            issue_categories=issue_categories,
+            required_changes=required_changes,
         )
 
     def submit_stage_review(
@@ -750,6 +775,7 @@ class DeclGraphService:
         stage: DeclStage | str,
         summary: str,
         marks: list[DeclReviewMarkRecord],
+        expected_decl_names: list[str] | None = None,
     ) -> ServiceResult[StageReviewResultView]:
         return self.review_gate.aggregate_stage_review_marks(
             repo_root,
@@ -758,6 +784,7 @@ class DeclGraphService:
             stage=stage,
             summary=summary,
             marks=marks,
+            expected_decl_names=expected_decl_names,
         )
 
     def compute_dependency_closure(

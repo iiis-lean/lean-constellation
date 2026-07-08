@@ -35,7 +35,6 @@ def test_strict_decl_graph_review_rejected_then_worker_blocked_evidence(
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The strict rejected branch statement is intentionally sparse.",
-                            "origin": [{"kind": "runtime_matrix_strict", "ref": "review_rejected"}],
                             "deps": [],
                         },
                     ),
@@ -44,7 +43,6 @@ def test_strict_decl_graph_review_rejected_then_worker_blocked_evidence(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Statement NL completed before strict reviewer rejection.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ],

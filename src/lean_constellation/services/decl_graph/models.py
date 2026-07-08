@@ -843,12 +843,22 @@ class DeclReviewMarkRecord(StrictModel):
     summary: str
     issue_kind: str | None = None
     suggested_fix: str | None = None
+    issue_categories: list[str] = Field(default_factory=list)
+    required_changes: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now_iso)
 
     @field_validator("round_id", "node_path", "decl_name", "summary")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
+
+    @field_validator("issue_categories", "required_changes")
+    @classmethod
+    def _strip_unique_text_list(cls, value: list[str]) -> list[str]:
+        stripped = [_required_text(item) for item in value]
+        if len(set(stripped)) != len(stripped):
+            raise ValueError("review mark lists must be unique")
+        return stripped
 
 
 class DeclReviewMarkView(StrictModel):
@@ -862,12 +872,22 @@ class DeclReviewMarkView(StrictModel):
     summary: str
     issue_kind: str | None = None
     suggested_fix: str | None = None
+    issue_categories: list[str] = Field(default_factory=list)
+    required_changes: list[str] = Field(default_factory=list)
     created_at: str | None = None
 
     @field_validator("round_id", "node_path", "decl_name", "summary")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
+
+    @field_validator("issue_categories", "required_changes")
+    @classmethod
+    def _strip_unique_text_list(cls, value: list[str]) -> list[str]:
+        stripped = [_required_text(item) for item in value]
+        if len(set(stripped)) != len(stripped):
+            raise ValueError("review mark lists must be unique")
+        return stripped
 
 
 class StageReviewResultView(StrictModel):

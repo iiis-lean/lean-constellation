@@ -54,7 +54,6 @@ class StageMutationComponent:
         revision.value.statement_nl = nl.strip()
         revision.value.statement_origin = self._normalize_origin(origin)
         revision.value.statement_deps = self._normalize_deps(deps)
-        revision.value.state = DeclState.SPECIFIED
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 
@@ -83,7 +82,6 @@ class StageMutationComponent:
         revision.value.statement_lean_code = lean_code.strip()
         revision.value.statement_lean_check = self._normalize_check(lean_check)
         revision.value.statement_deps = self._normalize_deps(deps if deps is not None else revision.value.statement_deps)
-        revision.value.state = DeclState.DECLARED
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 
@@ -115,7 +113,6 @@ class StageMutationComponent:
         revision.value.proof_nl = nl.strip()
         revision.value.proof_origin = self._normalize_origin(origin)
         revision.value.proof_deps = self._normalize_deps(deps)
-        revision.value.state = DeclState.PROOF_PLANNED
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 
@@ -147,9 +144,51 @@ class StageMutationComponent:
         revision.value.proof_lean_code = lean_code.strip()
         revision.value.proof_lean_check = self._normalize_check(lean_check)
         revision.value.proof_deps = self._normalize_deps(deps if deps is not None else revision.value.proof_deps)
-        revision.value.state = DeclState.PROVED
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def advance_stage_state(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        stage: str,
+        decl_names: list[str],
+    ) -> ServiceResult[list[str]]:
+        target_state = self._target_state_for_stage(stage)
+        if target_state is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("decl_stage_unknown", "Cannot advance accepted state for an unknown decl stage.", current=stage)
+            )
+        revisions: list[DeclRevision] = []
+        for decl_name in decl_names:
+            revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+            if not revision.ok or revision.value is None:
+                return self.runtime.foundation.fail(revision.issues)
+            revisions.append(revision.value)
+
+        advanced: list[str] = []
+        with self.runtime.foundation.mutation(f"advance {stage} state") as mutation:
+            for revision in revisions:
+                if self._state_rank(revision.state) < self._state_rank(target_state):
+                    revision.state = target_state
+                    revision.updated_at = utc_now_iso()
+                    mutation.stage_json(
+                        self.graph_store.revision_path(
+                            repo_root,
+                            node_path=node_path,
+                            decl_name=revision.decl_name,
+                            revision=revision.revision,
+                        ),
+                        revision,
+                        mode=WriteMode.UPDATE_EXISTING,
+                    )
+                advanced.append(revision.decl_name)
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
+        return self.runtime.foundation.ok(sorted(advanced))
 
     def _revision_for_stage(
         self,
@@ -259,3 +298,23 @@ class StageMutationComponent:
 
     def _normalize_check(self, lean_check: dict[str, Any]) -> dict[str, str]:
         return {str(key): str(value) for key, value in lean_check.items()}
+
+    @staticmethod
+    def _target_state_for_stage(stage: str) -> DeclState | None:
+        return {
+            "statement_nl": DeclState.SPECIFIED,
+            "statement_formal": DeclState.DECLARED,
+            "proof_nl": DeclState.PROOF_PLANNED,
+            "proof_formal": DeclState.PROVED,
+        }.get(stage)
+
+    @staticmethod
+    def _state_rank(state: DeclState) -> int:
+        return {
+            DeclState.OBSOLETE: -1,
+            DeclState.PLANNED: 0,
+            DeclState.SPECIFIED: 1,
+            DeclState.DECLARED: 2,
+            DeclState.PROOF_PLANNED: 3,
+            DeclState.PROVED: 4,
+        }[state]

@@ -31,7 +31,6 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The Runtime Matrix main result states True.",
-                            "origin": [{"kind": "runtime_matrix", "ref": "four_stage"}],
                             "deps": [],
                         },
                     ),
@@ -40,7 +39,6 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Statement NL completed.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ]
@@ -70,7 +68,6 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Statement formal completed.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ]
@@ -84,7 +81,6 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The proof closes by triviality.",
-                            "origin": [{"kind": "runtime_matrix", "ref": "proof_route"}],
                             "deps": [],
                         },
                     ),
@@ -93,7 +89,6 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Proof NL completed.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ]
@@ -113,7 +108,6 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Proof formal completed.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ]
@@ -172,7 +166,6 @@ def test_decl_graph_round_review_rejected_then_worker_blocked_matrix(
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The rejected branch statement is intentionally sparse.",
-                            "origin": [{"kind": "runtime_matrix", "ref": "review_rejected"}],
                             "deps": [],
                         },
                     ),
@@ -181,7 +174,6 @@ def test_decl_graph_round_review_rejected_then_worker_blocked_matrix(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Statement NL completed before reviewer rejection.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ],
@@ -211,13 +203,30 @@ def test_decl_graph_round_review_rejected_then_worker_blocked_matrix(
     assert [call["tool_name"] for call in provider.calls] == [
         "write_statement_nl",
         "submit_stage_worker_completed",
-        "record_decl_review",
+        "record_statement_nl_review_rejected",
         "submit_stage_review",
         "submit_stage_worker_blocked",
     ]
 
 
 def _review_actions(round_fixture: DeclRoundFixture, stage: str, *, passed: bool) -> list[tuple[str, str, dict[str, object]]]:
+    if stage == "statement_nl":
+        tool_name = "record_statement_nl_review_passed" if passed else "record_statement_nl_review_rejected"
+        args: dict[str, object] = {
+            "decl_name": round_fixture.decl_name,
+            "summary": f"{stage} {'accepted' if passed else 'rejected'} by Runtime Matrix.",
+        }
+        if not passed:
+            args["issue_categories"] = ["runtime_matrix_rejected"]
+            args["required_changes"] = ["Retry with reviewer feedback."]
+        return [
+            ("application", tool_name, args),
+            (
+                "submit",
+                "submit_stage_review",
+                {"summary": f"{stage} {'accepted' if passed else 'rejected'} by Runtime Matrix."},
+            ),
+        ]
     return [
         (
             "application",

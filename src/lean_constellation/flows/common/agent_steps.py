@@ -326,7 +326,7 @@ class ResourceCuratorAgentStep(AgentStep):
                 summary=submission.summary or submission.duplicate_reason,
             )
         if isinstance(submission, LocalResourceCreatedSubmission):
-            resource_key = submission.resource_key or submission.draft_id
+            resource_key = submission.resource_key
             local_resource = LocalResourceCreatedResultView(
                 resource_key=resource_key,
                 resource_ref_summary=f"Resource {resource_key}",
@@ -721,6 +721,7 @@ class DeclStageReviewerAgentStep(AgentStep):
                 outcome="passed" if submission.accepted else "rejected",
                 stage=submission.stage,
                 round_id=submission.round_id,
+                node_path=submission.node_path,
                 accepted=submission.accepted,
                 retry_required=submission.retry_required,
                 reviewed_decl_names=list(submission.reviewed_decl_names),

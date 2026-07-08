@@ -41,7 +41,6 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The strict Runtime Matrix theorem states True.",
-                            "origin": [{"kind": "runtime_matrix_strict", "ref": "real_lake_flow"}],
                             "deps": [],
                         },
                     ),
@@ -50,7 +49,6 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Statement NL completed in strict real Lake flow.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ]
@@ -76,7 +74,6 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Statement formal completed in strict real Lake flow.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ]
@@ -90,7 +87,6 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "Use triviality.",
-                            "origin": [{"kind": "runtime_matrix_strict", "ref": "real_lake_proof"}],
                             "deps": [],
                         },
                     ),
@@ -99,7 +95,6 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Proof NL completed in strict real Lake flow.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ]
@@ -115,7 +110,6 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         "submit_stage_worker_completed",
                         {
                             "summary": "Proof formal completed in strict real Lake flow.",
-                            "completed_decl_names": [round_fixture.decl_name],
                         },
                     ),
                 ]
@@ -173,6 +167,25 @@ def _require_lake_and_lean() -> None:
 
 
 def _review_actions(round_fixture: DeclRoundFixture, stage: str, *, passed: bool) -> list[tuple[str, str, dict[str, object]]]:
+    if stage == "statement_nl":
+        return [
+            (
+                "application",
+                "record_statement_nl_review_passed" if passed else "record_statement_nl_review_rejected",
+                {
+                    "decl_name": round_fixture.decl_name,
+                    "summary": f"{stage} accepted by strict Runtime Matrix.",
+                }
+                if passed
+                else {
+                    "decl_name": round_fixture.decl_name,
+                    "summary": f"{stage} rejected by strict Runtime Matrix.",
+                    "issue_categories": ["runtime_matrix_rejected"],
+                    "required_changes": ["Retry with reviewer feedback."],
+                },
+            ),
+            ("submit", "submit_stage_review", {"summary": f"{stage} accepted by strict Runtime Matrix."}),
+        ]
     return [
         (
             "application",

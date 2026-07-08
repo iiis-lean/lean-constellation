@@ -172,6 +172,7 @@ class DeclStageReviewerStepResult(LeanRenderableStepResult):
     outcome: Literal["passed", "rejected", "incomplete"]
     stage: DeclStageName | None = None
     round_id: str | None = None
+    node_path: str | None = None
     accepted: bool | None = None
     retry_required: bool | None = None
     reviewed_decl_names: list[str] = Field(default_factory=list)
@@ -185,6 +186,7 @@ class DeclStageReviewerStepResult(LeanRenderableStepResult):
             "outcome": self.outcome,
             "stage": self.stage,
             "round_id": self.round_id,
+            "node_path": self.node_path,
             "accepted": self.accepted,
             "retry_required": self.retry_required,
             "reviewed_decl_names": list(self.reviewed_decl_names),
@@ -197,6 +199,11 @@ class DeclStageReviewerStepResult(LeanRenderableStepResult):
 
 class DeclStageReviewerStepState(AgentStepState):
     state_type: Literal["decl_stage_reviewer_agent_step"] = "decl_stage_reviewer_agent_step"
+    round_id: str | None = None
+    node_path: str | None = None
+    stage: DeclStageName | None = None
+    expected_decl_names: list[str] = Field(default_factory=list)
+    review_attempt_index: int = 0
     review_marks: list[DeclReviewMarkRecord] = Field(default_factory=list)
 
 
@@ -509,7 +516,13 @@ class StageGateAndAuditStep(BaseStep):
             return ctx.complete_step(_stage_gate_failed(state.stage, "Stage gate requires the latest reviewer result."))
         if reviewer_result.outcome == "incomplete":
             return ctx.complete_step(_stage_gate_failed(state.stage, reviewer_result.incomplete_reason or "Reviewer did not submit a result."))
+        context_check = _reviewer_result_context_for_stage(reviewer_result, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
+        if context_check is not None:
+            return ctx.complete_step(context_check)
         if reviewer_result.outcome == "rejected":
+            rejected_decl_names = sorted(set(reviewer_result.failed_decl_names) | set(reviewer_result.missing_decl_names))
+            if not rejected_decl_names:
+                rejected_decl_names = list(state.target_decl_names)
             retry_count = state.retry_count + 1
             retry_remaining = max(state.max_retries - retry_count, 0)
             if state.retry_count < state.max_retries:
@@ -517,7 +530,7 @@ class StageGateAndAuditStep(BaseStep):
                     StageGateAndAuditStepResult(
                         outcome="retry_worker",
                         stage=state.stage,
-                        rejected_decl_names=list(state.target_decl_names),
+                        rejected_decl_names=rejected_decl_names,
                         retry_count=retry_count,
                         retry_remaining=retry_remaining,
                         feedback_summary=reviewer_result.summary,
@@ -528,7 +541,7 @@ class StageGateAndAuditStep(BaseStep):
                 StageGateAndAuditStepResult(
                     outcome="failed",
                     stage=state.stage,
-                    rejected_decl_names=list(state.target_decl_names),
+                    rejected_decl_names=rejected_decl_names,
                     retry_count=retry_count,
                     retry_remaining=0,
                     feedback_summary=reviewer_result.summary,
@@ -536,13 +549,16 @@ class StageGateAndAuditStep(BaseStep):
                         code="review_retry_exhausted",
                         message=reviewer_result.summary or f"{state.stage} review retry budget exhausted.",
                         stage=state.stage,
-                        affected_decl_names=list(state.target_decl_names),
+                        affected_decl_names=rejected_decl_names,
                         suggested_plan_action="Review stage feedback and open a new round if this execution route is still viable.",
                     ),
                     summary=f"{state.stage} review retry budget exhausted.",
                 )
             )
 
+        consistency = _statement_nl_consistency_for_stage(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
+        if consistency is not None:
+            return ctx.complete_step(consistency)
         consistency = _formal_consistency_for_stage(ctx, repo_root, input_model.node_path, state.stage, state.target_decl_names)
         if consistency is not None:
             return ctx.complete_step(consistency)
@@ -568,11 +584,20 @@ class StageGateAndAuditStep(BaseStep):
                     summary=audit.value.summary,
                 )
             )
+        advanced = _decl_graph(ctx).advance_stage_state(
+            repo_root,
+            node_path=input_model.node_path,
+            round_id=input_model.round_id,
+            stage=state.stage,
+            decl_names=list(state.target_decl_names),
+        )
+        if not advanced.ok or advanced.value is None:
+            return ctx.complete_step(_stage_gate_failed(state.stage, _first_issue_message(advanced.issues, "Stage state advance failed."), state.target_decl_names))
         return ctx.complete_step(
             StageGateAndAuditStepResult(
                 outcome="stage_passed",
                 stage=state.stage,
-                advanced_decl_names=list(state.target_decl_names),
+                advanced_decl_names=list(advanced.value),
                 retry_count=state.retry_count,
                 retry_remaining=max(state.max_retries - state.retry_count, 0),
                 audit_summary=audit.value.summary,
@@ -795,6 +820,13 @@ def _decl_graph(ctx: StepRunContext):
     return service
 
 
+def _material(ctx: StepRunContext):
+    service = getattr(ctx.app, "material", None)
+    if service is None:
+        raise FlowStepValidationError("Lean material service is not registered in app services.")
+    return service
+
+
 def _lean_projection(ctx: StepRunContext):
     service = getattr(ctx.app, "lean_projection", None)
     if service is None:
@@ -940,11 +972,11 @@ def _decl_stage_target_metadata(revision: DeclRevision) -> DeclStageTargetMetada
 
 def _stage_required(stage: DeclStageName, kind: str, revision, end_after_state: DeclState) -> bool:
     if stage == "statement_nl":
-        return not revision.statement_nl
+        return not _state_reaches(revision.state, DeclState.SPECIFIED)
     if stage == "statement_formal":
         return _state_rank(end_after_state) >= _state_rank(DeclState.DECLARED) and not _state_reaches(revision.state, DeclState.DECLARED)
     if stage == "proof_nl":
-        return end_after_state == DeclState.PROVED and _is_theorem_like(kind) and not revision.proof_nl
+        return end_after_state == DeclState.PROVED and _is_theorem_like(kind) and not _state_reaches(revision.state, DeclState.PROOF_PLANNED)
     if stage == "proof_formal":
         return end_after_state == DeclState.PROVED and _is_theorem_like(kind) and not _state_reaches(revision.state, DeclState.PROVED)
     return False
@@ -978,6 +1010,143 @@ def _formal_consistency_for_stage(
                 ),
                 summary=gate.value.summary,
             )
+    return None
+
+
+def _reviewer_result_context_for_stage(
+    reviewer_result: DeclStageReviewerStepResult,
+    node_path: str,
+    round_id: str,
+    stage: DeclStageName,
+    targets: list[str],
+) -> StageGateAndAuditStepResult | None:
+    issues: list[str] = []
+    if reviewer_result.round_id != round_id:
+        issues.append(f"round_id={reviewer_result.round_id!r}, expected {round_id!r}")
+    if reviewer_result.node_path != node_path:
+        issues.append(f"node_path={reviewer_result.node_path!r}, expected {node_path!r}")
+    if reviewer_result.stage != stage:
+        issues.append(f"stage={reviewer_result.stage!r}, expected {stage!r}")
+    target_set = set(targets)
+    reviewed_set = set(reviewer_result.reviewed_decl_names)
+    failed_set = set(reviewer_result.failed_decl_names)
+    missing_set = set(reviewer_result.missing_decl_names)
+    unexpected = sorted((reviewed_set | failed_set | missing_set) - target_set)
+    if unexpected:
+        issues.append(f"review result references declarations outside current target batch: {', '.join(unexpected)}")
+    if reviewer_result.outcome == "passed":
+        if reviewed_set != target_set:
+            issues.append("passed review result must review exactly the current target batch")
+        if failed_set or missing_set:
+            issues.append("passed review result must not contain failed or missing declarations")
+    if issues:
+        return _stage_gate_failed(stage, "Reviewer result context mismatch: " + "; ".join(issues), targets)
+    return None
+
+
+def _statement_nl_consistency_for_stage(
+    ctx: StepRunContext,
+    repo_root: Path,
+    node_path: str,
+    round_id: str,
+    stage: DeclStageName,
+    targets: list[str],
+) -> StageGateAndAuditStepResult | None:
+    if stage != "statement_nl":
+        return None
+    graph = _decl_graph(ctx)
+    material = _material(ctx)
+    round_record = graph.get_round(repo_root, node_path=node_path, round_id=round_id)
+    if not round_record.ok or round_record.value is None:
+        return _stage_gate_failed(stage, _first_issue_message(round_record.issues, "Cannot read current round for Statement NL gate."), targets)
+    round_ref_names = {ref.decl_name for ref in round_record.value.revision_refs}
+    for decl_name in targets:
+        revision = graph.current_decl_revision_view(repo_root, node_path=node_path, name=decl_name)
+        if not revision.ok or revision.value is None:
+            return _stage_gate_failed(stage, _first_issue_message(revision.issues, "Statement NL candidate check failed."), targets)
+        if not revision.value.statement_nl or not revision.value.statement_nl.strip():
+            return StageGateAndAuditStepResult(
+                outcome="failed",
+                stage=stage,
+                rejected_decl_names=list(targets),
+                error=RoundTerminalReason(
+                    code="stage_gate_failed",
+                    message=f"Statement NL candidate is missing for {decl_name}.",
+                    stage=stage,
+                    affected_decl_names=[decl_name],
+                    suggested_plan_action="Return to the Statement NL worker and write the missing statement candidate.",
+                ),
+                summary=f"Statement NL candidate is missing for {decl_name}.",
+            )
+        origin_issue = _validate_statement_origins(material, repo_root, revision.value.statement_origin, decl_name)
+        if origin_issue is not None:
+            return _stage_gate_failed(stage, origin_issue, [decl_name])
+        dep_issue = _validate_statement_deps(graph, repo_root, node_path, round_ref_names, revision.value.statement_deps, decl_name)
+        if dep_issue is not None:
+            return _stage_gate_failed(stage, dep_issue, [decl_name])
+    return None
+
+
+def _validate_statement_origins(material, repo_root: Path, origins: list[object], decl_name: str) -> str | None:
+    for origin in origins:
+        kind, ref = _origin_kind_ref(origin)
+        if kind == "source":
+            if ref is None:
+                return f"Statement NL source origin for {decl_name} must include a stable ref."
+            index = material.get_committed_source_index(repo_root)
+            if not index.ok or index.value is None:
+                return f"Statement NL source origin for {decl_name} requires a committed SourceIndex."
+            if not _source_origin_ref_exists(index.value, ref):
+                return f"Statement NL source origin for {decl_name} does not match committed SourceIndex: {ref}."
+            continue
+        if kind == "resource":
+            if ref is None:
+                return f"Statement NL resource origin for {decl_name} must include a stable resource key."
+            resource_key = ref.split("#", 1)[0].split(":", 1)[-1].strip()
+            resource = material.get_resource(repo_root, resource_key=resource_key)
+            if not resource.ok:
+                return f"Statement NL resource origin for {decl_name} does not match an active resource: {ref}."
+            continue
+        return f"Statement NL origin kind for {decl_name} is not a stable source/resource origin: {kind}."
+    return None
+
+
+def _origin_kind_ref(origin: object) -> tuple[str, str | None]:
+    if isinstance(origin, dict):
+        kind = str(origin.get("kind", "")).strip()
+        raw_ref = origin.get("ref")
+    else:
+        kind = str(getattr(origin, "kind", "")).strip()
+        raw_ref = getattr(origin, "ref", None)
+    ref = str(raw_ref).strip() if raw_ref is not None else None
+    return kind, ref or None
+
+
+def _source_origin_ref_exists(index, ref: str) -> bool:
+    if ref in getattr(index, "blocks", {}):
+        return True
+    if ref in getattr(index, "files", {}):
+        return True
+    ref_path = ref.split("#", 1)[0].split(":", 1)[0]
+    if ref_path in getattr(index, "files", {}):
+        return True
+    for block in getattr(index, "blocks", {}).values():
+        for block_ref in getattr(block, "refs", []):
+            if ref == getattr(block_ref, "ref_id", None):
+                return True
+            if ref_path == getattr(block_ref, "path", None):
+                return True
+    return False
+
+
+def _validate_statement_deps(graph, repo_root: Path, node_path: str, round_ref_names: set[str], deps: list[str], decl_name: str) -> str | None:
+    for dep_name in deps:
+        dep = graph.current_decl_revision_view(repo_root, node_path=node_path, name=dep_name)
+        if not dep.ok or dep.value is None:
+            return f"Statement NL dependency for {decl_name} is not a visible current declaration: {dep_name}."
+        dep_state = DeclState(dep.value.state)
+        if dep_name in round_ref_names and not _state_reaches(dep_state, DeclState.DECLARED):
+            return f"Statement NL dependency for {decl_name} points to same-round declaration that is not accepted declared state: {dep_name}."
     return None
 
 

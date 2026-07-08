@@ -135,7 +135,6 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         agent_step_id=resource_agent_step_id,
         tool_name="submit_resource_duplicate",
         arguments={
-            "reason": "Strict duplicate branch.",
             "target_kind": "web",
             "target": target,
             "existing_kind": "resource",
@@ -181,10 +180,26 @@ def test_strict_resource_curation_input_kinds_and_preflight_duplicate_evidence(
     local_preflight_step_id = run_next_created_step(ws.admin, local_flow_id)
     local_preflight = ws.runtime.ark.step_service.store.get_step(local_preflight_step_id)
     assert local_preflight.step_type == "resource_curation_preflight_step"
-    assert local_preflight.result.outcome == "duplicate"
-    local_flow = assert_flow_completed(ws.runtime, local_flow_id, outcome="duplicate")
+    assert local_preflight.result.outcome == "continue_to_curator"
+    assert local_preflight.result.resource_duplicate_hint.existing_resource_key == existing_key
+    local_advanced = unwrap(ws.admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=local_flow_id)))
+    assert local_advanced.created_step_id is not None
+    _run_resource_branch(
+        ws,
+        evidence_recorder,
+        flow_id=local_flow_id,
+        agent_step_id=local_advanced.created_step_id,
+        tool_name="submit_resource_duplicate",
+        arguments={
+            "existing_kind": "resource",
+            "duplicate_reason": "The local file target is already registered.",
+            "existing_resource_key": existing_key,
+        },
+        expected_outcome="duplicate",
+    )
+    local_flow = ws.runtime.ark.flow_service.get_flow(local_flow_id)
     assert local_flow.result.existing_resource_key == existing_key
-    assert ws.runtime.ark.flow_service.list_steps(flow_id=local_flow_id, step_type="resource_curator_agent_step") == []
+    assert ws.runtime.ark.flow_service.list_steps(flow_id=local_flow_id, step_type="resource_curator_agent_step") != []
 
     web_flow_id = _start_resource_flow(ws, target_kind="web", target=ws.resources.web_url)
     run_next_created_step(ws.admin, web_flow_id)
@@ -279,10 +294,13 @@ def _prepare_resource_branch(ws: RuntimeMatrixWorkspace, recorder: EvidenceRecor
     ws.create_home("ResourceCuratorControlledTestAgent")
     ws.provider_repo.mkdir(parents=True, exist_ok=True)
     target = ws.resources.web_url
-    local_draft_id = ws.allocate_resource_branch_draft(target_kind="web", target=target)
     existing_resource_key = ws.create_active_resource(target_kind="local_file", target=str(ws.resources.local_file))
     flow_id = _start_resource_flow(ws, target_kind="web", target=target)
     run_next_created_step(ws.admin, flow_id)
+    flow = ws.runtime.ark.flow_service.get_flow(flow_id)
+    local_draft_id = flow.state.active_resource_draft_key
+    assert local_draft_id
+    ws.fill_resource_draft(local_draft_id)
     advanced = unwrap(ws.admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id)))
     assert advanced.created_step_id is not None
     checkpoint = checkpoint_with_evidence(

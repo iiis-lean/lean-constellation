@@ -125,7 +125,7 @@ def test_decl_file_capture_with_real_lake_and_decl_graph_provider(tmp_path: Path
     statement_capture = runtime.lean_projection.capture_statement_formal(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert statement_capture.ok, statement_capture.issues
     revision = _current_revision(runtime, repo_root)
-    assert revision.state == DeclState.DECLARED
+    assert revision.state == DeclState.PLANNED
     assert revision.statement_lean_check is not None
     assert revision.statement_lean_check["status"] == "passed"
     assert revision.statement_lean_check["policy"] == "statement_formal"
@@ -153,7 +153,7 @@ def test_decl_file_capture_with_real_lake_and_decl_graph_provider(tmp_path: Path
     proof_capture = runtime.lean_projection.capture_proof_formal(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert proof_capture.ok, proof_capture.issues
     revision = _current_revision(runtime, repo_root)
-    assert revision.state == DeclState.PROVED
+    assert revision.state == DeclState.PLANNED
     assert revision.proof_lean_check is not None
     assert revision.proof_lean_check["status"] == "passed"
     assert revision.proof_lean_check["policy"] == "proof_formal"

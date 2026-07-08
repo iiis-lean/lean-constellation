@@ -153,6 +153,91 @@ def test_decl_round_final_audit_rejects_unsatisfied_target_by_default(tmp_path: 
     assert "did not satisfy proof policy" in final_audit_step.result.error.message
 
 
+def test_statement_nl_stage_gate_rejects_missing_statement_dependency(tmp_path: Path) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        end_after_state=DeclState.PROVED,
+    )
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+    )
+
+    advance_and_run(runtime, flow_id)
+    advance_and_run(runtime, flow_id)
+    prepare_step_id = advance_and_run(runtime, flow_id)
+    prepare_step = runtime.flow_service.get_step(prepare_step_id)
+    assert prepare_step.result.outcome == "targets_ready"
+    mutation = lean_runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+        deps=["missing_helper"],
+    )
+    assert mutation.ok, mutation.issues
+    queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
+    advance_and_run(runtime, flow_id)
+    record_passed_review(lean_runtime, repo_root, stage=DeclStage.STATEMENT_NL, round_id=round_id)
+    queue_review(runtime, repo_root, stage="statement_nl", round_id=round_id, accepted=True)
+    advance_and_run(runtime, flow_id)
+
+    gate_step_id = advance_and_run(runtime, flow_id)
+    gate_step = runtime.flow_service.get_step(gate_step_id)
+    assert gate_step.result.outcome == "failed"
+    assert "missing_helper" in gate_step.result.error.message
+    revision = lean_runtime.decl_graph.get_decl_revision(repo_root, node_path=NODE_PATH, name="main_result", revision=1)
+    assert revision.ok and revision.value is not None
+    assert revision.value.state is DeclState.PLANNED
+
+
+def test_stage_gate_rejects_reviewer_result_context_mismatch(tmp_path: Path) -> None:
+    runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    strategy_id, round_id, round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        end_after_state=DeclState.PROVED,
+    )
+    flow_id = start_decl_round_flow(
+        runtime,
+        repo_root,
+        strategy_id=strategy_id,
+        round_id=round_id,
+        round_index=round_index,
+    )
+
+    advance_and_run(runtime, flow_id)
+    advance_and_run(runtime, flow_id)
+    advance_and_run(runtime, flow_id)
+    mutation = lean_runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+    )
+    assert mutation.ok, mutation.issues
+    queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
+    advance_and_run(runtime, flow_id)
+    record_passed_review(lean_runtime, repo_root, stage=DeclStage.STATEMENT_NL, round_id=round_id)
+    queue_review(runtime, repo_root, stage="proof_nl", round_id=round_id, accepted=True)
+    advance_and_run(runtime, flow_id)
+
+    gate_step_id = advance_and_run(runtime, flow_id)
+    gate_step = runtime.flow_service.get_step(gate_step_id)
+    assert gate_step.result.outcome == "failed"
+    assert "Reviewer result context mismatch" in gate_step.result.error.message
+    revision = lean_runtime.decl_graph.get_decl_revision(repo_root, node_path=NODE_PATH, name="main_result", revision=1)
+    assert revision.ok and revision.value is not None
+    assert revision.value.state is DeclState.PLANNED
+
+
 def test_decl_round_final_audit_allows_unsatisfied_target_when_opted_out(tmp_path: Path) -> None:
     runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
     strategy_id, round_id, round_index = create_round_with_decl(
@@ -402,16 +487,22 @@ def _run_stage(
         assert synced.ok, synced.issues
     queue_worker_completed(runtime, repo_root, stage=stage, round_id=round_id)
     advance_and_run(runtime, flow_id)
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(repo_root)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_reviewer"
 
     record_passed_review(lean_runtime, repo_root, stage=review_stage, round_id=round_id)
     queue_review(runtime, repo_root, stage=stage, round_id=round_id, accepted=True)
     advance_and_run(runtime, flow_id)
+    assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(repo_root)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_gate_audit"
 
     gate_step_id = advance_and_run(runtime, flow_id)
     gate_step = runtime.flow_service.get_step(gate_step_id)
     assert gate_step.result.outcome == "stage_passed"
+
+
+def _expected_node_workdir(repo_root: Path) -> str:
+    return str(repo_root.joinpath(*NODE_PATH.split(".")))
 
 
 def _write_statement_formal(lean_runtime, repo_root: Path, round_id: str):

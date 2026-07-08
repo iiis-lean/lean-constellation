@@ -92,7 +92,7 @@ def test_stage_review_passes_after_all_required_decl_marks(tmp_path: Path) -> No
     assert result.value.missing_decl_names == []
 
 
-def test_stage_review_reports_missing_and_failed_marks(tmp_path: Path) -> None:
+def test_stage_review_rejects_submit_when_marks_are_missing(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_running_round(tmp_path, {"main_result": "theorem", "helper_def": "definition"})
     service = make_runtime().decl_graph
@@ -119,11 +119,8 @@ def test_stage_review_reports_missing_and_failed_marks(tmp_path: Path) -> None:
         marks=[mark.value],
     )
 
-    assert result.ok and result.value is not None
-    assert result.value.passed is False
-    assert result.value.failed_decl_names == ["main_result"]
-    assert result.value.missing_decl_names == ["helper_def"]
-    assert result.value.feedback[0].issue_kind == "semantic_mismatch"
+    assert not result.ok
+    assert any(issue.kind == "review_marks_missing" for issue in result.issues)
 
 
 def test_failed_review_mark_requires_issue_kind(tmp_path: Path) -> None:

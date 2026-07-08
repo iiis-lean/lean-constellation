@@ -11,6 +11,7 @@ from pydantic import Field
 
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
+from lean_constellation.flows.content_node_task.preparation.common import content_node_workdir
 from lean_constellation.flows.content_node_task.decl_round.steps import (
     BuildRoundResultStep,
     BuildRoundResultStepResult,
@@ -210,9 +211,9 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
                 )
             )
         if phase == "stage_worker" and state.current_stage is not None:
-            return ctx.create_step(_stage_worker_step(self, input_model, state))
+            return ctx.create_step(_stage_worker_step(ctx, self, input_model, state))
         if phase == "stage_reviewer" and state.current_stage is not None:
-            return ctx.create_step(_stage_reviewer_step(self, input_model, state))
+            return ctx.create_step(_stage_reviewer_step(ctx, self, input_model, state))
         if phase == "stage_gate_audit" and state.current_stage is not None:
             return ctx.create_step(
                 StageGateAndAuditStep(
@@ -466,43 +467,71 @@ def _advance_to_next_stage(state: DeclGraphRoundState) -> None:
     state.position = FlowPosition(phase="stage_prepare")
 
 
-def _stage_worker_step(flow: DeclGraphRoundFlow, input_model: DeclGraphRoundInput, state: DeclGraphRoundState):
+def _stage_worker_step(ctx: FlowContext, flow: DeclGraphRoundFlow, input_model: DeclGraphRoundInput, state: DeclGraphRoundState):
     from lean_constellation.flows.common.agent_steps import DeclStageWorkerAgentStep
 
     stage = _require_stage(state)
+    role = f"{stage}_worker"
+    _inherit_stage_agent_binding_from_parent(ctx, flow, role)
     return DeclStageWorkerAgentStep(
         step_id=new_decl_round_step_id(f"{stage}_worker"),
         flow_id=flow.flow_id,
         scope_id=flow.scope_id,
         state=AgentStepState(
-            agent_role=f"{stage}_worker",
+            agent_role=role,
             agent_type=WORKER_AGENT_TYPES[stage],
             create_agent_if_missing=True,
             bind_created_agent_to="flow",
             variables=_agent_variables(input_model, state, agent_role="worker", expected_view_key=WORKER_VIEW_KEYS[stage]),
             prompt_override=_stage_worker_prompt(input_model, state),
-            workdir_override=input_model.repo_path,
+            workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
         ),
     )
 
 
-def _stage_reviewer_step(flow: DeclGraphRoundFlow, input_model: DeclGraphRoundInput, state: DeclGraphRoundState):
+def _stage_reviewer_step(ctx: FlowContext, flow: DeclGraphRoundFlow, input_model: DeclGraphRoundInput, state: DeclGraphRoundState):
     from lean_constellation.flows.common.agent_steps import DeclStageReviewerAgentStep
 
     stage = _require_stage(state)
+    role = f"{stage}_reviewer"
+    _inherit_stage_agent_binding_from_parent(ctx, flow, role)
     return DeclStageReviewerAgentStep(
         step_id=new_decl_round_step_id(f"{stage}_reviewer"),
         flow_id=flow.flow_id,
         scope_id=flow.scope_id,
         state=DeclStageReviewerStepState(
-            agent_role=f"{stage}_reviewer",
+            agent_role=role,
             agent_type=REVIEWER_AGENT_TYPES[stage],
             create_agent_if_missing=True,
             bind_created_agent_to="flow",
+            round_id=input_model.round_id,
+            node_path=input_model.node_path,
+            stage=stage,
+            expected_decl_names=list(state.current_target_decl_names),
+            review_attempt_index=state.current_retry_count,
             variables=_agent_variables(input_model, state, agent_role="reviewer", expected_view_key=REVIEWER_VIEW_KEYS[stage]),
             prompt_override=_stage_reviewer_prompt(input_model, state),
-            workdir_override=input_model.repo_path,
+            workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
         ),
+    )
+
+
+def _inherit_stage_agent_binding_from_parent(ctx: FlowContext, flow: DeclGraphRoundFlow, role: str) -> None:
+    if flow.agent_bindings.get(role) is not None:
+        return
+    if not flow.parent_flow_id:
+        return
+    flow_service = ctx.ark.flow_service
+    if flow_service is None:
+        return
+    parent = flow_service.get_flow(flow.parent_flow_id)
+    agent_id = parent.agent_bindings.get(role)
+    if not agent_id:
+        return
+    flow.agent_bindings.by_role[role] = agent_id
+    flow_service.store.update_flow_record(
+        flow.flow_id,
+        lambda stored: stored.agent_bindings.by_role.__setitem__(role, agent_id),
     )
 
 
@@ -537,32 +566,54 @@ def _stage_worker_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRound
     metadata = _format_stage_target_metadata(state.current_target_metadata)
     feedback = ""
     if state.latest_reviewer_result is not None:
-        feedback = f"\nPrevious review summary: {state.latest_reviewer_result.summary or ''}"
+        feedback = "\nPrevious review feedback:\n" + _format_reviewer_feedback(state.latest_reviewer_result)
     return (
         f"Run decl stage worker for {stage}.\n"
         f"Mode: {mode}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
         f"Target declarations: {targets}.\n"
         f"Target change metadata:\n{metadata}\n"
-        f"Retry attempt: {state.current_retry_count} of {state.max_retries_per_stage}."
+        f"Retry attempt: {state.current_retry_count} of {state.max_retries_per_stage}. "
+        f"Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}."
         f"{feedback}\n"
-        "Use only the stage-specific tools. Submit completed or blocked when the stage is ready."
+        "Use only the stage-specific tools. On retry, prioritize failed or missing declarations, but remember that the next reviewer must re-check the full current batch. Submit completed or blocked when the stage is ready."
     )
 
 
 def _stage_reviewer_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
     stage = _require_stage(state)
+    mode = "retry_review" if state.current_retry_count else "initial_review"
     targets = ", ".join(state.current_target_decl_names) or "(no explicit targets)"
     metadata = _format_stage_target_metadata(state.current_target_metadata)
     worker_summary = state.latest_worker_result.summary if state.latest_worker_result is not None else ""
+    previous_feedback = ""
+    if state.latest_reviewer_result is not None:
+        previous_feedback = "\nPrevious reviewer feedback:\n" + _format_reviewer_feedback(state.latest_reviewer_result)
     return (
         f"Review decl stage {stage}.\n"
+        f"Mode: {mode}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
         f"Target declarations: {targets}.\n"
         f"Target change metadata:\n{metadata}\n"
+        f"Review attempt: {state.current_retry_count}. Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}.\n"
         f"Worker summary: {worker_summary or '(not provided)'}.\n"
-        "Record per-declaration review marks with tools, then submit the stage review."
+        f"{previous_feedback}\n"
+        "Read current candidates through tools and record exactly one current mark for every target declaration. Re-check the full current batch even when retry feedback highlights only failed or missing declarations. Submit the stage review after all current marks are present."
     )
+
+
+def _format_reviewer_feedback(result: DeclStageReviewerStepResult) -> str:
+    lines = [
+        f"- Summary: {result.summary or '(not provided)'}",
+        f"- Reviewed: {', '.join(result.reviewed_decl_names) or 'none'}",
+        f"- Failed: {', '.join(result.failed_decl_names) or 'none'}",
+        f"- Missing: {', '.join(result.missing_decl_names) or 'none'}",
+    ]
+    for item in result.feedback:
+        categories = ", ".join(item.issue_categories) or item.issue_kind or "unspecified"
+        changes = "; ".join(item.required_changes) or item.suggested_fix or "unspecified"
+        lines.append(f"- {item.decl_name}: {categories}; required changes: {changes}; summary: {item.summary}")
+    return "\n".join(lines)
 
 
 def _format_stage_target_metadata(items: list[DeclStageTargetMetadata]) -> str:

@@ -134,14 +134,13 @@ def test_declared_interface_content_plan_controlled_agent_smoke(
                         {
                             "decl_name": "main_result",
                             "nl": "The smoke interface theorem states True.",
-                            "origin": [{"kind": "runtime_matrix_strict", "ref": "declared_interface_smoke"}],
                             "deps": [],
                         },
                     ),
                     (
                         "submit",
                         "submit_stage_worker_completed",
-                        {"summary": "Statement NL completed.", "completed_decl_names": ["main_result"]},
+                        {"summary": "Statement NL completed."},
                     ),
                 ]
             ],
@@ -154,7 +153,7 @@ def test_declared_interface_content_plan_controlled_agent_smoke(
                     (
                         "submit",
                         "submit_stage_worker_completed",
-                        {"summary": "Statement formal completed.", "completed_decl_names": ["main_result"]},
+                        {"summary": "Statement formal completed."},
                     ),
                 ]
             ],

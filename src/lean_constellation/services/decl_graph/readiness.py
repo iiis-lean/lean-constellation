@@ -157,7 +157,6 @@ class DeclReadinessComponent:
             )
         revision.statement_lean_code = code
         revision.statement_lean_check = check
-        revision.state = DeclState.DECLARED
         written = self._write_revision(Path(repo_root), node_path=node_path, revision=revision)
         if not written.ok or written.value is None:
             return self.runtime.foundation.fail(written.issues)
@@ -198,7 +197,6 @@ class DeclReadinessComponent:
             )
         revision.proof_lean_code = code
         revision.proof_lean_check = check
-        revision.state = DeclState.PROVED
         written = self._write_revision(Path(repo_root), node_path=node_path, revision=revision)
         if not written.ok or written.value is None:
             return self.runtime.foundation.fail(written.issues)

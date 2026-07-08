@@ -116,7 +116,7 @@ def test_statement_capture_writes_decl_graph_snapshot_and_sync_gate(tmp_path: Pa
 
     assert captured.ok, captured.issues
     revision = _current_revision(runtime, tmp_path)
-    assert revision.state == DeclState.DECLARED
+    assert revision.state == DeclState.PLANNED
     assert revision.statement_lean_code is not None
     assert "theorem main_result : True := by" in revision.statement_lean_code
     assert revision.statement_lean_check is not None
@@ -180,7 +180,7 @@ def test_proof_restore_capture_and_strict_sync_use_decl_graph_snapshot(tmp_path:
 
     assert captured.ok, captured.issues
     revision = _current_revision(runtime, tmp_path)
-    assert revision.state == DeclState.PROVED
+    assert revision.state == DeclState.PLANNED
     assert revision.proof_lean_code is not None
     assert "trivial" in revision.proof_lean_code
     assert revision.proof_lean_check is not None

@@ -221,9 +221,10 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
     assert data["artifact_home_root"] == str(home_root)
     assert "resource-draft-curation" in data["skill_keys_seen"]
     tools_called = set(data["application_tools_called"])
-    assert {"normalize_resource_target", "allocate_resource_draft", "check_resource_draft"}.issubset(tools_called)
+    assert {"normalize_resource_target", "get_resource_draft", "check_resource_draft"}.issubset(tools_called)
+    assert "allocate_resource_draft" not in tools_called
     assert data["submit_tool_called"] == "submit_local_resource_created"
-    assert data["draft_id"]
+    assert data["draft_id"] == flow.state.active_resource_draft_key
     step = ws.runtime.ark.flow_service.get_step(step_id)
     assert step.submission is not None
     assert step.submission.tool_name == "submit_local_resource_created"
@@ -437,7 +438,6 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
                 {
                     "decl_name": round_fixture.decl_name,
                     "nl": "The strict real Codex statement formal theorem states True.",
-                    "origin": [{"kind": "runtime_matrix_strict", "ref": "real_codex_statement_formal"}],
                     "deps": [],
                 },
             ),
@@ -446,7 +446,6 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
                 "submit_stage_worker_completed",
                 {
                     "summary": "Statement NL completed before strict real Codex statement formal worker.",
-                    "completed_decl_names": [round_fixture.decl_name],
                 },
             ),
         ],
@@ -472,15 +471,10 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
         [
             (
                 "application",
-                "record_decl_review",
+                "record_statement_nl_review_passed",
                 {
-                    "round_id": round_fixture.round_id,
-                    "stage": "statement_nl",
                     "decl_name": round_fixture.decl_name,
-                    "passed": True,
                     "summary": "Statement NL accepted before strict real Codex statement formal worker.",
-                    "issue_kind": None,
-                    "suggested_fix": None,
                 },
             ),
             ("submit", "submit_stage_review", {"summary": "Statement NL accepted before strict real Codex statement formal worker."}),
@@ -1048,7 +1042,7 @@ Do these exact actions:
     prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, decl_name, lean_file_path, tool_results.
     Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
     tool_results must be an object with entries for capture_statement_formal_file and check_formal_stage_consistency. For capture_statement_formal_file include at least ok and summary. For check_formal_stage_consistency include at least ok, passed, and summary.
-10. If capture_statement_formal_file ok is true and check_formal_stage_consistency passed is true, call submit tool "submit_stage_worker_completed" with summary "Strict real Codex StatementFormalWorker probe completed statement formalization." and completed_decl_names ["{decl_name}"]. If either one failed, call submit tool "submit_stage_worker_blocked" with summary explaining the failed tool instead.
+10. If capture_statement_formal_file ok is true and check_formal_stage_consistency passed is true, call submit tool "submit_stage_worker_completed" with summary "Strict real Codex StatementFormalWorker probe completed statement formalization.". If either one failed, call submit tool "submit_stage_worker_blocked" with summary explaining the failed tool instead.
 
 Keep the final response short and mention the artifact path.
 """.strip()
@@ -1068,8 +1062,8 @@ Do these exact actions:
 1. Read the developer instructions and find the first token that starts with RTCODEX_DEV_MARKER_RESOURCE_CURATOR_STRICT_.
 2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report the actual skill key "resource-draft-curation" only if it exists on disk.
 3. Call application MCP tool "normalize_resource_target" with target "{target}".
-4. Call application MCP tool "allocate_resource_draft" with target "{target}" and title_hint "Strict real Codex resource curator probe".
-5. From the allocate result, read the returned draft_id and draft_root. Create these draft files under draft_root:
+4. Read the active draft id from environment variable LEAN_CONSTELLATION_RESOURCE_DRAFT_ID, then call application MCP tool "get_resource_draft" with that draft_id.
+5. From the get_resource_draft result, read the returned draft_id and draft_root. Create these draft files under draft_root:
    - README.md with a short title and summary.
    - original/raw.txt with text explaining that this is a strict real Codex resource curator probe.
    - normalized/main.md with normalized text explaining that the target supports a tiny True theorem.
@@ -1127,7 +1121,7 @@ Do these exact actions:
     prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, decl_name, lean_file_path, tool_results.
     Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
     tool_results must be an object with entries for capture_proof_formal_file and check_formal_stage_consistency. For capture_proof_formal_file include at least ok and summary. For check_formal_stage_consistency include at least ok, passed, and summary.
-9. If capture_proof_formal_file ok is true and check_formal_stage_consistency passed is true, set submit_tool_called in the JSON artifact to "submit_stage_worker_completed", then call submit tool "submit_stage_worker_completed" with summary "Strict real Codex ProofFormalWorker probe completed proof formalization." and completed_decl_names ["{decl_name}"]. If either one failed, set submit_tool_called in the JSON artifact to "submit_stage_worker_blocked", then call submit tool "submit_stage_worker_blocked" with summary explaining the failed tool instead.
+9. If capture_proof_formal_file ok is true and check_formal_stage_consistency passed is true, set submit_tool_called in the JSON artifact to "submit_stage_worker_completed", then call submit tool "submit_stage_worker_completed" with summary "Strict real Codex ProofFormalWorker probe completed proof formalization.". If either one failed, set submit_tool_called in the JSON artifact to "submit_stage_worker_blocked", then call submit tool "submit_stage_worker_blocked" with summary explaining the failed tool instead.
 
 Keep the final response short and mention the artifact path.
 """.strip()
@@ -1535,7 +1529,6 @@ def _complete_statement_nl_stage_for_real_codex(
                 {
                     "decl_name": round_fixture.decl_name,
                     "nl": "The strict real Codex proof formal theorem states True.",
-                    "origin": [{"kind": "runtime_matrix_strict", "ref": "real_codex_proof_formal"}],
                     "deps": [],
                 },
             ),
@@ -1544,7 +1537,6 @@ def _complete_statement_nl_stage_for_real_codex(
                 "submit_stage_worker_completed",
                 {
                     "summary": "Statement NL completed before strict real Codex proof formal worker.",
-                    "completed_decl_names": [round_fixture.decl_name],
                 },
             ),
         ],
@@ -1633,7 +1625,6 @@ def _complete_proof_nl_stage_for_real_codex(
                 {
                     "decl_name": round_fixture.decl_name,
                     "nl": "Use triviality.",
-                    "origin": [{"kind": "runtime_matrix_strict", "ref": "real_codex_proof_formal"}],
                     "deps": [],
                 },
             ),
@@ -1642,7 +1633,6 @@ def _complete_proof_nl_stage_for_real_codex(
                 "submit_stage_worker_completed",
                 {
                     "summary": "Proof NL completed before strict real Codex proof formal worker.",
-                    "completed_decl_names": [round_fixture.decl_name],
                 },
             ),
         ],
@@ -1685,23 +1675,31 @@ def _complete_review_stage(
             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "decl_stage_reviewer_submit",
         },
     )
+    if stage == "statement_nl":
+        review_action = (
+            "application",
+            "record_statement_nl_review_passed",
+            {"decl_name": round_fixture.decl_name, "summary": summary},
+        )
+    else:
+        review_action = (
+            "application",
+            "record_decl_review",
+            {
+                "round_id": round_fixture.round_id,
+                "stage": stage,
+                "decl_name": round_fixture.decl_name,
+                "passed": True,
+                "summary": summary,
+                "issue_kind": None,
+                "suggested_fix": None,
+            },
+        )
     run_external_actions_with_evidence(
         ws.admin,
         step_id,
         [
-            (
-                "application",
-                "record_decl_review",
-                {
-                    "round_id": round_fixture.round_id,
-                    "stage": stage,
-                    "decl_name": round_fixture.decl_name,
-                    "passed": True,
-                    "summary": summary,
-                    "issue_kind": None,
-                    "suggested_fix": None,
-                },
-            ),
+            review_action,
             ("submit", "submit_stage_review", {"summary": summary}),
         ],
         recorder=evidence_recorder,
@@ -1776,7 +1774,7 @@ def _complete_formal_stage_with_external_file_edit(
         payload,
         "submit",
         "submit_stage_worker_completed",
-        {"summary": summary, "completed_decl_names": [decl_name]},
+        {"summary": summary},
         evidence_recorder,
     )
     completed = unwrap(

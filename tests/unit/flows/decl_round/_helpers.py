@@ -212,7 +212,7 @@ def queue_worker_blocked(runtime: FakeLeanFlowRuntime, repo_root: Path, *, stage
     )
 
 
-def queue_review(runtime: FakeLeanFlowRuntime, repo_root: Path, *, stage: str, round_id: str, accepted: bool) -> None:
+def queue_review(runtime: FakeLeanFlowRuntime, repo_root: Path, *, stage: str, round_id: str, accepted: bool, decl_name: str = "main_result") -> None:
     runtime.agent_service.queue_submission(
         DeclStageReviewSubmittedSubmission(
             submission_id=new_submission_id("sub"),
@@ -224,6 +224,9 @@ def queue_review(runtime: FakeLeanFlowRuntime, repo_root: Path, *, stage: str, r
             round_id=round_id,
             accepted=accepted,
             retry_required=not accepted,
+            reviewed_decl_names=[decl_name],
+            failed_decl_names=[] if accepted else [decl_name],
+            missing_decl_names=[],
             summary=f"{stage} review {'accepted' if accepted else 'rejected'}.",
         )
     )

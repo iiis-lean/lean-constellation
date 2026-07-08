@@ -22,6 +22,8 @@ class DeclStageWorkerCompletedSubmission(LeanBaseSubmission):
     stage: str
     round_id: str
     completed_decl_names: list[str] = Field(default_factory=list)
+    changed_decl_names: list[str] = Field(default_factory=list)
+    notes: str | None = None
 
 
 class DeclStageWorkerBlockedSubmission(LeanBaseSubmission):
@@ -30,6 +32,8 @@ class DeclStageWorkerBlockedSubmission(LeanBaseSubmission):
     round_id: str
     reason: str
     affected_decl_names: list[str] = Field(default_factory=list)
+    checked_context_summary: str | None = None
+    blocked_needs: list[str] = Field(default_factory=list)
 
 
 class DeclStageReviewSubmittedSubmission(LeanBaseSubmission):

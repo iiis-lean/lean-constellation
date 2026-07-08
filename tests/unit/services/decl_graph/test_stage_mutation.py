@@ -50,7 +50,7 @@ def _create_running_round_with_decl(tmp_path: Path, *, name: str = "main_result"
     return round_record.value.round_id
 
 
-def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Path) -> None:
+def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_revision_state(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_running_round_with_decl(tmp_path)
     service = make_runtime().decl_graph
@@ -65,7 +65,7 @@ def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Pa
         deps=["supporting_lemma"],
     )
     assert statement_nl.ok and statement_nl.value is not None
-    assert statement_nl.value.state == DeclState.SPECIFIED
+    assert statement_nl.value.state == DeclState.PLANNED
     assert statement_nl.value.statement_origin == [{"kind": "source", "ref": "source:main"}]
     assert statement_nl.value.decl_deps == ["supporting_lemma"]
 
@@ -79,7 +79,7 @@ def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Pa
         deps=["supporting_lemma"],
     )
     assert statement_formal.ok and statement_formal.value is not None
-    assert statement_formal.value.state == DeclState.DECLARED
+    assert statement_formal.value.state == DeclState.PLANNED
     assert statement_formal.value.statement.formal is not None
     assert statement_formal.value.statement.formal.check is not None
     assert statement_formal.value.statement.formal.check.contains_sorry is True
@@ -96,7 +96,7 @@ def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Pa
         deps=["supporting_lemma", "proof_helper"],
     )
     assert proof_nl.ok and proof_nl.value is not None
-    assert proof_nl.value.state == DeclState.PROOF_PLANNED
+    assert proof_nl.value.state == DeclState.PLANNED
     assert proof_nl.value.decl_deps == ["proof_helper", "supporting_lemma"]
 
     proof_formal = service.write_proof_formal(
@@ -109,7 +109,7 @@ def test_statement_and_proof_stage_mutations_advance_revision_state(tmp_path: Pa
         deps=["proof_helper"],
     )
     assert proof_formal.ok and proof_formal.value is not None
-    assert proof_formal.value.state == DeclState.PROVED
+    assert proof_formal.value.state == DeclState.PLANNED
     assert proof_formal.value.proof_lean_code == "by trivial"
     assert proof_formal.value.decl_deps == ["proof_helper", "supporting_lemma"]
 
@@ -174,6 +174,73 @@ def test_statement_formal_requires_statement_nl(tmp_path: Path) -> None:
 
     assert not result.ok
     assert result.issues[0].kind == "statement_nl_missing"
+
+
+def test_advance_stage_state_is_explicit_after_candidate_write(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_running_round_with_decl(tmp_path)
+    service = make_runtime().decl_graph
+
+    candidate = service.write_statement_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+    )
+    assert candidate.ok and candidate.value is not None
+    assert candidate.value.state == DeclState.PLANNED
+
+    advanced = service.advance_stage_state(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        stage="statement_nl",
+        decl_names=["main_result"],
+    )
+
+    assert advanced.ok and advanced.value is not None
+    assert advanced.value == ["main_result"]
+    revision = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.state == DeclState.SPECIFIED
+
+
+def test_advance_stage_state_validates_whole_batch_before_writing(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_running_round_with_decl(tmp_path)
+    service = make_runtime().decl_graph
+    candidate = service.write_statement_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        nl="The main result states True.",
+    )
+    assert candidate.ok and candidate.value is not None
+
+    advanced = service.advance_stage_state(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        stage="statement_nl",
+        decl_names=["main_result", "not_in_round"],
+    )
+
+    assert not advanced.ok
+    revision = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.state == DeclState.PLANNED
 
 
 def test_proof_stages_reject_non_theorem_like_decl(tmp_path: Path) -> None:

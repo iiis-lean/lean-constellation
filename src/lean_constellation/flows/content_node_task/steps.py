@@ -271,14 +271,41 @@ class EnsureDeclStageAgentsStep(BaseStep):
         "proof_formal_worker",
         "proof_formal_reviewer",
     )
+    STAGE_AGENT_TYPES: ClassVar[dict[str, str]] = {
+        "statement_nl_worker": "StatementNLWorkerAgent",
+        "statement_nl_reviewer": "StatementNLReviewerAgent",
+        "statement_formal_worker": "StatementFormalWorkerAgent",
+        "statement_formal_reviewer": "StatementFormalReviewerAgent",
+        "proof_nl_worker": "ProofNLWorkerAgent",
+        "proof_nl_reviewer": "ProofNLReviewerAgent",
+        "proof_formal_worker": "ProofFormalWorkerAgent",
+        "proof_formal_reviewer": "ProofFormalReviewerAgent",
+    }
 
     def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
         flow_service = ctx.ark.flow_service
         if flow_service is None:
             raise FlowStepValidationError("ark.flow_service is not registered")
+        agent_service = ctx.ark.agent_service
+        if agent_service is None:
+            raise FlowStepValidationError("ark.agent_service is not registered")
         flow = flow_service.get_flow(ctx.flow_id)
         existing = [role for role in self.STAGE_ROLES if flow.agent_bindings.get(role)]
-        initialized = [role for role in self.STAGE_ROLES if role not in existing]
+        initialized: list[str] = []
+        bindings: dict[str, str] = {}
+        for role in self.STAGE_ROLES:
+            if flow.agent_bindings.get(role):
+                continue
+            agent_type = self.STAGE_AGENT_TYPES[role]
+            agent = agent_service.create_agent(ctx.scope_id, agent_type, home_id=agent_type)
+            agent_id = str(agent.agent_id)
+            bindings[role] = agent_id
+            initialized.append(role)
+        if bindings:
+            flow_service.store.update_flow_record(
+                ctx.flow_id,
+                lambda stored: stored.agent_bindings.by_role.update(bindings),
+            )
         return ctx.complete_step(
             EnsureDeclStageAgentsStepResult(
                 outcome="ready",

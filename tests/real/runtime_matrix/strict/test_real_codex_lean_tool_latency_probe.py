@@ -205,7 +205,7 @@ Do these exact actions and do not do extra exploration:
    application_tools_called must list the tools in call order, including "run_lean_file_diagnostics" twice.
    tool_results must contain compact objects for prepare_statement_formal_file, run_lean_file_diagnostics_first, check_statement_formal_policy, and run_lean_file_diagnostics_second. Include at least ok/passed/status/summary fields when available.
    Set submit_tool_called to "submit_stage_worker_completed" before the submit call.
-9. Call submit tool "submit_stage_worker_completed" with summary "Strict real Codex StatementFormalWorker Lean latency probe completed." and completed_decl_names ["{decl_name}"].
+9. Call submit tool "submit_stage_worker_completed" with summary "Strict real Codex StatementFormalWorker Lean latency probe completed.".
 
 Keep the final response short and mention the artifact path.
 """.strip()

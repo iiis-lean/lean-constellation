@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
-from lean_constellation.tools.args import DeclNameArgs, DeclReviewMarkArgs, DeclStageFileCheckArgs, DeclStageNlArgs, NoArgs
+from lean_constellation.tools.args import (
+    DeclNameArgs,
+    DeclReviewMarkArgs,
+    DeclStageFileCheckArgs,
+    DeclStageNlArgs,
+    NoArgs,
+    StatementNlReviewPassedArgs,
+    StatementNlReviewRejectedArgs,
+)
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import current_node_path, handler_tool
 
@@ -186,10 +194,33 @@ def _check_formal_stage_consistency(runtime, ctx, args: DeclStageFileCheckArgs):
 
 
 def _record_decl_review(runtime, ctx, args: DeclReviewMarkArgs):
+    if ctx.decl_stage is None:
+        return runtime.foundation.fail(runtime.foundation.issue("decl_stage_context_missing", "Current context has no decl stage."))
+    current_round_id = _round_id(ctx)
+    if args.round_id != current_round_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "review_mark_round_mismatch",
+                "Review mark round_id must match the current decl-stage context.",
+                object_ref=args.decl_name,
+                current=args.round_id,
+                expected=current_round_id,
+            )
+        )
+    if args.stage != ctx.decl_stage.stage:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "review_mark_stage_mismatch",
+                "Review mark stage must match the current decl-stage context.",
+                object_ref=args.decl_name,
+                current=args.stage,
+                expected=ctx.decl_stage.stage,
+            )
+        )
     mark = runtime.decl_graph.build_decl_review_mark(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_round_id(ctx, args.round_id),
+        round_id=current_round_id,
         stage=args.stage,
         decl_name=args.decl_name,
         passed=args.passed,
@@ -199,6 +230,154 @@ def _record_decl_review(runtime, ctx, args: DeclReviewMarkArgs):
     )
     if not mark.ok or mark.value is None:
         return runtime.foundation.fail(mark.issues)
+    step = _load_reviewer_step(runtime, ctx)
+    if not step.ok or step.value is None:
+        return runtime.foundation.fail(step.issues)
+    current_step = step.value
+    context = _review_step_context(runtime, ctx, current_step.state)
+    if not context.ok or context.value is None:
+        return runtime.foundation.fail(context.issues)
+    expected_decl_names = context.value["expected_decl_names"]
+    if args.decl_name not in expected_decl_names:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("review_decl_not_expected", "Declaration is not in the current reviewer expected batch.", object_ref=args.decl_name)
+        )
+    return _persist_review_mark(runtime, ctx, current_step.step_id, mark.value)
+
+
+def _record_statement_nl_review_passed(runtime, ctx, args: StatementNlReviewPassedArgs):
+    mark = _build_statement_nl_mark(
+        runtime,
+        ctx,
+        decl_name=args.decl_name,
+        passed=True,
+        summary=args.summary,
+    )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
+
+
+def _record_statement_nl_review_rejected(runtime, ctx, args: StatementNlReviewRejectedArgs):
+    mark = _build_statement_nl_mark(
+        runtime,
+        ctx,
+        decl_name=args.decl_name,
+        passed=False,
+        summary=args.summary,
+        issue_categories=args.issue_categories,
+        required_changes=args.required_changes,
+    )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
+
+
+def _build_statement_nl_mark(
+    runtime,
+    ctx,
+    *,
+    decl_name: str,
+    passed: bool,
+    summary: str,
+    issue_categories: list[str] | None = None,
+    required_changes: list[str] | None = None,
+):
+    if ctx.decl_stage is None:
+        return runtime.foundation.fail(runtime.foundation.issue("decl_stage_context_missing", "Current context has no decl stage."))
+    if ctx.decl_stage.stage != "statement_nl":
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "review_mark_stage_mismatch",
+                "Statement NL review tools are only valid in the statement_nl review context.",
+                object_ref=decl_name,
+                current=ctx.decl_stage.stage,
+                expected="statement_nl",
+            )
+        )
+    step = _load_reviewer_step(runtime, ctx)
+    if not step.ok or step.value is None:
+        return runtime.foundation.fail(step.issues)
+    context = _review_step_context(runtime, ctx, step.value.state)
+    if not context.ok or context.value is None:
+        return runtime.foundation.fail(context.issues)
+    expected_decl_names = context.value["expected_decl_names"]
+    if decl_name not in expected_decl_names:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("review_decl_not_expected", "Declaration is not in the current reviewer expected batch.", object_ref=decl_name)
+        )
+    return runtime.decl_graph.build_decl_review_mark(
+        ctx.repo_root,
+        node_path=context.value["node_path"],
+        round_id=context.value["round_id"],
+        stage="statement_nl",
+        decl_name=decl_name,
+        passed=passed,
+        summary=summary,
+        issue_categories=issue_categories,
+        required_changes=required_changes,
+    )
+
+
+def _inspect_current_stage_review_status(runtime, ctx, _args: NoArgs):
+    step = _load_reviewer_step(runtime, ctx)
+    if not step.ok or step.value is None:
+        return runtime.foundation.fail(step.issues)
+    context = _review_step_context(runtime, ctx, step.value.state)
+    if not context.ok or context.value is None:
+        return runtime.foundation.fail(context.issues)
+    expected_decl_names = context.value["expected_decl_names"]
+    marks = list(step.value.state.review_marks)
+    invalid_context_marks: list[dict[str, object]] = []
+    mark_by_decl = {}
+    for mark in marks:
+        reasons: list[str] = []
+        if mark.round_id != context.value["round_id"]:
+            reasons.append("round_id")
+        if mark.node_path != context.value["node_path"]:
+            reasons.append("node_path")
+        if mark.stage.value != context.value["stage"]:
+            reasons.append("stage")
+        if mark.decl_name not in expected_decl_names:
+            reasons.append("decl_name")
+        if not mark.passed and not mark.required_changes:
+            reasons.append("required_changes")
+        if mark.decl_name in mark_by_decl:
+            reasons.append("duplicate")
+        if reasons:
+            invalid_context_marks.append(
+                {
+                    "decl_name": mark.decl_name,
+                    "round_id": mark.round_id,
+                    "node_path": mark.node_path,
+                    "stage": mark.stage.value,
+                    "reasons": reasons,
+                }
+            )
+            continue
+        mark_by_decl[mark.decl_name] = mark
+    reviewed = sorted(mark_by_decl)
+    passed = sorted(name for name, mark in mark_by_decl.items() if mark.passed)
+    failed = sorted(name for name, mark in mark_by_decl.items() if not mark.passed)
+    missing = sorted(name for name in expected_decl_names if name not in mark_by_decl)
+    return runtime.foundation.ok(
+        {
+            "round_id": context.value["round_id"],
+            "node_path": context.value["node_path"],
+            "stage": context.value["stage"],
+            "expected_decl_names": expected_decl_names,
+            "reviewed_decl_names": reviewed,
+            "passed_decl_names": passed,
+            "failed_decl_names": failed,
+            "missing_decl_names": missing,
+            "invalid_context_marks": invalid_context_marks,
+            "ready_to_submit": not missing and not invalid_context_marks,
+            "marks": [runtime.decl_graph.review_mark_view(mark).model_dump(mode="json") for mark in marks],
+        }
+    )
+
+
+def _load_reviewer_step(runtime, ctx):
     step_id = ctx.runtime.step_id
     if not step_id:
         return runtime.foundation.fail(runtime.foundation.issue("review_step_context_missing", "Review mark recording requires current ARK step_id."))
@@ -218,15 +397,63 @@ def _record_decl_review(runtime, ctx, args: DeclReviewMarkArgs):
                 current=f"{current_step.step_type}:{type(current_step.state).__name__}",
             )
         )
+    return runtime.foundation.ok(current_step)
+
+
+def _review_step_context(runtime, ctx, state: DeclStageReviewerStepState):
+    if ctx.decl_stage is None:
+        return runtime.foundation.fail(runtime.foundation.issue("decl_stage_context_missing", "Current context has no decl stage."))
+    round_id = _round_id(ctx)
+    node_path = _node(ctx)
+    stage = ctx.decl_stage.stage
+    expected_decl_names = list(state.expected_decl_names or ctx.decl_stage.batch_decls)
+    if not expected_decl_names:
+        return runtime.foundation.fail(runtime.foundation.issue("review_expected_batch_missing", "Reviewer step has no expected declaration batch."))
+    issues = []
+    if state.round_id is not None and state.round_id != round_id:
+        issues.append(runtime.foundation.issue("review_step_round_mismatch", "Reviewer step round does not match current context.", current=state.round_id, expected=round_id))
+    if state.node_path is not None and state.node_path != node_path:
+        issues.append(runtime.foundation.issue("review_step_node_mismatch", "Reviewer step node does not match current context.", current=state.node_path, expected=node_path))
+    if state.stage is not None and state.stage != stage:
+        issues.append(runtime.foundation.issue("review_step_stage_mismatch", "Reviewer step stage does not match current context.", current=state.stage, expected=stage))
+    if issues:
+        return runtime.foundation.fail(issues)
+    return runtime.foundation.ok(
+        {
+            "round_id": round_id,
+            "node_path": node_path,
+            "stage": stage,
+            "expected_decl_names": sorted(set(expected_decl_names)),
+        }
+    )
+
+
+def _persist_review_mark(runtime, ctx, step_id: str | None, mark):
+    if step_id is None:
+        return runtime.foundation.fail(runtime.foundation.issue("review_step_context_missing", "Review mark recording requires current ARK step_id."))
+    step_service = getattr(runtime.ark, "step_service", None)
+    if step_service is None:
+        return runtime.foundation.fail(runtime.foundation.issue("step_service_missing", "ARK step service is not available."))
 
     def update_review_marks(step) -> None:
         state = step.state
+        if isinstance(state, DeclStageReviewerStepState):
+            state.round_id = state.round_id or mark.round_id
+            state.node_path = state.node_path or mark.node_path
+            state.stage = state.stage or mark.stage.value
+            if not state.expected_decl_names and ctx.decl_stage is not None:
+                state.expected_decl_names = list(ctx.decl_stage.batch_decls)
         state.review_marks = [
             item
             for item in state.review_marks
-            if not (item.stage == mark.value.stage and item.decl_name == mark.value.decl_name)
+            if not (
+                item.round_id == mark.round_id
+                and item.node_path == mark.node_path
+                and item.stage == mark.stage
+                and item.decl_name == mark.decl_name
+            )
         ]
-        state.review_marks.append(mark.value)
+        state.review_marks.append(mark)
 
     try:
         step_service.store.update_step_record(step_id, update_review_marks)
@@ -234,7 +461,7 @@ def _record_decl_review(runtime, ctx, args: DeclReviewMarkArgs):
         return runtime.foundation.fail(
             runtime.foundation.issue("review_step_update_failed", f"Cannot persist review mark on step state: {exc}", object_ref=step_id)
         )
-    return runtime.foundation.ok(runtime.decl_graph.review_mark_view(mark.value))
+    return runtime.foundation.ok(runtime.decl_graph.review_mark_view(mark))
 
 
 def _run_round_local_audit(runtime, ctx, args: NoArgs):
@@ -341,6 +568,36 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_STAGE_REVIEW_MARK_WRITE},
             roles={"reviewer", "admin"},
             handler=_record_decl_review,
+        ),
+        handler_tool(
+            name="record_statement_nl_review_passed",
+            description="Record a passed review mark for one declaration in the current Statement NL review step.",
+            args_model=StatementNlReviewPassedArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_review_mark",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_REVIEW_MARK_WRITE},
+            roles={"reviewer", "admin"},
+            handler=_record_statement_nl_review_passed,
+        ),
+        handler_tool(
+            name="record_statement_nl_review_rejected",
+            description="Record a rejected review mark with issue categories and required changes for one declaration in the current Statement NL review step.",
+            args_model=StatementNlReviewRejectedArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_review_mark",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_REVIEW_MARK_WRITE},
+            roles={"reviewer", "admin"},
+            handler=_record_statement_nl_review_rejected,
+        ),
+        handler_tool(
+            name="inspect_current_stage_review_status",
+            description="Inspect mark coverage and submit readiness for the current decl-stage reviewer step.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="stage_review_status",
+            groups={AppGroup.DECL_STAGE_REVIEW_STATUS_READ},
+            roles={"reviewer", "admin"},
+            handler=_inspect_current_stage_review_status,
         ),
         handler_tool(
             name="run_decl_round_local_audit",
