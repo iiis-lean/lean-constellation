@@ -23,7 +23,7 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
         "lean-constellation-tools-application",
         "lean-constellation-tools-submit",
     ]
-    assert (home_root / ".agents" / "skills" / "material-acquisition" / "SKILL.md").exists()
+    assert (home_root / ".agents" / "skills" / "source-material-acquisition" / "SKILL.md").exists()
     assert view.value.codex_config_path is not None
     config_text = Path(view.value.codex_config_path).read_text(encoding="utf-8")
     assert "http://127.0.0.1:8765/mcp/views/source_corpus_prepare" in config_text

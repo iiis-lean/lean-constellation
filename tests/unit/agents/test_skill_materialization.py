@@ -37,24 +37,26 @@ def test_skill_registry_builds_all_fixed_skills() -> None:
     specs = build_skill_specs()
 
     assert "material-acquisition" in specs
+    assert "source-material-acquisition" in specs
+    assert "resource-material-acquisition" in specs
     assert "resource-request-handling" in specs
     assert "lean-proof-formalization" in specs
-    assert specs["material-acquisition"].description
-    assert "## Workflow" in specs["material-acquisition"].body
+    assert specs["source-material-acquisition"].description
+    assert "## Workflow" in specs["source-material-acquisition"].body
 
 
 def test_skill_materialization_writes_skill_md_and_references(tmp_path: Path) -> None:
     paths = materialize_skill_specs(
         tmp_path,
-        ["material-acquisition", "resource-request-handling"],
+        ["source-material-acquisition", "resource-request-handling"],
     )
 
-    material_skill = paths["material-acquisition"]
+    material_skill = paths["source-material-acquisition"]
     request_skill = paths["resource-request-handling"]
 
     assert (material_skill / "SKILL.md").read_text(encoding="utf-8").startswith("---")
-    assert 'name: "material-acquisition"' in (material_skill / "SKILL.md").read_text(encoding="utf-8")
-    assert "None required beyond the Agent-specific submit workflow." in (
+    assert 'name: "source-material-acquisition"' in (material_skill / "SKILL.md").read_text(encoding="utf-8")
+    assert "source_acquisition" in (
         material_skill / "references" / "tool_groups.md"
     ).read_text(encoding="utf-8")
     assert "resource_request_submit" in (request_skill / "references" / "tool_groups.md").read_text(encoding="utf-8")
@@ -100,6 +102,21 @@ def test_alignment_related_shared_skill_tool_refs_are_visible_to_all_users() -> 
             report = reports[agent_spec.agent_type]
             visible = {tool.name for tool in report.application_tools} | {tool.name for tool in report.submit_tools}
             assert refs <= visible, f"{skill_key}: {report.agent_type}"
+
+
+def test_source_and_resource_acquisition_skills_reference_visible_tools() -> None:
+    specs = build_skill_specs()
+    reports = build_agent_surface_reports()
+
+    source_refs = _tool_refs(specs["source-material-acquisition"].body)
+    source_visible = {tool.name for tool in reports["SourceCorpusPrepareAgent"].application_tools}
+    assert source_refs <= source_visible
+    assert "acquire_resource_material" not in specs["source-material-acquisition"].body
+
+    resource_refs = _tool_refs(specs["resource-material-acquisition"].body)
+    resource_visible = {tool.name for tool in reports["ResourceCuratorAgent"].application_tools}
+    assert resource_refs <= resource_visible
+    assert "acquire_source_material" not in specs["resource-material-acquisition"].body
 
 
 def test_all_skill_bodies_are_english_and_tool_refs_resolve() -> None:

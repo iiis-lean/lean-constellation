@@ -10,14 +10,14 @@ EXPECTED_SURFACE_COUNTS = {
     "SourceIndexReviewerAgent": (3, 7, 1, 1, 0),
     "RootInterfacePrepareAgent": (6, 17, 1, 1, 1),
     "AdapterDeclCatalogAgent": (12, 40, 1, 2, 0),
-    "ResourceCuratorAgent": (5, 18, 1, 4, 2),
+    "ResourceCuratorAgent": (8, 20, 1, 4, 2),
     "CoordinatorAgent": (34, 79, 2, 4, 13),
     "ContentPlanAgent": (25, 70, 3, 6, 16),
     "NodeDirDependencyReconAgent": (4, 13, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 16, 2, 3, 3),
-    "StatementNLWorkerAgent": (11, 36, 1, 2, 4),
-    "StatementNLReviewerAgent": (9, 30, 1, 1, 2),
+    "StatementNLWorkerAgent": (12, 38, 1, 2, 4),
+    "StatementNLReviewerAgent": (14, 42, 1, 1, 2),
     "StatementFormalWorkerAgent": (14, 47, 1, 2, 8),
     "StatementFormalReviewerAgent": (9, 30, 1, 1, 2),
     "ProofNLWorkerAgent": (11, 36, 1, 2, 4),
@@ -91,3 +91,28 @@ def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
     assert "add_node_mathlib_module_hint" not in mathlib_recon_tools
     assert "search_arxiv_theorems" not in mathlib_recon_tools
     assert "search_arxiv_theorems" not in {tool.name for tool in reports["ProofNLWorkerAgent"].application_tools}
+
+
+def test_source_prepare_and_resource_curator_keep_acquisition_boundaries() -> None:
+    reports = build_agent_surface_reports()
+    source_tools = {tool.name for tool in reports["SourceCorpusPrepareAgent"].application_tools}
+    curator_tools = {tool.name for tool in reports["ResourceCuratorAgent"].application_tools}
+
+    source_write_tools = {
+        "acquire_source_material",
+        "import_source_material",
+        "extract_source_artifact",
+        "normalize_source_text_material",
+    }
+    resource_write_tools = {
+        "acquire_resource_material",
+        "import_resource_material",
+        "extract_resource_artifact",
+        "normalize_resource_text_material",
+    }
+
+    assert source_write_tools <= source_tools
+    assert resource_write_tools.isdisjoint(source_tools)
+    assert resource_write_tools <= curator_tools
+    assert source_write_tools.isdisjoint(curator_tools)
+    assert {"scan_source_corpus", "search_material_text", "get_source_index"} <= curator_tools

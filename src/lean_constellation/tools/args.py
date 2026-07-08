@@ -610,6 +610,18 @@ class DeclReviewMarkArgs(StrictModel):
     suggested_fix: str | None = Field(default=None, description="Optional suggested fix when review fails.")
 
 
+class StatementNlReviewPassedArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name under Statement NL review.")
+    summary: str = Field(description="Why the current Statement NL candidate is ready for statement formalization.")
+
+
+class StatementNlReviewRejectedArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name under Statement NL review.")
+    summary: str = Field(description="Concise review summary for this rejected Statement NL candidate.")
+    issue_categories: list[str] = Field(description="Concrete issue categories for the rejection.")
+    required_changes: list[str] = Field(description="Actionable changes the worker must make before the next review.")
+
+
 class StageReviewSubmitArgs(StrictModel):
     round_id: str = Field(description="Current declaration round id.")
     stage: str = Field(description="Stage under review.")

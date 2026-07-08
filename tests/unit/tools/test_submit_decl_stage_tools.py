@@ -49,8 +49,8 @@ class _FakeDeclGraph:
         self.foundation = foundation
         self.passed = passed
 
-    def aggregate_stage_review_marks(self, repo_root, *, node_path: str, round_id: str, stage: str, summary: str, marks: list):
-        del repo_root, node_path, round_id, stage, summary
+    def aggregate_stage_review_marks(self, repo_root, *, node_path: str, round_id: str, stage: str, summary: str, marks: list, expected_decl_names=None):
+        del repo_root, node_path, round_id, stage, summary, expected_decl_names
         assert marks
         return self.foundation.ok(_ReviewResult(passed=self.passed))
 
@@ -63,6 +63,10 @@ class _FakeStep:
         self.state = DeclStageReviewerStepState(
             agent_role="statement_nl_reviewer",
             agent_type="StatementNLReviewerAgent",
+            round_id="round_1",
+            node_path="Main.Core",
+            stage="statement_nl",
+            expected_decl_names=["main_result"],
             review_marks=[
                 {
                     "round_id": "round_1",
@@ -109,7 +113,7 @@ def _ctx(repo_root: Path) -> ToolExecutionContext:
         repo_root=repo_root,
         repo=RepoContextView(repo_key=repo_root.name, summary="repo"),
         node=NodeContextView(node_path="Main.Core", node_kind="content", summary="node"),
-        decl_stage=DeclStageContextView(stage="statement_nl", round_id="round_1", summary="stage"),
+        decl_stage=DeclStageContextView(stage="statement_nl", round_id="round_1", batch_decls=["main_result"], summary="stage"),
         actor=ActorContext(agent_type="DeclStageReviewerAgent", role="reviewer", added_by="worker", summary="reviewer"),
     )
 

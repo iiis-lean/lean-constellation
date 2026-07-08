@@ -35,7 +35,7 @@ class SubmitSourceCorpusPreparedArgs(SummarySubmitArgs):
     entry_path: str = Field(description="Entry document path relative to the source corpus root.")
     overview: str = Field(description="Overview of the prepared source corpus.")
     preparation_summary: str = Field(description="What was acquired, normalized, and organized.")
-    relpath: str = Field(default=".lean_constellation/source", description="Source corpus path relative to repo root.")
+    relpath: str = Field(default=".lean_constellation/source", description="Compatibility field; must match the current preparation input source corpus root.")
 
 
 class SubmitSourceCorpusBlockedArgs(ReasonSubmitArgs):
@@ -74,9 +74,10 @@ class SubmitResourceRequestArgs(SummarySubmitArgs):
     context_summary: str | None = Field(default=None, description="Why this resource is needed.")
 
 
-class SubmitResourceDuplicateArgs(ReasonSubmitArgs):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of requested resource target that was found to be duplicate.")
-    target: str = Field(description="Requested URL, arXiv id, or local path that duplicates existing material.")
+class SubmitResourceDuplicateArgs(StrictModel):
+    summary: str | None = Field(default=None, description="Optional concise summary for this duplicate submission.")
+    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] | None = Field(default=None, description="Compatibility field; when provided, must match the current resource request target kind.")
+    target: str | None = Field(default=None, description="Compatibility field; when provided, must match the current resource request target.")
     arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the duplicate target.")
     existing_kind: Literal["resource", "source"] = Field(description="Whether the duplicate is an accepted resource or original source material.")
     duplicate_reason: str = Field(description="Why the existing material is the same target.")
@@ -86,15 +87,15 @@ class SubmitResourceDuplicateArgs(ReasonSubmitArgs):
 
 
 class SubmitLocalResourceCreatedArgs(SummarySubmitArgs):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of resource target finalized into the local resource library.")
-    target: str = Field(description="URL, arXiv id, or local path finalized from the resource draft.")
+    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] | None = Field(default=None, description="Compatibility field; when provided, must match the current resource request target kind.")
+    target: str | None = Field(default=None, description="Compatibility field; when provided, must match the current resource request target.")
     arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the finalized target.")
     draft_id: str = Field(description="Resource draft id to finalize.")
 
 
 class SubmitExternalRepoRequiredArgs(ReasonSubmitArgs):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of resource target that should become an external provider repo requirement.")
-    target: str = Field(description="URL, arXiv id, or local path requiring separate provider repo work.")
+    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] | None = Field(default=None, description="Compatibility field; when provided, must match the current resource request target kind.")
+    target: str | None = Field(default=None, description="Compatibility field; when provided, must match the current resource request target.")
     arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the external provider target.")
     source_description: str = Field(description="Source description to pass to a provider repo requirement.")
     suggested_repo_name: str | None = Field(default=None, description="Optional suggested provider repo key for the external requirement.")
@@ -102,8 +103,8 @@ class SubmitExternalRepoRequiredArgs(ReasonSubmitArgs):
 
 
 class SubmitResourceRejectedArgs(ReasonSubmitArgs):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of requested resource target being rejected.")
-    target: str = Field(description="Requested URL, arXiv id, or local path being rejected.")
+    target_kind: Literal["web", "arxiv", "local_file", "local_dir"] | None = Field(default=None, description="Compatibility field; when provided, must match the current resource request target kind.")
+    target: str | None = Field(default=None, description="Compatibility field; when provided, must match the current resource request target.")
     arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the rejected target.")
     details: list[str] = Field(default_factory=list, description="Concrete reasons or evidence supporting the rejection.")
 
@@ -182,11 +183,14 @@ class SubmitResourceReconBlockedArgs(ReasonSubmitArgs):
 
 
 class SubmitStageWorkerCompletedArgs(SummarySubmitArgs):
-    completed_decl_names: list[str] = Field(default_factory=list, description="Declaration names completed by this stage worker batch.")
+    changed_decl_names: list[str] = Field(default_factory=list, description="Optional declarations changed during this worker attempt.")
+    notes: str | None = Field(default=None, description="Optional additional notes for the reviewer.")
 
 
 class SubmitStageWorkerBlockedArgs(ReasonSubmitArgs):
     affected_decl_names: list[str] = Field(default_factory=list, description="Declaration names that remain blocked in this stage worker batch.")
+    checked_context_summary: str | None = Field(default=None, description="What context and evidence were checked before blocking.")
+    blocked_needs: list[str] = Field(default_factory=list, description="Concrete missing evidence, dependencies, resources, or planning inputs.")
 
 
 class SubmitStageReviewArgs(SummarySubmitArgs):

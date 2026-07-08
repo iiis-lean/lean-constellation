@@ -432,7 +432,8 @@ class _FakeMathlibToolkit:
 class _FakeReviewerStep:
     step_type = "decl_stage_reviewer_agent_step"
 
-    def __init__(self) -> None:
+    def __init__(self, *, step_id: str) -> None:
+        self.step_id = step_id
         self.state = DeclStageReviewerStepState(
             agent_role="statement_nl_reviewer",
             agent_type="StatementNLReviewerAgent",
@@ -442,7 +443,7 @@ class _FakeReviewerStep:
 class _FakeStepStore:
     def __init__(self, *, step_id: str) -> None:
         self.step_id = step_id
-        self.step = _FakeReviewerStep()
+        self.step = _FakeReviewerStep(step_id=step_id)
 
     def get_step(self, step_id: str):
         assert step_id == self.step_id
@@ -978,7 +979,7 @@ def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) 
         )
     )
 
-    assert view["state"] == "specified"
+    assert view["state"] == "planned"
     assert view["statement_origin"] == [{"kind": "source", "ref": "notes.md"}]
     assert view["statement_deps"] == ["helper"]
     assert "statement" not in view
@@ -1037,12 +1038,9 @@ def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: 
                 round_id=round_record.value.round_id,
                 batch_decls=["main_result"],
             ),
-            tool_name="record_decl_review",
+            tool_name="record_statement_nl_review_passed",
             flat_args={
-                "round_id": round_record.value.round_id,
-                "stage": "statement_nl",
                 "decl_name": "main_result",
-                "passed": True,
                 "summary": "Statement is clear.",
             },
         )

@@ -209,7 +209,7 @@ def _classify_tool(spec: ToolSpec) -> ToolCoverageMode:
         "external_resource_discovery",
         "upstream_repo_search",
         "source_acquisition",
-        "material_acquisition",
+        "resource_acquisition",
     }:
         return ToolCoverageMode(name, "env_gated", "Requires live Toolkit, real network, GitHub, arXiv, or external repo visibility.")
     if any(token in name for token in ("write", "set_", "add_", "create_", "delete", "finalize", "record_", "bind_", "refresh", "capture", "prepare_")):

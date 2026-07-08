@@ -172,12 +172,13 @@ RUNTIME_MATRIX_CASES: tuple[RuntimeMatrixCase, ...] = (
     ),
     RuntimeMatrixCase(
         case_id="resource-preflight-duplicate",
-        summary="ResourceCuration preflight duplicate terminal branch without starting Agent.",
+        summary="ResourceCuration preflight duplicate hint branch continues to ResourceCurator Agent.",
         tags=frozenset(
             {
                 "flow:resource_curation",
                 "logic_step:resource_curation_preflight_step",
-                "snapshot:preflight_terminal_no_agent",
+                "agent_step:resource_curator_agent_step",
+                "submit:submit_resource_duplicate",
             }
         ),
     ),

@@ -186,6 +186,36 @@ def _gate_or_fail(runtime: Any, gate: GateReport | None) -> ServiceResult[None]:
     return runtime.foundation.ok(None)
 
 
+def _decl_stage_candidate_ready(runtime: Any, ctx: ToolExecutionContext, *, stage_name: str, decl_names: list[str]) -> ServiceResult[None]:
+    node = _require_node(runtime, ctx)
+    if not node.ok or node.value is None:
+        return runtime.foundation.fail(node.issues)
+    issues = []
+    for decl_name in decl_names:
+        revision = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=node.value, name=decl_name)
+        if not revision.ok or revision.value is None:
+            return runtime.foundation.fail(revision.issues)
+        if stage_name == "statement_nl":
+            if not revision.value.statement_nl or not revision.value.statement_nl.strip():
+                issues.append(runtime.foundation.issue("statement_nl_candidate_missing", "Statement NL candidate is missing.", object_ref=decl_name))
+        elif stage_name == "statement_formal":
+            if not revision.value.statement_lean_code:
+                issues.append(runtime.foundation.issue("statement_formal_candidate_missing", "Statement formal candidate is missing.", object_ref=decl_name))
+            if revision.value.statement_lean_check is None:
+                issues.append(runtime.foundation.issue("statement_formal_check_missing", "Statement formal Lean check is missing.", object_ref=decl_name))
+        elif stage_name == "proof_nl":
+            if not revision.value.proof_nl or not revision.value.proof_nl.strip():
+                issues.append(runtime.foundation.issue("proof_nl_candidate_missing", "Proof NL candidate is missing.", object_ref=decl_name))
+        elif stage_name == "proof_formal":
+            if not revision.value.proof_lean_code:
+                issues.append(runtime.foundation.issue("proof_formal_candidate_missing", "Proof formal candidate is missing.", object_ref=decl_name))
+            if revision.value.proof_lean_check is None:
+                issues.append(runtime.foundation.issue("proof_formal_check_missing", "Proof formal Lean check is missing.", object_ref=decl_name))
+    if issues:
+        return runtime.foundation.fail(issues)
+    return runtime.foundation.ok(None)
+
+
 def _is_github_repo_url(value: str) -> bool:
     parsed = urlparse(value)
     if parsed.scheme in {"http", "https"} and parsed.netloc.lower() == "github.com":
@@ -262,12 +292,23 @@ def submit_native_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_source_corpus_prepared(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusPreparedArgs) -> ServiceResult[PreparedSubmissionView]:
+    expected_relpath = _expected_source_corpus_relpath(runtime, ctx)
+    if args.relpath != expected_relpath:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "source_corpus_relpath_mismatch",
+                "Source corpus submit relpath must match the current preparation input.",
+                field="relpath",
+                current=args.relpath,
+                expected=expected_relpath,
+            )
+        )
     gate = runtime.material.submit_source_corpus_prepared(
         ctx.repo_root,
         entry_path=args.entry_path,
         overview=args.overview,
         preparation_summary=args.preparation_summary,
-        relpath=args.relpath,
+        relpath=expected_relpath,
         ctx=ctx,
     )
     if not gate.ok or gate.value is None:
@@ -276,13 +317,24 @@ def submit_source_corpus_prepared(runtime: Any, ctx: ToolExecutionContext, args:
         runtime,
         SourceCorpusPreparedSubmission(
             **_base_kwargs(ctx, tool_name="submit_source_corpus_prepared", summary=args.summary),
-            relpath=args.relpath,
+            relpath=expected_relpath,
             entry_path=args.entry_path,
             overview=args.overview,
             preparation_summary=args.preparation_summary,
         ),
         agent_view=gate.value.model_dump(mode="json"),
     )
+
+
+def _expected_source_corpus_relpath(runtime: Any, ctx: ToolExecutionContext) -> str:
+    fallback = ".lean_constellation/source"
+    try:
+        preparation = runtime.repo_workspace.preparation.get_preparation_input(ctx.repo_root)
+    except Exception:  # noqa: BLE001
+        return fallback
+    if preparation.ok and preparation.value is not None:
+        return preparation.value.input.source_corpus_relpath or fallback
+    return fallback
 
 
 def submit_source_corpus_blocked(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusBlockedArgs) -> ServiceResult[PreparedSubmissionView]:
@@ -398,8 +450,77 @@ def _resource_flow_input(runtime: Any, ctx: ToolExecutionContext, target_kind: s
     return runtime.material.submit_resource_request(ctx, target_kind=target_kind, target=target, arxiv_version=arxiv_version)
 
 
+def _current_resource_flow_input(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    *,
+    target_kind: str | None,
+    target: str | None,
+    arxiv_version: str | None,
+) -> ServiceResult[Any]:
+    if not ctx.runtime.flow_id:
+        return runtime.foundation.fail(runtime.foundation.issue("resource_curation_context_missing", "Resource curator submit requires current flow context."))
+    flow = runtime.get_flow(ctx.runtime.flow_id)
+    if getattr(flow, "flow_type", None) != "resource_curation":
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "resource_curation_context_missing",
+                "Resource curator submit tools are only available inside ResourceCurationFlow.",
+                current=getattr(flow, "flow_type", None),
+                expected="resource_curation",
+            )
+        )
+    input_model = getattr(flow, "input", None)
+    request_target = getattr(input_model, "target", None)
+    if request_target is None:
+        return runtime.foundation.fail(runtime.foundation.issue("resource_curation_input_missing", "ResourceCurationFlow has no target input."))
+    if target_kind is not None and target_kind != request_target.kind:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "resource_request_target_mismatch",
+                "Submitted target_kind does not match the current resource curation request.",
+                field="target_kind",
+                current=target_kind,
+                expected=request_target.kind,
+            )
+        )
+    if target is not None and target != request_target.target:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "resource_request_target_mismatch",
+                "Submitted target does not match the current resource curation request.",
+                field="target",
+                current=target,
+                expected=request_target.target,
+            )
+        )
+    if arxiv_version is not None and arxiv_version != request_target.arxiv_version:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "resource_request_target_mismatch",
+                "Submitted arxiv_version does not match the current resource curation request.",
+                field="arxiv_version",
+                current=arxiv_version,
+                expected=request_target.arxiv_version,
+            )
+        )
+    return _resource_flow_input(runtime, ctx, request_target.kind, request_target.target, request_target.arxiv_version)
+
+
+def _active_resource_draft_id_for_submit(runtime: Any, ctx: ToolExecutionContext) -> ServiceResult[str]:
+    if not ctx.runtime.flow_id:
+        return runtime.foundation.fail(runtime.foundation.issue("resource_curation_context_missing", "Resource curator submit requires current flow context."))
+    flow = runtime.get_flow(ctx.runtime.flow_id)
+    draft_id = getattr(getattr(flow, "state", None), "active_resource_draft_key", None)
+    if not draft_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("resource_active_draft_missing", "Current ResourceCurationFlow has no active resource draft.")
+        )
+    return runtime.foundation.ok(draft_id)
+
+
 def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: SubmitResourceDuplicateArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _resource_flow_input(runtime, ctx, args.target_kind, args.target, args.arxiv_version)
+    flow_input = _current_resource_flow_input(runtime, ctx, target_kind=args.target_kind, target=args.target, arxiv_version=args.arxiv_version)
     if not flow_input.ok or flow_input.value is None:
         return runtime.foundation.fail(flow_input.issues)
     gate = runtime.material.submit_resource_duplicate(
@@ -416,10 +537,10 @@ def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: Sub
     return _prepared(
         runtime,
         ResourceDuplicateSubmission(
-            **_base_kwargs(ctx, tool_name="submit_resource_duplicate", summary=gate.value.summary),
-            target_kind=args.target_kind,
-            target=args.target,
-            arxiv_version=args.arxiv_version,
+            **_base_kwargs(ctx, tool_name="submit_resource_duplicate", summary=args.summary or gate.value.summary),
+            target_kind=flow_input.value.target_kind,
+            target=flow_input.value.target,
+            arxiv_version=flow_input.value.arxiv_version,
             existing_kind=args.existing_kind,
             duplicate_reason=args.duplicate_reason,
             existing_resource_key=args.existing_resource_key,
@@ -431,19 +552,36 @@ def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args: SubmitLocalResourceCreatedArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _resource_flow_input(runtime, ctx, args.target_kind, args.target, args.arxiv_version)
+    flow_input = _current_resource_flow_input(runtime, ctx, target_kind=args.target_kind, target=args.target, arxiv_version=args.arxiv_version)
     if not flow_input.ok or flow_input.value is None:
         return runtime.foundation.fail(flow_input.issues)
+    active_draft = _active_resource_draft_id_for_submit(runtime, ctx)
+    if not active_draft.ok or active_draft.value is None:
+        return runtime.foundation.fail(active_draft.issues)
+    if args.draft_id != active_draft.value:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "resource_active_draft_mismatch",
+                "Local resource submit draft_id must match the current active resource draft.",
+                field="draft_id",
+                current=args.draft_id,
+                expected=active_draft.value,
+            )
+        )
     gate = runtime.material.submit_local_resource_created(ctx.repo_root, flow_input=flow_input.value, draft_id=args.draft_id, summary=args.summary)
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
+    if not gate.value.resource_key:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("resource_key_missing", "Local resource submit succeeded without a finalized resource key.")
+        )
     return _prepared(
         runtime,
         LocalResourceCreatedSubmission(
             **_base_kwargs(ctx, tool_name="submit_local_resource_created", summary=args.summary),
-            target_kind=args.target_kind,
-            target=args.target,
-            arxiv_version=args.arxiv_version,
+            target_kind=flow_input.value.target_kind,
+            target=flow_input.value.target,
+            arxiv_version=flow_input.value.arxiv_version,
             draft_id=args.draft_id,
             resource_key=gate.value.resource_key,
         ),
@@ -452,7 +590,7 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
 
 
 def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args: SubmitExternalRepoRequiredArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _resource_flow_input(runtime, ctx, args.target_kind, args.target, args.arxiv_version)
+    flow_input = _current_resource_flow_input(runtime, ctx, target_kind=args.target_kind, target=args.target, arxiv_version=args.arxiv_version)
     if not flow_input.ok or flow_input.value is None:
         return runtime.foundation.fail(flow_input.issues)
     gate = runtime.material.submit_external_repo_required(
@@ -469,9 +607,9 @@ def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args:
         runtime,
         ExternalRepoRequiredSubmission(
             **_base_kwargs(ctx, tool_name="submit_external_repo_required", summary=gate.value.summary),
-            target_kind=args.target_kind,
-            target=args.target,
-            arxiv_version=args.arxiv_version,
+            target_kind=flow_input.value.target_kind,
+            target=flow_input.value.target,
+            arxiv_version=flow_input.value.arxiv_version,
             reason=args.reason,
             source_description=args.source_description,
             suggested_repo_name=args.suggested_repo_name,
@@ -482,7 +620,7 @@ def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args:
 
 
 def submit_resource_rejected(runtime: Any, ctx: ToolExecutionContext, args: SubmitResourceRejectedArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _resource_flow_input(runtime, ctx, args.target_kind, args.target, args.arxiv_version)
+    flow_input = _current_resource_flow_input(runtime, ctx, target_kind=args.target_kind, target=args.target, arxiv_version=args.arxiv_version)
     if not flow_input.ok or flow_input.value is None:
         return runtime.foundation.fail(flow_input.issues)
     gate = runtime.material.submit_resource_rejected(ctx.repo_root, flow_input=flow_input.value, reason=args.reason)
@@ -492,9 +630,9 @@ def submit_resource_rejected(runtime: Any, ctx: ToolExecutionContext, args: Subm
         runtime,
         ResourceRejectedSubmission(
             **_base_kwargs(ctx, tool_name="submit_resource_rejected", summary=gate.value.summary),
-            target_kind=args.target_kind,
-            target=args.target,
-            arxiv_version=args.arxiv_version,
+            target_kind=flow_input.value.target_kind,
+            target=flow_input.value.target,
+            arxiv_version=flow_input.value.arxiv_version,
             reason=args.reason,
             details=args.details,
         ),
@@ -750,13 +888,21 @@ def submit_stage_worker_completed(runtime: Any, ctx: ToolExecutionContext, args:
     if not stage.ok or stage.value is None:
         return runtime.foundation.fail(stage.issues)
     stage_name, round_id = stage.value
+    expected_decl_names = list(ctx.decl_stage.batch_decls if ctx.decl_stage else [])
+    if not expected_decl_names:
+        return _fail(runtime, "stage_worker_expected_batch_missing", "Stage worker completed submit requires a current expected declaration batch.")
+    ready = _decl_stage_candidate_ready(runtime, ctx, stage_name=stage_name, decl_names=expected_decl_names)
+    if not ready.ok:
+        return runtime.foundation.fail(ready.issues)
     return _prepared(
         runtime,
         DeclStageWorkerCompletedSubmission(
             **_base_kwargs(ctx, tool_name="submit_stage_worker_completed", summary=args.summary),
             stage=stage_name,
             round_id=round_id,
-            completed_decl_names=args.completed_decl_names,
+            completed_decl_names=expected_decl_names,
+            changed_decl_names=list(args.changed_decl_names),
+            notes=args.notes,
         ),
     )
 
@@ -774,6 +920,8 @@ def submit_stage_worker_blocked(runtime: Any, ctx: ToolExecutionContext, args: S
             round_id=round_id,
             reason=args.reason,
             affected_decl_names=args.affected_decl_names,
+            checked_context_summary=args.checked_context_summary,
+            blocked_needs=list(args.blocked_needs),
         ),
     )
 
@@ -798,13 +946,24 @@ def submit_stage_review(runtime: Any, ctx: ToolExecutionContext, args: SubmitSta
         return _fail(runtime, "review_step_not_found", f"Cannot load current reviewer step: {exc}")
     if current_step.step_type != "decl_stage_reviewer_agent_step" or not isinstance(current_step.state, DeclStageReviewerStepState):
         return _fail(runtime, "review_step_state_invalid", "Stage review submit requires a DeclStageReviewerAgentStep state.")
+    step_state = current_step.state
+    if step_state.round_id is not None and step_state.round_id != round_id:
+        return _fail(runtime, "review_step_round_mismatch", "Reviewer step round does not match current submit context.")
+    if step_state.node_path is not None and step_state.node_path != node.value:
+        return _fail(runtime, "review_step_node_mismatch", "Reviewer step node does not match current submit context.")
+    if step_state.stage is not None and step_state.stage != stage_name:
+        return _fail(runtime, "review_step_stage_mismatch", "Reviewer step stage does not match current submit context.")
+    expected_decl_names = list(step_state.expected_decl_names or (ctx.decl_stage.batch_decls if ctx.decl_stage else []))
+    if not expected_decl_names:
+        return _fail(runtime, "review_expected_batch_missing", "Stage review submit requires an expected declaration batch.")
     review = runtime.decl_graph.aggregate_stage_review_marks(
         ctx.repo_root,
         node_path=node.value,
         round_id=round_id,
         stage=stage_name,
         summary=args.summary,
-        marks=list(current_step.state.review_marks),
+        marks=list(step_state.review_marks),
+        expected_decl_names=expected_decl_names,
     )
     if not review.ok or review.value is None:
         return runtime.foundation.fail(review.issues)

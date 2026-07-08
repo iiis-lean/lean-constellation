@@ -5,11 +5,12 @@ from typing import Any
 
 import pytest
 
+from agent_runtime_kit.flow.models import FlowRequest
 from lean_constellation.mcp import create_mcp_server
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.tool_facade import RuntimeToolContext
 from lean_constellation.tools import build_application_tool_specs
-from tests.real.runtime_matrix.admin_helpers import unwrap
+from tests.real.runtime_matrix.admin_helpers import run_next_created_step, unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
 from tests.real.runtime_matrix.strict.tool_cases import build_tool_cases, implemented_tool_cases, pending_tool_cases
@@ -1213,9 +1214,10 @@ def _ctx(
     agent_type: str,
     role: str = "worker",
     node_path: str | None = None,
+    flow_id: str | None = None,
 ) -> RuntimeToolContext:
     return RuntimeToolContext(
-        flow_id=f"strict_runtime_matrix_{view}",
+        flow_id=flow_id or f"strict_runtime_matrix_{view}",
         step_id=f"strict_runtime_matrix_{view}_step",
         agent_id=f"strict_runtime_matrix_{view}_agent",
         agent_type=agent_type,
@@ -1277,13 +1279,26 @@ def _install_fake_mathlib_toolkit(ws: RuntimeMatrixWorkspace) -> None:
 def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: EvidenceRecorder) -> None:
     source_root = ws.provider_repo / ".lean_constellation" / "source"
     local_source = str(ws.resources.local_file)
+    resource_flow_id = _start_resource_curation_for_tool_sweep(ws, target_kind="local_file", target=local_source)
+    run_next_created_step(ws.admin, resource_flow_id)
+    resource_flow = ws.runtime.ark.flow_service.get_flow(resource_flow_id)
+    resource_draft_id = resource_flow.state.active_resource_draft_key
+    assert resource_draft_id is not None
+    resource_draft = unwrap(ws.runtime.material.get_resource_draft(ws.provider_repo, draft_id=resource_draft_id))
+    resource_draft_root = Path(resource_draft.draft_root)
     source_prepare_ctx = _ctx(
         ws.provider_repo,
         view="source_corpus_prepare",
         agent_type="SourceCorpusPrepareAgent",
         role="worker",
     )
-    resource_ctx = _ctx(ws.provider_repo, view="resource_curator", agent_type="ResourceCuratorAgent", role="worker")
+    resource_ctx = _ctx(
+        ws.provider_repo,
+        view="resource_curator",
+        agent_type="ResourceCuratorAgent",
+        role="worker",
+        flow_id=resource_flow_id,
+    )
     checkpoint = checkpoint_with_evidence(
         ws.admin,
         ws.provider_repo,
@@ -1340,52 +1355,52 @@ def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, r
     )
     assert normalized_source.value["primary_material_ref"] == "normalized/strict_source_import.txt"
 
-    acquired_material = call_tool_with_evidence(
+    acquired_resource = call_tool_with_evidence(
         server,
         "resource_curator",
-        "acquire_material_resource",
+        "acquire_resource_material",
         {"target": local_source, "preferred_kind": "local_file"},
         runtime_context=resource_ctx,
         recorder=recorder,
-        assertion_summary="Local material resource acquisition copied a local file into material draft originals.",
+        assertion_summary="Local resource acquisition copied a local file into the active resource draft originals.",
     )
-    material_artifact_ref = acquired_material.value["primary_artifact_ref"]
-    assert material_artifact_ref
-    assert (source_root / material_artifact_ref).exists()
+    resource_artifact_ref = acquired_resource.value["primary_artifact_ref"]
+    assert resource_artifact_ref
+    assert (resource_draft_root / resource_artifact_ref).exists()
 
-    extracted_material = call_tool_with_evidence(
+    extracted_resource = call_tool_with_evidence(
         server,
         "resource_curator",
-        "extract_material_artifact",
-        {"artifact_ref": material_artifact_ref, "extraction_kind": "text_normalize"},
+        "extract_resource_artifact",
+        {"artifact_ref": resource_artifact_ref, "extraction_kind": "text_normalize"},
         runtime_context=resource_ctx,
         recorder=recorder,
-        assertion_summary="Local material artifact extraction normalized text material.",
+        assertion_summary="Local resource artifact extraction normalized text material in the active draft.",
     )
-    assert "Local Runtime Matrix Note" in (extracted_material.value["preview"] or "")
+    assert "Local Runtime Matrix Note" in (extracted_resource.value["preview"] or "")
 
-    imported_material = call_tool_with_evidence(
+    imported_resource = call_tool_with_evidence(
         server,
         "resource_curator",
-        "import_material_file",
-        {"source_path": local_source, "as_name": "strict_material_import.md"},
+        "import_resource_material",
+        {"source_path": local_source, "as_name": "strict_resource_import.md"},
         runtime_context=resource_ctx,
         recorder=recorder,
-        assertion_summary="Local material import created a named draft artifact.",
+        assertion_summary="Local resource import created a named artifact in the active draft.",
     )
-    imported_material_ref = imported_material.value["primary_artifact_ref"]
-    assert imported_material_ref == "original/strict_material_import.md"
+    imported_resource_ref = imported_resource.value["primary_artifact_ref"]
+    assert imported_resource_ref == "original/strict_resource_import.md"
 
-    normalized_material = call_tool_with_evidence(
+    normalized_resource = call_tool_with_evidence(
         server,
         "resource_curator",
-        "normalize_material_text",
-        {"material_ref": imported_material_ref},
+        "normalize_resource_text_material",
+        {"material_ref": imported_resource_ref},
         runtime_context=resource_ctx,
         recorder=recorder,
-        assertion_summary="Local material normalization produced readable text.",
+        assertion_summary="Local resource normalization produced readable text in the active draft.",
     )
-    assert normalized_material.value["primary_material_ref"] == "normalized/strict_material_import.txt"
+    assert normalized_resource.value["primary_material_ref"] == "normalized/strict_resource_import.txt"
 
     restore_with_evidence(
         ws.admin,
@@ -1397,8 +1412,26 @@ def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, r
     )
     assert not (source_root / "original" / "strict_source_import.md").exists()
     assert not (source_root / "normalized" / "strict_source_import.txt").exists()
-    assert not (source_root / "original" / "strict_material_import.md").exists()
-    assert not (source_root / "normalized" / "strict_material_import.txt").exists()
+    assert not (resource_draft_root / "original" / "strict_resource_import.md").exists()
+    assert not (resource_draft_root / "normalized" / "strict_resource_import.txt").exists()
+
+
+def _start_resource_curation_for_tool_sweep(ws: RuntimeMatrixWorkspace, *, target_kind: str, target: str) -> str:
+    return ws.runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="resource_curation",
+            scope_id="repo:Provider",
+            params={
+                "repo_key": "Provider",
+                "repo_root": str(ws.provider_repo),
+                "target_kind": target_kind,
+                "target": target,
+                "requested_by": "strict_tool_sweep",
+                "context_summary": "Strict ToolSweep active resource draft setup.",
+                "node_path": "Main.Core",
+            },
+        )
+    )
 
 
 def _item_field(item: Any, field: str) -> Any:

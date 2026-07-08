@@ -22,6 +22,8 @@ def test_representative_agent_type_resolves_expected_view() -> None:
     coordinator = runtime.tool_facade.build_tool_view("CoordinatorAgent")
     plan = runtime.tool_facade.build_tool_view("ContentPlanAgent")
     statement_worker = runtime.tool_facade.build_tool_view("StatementNLWorkerAgent", {"stage": "statement_nl"})
+    statement_reviewer = runtime.tool_facade.build_tool_view("StatementNLReviewerAgent", {"stage": "statement_nl"})
+    formal_reviewer = runtime.tool_facade.build_tool_view("StatementFormalReviewerAgent", {"stage": "statement_formal"})
 
     assert coordinator.ok
     assert coordinator.value is not None
@@ -32,6 +34,12 @@ def test_representative_agent_type_resolves_expected_view() -> None:
     assert statement_worker.ok
     assert statement_worker.value is not None
     assert statement_worker.value.key == "statement_nl_worker"
+    assert statement_reviewer.ok
+    assert statement_reviewer.value is not None
+    assert statement_reviewer.value.key == "statement_nl_reviewer"
+    assert formal_reviewer.ok
+    assert formal_reviewer.value is not None
+    assert formal_reviewer.value.key == "statement_formal_reviewer"
 
 
 def test_resource_discovery_tools_visible_to_coordinator_and_resource_recon() -> None:
@@ -126,6 +134,10 @@ def test_legacy_decl_readiness_tools_are_not_in_production_views() -> None:
     for view_key in sorted(runtime.tool_facade.tool_view._views):
         expanded = runtime.tool_facade.tool_view.tool_names_for_view(view_key)
         assert expanded.ok and expanded.value is not None
+        if view_key == "statement_nl_reviewer":
+            allowed_for_statement_reviewer = {"list_current_decls", "get_decl", "get_decl_revision", "get_decl_change"}
+            assert (legacy_tools - allowed_for_statement_reviewer).isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
+            continue
         assert legacy_tools.isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
 
 

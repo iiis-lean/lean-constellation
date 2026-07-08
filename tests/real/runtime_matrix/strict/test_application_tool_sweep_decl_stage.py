@@ -53,6 +53,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
                 "proof_nl_worker",
                 "proof_formal_worker",
                 "statement_nl_reviewer",
+                "statement_formal_reviewer",
             ],
         )
     )
@@ -72,14 +73,13 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         {
             "decl_name": round_fixture.decl_name,
             "nl": "The strict Runtime Matrix declaration states True.",
-            "origin": [{"kind": "runtime_matrix_strict", "ref": "decl_stage_tool_sweep"}],
             "deps": [],
         },
         runtime_context=statement_nl_ctx,
         recorder=evidence_recorder,
         assertion_summary="Statement NL was written through the stage worker view.",
     )
-    assert _field(statement_revision.value, "state") == "specified"
+    assert _field(statement_revision.value, "state") == "planned"
 
     statement_formal_ctx = _ctx(
         ws,
@@ -168,24 +168,62 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     )
     assert _field(statement_consistency.value, "passed") is True
 
+    statement_formal_reviewer_ctx = _ctx(
+        ws,
+        round_fixture,
+        view="statement_formal_reviewer",
+        agent_type="StatementFormalReviewerAgent",
+        role="reviewer",
+        stage="statement_formal",
+    )
+    statement_formal_reviewer_ctx = _attach_reviewer_step(ws, statement_formal_reviewer_ctx, round_fixture)
+    formal_review_mark = call_tool_with_evidence(
+        server,
+        "statement_formal_reviewer",
+        "record_decl_review",
+        {
+            "round_id": round_fixture.round_id,
+            "stage": "statement_formal",
+            "decl_name": round_fixture.decl_name,
+            "passed": True,
+            "summary": "Strict Runtime Matrix statement formal accepted.",
+        },
+        runtime_context=statement_formal_reviewer_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Statement formal generic reviewer mark was recorded.",
+    )
+    assert _field(formal_review_mark.value, "passed") is True
+
     reviewer_ctx = _ctx(
         ws,
         round_fixture,
         view="statement_nl_reviewer",
         agent_type="StatementNLReviewerAgent",
         role="reviewer",
-        stage="statement_nl_review",
+        stage="statement_nl",
     )
     reviewer_ctx = _attach_reviewer_step(ws, reviewer_ctx, round_fixture)
+    rejected_mark = call_tool_with_evidence(
+        server,
+        "statement_nl_reviewer",
+        "record_statement_nl_review_rejected",
+        {
+            "decl_name": round_fixture.decl_name,
+            "summary": "Strict Runtime Matrix statement NL rejected before replacement.",
+            "issue_categories": ["runtime_matrix_probe"],
+            "required_changes": ["Replace this probe rejection with the accepted mark."],
+        },
+        runtime_context=reviewer_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Statement NL reviewer rejected mark was recorded.",
+    )
+    assert _field(rejected_mark.value, "passed") is False
     review_mark = call_tool_with_evidence(
         server,
         "statement_nl_reviewer",
-        "record_decl_review",
+        "record_statement_nl_review_passed",
         {
-            "round_id": round_fixture.round_id,
-            "stage": "statement_nl",
             "decl_name": round_fixture.decl_name,
-            "passed": True,
             "summary": "Strict Runtime Matrix statement NL accepted.",
         },
         runtime_context=reviewer_ctx,
@@ -193,6 +231,16 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         assertion_summary="Statement NL reviewer mark was recorded.",
     )
     assert _field(review_mark.value, "passed") is True
+    review_status = call_tool_with_evidence(
+        server,
+        "statement_nl_reviewer",
+        "inspect_current_stage_review_status",
+        {},
+        runtime_context=reviewer_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Statement NL reviewer status reported full mark coverage.",
+    )
+    assert _field(review_status.value, "ready_to_submit") is True
 
     proof_nl_ctx = _ctx(ws, round_fixture, view="proof_nl_worker", agent_type="ProofNLWorkerAgent", stage="proof_nl")
     proof_revision = call_tool_with_evidence(
@@ -202,7 +250,6 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         {
             "decl_name": round_fixture.decl_name,
             "nl": "Use triviality.",
-            "origin": [{"kind": "runtime_matrix_strict", "ref": "decl_stage_tool_sweep_proof"}],
             "deps": [],
         },
         runtime_context=proof_nl_ctx,
@@ -365,14 +412,14 @@ def _attach_reviewer_step(
         ),
         enqueue=False,
     )
-    step_id = "strict_runtime_matrix_statement_nl_reviewer_step"
+    step_id = f"strict_runtime_matrix_{ctx.expected_view_key}_step"
     step = DeclStageReviewerAgentStep(
         step_id=step_id,
         flow_id=flow_id,
         scope_id=scope_id,
         state=DeclStageReviewerStepState(
-            agent_role="statement_nl_reviewer",
-            agent_type="StatementNLReviewerAgent",
+            agent_role=ctx.expected_view_key or "decl_stage_reviewer",
+            agent_type=ctx.agent_type or "DeclStageReviewerAgent",
         ),
     )
     ws.runtime.ark.step_service.create_step(step, enqueue=False)
