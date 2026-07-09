@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.refs import DeclRef, MathlibRef
 from lean_constellation.services.decl_graph import (
     Decl,
     DeclChangeKind,
@@ -12,6 +12,7 @@ from lean_constellation.services.decl_graph import (
     DeclStage,
     DeclState,
     DeclGraphViewMapper,
+    MathlibDeclDep,
     RepoDeclDep,
 )
 
@@ -39,6 +40,7 @@ def test_revision_tool_view_flattens_nested_truth_without_legacy_decl_deps() -> 
     revision.statement_deps = ["statement_helper"]
     revision.proof_nl = "Use the helper."
     revision.proof.deps.append(RepoDeclDep(ref=DeclRef(repo=None, node="Main.Topic", name="proof_helper", revision=1)))
+    revision.proof.deps.append(MathlibDeclDep(ref=MathlibRef(name="Nat.succ", module="Mathlib.Data.Nat.Basic"), reason="Uses successor."))
 
     view = mapper.revision_tool_view(decl=decl, revision=revision)
     dumped = view.model_dump(mode="json")
@@ -48,9 +50,17 @@ def test_revision_tool_view_flattens_nested_truth_without_legacy_decl_deps() -> 
     assert dumped["change_id"] == "main_result@rev:2"
     assert dumped["statement_nl"] == "The main theorem states True."
     assert dumped["statement_deps"] == ["statement_helper"]
+    assert dumped["statement_dep_refs"][0]["kind"] == "repo_decl"
     assert dumped["proof_nl"] == "Use the helper."
-    assert dumped["proof_deps"] == ["proof_helper"]
-    assert dumped["effective_deps"] == ["proof_helper", "statement_helper"]
+    assert dumped["proof_deps"] == ["Nat.succ", "proof_helper"]
+    proof_dep_refs = {item["kind"]: item for item in dumped["proof_dep_refs"]}
+    assert proof_dep_refs["mathlib_decl"]["ref"] == {"name": "Nat.succ", "module": "Mathlib.Data.Nat.Basic"}
+    assert proof_dep_refs["mathlib_decl"]["reason"] == "Uses successor."
+    assert proof_dep_refs["repo_decl"]["ref"]["node"] == "Main.Topic"
+    assert proof_dep_refs["repo_decl"]["ref"]["name"] == "proof_helper"
+    assert proof_dep_refs["repo_decl"]["ref"]["revision"] == 1
+    assert dumped["effective_deps"] == ["Nat.succ", "proof_helper", "statement_helper"]
+    assert len(dumped["effective_dep_refs"]) == 3
     assert "statement" not in dumped
     assert "proof" not in dumped
     assert "decl_deps" not in dumped

@@ -159,7 +159,7 @@ def test_external_takeover_handoff_includes_prompt_env_and_tool_lists(
                 handoff_id=handoff.handoff_id,
                 view_kind="submit",
                 tool_name="submit_native_repo_choice",
-                arguments={"summary": "Use native after handoff inspection.", "source_corpus_mode": "prepare"},
+                arguments={"summary": "Use native after handoff inspection.", "searched_targets": ["handoff inspection"], "rejected_candidates": []},
             )
         )
     )

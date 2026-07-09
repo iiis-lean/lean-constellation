@@ -2,10 +2,15 @@
 
 from lean_constellation.services.external_clients.github_repo import (
     GitCheckoutResult,
+    GitHubCodeSearchResult,
+    GitHubLeanRepoProbeView,
     GitHubRepoCandidate,
     GitHubRepoClient,
     GitHubRepoClientConfig,
     GitHubRepoSearchResult,
+    GitHubRepositoryFileView,
+    GitHubRepositoryTreeView,
+    GitHubTreeEntry,
     LeanRepoCandidateProbe,
 )
 from lean_constellation.services.external_clients.lake_command import (
@@ -59,10 +64,15 @@ __all__ = [
     "ExternalCommandResult",
     "ExtractedMaterialResult",
     "GitCheckoutResult",
+    "GitHubCodeSearchResult",
+    "GitHubLeanRepoProbeView",
     "GitHubRepoCandidate",
     "GitHubRepoClient",
     "GitHubRepoClientConfig",
     "GitHubRepoSearchResult",
+    "GitHubRepositoryFileView",
+    "GitHubRepositoryTreeView",
+    "GitHubTreeEntry",
     "LakeCommandClient",
     "LakeCommandClientConfig",
     "LakeCommandSummaryView",

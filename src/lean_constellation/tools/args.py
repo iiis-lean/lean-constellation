@@ -30,6 +30,41 @@ class UrlOrSlugArgs(StrictModel):
     url_or_slug: str = Field(description="GitHub repository URL or owner/name slug to inspect.")
 
 
+class GitHubRepoArgs(StrictModel):
+    git_url: str = Field(description="GitHub repository URL or owner/name slug.")
+
+
+class GitHubTreeArgs(GitHubRepoArgs):
+    revision: str | None = Field(default=None, description="Optional branch, tag, or commit to inspect.")
+    recursive: bool = Field(default=True, description="Whether to request the recursive git tree.")
+    path_prefix: str | None = Field(default=None, description="Optional repository-relative path prefix filter.")
+    limit: int = Field(default=5000, ge=1, le=5000, description="Maximum tree entries returned to the Agent.")
+
+
+class GitHubFileReadArgs(GitHubRepoArgs):
+    path: str = Field(description="Repository-relative remote file path.")
+    revision: str | None = Field(default=None, description="Optional branch, tag, or commit to inspect.")
+    max_chars: int = Field(default=20000, ge=1, le=50000, description="Maximum characters returned from the file.")
+
+
+class GitHubCodeSearchArgs(StrictModel):
+    query: str = Field(description="Code search query.")
+    repo: str | None = Field(default=None, description="Optional GitHub repository URL or owner/name slug used to scope the query.")
+    limit: int = Field(default=10, ge=1, le=50, description="Maximum code search results returned.")
+
+
+class GitHubLeanRepoProbeArgs(GitHubRepoArgs):
+    revision: str | None = Field(default=None, description="Optional branch, tag, or commit to inspect.")
+    subdir: str | None = Field(default=None, description="Optional repository-relative Lean project subdirectory to probe.")
+    max_tree_entries: int = Field(default=5000, ge=1, le=5000, description="Maximum tree entries inspected.")
+    max_file_chars: int = Field(default=20000, ge=1, le=50000, description="Maximum characters read from each remote file.")
+
+
+class PreparationRequirementRefArgs(StrictModel):
+    consumer_repo: str = Field(description="Consumer repo key from the current preparation input requirement_refs.")
+    requirement_name: str = Field(description="Requirement name from the current preparation input requirement_refs.")
+
+
 class TargetRepoArgs(StrictModel):
     target_repo: str = Field(description="Target provider repo key inside the current workspace.")
 
@@ -584,6 +619,122 @@ class DeclStageNlArgs(StrictModel):
     deps: list[str] | None = Field(default=None, description="Optional declaration dependency names.")
 
 
+class StatementNlSetArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current Statement NL stage batch.")
+    nl: str = Field(description="Natural-language statement text.")
+    summary: str | None = Field(default=None, description="Optional short summary of the statement update.")
+
+
+class StatementSourceOriginAddArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current Statement NL stage batch.")
+    source_path: str = Field(description="Stable source material path or source id already present in the committed source corpus.")
+    start_line: int = Field(ge=1, description="1-based first source line supporting the statement.")
+    end_line: int = Field(ge=1, description="1-based final source line supporting the statement.")
+    note: str | None = Field(default=None, description="Optional note explaining how this range supports the statement.")
+
+
+class StatementResourceOriginAddArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current Statement NL stage batch.")
+    resource_key: str = Field(description="Stable resource key already present in the resource library.")
+    start_locator: str | None = Field(default=None, description="Optional resource-local start locator, such as section, page, or paragraph.")
+    end_locator: str | None = Field(default=None, description="Optional resource-local end locator.")
+    note: str | None = Field(default=None, description="Optional note explaining how this resource supports the statement.")
+
+
+class StatementOriginRemoveArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current Statement NL stage batch.")
+    index: int = Field(ge=0, description="0-based origin index from the current declaration origin list.")
+
+
+class StatementOriginsClearArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current Statement NL stage batch.")
+    reason: str | None = Field(default=None, description="Optional reason for clearing statement origins.")
+
+
+class StatementDeclDepAddArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
+    dep_name: str = Field(description="Project declaration name needed to express this statement.")
+    dep_node: str | None = Field(default=None, description="Provider node path; omit for the current node.")
+    dep_repo: str | None = Field(default=None, description="Provider repo key; omit for the current repo.")
+    revision: int | None = Field(default=None, ge=1, description="Optional provider declaration revision.")
+    reason: str | None = Field(default=None, description="Why this declaration is needed to express the statement.")
+
+
+class StatementMathlibDepAddArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
+    mathlib_decl_name: str = Field(description="Mathlib declaration name needed to express this statement.")
+    module: str | None = Field(default=None, description="Mathlib module containing the declaration, when known.")
+    reason: str | None = Field(default=None, description="Why this Mathlib declaration is needed to express the statement.")
+
+
+class StatementDepRemoveArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
+    index: int = Field(ge=0, description="0-based dependency index from the current statement dependency list.")
+
+
+class StatementDepsClearArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
+    reason: str | None = Field(default=None, description="Optional reason for clearing statement dependencies.")
+
+
+class ProofNlSetArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current Proof NL stage batch.")
+    proof_nl: str = Field(description="Natural-language proof route for the current accepted formal statement.")
+    summary: str | None = Field(default=None, description="Optional short summary of the proof-route update.")
+
+
+class ProofSourceOriginAddArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current Proof NL stage batch.")
+    source_path: str = Field(description="Stable source material path or source id already present in the committed source corpus.")
+    start_line: int = Field(ge=1, description="1-based first source line supporting the proof route.")
+    end_line: int = Field(ge=1, description="1-based final source line supporting the proof route.")
+    note: str | None = Field(default=None, description="Optional note explaining how this source range supports the proof route.")
+
+
+class ProofResourceOriginAddArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current Proof NL stage batch.")
+    resource_key: str = Field(description="Stable resource key already present in the resource library.")
+    start_locator: str | None = Field(default=None, description="Optional resource-local start locator, such as section, page, or paragraph.")
+    end_locator: str | None = Field(default=None, description="Optional resource-local end locator.")
+    note: str | None = Field(default=None, description="Optional note explaining how this resource supports the proof route.")
+
+
+class ProofOriginRemoveArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current Proof NL stage batch.")
+    index: int = Field(ge=0, description="0-based origin index from the current proof origin list.")
+
+
+class ProofOriginsClearArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current Proof NL stage batch.")
+    reason: str | None = Field(default=None, description="Optional reason for clearing proof origins.")
+
+
+class ProofDeclDepAddArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
+    dep_name: str = Field(description="Project declaration name used by this proof route or formal proof.")
+    dep_node: str | None = Field(default=None, description="Provider node path; omit for the current node.")
+    dep_repo: str | None = Field(default=None, description="Provider repo key; omit for the current repo.")
+    revision: int | None = Field(default=None, ge=1, description="Optional provider declaration revision.")
+    reason: str | None = Field(default=None, description="Why this declaration is needed by the proof.")
+
+
+class ProofMathlibDepAddArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
+    mathlib_decl_name: str = Field(description="Mathlib declaration name used by this proof.")
+    module: str | None = Field(default=None, description="Mathlib module containing the declaration, when known.")
+    reason: str | None = Field(default=None, description="Why this Mathlib declaration is needed by the proof.")
+
+
+class ProofDepRemoveArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
+    index: int = Field(ge=0, description="0-based dependency index from the current proof dependency list.")
+
+
+class ProofDepsClearArgs(StrictModel):
+    decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
+    reason: str | None = Field(default=None, description="Optional reason for clearing proof dependencies.")
+
+
 class DeclStageFormalArgs(StrictModel):
     round_id: str | None = Field(default=None, description="Current declaration round id; omit to use the current stage round.")
     decl_name: str = Field(description="Declaration name to update.")
@@ -620,6 +771,44 @@ class StatementNlReviewRejectedArgs(StrictModel):
     summary: str = Field(description="Concise review summary for this rejected Statement NL candidate.")
     issue_categories: list[str] = Field(description="Concrete issue categories for the rejection.")
     required_changes: list[str] = Field(description="Actionable changes the worker must make before the next review.")
+
+
+class StatementFormalReviewPassedArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name under Statement Formal review.")
+    summary: str = Field(description="Why the current formal statement candidate preserves the accepted Statement NL meaning.")
+
+
+class StatementFormalReviewRejectedArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name under Statement Formal review.")
+    summary: str = Field(description="Concise review summary for this rejected formal statement candidate.")
+    issue_categories: list[str] = Field(description="Concrete semantic, dependency, visibility, or evidence issue categories.")
+    required_changes: list[str] = Field(description="Actionable formalization changes the worker must make before the next review.")
+
+
+class ProofNlReviewPassedArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name under Proof NL review.")
+    summary: str = Field(description="Why the current proof route is ready for proof formalization.")
+
+
+class ProofNlReviewRejectedArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name under Proof NL review.")
+    summary: str = Field(description="Concise review summary for this rejected proof route.")
+    issue_categories: list[str] = Field(description="Concrete proof-route, origin, dependency, or planning issue categories.")
+    required_changes: list[str] = Field(description="Actionable proof-route changes the worker must make before the next review.")
+    recommended_next_action: str | None = Field(default=None, description="Optional recommended routing action, such as worker repair, helper declaration, or resource curation.")
+
+
+class ProofFormalReviewPassedArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name under Proof Formal review.")
+    summary: str = Field(description="Why the current formal proof implements the reviewed proof route and proves the accepted formal statement.")
+
+
+class ProofFormalReviewRejectedArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name under Proof Formal review.")
+    summary: str = Field(description="Concise review summary for this rejected formal proof.")
+    issue_categories: list[str] = Field(description="Concrete proof-route alignment, source, dependency, helper, or semantic issue categories.")
+    required_changes: list[str] = Field(description="Actionable proof formalization changes the worker must make before the next review.")
+    recommended_next_action: str = Field(description="Recommended routing action for the retry, such as worker_repairable or needs_proof_nl_update.")
 
 
 class StageReviewSubmitArgs(StrictModel):

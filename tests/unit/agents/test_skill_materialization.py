@@ -199,8 +199,13 @@ def test_decl_stage_common_skills_keep_stage_specific_tools_out_of_shared_skill(
 
     statement = specs["lean-statement-formalization"].body
     assert "prepare_statement_formal_file" in statement
-    assert "check_statement_formal_policy" in statement
+    assert "check_statement_formal_policy" not in statement
     assert "capture_statement_formal_file" in statement
+    assert "check_formal_stage_consistency" in statement
+    assert "write_statement_formal_deps" not in statement
+    assert "record_mathlib_decl" in statement
+    assert "add_current_mathlib_decl_hint" in statement
+    assert "add_current_node_dep" in statement
     assert "prepare_proof_formal_file" not in statement
     assert "check_proof_formal_policy" not in statement
     assert "capture_proof_formal_file" not in statement

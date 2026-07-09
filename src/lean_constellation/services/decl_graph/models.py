@@ -107,13 +107,20 @@ class DeclOriginRef(StrictModel):
 
     kind: str
     ref: str | None = None
+    source_path: str | None = None
+    resource_key: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    start_locator: str | None = None
+    end_locator: str | None = None
+    note: str | None = None
 
     @field_validator("kind")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
 
-    @field_validator("ref")
+    @field_validator("ref", "source_path", "resource_key", "start_locator", "end_locator", "note")
     @classmethod
     def _optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -462,11 +469,11 @@ class DeclRevision(StrictModel):
         self.statement.nl = DeclNaturalLanguageSection(text=value, detail=detail, origin=origin)
 
     @property
-    def statement_origin(self) -> list[dict[str, str]]:
-        return [item.model_dump(mode="json") for item in self.statement.nl.origin] if self.statement.nl is not None else []
+    def statement_origin(self) -> list[dict[str, object]]:
+        return [item.model_dump(mode="json", exclude_none=True) for item in self.statement.nl.origin] if self.statement.nl is not None else []
 
     @statement_origin.setter
-    def statement_origin(self, value: list[dict[str, str]]) -> None:
+    def statement_origin(self, value: list[dict[str, object]]) -> None:
         text = self.statement.nl.text if self.statement.nl is not None else None
         detail = self.statement.nl.detail if self.statement.nl is not None else None
         self.statement.nl = DeclNaturalLanguageSection(text=text, detail=detail, origin=[DeclOriginRef.model_validate(item) for item in value])
@@ -530,11 +537,11 @@ class DeclRevision(StrictModel):
         proof.nl = DeclNaturalLanguageSection(text=value, detail=detail, origin=origin)
 
     @property
-    def proof_origin(self) -> list[dict[str, str]]:
-        return [item.model_dump(mode="json") for item in self.proof.nl.origin] if self.proof is not None and self.proof.nl is not None else []
+    def proof_origin(self) -> list[dict[str, object]]:
+        return [item.model_dump(mode="json", exclude_none=True) for item in self.proof.nl.origin] if self.proof is not None and self.proof.nl is not None else []
 
     @proof_origin.setter
-    def proof_origin(self, value: list[dict[str, str]]) -> None:
+    def proof_origin(self, value: list[dict[str, object]]) -> None:
         proof = self._ensure_proof()
         text = proof.nl.text if proof.nl is not None else None
         detail = proof.nl.detail if proof.nl is not None else None
@@ -748,14 +755,17 @@ class DeclRevisionToolView(StrictModel):
     statement_nl: str | None = None
     statement_origin: list[DeclOriginRef] = Field(default_factory=list)
     statement_deps: list[str] = Field(default_factory=list)
+    statement_dep_refs: list[DeclDep] = Field(default_factory=list)
     statement_lean_code: str | None = None
     statement_lean_check: dict[str, str] | None = None
     proof_nl: str | None = None
     proof_origin: list[DeclOriginRef] = Field(default_factory=list)
     proof_deps: list[str] = Field(default_factory=list)
+    proof_dep_refs: list[DeclDep] = Field(default_factory=list)
     proof_lean_code: str | None = None
     proof_lean_check: dict[str, str] | None = None
     effective_deps: list[str] = Field(default_factory=list)
+    effective_dep_refs: list[DeclDep] = Field(default_factory=list)
     summary: str | None = None
     updated_at: str | None = None
 
@@ -767,7 +777,7 @@ class DeclRevisionToolView(StrictModel):
     @field_validator("statement_deps", "proof_deps", "effective_deps")
     @classmethod
     def _unique_deps(cls, value: list[str]) -> list[str]:
-        return _sorted_unique_text(value, "decl revision tool view deps")
+        return _sorted_deduped_text(value)
 
 
 class DeclChangeView(StrictModel):
@@ -845,12 +855,21 @@ class DeclReviewMarkRecord(StrictModel):
     suggested_fix: str | None = None
     issue_categories: list[str] = Field(default_factory=list)
     required_changes: list[str] = Field(default_factory=list)
+    recommended_next_action: str | None = None
     created_at: str = Field(default_factory=utc_now_iso)
 
     @field_validator("round_id", "node_path", "decl_name", "summary")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
+
+    @field_validator("recommended_next_action")
+    @classmethod
+    def _optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
 
     @field_validator("issue_categories", "required_changes")
     @classmethod
@@ -874,6 +893,7 @@ class DeclReviewMarkView(StrictModel):
     suggested_fix: str | None = None
     issue_categories: list[str] = Field(default_factory=list)
     required_changes: list[str] = Field(default_factory=list)
+    recommended_next_action: str | None = None
     created_at: str | None = None
 
     @field_validator("round_id", "node_path", "decl_name", "summary")
@@ -888,6 +908,14 @@ class DeclReviewMarkView(StrictModel):
         if len(set(stripped)) != len(stripped):
             raise ValueError("review mark lists must be unique")
         return stripped
+
+    @field_validator("recommended_next_action")
+    @classmethod
+    def _optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
 
 
 class StageReviewResultView(StrictModel):
@@ -952,6 +980,10 @@ def _sorted_unique_text(value: list[str], label: str) -> list[str]:
     if len(set(stripped)) != len(stripped):
         raise ValueError(f"{label} must be unique")
     return sorted(stripped)
+
+
+def _sorted_deduped_text(value: list[str]) -> list[str]:
+    return sorted({_required_text(item) for item in value})
 
 
 def _repo_decl_deps_from_names(value: list[str], label: str) -> list[DeclDep]:

@@ -20,7 +20,7 @@ def test_tool_view_endpoint_exposes_only_its_tool_allowlist(tmp_path) -> None:
     denied = server.value.call_tool(
         "resource_curator",
         "submit_native_repo_choice",
-        {"summary": "Use native.", "source_corpus_mode": "prepare"},
+        {"summary": "Use native."},
         env=runtime_env(tmp_path, view="resource_curator", agent_type="resource_curator", role="worker"),
     )
 

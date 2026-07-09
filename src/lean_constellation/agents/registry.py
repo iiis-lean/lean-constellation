@@ -388,6 +388,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             *COMMON_FRAGMENTS,
             "workspace.repo_workspace_context",
             "workspace.requirement_and_lake_dependency_context",
+            "repo.native_repo_context",
             "repo.adapter_repo_context",
         ],
         skills=[],
@@ -678,7 +679,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         app_view=AppView.STATEMENT_NL_REVIEWER,
         submit_view=SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
         aliases=["StatementNlReviewerAgent", "StatementNlReviewer", "statement_nl_reviewer"],
-        stage="statement_nl_review",
+        stage="statement_nl",
     ),
     _spec(
         agent_type=ProductionAgentTypeKey.STATEMENT_FORMAL_WORKER,
@@ -722,7 +723,6 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "content.content_contract_task_context",
             "decl.stage_pipeline_context",
             "decl.proof_policy_satisfaction_context",
-            "lean.projection_capture_check_context",
             "quality.source_fidelity",
             "quality.lean_safety",
             "quality.review_contract",
@@ -731,7 +731,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         app_view=AppView.STATEMENT_FORMAL_REVIEWER,
         submit_view=SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
         aliases=["StatementFormalReviewer", "statement_formal_reviewer"],
-        stage="statement_formal_review",
+        stage="statement_formal",
     ),
     _spec(
         agent_type=ProductionAgentTypeKey.PROOF_NL_WORKER,
@@ -743,6 +743,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             *WORKER_FRAGMENTS,
             "source.source_index_context",
             "resource.resource_library_context",
+            "node.node_contract_context",
             "content.content_contract_task_context",
             "decl.stage_pipeline_context",
             "decl.proof_policy_satisfaction_context",
@@ -750,9 +751,12 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.VISIBLE_NODE_DEPENDENCY_RECON,
             SkillKey.DECL_DEPENDENCY_ORIGIN_CURATION,
             SkillKey.MATHLIB_INDEX_FIRST_RECON,
             SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
+            SkillKey.MATHLIB_INDEX_ENTRY_CURATION,
+            SkillKey.CURRENT_NODE_MATHLIB_HINT_MAINTENANCE,
         ],
         app_view=AppView.PROOF_NL_WORKER,
         submit_view=SubmitView.DECL_STAGE_WORKER_SUBMIT,
@@ -769,6 +773,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             *REVIEWER_FRAGMENTS,
             "source.source_index_context",
             "resource.resource_library_context",
+            "node.node_contract_context",
             "content.content_contract_task_context",
             "decl.stage_pipeline_context",
             "decl.proof_policy_satisfaction_context",
@@ -779,7 +784,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         app_view=AppView.PROOF_NL_REVIEWER,
         submit_view=SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
         aliases=["ProofNlReviewerAgent", "ProofNlReviewer", "proof_nl_reviewer"],
-        stage="proof_nl_review",
+        stage="proof_nl",
     ),
     _spec(
         agent_type=ProductionAgentTypeKey.PROOF_FORMAL_WORKER,
@@ -789,6 +794,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         agent_step_type="decl_stage_worker_agent_step",
         fragments=[
             *WORKER_FRAGMENTS,
+            "node.node_contract_context",
             "content.content_contract_task_context",
             "decl.stage_pipeline_context",
             "decl.proof_policy_satisfaction_context",
@@ -819,6 +825,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         agent_step_type="decl_stage_reviewer_agent_step",
         fragments=[
             *REVIEWER_FRAGMENTS,
+            "node.node_contract_context",
             "content.content_contract_task_context",
             "decl.stage_pipeline_context",
             "decl.proof_policy_satisfaction_context",
@@ -831,7 +838,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         app_view=AppView.PROOF_FORMAL_REVIEWER,
         submit_view=SubmitView.DECL_STAGE_REVIEWER_SUBMIT,
         aliases=["ProofFormalReviewer", "proof_formal_reviewer"],
-        stage="proof_formal_review",
+        stage="proof_formal",
     ),
 )
 

@@ -27,11 +27,10 @@ def test_decl_graph_round_four_stage_completed_matrix(
                 [
                     (
                         "application",
-                        "write_statement_nl",
+                        "set_statement_nl",
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The Runtime Matrix main result states True.",
-                            "deps": [],
                         },
                     ),
                     (
@@ -77,11 +76,10 @@ def test_decl_graph_round_four_stage_completed_matrix(
                 [
                     (
                         "application",
-                        "write_proof_nl",
+                        "set_proof_nl",
                         {
                             "decl_name": round_fixture.decl_name,
-                            "nl": "The proof closes by triviality.",
-                            "deps": [],
+                            "proof_nl": "The proof closes by triviality.",
                         },
                     ),
                     (
@@ -162,11 +160,10 @@ def test_decl_graph_round_review_rejected_then_worker_blocked_matrix(
                 [
                     (
                         "application",
-                        "write_statement_nl",
+                        "set_statement_nl",
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The rejected branch statement is intentionally sparse.",
-                            "deps": [],
                         },
                     ),
                     (
@@ -201,7 +198,7 @@ def test_decl_graph_round_review_rejected_then_worker_blocked_matrix(
     assert flow.result.outcome == "blocked"
     assert flow.result.terminal_reason.stage == "statement_nl"
     assert [call["tool_name"] for call in provider.calls] == [
-        "write_statement_nl",
+        "set_statement_nl",
         "submit_stage_worker_completed",
         "record_statement_nl_review_rejected",
         "submit_stage_review",
@@ -219,6 +216,59 @@ def _review_actions(round_fixture: DeclRoundFixture, stage: str, *, passed: bool
         if not passed:
             args["issue_categories"] = ["runtime_matrix_rejected"]
             args["required_changes"] = ["Retry with reviewer feedback."]
+        return [
+            ("application", tool_name, args),
+            (
+                "submit",
+                "submit_stage_review",
+                {"summary": f"{stage} {'accepted' if passed else 'rejected'} by Runtime Matrix."},
+            ),
+        ]
+    if stage == "statement_formal":
+        tool_name = "record_statement_formal_review_passed" if passed else "record_statement_formal_review_rejected"
+        args = {
+            "decl_name": round_fixture.decl_name,
+            "summary": f"{stage} {'accepted' if passed else 'rejected'} by Runtime Matrix.",
+        }
+        if not passed:
+            args["issue_categories"] = ["formal_not_equivalent_to_nl"]
+            args["required_changes"] = ["Retry with statement formal reviewer feedback."]
+        return [
+            ("application", tool_name, args),
+            (
+                "submit",
+                "submit_stage_review",
+                {"summary": f"{stage} {'accepted' if passed else 'rejected'} by Runtime Matrix."},
+            ),
+        ]
+    if stage == "proof_nl":
+        tool_name = "record_proof_nl_review_passed" if passed else "record_proof_nl_review_rejected"
+        args = {
+            "decl_name": round_fixture.decl_name,
+            "summary": f"{stage} {'accepted' if passed else 'rejected'} by Runtime Matrix.",
+        }
+        if not passed:
+            args["issue_categories"] = ["proof_route_too_vague"]
+            args["required_changes"] = ["Retry with proof route reviewer feedback."]
+            args["recommended_next_action"] = "worker_repairable"
+        return [
+            ("application", tool_name, args),
+            (
+                "submit",
+                "submit_stage_review",
+                {"summary": f"{stage} {'accepted' if passed else 'rejected'} by Runtime Matrix."},
+            ),
+        ]
+    if stage == "proof_formal":
+        tool_name = "record_proof_formal_review_passed" if passed else "record_proof_formal_review_rejected"
+        args = {
+            "decl_name": round_fixture.decl_name,
+            "summary": f"{stage} {'accepted' if passed else 'rejected'} by Runtime Matrix.",
+        }
+        if not passed:
+            args["issue_categories"] = ["proof_not_aligned_with_proof_nl"]
+            args["required_changes"] = ["Retry with proof formal reviewer feedback."]
+            args["recommended_next_action"] = "worker_repairable"
         return [
             ("application", tool_name, args),
             (

@@ -14,7 +14,6 @@ from tests.unit.flows.decl_round._helpers import (
     queue_review,
     queue_worker_completed,
     record_passed_review,
-    seed_committed_theorem,
     start_decl_round_flow,
 )
 
@@ -136,6 +135,7 @@ def test_decl_round_final_audit_rejects_unsatisfied_target_by_default(tmp_path: 
         round_id=round_id,
         round_index=round_index,
     )
+    _seed_open_proof_planned_theorem(lean_runtime, repo_root, decl_name="missing_helper")
 
     _run_main_result_theorem_stages(
         runtime,
@@ -253,6 +253,7 @@ def test_decl_round_final_audit_allows_unsatisfied_target_when_opted_out(tmp_pat
         round_id=round_id,
         round_index=round_index,
     )
+    _seed_open_proof_planned_theorem(lean_runtime, repo_root, decl_name="missing_helper")
 
     _run_main_result_theorem_stages(
         runtime,
@@ -283,6 +284,7 @@ def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path
         round_id=round_id,
         round_index=round_index,
     )
+    _seed_open_proof_planned_theorem(lean_runtime, repo_root, decl_name="missing_helper")
 
     _run_main_result_theorem_stages(
         runtime,
@@ -307,7 +309,7 @@ def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path
     assert before_helper.value.proof_policy_satisfied is False
     assert before_helper.value.failed_dependencies == ["missing_helper"]
 
-    seed_committed_theorem(lean_runtime, repo_root, decl_name="missing_helper")
+    _prove_committed_helper_theorem(lean_runtime, repo_root, decl_name="missing_helper")
     after_helper = lean_runtime.decl_graph.check_decl_proof_policy_satisfied(
         repo_root,
         node_path=NODE_PATH,
@@ -456,6 +458,109 @@ def _run_main_result_theorem_stages(
         review_stage=DeclStage.PROOF_FORMAL,
         mutate=lambda: _write_proof_formal(lean_runtime, repo_root, round_id, deps=proof_deps),
     )
+
+
+def _seed_open_proof_planned_theorem(lean_runtime, repo_root: Path, *, decl_name: str) -> str:
+    strategy_id, round_id, _round_index = create_round_with_decl(
+        lean_runtime,
+        repo_root,
+        decl_name=decl_name,
+        end_after_state=DeclState.PROVED,
+    )
+    assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
+    assert lean_runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name=decl_name,
+        nl=f"{decl_name} states True.",
+    ).ok
+    assert lean_runtime.decl_graph.write_statement_formal(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name=decl_name,
+        lean_code=f"theorem {decl_name} : True := by trivial",
+        lean_check={"status": "passed", "allow_sorry": "true", "contains_sorry": "false"},
+    ).ok
+    assert lean_runtime.decl_graph.write_proof_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name=decl_name,
+        nl="Use triviality.",
+    ).ok
+    advanced = lean_runtime.decl_graph.advance_stage_state(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        stage="proof_nl",
+        decl_names=[decl_name],
+    )
+    assert advanced.ok, advanced.issues
+    assert lean_runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name=decl_name, state=DeclState.PROOF_PLANNED).ok
+    _mark_seed_round_success(lean_runtime, repo_root, strategy_id=strategy_id, round_id=round_id, decl_name=decl_name)
+    return round_id
+
+
+def _prove_committed_helper_theorem(lean_runtime, repo_root: Path, *, decl_name: str) -> None:
+    strategy = lean_runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective=f"Prove {decl_name}.")
+    assert strategy.ok and strategy.value is not None, strategy.issues
+    round_record = lean_runtime.decl_graph.create_round_draft(
+        repo_root,
+        node_path=NODE_PATH,
+        strategy_id=strategy.value.strategy_id,
+        objective=f"Prove {decl_name}.",
+    )
+    assert round_record.ok and round_record.value is not None, round_record.issues
+    change = lean_runtime.decl_graph.open_decl_update(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+        name=decl_name,
+        objective=f"Prove {decl_name}.",
+        start_before_state=DeclState.PROOF_PLANNED,
+        end_after_state=DeclState.PROVED,
+    )
+    assert change.ok, change.issues
+    assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_record.value.round_id).ok
+    assert lean_runtime.decl_graph.write_proof_formal(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+        decl_name=decl_name,
+        lean_code=f"theorem {decl_name} : True := by trivial",
+        lean_check={"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+    ).ok
+    assert lean_runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name=decl_name, state=DeclState.PROVED).ok
+    _mark_seed_round_success(lean_runtime, repo_root, strategy_id=strategy.value.strategy_id, round_id=round_record.value.round_id, decl_name=decl_name)
+
+
+def _mark_seed_round_success(lean_runtime, repo_root: Path, *, strategy_id: str, round_id: str, decl_name: str) -> None:
+    seeded_round = lean_runtime.decl_graph.get_round(repo_root, node_path=NODE_PATH, round_id=round_id)
+    assert seeded_round.ok and seeded_round.value is not None, seeded_round.issues
+    for change_id in seeded_round.value.change_ids:
+        assert lean_runtime.decl_graph.write_decl_change_summary(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            change_id=change_id,
+            summary=f"Seeded {decl_name}.",
+        ).ok
+    assert lean_runtime.decl_graph.write_round_summary(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        summary=f"Seeded theorem {decl_name}.",
+    ).ok
+    terminal = lean_runtime.decl_graph.mark_round_terminal(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        result_kind="success",
+        reason=f"{strategy_id} seed completed.",
+    )
+    assert terminal.ok, terminal.issues
 
 
 def _run_stage(

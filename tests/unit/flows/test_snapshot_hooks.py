@@ -94,8 +94,6 @@ def test_requirement_bootstrap_terminal_snapshot(tmp_path: Path) -> None:
             submission_id=new_submission_id("sub"),
             submission_type="repo_format_native_choice",
             tool_name="submit_native_repo_choice",
-            native_repo_name=repo_root.name,
-            source_corpus_mode="prepare",
             summary="Native provider route.",
         )
     )

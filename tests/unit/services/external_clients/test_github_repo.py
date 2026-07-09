@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,67 @@ class FakeRunner:
                     }
                 ),
             )
+        if command[:2] == ["gh", "api"] and "/git/trees/" in command[2]:
+            return ExternalCommandResult(
+                ok=True,
+                command=command,
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=json.dumps(
+                    {
+                        "sha": "tree123",
+                        "truncated": False,
+                        "tree": [
+                            {"path": "lakefile.lean", "type": "blob", "sha": "lake"},
+                            {"path": "lean-toolchain", "type": "blob", "sha": "toolchain"},
+                            {"path": "Foo.lean", "type": "blob", "sha": "foo"},
+                            {"path": "README.md", "type": "blob", "sha": "readme"},
+                            {"path": "nested/lakefile.toml", "type": "blob", "sha": "nested-lake"},
+                            {"path": "nested/Nested.lean", "type": "blob", "sha": "nested"},
+                        ],
+                    }
+                ),
+            )
+        if command[:2] == ["gh", "api"] and "/contents/" in command[2]:
+            path = command[2].split("/contents/", 1)[1]
+            contents = {
+                "lakefile.lean": "import Lake\nopen Lake DSL\npackage Foo where\n",
+                "lean-toolchain": "leanprover/lean4:v4.12.0\n",
+                "README.md": "# Foo\nLean project with Lake proofs.\n",
+                "nested/lakefile.toml": 'name = "Nested"\n',
+            }
+            text = contents.get(path, "def x := 1\n")
+            return ExternalCommandResult(
+                ok=True,
+                command=command,
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=json.dumps(
+                    {
+                        "type": "file",
+                        "encoding": "base64",
+                        "size": len(text),
+                        "content": base64.b64encode(text.encode()).decode(),
+                    }
+                ),
+            )
+        if command[:3] == ["gh", "search", "code"]:
+            return ExternalCommandResult(
+                ok=True,
+                command=command,
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=json.dumps(
+                    [
+                        {
+                            "path": "Foo.lean",
+                            "url": "https://github.com/owner/repo/blob/main/Foo.lean",
+                            "repository": {"fullName": "owner/repo"},
+                            "textMatches": [{"fragment": "theorem foo : True := by trivial"}],
+                        }
+                    ]
+                ),
+            )
         if command[:2] == ["git", "clone"]:
             Path(command[-1]).mkdir(parents=True, exist_ok=True)
             return ExternalCommandResult(ok=True, command=command, cwd=str(cwd), exit_code=0)
@@ -77,6 +139,117 @@ def test_search_and_inspect_use_gh_json() -> None:
     assert inspected.full_name == "owner/repo"
     assert inspected.default_branch == "main"
     assert inspected.license_spdx_id == "MIT"
+
+
+def test_remote_tree_file_and_code_search_use_github_api() -> None:
+    runner = FakeRunner()
+    client = GitHubRepoClient(runner=runner)
+
+    tree = client.list_repository_tree("owner/repo", revision="main", path_prefix="nested", limit=10)
+    file_view = client.read_repository_file("owner/repo", "lakefile.lean", revision="main", max_chars=10)
+    code = client.search_code("theorem", repo="owner/repo", limit=5)
+
+    assert tree.entries[0].path == "nested/lakefile.toml"
+    assert tree.path_prefix == "nested"
+    assert file_view.content_excerpt == "import Lak"
+    assert file_view.truncated is True
+    assert code.ok is True
+    assert code.matches[0].repository == "owner/repo"
+    assert any(call[:2] == ["gh", "api"] and "/git/trees/main" in call[2] and "--method" in call and "GET" in call for call in runner.calls)
+    assert any(call[:2] == ["gh", "api"] and "/contents/lakefile.lean" in call[2] and "--method" in call and "GET" in call for call in runner.calls)
+    assert any(call[:3] == ["gh", "search", "code"] and "--repo" in call for call in runner.calls)
+
+
+def test_remote_file_reports_path_traversal_issue() -> None:
+    client = GitHubRepoClient(runner=FakeRunner())
+
+    result = client.read_repository_file("owner/repo", "../lakefile.lean")
+
+    assert result.issue_code == "invalid_github_path"
+    assert "cannot contain" in (result.summary or "")
+
+
+def test_remote_lean_probe_extracts_lake_evidence_without_checkout() -> None:
+    runner = FakeRunner()
+    client = GitHubRepoClient(runner=runner)
+
+    probe = client.probe_github_lean_repo_candidate("owner/repo", revision="main")
+    nested = client.probe_github_lean_repo_candidate("owner/repo", revision="main", subdir="nested")
+
+    assert probe.is_lean_project is True
+    assert probe.package_name == "Foo"
+    assert probe.has_lakefile is True
+    assert probe.has_lean_toolchain is True
+    assert probe.candidate_subdirs == ["", "nested"]
+    assert "Foo" in probe.likely_import_modules
+    assert "Lean project" in (probe.readme_evidence or "")
+    assert nested.package_name == "Nested"
+    assert nested.selected_subdir == "nested"
+    assert not any(call[:2] == ["git", "clone"] for call in runner.calls)
+
+
+def test_remote_lean_probe_handles_no_lakefile_and_truncated_tree() -> None:
+    class ProbeRunner(FakeRunner):
+        def __init__(self, *, truncated: bool) -> None:
+            super().__init__()
+            self.truncated = truncated
+
+        def run(self, command, *, cwd: Path, timeout_seconds: int, stdout_excerpt_chars: int, stderr_excerpt_chars: int):
+            command = list(command)
+            self.calls.append(command)
+            if command[:3] == ["gh", "repo", "view"]:
+                return ExternalCommandResult(
+                    ok=True,
+                    command=command,
+                    cwd=str(cwd),
+                    exit_code=0,
+                    stdout_excerpt=json.dumps(
+                        {
+                            "nameWithOwner": "owner/repo",
+                            "url": "https://github.com/owner/repo",
+                            "defaultBranchRef": {"name": "main"},
+                        }
+                    ),
+                )
+            if command[:2] == ["gh", "api"] and "/git/trees/" in command[2]:
+                return ExternalCommandResult(
+                    ok=True,
+                    command=command,
+                    cwd=str(cwd),
+                    exit_code=0,
+                    stdout_excerpt=json.dumps(
+                        {
+                            "sha": "tree123",
+                            "truncated": self.truncated,
+                            "tree": [{"path": "README.md", "type": "blob", "sha": "readme"}],
+                        }
+                    ),
+                )
+            if command[:2] == ["gh", "api"] and "/contents/README.md" in command[2]:
+                text = "A repository without Lean project files.\n"
+                return ExternalCommandResult(
+                    ok=True,
+                    command=command,
+                    cwd=str(cwd),
+                    exit_code=0,
+                    stdout_excerpt=json.dumps(
+                        {
+                            "type": "file",
+                            "encoding": "base64",
+                            "size": len(text),
+                            "content": base64.b64encode(text.encode()).decode(),
+                        }
+                    ),
+                )
+            return ExternalCommandResult(ok=True, command=command, cwd=str(cwd), exit_code=0, stdout_excerpt="{}")
+
+    no_lakefile = GitHubRepoClient(runner=ProbeRunner(truncated=False)).probe_github_lean_repo_candidate("owner/repo")
+    truncated = GitHubRepoClient(runner=ProbeRunner(truncated=True)).probe_github_lean_repo_candidate("owner/repo")
+
+    assert no_lakefile.is_lean_project is False
+    assert no_lakefile.has_lakefile is False
+    assert truncated.truncated is True
+    assert any("truncated" in risk for risk in truncated.known_risks)
 
 
 def test_search_reports_command_failure_invalid_json_and_bad_limit() -> None:

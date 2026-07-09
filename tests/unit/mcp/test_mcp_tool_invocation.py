@@ -39,19 +39,19 @@ def test_mcp_submit_path_returns_gate_errors_and_records_successful_submit(tmp_p
     rejected = server.value.call_tool(
         "repo_format_discovery_submit",
         "submit_adapter_repo_choice",
-        {"summary": "Use adapter.", "upstream_github_url": "https://example.com/project"},
+        {"git_url": "https://example.com/project", "evidence_summary": "Remote probe found lakefile.lean."},
         env=env,
     )
     assert rejected.ok
     assert rejected.value is not None
     assert rejected.value.ok is False
-    assert rejected.value.issues[0].kind == "upstream_github_url_invalid"
+    assert rejected.value.issues[0].kind == "git_url_invalid"
     assert gateway.accepted == []
 
     submitted = server.value.call_tool(
         "repo_format_discovery_submit",
         "submit_native_repo_choice",
-        {"summary": "Use native.", "source_corpus_mode": "prepare"},
+        {"summary": "Use native."},
         env=env,
     )
     assert submitted.ok

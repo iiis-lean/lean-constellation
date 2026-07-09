@@ -85,7 +85,8 @@ def test_repo_format_discovery_agent_step_business_results(tmp_path: Path) -> No
             submission_id=new_submission_id("sub"),
             submission_type="repo_format_adapter_choice",
             tool_name="submit_adapter_repo_choice",
-            upstream_github_url="https://github.com/example/upstream.git",
+            git_url="https://github.com/example/upstream.git",
+            evidence_summary="Remote probe found lakefile.lean.",
             summary="Use adapter.",
         ),
     )
@@ -104,7 +105,6 @@ def test_repo_format_discovery_agent_step_business_results(tmp_path: Path) -> No
             submission_id=new_submission_id("sub"),
             submission_type="repo_format_native_choice",
             tool_name="submit_native_repo_choice",
-            source_corpus_mode="prepare",
             summary="Use native.",
         ),
     )

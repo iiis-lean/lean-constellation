@@ -170,9 +170,9 @@ def test_requirement_bootstrap_native_choice_initializes_native_skeleton(tmp_pat
             submission_id=new_submission_id("sub"),
             submission_type="repo_format_native_choice",
             tool_name="submit_native_repo_choice",
-            native_repo_name="Provider",
-            source_corpus_mode="prepare",
             summary="Native route.",
+            searched_targets=["topology upstream"],
+            rejected_candidates=[],
         )
     )
     runtime.run_step(agent_step_id)
@@ -208,15 +208,19 @@ def test_requirement_bootstrap_adapter_choice_initializes_adapter_skeleton(tmp_p
             submission_id=new_submission_id("sub"),
             submission_type="repo_format_adapter_choice",
             tool_name="submit_adapter_repo_choice",
-            upstream_github_url="https://github.com/example/upstream.git",
-            upstream_revision="main",
-            upstream_subdir="lean",
-            adapter_repo_name="AdapterProvider",
+            git_url="https://github.com/example/upstream.git",
+            revision="main",
+            subdir="lean",
+            package_name="upstream",
+            likely_import_module="upstream",
+            evidence_summary="Remote probe found lakefile.lean.",
+            known_risks=["Coverage not verified."],
             summary="Adapter route.",
         )
     )
     runtime.run_step(agent_step_id)
-    _advance_and_run(runtime, flow_id)
+    apply_step_id = _advance_and_run(runtime, flow_id)
+    apply_step = runtime.flow_service.get_step(apply_step_id)
 
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
@@ -229,6 +233,8 @@ def test_requirement_bootstrap_adapter_choice_initializes_adapter_skeleton(tmp_p
     assert preparation.value.input.source_corpus_relpath is None
     assert lake.updated == [repo_root]
     assert lake.checked == [(repo_root, "upstream")]
+    assert apply_step.result is not None
+    assert "Coverage not verified." in apply_step.result.upstream_summary
 
 
 def test_requirement_bootstrap_missing_preparation_input_needs_admin_repair(tmp_path: Path) -> None:

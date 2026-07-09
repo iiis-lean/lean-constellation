@@ -37,7 +37,7 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         flow_id=repo_flow_id,
         agent_step_id=repo_agent_step_id,
         tool_name="submit_native_repo_choice",
-        arguments={"summary": "Strict native branch.", "source_corpus_mode": "prepare"},
+        arguments={"summary": "Strict native branch.", "searched_targets": ["strict matrix"], "rejected_candidates": []},
         expected_outcome="native_bootstrap_ready",
     )
     restore_with_evidence(
@@ -55,10 +55,12 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         agent_step_id=repo_agent_step_id,
         tool_name="submit_adapter_repo_choice",
         arguments={
-            "summary": "Strict adapter branch.",
-            "upstream_github_url": "https://github.com/example/runtime-matrix-upstream.git",
-            "upstream_revision": "HEAD",
-            "adapter_repo_name": "ProviderAdapter",
+            "git_url": "https://github.com/example/runtime-matrix-upstream.git",
+            "revision": "HEAD",
+            "package_name": "runtime_matrix_upstream",
+            "likely_import_module": "RuntimeMatrixUpstream",
+            "evidence_summary": "Strict matrix fixture uses a remote GitHub Lean candidate.",
+            "known_risks": ["Fixture does not validate declaration coverage."],
         },
         expected_outcome="adapter_bootstrap_ready",
     )

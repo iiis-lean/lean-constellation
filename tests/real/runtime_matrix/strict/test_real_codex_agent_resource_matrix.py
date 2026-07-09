@@ -434,11 +434,10 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
         [
             (
                 "application",
-                "write_statement_nl",
+                "set_statement_nl",
                 {
                     "decl_name": round_fixture.decl_name,
                     "nl": "The strict real Codex statement formal theorem states True.",
-                    "deps": [],
                 },
             ),
             (
@@ -1525,11 +1524,10 @@ def _complete_statement_nl_stage_for_real_codex(
         [
             (
                 "application",
-                "write_statement_nl",
+                "set_statement_nl",
                 {
                     "decl_name": round_fixture.decl_name,
                     "nl": "The strict real Codex proof formal theorem states True.",
-                    "deps": [],
                 },
             ),
             (
@@ -1621,11 +1619,10 @@ def _complete_proof_nl_stage_for_real_codex(
         [
             (
                 "application",
-                "write_proof_nl",
+                "set_proof_nl",
                 {
                     "decl_name": round_fixture.decl_name,
-                    "nl": "Use triviality.",
-                    "deps": [],
+                    "proof_nl": "Use triviality.",
                 },
             ),
             (
@@ -1679,6 +1676,24 @@ def _complete_review_stage(
         review_action = (
             "application",
             "record_statement_nl_review_passed",
+            {"decl_name": round_fixture.decl_name, "summary": summary},
+        )
+    elif stage == "statement_formal":
+        review_action = (
+            "application",
+            "record_statement_formal_review_passed",
+            {"decl_name": round_fixture.decl_name, "summary": summary},
+        )
+    elif stage == "proof_nl":
+        review_action = (
+            "application",
+            "record_proof_nl_review_passed",
+            {"decl_name": round_fixture.decl_name, "summary": summary},
+        )
+    elif stage == "proof_formal":
+        review_action = (
+            "application",
+            "record_proof_formal_review_passed",
             {"decl_name": round_fixture.decl_name, "summary": summary},
         )
     else:

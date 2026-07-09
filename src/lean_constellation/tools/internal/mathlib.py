@@ -277,7 +277,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ArxivTheoremSearchArgs,
             capability=ToolCapability.READ,
             result_view="arxiv_theorem_search",
-            groups={AppGroup.EXTERNAL_RESOURCE_DISCOVERY},
+            groups={AppGroup.EXTERNAL_RESOURCE_DISCOVERY, AppGroup.EXTERNAL_MATERIAL_SEARCH_READ},
             roles=roles,
             handler=_search_arxiv_theorems,
             required_context=set(),

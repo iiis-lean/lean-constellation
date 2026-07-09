@@ -107,6 +107,15 @@ class RequirementGroupView(StrictModel):
     summary: str
 
 
+class RepoPreparationRequirementsView(StrictModel):
+    repo_root: str
+    target_repo: str
+    requirement_refs: list[RepoRequirementRef] = Field(default_factory=list)
+    requirements: list[RequirementGroupItem] = Field(default_factory=list)
+    missing_refs: list[RepoRequirementRef] = Field(default_factory=list)
+    summary: str
+
+
 class RepoPreparationInputView(StrictModel):
     repo_root: str | None = None
     input: RepoPreparationInput
@@ -174,6 +183,7 @@ class UpstreamDependencyInput(StrictModel):
     package_name: str | None = None
     module_name: str | None = None
     evidence_summary: str | None = None
+    known_risks: list[str] = Field(default_factory=list)
 
 
 class RepoFormatChoice(StrictModel):

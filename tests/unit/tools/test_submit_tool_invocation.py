@@ -51,7 +51,7 @@ def test_successful_submit_records_typed_submission(tmp_path: Path) -> None:
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_native_repo_choice",
-        flat_args={"summary": "Use native repo.", "source_corpus_mode": "prepare"},
+        flat_args={"summary": "Use native repo.", "searched_targets": ["topology repo"], "rejected_candidates": []},
     )
 
     assert result.ok
@@ -59,9 +59,10 @@ def test_successful_submit_records_typed_submission(tmp_path: Path) -> None:
     assert result.value.ok is True
     assert len(gateway.accepted) == 1
     assert gateway.accepted[0].submission_type == "repo_format_native_choice"
+    assert gateway.accepted[0].searched_targets == ["topology repo"]
 
 
-def test_native_repo_choice_rejects_empty_or_none_source_corpus_mode(tmp_path: Path) -> None:
+def test_native_repo_choice_rejects_legacy_source_corpus_mode(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
@@ -70,25 +71,16 @@ def test_native_repo_choice_rejects_empty_or_none_source_corpus_mode(tmp_path: P
         runtime_context=_runtime_ctx(tmp_path, view="repo_format_discovery_submit"),
     )
 
-    missing = runtime.tool_facade.invoke_agent_tool(
-        raw,
-        tool_name="submit_native_repo_choice",
-        flat_args={"summary": "Use native repo."},
-    )
-    explicit_none = runtime.tool_facade.invoke_agent_tool(
+    legacy = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_native_repo_choice",
         flat_args={"summary": "Use native repo.", "source_corpus_mode": "none"},
     )
 
-    assert missing.ok
-    assert missing.value is not None
-    assert missing.value.ok is False
-    assert missing.value.issues[0].kind == "tool_arguments_invalid"
-    assert explicit_none.ok
-    assert explicit_none.value is not None
-    assert explicit_none.value.ok is False
-    assert explicit_none.value.issues[0].kind == "tool_arguments_invalid"
+    assert legacy.ok
+    assert legacy.value is not None
+    assert legacy.value.ok is False
+    assert legacy.value.issues[0].kind == "tool_arguments_invalid"
     assert gateway.accepted == []
 
 
@@ -104,14 +96,68 @@ def test_adapter_repo_choice_rejects_non_github_url(tmp_path: Path) -> None:
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_adapter_repo_choice",
-        flat_args={"summary": "Use adapter repo.", "upstream_github_url": "https://example.com/project"},
+        flat_args={"git_url": "https://example.com/project", "evidence_summary": "Remote evidence."},
     )
 
     assert result.ok
     assert result.value is not None
     assert result.value.ok is False
-    assert result.value.issues[0].kind == "upstream_github_url_invalid"
+    assert result.value.issues[0].kind == "git_url_invalid"
     assert gateway.accepted == []
+
+
+def test_adapter_repo_choice_rejects_legacy_upstream_url_payload(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="repo_format_discovery_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="repo_format_discovery_submit"),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_adapter_repo_choice",
+        flat_args={"summary": "Use adapter repo.", "upstream_github_url": "https://github.com/owner/repo"},
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is False
+    assert result.value.issues[0].kind == "tool_arguments_invalid"
+    assert gateway.accepted == []
+
+
+def test_adapter_repo_choice_records_typed_remote_evidence(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="repo_format_discovery_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="repo_format_discovery_submit"),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_adapter_repo_choice",
+        flat_args={
+            "git_url": "owner/repo",
+            "revision": "main",
+            "subdir": "lean",
+            "package_name": "Foo",
+            "likely_import_module": "Foo",
+            "evidence_summary": "Remote probe found lakefile.lean.",
+            "known_risks": ["Coverage not verified."],
+        },
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is True
+    assert gateway.accepted[0].git_url == "https://github.com/owner/repo"
+    assert gateway.accepted[0].package_name == "Foo"
+    assert gateway.accepted[0].likely_import_module == "Foo"
+    assert gateway.accepted[0].known_risks == ["Coverage not verified."]
 
 
 def test_gate_failure_does_not_record_submission(tmp_path: Path) -> None:
@@ -152,7 +198,7 @@ def test_second_successful_submit_is_rejected_before_gateway(tmp_path: Path) -> 
     result = runtime.tool_facade.invoke_agent_tool(
         raw,
         tool_name="submit_native_repo_choice",
-        flat_args={"summary": "Use native repo.", "source_corpus_mode": "prepare"},
+        flat_args={"summary": "Use native repo."},
     )
 
     assert result.ok

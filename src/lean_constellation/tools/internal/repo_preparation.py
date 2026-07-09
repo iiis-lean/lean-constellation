@@ -5,7 +5,13 @@ from __future__ import annotations
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     ExpectedFormatArgs,
+    GitHubCodeSearchArgs,
+    GitHubFileReadArgs,
+    GitHubLeanRepoProbeArgs,
+    GitHubRepoArgs,
+    GitHubTreeArgs,
     NoArgs,
+    PreparationRequirementRefArgs,
     ProviderRepoArgs,
     QueryLimitArgs,
     RequirementNameArgs,
@@ -13,6 +19,7 @@ from lean_constellation.tools.args import (
     TargetRepoArgs,
     UrlOrSlugArgs,
 )
+from lean_constellation.domain.preparation import RepoPreparationRequirementsView, RepoRequirementRef
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import direct_tool, handler_tool
 
@@ -42,6 +49,69 @@ def _list_resume_candidates(runtime, ctx, args: ProviderRepoArgs):
     return runtime.repo_workspace.list_resume_candidates_for_requirement(
         _workspace_root(ctx),
         provider_repo=args.provider_repo,
+    )
+
+
+def _load_scoped_preparation_requirements(runtime, ctx):
+    prepared = runtime.repo_workspace.preparation.get_preparation_input(ctx.repo_root)
+    if not prepared.ok or prepared.value is None:
+        return runtime.foundation.fail(prepared.issues)
+    refs = list(prepared.value.input.requirement_refs)
+    allowed = {(ref.consumer_repo, ref.requirement_name) for ref in refs}
+    group = runtime.repo_workspace.workspace_catalog.get_requirement_group(_workspace_root(ctx), target_repo=ctx.repo_root.name)
+    if not group.ok or group.value is None:
+        return runtime.foundation.fail(group.issues)
+    requirements = [
+        item
+        for item in group.value.requirements
+        if (item.consumer_repo, item.requirement.name) in allowed
+    ]
+    found = {(item.consumer_repo, item.requirement.name) for item in requirements}
+    missing = [
+        RepoRequirementRef(consumer_repo=ref.consumer_repo, requirement_name=ref.requirement_name)
+        for ref in refs
+        if (ref.consumer_repo, ref.requirement_name) not in found
+    ]
+    return runtime.foundation.ok(
+        RepoPreparationRequirementsView(
+            repo_root=str(ctx.repo_root),
+            target_repo=ctx.repo_root.name,
+            requirement_refs=refs,
+            requirements=requirements,
+            missing_refs=missing,
+            summary=f"Loaded {len(requirements)} requirements from {len(refs)} current preparation refs.",
+        )
+    )
+
+
+def _list_preparation_requirements(runtime, ctx, args: NoArgs):
+    del args
+    return _load_scoped_preparation_requirements(runtime, ctx)
+
+
+def _get_preparation_requirement(runtime, ctx, args: PreparationRequirementRefArgs):
+    scoped = _load_scoped_preparation_requirements(runtime, ctx)
+    if not scoped.ok or scoped.value is None:
+        return scoped
+    allowed = {(ref.consumer_repo, ref.requirement_name) for ref in scoped.value.requirement_refs}
+    requested = (args.consumer_repo, args.requirement_name)
+    if requested not in allowed:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "preparation_requirement_ref_not_allowed",
+                "Requirement ref is not part of the current preparation input.",
+                object_ref=f"{args.consumer_repo}:{args.requirement_name}",
+            )
+        )
+    for item in scoped.value.requirements:
+        if (item.consumer_repo, item.requirement.name) == requested:
+            return runtime.foundation.ok(item)
+    return runtime.foundation.fail(
+        runtime.foundation.issue(
+            "preparation_requirement_ref_missing",
+            "Requirement ref is listed in preparation input but the requirement detail was not found.",
+            object_ref=f"{args.consumer_repo}:{args.requirement_name}",
+        )
     )
 
 
@@ -126,6 +196,26 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_list_open_requirement_groups,
         ),
         handler_tool(
+            name="list_preparation_requirements",
+            description="Read only the requirement details referenced by the current repo preparation input.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="repo_preparation_requirements",
+            groups={AppGroup.REPO_PREPARATION_REQUIREMENT_READ},
+            roles={"coordinator", "admin"},
+            handler=_list_preparation_requirements,
+        ),
+        handler_tool(
+            name="get_preparation_requirement",
+            description="Read one requirement detail only when it is referenced by the current repo preparation input.",
+            args_model=PreparationRequirementRefArgs,
+            capability=ToolCapability.READ,
+            result_view="repo_preparation_requirement",
+            groups={AppGroup.REPO_PREPARATION_REQUIREMENT_READ},
+            roles={"coordinator", "admin"},
+            handler=_get_preparation_requirement,
+        ),
+        handler_tool(
             name="get_requirement_group",
             description="Read one open dependency requirement group by target repo.",
             args_model=TargetRepoArgs,
@@ -202,6 +292,71 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_method="inspect_repository",
             result_view="github_repo_candidate",
             groups={AppGroup.UPSTREAM_REPO_SEARCH},
+            roles={"coordinator", "admin"},
+            required_context=set(),
+        ),
+        direct_tool(
+            name="probe_github_lean_repo_candidate",
+            description="Probe a GitHub repository remotely for Lean/Lake project evidence without cloning it.",
+            args_model=GitHubLeanRepoProbeArgs,
+            capability=ToolCapability.READ,
+            backing_service="external",
+            backing_component="github_repo",
+            backing_method="probe_github_lean_repo_candidate",
+            result_view="github_lean_repo_probe",
+            groups={AppGroup.UPSTREAM_REPO_SEARCH},
+            roles={"coordinator", "admin"},
+            required_context=set(),
+        ),
+        direct_tool(
+            name="get_github_repository",
+            description="Read GitHub repository metadata by URL or owner/name slug.",
+            args_model=GitHubRepoArgs,
+            capability=ToolCapability.READ,
+            backing_service="external",
+            backing_component="github_repo",
+            backing_method="get_repository",
+            result_view="github_repository",
+            groups={AppGroup.GITHUB_REPOSITORY_READ},
+            roles={"coordinator", "admin"},
+            required_context=set(),
+        ),
+        direct_tool(
+            name="list_github_repository_tree",
+            description="Read a GitHub repository tree remotely.",
+            args_model=GitHubTreeArgs,
+            capability=ToolCapability.READ,
+            backing_service="external",
+            backing_component="github_repo",
+            backing_method="list_repository_tree",
+            result_view="github_repository_tree",
+            groups={AppGroup.GITHUB_REPOSITORY_READ},
+            roles={"coordinator", "admin"},
+            required_context=set(),
+        ),
+        direct_tool(
+            name="read_github_repository_file",
+            description="Read one repository-relative file from GitHub remotely.",
+            args_model=GitHubFileReadArgs,
+            capability=ToolCapability.READ,
+            backing_service="external",
+            backing_component="github_repo",
+            backing_method="read_repository_file",
+            result_view="github_repository_file",
+            groups={AppGroup.GITHUB_REPOSITORY_READ},
+            roles={"coordinator", "admin"},
+            required_context=set(),
+        ),
+        direct_tool(
+            name="search_github_code",
+            description="Search GitHub code, preferably scoped to a candidate repository.",
+            args_model=GitHubCodeSearchArgs,
+            capability=ToolCapability.READ,
+            backing_service="external",
+            backing_component="github_repo",
+            backing_method="search_code",
+            result_view="github_code_search",
+            groups={AppGroup.GITHUB_REPOSITORY_READ},
             roles={"coordinator", "admin"},
             required_context=set(),
         ),

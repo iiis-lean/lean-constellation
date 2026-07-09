@@ -59,7 +59,7 @@ def test_strict_external_takeover_handoff_payload_for_repo_coordinator_resource_
         app_view="repo_format_discovery",
         submit_view="repo_format_discovery_submit",
         app_call=("get_preparation_input", {}),
-        submit_call=("submit_native_repo_choice", {"summary": "Strict handoff chooses native.", "source_corpus_mode": "prepare"}),
+        submit_call=("submit_native_repo_choice", {"summary": "Strict handoff chooses native.", "searched_targets": ["strict handoff"], "rejected_candidates": []}),
         recorder=evidence_recorder,
     )
 

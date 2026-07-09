@@ -1026,10 +1026,16 @@ Use this skill when a declaration worker or reviewer must connect a statement or
 2. Treat the DeclRevision, change objective, target state, declaration kind, visibility, current stage, and previous revision as the first source of truth for what may be written or reviewed.
 3. Prefer stable evidence in the source corpus, resource library, visible public declarations, and recorded Mathlib index before broader semantic search.
 4. Use semantic search or external theorem discovery only as discovery. A search hit is not a stable origin until it is already represented in source corpus or resource library truth.
-5. Record origins only for source/resource ranges that actually support the statement or proof. Generated or agent-authored text may have no origin; do not overclaim support.
-6. Keep statement dependencies and proof dependencies separate. Statement dependencies are only the project or Mathlib declarations needed to express the statement; proof-only helper lemmas belong to proof dependencies.
-7. Do not use unfinished same-round declarations as stable dependencies unless the current truth already marks them accepted and suitable for this stage.
-8. Before submit, self-check that origins are stable, dependencies are visible, source support is not invented, and blocked needs name the missing material, dependency, helper declaration, resource, provider repo, or planning change.
+5. For Statement NL workers, write statement text first, then add only stable typed source/resource evidence ranges. Use origin removal or clearing only to repair the current candidate.
+6. For Statement NL workers, record statement dependencies one at a time as typed project-declaration or Mathlib-declaration dependencies. Use dependency removal or clearing only to repair the current candidate. Do not use a flat dependency list or an untyped origin dictionary as the Agent-facing write path.
+7. For Statement Formal workers, refine typed statement dependencies when the final formal statement uses a project or Mathlib declaration that is not already recorded. Do not mutate statement text, statement origins, proof routes, or proof artifacts while doing this.
+8. For Proof NL workers, write proof-route text first, then add only stable typed source/resource origins that support the proof route itself. Record proof dependencies one at a time as typed project-declaration or Mathlib-declaration dependencies; do not use a flat dependency list or an untyped origin dictionary as the Agent-facing write path.
+9. For Proof Formal workers, refine typed proof dependencies when the final formal proof actually uses a project or Mathlib declaration that is not already recorded. Do not mutate proof-route text or proof origins while doing this.
+10. For reviewers, inspect typed source/resource origins and repo_decl/mathlib_decl dependencies as artifacts under review; do not mutate them.
+11. Record origins only for source/resource ranges that actually support the statement or proof. Generated or agent-authored text may have no origin; do not overclaim support.
+12. Keep statement dependencies and proof dependencies separate. Statement dependencies are only the project or Mathlib declarations needed to express the statement; proof-only helper lemmas belong to proof dependencies.
+13. Do not use unfinished same-round declarations as stable dependencies unless the current truth already marks them accepted and suitable for this stage.
+14. Before submit, self-check that origins are stable, dependencies are visible, source support is not invented, and blocked needs name the missing material, dependency, helper declaration, resource, provider repo, or planning change.
 
 ## Boundaries
 
@@ -1037,7 +1043,7 @@ Use this skill when a declaration worker or reviewer must connect a statement or
 - Do not write external search hits directly as origins.
 - Do not mix proof-only dependencies into statement dependency fields.
 - Do not add dependencies on same-round declarations that are not accepted or satisfied for the current need.
-- Do not mutate node contracts, dispatch resource curation, or create helper declarations from declaration worker stages; block or return the gap to planning instead.
+- Do not mutate node contracts unless the current Agent instruction explicitly grants narrow current-node dependency maintenance for a verified provider dependency. Do not dispatch resource curation or create helper declarations from declaration worker stages; block or return the gap to planning instead.
 """,
     ),
     SkillKey.DECL_OWNED_LEAN_FILE_CAPTURE_CHECK.value: LeanSkillDefinition(
@@ -1049,18 +1055,19 @@ Use this skill when a declaration worker or reviewer must connect a statement or
             "decl-owned-lean-file-capture-check",
             "Use this skill when a formal worker edits a tracked declaration file or when a reviewer needs to understand formal capture semantics.",
             (
-                "Use the current stage's prepare tool to generate or recover the legal declaration-owned working file.",
-                "Treat prepare as destructive for uncaptured working-file edits; use it at stage start or to recover damaged markers, docstrings, or file structure.",
+                "Use the current stage's prepare tool only to generate or recover the legal declaration-owned working file when the scaffold, marker, docstring, or file structure is missing or damaged.",
+                "Treat prepare as destructive for uncaptured working-file edits.",
                 "Edit only the region that the current formal stage owns and keep system markers and prepared structure intact.",
-                "Use the current stage's diagnostics and policy check while iterating.",
+                "Use the current stage's diagnostics while iterating.",
                 "Use the current stage's capture tool to save durable formal state after editing.",
-                "Use the current stage's consistency gate before worker submit when it is available.",
-                "Respect safety policy before worker submit.",
+                "After capture, edit only if you will capture again.",
+                "Use the current stage's consistency gate before worker submit when it is available, and require it to pass.",
+                "Statement formal theorem-like declarations may use the workflow's statement-stage proof placeholder; proof formal completed work must not contain sorry, admit, axiom, opaque, unsafe, or equivalent shortcuts.",
             ),
             (
                 "Do not rely on uncaptured edits as accepted formal content.",
                 "Do not let reviewers prepare, capture, or mutate formal files; reviewers record review marks and submit review results.",
-                "Do not use sorry, admit, axiom, or equivalent shortcuts in completed work.",
+                "Do not treat a diagnostic or consistency tool call as sufficient; the result must pass before submit.",
             ),
         ),
     ),
@@ -1071,7 +1078,15 @@ Use this skill when a declaration worker or reviewer must connect a statement or
         required_tool_groups=_groups(
             AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE,
             AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE_WRITE,
+            AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE,
             AppGroup.STATEMENT_FORMAL_DIAGNOSTICS_READ,
+            AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
+            AppGroup.MATHLIB_INDEX_READ,
+            AppGroup.MATHLIB_INDEX_WRITE,
+            AppGroup.MATHLIB_SEMANTIC_SEARCH,
+            AppGroup.MATHLIB_NAVIGATION,
+            AppGroup.NODE_MATHLIB_HINT_READ,
+            AppGroup.NODE_MATHLIB_HINT_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -1080,14 +1095,19 @@ Use this skill when a declaration worker or reviewer must connect a statement or
             (
                 "Start from the accepted statement and declared objective.",
                 "Map variables, assumptions, definitions, and conclusions to Lean deliberately.",
-                "Search dependencies in visible project context and Mathlib before adding imports or hints.",
-                "Prepare the declaration-owned file with `prepare_statement_formal_file` at stage start, or to recover damaged scaffold, marker, or docstring structure. Do not call it casually after valid uncaptured edits because it rewrites the working file.",
-                "Edit only the statement formalization area, then run `run_lean_file_diagnostics` and `check_statement_formal_policy`.",
-                "Capture with `capture_statement_formal_file`, check consistency with `check_formal_stage_consistency`, and refine dependencies before `submit_stage_worker_completed`.",
+                "Search dependencies in visible project context and Mathlib before adding imports, dependencies, or hints.",
+                "Prepare the declaration-owned file with `prepare_statement_formal_file` only to recover missing or damaged scaffold, marker, docstring, or file structure. Do not call it casually after valid uncaptured edits because it rewrites the working file.",
+                "Edit only the statement formalization area and use `run_lean_file_diagnostics` while iterating.",
+                "Capture with `capture_statement_formal_file`, require `check_formal_stage_consistency` to pass, and refine typed statement dependencies with add/remove/clear statement dependency tools before `submit_stage_worker_completed`.",
+                "Read current node Mathlib hints first, then the repo MathlibIndex; only use broader search/navigation when those are insufficient.",
+                "For a Mathlib candidate you intend to use, inspect or check it first, then record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`.",
+                "Record current-node relevance with `add_current_mathlib_decl_hint` or `add_current_mathlib_module_hint` only for confirmed current statement needs.",
+                "Use `add_current_node_dep` only when the current formal statement actually needs a provider node dependency that is not already available.",
             ),
             (
                 "Do not silently change statement meaning to make Lean easier.",
                 "Do not complete theorem proofs in the statement formalization stage.",
+                "Do not record guessed Mathlib entries, raw search scratch, future proof-only lemmas, or APIs unrelated to the current statement.",
             ),
         ),
     ),
@@ -1098,23 +1118,37 @@ Use this skill when a declaration worker or reviewer must connect a statement or
         required_tool_groups=_groups(
             AppGroup.DECL_STAGE_PROOF_FORMAL_FILE,
             AppGroup.DECL_STAGE_PROOF_FORMAL_FILE_WRITE,
+            AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE,
             AppGroup.PROOF_FORMAL_DIAGNOSTICS_READ,
+            AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
+            AppGroup.MATHLIB_INDEX_READ,
+            AppGroup.MATHLIB_INDEX_WRITE,
+            AppGroup.MATHLIB_SEMANTIC_SEARCH,
+            AppGroup.MATHLIB_NAVIGATION,
+            AppGroup.NODE_MATHLIB_HINT_READ,
+            AppGroup.NODE_MATHLIB_HINT_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "lean-proof-formalization",
             "Use this skill for Proof Formal workers after proof NL has been accepted.",
             (
-                "Start from the frozen statement and reviewed proof route.",
-                "Search formal dependencies in visible project context and Mathlib.",
-                "Prepare the assigned file with `prepare_proof_formal_file` at stage start, or to recover damaged frozen statement, marker, docstring, or file structure. It restores from the accepted statement formal capture and discards uncaptured proof edits.",
-                "Edit the proof body without changing the accepted statement.",
-                "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` iteratively, then capture at the durable boundary with `capture_proof_formal_file`.",
-                "Use `check_formal_stage_consistency` before submit, and call `submit_stage_worker_blocked` when the route needs planning changes.",
+                "Start from the accepted formal statement, reviewed proof route, proof origins/deps, current decl history, and prior feedback.",
+                "Inspect the prepared proof formal file first. Use `prepare_proof_formal_file` only to repair missing or damaged scaffold, marker, docstring, theorem header, or file structure; it rewrites from accepted statement formal capture and discards uncaptured proof edits.",
+                "Edit only the proof body and small proof-local helpers. Block for planning when a helper is major, reusable, or mathematically meaningful enough to be tracked as a declaration.",
+                "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` while iterating; proof formal completed work must satisfy strict proof policy.",
+                "Capture at the durable boundary with `capture_proof_formal_file`; if any edit happens after capture, capture again.",
+                "Before submit, require `check_formal_stage_consistency` to pass.",
+                "Refine typed proof dependencies with `add_proof_decl_dep`, `add_proof_mathlib_dep`, `remove_proof_dep`, or `clear_proof_deps`; these are proof deps, not statement deps.",
+                "Read current node Mathlib hints first, then repo MathlibIndex; search or navigate only when those are insufficient.",
+                "For a Mathlib candidate you intend to use in the current proof, inspect or check it first, record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`, record current-node relevance with hint tools, and add the typed proof Mathlib dep.",
+                "Use `add_current_node_dep` only when the final proof actually needs a verified provider public declaration that is not already available.",
             ),
             (
                 "Do not alter the theorem statement to make the proof work.",
-                "Do not leave sorry, admit, axiom, or equivalent shortcuts in completed proof work.",
+                "Do not mutate proof NL, proof origins, statement fields, reviewer marks, or round plans.",
+                "Do not record guessed Mathlib entries, search scratch, future-proof possibilities, or APIs unrelated to the current proof.",
+                "Do not leave sorry, admit, axiom, opaque, unsafe, or equivalent shortcuts in completed proof work.",
             ),
         ),
     ),

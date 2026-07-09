@@ -43,30 +43,87 @@ def test_strict_live_env_github_mathlib_and_arxiv_tools_execute_through_mcp(
         agent_type="MathlibReconAgent",
         node_path="Main.Topic.Core",
     )
+    github_repo = os.environ.get("LEAN_CONSTELLATION_REAL_GITHUB_REPO", "leanprover-community/mathlib4")
 
     github_search = call_tool_with_evidence(
         server,
         "repo_format_discovery",
         "search_github_lean_repositories",
-        {"query": os.environ.get("LEAN_CONSTELLATION_REAL_GITHUB_QUERY", "leanprover-community/lean4-samples"), "limit": 1},
+        {"query": os.environ.get("LEAN_CONSTELLATION_REAL_GITHUB_QUERY", github_repo), "limit": 1},
         runtime_context=repo_ctx,
         recorder=recorder,
         assertion_summary="Live GitHub repository search returned a real Lean repository candidate.",
     )
     assert github_search.value["candidates"]
-    assert any("lean4-samples" in item["full_name"] for item in github_search.value["candidates"])
+    assert any(github_repo.split("/", 1)[1] in item["full_name"] for item in github_search.value["candidates"])
 
     github_inspect = call_tool_with_evidence(
         server,
         "repo_format_discovery",
         "inspect_github_lean_repository",
-        {"url_or_slug": os.environ.get("LEAN_CONSTELLATION_REAL_GITHUB_REPO", "leanprover-community/lean4-samples")},
+        {"url_or_slug": github_repo},
         runtime_context=repo_ctx,
         recorder=recorder,
         assertion_summary="Live GitHub repository inspect returned metadata from gh.",
     )
-    assert github_inspect.value["full_name"] == "leanprover-community/lean4-samples"
+    assert github_inspect.value["full_name"] == github_repo
     assert github_inspect.value["html_url"].startswith("https://github.com/")
+
+    github_metadata = call_tool_with_evidence(
+        server,
+        "repo_format_discovery",
+        "get_github_repository",
+        {"git_url": github_repo},
+        runtime_context=repo_ctx,
+        recorder=recorder,
+        assertion_summary="Live GitHub generic repository metadata returned from gh.",
+    )
+    assert github_metadata.value["full_name"] == github_repo
+
+    github_tree = call_tool_with_evidence(
+        server,
+        "repo_format_discovery",
+        "list_github_repository_tree",
+        {"git_url": github_repo, "revision": github_inspect.value["default_branch"], "recursive": True, "limit": 100},
+        runtime_context=repo_ctx,
+        recorder=recorder,
+        assertion_summary="Live GitHub tree read returned remote repository entries.",
+    )
+    assert any(item["path"].startswith("lakefile.") for item in github_tree.value["entries"])
+
+    github_file = call_tool_with_evidence(
+        server,
+        "repo_format_discovery",
+        "read_github_repository_file",
+        {"git_url": github_repo, "path": "lakefile.lean", "revision": github_inspect.value["default_branch"], "max_chars": 2000},
+        runtime_context=repo_ctx,
+        recorder=recorder,
+        assertion_summary="Live GitHub file read returned a remote lakefile excerpt.",
+    )
+    assert "package" in (github_file.value["content_excerpt"] or "")
+
+    github_probe = call_tool_with_evidence(
+        server,
+        "repo_format_discovery",
+        "probe_github_lean_repo_candidate",
+        {"git_url": github_repo, "revision": github_inspect.value["default_branch"], "max_tree_entries": 100, "max_file_chars": 2000},
+        runtime_context=repo_ctx,
+        recorder=recorder,
+        assertion_summary="Live GitHub remote Lean repo probe found lakefile evidence without checkout.",
+    )
+    assert github_probe.value["is_lean_project"] is True
+    assert github_probe.value["has_lakefile"] is True
+
+    github_code = call_tool_with_evidence(
+        server,
+        "repo_format_discovery",
+        "search_github_code",
+        {"query": "package", "repo": github_repo, "limit": 1},
+        runtime_context=repo_ctx,
+        recorder=recorder,
+        assertion_summary="Live GitHub code search executed repo-scoped search.",
+    )
+    assert github_code.value["ok"] is True
 
     external_search = call_tool_with_evidence(
         server,
@@ -147,6 +204,11 @@ def test_strict_live_env_github_mathlib_and_arxiv_tools_execute_through_mcp(
     assert {
         "search_github_lean_repositories",
         "inspect_github_lean_repository",
+        "get_github_repository",
+        "list_github_repository_tree",
+        "read_github_repository_file",
+        "probe_github_lean_repo_candidate",
+        "search_github_code",
         "search_external_mathlib",
         "search_mathlib_declarations",
         "inspect_mathlib_search_candidate",

@@ -230,10 +230,8 @@ class ApplyRepoFormatChoiceStep(BaseStep):
         repo_workspace = _repo_workspace(ctx)
         repo_root = Path(input_model.repo_root)
         if isinstance(submission, RepoFormatAdapterChoiceSubmission):
-            if not submission.upstream_github_url.strip():
-                return ctx.complete_step(
-                    _repair_result("adapter_choice_missing_upstream", "Adapter choice must include upstream_github_url.")
-                )
+            if not submission.git_url.strip():
+                return ctx.complete_step(_repair_result("adapter_choice_missing_upstream", "Adapter choice must include git_url."))
             prepared_input = repo_workspace.preparation.get_preparation_input(repo_root)
             if not prepared_input.ok or prepared_input.value is None:
                 return ctx.complete_step(
@@ -259,15 +257,18 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                     )
                 )
             upstream = UpstreamDependencyInput(
-                git_url=submission.upstream_github_url,
-                revision=submission.upstream_revision,
-                subdir=submission.upstream_subdir,
-                evidence_summary=submission.summary,
+                git_url=submission.git_url,
+                revision=submission.revision,
+                subdir=submission.subdir,
+                package_name=submission.package_name,
+                module_name=submission.likely_import_module,
+                evidence_summary=submission.evidence_summary,
+                known_risks=submission.known_risks,
             )
             initialized = repo_workspace.initialize_repo_as_adapter(
                 repo_root,
                 upstream=upstream,
-                project_name=submission.adapter_repo_name or input_model.target_repo,
+                project_name=input_model.target_repo,
             )
             if not initialized.ok or initialized.value is None:
                 return ctx.complete_step(
@@ -292,7 +293,7 @@ class ApplyRepoFormatChoiceStep(BaseStep):
         if isinstance(submission, RepoFormatNativeChoiceSubmission):
             initialized = repo_workspace.initialize_repo_as_native(
                 repo_root,
-                project_name=submission.native_repo_name or input_model.target_repo,
+                project_name=input_model.target_repo,
             )
             if not initialized.ok or initialized.value is None:
                 return ctx.complete_step(

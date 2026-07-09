@@ -608,6 +608,41 @@ class DeclGraphService:
             deps=deps,
         )
 
+    def set_statement_nl(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        nl: str,
+    ) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.set_statement_nl(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
+            nl=nl,
+        )
+
+    def add_statement_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, origin) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.add_statement_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, origin=origin)
+
+    def remove_statement_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.remove_statement_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index)
+
+    def clear_statement_origins(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.clear_statement_origins(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+
+    def add_statement_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, dep) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.add_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep)
+
+    def remove_statement_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.remove_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index)
+
+    def clear_statement_deps(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.clear_statement_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+
     def write_statement_formal(
         self,
         repo_root: Path,
@@ -626,6 +661,23 @@ class DeclGraphService:
             decl_name=decl_name,
             lean_code=lean_code,
             lean_check=lean_check,
+            deps=deps,
+        )
+
+    def write_statement_deps(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        deps: list[str] | None = None,
+    ) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.write_statement_deps(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
             deps=deps,
         )
 
@@ -649,6 +701,41 @@ class DeclGraphService:
             origin=origin,
             deps=deps,
         )
+
+    def set_proof_nl(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        nl: str,
+    ) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.set_proof_nl(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
+            nl=nl,
+        )
+
+    def add_proof_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, origin) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.add_proof_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, origin=origin)
+
+    def remove_proof_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.remove_proof_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index)
+
+    def clear_proof_origins(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.clear_proof_origins(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+
+    def add_proof_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, dep) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.add_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep)
+
+    def remove_proof_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.remove_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index)
+
+    def clear_proof_deps(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.clear_proof_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
 
     def write_proof_formal(
         self,
@@ -702,6 +789,7 @@ class DeclGraphService:
         suggested_fix: str | None = None,
         issue_categories: list[str] | None = None,
         required_changes: list[str] | None = None,
+        recommended_next_action: str | None = None,
     ) -> ServiceResult[DeclReviewMarkRecord]:
         return self.review_gate.record_decl_review(
             repo_root,
@@ -715,6 +803,7 @@ class DeclGraphService:
             suggested_fix=suggested_fix,
             issue_categories=issue_categories,
             required_changes=required_changes,
+            recommended_next_action=recommended_next_action,
         )
 
     def review_mark_view(self, mark: DeclReviewMarkRecord) -> DeclReviewMarkView:
@@ -734,6 +823,7 @@ class DeclGraphService:
         suggested_fix: str | None = None,
         issue_categories: list[str] | None = None,
         required_changes: list[str] | None = None,
+        recommended_next_action: str | None = None,
     ) -> ServiceResult[DeclReviewMarkRecord]:
         return self.review_gate.build_decl_review_mark(
             repo_root,
@@ -747,6 +837,7 @@ class DeclGraphService:
             suggested_fix=suggested_fix,
             issue_categories=issue_categories,
             required_changes=required_changes,
+            recommended_next_action=recommended_next_action,
         )
 
     def submit_stage_review(

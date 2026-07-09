@@ -16,8 +16,9 @@ def test_stdio_bridge_exposes_tools_with_tool_spec_schema(tmp_path) -> None:
 
     assert "submit_native_repo_choice" in tools
     native = tools["submit_native_repo_choice"]
-    assert native.inputSchema["required"] == ["summary", "source_corpus_mode"]
-    assert native.inputSchema["properties"]["source_corpus_mode"]["enum"] == ["prepare", "existing"]
+    assert native.inputSchema["required"] == ["summary"]
+    assert "source_corpus_mode" not in native.inputSchema["properties"]
+    assert "native_repo_name" not in native.inputSchema["properties"]
 
 
 def test_stdio_bridge_converts_tool_result_for_success_and_gate_failure(tmp_path) -> None:
@@ -36,17 +37,17 @@ def test_stdio_bridge_converts_tool_result_for_success_and_gate_failure(tmp_path
     rejected = mcp_protocol_call_tool(
         endpoint,
         "submit_adapter_repo_choice",
-        {"summary": "Use adapter.", "upstream_github_url": "https://example.com/project"},
+        {"git_url": "https://example.com/project", "evidence_summary": "Remote probe found a lakefile."},
         env=env,
     )
     assert rejected.isError is True
     assert rejected.structuredContent["ok"] is False
-    assert rejected.structuredContent["issues"][0]["kind"] == "upstream_github_url_invalid"
+    assert rejected.structuredContent["issues"][0]["kind"] == "git_url_invalid"
 
     submitted = mcp_protocol_call_tool(
         endpoint,
         "submit_native_repo_choice",
-        {"summary": "Use native.", "source_corpus_mode": "prepare"},
+        {"summary": "Use native.", "searched_targets": ["No repo found"], "rejected_candidates": []},
         env=env,
     )
     assert submitted.isError is False

@@ -17,6 +17,9 @@ from lean_constellation.flows.common.flow_requests import (
 )
 from lean_constellation.flows.common.submissions import new_submission_id, submission_agent_id
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
+from lean_constellation.services.decl_graph.models import DeclState
+from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_nl_candidate
+from lean_constellation.services.decl_graph.statement_nl_validation import validate_statement_deps, validate_statement_nl_candidate
 from lean_constellation.flows.content_node_task.decl_round.submissions import (
     DeclRoundDispatchSubmission,
     DeclStageReviewSubmittedSubmission,
@@ -196,24 +199,89 @@ def _decl_stage_candidate_ready(runtime: Any, ctx: ToolExecutionContext, *, stag
         if not revision.ok or revision.value is None:
             return runtime.foundation.fail(revision.issues)
         if stage_name == "statement_nl":
-            if not revision.value.statement_nl or not revision.value.statement_nl.strip():
-                issues.append(runtime.foundation.issue("statement_nl_candidate_missing", "Statement NL candidate is missing.", object_ref=decl_name))
+            validation = validate_statement_nl_candidate(runtime, ctx.repo_root, node_path=node.value, round_id=ctx.decl_stage.round_id, decl_name=decl_name)
+            if not validation.ok:
+                issues.extend(validation.issues)
         elif stage_name == "statement_formal":
             if not revision.value.statement_lean_code:
                 issues.append(runtime.foundation.issue("statement_formal_candidate_missing", "Statement formal candidate is missing.", object_ref=decl_name))
             if revision.value.statement_lean_check is None:
                 issues.append(runtime.foundation.issue("statement_formal_check_missing", "Statement formal Lean check is missing.", object_ref=decl_name))
+            formal = _formal_candidate_gate(runtime, ctx, node_path=node.value, decl_name=decl_name, stage="statement")
+            if not formal.ok:
+                issues.extend(formal.issues)
+            deps = _statement_dep_gate(runtime, ctx, node_path=node.value, decl_name=decl_name, stage_label="Statement formal")
+            if not deps.ok:
+                issues.extend(deps.issues)
         elif stage_name == "proof_nl":
-            if not revision.value.proof_nl or not revision.value.proof_nl.strip():
-                issues.append(runtime.foundation.issue("proof_nl_candidate_missing", "Proof NL candidate is missing.", object_ref=decl_name))
+            validation = validate_proof_nl_candidate(runtime, ctx.repo_root, node_path=node.value, round_id=ctx.decl_stage.round_id, decl_name=decl_name)
+            if not validation.ok:
+                issues.extend(validation.issues)
         elif stage_name == "proof_formal":
             if not revision.value.proof_lean_code:
                 issues.append(runtime.foundation.issue("proof_formal_candidate_missing", "Proof formal candidate is missing.", object_ref=decl_name))
             if revision.value.proof_lean_check is None:
                 issues.append(runtime.foundation.issue("proof_formal_check_missing", "Proof formal Lean check is missing.", object_ref=decl_name))
+            if not revision.value.proof_nl:
+                issues.append(runtime.foundation.issue("proof_nl_candidate_missing", "Proof Formal submit requires an accepted Proof NL route.", object_ref=decl_name))
+            formal = _formal_candidate_gate(runtime, ctx, node_path=node.value, decl_name=decl_name, stage="proof")
+            if not formal.ok:
+                issues.extend(formal.issues)
+            deps = _proof_dep_gate(runtime, ctx, node_path=node.value, decl_name=decl_name)
+            if not deps.ok:
+                issues.extend(deps.issues)
     if issues:
         return runtime.foundation.fail(issues)
     return runtime.foundation.ok(None)
+
+
+def _formal_candidate_gate(runtime: Any, ctx: ToolExecutionContext, *, node_path: str, decl_name: str, stage: str) -> ServiceResult[None]:
+    sync = runtime.lean_projection.check_decl_file_snapshot_sync(ctx.repo_root, node_path=node_path, decl_name=decl_name, stage=stage)
+    if not sync.ok or sync.value is None:
+        return runtime.foundation.fail(sync.issues)
+    if not sync.value.passed:
+        return runtime.foundation.fail(sync.value.issues)
+    consistency = runtime.decl_graph.check_formal_stage_consistency(ctx.repo_root, node_path=node_path, decl_name=decl_name, stage=stage)
+    if not consistency.ok or consistency.value is None:
+        return runtime.foundation.fail(consistency.issues)
+    if not consistency.value.passed:
+        return runtime.foundation.fail(consistency.value.issues)
+    return runtime.foundation.ok(None)
+
+
+def _statement_dep_gate(runtime: Any, ctx: ToolExecutionContext, *, node_path: str, decl_name: str, stage_label: str) -> ServiceResult[None]:
+    del stage_label
+    decl = runtime.decl_graph.get_decl(ctx.repo_root, node_path=node_path, name=decl_name)
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    revision = runtime.decl_graph.get_decl_revision(ctx.repo_root, node_path=node_path, name=decl_name, revision=decl.value.current_revision)
+    if not revision.ok or revision.value is None:
+        return runtime.foundation.fail(revision.issues)
+    round_id = ctx.decl_stage.round_id if ctx.decl_stage is not None else None
+    return validate_statement_deps(runtime, ctx.repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, deps=revision.value.statement.deps)
+
+
+def _proof_dep_gate(runtime: Any, ctx: ToolExecutionContext, *, node_path: str, decl_name: str) -> ServiceResult[None]:
+    decl = runtime.decl_graph.get_decl(ctx.repo_root, node_path=node_path, name=decl_name)
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    revision = runtime.decl_graph.get_decl_revision(ctx.repo_root, node_path=node_path, name=decl_name, revision=decl.value.current_revision)
+    if not revision.ok or revision.value is None:
+        return runtime.foundation.fail(revision.issues)
+    deps = list(revision.value.proof.deps) if revision.value.proof is not None else []
+    round_id = ctx.decl_stage.round_id if ctx.decl_stage is not None else None
+    return validate_proof_deps(runtime, ctx.repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, deps=deps)
+
+
+def _decl_state_rank(state: DeclState) -> int:
+    return {
+        DeclState.OBSOLETE: -1,
+        DeclState.PLANNED: 0,
+        DeclState.SPECIFIED: 1,
+        DeclState.DECLARED: 2,
+        DeclState.PROOF_PLANNED: 3,
+        DeclState.PROVED: 4,
+    }[state]
 
 
 def _is_github_repo_url(value: str) -> bool:
@@ -263,19 +331,24 @@ def _resource_request(
 
 
 def submit_adapter_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: SubmitAdapterRepoChoiceArgs) -> ServiceResult[PreparedSubmissionView]:
-    upstream_url = args.upstream_github_url.strip()
-    if not upstream_url:
-        return _fail(runtime, "upstream_github_url_required", "Adapter repo choice requires upstream_github_url.", field="upstream_github_url")
-    if not _is_github_repo_url(upstream_url):
-        return _fail(runtime, "upstream_github_url_invalid", "Adapter repo choice requires a GitHub repository URL.", field="upstream_github_url")
+    try:
+        git_url = runtime.external.github_repo.normalize_github_url(args.git_url)
+    except ValueError as exc:
+        return _fail(runtime, "git_url_invalid", str(exc), field="git_url")
+    evidence_summary = args.evidence_summary.strip()
+    if not evidence_summary:
+        return _fail(runtime, "evidence_summary_required", "Adapter repo choice requires non-empty evidence_summary.", field="evidence_summary")
     return _prepared(
         runtime,
         RepoFormatAdapterChoiceSubmission(
-            **_base_kwargs(ctx, tool_name="submit_adapter_repo_choice", summary=args.summary),
-            upstream_github_url=upstream_url,
-            upstream_revision=args.upstream_revision,
-            upstream_subdir=args.upstream_subdir,
-            adapter_repo_name=args.adapter_repo_name,
+            **_base_kwargs(ctx, tool_name="submit_adapter_repo_choice", summary=evidence_summary),
+            git_url=git_url,
+            revision=args.revision.strip() if args.revision else None,
+            subdir=args.subdir.strip().strip("/") if args.subdir else None,
+            package_name=args.package_name.strip() if args.package_name else None,
+            likely_import_module=args.likely_import_module.strip() if args.likely_import_module else None,
+            evidence_summary=evidence_summary,
+            known_risks=[risk.strip() for risk in args.known_risks if risk.strip()],
         ),
     )
 
@@ -285,8 +358,17 @@ def submit_native_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: Sub
         runtime,
         RepoFormatNativeChoiceSubmission(
             **_base_kwargs(ctx, tool_name="submit_native_repo_choice", summary=args.summary),
-            native_repo_name=args.native_repo_name,
-            source_corpus_mode=args.source_corpus_mode,
+            searched_targets=[target.strip() for target in args.searched_targets if target.strip()],
+            rejected_candidates=[
+                {
+                    "git_url": candidate.git_url.strip() if candidate.git_url else None,
+                    "name": candidate.name.strip() if candidate.name else None,
+                    "reason": candidate.reason.strip(),
+                    "evidence_summary": candidate.evidence_summary.strip() if candidate.evidence_summary else None,
+                }
+                for candidate in args.rejected_candidates
+                if candidate.reason.strip()
+            ],
         ),
     )
 

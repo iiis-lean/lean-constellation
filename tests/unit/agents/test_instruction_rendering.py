@@ -79,6 +79,24 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "Do not replace NodeDirDependencyReconFlow, MathlibReconFlow, or ResourceReconFlow" in text
 
 
+def test_repo_format_discovery_instruction_spells_out_scoped_remote_workflow() -> None:
+    text = render_agent_instruction("RepoFormatDiscoveryAgent")
+
+    assert "get_preparation_input" in text
+    assert "list_preparation_requirements" in text
+    assert "get_preparation_requirement" in text
+    assert "probe_github_lean_repo_candidate" in text
+    assert "list_github_repository_tree" in text
+    assert "read_github_repository_file" in text
+    assert "search_github_code" in text
+    assert "workspace-wide requirement tools" in text
+    assert "Do not clone upstream code" in text
+    assert "change source corpus mode" in text
+    assert "source_corpus_mode" not in text
+    assert "adapter_repo_name" not in text
+    assert "native_repo_name" not in text
+
+
 def test_all_runtime_instructions_are_english_and_tool_refs_resolve() -> None:
     for spec in build_agent_type_specs():
         text = render_agent_instruction(spec)
@@ -94,19 +112,49 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     proof_reviewer = render_agent_instruction("ProofFormalReviewerAgent")
 
     assert "rewrites the working file" in statement_worker
-    assert "check_statement_formal_policy" in statement_worker
+    assert "Capture and deterministic gates own statement formal policy checks" in statement_worker
+    assert "add_statement_decl_dep" in statement_worker
+    assert "add_statement_mathlib_dep" in statement_worker
+    assert "clear_statement_deps" in statement_worker
+    assert "write_statement_formal_deps" not in statement_worker
+    assert "add_current_node_dep" in statement_worker
+    assert "check_statement_formal_policy" not in statement_worker
     assert "check_proof_formal_policy" not in statement_worker
     assert "prepare_statement_formal_file" not in statement_reviewer
     assert "capture_statement_formal_file" not in statement_reviewer
-    assert "check_statement_formal_policy" in statement_reviewer
+    assert "check_statement_formal_policy" not in statement_reviewer
+    assert "run_lean_file_diagnostics" not in statement_reviewer
+    assert "check_decl_file_snapshot_sync" not in statement_reviewer
     assert "check_proof_formal_policy" not in statement_reviewer
+    assert "record_statement_formal_review_passed" in statement_reviewer
+    assert "record_statement_formal_review_rejected" in statement_reviewer
+    assert "record_decl_review" not in statement_reviewer
+
+    proof_nl_worker = render_agent_instruction("ProofNLWorkerAgent")
+    proof_nl_reviewer = render_agent_instruction("ProofNLReviewerAgent")
+    assert "set_proof_nl" in proof_nl_worker
+    assert "add_proof_decl_dep" in proof_nl_worker
+    assert "add_proof_mathlib_dep" in proof_nl_worker
+    assert "write_proof_nl" not in proof_nl_worker
+    assert "search_arxiv_theorems" in proof_nl_worker
+    assert "record_proof_nl_review_passed" in proof_nl_reviewer
+    assert "record_proof_nl_review_rejected" in proof_nl_reviewer
+    assert "record_decl_review" not in proof_nl_reviewer
+    assert "inspect_current_stage_review_status" in proof_nl_reviewer
 
     assert "discards uncaptured proof edits" in proof_worker
     assert "check_proof_formal_policy" in proof_worker
+    assert "add_proof_decl_dep" in proof_worker
+    assert "add_proof_mathlib_dep" in proof_worker
     assert "check_statement_formal_policy" not in proof_worker
     assert "prepare_proof_formal_file" not in proof_reviewer
     assert "capture_proof_formal_file" not in proof_reviewer
-    assert "check_proof_formal_policy" in proof_reviewer
+    assert "check_proof_formal_policy" not in proof_reviewer
+    assert "run_lean_file_diagnostics" not in proof_reviewer
+    assert "check_decl_file_snapshot_sync" not in proof_reviewer
+    assert "record_proof_formal_review_passed" in proof_reviewer
+    assert "record_proof_formal_review_rejected" in proof_reviewer
+    assert "record_decl_review" not in proof_reviewer
     assert "check_statement_formal_policy" not in proof_reviewer
 
 

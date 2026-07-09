@@ -42,6 +42,36 @@ def test_representative_agent_type_resolves_expected_view() -> None:
     assert formal_reviewer.value.key == "statement_formal_reviewer"
 
 
+def test_repo_format_discovery_view_exposes_scoped_remote_tools_only() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    view = runtime.tool_facade.tool_view.tool_names_for_view("repo_format_discovery")
+
+    assert view.ok and view.value is not None
+    tools = set(view.value)
+    assert {
+        "get_preparation_input",
+        "get_preparation_start_preflight",
+        "list_preparation_requirements",
+        "get_preparation_requirement",
+        "inspect_workspace_for_coordinator",
+        "search_github_lean_repositories",
+        "inspect_github_lean_repository",
+        "probe_github_lean_repo_candidate",
+        "get_github_repository",
+        "list_github_repository_tree",
+        "read_github_repository_file",
+        "search_github_code",
+    } == tools
+    assert {
+        "list_open_requirement_groups",
+        "get_requirement_group",
+        "list_requirement_resume_candidates",
+        "checkout_repository",
+        "probe_lean_repo",
+    }.isdisjoint(tools)
+
+
 def test_resource_discovery_tools_visible_to_coordinator_and_resource_recon() -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
 
@@ -134,9 +164,9 @@ def test_legacy_decl_readiness_tools_are_not_in_production_views() -> None:
     for view_key in sorted(runtime.tool_facade.tool_view._views):
         expanded = runtime.tool_facade.tool_view.tool_names_for_view(view_key)
         assert expanded.ok and expanded.value is not None
-        if view_key == "statement_nl_reviewer":
-            allowed_for_statement_reviewer = {"list_current_decls", "get_decl", "get_decl_revision", "get_decl_change"}
-            assert (legacy_tools - allowed_for_statement_reviewer).isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
+        if view_key in {"statement_nl_reviewer", "statement_formal_reviewer", "proof_nl_worker", "proof_nl_reviewer", "proof_formal_worker", "proof_formal_reviewer"}:
+            allowed_for_decl_detail_reader = {"list_current_decls", "get_decl", "get_decl_revision", "get_decl_change"}
+            assert (legacy_tools - allowed_for_decl_detail_reader).isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
             continue
         assert legacy_tools.isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
 

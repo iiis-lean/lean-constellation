@@ -6,21 +6,32 @@ from typing import Literal
 
 from pydantic import Field
 
+from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.common.submissions import LeanBaseSubmission, LeanDispatchSubmission
 
 
 class RepoFormatAdapterChoiceSubmission(LeanBaseSubmission):
     submission_type: Literal["repo_format_adapter_choice"] = "repo_format_adapter_choice"
-    upstream_github_url: str
-    upstream_revision: str | None = None
-    upstream_subdir: str | None = None
-    adapter_repo_name: str | None = None
+    git_url: str
+    revision: str | None = None
+    subdir: str | None = None
+    package_name: str | None = None
+    likely_import_module: str | None = None
+    evidence_summary: str
+    known_risks: list[str] = Field(default_factory=list)
+
+
+class RejectedUpstreamCandidateSubmission(StrictModel):
+    git_url: str | None = None
+    name: str | None = None
+    reason: str
+    evidence_summary: str | None = None
 
 
 class RepoFormatNativeChoiceSubmission(LeanBaseSubmission):
     submission_type: Literal["repo_format_native_choice"] = "repo_format_native_choice"
-    native_repo_name: str | None = None
-    source_corpus_mode: Literal["prepare", "existing"]
+    searched_targets: list[str] = Field(default_factory=list)
+    rejected_candidates: list[RejectedUpstreamCandidateSubmission] = Field(default_factory=list)
 
 
 class SourceCorpusPreparedSubmission(LeanBaseSubmission):

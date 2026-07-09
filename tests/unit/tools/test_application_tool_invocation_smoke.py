@@ -969,19 +969,39 @@ def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) 
                 round_id=round_record.value.round_id,
                 batch_decls=["main_result"],
             ),
-            tool_name="write_statement_nl",
+            tool_name="set_statement_nl",
             flat_args={
                 "decl_name": "main_result",
                 "nl": "The main result states True.",
-                "origin": [{"kind": "source", "ref": "notes.md"}],
-                "deps": ["helper"],
+            },
+        )
+    )
+    view = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(
+                tmp_path,
+                view="statement_nl_worker",
+                agent_type="statement_nl_worker",
+                node_path="Main.Topic",
+                stage="statement_nl",
+                round_id=round_record.value.round_id,
+                batch_decls=["main_result"],
+            ),
+            tool_name="add_statement_source_origin",
+            flat_args={
+                "decl_name": "main_result",
+                "source_path": "notes.md",
+                "start_line": 1,
+                "end_line": 1,
+                "note": "statement source",
             },
         )
     )
 
     assert view["state"] == "planned"
-    assert view["statement_origin"] == [{"kind": "source", "ref": "notes.md"}]
-    assert view["statement_deps"] == ["helper"]
+    assert view["statement_origin"][0]["kind"] == "source"
+    assert view["statement_origin"][0]["source_path"] == "notes.md"
+    assert view["statement_deps"] == []
     assert "statement" not in view
     assert "decl_deps" not in view
 

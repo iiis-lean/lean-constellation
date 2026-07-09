@@ -52,6 +52,7 @@ class ReviewGateComponent:
         suggested_fix: str | None = None,
         issue_categories: list[str] | None = None,
         required_changes: list[str] | None = None,
+        recommended_next_action: str | None = None,
     ) -> ServiceResult[DeclReviewMarkRecord]:
         return self.build_decl_review_mark(
             repo_root,
@@ -65,6 +66,7 @@ class ReviewGateComponent:
             suggested_fix=suggested_fix,
             issue_categories=issue_categories,
             required_changes=required_changes,
+            recommended_next_action=recommended_next_action,
         )
 
     def build_decl_review_mark(
@@ -81,6 +83,7 @@ class ReviewGateComponent:
         suggested_fix: str | None = None,
         issue_categories: list[str] | None = None,
         required_changes: list[str] | None = None,
+        recommended_next_action: str | None = None,
     ) -> ServiceResult[DeclReviewMarkRecord]:
         stage = DeclStage(stage)
         if not summary or not summary.strip():
@@ -120,6 +123,7 @@ class ReviewGateComponent:
                 suggested_fix=normalized_changes[0] if normalized_changes else None,
                 issue_categories=normalized_categories,
                 required_changes=normalized_changes,
+                recommended_next_action=recommended_next_action,
             )
         )
 

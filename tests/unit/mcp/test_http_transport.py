@@ -109,7 +109,7 @@ async def _exercise_resource_curator_http_mcp(app, tmp_path: Path) -> None:  # n
                     )
                     wrong_view = await session.call_tool(
                         "submit_native_repo_choice",
-                        {"summary": "Wrong view.", "source_corpus_mode": "prepare"},
+                        {"summary": "Wrong view."},
                     )
 
     assert result.isError is False
@@ -145,7 +145,7 @@ async def _exercise_submit_http_mcp(app, tmp_path: Path) -> None:  # noqa: ANN00
                     await session.initialize()
                     result = await session.call_tool(
                         "submit_native_repo_choice",
-                        {"summary": "Use native.", "source_corpus_mode": "prepare"},
+                        {"summary": "Use native."},
                     )
 
     assert result.isError is False

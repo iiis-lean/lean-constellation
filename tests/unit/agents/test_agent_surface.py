@@ -4,7 +4,7 @@ from lean_constellation.agents import build_agent_type_specs, build_agent_surfac
 
 
 EXPECTED_SURFACE_COUNTS = {
-    "RepoFormatDiscoveryAgent": (3, 5, 1, 2, 0),
+    "RepoFormatDiscoveryAgent": (5, 12, 1, 2, 0),
     "SourceCorpusPrepareAgent": (3, 8, 1, 2, 1),
     "SourceIndexBuilderAgent": (4, 19, 1, 1, 0),
     "SourceIndexReviewerAgent": (3, 7, 1, 1, 0),
@@ -16,14 +16,14 @@ EXPECTED_SURFACE_COUNTS = {
     "NodeDirDependencyReconAgent": (4, 13, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 16, 2, 3, 3),
-    "StatementNLWorkerAgent": (12, 38, 1, 2, 4),
+    "StatementNLWorkerAgent": (12, 46, 1, 2, 4),
     "StatementNLReviewerAgent": (14, 42, 1, 1, 2),
-    "StatementFormalWorkerAgent": (14, 47, 1, 2, 8),
-    "StatementFormalReviewerAgent": (9, 30, 1, 1, 2),
-    "ProofNLWorkerAgent": (11, 36, 1, 2, 4),
-    "ProofNLReviewerAgent": (9, 30, 1, 1, 2),
-    "ProofFormalWorkerAgent": (14, 47, 1, 2, 8),
-    "ProofFormalReviewerAgent": (9, 30, 1, 1, 2),
+    "StatementFormalWorkerAgent": (16, 53, 1, 2, 8),
+    "StatementFormalReviewerAgent": (14, 42, 1, 1, 2),
+    "ProofNLWorkerAgent": (19, 63, 1, 2, 7),
+    "ProofNLReviewerAgent": (16, 45, 1, 1, 2),
+    "ProofFormalWorkerAgent": (21, 64, 1, 2, 8),
+    "ProofFormalReviewerAgent": (15, 44, 1, 1, 2),
 }
 
 
@@ -50,21 +50,91 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
     statement_reviewer_tools = {tool.name for tool in reports["StatementFormalReviewerAgent"].application_tools}
     proof_worker_tools = {tool.name for tool in reports["ProofFormalWorkerAgent"].application_tools}
     proof_reviewer_tools = {tool.name for tool in reports["ProofFormalReviewerAgent"].application_tools}
+    proof_nl_worker_tools = {tool.name for tool in reports["ProofNLWorkerAgent"].application_tools}
+    proof_nl_reviewer_tools = {tool.name for tool in reports["ProofNLReviewerAgent"].application_tools}
 
     assert "capture_statement_formal_file" in statement_worker_tools
     assert "capture_statement_formal_file" not in statement_reviewer_tools
+    assert {"add_statement_decl_dep", "add_statement_mathlib_dep", "remove_statement_dep", "clear_statement_deps"} <= statement_worker_tools
+    assert "write_statement_formal_deps" not in statement_worker_tools
+    assert "write_statement_formal_deps" not in statement_reviewer_tools
+    assert "add_current_node_dep" in statement_worker_tools
+    assert "add_current_node_dep" not in statement_reviewer_tools
     assert "capture_proof_formal_file" in proof_worker_tools
     assert "capture_proof_formal_file" not in proof_reviewer_tools
     assert "check_statement_formal_policy" in statement_worker_tools
-    assert "check_statement_formal_policy" in statement_reviewer_tools
+    assert "check_statement_formal_policy" not in statement_reviewer_tools
+    assert "run_lean_file_diagnostics" not in statement_reviewer_tools
+    assert "check_decl_file_snapshot_sync" not in statement_reviewer_tools
     assert "check_statement_formal_policy" not in proof_worker_tools
     assert "check_statement_formal_policy" not in proof_reviewer_tools
     assert "check_proof_formal_policy" in proof_worker_tools
-    assert "check_proof_formal_policy" in proof_reviewer_tools
+    assert "check_proof_formal_policy" not in proof_reviewer_tools
+    assert "run_lean_file_diagnostics" not in proof_reviewer_tools
+    assert "check_decl_file_snapshot_sync" not in proof_reviewer_tools
     assert "check_proof_formal_policy" not in statement_worker_tools
     assert "check_proof_formal_policy" not in statement_reviewer_tools
+    assert "record_statement_formal_review_passed" in statement_reviewer_tools
+    assert "record_statement_formal_review_rejected" in statement_reviewer_tools
+    assert "record_decl_review" not in statement_reviewer_tools
+    assert {
+        "set_proof_nl",
+        "add_proof_source_origin",
+        "add_proof_resource_origin",
+        "add_proof_decl_dep",
+        "add_proof_mathlib_dep",
+        "remove_proof_dep",
+        "clear_proof_deps",
+    } <= proof_nl_worker_tools
+    assert "write_proof_nl" not in proof_nl_worker_tools
+    assert "record_proof_nl_review_passed" in proof_nl_reviewer_tools
+    assert "record_proof_nl_review_rejected" in proof_nl_reviewer_tools
+    assert "record_decl_review" not in proof_nl_reviewer_tools
+    assert "inspect_current_stage_review_status" in proof_nl_reviewer_tools
+    assert {"add_proof_decl_dep", "add_proof_mathlib_dep", "remove_proof_dep", "clear_proof_deps"} <= proof_worker_tools
+    assert "add_current_node_dep" in proof_worker_tools
+    assert "search_arxiv_theorems" not in proof_worker_tools
+    assert "record_proof_formal_review_passed" in proof_reviewer_tools
+    assert "record_proof_formal_review_rejected" in proof_reviewer_tools
+    assert "record_decl_review" not in proof_reviewer_tools
+    assert "inspect_current_stage_review_status" in proof_reviewer_tools
     assert "sync_decl_file_after_revision_reset" not in statement_worker_tools | proof_worker_tools
     assert "remove_decl_file_for_delete" not in statement_worker_tools | proof_worker_tools
+
+
+def test_repo_format_discovery_surface_matches_remote_only_design() -> None:
+    reports = build_agent_surface_reports()
+    report = reports["RepoFormatDiscoveryAgent"]
+    tools = {tool.name for tool in report.application_tools}
+
+    assert {
+        "get_preparation_input",
+        "get_preparation_start_preflight",
+        "list_preparation_requirements",
+        "get_preparation_requirement",
+        "inspect_workspace_for_coordinator",
+        "search_github_lean_repositories",
+        "inspect_github_lean_repository",
+        "probe_github_lean_repo_candidate",
+        "get_github_repository",
+        "list_github_repository_tree",
+        "read_github_repository_file",
+        "search_github_code",
+    } == tools
+    assert {
+        "repo_preparation_input_read",
+        "repo_preparation_requirement_read",
+        "workspace_repo_catalog_read",
+        "upstream_repo_search",
+        "github_repository_read",
+    } == set(report.application_group_keys)
+    assert {
+        "list_open_requirement_groups",
+        "get_requirement_group",
+        "list_requirement_resume_candidates",
+        "checkout_repository",
+        "probe_lean_repo",
+    }.isdisjoint(tools)
 
 
 def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
@@ -90,7 +160,7 @@ def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
     assert "add_node_dep" not in content_plan_tools
     assert "add_node_mathlib_module_hint" not in mathlib_recon_tools
     assert "search_arxiv_theorems" not in mathlib_recon_tools
-    assert "search_arxiv_theorems" not in {tool.name for tool in reports["ProofNLWorkerAgent"].application_tools}
+    assert "search_arxiv_theorems" in {tool.name for tool in reports["ProofNLWorkerAgent"].application_tools}
 
 
 def test_source_prepare_and_resource_curator_keep_acquisition_boundaries() -> None:

@@ -61,6 +61,20 @@ def test_representative_agent_specs_bind_expected_views_and_steps() -> None:
     assert statement_worker.stage == "statement_nl"
 
 
+def test_decl_stage_reviewer_specs_use_base_runtime_stage_names() -> None:
+    assert get_agent_type_spec("StatementNLReviewerAgent").stage == "statement_nl"
+    assert get_agent_type_spec("StatementFormalReviewerAgent").stage == "statement_formal"
+    assert get_agent_type_spec("ProofNLReviewerAgent").stage == "proof_nl"
+    assert get_agent_type_spec("ProofFormalReviewerAgent").stage == "proof_formal"
+
+
+def test_repo_format_discovery_has_native_and_adapter_context_fragments() -> None:
+    spec = get_agent_type_spec("RepoFormatDiscoveryAgent")
+
+    assert "repo.native_repo_context" in spec.instruction_fragment_keys
+    assert "repo.adapter_repo_context" in spec.instruction_fragment_keys
+
+
 def test_agent_skill_mapping_reuses_shared_skills() -> None:
     mapping = agent_skill_keys()
 

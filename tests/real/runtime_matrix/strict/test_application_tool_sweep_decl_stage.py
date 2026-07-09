@@ -34,13 +34,35 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     )
     initial_build = ws.lake.run_lake_build(ws.provider_repo, timeout_seconds=120)
     assert initial_build.ok, initial_build.summary
+    active_resource_key = ws.create_active_resource(target_kind="local_file", target=str(ws.resources.local_file))
+    _prepare_committed_source_index(ws)
     round_fixture = ws.create_decl_round(end_after_state=DeclState.PROVED)
+    support = ws.runtime.decl_graph.create_decl(
+        ws.provider_repo,
+        node_path=round_fixture.node_path,
+        round_id=round_fixture.round_id,
+        name="supporting_statement",
+        kind="theorem",
+        objective="Create supporting_statement.",
+        summary="Supporting statement for strict ToolSweep dependency coverage.",
+        public=False,
+        end_after_state=DeclState.PROVED,
+    )
+    assert support.ok, support.issues
     started = ws.runtime.decl_graph.start_round(
         ws.provider_repo,
         node_path=round_fixture.node_path,
         round_id=round_fixture.round_id,
     )
     assert started.ok, started.issues
+    support_advance = ws.runtime.decl_graph.advance_stage_state(
+        ws.provider_repo,
+        node_path=round_fixture.node_path,
+        round_id=round_fixture.round_id,
+        stage="proof_formal",
+        decl_names=["supporting_statement"],
+    )
+    assert support_advance.ok, support_advance.issues
     refreshed = ws.runtime.lean_projection.refresh_node_projection(ws.provider_repo, node_path=round_fixture.node_path)
     assert refreshed.ok, refreshed.issues
 
@@ -69,17 +91,104 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     statement_revision = call_tool_with_evidence(
         server,
         "statement_nl_worker",
-        "write_statement_nl",
+        "set_statement_nl",
         {
             "decl_name": round_fixture.decl_name,
             "nl": "The strict Runtime Matrix declaration states True.",
-            "deps": [],
         },
         runtime_context=statement_nl_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Statement NL was written through the stage worker view.",
+        assertion_summary="Statement NL text was written through the typed stage worker view.",
     )
     assert _field(statement_revision.value, "state") == "planned"
+    source_origin = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "add_statement_source_origin",
+        {"decl_name": round_fixture.decl_name, "source_path": "source.md", "start_line": 1, "end_line": 2, "note": "Source range states the theorem."},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Typed statement source origin was added.",
+    )
+    assert _field(source_origin.value, "statement_origin")
+    resource_origin = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "add_statement_resource_origin",
+        {"decl_name": round_fixture.decl_name, "resource_key": active_resource_key, "start_locator": "normalized/main.md:1", "note": "Resource note supports the theorem."},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Typed statement resource origin was added.",
+    )
+    assert len(_field(resource_origin.value, "statement_origin")) == 2
+    removed_origin = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "remove_statement_origin",
+        {"decl_name": round_fixture.decl_name, "index": 1},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Typed statement origin removal worked.",
+    )
+    assert len(_field(removed_origin.value, "statement_origin")) == 1
+    cleared_origins = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "clear_statement_origins",
+        {"decl_name": round_fixture.decl_name, "reason": "Strict ToolSweep covers origin clearing."},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Typed statement origin clearing worked.",
+    )
+    assert _field(cleared_origins.value, "statement_origin") == []
+    indexed_true = ws.runtime.mathlib.upsert_mathlib_decl_entry(
+        ws.provider_repo,
+        name="True",
+        module="Init.Prelude",
+        kind="inductive",
+        summary="Truth proposition used by the strict ToolSweep statement.",
+    )
+    assert indexed_true.ok, indexed_true.issues
+    mathlib_dep = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "add_statement_mathlib_dep",
+        {"decl_name": round_fixture.decl_name, "mathlib_decl_name": "True", "module": "Init.Prelude", "reason": "The statement mentions True."},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Typed statement Mathlib dependency was added.",
+    )
+    assert "True" in _field(mathlib_dep.value, "statement_deps")
+    removed_dep = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "remove_statement_dep",
+        {"decl_name": round_fixture.decl_name, "index": 0},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Typed statement dependency removal worked.",
+    )
+    assert _field(removed_dep.value, "statement_deps") == []
+    decl_dep = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "add_statement_decl_dep",
+        {"decl_name": round_fixture.decl_name, "dep_name": "supporting_statement", "reason": "Support declaration used by statement."},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Typed statement declaration dependency was added.",
+    )
+    assert "supporting_statement" in _field(decl_dep.value, "statement_deps")
+    cleared_deps = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "clear_statement_deps",
+        {"decl_name": round_fixture.decl_name, "reason": "Strict ToolSweep leaves the sample statement dependency-free."},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Typed statement dependency clearing worked.",
+    )
+    assert _field(cleared_deps.value, "statement_deps") == []
 
     statement_formal_ctx = _ctx(
         ws,
@@ -145,7 +254,46 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         assertion_summary="Statement formal file was captured with real Lake diagnostics.",
     )
     assert _field(statement_capture.value, "check", "status") == "passed"
-
+    formal_mathlib_dep = call_tool_with_evidence(
+        server,
+        "statement_formal_worker",
+        "add_statement_mathlib_dep",
+        {"decl_name": round_fixture.decl_name, "mathlib_decl_name": "True", "module": "Init.Prelude", "reason": "The formal statement mentions True."},
+        runtime_context=statement_formal_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Statement formal worker added a typed Mathlib statement dependency.",
+    )
+    assert "True" in _field(formal_mathlib_dep.value, "statement_deps")
+    formal_removed_dep = call_tool_with_evidence(
+        server,
+        "statement_formal_worker",
+        "remove_statement_dep",
+        {"decl_name": round_fixture.decl_name, "index": 0},
+        runtime_context=statement_formal_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Statement formal worker removed a typed statement dependency.",
+    )
+    assert _field(formal_removed_dep.value, "statement_deps") == []
+    formal_decl_dep = call_tool_with_evidence(
+        server,
+        "statement_formal_worker",
+        "add_statement_decl_dep",
+        {"decl_name": round_fixture.decl_name, "dep_name": "supporting_statement", "reason": "Support declaration checked during formalization."},
+        runtime_context=statement_formal_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Statement formal worker added a typed project statement dependency.",
+    )
+    assert "supporting_statement" in _field(formal_decl_dep.value, "statement_deps")
+    formal_cleared_deps = call_tool_with_evidence(
+        server,
+        "statement_formal_worker",
+        "clear_statement_deps",
+        {"decl_name": round_fixture.decl_name, "reason": "Strict ToolSweep leaves formal statement dependency-free."},
+        runtime_context=statement_formal_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Statement formal worker cleared typed statement dependencies.",
+    )
+    assert _field(formal_cleared_deps.value, "statement_deps") == []
     statement_sync = call_tool_with_evidence(
         server,
         "statement_formal_worker",
@@ -177,20 +325,32 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         stage="statement_formal",
     )
     statement_formal_reviewer_ctx = _attach_reviewer_step(ws, statement_formal_reviewer_ctx, round_fixture)
+    formal_rejected_mark = call_tool_with_evidence(
+        server,
+        "statement_formal_reviewer",
+        "record_statement_formal_review_rejected",
+        {
+            "decl_name": round_fixture.decl_name,
+            "summary": "Strict Runtime Matrix statement formal rejected before replacement.",
+            "issue_categories": ["formal_not_equivalent_to_nl"],
+            "required_changes": ["Replace this probe rejection with the accepted mark."],
+        },
+        runtime_context=statement_formal_reviewer_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Statement formal reviewer rejected mark was recorded.",
+    )
+    assert _field(formal_rejected_mark.value, "passed") is False
     formal_review_mark = call_tool_with_evidence(
         server,
         "statement_formal_reviewer",
-        "record_decl_review",
+        "record_statement_formal_review_passed",
         {
-            "round_id": round_fixture.round_id,
-            "stage": "statement_formal",
             "decl_name": round_fixture.decl_name,
-            "passed": True,
             "summary": "Strict Runtime Matrix statement formal accepted.",
         },
         runtime_context=statement_formal_reviewer_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Statement formal generic reviewer mark was recorded.",
+        assertion_summary="Statement formal reviewer passed mark was recorded.",
     )
     assert _field(formal_review_mark.value, "passed") is True
 
@@ -246,18 +406,128 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     proof_revision = call_tool_with_evidence(
         server,
         "proof_nl_worker",
-        "write_proof_nl",
+        "set_proof_nl",
         {
             "decl_name": round_fixture.decl_name,
-            "nl": "Use triviality.",
-            "deps": [],
+            "proof_nl": "Use triviality.",
         },
         runtime_context=proof_nl_ctx,
         recorder=evidence_recorder,
         assertion_summary="Proof NL was written through the stage worker view.",
     )
     assert _field(proof_revision.value, "proof_nl") == "Use triviality."
-    assert _field(proof_revision.value, "proof_deps") == []
+    proof_source_origin = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "add_proof_source_origin",
+        {"decl_name": round_fixture.decl_name, "source_path": "source.md", "start_line": 1, "end_line": 1, "note": "Strict proof source-origin probe."},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL worker added a typed source proof origin.",
+    )
+    assert len(_field(proof_source_origin.value, "proof_origin")) == 1
+    proof_resource_origin = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "add_proof_resource_origin",
+        {"decl_name": round_fixture.decl_name, "resource_key": active_resource_key, "start_locator": "proof", "note": "Strict proof resource-origin probe."},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL worker added a typed resource proof origin.",
+    )
+    assert len(_field(proof_resource_origin.value, "proof_origin")) == 2
+    proof_removed_origin = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "remove_proof_origin",
+        {"decl_name": round_fixture.decl_name, "index": 0},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL worker removed a typed proof origin.",
+    )
+    assert len(_field(proof_removed_origin.value, "proof_origin")) == 1
+    proof_cleared_origins = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "clear_proof_origins",
+        {"decl_name": round_fixture.decl_name, "reason": "Strict ToolSweep leaves generated proof route without origins."},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL worker cleared typed proof origins.",
+    )
+    assert _field(proof_cleared_origins.value, "proof_origin") == []
+    proof_mathlib_dep = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "add_proof_mathlib_dep",
+        {"decl_name": round_fixture.decl_name, "mathlib_decl_name": "True", "module": "Init.Prelude", "reason": "Proof closes True."},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL worker added a typed Mathlib proof dependency.",
+    )
+    assert "True" in _field(proof_mathlib_dep.value, "proof_deps")
+    proof_removed_dep = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "remove_proof_dep",
+        {"decl_name": round_fixture.decl_name, "index": 0},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL worker removed a typed proof dependency.",
+    )
+    assert _field(proof_removed_dep.value, "proof_deps") == []
+    proof_decl_dep = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "add_proof_decl_dep",
+        {"decl_name": round_fixture.decl_name, "dep_name": "supporting_statement", "reason": "Strict proof dependency probe."},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL worker added a typed project proof dependency.",
+    )
+    assert "supporting_statement" in _field(proof_decl_dep.value, "proof_deps")
+    proof_cleared_deps = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "clear_proof_deps",
+        {"decl_name": round_fixture.decl_name, "reason": "Strict ToolSweep leaves generated proof route dependency-free."},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL worker cleared typed proof dependencies.",
+    )
+    assert _field(proof_cleared_deps.value, "proof_deps") == []
+
+    proof_nl_reviewer_ctx = _ctx(ws, round_fixture, view="proof_nl_reviewer", agent_type="ProofNLReviewerAgent", role="reviewer", stage="proof_nl")
+    proof_nl_reviewer_ctx = _attach_reviewer_step(ws, proof_nl_reviewer_ctx, round_fixture)
+    proof_rejected_mark = call_tool_with_evidence(
+        server,
+        "proof_nl_reviewer",
+        "record_proof_nl_review_rejected",
+        {
+            "decl_name": round_fixture.decl_name,
+            "summary": "Strict Runtime Matrix proof NL rejected before replacement.",
+            "issue_categories": ["proof_route_too_vague"],
+            "required_changes": ["Replace this probe rejection with the accepted mark."],
+            "recommended_next_action": "worker_repairable",
+        },
+        runtime_context=proof_nl_reviewer_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL reviewer rejected mark was recorded.",
+    )
+    assert _field(proof_rejected_mark.value, "passed") is False
+    proof_review_mark = call_tool_with_evidence(
+        server,
+        "proof_nl_reviewer",
+        "record_proof_nl_review_passed",
+        {
+            "decl_name": round_fixture.decl_name,
+            "summary": "Strict Runtime Matrix proof NL accepted.",
+        },
+        runtime_context=proof_nl_reviewer_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof NL reviewer passed mark was recorded.",
+    )
+    assert _field(proof_review_mark.value, "passed") is True
 
     proof_formal_ctx = _ctx(ws, round_fixture, view="proof_formal_worker", agent_type="ProofFormalWorkerAgent", stage="proof_formal")
     prepared_proof = call_tool_with_evidence(
@@ -331,6 +601,80 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     )
     assert _field(proof_consistency.value, "passed") is True
 
+    proof_formal_mathlib_dep = call_tool_with_evidence(
+        server,
+        "proof_formal_worker",
+        "add_proof_mathlib_dep",
+        {"decl_name": round_fixture.decl_name, "mathlib_decl_name": "True", "module": "Init.Prelude", "reason": "Proof formal closes True."},
+        runtime_context=proof_formal_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof Formal worker added a typed Mathlib proof dependency.",
+    )
+    assert "True" in _field(proof_formal_mathlib_dep.value, "proof_deps")
+    proof_formal_removed_dep = call_tool_with_evidence(
+        server,
+        "proof_formal_worker",
+        "remove_proof_dep",
+        {"decl_name": round_fixture.decl_name, "index": 0},
+        runtime_context=proof_formal_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof Formal worker removed a typed proof dependency.",
+    )
+    assert _field(proof_formal_removed_dep.value, "proof_deps") == []
+    proof_formal_decl_dep = call_tool_with_evidence(
+        server,
+        "proof_formal_worker",
+        "add_proof_decl_dep",
+        {"decl_name": round_fixture.decl_name, "dep_name": "supporting_statement", "reason": "Proof formal dependency probe."},
+        runtime_context=proof_formal_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof Formal worker added a typed project proof dependency.",
+    )
+    assert "supporting_statement" in _field(proof_formal_decl_dep.value, "proof_deps")
+    proof_formal_cleared_deps = call_tool_with_evidence(
+        server,
+        "proof_formal_worker",
+        "clear_proof_deps",
+        {"decl_name": round_fixture.decl_name, "reason": "Strict ToolSweep leaves generated formal proof dependency-free."},
+        runtime_context=proof_formal_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof Formal worker cleared typed proof dependencies.",
+    )
+    assert _field(proof_formal_cleared_deps.value, "proof_deps") == []
+
+    proof_formal_reviewer_ctx = _ctx(ws, round_fixture, view="proof_formal_reviewer", agent_type="ProofFormalReviewerAgent", role="reviewer", stage="proof_formal")
+    proof_formal_reviewer_ctx = _attach_reviewer_step(ws, proof_formal_reviewer_ctx, round_fixture)
+    proof_formal_rejected_mark = call_tool_with_evidence(
+        server,
+        "proof_formal_reviewer",
+        "record_proof_formal_review_rejected",
+        {
+            "decl_name": round_fixture.decl_name,
+            "summary": "Strict Runtime Matrix proof formal rejected before replacement.",
+            "issue_categories": ["proof_not_aligned_with_proof_nl"],
+            "required_changes": ["Replace this probe rejection with the accepted mark."],
+            "recommended_next_action": "worker_repairable",
+        },
+        runtime_context=proof_formal_reviewer_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof Formal reviewer rejected mark was recorded.",
+    )
+    assert _field(proof_formal_rejected_mark.value, "passed") is False
+    assert _field(proof_formal_rejected_mark.value, "recommended_next_action") == "worker_repairable"
+    proof_formal_review_mark = call_tool_with_evidence(
+        server,
+        "proof_formal_reviewer",
+        "record_proof_formal_review_passed",
+        {
+            "decl_name": round_fixture.decl_name,
+            "summary": "Strict Runtime Matrix proof formal accepted.",
+        },
+        runtime_context=proof_formal_reviewer_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Proof Formal reviewer passed mark was recorded.",
+    )
+    assert _field(proof_formal_review_mark.value, "passed") is True
+
     audit = call_tool_with_evidence(
         server,
         "proof_formal_worker",
@@ -390,6 +734,37 @@ def _ctx(
         current_decl=round_fixture.decl_name,
         decl_kind="theorem",
     )
+
+
+def _prepare_committed_source_index(ws: RuntimeMatrixWorkspace) -> None:
+    created = ws.runtime.material.create_draft_source_index(ws.provider_repo)
+    assert created.ok, created.issues
+    assert ws.runtime.material.set_source_index_overview(ws.provider_repo, overview="Strict decl stage proof source index.").ok
+    block = ws.runtime.material.create_source_block(
+        ws.provider_repo,
+        parent_id="root",
+        kind="proof",
+        title="Strict proof source",
+        summary="Strict proof source summary.",
+    )
+    assert block.ok and block.value is not None, block.issues
+    ref = ws.runtime.material.add_source_block_ref(
+        ws.provider_repo,
+        block_id=block.value.block_id,
+        path="source.md",
+        start_line=1,
+        end_line=1,
+        role="main",
+    )
+    assert ref.ok, ref.issues
+    assert ws.runtime.material.mark_block_refs_done(ws.provider_repo, block_id=block.value.block_id).ok
+    assert ws.runtime.material.mark_block_links_done(ws.provider_repo, block_id=block.value.block_id).ok
+    assert ws.runtime.material.mark_block_completed(ws.provider_repo, block_id=block.value.block_id).ok
+    assert ws.runtime.material.set_file_survey_status(ws.provider_repo, path="source.md", status="surveyed", summary="Read in full.").ok
+    assert ws.runtime.material.set_file_indexing_status(ws.provider_repo, path="source.md", status="indexed").ok
+    committed = ws.runtime.material.commit_source_index(ws.provider_repo)
+    assert committed.ok and committed.value is not None, committed.issues
+    assert committed.value.passed, committed.value.issues
 
 
 def _attach_reviewer_step(

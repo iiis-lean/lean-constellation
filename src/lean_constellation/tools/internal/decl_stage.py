@@ -3,15 +3,41 @@
 from __future__ import annotations
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
+from lean_constellation.domain.refs import DeclRef, MathlibRef
+from lean_constellation.services.decl_graph.models import DeclOriginRef, DeclState, MathlibDeclDep, RepoDeclDep
+from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_origin_ref
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     DeclNameArgs,
     DeclReviewMarkArgs,
     DeclStageFileCheckArgs,
-    DeclStageNlArgs,
     NoArgs,
+    ProofDeclDepAddArgs,
+    ProofDepRemoveArgs,
+    ProofDepsClearArgs,
+    ProofFormalReviewPassedArgs,
+    ProofFormalReviewRejectedArgs,
+    ProofMathlibDepAddArgs,
+    ProofNlReviewPassedArgs,
+    ProofNlReviewRejectedArgs,
+    ProofNlSetArgs,
+    ProofOriginRemoveArgs,
+    ProofOriginsClearArgs,
+    ProofResourceOriginAddArgs,
+    ProofSourceOriginAddArgs,
+    StatementDeclDepAddArgs,
+    StatementDepRemoveArgs,
+    StatementDepsClearArgs,
+    StatementFormalReviewPassedArgs,
+    StatementFormalReviewRejectedArgs,
+    StatementMathlibDepAddArgs,
     StatementNlReviewPassedArgs,
     StatementNlReviewRejectedArgs,
+    StatementNlSetArgs,
+    StatementOriginRemoveArgs,
+    StatementOriginsClearArgs,
+    StatementResourceOriginAddArgs,
+    StatementSourceOriginAddArgs,
 )
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import current_node_path, handler_tool
@@ -40,6 +66,21 @@ def _assert_stage(runtime, ctx, *, expected_stage: str, decl_name: str):
     return runtime.foundation.ok(None)
 
 
+def _assert_any_stage(runtime, ctx, *, expected_stages: set[str], decl_name: str):
+    if ctx.decl_stage is None or ctx.decl_stage.stage not in expected_stages:
+        current = ctx.decl_stage.stage if ctx.decl_stage is not None else None
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_stage_mutation_rejected",
+                "Tool is not available in the current declaration stage.",
+                object_ref=decl_name,
+                current=current,
+                expected=",".join(sorted(expected_stages)),
+            )
+        )
+    return _assert_stage(runtime, ctx, expected_stage=ctx.decl_stage.stage, decl_name=decl_name)
+
+
 def _normalize_formal_check_stage(stage: str) -> str | None:
     normalized = stage.strip().lower()
     if normalized in {"statement", "statement_formal"}:
@@ -55,9 +96,7 @@ def _assert_formal_read_stage(runtime, ctx, *, requested_stage: str, decl_name: 
     current_stage = ctx.decl_stage.stage
     stage_map = {
         "statement_formal": "statement",
-        "statement_formal_review": "statement",
         "proof_formal": "proof",
-        "proof_formal_review": "proof",
     }
     expected_stage = stage_map.get(current_stage)
     if expected_stage is None:
@@ -67,7 +106,7 @@ def _assert_formal_read_stage(runtime, ctx, *, requested_stage: str, decl_name: 
                 "Formal file checks are only available in current formal worker or reviewer stages.",
                 object_ref=decl_name,
                 current=current_stage,
-                expected="statement_formal,statement_formal_review,proof_formal,proof_formal_review",
+                expected="statement_formal,proof_formal",
             )
         )
     normalized_requested = _normalize_formal_check_stage(requested_stage)
@@ -105,40 +144,517 @@ def _assert_formal_read_stage(runtime, ctx, *, requested_stage: str, decl_name: 
     return runtime.foundation.ok(normalized_requested)
 
 
-def _write_statement_nl(runtime, ctx, args: DeclStageNlArgs):
+def _current_decl_view(runtime, ctx, decl_name: str):
+    return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=decl_name)
+
+
+def _set_statement_nl(runtime, ctx, args: StatementNlSetArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
     if not allowed.ok:
         return allowed
-    written = runtime.decl_graph.write_statement_nl(
+    written = runtime.decl_graph.set_statement_nl(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_round_id(ctx, args.round_id),
+        round_id=_round_id(ctx),
         decl_name=args.decl_name,
         nl=args.nl,
-        origin=args.origin,
-        deps=args.deps,
     )
     if not written.ok:
         return written
-    return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
+    return _current_decl_view(runtime, ctx, args.decl_name)
 
 
-def _write_proof_nl(runtime, ctx, args: DeclStageNlArgs):
+def _add_statement_source_origin(runtime, ctx, args: StatementSourceOriginAddArgs):
+    allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    if args.end_line < args.start_line:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("statement_origin_line_range_invalid", "Source origin end_line must be >= start_line.", object_ref=args.decl_name, field="end_line")
+        )
+    origin = DeclOriginRef(kind="source", source_path=args.source_path, start_line=args.start_line, end_line=args.end_line, note=args.note)
+    written = runtime.decl_graph.add_statement_origin(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        origin=origin,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _add_statement_resource_origin(runtime, ctx, args: StatementResourceOriginAddArgs):
+    allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    origin = DeclOriginRef(kind="resource", resource_key=args.resource_key, start_locator=args.start_locator, end_locator=args.end_locator, note=args.note)
+    written = runtime.decl_graph.add_statement_origin(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        origin=origin,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _remove_statement_origin(runtime, ctx, args: StatementOriginRemoveArgs):
+    allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    written = runtime.decl_graph.remove_statement_origin(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        index=args.index,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _clear_statement_origins(runtime, ctx, args: StatementOriginsClearArgs):
+    allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    written = runtime.decl_graph.clear_statement_origins(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _actor_role(ctx) -> str:
+    role = getattr(ctx, "agent_role", None)
+    if role is None:
+        return "worker"
+    return role.value if hasattr(role, "value") else str(role)
+
+
+def _resolved_mathlib_dep_module(runtime, entry, *, requested_module: str | None, dep_name: str, field_prefix: str):
+    entry_module = getattr(entry, "module", None)
+    module = requested_module or entry_module
+    if not module:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                f"{field_prefix}_mathlib_dep_module_missing",
+                "Mathlib dependency must include a module or refer to a MathlibIndex entry with a module.",
+                object_ref=dep_name,
+                field="module",
+            )
+        )
+    if requested_module and entry_module and requested_module != entry_module:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                f"{field_prefix}_mathlib_dep_module_mismatch",
+                "Mathlib dependency module does not match the repo-level MathlibIndex entry.",
+                object_ref=dep_name,
+                field="module",
+                current=requested_module,
+                expected=entry_module,
+            )
+        )
+    return runtime.foundation.ok(module)
+
+
+def _assert_statement_decl_dep_visible(runtime, ctx, *, decl_name: str, args: StatementDeclDepAddArgs):
+    current_node = _node(ctx)
+    if args.dep_repo:
+        repo_key = runtime.foundation.layout.ensure_safe_key(args.dep_repo)
+        public = runtime.node.public_decl_access.list_repo_public_decls(
+            ctx.repo_root,
+            repo_key=repo_key,
+            actor_role=_actor_role(ctx),
+            current_node_path=current_node,
+        )
+        if not public.ok or public.value is None:
+            return runtime.foundation.fail(public.issues)
+        ref = next((item.ref for item in public.value if item.ref.name == args.dep_name), None)
+        if ref is None:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "statement_dep_not_visible",
+                    "Statement dependency is not visible on the requested provider repo public interface.",
+                    object_ref=args.dep_name,
+                    current=repo_key,
+                )
+            )
+        if args.revision is not None:
+            ref = ref.model_copy(update={"revision": args.revision})
+        return runtime.foundation.ok(ref)
+
+    if args.dep_node and args.dep_node != current_node:
+        public = runtime.node.public_decl_access.list_node_public_decls(
+            ctx.repo_root,
+            node_path=args.dep_node,
+            actor_role=_actor_role(ctx),
+            current_node_path=current_node,
+        )
+        if not public.ok or public.value is None:
+            return runtime.foundation.fail(public.issues)
+        ref = next((item.ref for item in public.value if item.ref.name == args.dep_name), None)
+        if ref is None:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "statement_dep_not_visible",
+                    "Statement dependency is not visible on the requested provider node public interface.",
+                    object_ref=args.dep_name,
+                    current=args.dep_node,
+                )
+            )
+        if args.revision is not None:
+            ref = ref.model_copy(update={"revision": args.revision})
+        return runtime.foundation.ok(ref)
+
+    deps_allowed = _assert_statement_deps_visible(runtime, ctx, decl_name=decl_name, deps=[args.dep_name])
+    if not deps_allowed.ok:
+        return deps_allowed
+    revision = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=current_node, name=args.dep_name)
+    if not revision.ok or revision.value is None:
+        return runtime.foundation.fail(revision.issues)
+    return runtime.foundation.ok(DeclRef(node=current_node, name=args.dep_name, revision=revision.value.revision))
+
+
+def _add_statement_decl_dep(runtime, ctx, args: StatementDeclDepAddArgs):
+    allowed = _assert_any_stage(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    deps_allowed = _assert_statement_decl_dep_visible(runtime, ctx, decl_name=args.decl_name, args=args)
+    if not deps_allowed.ok:
+        return deps_allowed
+    dep = RepoDeclDep(ref=deps_allowed.value, reason=args.reason)
+    written = runtime.decl_graph.add_statement_dep(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        dep=dep,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _add_statement_mathlib_dep(runtime, ctx, args: StatementMathlibDepAddArgs):
+    allowed = _assert_any_stage(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    entry = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=args.mathlib_decl_name)
+    if not entry.ok or entry.value is None:
+        return runtime.foundation.fail(entry.issues)
+    module = _resolved_mathlib_dep_module(runtime, entry.value, requested_module=args.module, dep_name=args.mathlib_decl_name, field_prefix="statement")
+    if not module.ok:
+        return module
+    dep = MathlibDeclDep(ref=MathlibRef(name=args.mathlib_decl_name, module=module.value), reason=args.reason)
+    written = runtime.decl_graph.add_statement_dep(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        dep=dep,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _remove_statement_dep(runtime, ctx, args: StatementDepRemoveArgs):
+    allowed = _assert_any_stage(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    written = runtime.decl_graph.remove_statement_dep(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        index=args.index,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _clear_statement_deps(runtime, ctx, args: StatementDepsClearArgs):
+    allowed = _assert_any_stage(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    written = runtime.decl_graph.clear_statement_deps(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _set_proof_nl(runtime, ctx, args: ProofNlSetArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="proof_nl", decl_name=args.decl_name)
     if not allowed.ok:
         return allowed
-    written = runtime.decl_graph.write_proof_nl(
+    written = runtime.decl_graph.set_proof_nl(
         ctx.repo_root,
         node_path=_node(ctx),
-        round_id=_round_id(ctx, args.round_id),
+        round_id=_round_id(ctx),
         decl_name=args.decl_name,
-        nl=args.nl,
-        origin=args.origin,
-        deps=args.deps,
+        nl=args.proof_nl,
     )
     if not written.ok:
         return written
-    return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _add_proof_source_origin(runtime, ctx, args: ProofSourceOriginAddArgs):
+    allowed = _assert_stage(runtime, ctx, expected_stage="proof_nl", decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    if args.end_line < args.start_line:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("proof_origin_line_range_invalid", "Source origin end_line must be >= start_line.", object_ref=args.decl_name, field="end_line")
+        )
+    origin = DeclOriginRef(kind="source", source_path=args.source_path, start_line=args.start_line, end_line=args.end_line, note=args.note)
+    validated = validate_proof_origin_ref(runtime, ctx.repo_root, origin=origin, decl_name=args.decl_name)
+    if not validated.ok:
+        return validated
+    written = runtime.decl_graph.add_proof_origin(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        origin=origin,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _add_proof_resource_origin(runtime, ctx, args: ProofResourceOriginAddArgs):
+    allowed = _assert_stage(runtime, ctx, expected_stage="proof_nl", decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    origin = DeclOriginRef(kind="resource", resource_key=args.resource_key, start_locator=args.start_locator, end_locator=args.end_locator, note=args.note)
+    validated = validate_proof_origin_ref(runtime, ctx.repo_root, origin=origin, decl_name=args.decl_name)
+    if not validated.ok:
+        return validated
+    written = runtime.decl_graph.add_proof_origin(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        origin=origin,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _remove_proof_origin(runtime, ctx, args: ProofOriginRemoveArgs):
+    allowed = _assert_stage(runtime, ctx, expected_stage="proof_nl", decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    written = runtime.decl_graph.remove_proof_origin(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        index=args.index,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _clear_proof_origins(runtime, ctx, args: ProofOriginsClearArgs):
+    allowed = _assert_stage(runtime, ctx, expected_stage="proof_nl", decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    written = runtime.decl_graph.clear_proof_origins(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _assert_proof_decl_dep_visible(runtime, ctx, *, decl_name: str, args: ProofDeclDepAddArgs):
+    current_node = _node(ctx)
+    if args.dep_repo:
+        repo_key = runtime.foundation.layout.ensure_safe_key(args.dep_repo)
+        public = runtime.node.public_decl_access.list_repo_public_decls(
+            ctx.repo_root,
+            repo_key=repo_key,
+            actor_role=_actor_role(ctx),
+            current_node_path=current_node,
+        )
+        if not public.ok or public.value is None:
+            return runtime.foundation.fail(public.issues)
+        ref = next((item.ref for item in public.value if item.ref.name == args.dep_name), None)
+        if ref is None:
+            return runtime.foundation.fail(
+                runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not visible on the requested provider repo public interface.", object_ref=args.dep_name, current=repo_key)
+            )
+        if args.revision is not None:
+            ref = ref.model_copy(update={"revision": args.revision})
+        return runtime.foundation.ok(ref)
+
+    if args.dep_node and args.dep_node != current_node:
+        public = runtime.node.public_decl_access.list_node_public_decls(
+            ctx.repo_root,
+            node_path=args.dep_node,
+            actor_role=_actor_role(ctx),
+            current_node_path=current_node,
+        )
+        if not public.ok or public.value is None:
+            return runtime.foundation.fail(public.issues)
+        ref = next((item.ref for item in public.value if item.ref.name == args.dep_name), None)
+        if ref is None:
+            return runtime.foundation.fail(
+                runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not visible on the requested provider node public interface.", object_ref=args.dep_name, current=args.dep_node)
+            )
+        if args.revision is not None:
+            ref = ref.model_copy(update={"revision": args.revision})
+        return runtime.foundation.ok(ref)
+
+    dep = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=current_node, name=args.dep_name)
+    if not dep.ok or dep.value is None:
+        return runtime.foundation.fail(runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not a visible current declaration.", object_ref=args.dep_name))
+    return runtime.foundation.ok(DeclRef(node=current_node, name=args.dep_name, revision=args.revision or dep.value.revision))
+
+
+def _add_proof_decl_dep(runtime, ctx, args: ProofDeclDepAddArgs):
+    allowed = _assert_any_stage(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    deps_allowed = _assert_proof_decl_dep_visible(runtime, ctx, decl_name=args.decl_name, args=args)
+    if not deps_allowed.ok:
+        return deps_allowed
+    dep = RepoDeclDep(ref=deps_allowed.value, reason=args.reason)
+    validation = validate_proof_deps(
+        runtime,
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        deps=[dep],
+    )
+    if not validation.ok:
+        return validation
+    written = runtime.decl_graph.add_proof_dep(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        dep=dep,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _add_proof_mathlib_dep(runtime, ctx, args: ProofMathlibDepAddArgs):
+    allowed = _assert_any_stage(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    entry = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=args.mathlib_decl_name)
+    if not entry.ok or entry.value is None:
+        return runtime.foundation.fail(entry.issues)
+    module = _resolved_mathlib_dep_module(runtime, entry.value, requested_module=args.module, dep_name=args.mathlib_decl_name, field_prefix="proof")
+    if not module.ok:
+        return module
+    dep = MathlibDeclDep(ref=MathlibRef(name=args.mathlib_decl_name, module=module.value), reason=args.reason)
+    written = runtime.decl_graph.add_proof_dep(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        dep=dep,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):
+    allowed = _assert_any_stage(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    written = runtime.decl_graph.remove_proof_dep(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+        index=args.index,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _clear_proof_deps(runtime, ctx, args: ProofDepsClearArgs):
+    allowed = _assert_any_stage(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
+    if not allowed.ok:
+        return allowed
+    written = runtime.decl_graph.clear_proof_deps(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_round_id(ctx),
+        decl_name=args.decl_name,
+    )
+    if not written.ok:
+        return written
+    return _current_decl_view(runtime, ctx, args.decl_name)
+
+
+def _assert_statement_deps_visible(runtime, ctx, *, decl_name: str, deps: list[str]):
+    round_id = _round_id(ctx)
+    round_record = runtime.decl_graph.get_round(ctx.repo_root, node_path=_node(ctx), round_id=round_id)
+    if not round_record.ok or round_record.value is None:
+        return runtime.foundation.fail(round_record.issues)
+    round_ref_names = {ref.decl_name for ref in round_record.value.revision_refs}
+    issues = []
+    for dep_name in sorted({dep.strip() for dep in deps if dep and dep.strip()}):
+        dep = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=dep_name)
+        if not dep.ok or dep.value is None:
+            issues.append(runtime.foundation.issue("statement_dep_not_visible", "Statement dependency is not a visible current declaration.", object_ref=dep_name))
+            continue
+        if dep_name in round_ref_names and _decl_state_rank(DeclState(dep.value.state)) < _decl_state_rank(DeclState.DECLARED):
+            current = dep.value.state.value if hasattr(dep.value.state, "value") else str(dep.value.state)
+            issues.append(
+                runtime.foundation.issue(
+                    "statement_dep_same_round_not_declared",
+                    "Statement dependency points to a same-round declaration that is not accepted declared state.",
+                    object_ref=dep_name,
+                    current=current,
+                    expected="declared",
+                )
+            )
+    if issues:
+        return runtime.foundation.fail(issues)
+    return runtime.foundation.ok(None)
+
+
+def _decl_state_rank(state: DeclState) -> int:
+    return {
+        DeclState.OBSOLETE: -1,
+        DeclState.PLANNED: 0,
+        DeclState.SPECIFIED: 1,
+        DeclState.DECLARED: 2,
+        DeclState.PROOF_PLANNED: 3,
+        DeclState.PROVED: 4,
+    }[state]
 
 
 def _prepare_statement_file(runtime, ctx, args: DeclNameArgs):
@@ -273,6 +789,216 @@ def _record_statement_nl_review_rejected(runtime, ctx, args: StatementNlReviewRe
     return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
 
 
+_STATEMENT_FORMAL_REVIEW_ISSUE_CATEGORIES = {
+    "formal_not_equivalent_to_nl",
+    "statement_too_strong",
+    "statement_too_weak",
+    "missing_hypothesis",
+    "extra_hidden_assumption",
+    "wrong_binder_or_domain",
+    "wrong_typeclass_or_instance_context",
+    "wrong_mathlib_concept",
+    "wrong_local_dependency",
+    "unavailable_dependency",
+    "unnecessary_dependency",
+    "source_or_resource_mismatch",
+    "node_boundary_violation",
+    "semantic_shortcut_or_gate_gap",
+    "unclear_worker_intent",
+}
+
+
+_PROOF_NL_REVIEW_ISSUE_CATEGORIES = {
+    "proof_route_incomplete",
+    "proof_route_too_vague",
+    "logical_gap",
+    "invalid_inference",
+    "missing_case",
+    "missing_assumption",
+    "proves_wrong_statement",
+    "formal_statement_mismatch",
+    "origin_missing",
+    "origin_invalid",
+    "external_material_needs_resource",
+    "source_proof_misaligned",
+    "missing_decl_dependency",
+    "missing_mathlib_dependency",
+    "invalid_dependency",
+    "same_round_dependency",
+    "needs_helper_decl",
+    "not_formalization_ready",
+    "previous_failure_not_addressed",
+    "planning_required",
+}
+
+
+_PROOF_FORMAL_REVIEW_ISSUE_CATEGORIES = {
+    "proof_not_aligned_with_proof_nl",
+    "source_proof_mismatch",
+    "unjustified_alternative_proof",
+    "missing_major_proof_dep",
+    "wrong_proof_dep_semantics",
+    "hidden_helper_should_be_decl",
+    "local_helper_too_complex",
+    "proof_uses_unintended_strong_theorem",
+    "metadata_mismatch",
+    "semantic_shortcut_or_gate_gap",
+}
+
+
+_PROOF_FORMAL_REVIEW_NEXT_ACTIONS = {
+    "worker_repairable",
+    "needs_proof_nl_update",
+    "needs_helper_decl",
+    "source_mismatch",
+    "gate_gap",
+}
+
+
+def _record_statement_formal_review_passed(runtime, ctx, args: StatementFormalReviewPassedArgs):
+    mark = _build_stage_specific_review_mark(
+        runtime,
+        ctx,
+        expected_stage="statement_formal",
+        decl_name=args.decl_name,
+        passed=True,
+        summary=args.summary,
+    )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
+
+
+def _record_statement_formal_review_rejected(runtime, ctx, args: StatementFormalReviewRejectedArgs):
+    unknown_categories = sorted(set(args.issue_categories) - _STATEMENT_FORMAL_REVIEW_ISSUE_CATEGORIES)
+    if unknown_categories:
+        return runtime.foundation.fail(
+            [
+                runtime.foundation.issue(
+                    "statement_formal_review_issue_category_invalid",
+                    "Statement Formal review rejection uses an unsupported issue category.",
+                    object_ref=category,
+                    expected=", ".join(sorted(_STATEMENT_FORMAL_REVIEW_ISSUE_CATEGORIES)),
+                )
+                for category in unknown_categories
+            ]
+        )
+    mark = _build_stage_specific_review_mark(
+        runtime,
+        ctx,
+        expected_stage="statement_formal",
+        decl_name=args.decl_name,
+        passed=False,
+        summary=args.summary,
+        issue_categories=args.issue_categories,
+        required_changes=args.required_changes,
+    )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
+
+
+def _record_proof_nl_review_passed(runtime, ctx, args: ProofNlReviewPassedArgs):
+    mark = _build_stage_specific_review_mark(
+        runtime,
+        ctx,
+        expected_stage="proof_nl",
+        decl_name=args.decl_name,
+        passed=True,
+        summary=args.summary,
+    )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
+
+
+def _record_proof_nl_review_rejected(runtime, ctx, args: ProofNlReviewRejectedArgs):
+    unknown_categories = sorted(set(args.issue_categories) - _PROOF_NL_REVIEW_ISSUE_CATEGORIES)
+    if unknown_categories:
+        return runtime.foundation.fail(
+            [
+                runtime.foundation.issue(
+                    "proof_nl_review_issue_category_invalid",
+                    "Proof NL review rejection uses an unsupported issue category.",
+                    object_ref=category,
+                    expected=", ".join(sorted(_PROOF_NL_REVIEW_ISSUE_CATEGORIES)),
+                )
+                for category in unknown_categories
+            ]
+        )
+    required_changes = list(args.required_changes)
+    if args.recommended_next_action:
+        required_changes.append(f"Recommended next action: {args.recommended_next_action.strip()}")
+    mark = _build_stage_specific_review_mark(
+        runtime,
+        ctx,
+        expected_stage="proof_nl",
+        decl_name=args.decl_name,
+        passed=False,
+        summary=args.summary,
+        issue_categories=args.issue_categories,
+        required_changes=required_changes,
+    )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
+
+
+def _record_proof_formal_review_passed(runtime, ctx, args: ProofFormalReviewPassedArgs):
+    mark = _build_stage_specific_review_mark(
+        runtime,
+        ctx,
+        expected_stage="proof_formal",
+        decl_name=args.decl_name,
+        passed=True,
+        summary=args.summary,
+    )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
+
+
+def _record_proof_formal_review_rejected(runtime, ctx, args: ProofFormalReviewRejectedArgs):
+    unknown_categories = sorted(set(args.issue_categories) - _PROOF_FORMAL_REVIEW_ISSUE_CATEGORIES)
+    if unknown_categories:
+        return runtime.foundation.fail(
+            [
+                runtime.foundation.issue(
+                    "proof_formal_review_issue_category_invalid",
+                    "Proof Formal review rejection uses an unsupported issue category.",
+                    object_ref=category,
+                    expected=", ".join(sorted(_PROOF_FORMAL_REVIEW_ISSUE_CATEGORIES)),
+                )
+                for category in unknown_categories
+            ]
+        )
+    if args.recommended_next_action not in _PROOF_FORMAL_REVIEW_NEXT_ACTIONS:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "proof_formal_review_next_action_invalid",
+                "Proof Formal review rejection uses an unsupported recommended next action.",
+                object_ref=args.decl_name,
+                field="recommended_next_action",
+                current=args.recommended_next_action,
+                expected=", ".join(sorted(_PROOF_FORMAL_REVIEW_NEXT_ACTIONS)),
+            )
+        )
+    mark = _build_stage_specific_review_mark(
+        runtime,
+        ctx,
+        expected_stage="proof_formal",
+        decl_name=args.decl_name,
+        passed=False,
+        summary=args.summary,
+        issue_categories=args.issue_categories,
+        required_changes=args.required_changes,
+        recommended_next_action=args.recommended_next_action,
+    )
+    if not mark.ok or mark.value is None:
+        return runtime.foundation.fail(mark.issues)
+    return _persist_review_mark(runtime, ctx, ctx.runtime.step_id, mark.value)
+
+
 def _build_statement_nl_mark(
     runtime,
     ctx,
@@ -282,17 +1008,43 @@ def _build_statement_nl_mark(
     summary: str,
     issue_categories: list[str] | None = None,
     required_changes: list[str] | None = None,
+    recommended_next_action: str | None = None,
+):
+    return _build_stage_specific_review_mark(
+        runtime,
+        ctx,
+        expected_stage="statement_nl",
+        decl_name=decl_name,
+        passed=passed,
+        summary=summary,
+        issue_categories=issue_categories,
+        required_changes=required_changes,
+        recommended_next_action=recommended_next_action,
+    )
+
+
+def _build_stage_specific_review_mark(
+    runtime,
+    ctx,
+    *,
+    expected_stage: str,
+    decl_name: str,
+    passed: bool,
+    summary: str,
+    issue_categories: list[str] | None = None,
+    required_changes: list[str] | None = None,
+    recommended_next_action: str | None = None,
 ):
     if ctx.decl_stage is None:
         return runtime.foundation.fail(runtime.foundation.issue("decl_stage_context_missing", "Current context has no decl stage."))
-    if ctx.decl_stage.stage != "statement_nl":
+    if ctx.decl_stage.stage != expected_stage:
         return runtime.foundation.fail(
             runtime.foundation.issue(
                 "review_mark_stage_mismatch",
-                "Statement NL review tools are only valid in the statement_nl review context.",
+                f"{expected_stage} review tools are only valid in the {expected_stage} review context.",
                 object_ref=decl_name,
                 current=ctx.decl_stage.stage,
-                expected="statement_nl",
+                expected=expected_stage,
             )
         )
     step = _load_reviewer_step(runtime, ctx)
@@ -310,12 +1062,13 @@ def _build_statement_nl_mark(
         ctx.repo_root,
         node_path=context.value["node_path"],
         round_id=context.value["round_id"],
-        stage="statement_nl",
+        stage=expected_stage,
         decl_name=decl_name,
         passed=passed,
         summary=summary,
         issue_categories=issue_categories,
         required_changes=required_changes,
+        recommended_next_action=recommended_next_action,
     )
 
 
@@ -480,24 +1233,184 @@ def build_tool_specs() -> list[ToolSpec]:
     read_roles = {"worker", "reviewer", "plan", "admin"}
     return [
         handler_tool(
-            name="write_statement_nl",
-            description="Write natural-language statement text, supporting origins, and draft dependencies for one declaration in the current statement natural-language stage.",
-            args_model=DeclStageNlArgs,
+            name="set_statement_nl",
+            description="Set the natural-language statement text for one declaration in the current Statement NL stage without changing origins, dependencies, proof artifacts, or declaration state.",
+            args_model=StatementNlSetArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_revision",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
             roles=worker_roles,
-            handler=_write_statement_nl,
+            handler=_set_statement_nl,
         ),
         handler_tool(
-            name="write_proof_nl",
-            description="Write a natural-language proof route, supporting origins, and draft proof dependencies for one declaration in the current proof natural-language stage.",
-            args_model=DeclStageNlArgs,
+            name="add_statement_source_origin",
+            description="Add one typed source-origin range supporting the statement NL candidate in the current Statement NL stage.",
+            args_model=StatementSourceOriginAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
+            roles=worker_roles,
+            handler=_add_statement_source_origin,
+        ),
+        handler_tool(
+            name="add_statement_resource_origin",
+            description="Add one typed resource-origin reference supporting the statement NL candidate in the current Statement NL stage.",
+            args_model=StatementResourceOriginAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
+            roles=worker_roles,
+            handler=_add_statement_resource_origin,
+        ),
+        handler_tool(
+            name="remove_statement_origin",
+            description="Remove one statement origin from the current Statement NL candidate by 0-based origin index.",
+            args_model=StatementOriginRemoveArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
+            roles=worker_roles,
+            handler=_remove_statement_origin,
+        ),
+        handler_tool(
+            name="clear_statement_origins",
+            description="Clear all statement origins from the current Statement NL candidate without changing statement text or dependencies.",
+            args_model=StatementOriginsClearArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
+            roles=worker_roles,
+            handler=_clear_statement_origins,
+        ),
+        handler_tool(
+            name="add_statement_decl_dep",
+            description="Add one typed project declaration dependency needed to express the statement candidate.",
+            args_model=StatementDeclDepAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
+            roles=worker_roles,
+            handler=_add_statement_decl_dep,
+        ),
+        handler_tool(
+            name="add_statement_mathlib_dep",
+            description="Add one typed Mathlib declaration dependency needed to express the statement candidate.",
+            args_model=StatementMathlibDepAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
+            roles=worker_roles,
+            handler=_add_statement_mathlib_dep,
+        ),
+        handler_tool(
+            name="remove_statement_dep",
+            description="Remove one statement dependency from the current candidate by 0-based dependency index.",
+            args_model=StatementDepRemoveArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
+            roles=worker_roles,
+            handler=_remove_statement_dep,
+        ),
+        handler_tool(
+            name="clear_statement_deps",
+            description="Clear all statement dependencies from the current candidate without changing statement text or origins.",
+            args_model=StatementDepsClearArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
+            roles=worker_roles,
+            handler=_clear_statement_deps,
+        ),
+        handler_tool(
+            name="set_proof_nl",
+            description="Set the natural-language proof route for one theorem-like declaration in the current Proof NL stage without changing origins, dependencies, formal artifacts, or declaration state.",
+            args_model=ProofNlSetArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_revision",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
             roles=worker_roles,
-            handler=_write_proof_nl,
+            handler=_set_proof_nl,
+        ),
+        handler_tool(
+            name="add_proof_source_origin",
+            description="Add one typed source-origin range supporting the proof route in the current Proof NL stage.",
+            args_model=ProofSourceOriginAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
+            roles=worker_roles,
+            handler=_add_proof_source_origin,
+        ),
+        handler_tool(
+            name="add_proof_resource_origin",
+            description="Add one typed resource-origin reference supporting the proof route in the current Proof NL stage.",
+            args_model=ProofResourceOriginAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
+            roles=worker_roles,
+            handler=_add_proof_resource_origin,
+        ),
+        handler_tool(
+            name="remove_proof_origin",
+            description="Remove one proof origin from the current Proof NL candidate by 0-based origin index.",
+            args_model=ProofOriginRemoveArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
+            roles=worker_roles,
+            handler=_remove_proof_origin,
+        ),
+        handler_tool(
+            name="clear_proof_origins",
+            description="Clear all proof origins from the current Proof NL candidate without changing proof text or dependencies.",
+            args_model=ProofOriginsClearArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
+            roles=worker_roles,
+            handler=_clear_proof_origins,
+        ),
+        handler_tool(
+            name="add_proof_decl_dep",
+            description="Add one typed project declaration dependency used by the proof route or formal proof.",
+            args_model=ProofDeclDepAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
+            roles=worker_roles,
+            handler=_add_proof_decl_dep,
+        ),
+        handler_tool(
+            name="add_proof_mathlib_dep",
+            description="Add one typed Mathlib declaration dependency used by the proof route or formal proof.",
+            args_model=ProofMathlibDepAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
+            roles=worker_roles,
+            handler=_add_proof_mathlib_dep,
+        ),
+        handler_tool(
+            name="remove_proof_dep",
+            description="Remove one proof dependency from the current candidate by 0-based dependency index.",
+            args_model=ProofDepRemoveArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
+            roles=worker_roles,
+            handler=_remove_proof_dep,
+        ),
+        handler_tool(
+            name="clear_proof_deps",
+            description="Clear all proof dependencies from the current candidate without changing proof text or origins.",
+            args_model=ProofDepsClearArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
+            roles=worker_roles,
+            handler=_clear_proof_deps,
         ),
         handler_tool(
             name="prepare_statement_formal_file",
@@ -588,6 +1501,66 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_REVIEW_MARK_WRITE},
             roles={"reviewer", "admin"},
             handler=_record_statement_nl_review_rejected,
+        ),
+        handler_tool(
+            name="record_statement_formal_review_passed",
+            description="Record a passed semantic review mark for one declaration in the current Statement Formal review step.",
+            args_model=StatementFormalReviewPassedArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_review_mark",
+            groups={AppGroup.DECL_STAGE_STATEMENT_FORMAL_REVIEW_MARK_WRITE},
+            roles={"reviewer", "admin"},
+            handler=_record_statement_formal_review_passed,
+        ),
+        handler_tool(
+            name="record_statement_formal_review_rejected",
+            description="Record a rejected semantic review mark with issue categories and required changes for one declaration in the current Statement Formal review step.",
+            args_model=StatementFormalReviewRejectedArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_review_mark",
+            groups={AppGroup.DECL_STAGE_STATEMENT_FORMAL_REVIEW_MARK_WRITE},
+            roles={"reviewer", "admin"},
+            handler=_record_statement_formal_review_rejected,
+        ),
+        handler_tool(
+            name="record_proof_nl_review_passed",
+            description="Record a passed semantic review mark for one declaration in the current Proof NL review step.",
+            args_model=ProofNlReviewPassedArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_review_mark",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_REVIEW_MARK_WRITE},
+            roles={"reviewer", "admin"},
+            handler=_record_proof_nl_review_passed,
+        ),
+        handler_tool(
+            name="record_proof_nl_review_rejected",
+            description="Record a rejected proof-route review mark with issue categories and required changes for one declaration in the current Proof NL review step.",
+            args_model=ProofNlReviewRejectedArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_review_mark",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_REVIEW_MARK_WRITE},
+            roles={"reviewer", "admin"},
+            handler=_record_proof_nl_review_rejected,
+        ),
+        handler_tool(
+            name="record_proof_formal_review_passed",
+            description="Record a passed semantic review mark for one declaration in the current Proof Formal review step.",
+            args_model=ProofFormalReviewPassedArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_review_mark",
+            groups={AppGroup.DECL_STAGE_PROOF_FORMAL_REVIEW_MARK_WRITE},
+            roles={"reviewer", "admin"},
+            handler=_record_proof_formal_review_passed,
+        ),
+        handler_tool(
+            name="record_proof_formal_review_rejected",
+            description="Record a rejected proof-formal review mark with issue categories, required changes, and recommended next action for one declaration in the current Proof Formal review step.",
+            args_model=ProofFormalReviewRejectedArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_review_mark",
+            groups={AppGroup.DECL_STAGE_PROOF_FORMAL_REVIEW_MARK_WRITE},
+            roles={"reviewer", "admin"},
+            handler=_record_proof_formal_review_rejected,
         ),
         handler_tool(
             name="inspect_current_stage_review_status",

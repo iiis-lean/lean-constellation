@@ -25,6 +25,8 @@ from lean_constellation.services.decl_graph.models import (
     DeclState,
     DeclStrategyStatus,
 )
+from lean_constellation.services.decl_graph.proof_nl_validation import proof_nl_validation_message, validate_proof_deps
+from lean_constellation.services.decl_graph.statement_nl_validation import statement_nl_validation_message
 
 
 DeclStageName = Literal["statement_nl", "statement_formal", "proof_nl", "proof_formal"]
@@ -559,7 +561,10 @@ class StageGateAndAuditStep(BaseStep):
         consistency = _statement_nl_consistency_for_stage(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
         if consistency is not None:
             return ctx.complete_step(consistency)
-        consistency = _formal_consistency_for_stage(ctx, repo_root, input_model.node_path, state.stage, state.target_decl_names)
+        consistency = _proof_nl_consistency_for_stage(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
+        if consistency is not None:
+            return ctx.complete_step(consistency)
+        consistency = _formal_consistency_for_stage(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
         if consistency is not None:
             return ctx.complete_step(consistency)
         audit = _validation_snapshot(ctx).run_round_local_audit(repo_root, node_path=input_model.node_path, round_id=input_model.round_id, stage=state.stage)
@@ -986,6 +991,7 @@ def _formal_consistency_for_stage(
     ctx: StepRunContext,
     repo_root: Path,
     node_path: str,
+    round_id: str,
     stage: DeclStageName,
     targets: list[str],
 ) -> StageGateAndAuditStepResult | None:
@@ -1010,7 +1016,32 @@ def _formal_consistency_for_stage(
                 ),
                 summary=gate.value.summary,
             )
+        if stage == "proof_formal":
+            dep_gate = _proof_deps_gate_for_stage(ctx, repo_root, node_path, round_id, decl_name, stage)
+            if dep_gate is not None:
+                return dep_gate
     return None
+
+
+def _proof_deps_gate_for_stage(
+    ctx: StepRunContext,
+    repo_root: Path,
+    node_path: str,
+    round_id: str,
+    decl_name: str,
+    stage: DeclStageName,
+) -> StageGateAndAuditStepResult | None:
+    decl = _decl_graph(ctx).get_decl(repo_root, node_path=node_path, name=decl_name)
+    if not decl.ok or decl.value is None:
+        return _stage_gate_failed(stage, _first_issue_message(decl.issues, "Proof dependency gate could not load declaration."), [decl_name])
+    revision = _decl_graph(ctx).get_decl_revision(repo_root, node_path=node_path, name=decl_name, revision=decl.value.current_revision)
+    if not revision.ok or revision.value is None:
+        return _stage_gate_failed(stage, _first_issue_message(revision.issues, "Proof dependency gate could not load declaration revision."), [decl_name])
+    deps = list(revision.value.proof.deps) if revision.value.proof is not None else []
+    checked = validate_proof_deps(ctx.app, repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, deps=deps)
+    if checked.ok:
+        return None
+    return _stage_gate_failed(stage, _first_issue_message(checked.issues, "Proof dependency gate failed."), [decl_name])
 
 
 def _reviewer_result_context_for_stage(
@@ -1054,99 +1085,27 @@ def _statement_nl_consistency_for_stage(
 ) -> StageGateAndAuditStepResult | None:
     if stage != "statement_nl":
         return None
-    graph = _decl_graph(ctx)
-    material = _material(ctx)
-    round_record = graph.get_round(repo_root, node_path=node_path, round_id=round_id)
-    if not round_record.ok or round_record.value is None:
-        return _stage_gate_failed(stage, _first_issue_message(round_record.issues, "Cannot read current round for Statement NL gate."), targets)
-    round_ref_names = {ref.decl_name for ref in round_record.value.revision_refs}
     for decl_name in targets:
-        revision = graph.current_decl_revision_view(repo_root, node_path=node_path, name=decl_name)
-        if not revision.ok or revision.value is None:
-            return _stage_gate_failed(stage, _first_issue_message(revision.issues, "Statement NL candidate check failed."), targets)
-        if not revision.value.statement_nl or not revision.value.statement_nl.strip():
-            return StageGateAndAuditStepResult(
-                outcome="failed",
-                stage=stage,
-                rejected_decl_names=list(targets),
-                error=RoundTerminalReason(
-                    code="stage_gate_failed",
-                    message=f"Statement NL candidate is missing for {decl_name}.",
-                    stage=stage,
-                    affected_decl_names=[decl_name],
-                    suggested_plan_action="Return to the Statement NL worker and write the missing statement candidate.",
-                ),
-                summary=f"Statement NL candidate is missing for {decl_name}.",
-            )
-        origin_issue = _validate_statement_origins(material, repo_root, revision.value.statement_origin, decl_name)
-        if origin_issue is not None:
-            return _stage_gate_failed(stage, origin_issue, [decl_name])
-        dep_issue = _validate_statement_deps(graph, repo_root, node_path, round_ref_names, revision.value.statement_deps, decl_name)
-        if dep_issue is not None:
-            return _stage_gate_failed(stage, dep_issue, [decl_name])
+        issue = statement_nl_validation_message(ctx.app, repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if issue is not None:
+            return _stage_gate_failed(stage, issue, [decl_name])
     return None
 
 
-def _validate_statement_origins(material, repo_root: Path, origins: list[object], decl_name: str) -> str | None:
-    for origin in origins:
-        kind, ref = _origin_kind_ref(origin)
-        if kind == "source":
-            if ref is None:
-                return f"Statement NL source origin for {decl_name} must include a stable ref."
-            index = material.get_committed_source_index(repo_root)
-            if not index.ok or index.value is None:
-                return f"Statement NL source origin for {decl_name} requires a committed SourceIndex."
-            if not _source_origin_ref_exists(index.value, ref):
-                return f"Statement NL source origin for {decl_name} does not match committed SourceIndex: {ref}."
-            continue
-        if kind == "resource":
-            if ref is None:
-                return f"Statement NL resource origin for {decl_name} must include a stable resource key."
-            resource_key = ref.split("#", 1)[0].split(":", 1)[-1].strip()
-            resource = material.get_resource(repo_root, resource_key=resource_key)
-            if not resource.ok:
-                return f"Statement NL resource origin for {decl_name} does not match an active resource: {ref}."
-            continue
-        return f"Statement NL origin kind for {decl_name} is not a stable source/resource origin: {kind}."
-    return None
-
-
-def _origin_kind_ref(origin: object) -> tuple[str, str | None]:
-    if isinstance(origin, dict):
-        kind = str(origin.get("kind", "")).strip()
-        raw_ref = origin.get("ref")
-    else:
-        kind = str(getattr(origin, "kind", "")).strip()
-        raw_ref = getattr(origin, "ref", None)
-    ref = str(raw_ref).strip() if raw_ref is not None else None
-    return kind, ref or None
-
-
-def _source_origin_ref_exists(index, ref: str) -> bool:
-    if ref in getattr(index, "blocks", {}):
-        return True
-    if ref in getattr(index, "files", {}):
-        return True
-    ref_path = ref.split("#", 1)[0].split(":", 1)[0]
-    if ref_path in getattr(index, "files", {}):
-        return True
-    for block in getattr(index, "blocks", {}).values():
-        for block_ref in getattr(block, "refs", []):
-            if ref == getattr(block_ref, "ref_id", None):
-                return True
-            if ref_path == getattr(block_ref, "path", None):
-                return True
-    return False
-
-
-def _validate_statement_deps(graph, repo_root: Path, node_path: str, round_ref_names: set[str], deps: list[str], decl_name: str) -> str | None:
-    for dep_name in deps:
-        dep = graph.current_decl_revision_view(repo_root, node_path=node_path, name=dep_name)
-        if not dep.ok or dep.value is None:
-            return f"Statement NL dependency for {decl_name} is not a visible current declaration: {dep_name}."
-        dep_state = DeclState(dep.value.state)
-        if dep_name in round_ref_names and not _state_reaches(dep_state, DeclState.DECLARED):
-            return f"Statement NL dependency for {decl_name} points to same-round declaration that is not accepted declared state: {dep_name}."
+def _proof_nl_consistency_for_stage(
+    ctx: StepRunContext,
+    repo_root: Path,
+    node_path: str,
+    round_id: str,
+    stage: DeclStageName,
+    targets: list[str],
+) -> StageGateAndAuditStepResult | None:
+    if stage != "proof_nl":
+        return None
+    for decl_name in targets:
+        issue = proof_nl_validation_message(ctx.app, repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if issue is not None:
+            return _stage_gate_failed(stage, issue, [decl_name])
     return None
 
 

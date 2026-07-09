@@ -263,13 +263,19 @@ class LakeDependencyComponent:
         ]
         return self.runtime.foundation.ok(
             AdapterSetupView(
-                upstream_summary=upstream.evidence_summary or f"Adapter upstream: {upstream.git_url}",
+                upstream_summary=self._adapter_upstream_summary(upstream),
                 lake_check_summary="; ".join(summaries) if summaries else None,
                 trusted_build=True,
                 summary=f"Initialized adapter Lean project skeleton for {project_name}.",
                 written_files=[str(path) for path in written],
             )
         )
+
+    def _adapter_upstream_summary(self, upstream: UpstreamDependencyInput) -> str:
+        parts = [upstream.evidence_summary or f"Adapter upstream: {upstream.git_url}"]
+        if upstream.known_risks:
+            parts.append("Known risks: " + "; ".join(upstream.known_risks))
+        return " ".join(parts)
 
     def check_native_repo_skeleton(self, repo_root: Path) -> ServiceResult[GateReport]:
         repo_root = Path(repo_root)

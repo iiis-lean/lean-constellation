@@ -69,7 +69,7 @@ def test_runtime_mcp_gateway_fallback_resolves_repo_context_from_ark_state(tmp_p
             env={"ARK_FLOW_ID": flow_id, "ARK_STEP_ID": step_id, "ARK_AGENT_ID": agent.agent_id},
         ),
         tool_name="submit_native_repo_choice",
-        flat_args={"summary": "Use native.", "source_corpus_mode": "prepare"},
+        flat_args={"summary": "Use native."},
     )
 
     assert result.ok and result.value is not None
@@ -147,7 +147,7 @@ def test_runtime_mcp_gateway_supports_derived_agent_type_tool_view_permissions(t
             env={"ARK_FLOW_ID": flow_id, "ARK_STEP_ID": step_id, "ARK_AGENT_ID": agent.agent_id},
         ),
         tool_name="submit_native_repo_choice",
-        flat_args={"summary": "Use native.", "source_corpus_mode": "prepare"},
+        flat_args={"summary": "Use native."},
     )
 
     assert result.ok and result.value is not None

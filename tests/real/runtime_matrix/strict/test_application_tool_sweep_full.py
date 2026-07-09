@@ -26,9 +26,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 208
-    assert len(implemented_tool_cases()) == 174
-    assert len(pending_tool_cases()) == 34
+    assert len(cases) == 240
+    assert len(implemented_tool_cases()) == 200
+    assert len(pending_tool_cases()) == 40
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -74,6 +74,30 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         assertion_summary="Preparation input returned the repo goal.",
     )
     assert prep.value["input"]["goal"]
+    requirement_refs = prep.value["input"].get("requirement_refs") or []
+
+    scoped_requirements = call_tool_with_evidence(
+        server,
+        "repo_format_discovery",
+        "list_preparation_requirements",
+        {},
+        runtime_context=_ctx(ws.provider_repo, view="repo_format_discovery", agent_type="RepoFormatDiscoveryAgent", role="coordinator"),
+        recorder=evidence_recorder,
+        assertion_summary="Scoped preparation requirements returned only current refs.",
+    )
+    assert len(scoped_requirements.value["requirements"]) == len(requirement_refs)
+    if requirement_refs:
+        ref = requirement_refs[0]
+        requirement_detail = call_tool_with_evidence(
+            server,
+            "repo_format_discovery",
+            "get_preparation_requirement",
+            {"consumer_repo": ref["consumer_repo"], "requirement_name": ref["requirement_name"]},
+            runtime_context=_ctx(ws.provider_repo, view="repo_format_discovery", agent_type="RepoFormatDiscoveryAgent", role="coordinator"),
+            recorder=evidence_recorder,
+            assertion_summary="Scoped preparation requirement detail returned one current ref.",
+        )
+        assert requirement_detail.value["requirement"]["name"] == ref["requirement_name"]
 
     preflight = call_tool_with_evidence(
         server,

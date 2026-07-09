@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from pydantic import Field
 
@@ -45,6 +46,77 @@ class GitHubRepoSearchResult(StrictModel):
     candidates: list[GitHubRepoCandidate] = Field(default_factory=list)
     summary: str | None = None
     issue_code: str | None = None
+
+
+class GitHubTreeEntry(StrictModel):
+    path: str
+    type: str
+    size: int | None = None
+    sha: str | None = None
+
+
+class GitHubRepositoryTreeView(StrictModel):
+    git_url: str
+    revision: str | None = None
+    resolved_revision: str | None = None
+    recursive: bool = True
+    path_prefix: str | None = None
+    entries: list[GitHubTreeEntry] = Field(default_factory=list)
+    truncated: bool = False
+    summary: str | None = None
+    issue_code: str | None = None
+
+
+class GitHubRepositoryFileView(StrictModel):
+    git_url: str
+    path: str
+    revision: str | None = None
+    encoding: str | None = None
+    size: int | None = None
+    content_excerpt: str | None = None
+    truncated: bool = False
+    summary: str | None = None
+    issue_code: str | None = None
+
+
+class GitHubCodeSearchMatch(StrictModel):
+    repository: str | None = None
+    path: str
+    url: str | None = None
+    text_matches: list[str] = Field(default_factory=list)
+
+
+class GitHubCodeSearchResult(StrictModel):
+    ok: bool
+    query: str
+    repo: str | None = None
+    matches: list[GitHubCodeSearchMatch] = Field(default_factory=list)
+    summary: str | None = None
+    issue_code: str | None = None
+
+
+class GitHubLeanRepoProbeView(StrictModel):
+    git_url: str
+    normalized_git_url: str
+    requested_revision: str | None = None
+    resolved_revision: str | None = None
+    requested_subdir: str | None = None
+    is_lean_project: bool
+    has_lakefile: bool
+    has_lean_toolchain: bool
+    lakefile_paths: list[str] = Field(default_factory=list)
+    lean_toolchain_paths: list[str] = Field(default_factory=list)
+    candidate_subdirs: list[str] = Field(default_factory=list)
+    selected_subdir: str | None = None
+    package_name: str | None = None
+    likely_import_modules: list[str] = Field(default_factory=list)
+    lakefile_excerpt: str | None = None
+    lean_toolchain: str | None = None
+    readme_evidence: str | None = None
+    evidence_summary: str
+    known_risks: list[str] = Field(default_factory=list)
+    truncated: bool = False
+    summary: str | None = None
 
 
 class GitCheckoutResult(StrictModel):
@@ -168,6 +240,326 @@ class GitHubRepoClient:
                 evidence_summary="Repository inspect returned invalid JSON.",
             )
         return self._candidate_from_gh_json(item, fallback_url=html_url, fallback_full_name=owner_repo)
+
+    def get_repository(self, git_url: str) -> GitHubRepoCandidate:
+        return self.inspect_repository(git_url)
+
+    def list_repository_tree(
+        self,
+        git_url: str,
+        revision: str | None = None,
+        recursive: bool = True,
+        path_prefix: str | None = None,
+        limit: int = 5000,
+    ) -> GitHubRepositoryTreeView:
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        limit = min(limit, 5000)
+        html_url = self.normalize_github_url(git_url)
+        owner_repo = self._owner_repo_from_url(html_url)
+        effective_revision = revision or self.inspect_repository(html_url).default_branch or "HEAD"
+        endpoint = f"repos/{owner_repo}/git/trees/{quote(effective_revision, safe='')}"
+        command = [self.config.gh_bin, "api", endpoint]
+        if recursive:
+            command.extend(["--method", "GET", "-f", "recursive=1"])
+        result = self.runner.run(
+            command,
+            cwd=Path.cwd(),
+            timeout_seconds=self.config.timeout_seconds,
+            stdout_excerpt_chars=max(self.config.stdout_excerpt_chars, 200000),
+            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
+        )
+        if not result.ok:
+            return GitHubRepositoryTreeView(
+                git_url=html_url,
+                revision=revision,
+                recursive=recursive,
+                path_prefix=path_prefix,
+                summary=result.summary,
+                issue_code=result.issue_code or "github_tree_failed",
+            )
+        try:
+            payload = json.loads(result.stdout_excerpt or "{}")
+        except json.JSONDecodeError:
+            return GitHubRepositoryTreeView(
+                git_url=html_url,
+                revision=revision,
+                recursive=recursive,
+                path_prefix=path_prefix,
+                summary="GitHub tree returned invalid JSON.",
+                issue_code="invalid_json",
+            )
+        try:
+            prefix = self._normalize_optional_repo_path(path_prefix)
+        except ValueError as exc:
+            return GitHubRepositoryTreeView(
+                git_url=html_url,
+                revision=revision,
+                recursive=recursive,
+                path_prefix=path_prefix,
+                summary=str(exc),
+                issue_code="invalid_github_path",
+            )
+        raw_entries = payload.get("tree") if isinstance(payload, dict) else []
+        entries: list[GitHubTreeEntry] = []
+        for item in raw_entries if isinstance(raw_entries, list) else []:
+            if not isinstance(item, dict):
+                continue
+            raw_path = str(item.get("path") or "")
+            if prefix and raw_path != prefix and not raw_path.startswith(prefix + "/"):
+                continue
+            entries.append(
+                GitHubTreeEntry(
+                    path=raw_path,
+                    type=str(item.get("type") or ""),
+                    size=int(item["size"]) if isinstance(item.get("size"), int) else None,
+                    sha=str(item.get("sha")) if item.get("sha") else None,
+                )
+            )
+            if len(entries) >= limit:
+                break
+        truncated = bool(payload.get("truncated")) if isinstance(payload, dict) else False
+        truncated = truncated or (isinstance(raw_entries, list) and len(entries) >= limit and len(raw_entries) > limit)
+        return GitHubRepositoryTreeView(
+            git_url=html_url,
+            revision=revision,
+            resolved_revision=str(payload.get("sha")) if isinstance(payload, dict) and payload.get("sha") else None,
+            recursive=recursive,
+            path_prefix=prefix,
+            entries=entries,
+            truncated=truncated,
+            summary=f"Read {len(entries)} remote tree entries from {owner_repo}.",
+        )
+
+    def read_repository_file(
+        self,
+        git_url: str,
+        path: str,
+        revision: str | None = None,
+        max_chars: int = 20000,
+    ) -> GitHubRepositoryFileView:
+        max_chars = min(max(max_chars, 1), 50000)
+        html_url = self.normalize_github_url(git_url)
+        owner_repo = self._owner_repo_from_url(html_url)
+        try:
+            safe_path = self._normalize_repo_path(path)
+        except ValueError as exc:
+            return GitHubRepositoryFileView(
+                git_url=html_url,
+                path=path,
+                revision=revision,
+                summary=str(exc),
+                issue_code="invalid_github_path",
+            )
+        endpoint = f"repos/{owner_repo}/contents/{quote(safe_path, safe='/')}"
+        command = [self.config.gh_bin, "api", endpoint]
+        if revision:
+            command.extend(["--method", "GET", "-f", f"ref={revision}"])
+        result = self.runner.run(
+            command,
+            cwd=Path.cwd(),
+            timeout_seconds=self.config.timeout_seconds,
+            stdout_excerpt_chars=max(self.config.stdout_excerpt_chars, max_chars * 2),
+            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
+        )
+        if not result.ok:
+            return GitHubRepositoryFileView(
+                git_url=html_url,
+                path=safe_path,
+                revision=revision,
+                summary=result.summary,
+                issue_code=result.issue_code or "github_file_read_failed",
+            )
+        try:
+            payload = json.loads(result.stdout_excerpt or "{}")
+        except json.JSONDecodeError:
+            return GitHubRepositoryFileView(
+                git_url=html_url,
+                path=safe_path,
+                revision=revision,
+                summary="GitHub file read returned invalid JSON.",
+                issue_code="invalid_json",
+            )
+        if not isinstance(payload, dict) or payload.get("type") not in {None, "file"}:
+            return GitHubRepositoryFileView(
+                git_url=html_url,
+                path=safe_path,
+                revision=revision,
+                summary="GitHub path is not a readable file.",
+                issue_code="github_path_not_file",
+            )
+        raw_content = str(payload.get("content") or "")
+        encoding = str(payload.get("encoding") or "")
+        if encoding == "base64":
+            try:
+                data = base64.b64decode(raw_content, validate=False)
+                text = data.decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                return GitHubRepositoryFileView(
+                    git_url=html_url,
+                    path=safe_path,
+                    revision=revision,
+                    encoding=encoding,
+                    size=int(payload["size"]) if isinstance(payload.get("size"), int) else None,
+                    summary="GitHub file is binary or not UTF-8 text.",
+                    issue_code="github_file_not_text",
+                )
+        else:
+            text = raw_content
+        truncated = len(text) > max_chars
+        return GitHubRepositoryFileView(
+            git_url=html_url,
+            path=safe_path,
+            revision=revision,
+            encoding=encoding or None,
+            size=int(payload["size"]) if isinstance(payload.get("size"), int) else None,
+            content_excerpt=text[:max_chars],
+            truncated=truncated,
+            summary=f"Read remote file {safe_path} from {owner_repo}.",
+        )
+
+    def search_code(self, query: str, repo: str | None = None, limit: int = 10) -> GitHubCodeSearchResult:
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        limit = min(limit, 50)
+        command = [
+            self.config.gh_bin,
+            "search",
+            "code",
+            query,
+            "--limit",
+            str(limit),
+            "--json",
+            "path,repository,url,textMatches",
+        ]
+        normalized_repo: str | None = None
+        if repo:
+            normalized_repo = self._owner_repo_from_url(self.normalize_github_url(repo))
+            command.extend(["--repo", normalized_repo])
+        result = self.runner.run(
+            command,
+            cwd=Path.cwd(),
+            timeout_seconds=self.config.timeout_seconds,
+            stdout_excerpt_chars=self.config.stdout_excerpt_chars,
+            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
+        )
+        if not result.ok:
+            return GitHubCodeSearchResult(
+                ok=False,
+                query=query,
+                repo=normalized_repo,
+                summary=result.summary,
+                issue_code=result.issue_code or "github_code_search_failed",
+            )
+        try:
+            items = json.loads(result.stdout_excerpt or "[]")
+        except json.JSONDecodeError:
+            return GitHubCodeSearchResult(ok=False, query=query, repo=normalized_repo, summary="GitHub code search returned invalid JSON.", issue_code="invalid_json")
+        matches = [self._code_match_from_gh_json(item) for item in items[:limit] if isinstance(item, dict)]
+        return GitHubCodeSearchResult(ok=True, query=query, repo=normalized_repo, matches=matches, summary=f"Found {len(matches)} code matches.")
+
+    def probe_github_lean_repo_candidate(
+        self,
+        git_url: str,
+        revision: str | None = None,
+        subdir: str | None = None,
+        max_tree_entries: int = 5000,
+        max_file_chars: int = 20000,
+    ) -> GitHubLeanRepoProbeView:
+        html_url = self.normalize_github_url(git_url)
+        try:
+            requested_subdir = self._normalize_optional_repo_path(subdir)
+        except ValueError as exc:
+            return GitHubLeanRepoProbeView(
+                git_url=git_url,
+                normalized_git_url=html_url,
+                requested_revision=revision,
+                requested_subdir=subdir,
+                is_lean_project=False,
+                has_lakefile=False,
+                has_lean_toolchain=False,
+                evidence_summary=str(exc),
+                known_risks=["invalid_github_path"],
+                summary=str(exc),
+            )
+        tree = self.list_repository_tree(html_url, revision=revision, recursive=True, limit=max_tree_entries)
+        if tree.issue_code:
+            return GitHubLeanRepoProbeView(
+                git_url=git_url,
+                normalized_git_url=html_url,
+                requested_revision=revision,
+                requested_subdir=requested_subdir,
+                is_lean_project=False,
+                has_lakefile=False,
+                has_lean_toolchain=False,
+                evidence_summary=tree.summary or "Remote tree probe failed.",
+                known_risks=[tree.issue_code],
+                truncated=tree.truncated,
+                summary=tree.summary,
+            )
+        paths = [entry.path for entry in tree.entries]
+        lakefile_paths = sorted(path for path in paths if Path(path).name in {"lakefile.lean", "lakefile.toml"})
+        toolchain_paths = sorted(path for path in paths if Path(path).name == "lean-toolchain")
+        candidate_subdirs = sorted({"" if str(Path(path).parent) == "." else str(Path(path).parent) for path in lakefile_paths})
+        candidate_subdirs = ["" if value in {".", ""} else value for value in candidate_subdirs]
+        selected_subdir = requested_subdir
+        if selected_subdir is None and candidate_subdirs:
+            selected_subdir = "" if "" in candidate_subdirs else candidate_subdirs[0]
+        scoped_lakefiles = [path for path in lakefile_paths if self._path_in_subdir(path, selected_subdir)]
+        scoped_toolchains = [path for path in toolchain_paths if self._path_in_subdir(path, selected_subdir)]
+        lakefile_path = scoped_lakefiles[0] if scoped_lakefiles else None
+        lakefile_view = (
+            self.read_repository_file(html_url, lakefile_path, revision=revision, max_chars=max_file_chars)
+            if lakefile_path
+            else None
+        )
+        lakefile_text = lakefile_view.content_excerpt if lakefile_view and not lakefile_view.issue_code else None
+        package_name = self._package_name_from_lakefile_text(lakefile_text or "")
+        toolchain_path = scoped_toolchains[0] if scoped_toolchains else None
+        toolchain_view = (
+            self.read_repository_file(html_url, toolchain_path, revision=revision, max_chars=1000)
+            if toolchain_path
+            else None
+        )
+        readme = self._read_readme_evidence(html_url, paths, revision=revision, subdir=selected_subdir, max_chars=min(max_file_chars, 4000))
+        likely_modules = self._likely_import_modules(paths=paths, selected_subdir=selected_subdir, package_name=package_name)
+        risks: list[str] = []
+        if tree.truncated:
+            risks.append("Remote repository tree was truncated; candidate evidence may be incomplete.")
+        if not scoped_toolchains:
+            risks.append("No lean-toolchain was found under the selected Lean project scope.")
+        if not likely_modules:
+            risks.append("No likely import module was inferred from remote tree evidence.")
+        is_lean_project = bool(scoped_lakefiles)
+        if is_lean_project:
+            evidence_summary = f"Remote probe found {Path(lakefile_path or '').name} in {selected_subdir or 'repo root'}."
+            if package_name:
+                evidence_summary += f" Package appears to be {package_name}."
+        else:
+            evidence_summary = "Remote probe did not find a Lean lakefile in the requested scope."
+        return GitHubLeanRepoProbeView(
+            git_url=git_url,
+            normalized_git_url=html_url,
+            requested_revision=revision,
+            resolved_revision=tree.resolved_revision,
+            requested_subdir=requested_subdir,
+            is_lean_project=is_lean_project,
+            has_lakefile=bool(scoped_lakefiles),
+            has_lean_toolchain=bool(scoped_toolchains),
+            lakefile_paths=scoped_lakefiles,
+            lean_toolchain_paths=scoped_toolchains,
+            candidate_subdirs=candidate_subdirs,
+            selected_subdir=selected_subdir,
+            package_name=package_name,
+            likely_import_modules=likely_modules,
+            lakefile_excerpt=lakefile_text,
+            lean_toolchain=(toolchain_view.content_excerpt.strip() if toolchain_view and toolchain_view.content_excerpt else None),
+            readme_evidence=readme,
+            evidence_summary=evidence_summary,
+            known_risks=risks,
+            truncated=tree.truncated,
+            summary=evidence_summary,
+        )
 
     def checkout_repository(self, url: str, dest: Path, revision: str | None = None) -> GitCheckoutResult:
         git_url = self.normalize_github_url(url)
@@ -350,6 +742,109 @@ class GitHubRepoClient:
             license_spdx_id=license_spdx_id,
             license_name=license_name,
         )
+
+    def _code_match_from_gh_json(self, item: dict[str, object]) -> GitHubCodeSearchMatch:
+        repo_raw = item.get("repository")
+        repo_name: str | None = None
+        if isinstance(repo_raw, dict):
+            repo_name = str(repo_raw.get("fullName") or repo_raw.get("nameWithOwner") or repo_raw.get("name") or "") or None
+        text_matches: list[str] = []
+        raw_matches = item.get("textMatches")
+        if isinstance(raw_matches, list):
+            for match in raw_matches:
+                if not isinstance(match, dict):
+                    continue
+                fragment = match.get("fragment")
+                if fragment:
+                    text_matches.append(str(fragment)[:500])
+        return GitHubCodeSearchMatch(
+            repository=repo_name,
+            path=str(item.get("path") or ""),
+            url=str(item.get("url")) if item.get("url") else None,
+            text_matches=text_matches,
+        )
+
+    def _normalize_repo_path(self, path: str) -> str:
+        raw = path.strip().replace("\\", "/")
+        if not raw or raw.startswith("/") or raw.startswith("~"):
+            raise ValueError("GitHub repository path must be repo-relative")
+        parts = [part for part in raw.split("/") if part not in {"", "."}]
+        if any(part == ".." for part in parts):
+            raise ValueError("GitHub repository path cannot contain '..'")
+        normalized = "/".join(parts)
+        if not normalized:
+            raise ValueError("GitHub repository path must be non-empty")
+        return normalized
+
+    def _normalize_optional_repo_path(self, path: str | None) -> str | None:
+        if path is None:
+            return None
+        return self._normalize_repo_path(path)
+
+    def _path_in_subdir(self, path: str, subdir: str | None) -> bool:
+        if not subdir:
+            return "/" not in path or str(Path(path).parent) == "."
+        return path == subdir or path.startswith(subdir.rstrip("/") + "/")
+
+    def _package_name_from_lakefile_text(self, text: str) -> str | None:
+        if not text:
+            return None
+        package_match = re.search(
+            r"\bpackage\s+(?:«([^»]+)»|\"([^\"]+)\"|'([^']+)'|([A-Za-z0-9_.-]+))",
+            text,
+        )
+        if package_match:
+            name = next((group for group in package_match.groups() if group), None)
+            if name:
+                return name
+        toml_match = re.search(r'(?m)^\s*name\s*=\s*"([^"]+)"', text)
+        if toml_match:
+            return toml_match.group(1)
+        return None
+
+    def _likely_import_modules(self, *, paths: list[str], selected_subdir: str | None, package_name: str | None) -> list[str]:
+        modules: list[str] = []
+        if package_name and self._is_reasonable_module_name(package_name):
+            modules.append(package_name)
+        prefix = (selected_subdir.rstrip("/") + "/") if selected_subdir else ""
+        scoped = [path.removeprefix(prefix) for path in paths if not prefix or path.startswith(prefix)]
+        for path in scoped:
+            if path == "Main.lean":
+                modules.append("Main")
+            if "/" not in path and path.endswith(".lean") and path != "lakefile.lean":
+                name = path.removesuffix(".lean")
+                if self._is_reasonable_module_name(name):
+                    modules.append(name)
+            if "/" in path and path.endswith(".lean"):
+                top = path.split("/", 1)[0]
+                if self._is_reasonable_module_name(top):
+                    modules.append(top)
+        return list(dict.fromkeys(modules))[:10]
+
+    def _read_readme_evidence(
+        self,
+        git_url: str,
+        paths: list[str],
+        *,
+        revision: str | None,
+        subdir: str | None,
+        max_chars: int,
+    ) -> str | None:
+        prefix = (subdir.rstrip("/") + "/") if subdir else ""
+        readme_paths = [
+            path
+            for path in paths
+            if path.removeprefix(prefix).lower() in {"readme.md", "readme.txt", "readme"}
+            and (not prefix or path.startswith(prefix))
+        ]
+        if not readme_paths:
+            return None
+        view = self.read_repository_file(git_url, readme_paths[0], revision=revision, max_chars=max_chars)
+        if view.issue_code or not view.content_excerpt:
+            return None
+        lines = [line.strip() for line in view.content_excerpt.splitlines() if line.strip()]
+        relevant = [line for line in lines if re.search(r"\b(lean|lake|theorem|proof|formal|mathlib)\b", line, re.IGNORECASE)]
+        return "\n".join((relevant or lines)[:8])[:max_chars]
 
     def _owner_repo_from_url(self, html_url: str) -> str:
         parsed = urlparse(html_url)

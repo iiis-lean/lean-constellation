@@ -37,11 +37,10 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                 [
                     (
                         "application",
-                        "write_statement_nl",
+                        "set_statement_nl",
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The strict Runtime Matrix theorem states True.",
-                            "deps": [],
                         },
                     ),
                     (
@@ -83,11 +82,10 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                 [
                     (
                         "application",
-                        "write_proof_nl",
+                        "set_proof_nl",
                         {
                             "decl_name": round_fixture.decl_name,
-                            "nl": "Use triviality.",
-                            "deps": [],
+                            "proof_nl": "Use triviality.",
                         },
                     ),
                     (
@@ -182,6 +180,65 @@ def _review_actions(round_fixture: DeclRoundFixture, stage: str, *, passed: bool
                     "summary": f"{stage} rejected by strict Runtime Matrix.",
                     "issue_categories": ["runtime_matrix_rejected"],
                     "required_changes": ["Retry with reviewer feedback."],
+                },
+            ),
+            ("submit", "submit_stage_review", {"summary": f"{stage} accepted by strict Runtime Matrix."}),
+        ]
+    if stage == "statement_formal":
+        return [
+            (
+                "application",
+                "record_statement_formal_review_passed" if passed else "record_statement_formal_review_rejected",
+                {
+                    "decl_name": round_fixture.decl_name,
+                    "summary": f"{stage} accepted by strict Runtime Matrix.",
+                }
+                if passed
+                else {
+                    "decl_name": round_fixture.decl_name,
+                    "summary": f"{stage} rejected by strict Runtime Matrix.",
+                    "issue_categories": ["formal_not_equivalent_to_nl"],
+                    "required_changes": ["Retry with statement formal reviewer feedback."],
+                },
+            ),
+            ("submit", "submit_stage_review", {"summary": f"{stage} accepted by strict Runtime Matrix."}),
+        ]
+    if stage == "proof_nl":
+        return [
+            (
+                "application",
+                "record_proof_nl_review_passed" if passed else "record_proof_nl_review_rejected",
+                {
+                    "decl_name": round_fixture.decl_name,
+                    "summary": f"{stage} accepted by strict Runtime Matrix.",
+                }
+                if passed
+                else {
+                    "decl_name": round_fixture.decl_name,
+                    "summary": f"{stage} rejected by strict Runtime Matrix.",
+                    "issue_categories": ["proof_route_too_vague"],
+                    "required_changes": ["Retry with proof route reviewer feedback."],
+                    "recommended_next_action": "worker_repairable",
+                },
+            ),
+            ("submit", "submit_stage_review", {"summary": f"{stage} accepted by strict Runtime Matrix."}),
+        ]
+    if stage == "proof_formal":
+        return [
+            (
+                "application",
+                "record_proof_formal_review_passed" if passed else "record_proof_formal_review_rejected",
+                {
+                    "decl_name": round_fixture.decl_name,
+                    "summary": f"{stage} accepted by strict Runtime Matrix.",
+                }
+                if passed
+                else {
+                    "decl_name": round_fixture.decl_name,
+                    "summary": f"{stage} rejected by strict Runtime Matrix.",
+                    "issue_categories": ["proof_not_aligned_with_proof_nl"],
+                    "required_changes": ["Retry with proof formal reviewer feedback."],
+                    "recommended_next_action": "worker_repairable",
                 },
             ),
             ("submit", "submit_stage_review", {"summary": f"{stage} accepted by strict Runtime Matrix."}),

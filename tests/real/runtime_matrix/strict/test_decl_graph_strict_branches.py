@@ -31,11 +31,10 @@ def test_strict_decl_graph_review_rejected_then_worker_blocked_evidence(
                 [
                     (
                         "application",
-                        "write_statement_nl",
+                        "set_statement_nl",
                         {
                             "decl_name": round_fixture.decl_name,
                             "nl": "The strict rejected branch statement is intentionally sparse.",
-                            "deps": [],
                         },
                     ),
                     (

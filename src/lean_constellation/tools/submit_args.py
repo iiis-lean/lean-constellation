@@ -17,18 +17,26 @@ class ReasonSubmitArgs(StrictModel):
     reason: str = Field(description="Reason for this terminal submission.")
 
 
-class SubmitAdapterRepoChoiceArgs(SummarySubmitArgs):
-    upstream_github_url: str = Field(description="GitHub URL for the existing Lean upstream repository.")
-    upstream_revision: str | None = Field(default=None, description="Optional upstream revision, tag, or commit.")
-    upstream_subdir: str | None = Field(default=None, description="Optional subdirectory containing the Lean project.")
-    adapter_repo_name: str | None = Field(default=None, description="Optional preferred provider repo key.")
+class SubmitAdapterRepoChoiceArgs(StrictModel):
+    git_url: str = Field(description="GitHub URL or owner/name slug for the existing Lean upstream repository.")
+    revision: str | None = Field(default=None, description="Optional upstream revision, tag, or commit.")
+    subdir: str | None = Field(default=None, description="Optional subdirectory containing the Lean project.")
+    package_name: str | None = Field(default=None, description="Optional upstream Lake package name.")
+    likely_import_module: str | None = Field(default=None, description="Optional likely Lean module to import from the upstream package.")
+    evidence_summary: str = Field(description="Concrete remote evidence supporting the adapter route.")
+    known_risks: list[str] = Field(default_factory=list, description="Known risks that later preparation must verify.")
+
+
+class RejectedUpstreamCandidateArgs(StrictModel):
+    git_url: str | None = Field(default=None, description="Rejected GitHub candidate URL or slug, if known.")
+    name: str | None = Field(default=None, description="Rejected candidate name or pattern, if no URL is known.")
+    reason: str = Field(description="Reason this candidate should not be used as adapter upstream.")
+    evidence_summary: str | None = Field(default=None, description="Optional evidence gathered for the rejection.")
 
 
 class SubmitNativeRepoChoiceArgs(SummarySubmitArgs):
-    native_repo_name: str | None = Field(default=None, description="Optional preferred native provider repo key.")
-    source_corpus_mode: Literal["prepare", "existing"] = Field(
-        description="Source corpus mode for the native repo shell. Native repo preparation cannot use none.",
-    )
+    searched_targets: list[str] = Field(default_factory=list, description="Search queries or target names checked before choosing native.")
+    rejected_candidates: list[RejectedUpstreamCandidateArgs] = Field(default_factory=list, description="Upstream candidates rejected before choosing native.")
 
 
 class SubmitSourceCorpusPreparedArgs(SummarySubmitArgs):

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
-from lean_constellation.services.decl_graph.models import DeclChangeKind, DeclRevision, DeclRoundStatus, DeclState
+from lean_constellation.services.decl_graph.models import DeclChangeKind, DeclDep, DeclOriginRef, DeclRevision, DeclRoundStatus, DeclState
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
 from lean_constellation.services.foundation import ServiceResult, WriteMode
 
@@ -57,6 +57,138 @@ class StageMutationComponent:
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 
+    def set_statement_nl(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        nl: str,
+    ) -> ServiceResult[DeclRevision]:
+        if not nl or not nl.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("statement_nl_required", "Statement NL text is required.", field="nl")
+            )
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        revision.value.statement_nl = nl.strip()
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def add_statement_origin(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        origin: DeclOriginRef,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        current = revision.value.statement.nl.origin if revision.value.statement.nl is not None else []
+        revision.value.statement_origin = [item.model_dump(mode="json", exclude_none=True) for item in [*current, origin]]
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def remove_statement_origin(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        index: int,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        origins = list(revision.value.statement.nl.origin if revision.value.statement.nl is not None else [])
+        if index < 0 or index >= len(origins):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("statement_origin_index_invalid", "Statement origin index is out of range.", object_ref=decl_name, field="index")
+            )
+        del origins[index]
+        revision.value.statement_origin = [item.model_dump(mode="json", exclude_none=True) for item in origins]
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def clear_statement_origins(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        revision.value.statement_origin = []
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def add_statement_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        dep: DeclDep,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        try:
+            revision.value.statement.deps = [*revision.value.statement.deps, dep]
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("statement_dep_invalid", str(exc), object_ref=decl_name)
+            )
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def remove_statement_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        index: int,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        deps = list(revision.value.statement.deps)
+        if index < 0 or index >= len(deps):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("statement_dep_index_invalid", "Statement dependency index is out of range.", object_ref=decl_name, field="index")
+            )
+        del deps[index]
+        revision.value.statement.deps = deps
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def clear_statement_deps(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        revision.value.statement.deps = []
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
     def write_statement_formal(
         self,
         repo_root: Path,
@@ -82,6 +214,26 @@ class StageMutationComponent:
         revision.value.statement_lean_code = lean_code.strip()
         revision.value.statement_lean_check = self._normalize_check(lean_check)
         revision.value.statement_deps = self._normalize_deps(deps if deps is not None else revision.value.statement_deps)
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def write_statement_deps(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        deps: list[str] | None = None,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        if not revision.value.statement_nl:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("statement_nl_missing", "Statement NL must be accepted before statement dependency refinement.", object_ref=decl_name)
+            )
+        revision.value.statement_deps = self._normalize_deps(deps)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 
@@ -113,6 +265,155 @@ class StageMutationComponent:
         revision.value.proof_nl = nl.strip()
         revision.value.proof_origin = self._normalize_origin(origin)
         revision.value.proof_deps = self._normalize_deps(deps)
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def set_proof_nl(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        nl: str,
+    ) -> ServiceResult[DeclRevision]:
+        if not nl or not nl.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("proof_nl_required", "Proof NL text is required.", field="proof_nl")
+            )
+        theorem_like = self._require_theorem_like(repo_root, node_path=node_path, decl_name=decl_name)
+        if not theorem_like.ok:
+            return self.runtime.foundation.fail(theorem_like.issues)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        if not revision.value.statement_lean_code:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("statement_formal_missing", "Accepted statement formal code must exist before proof planning.", object_ref=decl_name)
+            )
+        revision.value.proof_nl = nl.strip()
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def add_proof_origin(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        origin: DeclOriginRef,
+    ) -> ServiceResult[DeclRevision]:
+        theorem_like = self._require_theorem_like(repo_root, node_path=node_path, decl_name=decl_name)
+        if not theorem_like.ok:
+            return self.runtime.foundation.fail(theorem_like.issues)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        proof = revision.value._ensure_proof()
+        current = proof.nl.origin if proof.nl is not None else []
+        revision.value.proof_origin = [item.model_dump(mode="json", exclude_none=True) for item in [*current, origin]]
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def remove_proof_origin(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        index: int,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        origins = list(revision.value.proof.nl.origin if revision.value.proof is not None and revision.value.proof.nl is not None else [])
+        if index < 0 or index >= len(origins):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("proof_origin_index_invalid", "Proof origin index is out of range.", object_ref=decl_name, field="index")
+            )
+        del origins[index]
+        revision.value.proof_origin = [item.model_dump(mode="json", exclude_none=True) for item in origins]
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def clear_proof_origins(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        revision.value.proof_origin = []
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def add_proof_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        dep: DeclDep,
+    ) -> ServiceResult[DeclRevision]:
+        theorem_like = self._require_theorem_like(repo_root, node_path=node_path, decl_name=decl_name)
+        if not theorem_like.ok:
+            return self.runtime.foundation.fail(theorem_like.issues)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        proof = revision.value._ensure_proof()
+        try:
+            proof.deps = [*proof.deps, dep]
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("proof_dep_invalid", str(exc), object_ref=decl_name)
+            )
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def remove_proof_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        index: int,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        deps = list(revision.value.proof.deps if revision.value.proof is not None else [])
+        if index < 0 or index >= len(deps):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("proof_dep_index_invalid", "Proof dependency index is out of range.", object_ref=decl_name, field="index")
+            )
+        del deps[index]
+        proof = revision.value._ensure_proof()
+        proof.deps = deps
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def clear_proof_deps(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        proof = revision.value._ensure_proof()
+        proof.deps = []
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 

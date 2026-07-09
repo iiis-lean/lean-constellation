@@ -130,11 +130,10 @@ def test_declared_interface_content_plan_controlled_agent_smoke(
                 [
                     (
                         "application",
-                        "write_statement_nl",
+                        "set_statement_nl",
                         {
                             "decl_name": "main_result",
                             "nl": "The smoke interface theorem states True.",
-                            "deps": [],
                         },
                     ),
                     (

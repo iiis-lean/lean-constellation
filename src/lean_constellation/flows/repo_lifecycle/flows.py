@@ -1145,8 +1145,9 @@ def _repo_format_discovery_prompt(input_model: RequirementGroupRepoBootstrapInpu
         "",
         "The provider repo shell and preparation input already exist.",
         "Your only task is to choose whether this repo should continue as an adapter around an upstream Lean repo or as a native Lean Constellation repo.",
-        "Use the available tools to read preparation input, inspect workspace context, and check upstream candidates.",
-        "When ready, call either submit_adapter_repo_choice or submit_native_repo_choice. Do not initialize the Lake skeleton yourself.",
+        "Use tools to read preparation input and scoped requirement details; requirement refs below are only navigation hints.",
+        "Use remote GitHub search, tree/file/code read, and Lean repo probe tools for upstream evidence.",
+        "When ready, call either submit_adapter_repo_choice or submit_native_repo_choice. Do not initialize the Lake skeleton or source corpus yourself.",
     ]
     if input_model.requirement_refs:
         lines.extend(["", f"Requirement refs: {', '.join(input_model.requirement_refs)}"])

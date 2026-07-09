@@ -20,7 +20,13 @@ def test_tool_spec_description_and_argument_schema_map_to_mcp_registration() -> 
     assert native.capability == "submit"
     assert native.submit_behavior == "terminal"
     assert native.input_schema["properties"]["summary"]["description"] == "Concise summary of the submitted result."
-    assert "Source corpus mode" in native.input_schema["properties"]["source_corpus_mode"]["description"]
+    assert "source_corpus_mode" not in native.input_schema["properties"]
+    assert "native_repo_name" not in native.input_schema["properties"]
+
+    adapter = {tool.name: tool for tool in submit.value}["submit_adapter_repo_choice"]
+    assert {"git_url", "evidence_summary", "known_risks"} <= set(adapter.input_schema["properties"])
+    assert "upstream_github_url" not in adapter.input_schema["properties"]
+    assert "adapter_repo_name" not in adapter.input_schema["properties"]
 
     assert normalize.capability == "read"
     assert normalize.submit_behavior == "none"

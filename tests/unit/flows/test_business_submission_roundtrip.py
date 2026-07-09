@@ -22,8 +22,14 @@ def _sample_payload(cls):
             }
         )
     extras = {
-        "upstream_github_url": "https://github.com/example/project",
-        "source_corpus_mode": "prepare",
+        "git_url": "https://github.com/example/project",
+        "revision": "main",
+        "subdir": "lean",
+        "package_name": "Project",
+        "likely_import_module": "Project",
+        "known_risks": [],
+        "searched_targets": [],
+        "rejected_candidates": [],
         "relpath": ".lean_constellation/source",
         "entry_path": "README.md",
         "overview": "Overview",

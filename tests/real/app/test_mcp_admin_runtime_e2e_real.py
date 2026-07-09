@@ -500,7 +500,7 @@ def test_semireal_repo_format_discovery_mcp_submit_through_scheduler(tmp_path: P
         None,
         {
             "RepoFormatDiscoveryAgent": [
-                ("submit_native_repo_choice", {"summary": "Use native.", "source_corpus_mode": "prepare"}),
+                ("submit_native_repo_choice", {"summary": "Use native.", "searched_targets": [], "rejected_candidates": []}),
             ],
         },
     )
@@ -538,18 +538,20 @@ def test_semireal_repo_format_discovery_mcp_submit_through_scheduler(tmp_path: P
     [
         (
             "submit_native_repo_choice",
-            {"summary": "Use native via external takeover.", "source_corpus_mode": "prepare"},
+            {"summary": "Use native via external takeover.", "searched_targets": ["strict fixture"], "rejected_candidates": []},
             "native_bootstrap_ready",
             "repo_format_native_choice",
         ),
         (
             "submit_adapter_repo_choice",
             {
-                "summary": "Use adapter via external takeover.",
-                "upstream_github_url": "https://github.com/example/upstream.git",
-                "upstream_revision": "main",
-                "upstream_subdir": "lean",
-                "adapter_repo_name": "AdapterProvider",
+                "git_url": "https://github.com/example/upstream.git",
+                "revision": "main",
+                "subdir": "lean",
+                "package_name": "upstream",
+                "likely_import_module": "upstream",
+                "evidence_summary": "Remote probe fixture found lakefile.lean.",
+                "known_risks": [],
             },
             "adapter_bootstrap_ready",
             "repo_format_adapter_choice",
@@ -950,7 +952,8 @@ def test_semireal_admin_checkpoint_restore_native_and_adapter_repo_format_branch
         "submit_native_repo_choice",
         {
             "summary": "Use native branch.",
-            "source_corpus_mode": "prepare",
+            "searched_targets": ["snapshot fixture"],
+            "rejected_candidates": [],
         },
     )
     native_apply = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=started.value.flow_id))
@@ -992,10 +995,12 @@ def test_semireal_admin_checkpoint_restore_native_and_adapter_repo_format_branch
         agent_step_id,
         "submit_adapter_repo_choice",
         {
-            "summary": "Use adapter branch.",
-            "upstream_github_url": "https://github.com/leanprover-community/mathlib4",
-            "upstream_revision": "main",
-            "adapter_repo_name": "ProviderAdapter",
+            "git_url": "https://github.com/leanprover-community/mathlib4",
+            "revision": "main",
+            "package_name": "mathlib",
+            "likely_import_module": "Mathlib",
+            "evidence_summary": "Remote probe fixture found mathlib4 lakefile.",
+            "known_risks": ["Exact declaration coverage not verified in this test."],
         },
     )
     adapter_apply = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=started.value.flow_id))
@@ -1248,7 +1253,7 @@ def test_semireal_external_takeover_snapshot_restore_after_completion(tmp_path: 
     controller = _ExternalTakeoverMcpController(
         runtime,
         runtime_root,
-        {"RepoFormatDiscoveryAgent": [("submit_native_repo_choice", {"summary": "Use native.", "source_corpus_mode": "prepare"})]},
+        {"RepoFormatDiscoveryAgent": [("submit_native_repo_choice", {"summary": "Use native.", "searched_targets": [], "rejected_candidates": []})]},
     )
     _create_homes(runtime, "RepoFormatDiscoveryAgent")
     workspace = tmp_path / "workspace"
@@ -1794,7 +1799,7 @@ def test_real_codex_controlled_test_agent_type_mcp_mount_env_gated(tmp_path: Pat
                 "agent_type_override": "RepoFormatDiscoveryControlledTestAgent",
                 "prompt_overlay": (
                     "For this controlled runtime test, use the inherited submit ToolView and submit "
-                    "a native repository choice with source_corpus_mode prepare."
+                    "a native repository choice with a short summary and optional searched_targets."
                 ),
             },
         ),
@@ -1852,11 +1857,10 @@ def test_real_lean_decl_stage_worker_submit_gate_env_gated(tmp_path: Path) -> No
                 [
                     (
                         "application",
-                        "write_statement_nl",
+                        "set_statement_nl",
                         {
                             "decl_name": "main_result",
                             "nl": "The main result states True.",
-                            "deps": [],
                         },
                     ),
                     (
@@ -1917,12 +1921,9 @@ def test_real_lean_decl_stage_worker_submit_gate_env_gated(tmp_path: Path) -> No
                 [
                     (
                         "application",
-                        "record_decl_review",
+                        "record_statement_formal_review_passed",
                         {
-                            "round_id": round_id,
-                            "stage": "statement_formal",
                             "decl_name": "main_result",
-                            "passed": True,
                             "summary": "Statement formal is synchronized with real Lean capture.",
                         },
                     ),
