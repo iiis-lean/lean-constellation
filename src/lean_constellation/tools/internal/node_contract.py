@@ -29,6 +29,9 @@ from lean_constellation.tools.args import (
     NodeMaterialRefRemoveArgs,
     NodePathArgs,
     NoArgs,
+    RootInterfaceAddArgs,
+    RootInterfaceNameArgs,
+    RootInterfaceUpdateArgs,
     ScopeExportAddArgs,
     ScopeExportRemoveArgs,
     ScopePathArgs,
@@ -210,6 +213,43 @@ def _remove_interface(runtime, ctx, args: InterfaceNameArgs):
     return runtime.node.interface.remove_interface(
         ctx.repo_root,
         node_path=args.node_path,
+        name=args.name,
+        actor=actor_for_write(ctx),
+    )
+
+
+def _list_root_interfaces(runtime, ctx, args: NoArgs):
+    del args
+    return runtime.node.interface.list_interfaces(ctx.repo_root, node_path="Main")
+
+
+def _add_root_interface(runtime, ctx, args: RootInterfaceAddArgs):
+    return runtime.node.interface.add_interface(
+        ctx.repo_root,
+        node_path="Main",
+        name=args.name,
+        kind=args.kind,
+        summary=args.summary,
+        statement_hint=args.statement_hint,
+        actor=actor_for_write(ctx),
+    )
+
+
+def _update_root_interface(runtime, ctx, args: RootInterfaceUpdateArgs):
+    return runtime.node.interface.update_interface(
+        ctx.repo_root,
+        node_path="Main",
+        name=args.name,
+        summary=args.summary,
+        statement_hint=args.statement_hint,
+        actor=actor_for_write(ctx),
+    )
+
+
+def _remove_root_interface(runtime, ctx, args: RootInterfaceNameArgs):
+    return runtime.node.interface.remove_interface(
+        ctx.repo_root,
+        node_path="Main",
         name=args.name,
         actor=actor_for_write(ctx),
     )
@@ -642,6 +682,46 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="node_interfaces",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_READ},
             roles=all_roles,
+        ),
+        handler_tool(
+            name="list_root_interfaces",
+            description="List root Main interfaces with protected/supplement markers.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="node_interfaces",
+            groups={AppGroup.ROOT_INTERFACE_STATE_READ},
+            roles={"worker", "coordinator", "admin"},
+            handler=_list_root_interfaces,
+        ),
+        handler_tool(
+            name="add_root_interface",
+            description="Add a supplement interface to root Main.",
+            args_model=RootInterfaceAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="node_contract",
+            groups={AppGroup.ROOT_INTERFACE_WRITE},
+            roles={"worker", "admin"},
+            handler=_add_root_interface,
+        ),
+        handler_tool(
+            name="update_root_interface",
+            description="Update a supplement root Main interface summary or statement hint.",
+            args_model=RootInterfaceUpdateArgs,
+            capability=ToolCapability.WRITE,
+            result_view="node_contract",
+            groups={AppGroup.ROOT_INTERFACE_WRITE},
+            roles={"worker", "admin"},
+            handler=_update_root_interface,
+        ),
+        handler_tool(
+            name="remove_root_interface",
+            description="Remove a supplement root Main interface.",
+            args_model=RootInterfaceNameArgs,
+            capability=ToolCapability.WRITE,
+            result_view="node_contract",
+            groups={AppGroup.ROOT_INTERFACE_WRITE},
+            roles={"worker", "admin"},
+            handler=_remove_root_interface,
         ),
         handler_tool(
             name="add_node_interface",

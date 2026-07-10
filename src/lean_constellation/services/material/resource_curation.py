@@ -348,6 +348,35 @@ class ResourceCurationComponent:
         draft_id: str,
         summary: str,
     ) -> ServiceResult[ResourceCurationResultView]:
+        checked = self.check_local_resource_created(
+            repo_root,
+            flow_input=flow_input,
+            draft_id=draft_id,
+            summary=summary,
+        )
+        if not checked.ok or checked.value is None:
+            return self.runtime.foundation.fail(checked.issues)
+        finalized = self.resource_library.finalize_resource_draft(repo_root, draft_id=draft_id, summary=summary)
+        if not finalized.ok or finalized.value is None:
+            return self.runtime.foundation.fail(finalized.issues)
+        return self.runtime.foundation.ok(
+            ResourceCurationResultView(
+                kind="local_resource_created",
+                target=flow_input.normalized_target,
+                resource_key=finalized.value.resource.resource_key,
+                reason="Target was curated into the local resource library.",
+                summary=summary.strip(),
+            )
+        )
+
+    def check_local_resource_created(
+        self,
+        repo_root: Path,
+        *,
+        flow_input: ResourceCurationFlowInputView,
+        draft_id: str,
+        summary: str,
+    ) -> ServiceResult[ResourceCurationResultView]:
         text = self._required_text(summary, field="summary", issue_kind="resource_local_summary_required")
         if not text.ok or text.value is None:
             return self.runtime.foundation.fail(text.issues)
@@ -366,14 +395,26 @@ class ResourceCurationComponent:
                     },
                 )
             )
-        finalized = self.resource_library.finalize_resource_draft(repo_root, draft_id=draft_id, summary=text.value)
-        if not finalized.ok or finalized.value is None:
-            return self.runtime.foundation.fail(finalized.issues)
+        gate = self.resource_library.check_resource_draft(repo_root, draft_id=draft_id, update_status=False)
+        if not gate.ok or gate.value is None:
+            return self.runtime.foundation.fail(gate.issues)
+        if not gate.value.passed:
+            return self.runtime.foundation.fail(gate.value.issues)
+        duplicate = self.resource_library.find_duplicate_resource(repo_root, target=draft.value.draft.target)
+        if not duplicate.ok or duplicate.value is None:
+            return self.runtime.foundation.fail(duplicate.issues)
+        if duplicate.value.duplicate:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("resource_duplicate", duplicate.value.summary, object_ref=duplicate.value.resource_key)
+            )
+        resource_key = self.resource_library.resource_key_for_target(draft.value.draft.target)
+        if not resource_key.ok or resource_key.value is None:
+            return self.runtime.foundation.fail(resource_key.issues)
         return self.runtime.foundation.ok(
             ResourceCurationResultView(
                 kind="local_resource_created",
                 target=flow_input.normalized_target,
-                resource_key=finalized.value.resource.resource_key,
+                resource_key=resource_key.value,
                 reason="Target was curated into the local resource library.",
                 summary=text.value,
             )
@@ -541,20 +582,20 @@ class ResourceCurationComponent:
             artifact = self._resolve_inside(root, artifact_ref)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_artifact_ref_invalid", str(exc)))
-        output_root = root / "normalized"
-        ensured = self.runtime.foundation.store.ensure_dir(output_root)
+        normalized_root = root / "normalized"
+        ensured = self.runtime.foundation.store.ensure_dir(normalized_root)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
         if extraction_kind is None:
             extraction_kind = self._guess_extraction_kind(artifact)
         if extraction_kind == "pdf_text":
-            result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=output_root)
+            result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=root)
         elif extraction_kind == "html_main_text":
-            result = self.runtime.external.material.extract_web_main_text(html_path=artifact, output_root=output_root)
+            result = self.runtime.external.material.extract_web_main_text(html_path=artifact, output_root=root)
         elif extraction_kind == "tex_source":
-            result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=output_root)
+            result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=root)
         else:
-            result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=output_root)
+            result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=root)
         view = self._source_extraction_view(artifact_ref, result, root)
         if not result.ok:
             return self.runtime.foundation.fail(
@@ -571,11 +612,11 @@ class ResourceCurationComponent:
             source = self._resolve_inside(root, material_ref)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_material_ref_invalid", str(exc)))
-        output_root = root / "normalized"
-        ensured = self.runtime.foundation.store.ensure_dir(output_root)
+        normalized_root = root / "normalized"
+        ensured = self.runtime.foundation.store.ensure_dir(normalized_root)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
-        result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=output_root)
+        result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=root)
         view = self._source_extraction_view(material_ref, result, root)
         if not result.ok:
             return self.runtime.foundation.fail(

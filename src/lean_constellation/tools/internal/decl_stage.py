@@ -9,7 +9,6 @@ from lean_constellation.services.decl_graph.proof_nl_validation import validate_
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     DeclNameArgs,
-    DeclReviewMarkArgs,
     DeclStageFileCheckArgs,
     NoArgs,
     ProofDeclDepAddArgs,
@@ -709,58 +708,6 @@ def _check_formal_stage_consistency(runtime, ctx, args: DeclStageFileCheckArgs):
     )
 
 
-def _record_decl_review(runtime, ctx, args: DeclReviewMarkArgs):
-    if ctx.decl_stage is None:
-        return runtime.foundation.fail(runtime.foundation.issue("decl_stage_context_missing", "Current context has no decl stage."))
-    current_round_id = _round_id(ctx)
-    if args.round_id != current_round_id:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "review_mark_round_mismatch",
-                "Review mark round_id must match the current decl-stage context.",
-                object_ref=args.decl_name,
-                current=args.round_id,
-                expected=current_round_id,
-            )
-        )
-    if args.stage != ctx.decl_stage.stage:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "review_mark_stage_mismatch",
-                "Review mark stage must match the current decl-stage context.",
-                object_ref=args.decl_name,
-                current=args.stage,
-                expected=ctx.decl_stage.stage,
-            )
-        )
-    mark = runtime.decl_graph.build_decl_review_mark(
-        ctx.repo_root,
-        node_path=_node(ctx),
-        round_id=current_round_id,
-        stage=args.stage,
-        decl_name=args.decl_name,
-        passed=args.passed,
-        summary=args.summary,
-        issue_kind=args.issue_kind,
-        suggested_fix=args.suggested_fix,
-    )
-    if not mark.ok or mark.value is None:
-        return runtime.foundation.fail(mark.issues)
-    step = _load_reviewer_step(runtime, ctx)
-    if not step.ok or step.value is None:
-        return runtime.foundation.fail(step.issues)
-    current_step = step.value
-    context = _review_step_context(runtime, ctx, current_step.state)
-    if not context.ok or context.value is None:
-        return runtime.foundation.fail(context.issues)
-    expected_decl_names = context.value["expected_decl_names"]
-    if args.decl_name not in expected_decl_names:
-        return runtime.foundation.fail(
-            runtime.foundation.issue("review_decl_not_expected", "Declaration is not in the current reviewer expected batch.", object_ref=args.decl_name)
-        )
-    return _persist_review_mark(runtime, ctx, current_step.step_id, mark.value)
-
-
 def _record_statement_nl_review_passed(runtime, ctx, args: StatementNlReviewPassedArgs):
     mark = _build_statement_nl_mark(
         runtime,
@@ -801,6 +748,11 @@ _STATEMENT_FORMAL_REVIEW_ISSUE_CATEGORIES = {
     "wrong_local_dependency",
     "unavailable_dependency",
     "unnecessary_dependency",
+    "unavailable_repo_decl_dependency",
+    "unresolved_mathlib_dependency",
+    "ambiguous_mathlib_dependency",
+    "proof_only_dependency_in_statement_deps",
+    "same_round_repo_decl_dependency",
     "source_or_resource_mismatch",
     "node_boundary_violation",
     "semantic_shortcut_or_gate_gap",
@@ -1471,16 +1423,6 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE, AppGroup.DECL_STAGE_PROOF_FORMAL_FILE},
             roles=read_roles,
             handler=_check_formal_stage_consistency,
-        ),
-        handler_tool(
-            name="record_decl_review",
-            description="Record the reviewer pass/fail mark, issue category, and suggested fix for one declaration in the current DeclGraph stage review.",
-            args_model=DeclReviewMarkArgs,
-            capability=ToolCapability.WRITE,
-            result_view="decl_review_mark",
-            groups={AppGroup.DECL_STAGE_REVIEW_MARK_WRITE},
-            roles={"reviewer", "admin"},
-            handler=_record_decl_review,
         ),
         handler_tool(
             name="record_statement_nl_review_passed",

@@ -22,6 +22,7 @@ from lean_constellation.flows.resource_request.steps import (
     ResourceRejectedResultView,
     new_resource_request_step_id,
 )
+from lean_constellation.flows.resource_request.submissions import LocalResourceCreatedSubmission
 
 
 ResourceTargetKind = Literal["web", "arxiv", "local_file", "local_dir"]
@@ -214,7 +215,7 @@ class ResourceCurationFlow(LeanBusinessFlow):
         if isinstance(result, ResourceCurationPreflightStepResult):
             self._consume_preflight_result(state, input_model, result)
         elif ctx.step.step_type == "resource_curator_agent_step":
-            self._consume_curator_result(ctx, state, input_model, result)
+            self._consume_curator_result(ctx, state, input_model, result, ctx.step.submission)
         super().on_step_terminal(ctx)
 
     def _consume_preflight_result(
@@ -247,6 +248,7 @@ class ResourceCurationFlow(LeanBusinessFlow):
         state: ResourceCurationState,
         input_model: ResourceCurationInput,
         result: object | None,
+        submission: object | None,
     ) -> None:
         state.position = FlowPosition(phase="completed")
         if isinstance(result, AgentStepIncompleteResult) or result is None:
@@ -265,15 +267,52 @@ class ResourceCurationFlow(LeanBusinessFlow):
             self.result = _result_from_duplicate(input_model, result.duplicate, summary=result.summary)
             _abandon_active_draft(ctx, input_model, state, reason=result.summary or result.duplicate.duplicate_reason)
             return
-        if result.outcome == "local_resource_created" and result.local_resource is not None:
+        if (
+            result.outcome == "local_resource_created"
+            and result.local_resource is not None
+            and isinstance(submission, LocalResourceCreatedSubmission)
+        ):
+            material = getattr(ctx.app, "material", None)
+            if material is None:
+                rejected = ResourceRejectedResultView(reason="Material service is not registered; cannot finalize local resource.")
+                self.result = _result_from_rejected(input_model, rejected, summary=rejected.reason)
+                return
+            flow_input = material.submit_resource_request(
+                {
+                    "repo_root": _resource_repo_root(input_model),
+                    "node_path": input_model.caller_context.node_path,
+                },
+                target_kind=submission.target_kind,
+                target=submission.target,
+                arxiv_version=submission.arxiv_version,
+            )
+            if not flow_input.ok or flow_input.value is None:
+                rejected = ResourceRejectedResultView(reason=flow_input.issues[0].message if flow_input.issues else "Resource request context failed.")
+                self.result = _result_from_rejected(input_model, rejected, summary=rejected.reason)
+                return
+            finalized = material.submit_local_resource_created(
+                _resource_repo_root(input_model),
+                flow_input=flow_input.value,
+                draft_id=submission.draft_id,
+                summary=submission.summary or result.summary or "Curated local resource.",
+            )
+            if not finalized.ok or finalized.value is None or not finalized.value.resource_key:
+                rejected = ResourceRejectedResultView(reason=finalized.issues[0].message if finalized.issues else "Local resource finalize failed.")
+                self.result = _result_from_rejected(input_model, rejected, summary=rejected.reason)
+                return
+            local_resource = LocalResourceCreatedResultView(
+                resource_key=finalized.value.resource_key,
+                resource_ref_summary=f"Resource {finalized.value.resource_key}",
+                locator_summary=f"{submission.target_kind}:{submission.target}",
+            )
             self.result = ResourceCurationResult(
                 outcome="local_resource_created",
                 repo_key=input_model.repo_key,
                 target_summary=_target_summary(input_model),
-                resource_key=result.local_resource.resource_key,
-                reason=result.summary,
-                local_resource=result.local_resource,
-                summary=result.summary,
+                resource_key=finalized.value.resource_key,
+                reason=finalized.value.summary,
+                local_resource=local_resource,
+                summary=finalized.value.summary,
             )
             return
         if result.outcome == "external_repo_required" and result.external_repo is not None:
@@ -314,6 +353,12 @@ def _require_resource_curation_input(input_model: BaseFlowInput | None) -> Resou
 
 def _target_summary(input_model: ResourceCurationInput) -> str:
     return f"{input_model.target.kind}:{input_model.target.target}"
+
+
+def _resource_repo_root(input_model: ResourceCurationInput) -> Path:
+    if not input_model.repo_root:
+        raise TypeError("resource curation flow requires repo_root")
+    return Path(input_model.repo_root)
 
 
 def _resource_draft_workdir(input_model: ResourceCurationInput) -> str | None:

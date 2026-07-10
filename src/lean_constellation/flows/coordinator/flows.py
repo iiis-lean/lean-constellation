@@ -14,6 +14,7 @@ from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.coordinator.submissions import (
     CoordinatorContentTasksSubmission,
+    CoordinatorRepoRequirementSubmission,
     CoordinatorResourceRequestSubmission,
 )
 from lean_constellation.flows.coordinator.steps import (
@@ -194,7 +195,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
 
         result = ctx.step.result
         if ctx.step.step_type == "coordinator_agent_step":
-            self._consume_coordinator_agent_result(state, result, ctx.step.submission, ctx.step.step_id)
+            self._consume_coordinator_agent_result(ctx, state, result, ctx.step.submission, ctx.step.step_id)
         elif isinstance(result, CoordinatorContentBatchSnapshotStepResult):
             self._consume_content_snapshot_result(state, result)
         elif isinstance(result, DispatchStepResult):
@@ -259,6 +260,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
 
     def _consume_coordinator_agent_result(
         self,
+        ctx: FlowStepContext,
         state: NativeRepoCoordinatorState,
         result: object | None,
         submission: object | None,
@@ -293,7 +295,38 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             state.pending_resource_target_summary = f"{result.resource_request.target_kind}:{result.resource_request.target}"
             state.position = FlowPosition(phase="dispatch_resource_request")
             return
-        if result.outcome == "repo_requirement" and result.repo_requirement is not None:
+        if (
+            result.outcome == "repo_requirement"
+            and result.repo_requirement is not None
+            and isinstance(submission, CoordinatorRepoRequirementSubmission)
+        ):
+            repo_workspace = getattr(ctx.app, "repo_workspace", None)
+            repo_root = _coordinator_repo_root(_require_native_coordinator_input(self.input))
+            if repo_workspace is None or repo_root is None:
+                self._fail_coordinator("coordinator_requirement_service_missing", "Repo workspace service or repo root missing.")
+                return
+            created = repo_workspace.create_requirement_with_interfaces(
+                repo_root,
+                name=submission.requirement_name,
+                target_repo=submission.target_repo,
+                source_description=submission.source_description,
+                reason=submission.reason,
+                interfaces=list(submission.interfaces),
+            )
+            if not created.ok or created.value is None:
+                message = created.issues[0].message if created.issues else "Failed to create repo requirement."
+                self._fail_coordinator("coordinator_requirement_create_failed", message)
+                return
+            waiting = repo_workspace.mark_requirement_waiting_for_provider(
+                repo_root,
+                requirement_name=submission.requirement_name,
+                provider_repo=submission.target_repo,
+                reason=submission.reason or submission.summary,
+            )
+            if not waiting.ok or waiting.value is None:
+                message = waiting.issues[0].message if waiting.issues else "Failed to mark repo requirement waiting."
+                self._fail_coordinator("coordinator_requirement_waiting_failed", message)
+                return
             state.waiting_requirement_name = result.repo_requirement.requirement_name
             state.waiting_reason = result.repo_requirement.reason or result.summary
             state.position = FlowPosition(phase="waiting_requirement")

@@ -378,8 +378,28 @@ def _inherit_content_plan_binding_from_prior_task(ctx: FlowContext, flow: Conten
         return
     prior_flows.sort(key=lambda prior: (prior.created_at, prior.flow_id))
     inherited_agent_id = prior_flows[-1].agent_bindings.get("content_plan")
-    if inherited_agent_id is not None:
+    if inherited_agent_id is not None and _valid_content_plan_agent_binding(ctx, inherited_agent_id, scope_id=flow.scope_id):
         flow.agent_bindings.by_role["content_plan"] = inherited_agent_id
+
+
+def _valid_content_plan_agent_binding(ctx: FlowContext, agent_id: str, *, scope_id: str) -> bool:
+    agent_service = ctx.ark.agent_service
+    if agent_service is None:
+        return False
+    try:
+        agent = agent_service.get_agent(agent_id)
+    except Exception:  # noqa: BLE001
+        return False
+    if getattr(agent, "scope_id", None) != scope_id:
+        return False
+    agent_type = str(getattr(agent, "agent_type", ""))
+    home_id = str(getattr(agent, "home_id", "") or "")
+    if agent_type != "ContentPlanAgent" and home_id != "ContentPlanAgent":
+        return False
+    status = str(getattr(agent, "status", "idle"))
+    if status in {"deleted", "archived", "failed"}:
+        return False
+    return True
 
 
 def _dispatch_step_from_pending(ctx: FlowContext, flow: ContentNodeTaskFlow, state: ContentNodeTaskState) -> DispatchStep:

@@ -228,7 +228,7 @@ class ResourceLibraryComponent:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(self._draft_view(repo_root, draft))
 
-    def check_resource_draft(self, repo_root: Path, *, draft_id: str) -> ServiceResult[GateReport]:
+    def check_resource_draft(self, repo_root: Path, *, draft_id: str, update_status: bool = True) -> ServiceResult[GateReport]:
         loaded = self._load_draft(repo_root, draft_id=draft_id)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
@@ -242,7 +242,7 @@ class ResourceLibraryComponent:
                     summary=f"{len(issues)} resource draft checks failed.",
                 )
             )
-        if draft.status == ResourceDraftStatus.ALLOCATED:
+        if update_status and draft.status == ResourceDraftStatus.ALLOCATED:
             draft.status = ResourceDraftStatus.CHECKED
             draft.checked_at = utc_now_iso()
             draft.summary = "Resource draft passed checks."
@@ -256,6 +256,12 @@ class ResourceLibraryComponent:
         return self.runtime.foundation.ok(
             self.runtime.foundation.gate_passed("resource_draft_check", summary="Resource draft checks passed.")
         )
+
+    def resource_key_for_target(self, target: ResourceTarget | ResourceTargetView | str) -> ServiceResult[str]:
+        normalized = self._coerce_target_model(target)
+        if not normalized.ok or normalized.value is None:
+            return self.runtime.foundation.fail(normalized.issues)
+        return self.runtime.foundation.ok(self._resource_key(normalized.value))
 
     def finalize_resource_draft(self, repo_root: Path, *, draft_id: str, summary: str) -> ServiceResult[ResourceView]:
         if not summary or not summary.strip():

@@ -654,6 +654,19 @@ class CommitSourceIndexStep(BaseStep):
 
     def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
         flow = _load_native_preparation_flow(ctx)
+        state = flow.state
+        if getattr(state, "last_source_index_review_approved", False) is not True:
+            return ctx.complete_step(
+                CommitSourceIndexStepResult(
+                    outcome="blocked",
+                    summary="SourceIndex cannot be committed before reviewer approval.",
+                    error=NativePreparationStepError(
+                        code="source_index_review_approval_required",
+                        message="SourceIndex commit requires an approved SourceIndex reviewer round.",
+                        suggested_fix="Run SourceIndexReviewerAgent and obtain an approved review before committing.",
+                    ),
+                )
+            )
         input_model = _require_native_preparation_input(flow.input)
         repo_root = _native_repo_root(input_model)
         committed = _material(ctx).commit_source_index(repo_root)

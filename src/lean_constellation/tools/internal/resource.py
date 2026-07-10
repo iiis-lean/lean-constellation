@@ -7,18 +7,26 @@ from lean_constellation.tools.args import (
     DraftIdArgs,
     DraftIdReasonArgs,
     MaterialContextArgs,
+    ResourceArtifactExtractArgs,
     ResourceDraftTargetArgs,
     ResourceKeyArgs,
     ResourceListArgs,
+    ResourceMaterialAcquireArgs,
+    ResourceMaterialImportArgs,
+    ResourceMaterialNormalizeArgs,
     ResourceRangeArgs,
     ResourceTargetArgs,
-    SourceArtifactExtractArgs,
-    SourceMaterialAcquireArgs,
-    SourceMaterialImportArgs,
-    SourceMaterialNormalizeArgs,
 )
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import current_node_path, direct_tool, handler_tool
+
+
+_COMMITTED_MATERIAL_CONTEXT_VIEWS = {
+    "resource_curator",
+    "native_repo_coordinator",
+    "content_plan",
+    "resource_recon",
+}
 
 
 def _material_context(runtime, ctx, args: MaterialContextArgs):
@@ -29,6 +37,7 @@ def _material_context(runtime, ctx, args: MaterialContextArgs):
         query=args.query,
         include_source=args.include_source,
         include_resources=args.include_resources,
+        require_committed_source_index=ctx.expected_view_key in _COMMITTED_MATERIAL_CONTEXT_VIEWS,
         regex=args.regex,
         limit=args.limit,
     )
@@ -69,7 +78,7 @@ def _active_resource_draft_id(runtime, ctx: ToolExecutionContext):
     return runtime.foundation.ok(draft_id)
 
 
-def _acquire_resource_material(runtime, ctx: ToolExecutionContext, args: SourceMaterialAcquireArgs):
+def _acquire_resource_material(runtime, ctx: ToolExecutionContext, args: ResourceMaterialAcquireArgs):
     draft_id = _active_resource_draft_id(runtime, ctx)
     if not draft_id.ok or draft_id.value is None:
         return draft_id
@@ -81,7 +90,7 @@ def _acquire_resource_material(runtime, ctx: ToolExecutionContext, args: SourceM
     )
 
 
-def _extract_resource_artifact(runtime, ctx: ToolExecutionContext, args: SourceArtifactExtractArgs):
+def _extract_resource_artifact(runtime, ctx: ToolExecutionContext, args: ResourceArtifactExtractArgs):
     draft_id = _active_resource_draft_id(runtime, ctx)
     if not draft_id.ok or draft_id.value is None:
         return draft_id
@@ -93,7 +102,7 @@ def _extract_resource_artifact(runtime, ctx: ToolExecutionContext, args: SourceA
     )
 
 
-def _import_resource_material(runtime, ctx: ToolExecutionContext, args: SourceMaterialImportArgs):
+def _import_resource_material(runtime, ctx: ToolExecutionContext, args: ResourceMaterialImportArgs):
     draft_id = _active_resource_draft_id(runtime, ctx)
     if not draft_id.ok or draft_id.value is None:
         return draft_id
@@ -105,7 +114,7 @@ def _import_resource_material(runtime, ctx: ToolExecutionContext, args: SourceMa
     )
 
 
-def _normalize_resource_text_material(runtime, ctx: ToolExecutionContext, args: SourceMaterialNormalizeArgs):
+def _normalize_resource_text_material(runtime, ctx: ToolExecutionContext, args: ResourceMaterialNormalizeArgs):
     draft_id = _active_resource_draft_id(runtime, ctx)
     if not draft_id.ok or draft_id.value is None:
         return draft_id
@@ -154,9 +163,9 @@ def build_tool_specs() -> list[ToolSpec]:
         handler_tool(
             name="acquire_resource_material",
             description="Acquire raw resource material such as arXiv source, PDF, web page, or local target into the current active resource draft acquisition area.",
-            args_model=SourceMaterialAcquireArgs,
+            args_model=ResourceMaterialAcquireArgs,
             capability=ToolCapability.WRITE,
-            result_view="source_acquisition",
+            result_view="resource_acquisition",
             groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
             handler=_acquire_resource_material,
@@ -164,9 +173,9 @@ def build_tool_specs() -> list[ToolSpec]:
         handler_tool(
             name="extract_resource_artifact",
             description="Extract readable text or project files from an active resource draft artifact into the resource draft normalized area.",
-            args_model=SourceArtifactExtractArgs,
+            args_model=ResourceArtifactExtractArgs,
             capability=ToolCapability.WRITE,
-            result_view="source_extraction",
+            result_view="resource_extraction",
             groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
             handler=_extract_resource_artifact,
@@ -174,9 +183,9 @@ def build_tool_specs() -> list[ToolSpec]:
         handler_tool(
             name="import_resource_material",
             description="Import a local file into the current active resource draft original material area.",
-            args_model=SourceMaterialImportArgs,
+            args_model=ResourceMaterialImportArgs,
             capability=ToolCapability.WRITE,
-            result_view="source_acquisition",
+            result_view="resource_acquisition",
             groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
             handler=_import_resource_material,
@@ -184,9 +193,9 @@ def build_tool_specs() -> list[ToolSpec]:
         handler_tool(
             name="normalize_resource_text_material",
             description="Normalize a resource draft material reference into readable text for README summaries, resource notes, and downstream line-range reads.",
-            args_model=SourceMaterialNormalizeArgs,
+            args_model=ResourceMaterialNormalizeArgs,
             capability=ToolCapability.WRITE,
-            result_view="source_extraction",
+            result_view="resource_extraction",
             groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
             handler=_normalize_resource_text_material,
@@ -234,7 +243,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="allocate_resource_draft",
             result_view="resource_draft",
-            groups={AppGroup.RESOURCE_DRAFT_WRITE},
+            groups={AppGroup.RESOURCE_DRAFT_LIFECYCLE_WRITE},
             roles=curator_roles,
         ),
         direct_tool(
@@ -245,7 +254,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="get_resource_draft",
             result_view="resource_draft",
-            groups={AppGroup.RESOURCE_DRAFT_WRITE},
+            groups={AppGroup.RESOURCE_DRAFT_CURRENT_READ},
             roles=curator_roles,
         ),
         direct_tool(
@@ -256,7 +265,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="check_resource_draft",
             result_view="gate_report",
-            groups={AppGroup.RESOURCE_DRAFT_WRITE},
+            groups={AppGroup.RESOURCE_DRAFT_CURRENT_READ},
             roles=curator_roles,
         ),
         direct_tool(
@@ -267,7 +276,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="material",
             backing_method="abandon_resource_draft",
             result_view="resource_draft",
-            groups={AppGroup.RESOURCE_DRAFT_WRITE},
+            groups={AppGroup.RESOURCE_DRAFT_LIFECYCLE_WRITE},
             roles=curator_roles,
         ),
     ]

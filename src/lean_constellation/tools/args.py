@@ -82,7 +82,7 @@ class RepoRelativeFileArgs(StrictModel):
 
 
 class FormalPolicyCheckArgs(RepoRelativeFileArgs):
-    decl_kind: str | None = Field(default=None, description="Expected Lean declaration kind for statement-formal policy checks, such as def, theorem, lemma, or instance.")
+    decl_kind: str = Field(description="Expected Lean declaration kind for statement-formal policy checks, such as def, theorem, lemma, or instance.")
 
 
 class RequirementNameArgs(StrictModel):
@@ -127,9 +127,33 @@ class SourceMaterialNormalizeArgs(StrictModel):
     material_ref: str = Field(description="Source draft material reference to normalize into readable text.")
 
 
-class MaterialSearchArgs(StrictModel):
-    query: str = Field(description="Text or regex pattern to search in source/resource material.")
-    scope: str = Field(default="all", description="Material scope: all, source, or resource.")
+class ResourceMaterialAcquireArgs(StrictModel):
+    target: str = Field(description="Resource target to acquire into the current active resource draft, such as an arXiv id, URL, local file, or local directory.")
+    preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None = Field(
+        default=None,
+        description="Optional acquisition kind override for the resource target.",
+    )
+
+
+class ResourceArtifactExtractArgs(StrictModel):
+    artifact_ref: str = Field(description="Artifact reference returned by acquire_resource_material.")
+    extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = Field(
+        default=None,
+        description="Optional extraction kind override for resource draft normalization.",
+    )
+
+
+class ResourceMaterialImportArgs(StrictModel):
+    source_path: str = Field(description="Local file or directory path to import into the current resource draft original material area.")
+    as_name: str | None = Field(default=None, description="Optional normalized file or directory name inside the resource draft.")
+
+
+class ResourceMaterialNormalizeArgs(StrictModel):
+    material_ref: str = Field(description="Resource draft material reference to normalize into readable text.")
+
+
+class TextSearchArgs(StrictModel):
+    query: str = Field(description="Text or regex pattern to search.")
     regex: bool = Field(default=False, description="Whether query should be treated as a regular expression.")
     limit: int = Field(default=20, ge=1, le=100, description="Maximum number of matches to return.")
 
@@ -147,6 +171,12 @@ class SourceRangeArgs(StrictModel):
     start_line: int = Field(ge=1, description="First source line to read, 1-based.")
     end_line: int = Field(ge=1, description="Last source line to read, inclusive.")
     context_lines: int = Field(default=2, ge=0, le=20, description="Extra context lines around the requested range.")
+
+
+class SourceRangeValidateArgs(StrictModel):
+    path: str = Field(description="Path relative to the source corpus root.")
+    start_line: int = Field(ge=1, description="First source line to validate, 1-based.")
+    end_line: int = Field(ge=1, description="Last source line to validate, inclusive.")
 
 
 class ResourceRangeArgs(StrictModel):
@@ -332,6 +362,23 @@ class InterfaceUpdateArgs(NodePathArgs):
 
 class InterfaceNameArgs(NodePathArgs):
     name: str = Field(description="Interface name.")
+
+
+class RootInterfaceAddArgs(StrictModel):
+    name: str = Field(description="Root Main interface name.")
+    kind: str = Field(description="Root Main interface declaration kind.")
+    summary: str = Field(description="Root Main interface summary.")
+    statement_hint: str | None = Field(default=None, description="Optional statement hint.")
+
+
+class RootInterfaceUpdateArgs(StrictModel):
+    name: str = Field(description="Root Main interface name.")
+    summary: str | None = Field(default=None, description="Updated summary, if changing it.")
+    statement_hint: str | None = Field(default=None, description="Updated statement hint, if changing it.")
+
+
+class RootInterfaceNameArgs(StrictModel):
+    name: str = Field(description="Root Main interface name.")
 
 
 class InterfaceBindArgs(NodePathArgs):
@@ -751,16 +798,6 @@ class DeclStageFileCheckArgs(DeclNameArgs):
     stage: str = Field(description="Formal capture stage to check: statement or proof.")
 
 
-class DeclReviewMarkArgs(StrictModel):
-    round_id: str = Field(description="Current declaration round id.")
-    stage: str = Field(description="Stage under review.")
-    decl_name: str = Field(description="Declaration name under review.")
-    passed: bool = Field(description="Whether this declaration passed review.")
-    summary: str = Field(description="Review summary for this declaration.")
-    issue_kind: str | None = Field(default=None, description="Optional issue category when review fails.")
-    suggested_fix: str | None = Field(default=None, description="Optional suggested fix when review fails.")
-
-
 class StatementNlReviewPassedArgs(StrictModel):
     decl_name: str = Field(description="Declaration name under Statement NL review.")
     summary: str = Field(description="Why the current Statement NL candidate is ready for statement formalization.")
@@ -913,6 +950,12 @@ class AdapterInterfaceUnbindArgs(StrictModel):
 
 class AdapterDeclOptionalNameArgs(StrictModel):
     name: str | None = Field(default=None, description="Optional adapter declaration name; omit to check all declarations.")
+
+
+class AdapterDeclUpstreamFindArgs(StrictModel):
+    module: str = Field(description="Upstream module containing the declaration.")
+    upstream_decl_name: str | None = Field(default=None, description="Optional upstream declaration name to match.")
+    adapter_name_query: str | None = Field(default=None, description="Optional adapter declaration name text query.")
 
 
 class AdapterDeclNameArgs(StrictModel):

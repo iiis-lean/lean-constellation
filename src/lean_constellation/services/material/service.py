@@ -233,6 +233,40 @@ class MaterialService:
             relpath=relpath,
         )
 
+    def check_source_corpus_prepared(
+        self,
+        repo_root: Path,
+        *,
+        entry_path: str,
+        overview: str,
+        preparation_summary: str,
+        relpath: str = ".lean_constellation/source",
+    ) -> ServiceResult[SourceCorpusPreparedView]:
+        return self.source_corpus.check_source_corpus_prepared(
+            repo_root,
+            entry_path=entry_path,
+            overview=overview,
+            preparation_summary=preparation_summary,
+            relpath=relpath,
+        )
+
+    def finalize_source_corpus_prepared(
+        self,
+        repo_root: Path,
+        *,
+        entry_path: str,
+        overview: str,
+        preparation_summary: str,
+        relpath: str = ".lean_constellation/source",
+    ) -> ServiceResult[SourceCorpusPreparedView]:
+        return self.source_corpus.finalize_source_corpus_prepared(
+            repo_root,
+            entry_path=entry_path,
+            overview=overview,
+            preparation_summary=preparation_summary,
+            relpath=relpath,
+        )
+
     def submit_source_corpus_blocked(
         self,
         repo_root: Path,
@@ -283,6 +317,7 @@ class MaterialService:
         query: str | None = None,
         include_source: bool = True,
         include_resources: bool = True,
+        require_committed_source_index: bool = False,
         regex: bool = False,
         limit: int = 20,
     ) -> ServiceResult[MaterialContextView]:
@@ -304,7 +339,11 @@ class MaterialService:
             if not listed_source.ok or listed_source.value is None:
                 return self.runtime.foundation.fail(listed_source.issues)
             source_files = listed_source.value.files
-            source_index = self.source_index.get_source_index(repo_root)
+            source_index = (
+                self.source_index.get_committed_source_index(repo_root)
+                if require_committed_source_index
+                else self.source_index.get_source_index(repo_root)
+            )
             if source_index.ok and source_index.value is not None:
                 source_index_overview = source_index.value.overview
                 source_blocks = [
@@ -313,7 +352,10 @@ class MaterialService:
                     if block.active and block.block_id != source_index.value.root_block_id
                 ]
                 source_blocks.sort(key=lambda item: (item.kind, item.title))
-            elif not any(issue.kind == "source_index_missing" for issue in source_index.issues):
+            elif not any(
+                issue.kind in {"source_index_missing", "source_index_not_committed"}
+                for issue in source_index.issues
+            ):
                 return self.runtime.foundation.fail(source_index.issues)
 
         if include_resources:
@@ -438,6 +480,21 @@ class MaterialService:
         summary: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         return self.resource_curation.submit_local_resource_created(
+            repo_root,
+            flow_input=flow_input,
+            draft_id=draft_id,
+            summary=summary,
+        )
+
+    def check_local_resource_created(
+        self,
+        repo_root: Path,
+        *,
+        flow_input: ResourceCurationFlowInputView,
+        draft_id: str,
+        summary: str,
+    ) -> ServiceResult[ResourceCurationResultView]:
+        return self.resource_curation.check_local_resource_created(
             repo_root,
             flow_input=flow_input,
             draft_id=draft_id,

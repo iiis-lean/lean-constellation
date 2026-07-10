@@ -320,7 +320,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Use `list_visible_nodes` and `list_imported_repos` to find visible dependency sources.",
                 "Inspect public declarations selectively with node/repo public declaration tools before recording a visible dependency.",
                 "Add dependencies with `add_current_node_dep` only when they support the node objective and are visible.",
-                "Report unresolved needs without inventing unavailable dependencies.",
+                "When a dependency is justified by specific provider public declarations, put those names in expected_public_decl_names so the dependency carries structured evidence.",
+                "Use `remove_current_node_dep` conservatively, only for worker-owned dependencies that are clearly stale, wrong, or outside the current objective.",
+                "Report unclear cases through unresolved_within_visible_boundaries without inventing unavailable dependencies or deleting uncertain dependencies.",
             ),
             (
                 "Do not use non-ready private declarations.",
@@ -469,7 +471,11 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         name="resource-draft-curation",
         description="Guides resource curation agents when preparing a local Resource draft.",
         group="resource",
-        required_tool_groups=_groups(AppGroup.RESOURCE_DRAFT_WRITE, SubmitGroup.RESOURCE_CURATOR_SUBMIT),
+        required_tool_groups=_groups(
+            AppGroup.RESOURCE_DRAFT_CURRENT_READ,
+            AppGroup.RESOURCE_ACQUISITION,
+            SubmitGroup.RESOURCE_CURATOR_SUBMIT,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
             "resource-draft-curation",

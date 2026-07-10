@@ -8,7 +8,6 @@ from lean_constellation.tools.args import (
     DraftIdReasonArgs,
     FileIndexingStatusArgs,
     FileStatusArgs,
-    MaterialSearchArgs,
     SourceArtifactExtractArgs,
     NoArgs,
     ResourceDraftTargetArgs,
@@ -28,6 +27,8 @@ from lean_constellation.tools.args import (
     SourceMaterialImportArgs,
     SourceMaterialNormalizeArgs,
     SourceRangeArgs,
+    SourceRangeValidateArgs,
+    TextSearchArgs,
 )
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.keys import ApplicationToolViewKey as AppView
@@ -37,11 +38,15 @@ from lean_constellation.tools.specs import direct_tool, handler_tool
 _COMMITTED_SOURCE_INDEX_VIEWS = {
     AppView.ROOT_INTERFACE_PREPARE.value,
     AppView.NATIVE_REPO_COORDINATOR.value,
-    AppView.CONTENT_PLAN.value,
     AppView.RESOURCE_CURATOR.value,
     AppView.RESOURCE_RECON.value,
     AppView.STATEMENT_NL_WORKER.value,
     AppView.STATEMENT_NL_REVIEWER.value,
+    AppView.STATEMENT_FORMAL_REVIEWER.value,
+    AppView.PROOF_NL_WORKER.value,
+    AppView.PROOF_NL_REVIEWER.value,
+    AppView.PROOF_FORMAL_WORKER.value,
+    AppView.PROOF_FORMAL_REVIEWER.value,
 }
 
 
@@ -65,17 +70,6 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
     builder_roles = {"worker", "admin"}
     read_roles = {"coordinator", "plan", "worker", "reviewer", "admin"}
     return [
-        direct_tool(
-            name="create_draft_source_index",
-            description="Create or load the draft SourceIndex for the current repo.",
-            args_model=NoArgs,
-            capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="create_draft_source_index",
-            result_view="source_index",
-            groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
-            roles=builder_roles,
-        ),
         handler_tool(
             name="get_source_index",
             description="Read the SourceIndex view for the repo. Draft SourceIndex views return the draft; committed SourceIndex views require committed state.",
@@ -234,16 +228,25 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
 def build_material_tool_specs() -> list[ToolSpec]:
     roles = {"coordinator", "plan", "worker", "reviewer", "admin"}
     return [
-        direct_tool(
-            name="search_material_text",
-            description="Search source corpus and resource text in the current repo.",
-            args_model=MaterialSearchArgs,
+        handler_tool(
+            name="search_source_text",
+            description="Search source corpus text in the current repo.",
+            args_model=TextSearchArgs,
             capability=ToolCapability.READ,
-            backing_service="material",
-            backing_method="search_material_text",
             result_view="material_search",
             groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
             roles=roles,
+            handler=_search_source_text,
+        ),
+        handler_tool(
+            name="search_resource_text",
+            description="Search registered resource library text in the current repo.",
+            args_model=TextSearchArgs,
+            capability=ToolCapability.READ,
+            result_view="material_search",
+            groups={AppGroup.RESOURCE_LIBRARY_READ},
+            roles=roles,
+            handler=_search_resource_text,
         ),
         direct_tool(
             name="read_source_range",
@@ -256,11 +259,53 @@ def build_material_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
             roles=roles,
         ),
+        direct_tool(
+            name="validate_source_range",
+            description="Validate that a source corpus line range exists and is well-formed.",
+            args_model=SourceRangeValidateArgs,
+            capability=ToolCapability.READ,
+            backing_service="material",
+            backing_method="validate_source_range",
+            result_view="source_range_validation",
+            groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
+            roles=roles,
+        ),
+        direct_tool(
+            name="preview_source_ref",
+            description="Preview a source corpus range with nearby context before using it as a SourceIndex ref.",
+            args_model=SourceRangeArgs,
+            capability=ToolCapability.READ,
+            backing_service="material",
+            backing_method="preview_source_ref",
+            result_view="material_ref_preview",
+            groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
+            roles=roles,
+        ),
     ]
 
 
+def _search_source_text(runtime, ctx: ToolExecutionContext, args: TextSearchArgs):
+    return runtime.material.search_material_text(
+        ctx.repo_root,
+        query=args.query,
+        scope="source",
+        regex=args.regex,
+        limit=args.limit,
+    )
+
+
+def _search_resource_text(runtime, ctx: ToolExecutionContext, args: TextSearchArgs):
+    return runtime.material.search_material_text(
+        ctx.repo_root,
+        query=args.query,
+        scope="resource",
+        regex=args.regex,
+        limit=args.limit,
+    )
+
+
 def build_source_corpus_tool_specs() -> list[ToolSpec]:
-    roles = {"coordinator", "worker", "admin"}
+    roles = {"coordinator", "worker", "reviewer", "admin"}
     return [
         direct_tool(
             name="scan_source_corpus",

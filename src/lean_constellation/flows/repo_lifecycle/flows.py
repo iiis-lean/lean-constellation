@@ -346,6 +346,8 @@ class NativeRepoPreparationState(BaseFlowState):
     source_index_round: int = 0
     max_source_index_rounds: int = 3
     last_source_index_review_approved: bool = False
+    latest_source_index_builder_summary: str | None = None
+    latest_source_index_reviewer_feedback: str | None = None
     source_index_committed: bool = False
     root_interface_ready: bool = False
     handoff_gate_passed: bool = False
@@ -447,7 +449,11 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                         create_agent_if_missing=True,
                         bind_created_agent_to="flow",
                         variables={"repo_key": input_model.repo_key, "round_index": state.source_index_round},
-                        prompt_override=_source_index_builder_prompt(input_model, state.source_index_round),
+                        prompt_override=_source_index_builder_prompt(
+                            input_model,
+                            state.source_index_round,
+                            reviewer_feedback=state.latest_source_index_reviewer_feedback,
+                        ),
                         env_overrides=_agent_env("SourceIndexBuilderAgent", "source_index_builder", "source_index_builder_submit"),
                         workdir_override=str(repo_root),
                     ),
@@ -468,7 +474,11 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                         create_agent_if_missing=True,
                         bind_created_agent_to="flow",
                         variables={"repo_key": input_model.repo_key, "round_index": state.source_index_round},
-                        prompt_override=_source_index_reviewer_prompt(input_model, state.source_index_round),
+                        prompt_override=_source_index_reviewer_prompt(
+                            input_model,
+                            state.source_index_round,
+                            builder_summary=state.latest_source_index_builder_summary,
+                        ),
                         env_overrides=_agent_env("SourceIndexReviewerAgent", "source_index_reviewer", "source_index_reviewer_submit"),
                         workdir_override=str(repo_root),
                     ),
@@ -571,7 +581,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
         elif isinstance(result, ExistingSourceCorpusScanStepResult):
             self._consume_existing_source_corpus_result(state, input_model, result)
         elif ctx.step.step_type == "source_corpus_prepare_agent_step":
-            self._consume_source_corpus_agent_result(state, input_model, result, ctx.step.submission)
+            self._consume_source_corpus_agent_result(ctx, state, input_model, result, ctx.step.submission)
         elif isinstance(result, CreateDraftSourceIndexStepResult):
             self._consume_create_source_index_result(state, input_model, result)
         elif ctx.step.step_type == "source_index_builder_agent_step":
@@ -635,6 +645,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
 
     def _consume_source_corpus_agent_result(
         self,
+        ctx: FlowStepContext,
         state: NativeRepoPreparationState,
         input_model: NativeRepoPreparationInput,
         result: object | None,
@@ -650,6 +661,27 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
             )
             return
         if isinstance(submission, SourceCorpusPreparedSubmission):
+            material = getattr(ctx.app, "material", None)
+            if material is None:
+                self._finish_native_preparation(
+                    state,
+                    input_model,
+                    "blocked",
+                    "Material service is not registered; cannot finalize source corpus manifest.",
+                    "Source corpus manifest finalize failed.",
+                )
+                return
+            finalized = material.finalize_source_corpus_prepared(
+                _native_repo_root(input_model),
+                entry_path=submission.entry_path,
+                overview=submission.overview,
+                preparation_summary=submission.preparation_summary,
+                relpath=submission.relpath,
+            )
+            if not finalized.ok:
+                reason = finalized.issues[0].message if finalized.issues else "Source corpus manifest finalize failed."
+                self._finish_native_preparation(state, input_model, "blocked", reason, "Source corpus manifest finalize failed.")
+                return
             state.source_corpus_ready = True
             state.position = FlowPosition(phase="source_index_create")
             return
@@ -687,6 +719,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 "Source index builder did not submit.",
             )
             return
+        state.latest_source_index_builder_summary = submission.summary
         state.position = FlowPosition(phase="source_index_reviewer", round_index=state.source_index_round)
 
     def _consume_source_index_reviewer_result(
@@ -707,9 +740,11 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
             return
         if submission.approved:
             state.last_source_index_review_approved = True
+            state.latest_source_index_reviewer_feedback = None
             state.position = FlowPosition(phase="source_index_commit", round_index=state.source_index_round)
             return
         state.last_source_index_review_approved = False
+        state.latest_source_index_reviewer_feedback = submission.feedback
         if state.source_index_round < state.max_source_index_rounds:
             state.source_index_round += 1
             state.position = FlowPosition(phase="source_index_builder", round_index=state.source_index_round)
@@ -1245,22 +1280,34 @@ def _source_corpus_prepare_prompt(input_model: NativeRepoPreparationInput) -> st
     )
 
 
-def _source_index_builder_prompt(input_model: NativeRepoPreparationInput, round_index: int) -> str:
-    return "\n".join(
-        [
-            f"Build SourceIndex round {round_index} for native repo {input_model.repo_key}.",
-            "Use the source corpus and draft SourceIndex tools. Submit the builder round when the draft is ready for review.",
-        ]
-    )
+def _source_index_builder_prompt(
+    input_model: NativeRepoPreparationInput,
+    round_index: int,
+    *,
+    reviewer_feedback: str | None = None,
+) -> str:
+    lines = [
+        f"Build SourceIndex round {round_index} for native repo {input_model.repo_key}.",
+        "Use the source corpus and existing draft SourceIndex tools. Submit the builder round when the draft is ready for review.",
+    ]
+    if reviewer_feedback:
+        lines.extend(["", "Previous reviewer feedback:", reviewer_feedback])
+    return "\n".join(lines)
 
 
-def _source_index_reviewer_prompt(input_model: NativeRepoPreparationInput, round_index: int) -> str:
-    return "\n".join(
-        [
-            f"Review SourceIndex round {round_index} for native repo {input_model.repo_key}.",
-            "Inspect the draft SourceIndex and source evidence. Submit approved or rejected with actionable feedback.",
-        ]
-    )
+def _source_index_reviewer_prompt(
+    input_model: NativeRepoPreparationInput,
+    round_index: int,
+    *,
+    builder_summary: str | None = None,
+) -> str:
+    lines = [
+        f"Review SourceIndex round {round_index} for native repo {input_model.repo_key}.",
+        "Inspect the draft SourceIndex and source evidence. Submit approved or rejected with actionable feedback.",
+    ]
+    if builder_summary:
+        lines.extend(["", "Latest builder summary:", builder_summary])
+    return "\n".join(lines)
 
 
 def _root_interface_prepare_prompt(input_model: NativeRepoPreparationInput) -> str:

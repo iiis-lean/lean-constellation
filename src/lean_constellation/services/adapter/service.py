@@ -531,14 +531,11 @@ class AdapterService:
         del ctx
         if not summary or not summary.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_ready_summary_required", "Adapter ready submit summary is required.", field="summary"))
-        gate = self.check_adapter_ready(repo_root)
+        gate = self.check_adapter_catalog_ready_preflight(repo_root)
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
         if not gate.value.passed:
             return self.runtime.foundation.fail(gate.value.issues)
-        marked = self._repo_workspace().mark_provider_repo_ready(repo_root, summary=summary.strip())
-        if not marked.ok:
-            return self.runtime.foundation.fail(marked.issues)
         return self.runtime.foundation.ok(
             AdapterCatalogSubmissionView(
                 submission_type="adapter_catalog_ready",
@@ -561,6 +558,14 @@ class AdapterService:
         del repo_root, ctx
         if not reason or not reason.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_blocked_reason_required", "Blocked submit reason is required.", field="reason"))
+        if missing_interfaces and not (evidence_summary and evidence_summary.strip()):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_blocked_evidence_required",
+                    "Blocked submit with missing interfaces requires an evidence_summary.",
+                    field="evidence_summary",
+                )
+            )
         return self.runtime.foundation.ok(
             AdapterCatalogSubmissionView(
                 submission_type="adapter_catalog_blocked",

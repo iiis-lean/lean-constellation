@@ -125,11 +125,14 @@ class RepoWorkspaceService:
                 return self.runtime.foundation.fail(current.issues)
         return current
 
-    def _requirement_proof_availability_for_repo(self, repo_root: Path):
+    def requirement_proof_availability_for_repo(self, repo_root: Path):
         config = self.metadata.get_repo_config(repo_root)
         if config.ok and config.value is not None:
             return config.value.config.default_requirement_proof_availability
         return self.workspace_config.default_requirement_proof_availability
+
+    def _requirement_proof_availability_for_repo(self, repo_root: Path):
+        return self.requirement_proof_availability_for_repo(repo_root)
 
     def create_provider_repo_shell_from_group(
         self,

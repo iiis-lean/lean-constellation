@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from lean_constellation.domain.common import StrictModel
 
@@ -12,9 +12,25 @@ from lean_constellation.domain.common import StrictModel
 class SummarySubmitArgs(StrictModel):
     summary: str = Field(description="Concise summary of the submitted result.")
 
+    @field_validator("summary")
+    @classmethod
+    def _summary_non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("summary must be non-empty")
+        return value
+
 
 class ReasonSubmitArgs(StrictModel):
     reason: str = Field(description="Reason for this terminal submission.")
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must be non-empty")
+        return value
 
 
 class SubmitAdapterRepoChoiceArgs(StrictModel):

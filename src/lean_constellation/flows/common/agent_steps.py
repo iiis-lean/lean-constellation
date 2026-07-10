@@ -326,7 +326,7 @@ class ResourceCuratorAgentStep(AgentStep):
                 summary=submission.summary or submission.duplicate_reason,
             )
         if isinstance(submission, LocalResourceCreatedSubmission):
-            resource_key = submission.resource_key
+            resource_key = submission.resource_key or submission.draft_id
             local_resource = LocalResourceCreatedResultView(
                 resource_key=resource_key,
                 resource_ref_summary=f"Resource {resource_key}",

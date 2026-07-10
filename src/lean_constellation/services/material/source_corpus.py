@@ -257,6 +257,7 @@ class SourceCorpusComponent:
         if not scan.ok or scan.value is None:
             return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("source_corpus_draft", scan.issues, summary="Source corpus scan failed."))
         manifest = scan.value
+        root = self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)), relpath)
         issues = []
         if not manifest.files:
             issues.append(self.runtime.foundation.issue("source_corpus_empty", "Source corpus contains no files."))
@@ -264,6 +265,8 @@ class SourceCorpusComponent:
         if not readable:
             issues.append(self.runtime.foundation.issue("source_corpus_no_readable_text", "Source corpus has no readable text files."))
         entry = manifest.entry_path or entry_path
+        entry_view: SourceCorpusFileView | None = None
+        entry_text = ""
         if not entry:
             issues.append(self.runtime.foundation.issue("source_corpus_entry_missing", "Source corpus needs an entry file such as README.md."))
         elif entry not in {item.path for item in manifest.files}:
@@ -277,6 +280,50 @@ class SourceCorpusComponent:
                         f"Entry file must be readable non-empty UTF-8 text: {entry}",
                     )
                 )
+            else:
+                entry_text = self._read_source_text(root / entry)
+        if entry and entry_view is not None and entry_view.readable_text:
+            if not self._has_provenance_marker(entry_text):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_provenance_missing",
+                        "Source corpus entry must explain where the source material came from.",
+                        field="entry_path",
+                    )
+                )
+            if not self._has_reading_order_marker(entry_text):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_reading_order_missing",
+                        "Source corpus entry must explain how downstream readers should use the material.",
+                        field="entry_path",
+                    )
+                )
+            if not self._has_main_material_marker(entry_text):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_main_material_missing",
+                        "Source corpus entry must identify the main material or point to separate readable source material.",
+                        field="entry_path",
+                    )
+                )
+            if not self._has_extraction_limits_marker(entry_text):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_extraction_limits_missing",
+                        "Source corpus entry must record known gaps, missing material, or extraction limits.",
+                        field="entry_path",
+                    )
+                )
+        if entry and not entry_path and entry_view is not None and not self._is_canonical_entry(entry):
+            issues.append(
+                self.runtime.foundation.issue(
+                    "source_corpus_entry_not_explanatory",
+                    "Source corpus entry must be explicit or use README.md, README.txt, index.md, or main.md.",
+                    field="entry_path",
+                    current=entry,
+                )
+            )
         if issues:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed("source_corpus_draft", issues, summary=f"{len(issues)} source corpus checks failed.")
@@ -285,7 +332,7 @@ class SourceCorpusComponent:
             self.runtime.foundation.gate_passed("source_corpus_draft", summary="Source corpus draft is usable.")
         )
 
-    def submit_source_corpus_prepared(
+    def check_source_corpus_prepared(
         self,
         repo_root: Path,
         *,
@@ -311,16 +358,61 @@ class SourceCorpusComponent:
         )
         if not manifest.ok or manifest.value is None:
             return self.runtime.foundation.fail(manifest.issues)
-        write = self.runtime.foundation.store.write_json_atomic(self._manifest_path(repo_root), manifest.value)
-        if not write.ok:
-            return self.runtime.foundation.fail(write.issues)
         return self.runtime.foundation.ok(
             SourceCorpusPreparedView(
                 prepared=True,
                 manifest=manifest.value,
                 preparation_summary=preparation_summary.strip(),
+                summary="Source corpus prepared and manifest validated.",
+            )
+        )
+
+    def finalize_source_corpus_prepared(
+        self,
+        repo_root: Path,
+        *,
+        entry_path: str,
+        overview: str,
+        preparation_summary: str,
+        relpath: str = ".lean_constellation/source",
+    ) -> ServiceResult[SourceCorpusPreparedView]:
+        prepared = self.check_source_corpus_prepared(
+            repo_root,
+            entry_path=entry_path,
+            overview=overview,
+            preparation_summary=preparation_summary,
+            relpath=relpath,
+        )
+        if not prepared.ok or prepared.value is None:
+            return self.runtime.foundation.fail(prepared.issues)
+        manifest = prepared.value.manifest
+        write = self.runtime.foundation.store.write_json_atomic(self._manifest_path(repo_root), manifest)
+        if not write.ok:
+            return self.runtime.foundation.fail(write.issues)
+        return self.runtime.foundation.ok(
+            SourceCorpusPreparedView(
+                prepared=True,
+                manifest=manifest,
+                preparation_summary=preparation_summary.strip(),
                 summary="Source corpus prepared and manifest written.",
             )
+        )
+
+    def submit_source_corpus_prepared(
+        self,
+        repo_root: Path,
+        *,
+        entry_path: str,
+        overview: str,
+        preparation_summary: str,
+        relpath: str = ".lean_constellation/source",
+    ) -> ServiceResult[SourceCorpusPreparedView]:
+        return self.finalize_source_corpus_prepared(
+            repo_root,
+            entry_path=entry_path,
+            overview=overview,
+            preparation_summary=preparation_summary,
+            relpath=relpath,
         )
 
     def submit_source_corpus_blocked(
@@ -465,6 +557,79 @@ class SourceCorpusComponent:
                 return name
         readable = [item for item in files if item.readable_text]
         return readable[0].path if readable else None
+
+    @staticmethod
+    def _is_canonical_entry(path: str) -> bool:
+        return Path(path).name in {"README.md", "README.txt", "index.md", "main.md"}
+
+    @staticmethod
+    def _has_provenance_marker(text: str) -> bool:
+        lowered = text.lower()
+        return any(
+            re.search(pattern, lowered)
+            for pattern in (
+                r"\bsource\s+provenance\b",
+                r"\bprovenance\b",
+                r"\bsource\s+origin\b",
+                r"\borigin\b",
+                r"\bimported\s+from\b",
+                r"\bextracted\s+from\b",
+                r"\bderived\s+from\b",
+                r"\bdownloaded\s+from\b",
+                r"\btranscribed\s+from\b",
+            )
+        )
+
+    @staticmethod
+    def _has_reading_order_marker(text: str) -> bool:
+        lowered = text.lower()
+        return any(
+            re.search(pattern, lowered)
+            for pattern in (
+                r"\breading\s+order\b",
+                r"\bread\s+first\b",
+                r"\bread\s+this\b",
+                r"\bthen\s+read\b",
+                r"\bstart\s+with\b",
+                r"\bstart\s+from\b",
+                r"\bentry\s+point\b",
+                r"\buse\s+.+\s+as\s+the\s+main\s+material\b",
+                r"\buse\s+.+\s+as\s+the\s+entry\b",
+            )
+        )
+
+    @staticmethod
+    def _has_main_material_marker(text: str) -> bool:
+        lowered = text.lower()
+        return any(term in lowered for term in ("main", "material", "theorem", "definition", "chapter", "section"))
+
+    @staticmethod
+    def _has_extraction_limits_marker(text: str) -> bool:
+        lowered = text.lower()
+        return any(
+            re.search(pattern, lowered)
+            for pattern in (
+                r"\bknown\s+gap\b",
+                r"\bknown\s+gaps\b",
+                r"\bknown\s+missing\b",
+                r"\bno\s+known\s+gaps\b",
+                r"\bmissing\s+source\b",
+                r"\bmissing\s+sections\b",
+                r"\bextraction\s+limit\b",
+                r"\bextraction\s+limits\b",
+                r"\bknown\s+limit\b",
+                r"\bknown\s+limits\b",
+                r"\bknown\s+limitation\b",
+                r"\bknown\s+limitations\b",
+            )
+        )
+
+    @staticmethod
+    def _read_source_text(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
 
     def _resolve_inside(self, root: Path, ref: str) -> Path:
         relative = self.runtime.foundation.layout.ensure_relative_path(ref)

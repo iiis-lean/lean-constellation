@@ -59,12 +59,12 @@ class ReadyGateComponent:
         )
 
     def check_adapter_catalog_ready_preflight(self, repo_root: Path) -> ServiceResult[GateReport]:
-        return self._check(repo_root, gate_name="adapter_catalog_ready_preflight")
+        return self._check(repo_root, gate_name="adapter_catalog_ready_preflight", include_projection=False)
 
     def check_adapter_ready(self, repo_root: Path) -> ServiceResult[GateReport]:
-        return self._check(repo_root, gate_name="adapter_ready")
+        return self._check(repo_root, gate_name="adapter_ready", include_projection=True)
 
-    def _check(self, repo_root: Path, *, gate_name: str) -> ServiceResult[GateReport]:
+    def _check(self, repo_root: Path, *, gate_name: str, include_projection: bool) -> ServiceResult[GateReport]:
         reports: list[GateReport] = []
 
         upstream = self.upstream_metadata.validate_upstream_metadata(repo_root)
@@ -96,9 +96,10 @@ class ReadyGateComponent:
             return self.runtime.foundation.fail(bindings.issues)
         reports.append(bindings.value)
 
-        projection = self.projection.check_adapter_projection(repo_root)
-        if not projection.ok or projection.value is None:
-            return self.runtime.foundation.fail(projection.issues)
-        reports.append(projection.value)
+        if include_projection:
+            projection = self.projection.check_adapter_projection(repo_root)
+            if not projection.ok or projection.value is None:
+                return self.runtime.foundation.fail(projection.issues)
+            reports.append(projection.value)
 
         return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports(gate_name, reports))

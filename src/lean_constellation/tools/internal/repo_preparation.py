@@ -150,7 +150,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="repo_workspace",
             backing_method="get_preparation_start_preflight",
             result_view="preparation_start_preflight",
-            groups={AppGroup.REPO_PREPARATION_INPUT_READ},
+            groups={AppGroup.REPO_PREPARATION_START_PREFLIGHT_READ},
             roles={"coordinator", "admin"},
         ),
         direct_tool(
@@ -202,7 +202,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="repo_preparation_requirements",
             groups={AppGroup.REPO_PREPARATION_REQUIREMENT_READ},
-            roles={"coordinator", "admin"},
+            roles={"coordinator", "worker", "admin"},
             handler=_list_preparation_requirements,
         ),
         handler_tool(
@@ -212,7 +212,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="repo_preparation_requirement",
             groups={AppGroup.REPO_PREPARATION_REQUIREMENT_READ},
-            roles={"coordinator", "admin"},
+            roles={"coordinator", "worker", "admin"},
             handler=_get_preparation_requirement,
         ),
         handler_tool(

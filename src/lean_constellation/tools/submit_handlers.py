@@ -16,6 +16,7 @@ from lean_constellation.flows.common.flow_requests import (
     repo_scope_id,
 )
 from lean_constellation.flows.common.submissions import new_submission_id, submission_agent_id
+from lean_constellation.domain.interface import DeclKind
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services.decl_graph.models import DeclState
 from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_nl_candidate
@@ -385,13 +386,12 @@ def submit_source_corpus_prepared(runtime: Any, ctx: ToolExecutionContext, args:
                 expected=expected_relpath,
             )
         )
-    gate = runtime.material.submit_source_corpus_prepared(
+    gate = runtime.material.check_source_corpus_prepared(
         ctx.repo_root,
         entry_path=args.entry_path,
         overview=args.overview,
         preparation_summary=args.preparation_summary,
         relpath=expected_relpath,
-        ctx=ctx,
     )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
@@ -401,8 +401,8 @@ def submit_source_corpus_prepared(runtime: Any, ctx: ToolExecutionContext, args:
             **_base_kwargs(ctx, tool_name="submit_source_corpus_prepared", summary=args.summary),
             relpath=expected_relpath,
             entry_path=args.entry_path,
-            overview=args.overview,
-            preparation_summary=args.preparation_summary,
+            overview=args.overview.strip(),
+            preparation_summary=args.preparation_summary.strip(),
         ),
         agent_view=gate.value.model_dump(mode="json"),
     )
@@ -650,7 +650,7 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
                 expected=active_draft.value,
             )
         )
-    gate = runtime.material.submit_local_resource_created(ctx.repo_root, flow_input=flow_input.value, draft_id=args.draft_id, summary=args.summary)
+    gate = runtime.material.check_local_resource_created(ctx.repo_root, flow_input=flow_input.value, draft_id=args.draft_id, summary=args.summary)
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
     if not gate.value.resource_key:
@@ -759,37 +759,67 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoRequirementArgs) -> ServiceResult[PreparedSubmissionView]:
-    interfaces = [item.model_dump(exclude_none=True) for item in args.interfaces]
-    created = runtime.repo_workspace.create_requirement_with_interfaces(
-        ctx.repo_root,
-        name=args.name,
-        target_repo=args.target_repo,
-        source_description=args.source_description,
-        reason=args.reason,
-        interfaces=interfaces,
-    )
-    if not created.ok or created.value is None:
-        return runtime.foundation.fail(created.issues)
-    waiting = runtime.repo_workspace.mark_requirement_waiting_for_provider(
-        ctx.repo_root,
-        requirement_name=args.name,
-        provider_repo=args.target_repo,
-        reason=args.reason or args.summary,
-    )
-    if not waiting.ok or waiting.value is None:
-        return runtime.foundation.fail(waiting.issues)
+    try:
+        requirement_name = runtime.foundation.layout.ensure_safe_key(args.name)
+        target_repo = runtime.foundation.layout.ensure_safe_key(args.target_repo)
+    except ValueError as exc:
+        return runtime.foundation.fail(runtime.foundation.issue("requirement_key_invalid", str(exc)))
+    if not (args.source_description and args.source_description.strip()) and not (args.reason and args.reason.strip()):
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "requirement_missing_context",
+                "Requirement needs at least source_description or reason.",
+            )
+        )
+    existing = runtime.repo_workspace.requirement.get_requirement(ctx.repo_root, name=requirement_name)
+    if existing.ok and existing.value is not None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "requirement_name_duplicate",
+                f"Requirement already exists: {requirement_name}",
+            )
+        )
+    interfaces = []
+    for item in args.interfaces:
+        try:
+            kind = DeclKind(item.kind)
+        except ValueError as exc:
+            return runtime.foundation.fail(runtime.foundation.issue("requirement_interface_kind_invalid", str(exc), field="interfaces.kind"))
+        if not item.name.strip() or not item.summary.strip():
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "requirement_interface_invalid",
+                    "Requirement interfaces need non-empty name and summary.",
+                    field="interfaces",
+                )
+            )
+        interfaces.append(
+            {
+                "name": item.name.strip(),
+                "kind": kind.value,
+                "summary": item.summary.strip(),
+                **({"statement_hint": item.statement_hint.strip()} if item.statement_hint and item.statement_hint.strip() else {}),
+            }
+        )
+    required_proof_availability = runtime.repo_workspace.requirement_proof_availability_for_repo(ctx.repo_root)
     return _prepared(
         runtime,
         CoordinatorRepoRequirementSubmission(
             **_base_kwargs(ctx, tool_name="submit_repo_requirement", summary=args.summary),
-            requirement_name=args.name,
-            target_repo=args.target_repo,
-            required_proof_availability=created.value.requirement.required_proof_availability,
-            source_description=args.source_description,
-            reason=args.reason,
+            requirement_name=requirement_name,
+            target_repo=target_repo,
+            required_proof_availability=required_proof_availability,
+            source_description=args.source_description.strip() if args.source_description else None,
+            reason=args.reason.strip() if args.reason else None,
             interfaces=interfaces,
         ),
-        agent_view=waiting.value.model_dump(mode="json"),
+        agent_view={
+            "requirement_name": requirement_name,
+            "target_repo": target_repo,
+            "required_proof_availability": str(required_proof_availability),
+            "interfaces": interfaces,
+            "summary": "Requirement submission validated; waiting state will be recorded after the submission is accepted.",
+        },
     )
 
 
@@ -994,6 +1024,20 @@ def submit_stage_worker_blocked(runtime: Any, ctx: ToolExecutionContext, args: S
     if not stage.ok or stage.value is None:
         return runtime.foundation.fail(stage.issues)
     stage_name, round_id = stage.value
+    expected_decl_names = list(ctx.decl_stage.batch_decls if ctx.decl_stage else [])
+    if not expected_decl_names:
+        return _fail(runtime, "stage_worker_expected_batch_missing", "Stage worker blocked submit requires a current expected declaration batch.")
+    unexpected_decl_names = sorted(set(args.affected_decl_names) - set(expected_decl_names))
+    if unexpected_decl_names:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "stage_worker_blocked_decl_outside_batch",
+                "Stage worker blocked submit affected_decl_names must belong to the current stage batch.",
+                field="affected_decl_names",
+                current=", ".join(unexpected_decl_names),
+                expected=", ".join(expected_decl_names),
+            )
+        )
     return _prepared(
         runtime,
         DeclStageWorkerBlockedSubmission(
@@ -1001,7 +1045,7 @@ def submit_stage_worker_blocked(runtime: Any, ctx: ToolExecutionContext, args: S
             stage=stage_name,
             round_id=round_id,
             reason=args.reason,
-            affected_decl_names=args.affected_decl_names,
+            affected_decl_names=list(args.affected_decl_names),
             checked_context_summary=args.checked_context_summary,
             blocked_needs=list(args.blocked_needs),
         ),

@@ -128,6 +128,15 @@ class InterfaceComponent:
         statement_hint: str | None = None,
         actor: str | InterfaceActor,
     ) -> ServiceResult[NodeContractView]:
+        if summary is None and statement_hint is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_update_field_required",
+                    "Interface update requires at least one field to change.",
+                    object_ref=node_path,
+                    field=name,
+                )
+            )
         protected = self._protected_names(repo_root, node_path)
         if not protected.ok or protected.value is None:
             return self.runtime.foundation.fail(protected.issues)

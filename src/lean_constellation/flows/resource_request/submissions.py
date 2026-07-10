@@ -27,7 +27,7 @@ class LocalResourceCreatedSubmission(LeanBaseSubmission):
     target: str
     arxiv_version: str | None = None
     draft_id: str
-    resource_key: str
+    resource_key: str | None = None
 
 
 class ExternalRepoRequiredSubmission(LeanBaseSubmission):
