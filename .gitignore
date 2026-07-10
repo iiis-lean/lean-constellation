@@ -23,6 +23,11 @@ htmlcov/
 .vscode/
 .claude/
 
+# Node / local frontend tooling
+node_modules/
+package-lock.json
+package.json
+
 # Local docs (do not upload by default)
 dev_docs/
 
