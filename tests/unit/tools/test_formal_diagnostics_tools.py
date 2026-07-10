@@ -61,3 +61,20 @@ def test_scan_lean_sorry_axiom_rejects_escaping_path(tmp_path: Path) -> None:
     assert result.value is not None
     assert result.value.ok is False
     assert result.value.issues[0].kind == "tool_file_path_rejected"
+
+
+def test_statement_formal_policy_decl_kind_is_required_by_schema(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    (tmp_path / "Main.lean").write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    raw = RawToolCallContext(endpoint_view_key="statement_formal_worker", runtime_context=_runtime(tmp_path))
+
+    missing = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="check_statement_formal_policy",
+        flat_args={"file_path": "Main.lean"},
+    )
+
+    assert missing.ok
+    assert missing.value is not None
+    assert missing.value.ok is False
+    assert missing.value.issues[0].kind == "tool_arguments_invalid"

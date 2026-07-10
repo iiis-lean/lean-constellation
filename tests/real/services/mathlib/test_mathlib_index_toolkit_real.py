@@ -176,7 +176,7 @@ def test_mathlib_index_toolkit_use_real_service_lifecycle(tmp_path: Path) -> Non
     )
     assert module_use.ok
     assert module_use.value is not None
-    assert module_use.value.contract.mathlib_modules == [
+    assert [item.model_dump(mode="json") for item in module_use.value.contract.mathlib_modules] == [
         {
             "module": "Mathlib.Data.Nat.Basic",
             "reason": "Required for natural number addition lemmas.",
@@ -198,7 +198,7 @@ def test_mathlib_index_toolkit_use_real_service_lifecycle(tmp_path: Path) -> Non
     )
     assert decl_use.ok
     assert decl_use.value is not None
-    assert decl_use.value.contract.mathlib_decls == [
+    assert [item.model_dump(mode="json") for item in decl_use.value.contract.mathlib_decls] == [
         {
             "name": "Nat.add_assoc",
             "module": "Mathlib.Data.Nat.Basic",

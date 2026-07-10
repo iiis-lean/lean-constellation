@@ -104,6 +104,16 @@ def test_alignment_related_shared_skill_tool_refs_are_visible_to_all_users() -> 
             assert refs <= visible, f"{skill_key}: {report.agent_type}"
 
 
+def test_visible_node_dependency_recon_skill_spells_out_dependency_evidence_policy() -> None:
+    body = build_skill_specs()["visible-node-dependency-recon"].body
+
+    assert "expected_public_decl_names" in body
+    assert "remove_current_node_dep" in body
+    assert "worker-owned dependencies that are clearly stale" in body
+    assert "unresolved_within_visible_boundaries" in body
+    assert "structured evidence" in body
+
+
 def test_source_and_resource_acquisition_skills_reference_visible_tools() -> None:
     specs = build_skill_specs()
     reports = build_agent_surface_reports()

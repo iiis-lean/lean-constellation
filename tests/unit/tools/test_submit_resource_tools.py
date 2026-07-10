@@ -197,7 +197,7 @@ def test_resource_curator_local_submit_rejects_non_active_draft_before_gateway(t
     assert gateway.accepted == []
 
 
-def test_resource_curator_local_submit_finalizes_active_draft(tmp_path: Path) -> None:
+def test_resource_curator_local_submit_validates_active_draft_without_finalizing(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = create_test_runtime_services(providers=LeanProviderOverrides(submission_gateway=gateway))
     target = runtime.material.normalize_resource_target("https://example.com/current")
@@ -224,4 +224,40 @@ def test_resource_curator_local_submit_finalizes_active_draft(tmp_path: Path) ->
     assert submission.submission_type == "local_resource_created"
     assert submission.resource_key
     loaded = runtime.material.resource_library.get_resource(tmp_path, resource_key=submission.resource_key)
-    assert loaded.ok and loaded.value is not None
+    assert not loaded.ok
+    assert loaded.issues[0].kind == "resource_not_found"
+    draft_after = runtime.material.get_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
+    assert draft_after.ok and draft_after.value is not None
+    assert str(draft_after.value.draft.status) == "allocated"
+
+
+def test_resource_curator_local_submit_gateway_missing_does_not_finalize_draft(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services()
+    target = runtime.material.normalize_resource_target("https://example.com/current")
+    assert target.ok and target.value is not None
+    draft = runtime.material.allocate_resource_draft(tmp_path, target=target.value, title_hint="Current")
+    assert draft.ok and draft.value is not None, draft.issues
+    draft_root = Path(draft.value.draft_root)
+    (draft_root / "README.md").write_text("# Current\n\nCurated resource.\n", encoding="utf-8")
+    (draft_root / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
+    (draft_root / "normalized" / "main.md").write_text("normalized resource text\n", encoding="utf-8")
+    runtime.ark.flow_service = FakeResourceFlowService(active_draft_id=draft.value.draft.draft_id)
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        _resource_curator_raw(tmp_path),
+        tool_name="submit_local_resource_created",
+        flat_args={"summary": "Promote active draft.", "draft_id": draft.value.draft.draft_id},
+    )
+
+    assert result.ok and result.value is not None
+    assert result.value.ok is False
+    assert result.value.issues[0].kind == "submission_gateway_missing"
+    resource_key = runtime.material.resource_library.resource_key_for_target(target.value)
+    assert resource_key.ok and resource_key.value is not None
+    loaded = runtime.material.resource_library.get_resource(tmp_path, resource_key=resource_key.value)
+    assert not loaded.ok
+    assert loaded.issues[0].kind == "resource_not_found"
+    draft_after = runtime.material.get_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
+    assert draft_after.ok and draft_after.value is not None
+    assert str(draft_after.value.draft.status) == "allocated"

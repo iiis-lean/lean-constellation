@@ -101,6 +101,13 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
             reason="Strict provider handoff is waiting.",
         )
     )
+    strict_provider_repo = callback_ws.workspace_root / "StrictProvider"
+    strict_provider_repo.mkdir(parents=True, exist_ok=True)
+    assert callback_ws.runtime.repo_workspace.metadata.ensure_repo_model(strict_provider_repo).ok
+    assert callback_ws.runtime.repo_workspace.metadata.mark_repo_stable(
+        strict_provider_repo,
+        summary="Strict provider result is ready.",
+    ).ok
     unwrap(
         callback_ws.runtime.repo_workspace.requirement.mark_requirement_satisfied(
             callback_ws.provider_repo,
@@ -308,7 +315,18 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(decl_ws.runtime, decl_provider)
-    decl_ws.create_homes("ContentPlanAgent", "StatementNLWorkerAgent", cli_type="codex")
+    decl_ws.create_homes(
+        "ContentPlanAgent",
+        "StatementNLWorkerAgent",
+        "StatementNLReviewerAgent",
+        "StatementFormalWorkerAgent",
+        "StatementFormalReviewerAgent",
+        "ProofNLWorkerAgent",
+        "ProofNLReviewerAgent",
+        "ProofFormalWorkerAgent",
+        "ProofFormalReviewerAgent",
+        cli_type="codex",
+    )
     unwrap(decl_ws.admin.resume_runtime())
     decl_flow_id = _start_content_task(decl_ws, round_fixture.node_path)
     schedule_until(decl_ws.runtime, lambda: decl_ws.runtime.ark.flow_service.get_flow(decl_flow_id).status is FlowStatus.COMPLETED, limit=160)

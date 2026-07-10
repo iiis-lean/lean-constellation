@@ -20,7 +20,15 @@ class FakeSubmissionGateway:
         return {"accepted": True}
 
 
-def _runtime_ctx(repo_root: Path, *, view: str, role: str = "coordinator", agent_type: str = "RepoFormatDiscoveryAgent", successful: bool = False) -> RuntimeToolContext:
+def _runtime_ctx(
+    repo_root: Path,
+    *,
+    view: str,
+    role: str = "coordinator",
+    agent_type: str = "RepoFormatDiscoveryAgent",
+    successful: bool = False,
+    successful_kind: str | None = None,
+) -> RuntimeToolContext:
     return RuntimeToolContext(
         flow_id="flow_1",
         step_id="step_1",
@@ -31,7 +39,7 @@ def _runtime_ctx(repo_root: Path, *, view: str, role: str = "coordinator", agent
         expected_view_key=view,
         repo_root=repo_root,
         successful_submission_count=1 if successful else 0,
-        successful_submission_kind="repo_format_native_choice" if successful else None,
+        successful_submission_kind=successful_kind or ("repo_format_native_choice" if successful else None),
     )
 
 
@@ -60,6 +68,63 @@ def test_successful_submit_records_typed_submission(tmp_path: Path) -> None:
     assert len(gateway.accepted) == 1
     assert gateway.accepted[0].submission_type == "repo_format_native_choice"
     assert gateway.accepted[0].searched_targets == ["topology repo"]
+
+
+def test_terminal_submit_summary_is_stripped_and_cannot_be_blank(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="repo_format_discovery_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="repo_format_discovery_submit"),
+    )
+
+    blank = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_native_repo_choice",
+        flat_args={"summary": "   "},
+    )
+    stripped = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_native_repo_choice",
+        flat_args={"summary": "  Use native repo.  "},
+    )
+
+    assert blank.ok
+    assert blank.value is not None
+    assert blank.value.ok is False
+    assert blank.value.issues[0].kind == "tool_arguments_invalid"
+    assert stripped.ok
+    assert stripped.value is not None
+    assert stripped.value.ok is True
+    assert gateway.accepted[0].summary == "Use native repo."
+
+
+def test_node_dir_dependency_recon_completed_rejects_blank_summary(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="node_dir_dependency_recon_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="node_dir_dependency_recon_submit",
+            role="worker",
+            agent_type="NodeDirDependencyReconAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_node_dir_dependency_recon_completed",
+        flat_args={"summary": "   "},
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is False
+    assert result.value.issues[0].kind == "tool_arguments_invalid"
+    assert gateway.accepted == []
 
 
 def test_native_repo_choice_rejects_legacy_source_corpus_mode(tmp_path: Path) -> None:
@@ -186,6 +251,78 @@ def test_gate_failure_does_not_record_submission(tmp_path: Path) -> None:
     assert gateway.accepted == []
 
 
+def test_source_corpus_prepared_gateway_missing_does_not_write_manifest(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services()
+    assert register_submit_tooling(runtime).ok
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        "Source overview.\n"
+        "Source provenance: local source fixture.\n"
+        "Reading order: this README is the entry and main material.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
+        encoding="utf-8",
+    )
+    raw = RawToolCallContext(
+        endpoint_view_key="source_corpus_prepare_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="source_corpus_prepare_submit", role="worker", agent_type="SourceCorpusPrepareAgent"),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_source_corpus_prepared",
+        flat_args={
+            "summary": "Prepared.",
+            "entry_path": "README.md",
+            "overview": "Source corpus overview.",
+            "preparation_summary": "Prepared source corpus.",
+        },
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is False
+    assert result.value.issues[0].kind == "submission_gateway_missing"
+    assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
+
+
+def test_source_corpus_prepared_weak_canonical_readme_rejected_before_gateway(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        "# Source\n\nMain material: notes. Known gaps and extraction limits: none.\n",
+        encoding="utf-8",
+    )
+    raw = RawToolCallContext(
+        endpoint_view_key="source_corpus_prepare_submit",
+        runtime_context=_runtime_ctx(tmp_path, view="source_corpus_prepare_submit", role="worker", agent_type="SourceCorpusPrepareAgent"),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_source_corpus_prepared",
+        flat_args={
+            "summary": "Prepared.",
+            "entry_path": "README.md",
+            "overview": "Source corpus overview.",
+            "preparation_summary": "Prepared source corpus.",
+        },
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is False
+    assert gateway.accepted == []
+    assert {
+        "source_corpus_provenance_missing",
+        "source_corpus_reading_order_missing",
+    } <= {issue.kind for issue in result.value.issues}
+    assert not (tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json").exists()
+
+
 def test_second_successful_submit_is_rejected_before_gateway(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
@@ -208,7 +345,120 @@ def test_second_successful_submit_is_rejected_before_gateway(tmp_path: Path) -> 
     assert gateway.accepted == []
 
 
-def test_submit_repo_requirement_records_waiting_state(tmp_path: Path) -> None:
+def _prepare_valid_source_index(runtime, repo_root: Path) -> None:
+    source_root = repo_root / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        "Source overview\nThe main statement.\nThe proof outline.\n",
+        encoding="utf-8",
+    )
+    assert runtime.material.create_draft_source_index(repo_root).ok
+    block = runtime.material.create_source_block(
+        repo_root,
+        parent_id="root",
+        kind="section",
+        title="Main source block",
+        summary="Covers the main statement and proof outline.",
+    )
+    assert block.ok and block.value is not None
+    assert runtime.material.add_source_block_ref(
+        repo_root,
+        block_id=block.value.block_id,
+        path="README.md",
+        start_line=1,
+        end_line=3,
+        role="main",
+    ).ok
+    assert runtime.material.mark_block_refs_done(repo_root, block_id=block.value.block_id).value.passed
+    assert runtime.material.mark_block_links_done(repo_root, block_id=block.value.block_id).value.passed
+    assert runtime.material.mark_block_completed(repo_root, block_id=block.value.block_id).value.passed
+    assert runtime.material.set_file_survey_status(repo_root, path="README.md", status="surveyed", summary="Read.").ok
+    assert runtime.material.set_file_indexing_status(repo_root, path="README.md", status="indexed").ok
+
+
+def test_second_source_index_builder_submit_is_rejected_before_gateway(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    _prepare_valid_source_index(runtime, tmp_path)
+
+    first = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="source_index_builder_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="source_index_builder_submit",
+                role="worker",
+                agent_type="SourceIndexBuilderAgent",
+            ),
+        ),
+        tool_name="submit_source_index_builder_round",
+        flat_args={"summary": "Builder round ready."},
+    )
+    second = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="source_index_builder_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="source_index_builder_submit",
+                role="worker",
+                agent_type="SourceIndexBuilderAgent",
+                successful=True,
+                successful_kind="source_index_builder_round",
+            ),
+        ),
+        tool_name="submit_source_index_builder_round",
+        flat_args={"summary": "Duplicate builder round."},
+    )
+
+    assert first.ok and first.value is not None and first.value.ok is True
+    assert second.ok and second.value is not None and second.value.ok is False
+    assert second.value.issues[0].kind in {"submission_already_accepted", "submission_already_recorded", "conflicting_submission"}
+    assert len(gateway.accepted) == 1
+
+
+def test_second_source_index_reviewer_submit_is_rejected_before_gateway(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    _prepare_valid_source_index(runtime, tmp_path)
+
+    first = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="source_index_reviewer_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="source_index_reviewer_submit",
+                role="reviewer",
+                agent_type="SourceIndexReviewerAgent",
+            ),
+        ),
+        tool_name="submit_source_index_review_round",
+        flat_args={"approved": False, "summary": "Rejected.", "feedback": "Add missing source refs."},
+    )
+    second = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="source_index_reviewer_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="source_index_reviewer_submit",
+                role="reviewer",
+                agent_type="SourceIndexReviewerAgent",
+                successful=True,
+                successful_kind="source_index_reviewer_round",
+            ),
+        ),
+        tool_name="submit_source_index_review_round",
+        flat_args={"approved": True, "summary": "Duplicate review."},
+    )
+
+    assert first.ok and first.value is not None and first.value.ok is True
+    assert second.ok and second.value is not None and second.value.ok is False
+    assert second.value.issues[0].kind in {"submission_already_accepted", "submission_already_recorded", "conflicting_submission"}
+    assert len(gateway.accepted) == 1
+
+
+def test_submit_repo_requirement_builds_submission_without_waiting_state(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
@@ -238,15 +488,12 @@ def test_submit_repo_requirement_records_waiting_state(tmp_path: Path) -> None:
     assert result.value is not None
     assert result.value.ok is True
     requirement = runtime.repo_workspace.requirement.get_requirement(tmp_path, name="need_provider")
-    assert requirement.ok and requirement.value is not None
-    assert requirement.value.requirement.provider_repo == "Provider"
-    assert requirement.value.requirement.required_proof_availability == ProofAvailability.DECLARED
-    assert requirement.value.requirement.provider_request_submitted_at is not None
-    assert requirement.value.requirement.provider_result_observed_at is None
-    assert requirement.value.requirement.note == "Need provider theorem."
+    assert not requirement.ok
+    assert requirement.issues[0].kind == "requirement_not_found"
     assert len(gateway.accepted) == 1
     assert gateway.accepted[0].submission_type == "coordinator_repo_requirement"
     assert gateway.accepted[0].required_proof_availability == ProofAvailability.DECLARED
+    assert gateway.accepted[0].requirement_name == "need_provider"
 
 
 def test_submit_repo_requirement_uses_consumer_repo_default_proof_availability(tmp_path: Path) -> None:
@@ -285,9 +532,41 @@ def test_submit_repo_requirement_uses_consumer_repo_default_proof_availability(t
     assert result.value is not None
     assert result.value.ok is True
     requirement = runtime.repo_workspace.requirement.get_requirement(tmp_path, name="need_proved_provider")
-    assert requirement.ok and requirement.value is not None
-    assert requirement.value.requirement.required_proof_availability == ProofAvailability.PROVED
+    assert not requirement.ok
     assert gateway.accepted[0].required_proof_availability == ProofAvailability.PROVED
+
+
+def test_submit_repo_requirement_gateway_missing_does_not_write_requirement(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services()
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_repo_requirement",
+        flat_args={
+            "name": "need_provider",
+            "target_repo": "Provider",
+            "summary": "Need provider repo.",
+            "reason": "Need provider theorem.",
+        },
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is False
+    assert result.value.issues[0].kind == "submission_gateway_missing"
+    requirement = runtime.repo_workspace.requirement.get_requirement(tmp_path, name="need_provider")
+    assert not requirement.ok
+    assert requirement.issues[0].kind == "requirement_not_found"
 
 
 def test_submit_content_node_tasks_passes_open_contract_version(tmp_path: Path) -> None:

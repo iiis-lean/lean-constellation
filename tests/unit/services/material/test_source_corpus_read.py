@@ -121,6 +121,16 @@ def _fake_material_service() -> tuple[MaterialService, FakeMaterialClient]:
     return runtime.material, fake
 
 
+def _source_entry_text(*, main_path: str = "notes/section.md") -> str:
+    return (
+        "# Source corpus\n\n"
+        "Source provenance: imported from local markdown source material.\n"
+        f"Reading order: start with this entry, then read `{main_path}` as the main material.\n"
+        f"Main material: `{main_path}` contains the formal background used for indexing.\n"
+        "Known gaps and extraction limits: no missing source sections are known in this fixture.\n"
+    )
+
+
 def test_source_acquisition_uses_current_preparation_relpath(tmp_path: Path) -> None:
     fake = FakeMaterialClient()
     runtime = make_runtime(external_overrides={"material_acquisition": fake})
@@ -134,7 +144,7 @@ def test_source_acquisition_uses_current_preparation_relpath(tmp_path: Path) -> 
     )
     assert written.ok
     local = tmp_path / "note.md"
-    local.write_text("custom source\n", encoding="utf-8")
+    local.write_text(_source_entry_text(main_path="original/raw.md"), encoding="utf-8")
 
     imported = runtime.material.import_source_material(tmp_path, source_path=str(local), as_name="raw.md")
     normalized = runtime.material.normalize_source_text_material(tmp_path, material_ref="original/raw.md")
@@ -151,7 +161,7 @@ def test_source_acquisition_uses_current_preparation_relpath(tmp_path: Path) -> 
 def _write_source(repo_root: Path) -> None:
     source_root = repo_root / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text("# Source\n\nEntry line.\n", encoding="utf-8")
+    (source_root / "README.md").write_text(_source_entry_text(), encoding="utf-8")
     notes = source_root / "notes"
     notes.mkdir()
     (notes / "section.md").write_text("alpha\nbeta theorem\ngamma\n", encoding="utf-8")
@@ -234,6 +244,64 @@ def test_source_corpus_gate_rejects_missing_entry(tmp_path: Path) -> None:
     )
     assert not submit.ok
     assert submit.issues[0].kind == "source_corpus_entry_not_found"
+
+
+def test_source_corpus_gate_rejects_unexplained_single_note(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "note.txt").write_text("loose note\n", encoding="utf-8")
+    service = make_runtime().material
+
+    inferred = service.check_source_corpus_draft(tmp_path)
+    explicit = service.check_source_corpus_draft(tmp_path, entry_path="note.txt")
+
+    assert inferred.ok and inferred.value is not None
+    assert not inferred.value.passed
+    assert "source_corpus_entry_not_explanatory" in {issue.kind for issue in inferred.value.issues}
+    assert explicit.ok and explicit.value is not None
+    assert not explicit.value.passed
+    assert {
+        "source_corpus_provenance_missing",
+        "source_corpus_reading_order_missing",
+        "source_corpus_main_material_missing",
+        "source_corpus_extraction_limits_missing",
+    } <= {issue.kind for issue in explicit.value.issues}
+
+
+def test_source_corpus_gate_rejects_weak_canonical_readme(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text("# Source\n\nMain section overview. No missing material.\n", encoding="utf-8")
+    (source_root / "notes.md").write_text("source notes\n", encoding="utf-8")
+    service = make_runtime().material
+
+    gate = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert gate.ok and gate.value is not None
+    assert not gate.value.passed
+    assert {
+        "source_corpus_provenance_missing",
+        "source_corpus_reading_order_missing",
+        "source_corpus_extraction_limits_missing",
+    } <= {issue.kind for issue in gate.value.issues}
+
+
+def test_source_corpus_gate_accepts_explained_single_file_entry(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "paper.md").write_text(
+        "Source provenance: imported from the project paper.\n"
+        "Reading order: read this main material from top to bottom.\n"
+        "Main theorem statement and proof outline.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
+        encoding="utf-8",
+    )
+    service = make_runtime().material
+
+    gate = service.check_source_corpus_draft(tmp_path, entry_path="paper.md")
+
+    assert gate.ok and gate.value is not None
+    assert gate.value.passed
 
 
 def test_material_service_uses_injected_fake_provider_for_acquire_and_extract(tmp_path: Path) -> None:

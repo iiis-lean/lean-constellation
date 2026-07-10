@@ -69,6 +69,12 @@ def _create_local_resource(lean_runtime, repo_root: Path, *, target_kind: str, t
     return promoted.value.resource_key
 
 
+def _write_draft_files(draft_root: Path) -> None:
+    (draft_root / "README.md").write_text("# Resource\n\nCurated resource notes.\n", encoding="utf-8")
+    (draft_root / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
+    (draft_root / "normalized" / "main.md").write_text("normalized resource text\n", encoding="utf-8")
+
+
 def test_resource_curation_preflight_duplicate_hint_continues_to_agent(tmp_path: Path) -> None:
     runtime, lean_runtime = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
@@ -119,8 +125,13 @@ def test_resource_curation_local_resource_created_result(tmp_path: Path) -> None
     flow_id = _start_resource_flow(runtime, repo_root, target_kind="local_file", target=str(target_file))
 
     _advance_and_run(runtime, flow_id)
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "curator_agent"
-    resource_key = _create_local_resource(lean_runtime, repo_root, target_kind="local_file", target=str(target_file))
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "curator_agent"
+    draft_id = flow.state.active_resource_draft_key
+    assert draft_id is not None
+    draft = lean_runtime.material.get_resource_draft(repo_root, draft_id=draft_id)
+    assert draft.ok and draft.value is not None
+    _write_draft_files(Path(draft.value.draft_root))
     runtime.agent_service.queue_submission(
         LocalResourceCreatedSubmission(
             submission_id=new_submission_id("sub"),
@@ -129,8 +140,7 @@ def test_resource_curation_local_resource_created_result(tmp_path: Path) -> None
             repo_key=repo_root.name,
             target_kind="local_file",
             target=str(target_file),
-            draft_id="already_promoted_by_gate",
-            resource_key=resource_key,
+            draft_id=draft_id,
             summary="Curated local resource.",
         )
     )
@@ -140,8 +150,8 @@ def test_resource_curation_local_resource_created_result(tmp_path: Path) -> None
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result is not None
     assert flow.result.outcome == "local_resource_created"
-    assert flow.result.resource_key == resource_key
-    assert lean_runtime.material.resource_library.get_resource(repo_root, resource_key=resource_key).ok
+    assert flow.result.resource_key is not None
+    assert lean_runtime.material.resource_library.get_resource(repo_root, resource_key=flow.result.resource_key).ok
 
 
 def test_resource_curation_external_repo_required_result_does_not_create_resource(tmp_path: Path) -> None:

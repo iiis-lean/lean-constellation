@@ -125,6 +125,13 @@ def test_coordinator_content_resource_requirement_callback_matrix(
             reason="Runtime Matrix provider handoff is waiting.",
         )
     )
+    provider_repo = ws.workspace_root / "RuntimeMatrixProvider"
+    provider_repo.mkdir(parents=True, exist_ok=True)
+    assert ws.runtime.repo_workspace.metadata.ensure_repo_model(provider_repo).ok
+    assert ws.runtime.repo_workspace.metadata.mark_repo_stable(
+        provider_repo,
+        summary="Runtime Matrix provider result is ready.",
+    ).ok
     unwrap(
         ws.runtime.repo_workspace.requirement.mark_requirement_satisfied(
             ws.provider_repo,

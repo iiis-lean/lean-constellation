@@ -213,6 +213,7 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     )
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "finalize_ready"
+    assert lean_runtime.repo_workspace.metadata.get_provider_ready(repo_root).value.ready is False
     _advance_and_run(runtime, flow_id)
     assert "public import Upstream.Basic" in (repo_root / "Main" / "Interfaces.lean").read_text(encoding="utf-8")
     _advance_and_run(runtime, flow_id)
@@ -248,6 +249,7 @@ def test_adapter_preparation_blocked_submit_finishes_blocked(tmp_path: Path) -> 
             tool_name="submit_adapter_catalog_blocked",
             reason="No upstream declaration matches the required interface.",
             missing_interfaces=["main_result"],
+            evidence_summary="The required interface has no matching upstream declaration.",
             suggested_next_action="Choose a different upstream repo.",
             summary="Adapter catalog blocked.",
         )

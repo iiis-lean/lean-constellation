@@ -73,12 +73,14 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
                 "statement_nl_worker",
                 "statement_formal_worker",
                 "proof_nl_worker",
-                "proof_formal_worker",
-                "statement_nl_reviewer",
-                "statement_formal_reviewer",
-            ],
+                    "proof_formal_worker",
+                    "statement_nl_reviewer",
+                    "statement_formal_reviewer",
+                    "proof_nl_reviewer",
+                    "proof_formal_reviewer",
+                ],
+            )
         )
-    )
     checkpoint = checkpoint_with_evidence(
         ws.admin,
         ws.provider_repo,
@@ -737,6 +739,16 @@ def _ctx(
 
 
 def _prepare_committed_source_index(ws: RuntimeMatrixWorkspace) -> None:
+    source_root = ws.provider_repo / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "source.md").write_text(
+        "# Strict decl stage proof source\n\n"
+        "Source provenance: local strict DeclStage fixture.\n"
+        "Reading order: use this main source entry for the strict Runtime Matrix declaration.\n"
+        "The strict Runtime Matrix declaration states True.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
+        encoding="utf-8",
+    )
     created = ws.runtime.material.create_draft_source_index(ws.provider_repo)
     assert created.ok, created.issues
     assert ws.runtime.material.set_source_index_overview(ws.provider_repo, overview="Strict decl stage proof source index.").ok

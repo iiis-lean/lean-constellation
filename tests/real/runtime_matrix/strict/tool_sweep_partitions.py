@@ -67,17 +67,13 @@ DECL_GRAPH_TOOL_SWEEP_NAMES = frozenset(
         "plan_create_decl",
         "plan_update_decl",
         "plan_delete_decl",
-        "list_current_decls",
-        "get_decl",
-        "get_decl_revision",
-        "get_decl_change",
+        "list_current_node_decls",
+        "inspect_current_node_decl",
         "preview_decl_delete_closure",
         "validate_decl_round_draft",
-        "compute_decl_dependency_closure",
-        "check_decl_ready",
-        "list_content_public_decls",
+        "compute_current_node_decl_dependency_closure",
         "list_active_decl_names",
-        "check_content_node_ready",
+        "check_current_content_node_completion",
     }
 )
 
@@ -96,6 +92,12 @@ LOCAL_BOUNDARY_TOOL_SWEEP_NAMES = frozenset(
     }
 )
 
+REPO_MATURITY_SMOKE_TOOL_NAMES = frozenset(
+    {
+        "get_current_repo_work_config",
+    }
+)
+
 
 def core_tool_sweep_names() -> set[str]:
     """Implemented ToolCases covered by the broad non-DeclStage sweep."""
@@ -106,6 +108,7 @@ def core_tool_sweep_names() -> set[str]:
         - set(DECL_GRAPH_TOOL_SWEEP_NAMES)
         - set(SCOPE_EXPORT_TOOL_SWEEP_NAMES)
         - set(LOCAL_BOUNDARY_TOOL_SWEEP_NAMES)
+        - set(REPO_MATURITY_SMOKE_TOOL_NAMES)
     )
 
 

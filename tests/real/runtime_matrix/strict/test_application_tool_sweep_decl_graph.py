@@ -205,7 +205,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     decls = call_tool_with_evidence(
         server,
         "content_plan",
-        "list_current_decls",
+        "list_current_node_decls",
         {},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
@@ -216,35 +216,24 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     created_decl = call_tool_with_evidence(
         server,
         "content_plan",
-        "get_decl",
+        "inspect_current_node_decl",
         {"decl_name": "created_result"},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Created declaration was loaded.",
     )
-    assert _field(created_decl.value, "name") == "created_result"
+    assert _field(created_decl.value, "decl_name") == "created_result"
 
     revision = call_tool_with_evidence(
         server,
         "content_plan",
-        "get_decl_revision",
+        "inspect_current_node_decl",
         {"decl_name": "existing_result", "revision": 2},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Update declaration revision was loaded.",
     )
     assert _field(revision.value, "revision") == 2
-
-    change_lookup = call_tool_with_evidence(
-        server,
-        "content_plan",
-        "get_decl_change",
-        {"change_id": create_change_id},
-        runtime_context=plan_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Declaration change was loaded.",
-    )
-    assert _field(change_lookup.value, "decl_name") == "created_result"
 
     delete_closure = call_tool_with_evidence(
         server,
@@ -271,35 +260,13 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     dependency_closure = call_tool_with_evidence(
         server,
         "content_plan",
-        "compute_decl_dependency_closure",
+        "compute_current_node_decl_dependency_closure",
         {"decl_names": ["ready_public_result"]},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Dependency closure was computed for a ready public decl.",
     )
     assert "ready_public_result" in str(dependency_closure.value)
-
-    ready = call_tool_with_evidence(
-        server,
-        "content_plan",
-        "check_decl_ready",
-        {"decl_name": "ready_public_result"},
-        runtime_context=plan_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Ready public declaration passed readiness check.",
-    )
-    assert _field(ready.value, "ready") is True
-
-    public_decls = call_tool_with_evidence(
-        server,
-        "content_plan",
-        "list_content_public_decls",
-        {},
-        runtime_context=plan_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Public declarations were listed.",
-    )
-    assert any(_field(item, "ref", "name") == "ready_public_result" for item in _as_items(public_decls.value))
 
     active_names = call_tool_with_evidence(
         server,
@@ -315,13 +282,14 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     content_ready = call_tool_with_evidence(
         server,
         "content_plan",
-        "check_content_node_ready",
+        "check_current_content_node_completion",
         {},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Content node readiness gate passed for public declarations.",
+        assertion_summary="Current content-node completion view was checked.",
     )
-    assert _field(content_ready.value, "passed") is True
+    assert _field(content_ready.value, "checked_decl_count") >= 1
+    assert "blocking_issue_kinds" in content_ready.value
 
     for change_id in (create_change_id, update_change_id, delete_change_id):
         summarized = call_tool_with_evidence(
@@ -334,16 +302,6 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
             assertion_summary=f"Decl change summary was written for {change_id}.",
         )
         assert _field(summarized.value, "round_id") == round_id
-        summarized_change = call_tool_with_evidence(
-            server,
-            "content_plan",
-            "get_decl_change",
-            {"change_id": change_id},
-            runtime_context=plan_ctx,
-            recorder=evidence_recorder,
-            assertion_summary=f"Decl change summary was read for {change_id}.",
-        )
-        assert _field(summarized_change.value, "summary") == f"Strict ToolSweep summarized {change_id}."
 
     round_summary = call_tool_with_evidence(
         server,

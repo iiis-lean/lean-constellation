@@ -8,7 +8,6 @@ from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.tool_facade import ActorContext, DeclStageContextView, NodeContextView, RepoContextView, RuntimeToolContext, ToolExecutionContext
 from lean_constellation.tools import build_application_tool_specs
 from lean_constellation.tools.args import (
-    DeclReviewMarkArgs,
     DeclStageFileCheckArgs,
     NoArgs,
     ProofDeclDepAddArgs,
@@ -34,7 +33,6 @@ from lean_constellation.tools.internal.decl_stage import (
     _check_file_capture_sync,
     _check_formal_stage_consistency,
     _inspect_current_stage_review_status,
-    _record_decl_review,
     _record_proof_formal_review_passed,
     _record_proof_formal_review_rejected,
     _record_statement_formal_review_passed,
@@ -83,7 +81,6 @@ def test_decl_stage_tools_are_registered() -> None:
         "capture_proof_formal_file",
         "check_decl_file_snapshot_sync",
         "check_formal_stage_consistency",
-        "record_decl_review",
         "run_lean_file_diagnostics",
         "scan_lean_sorry_axiom",
         "check_statement_formal_policy",
@@ -107,6 +104,16 @@ def test_decl_stage_projection_reset_delete_tools_are_not_application_specs() ->
 
     assert "sync_decl_file_after_revision_reset" not in names
     assert "remove_decl_file_for_delete" not in names
+
+
+def test_legacy_generic_review_tool_is_not_application_spec() -> None:
+    names = {spec.name for spec in build_application_tool_specs()}
+
+    assert "record_decl_review" not in names
+    assert "record_statement_nl_review_passed" in names
+    assert "record_statement_formal_review_passed" in names
+    assert "record_proof_nl_review_passed" in names
+    assert "record_proof_formal_review_passed" in names
 
 
 def test_decl_stage_groups_expose_expected_tools() -> None:
@@ -152,7 +159,6 @@ def test_decl_stage_groups_expose_expected_tools() -> None:
         "decl_stage_proof_formal_dep_write",
         {"add_proof_decl_dep", "add_proof_mathlib_dep", "remove_proof_dep", "clear_proof_deps"},
     )
-    assert_group_contains("decl_stage_review_mark_write", {"record_decl_review"})
     assert_group_contains("decl_stage_review_status_read", {"inspect_current_stage_review_status"})
     assert_group_contains(
         "decl_stage_statement_nl_review_mark_write",
@@ -777,61 +783,6 @@ def test_formal_read_checks_allow_reviewer_role_on_reviewed_formal_stage(tmp_pat
     assert fake_projection.calls == [("main_result", "statement")]
 
 
-def test_record_decl_review_writes_current_reviewer_step_state(tmp_path: Path) -> None:
-    runtime = create_test_runtime_services()
-    runtime.ark.step_service = _FakeStepService()
-    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
-    assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
-    assert runtime.node.create_content_node(
-        tmp_path,
-        path="Main.Topic.Core",
-        goal="Core",
-        boundary="Core boundary",
-        objective="Objective",
-        success_criteria="Ready",
-    ).ok
-    strategy = runtime.decl_graph.ensure_open_strategy(tmp_path, node_path="Main.Topic.Core", objective="Strategy")
-    assert strategy.ok and strategy.value is not None
-    round_record = runtime.decl_graph.create_round_draft(
-        tmp_path,
-        node_path="Main.Topic.Core",
-        strategy_id=strategy.value.strategy_id,
-        objective="Round",
-    )
-    assert round_record.ok and round_record.value is not None
-    created = runtime.decl_graph.create_decl(
-        tmp_path,
-        node_path="Main.Topic.Core",
-        round_id=round_record.value.round_id,
-        name="main_result",
-        kind="theorem",
-        objective="Create theorem",
-        summary="Theorem",
-        end_after_state=DeclState.DECLARED,
-    )
-    assert created.ok
-    assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
-    ctx = _review_ctx(tmp_path, round_id=round_record.value.round_id)
-
-    result = _record_decl_review(
-        runtime,
-        ctx,
-        DeclReviewMarkArgs(
-            round_id=round_record.value.round_id,
-            decl_name="main_result",
-            stage="statement_nl",
-            passed=True,
-            summary="accepted",
-        ),
-    )
-
-    assert result.ok, result.issues
-    step = runtime.ark.step_service.store.get_step("review_step_1")
-    assert [mark.decl_name for mark in step.state.review_marks] == ["main_result"]
-    reviews_dir = runtime.decl_graph.graph_store.graph_root(tmp_path, node_path="Main.Topic.Core") / "reviews"
-    assert not list(reviews_dir.glob("**/*.json"))
-
-
 def test_statement_nl_review_tools_record_marks_and_report_status(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
     runtime.ark.step_service = _FakeStepService()
@@ -1207,7 +1158,7 @@ def test_statement_formal_review_tools_record_stage_specific_marks_and_validate_
         StatementFormalReviewRejectedArgs(
             decl_name="helper_def",
             summary="The formal statement drops an assumption.",
-            issue_categories=["missing_hypothesis"],
+            issue_categories=["missing_hypothesis", "unavailable_repo_decl_dependency", "unresolved_mathlib_dependency"],
             required_changes=["Add the missing hypothesis from the accepted NL statement."],
         ),
     )
@@ -1218,3 +1169,9 @@ def test_statement_formal_review_tools_record_stage_specific_marks_and_validate_
     assert status.value["passed_decl_names"] == ["main_result"]
     assert status.value["failed_decl_names"] == ["helper_def"]
     assert status.value["ready_to_submit"] is True
+    failed_mark = next(mark for mark in status.value["marks"] if mark["decl_name"] == "helper_def")
+    assert failed_mark["issue_categories"] == [
+        "missing_hypothesis",
+        "unavailable_repo_decl_dependency",
+        "unresolved_mathlib_dependency",
+    ]

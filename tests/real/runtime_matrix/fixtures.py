@@ -159,10 +159,21 @@ class RuntimeMatrixWorkspace:
         self.write_bootstrap_preparation(self.provider_repo)
         source_root = self.provider_repo / ".lean_constellation" / "source"
         source_root.mkdir(parents=True, exist_ok=True)
+        (source_root / "README.md").write_text(
+            "Runtime Matrix source corpus.\n"
+            "Source provenance: local strict Runtime Matrix fixture.\n"
+            "Reading order: read source.md after this README entry.\n"
+            "Main material: source.md contains the theorem fixture.\n"
+            "Known gaps and extraction limits: no missing source sections are known.\n",
+            encoding="utf-8",
+        )
         (source_root / "source.md").write_text(
             "Runtime Matrix source\n"
+            "Source provenance: local strict Runtime Matrix fixture.\n"
+            "Reading order: read this source.md entry as the main material.\n"
             "The main theorem is `main_result : True`.\n"
-            "The proof is by triviality and may use a Mathlib hint.\n",
+            "The proof is by triviality and may use a Mathlib hint.\n"
+            "Known gaps and extraction limits: no missing source sections are known.\n",
             encoding="utf-8",
         )
         written = self.runtime.repo_workspace.preparation.write_preparation_input(
@@ -171,6 +182,7 @@ class RuntimeMatrixWorkspace:
                 goal="Formalize a tiny true theorem.",
                 source_corpus_mode=SourceCorpusMode.EXISTING,
                 source_corpus_relpath=".lean_constellation/source",
+                requirement_refs=[{"consumer_repo": self.consumer_repo.name, "requirement_name": "need_provider"}],
                 interface_inputs=[
                     DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the main true theorem.")
                 ],
@@ -196,10 +208,21 @@ class RuntimeMatrixWorkspace:
         assert written.ok, written.issues
         source_root = self.provider_repo / ".lean_constellation" / "source"
         source_root.mkdir(parents=True, exist_ok=True)
+        (source_root / "README.md").write_text(
+            "Runtime Matrix source corpus.\n"
+            "Source provenance: local strict Runtime Matrix fixture.\n"
+            "Reading order: read source.md after this README entry.\n"
+            "Main material: source.md contains the theorem fixture.\n"
+            "Known gaps and extraction limits: no missing source sections are known.\n",
+            encoding="utf-8",
+        )
         (source_root / "source.md").write_text(
             "Runtime Matrix source.\n"
+            "Source provenance: local strict Runtime Matrix fixture.\n"
+            "Reading order: read this source.md entry as the main material.\n"
             "The theorem is True.\n"
-            "The proof is by triviality.\n",
+            "The proof is by triviality.\n"
+            "Known gaps and extraction limits: no missing source sections are known.\n",
             encoding="utf-8",
         )
         initialized = self.runtime.repo_workspace.initialize_repo_as_native(self.provider_repo, project_name=self.provider_repo.name)
@@ -237,9 +260,12 @@ class RuntimeMatrixWorkspace:
             project_name=self.adapter_repo.name,
         )
         assert initialized.ok, initialized.issues
+        root_contract = self.runtime.node.ensure_adapter_root_main_contract(self.adapter_repo)
+        assert root_contract.ok, root_contract.issues
         upstream = self.runtime.adapter.write_adapter_upstream_metadata(
             self.adapter_repo,
-            git_url=str(self.upstream_repo),
+            source_kind="local_path",
+            local_path=str(self.upstream_repo),
             package_name="upstream",
             dependency_name="upstream",
             evidence_summary="Local runtime matrix upstream fixture.",
@@ -387,6 +413,15 @@ class RuntimeMatrixWorkspace:
             assert material.mark_block_completed(self.provider_repo, block_id=block_id).ok
         assert material.set_file_survey_status(self.provider_repo, path=path, status="surveyed", summary="Read in full.").ok
         assert material.set_file_indexing_status(self.provider_repo, path=path, status="indexed").ok
+        readme_path = self.provider_repo / ".lean_constellation" / "source" / "README.md"
+        if path != "README.md" and readme_path.exists():
+            assert material.set_file_survey_status(
+                self.provider_repo,
+                path="README.md",
+                status="skipped",
+                summary="Entry file only; source.md contains the indexed material.",
+            ).ok
+            assert material.set_file_indexing_status(self.provider_repo, path="README.md", status="skipped").ok
         assert material.validate_source_index(self.provider_repo).ok
         assert material.commit_source_index(self.provider_repo).ok
 

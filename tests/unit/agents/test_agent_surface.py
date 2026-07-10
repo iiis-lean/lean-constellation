@@ -1,30 +1,42 @@
 from __future__ import annotations
 
 from lean_constellation.agents import build_agent_type_specs, build_agent_surface_reports
+from lean_constellation.tools import build_application_tool_specs, build_submit_tool_specs
 
 
 EXPECTED_SURFACE_COUNTS = {
-    "RepoFormatDiscoveryAgent": (5, 12, 1, 2, 0),
-    "SourceCorpusPrepareAgent": (3, 8, 1, 2, 1),
-    "SourceIndexBuilderAgent": (4, 19, 1, 1, 0),
-    "SourceIndexReviewerAgent": (3, 7, 1, 1, 0),
-    "RootInterfacePrepareAgent": (6, 17, 1, 1, 1),
-    "AdapterDeclCatalogAgent": (12, 40, 1, 2, 0),
-    "ResourceCuratorAgent": (8, 20, 1, 4, 2),
-    "CoordinatorAgent": (34, 79, 2, 4, 13),
-    "ContentPlanAgent": (25, 70, 3, 6, 16),
+    "RepoFormatDiscoveryAgent": (6, 12, 1, 2, 0),
+    "SourceCorpusPrepareAgent": (3, 7, 1, 2, 1),
+    "SourceIndexBuilderAgent": (4, 20, 1, 1, 0),
+    "SourceIndexReviewerAgent": (3, 9, 1, 1, 0),
+    "RootInterfacePrepareAgent": (6, 12, 1, 1, 0),
+    "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
+    "ResourceCuratorAgent": (8, 21, 1, 4, 2),
+    "CoordinatorAgent": (34, 81, 2, 4, 13),
+    "ContentPlanAgent": (25, 73, 3, 6, 16),
     "NodeDirDependencyReconAgent": (4, 13, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
-    "ResourceReconAgent": (8, 16, 2, 3, 3),
-    "StatementNLWorkerAgent": (12, 46, 1, 2, 4),
-    "StatementNLReviewerAgent": (14, 42, 1, 1, 2),
+    "ResourceReconAgent": (8, 19, 2, 3, 3),
+    "StatementNLWorkerAgent": (12, 49, 1, 2, 4),
+    "StatementNLReviewerAgent": (12, 41, 1, 1, 2),
     "StatementFormalWorkerAgent": (16, 53, 1, 2, 8),
-    "StatementFormalReviewerAgent": (14, 42, 1, 1, 2),
-    "ProofNLWorkerAgent": (19, 63, 1, 2, 7),
-    "ProofNLReviewerAgent": (16, 45, 1, 1, 2),
-    "ProofFormalWorkerAgent": (21, 64, 1, 2, 8),
-    "ProofFormalReviewerAgent": (15, 44, 1, 1, 2),
+    "StatementFormalReviewerAgent": (12, 41, 1, 1, 2),
+    "ProofNLWorkerAgent": (17, 62, 1, 2, 7),
+    "ProofNLReviewerAgent": (14, 44, 1, 1, 2),
+    "ProofFormalWorkerAgent": (19, 63, 1, 2, 8),
+    "ProofFormalReviewerAgent": (13, 43, 1, 1, 2),
 }
+
+
+def _assert_surface_tools_allow_role(agent_type: str, role: str) -> None:
+    report = build_agent_surface_reports()[agent_type]
+    application_specs = {tool.name: tool for tool in build_application_tool_specs()}
+    submit_specs = {tool.name: tool for tool in build_submit_tool_specs()}
+
+    for tool in report.application_tools:
+        assert role in application_specs[tool.name].allowed_roles, tool.name
+    for tool in report.submit_tools:
+        assert role in submit_specs[tool.name].allowed_roles, tool.name
 
 
 def test_agent_surface_reports_cover_every_production_agent() -> None:
@@ -123,6 +135,7 @@ def test_repo_format_discovery_surface_matches_remote_only_design() -> None:
     } == tools
     assert {
         "repo_preparation_input_read",
+        "repo_preparation_start_preflight_read",
         "repo_preparation_requirement_read",
         "workspace_repo_catalog_read",
         "upstream_repo_search",
@@ -135,6 +148,159 @@ def test_repo_format_discovery_surface_matches_remote_only_design() -> None:
         "checkout_repository",
         "probe_lean_repo",
     }.isdisjoint(tools)
+
+
+def test_source_index_builder_and_reviewer_surfaces_match_draft_boundary() -> None:
+    reports = build_agent_surface_reports()
+    builder_tools = {tool.name for tool in reports["SourceIndexBuilderAgent"].application_tools}
+    reviewer_tools = {tool.name for tool in reports["SourceIndexReviewerAgent"].application_tools}
+
+    assert "create_draft_source_index" not in builder_tools
+    assert {
+        "scan_source_corpus",
+        "check_source_corpus_draft",
+        "read_source_range",
+        "validate_source_range",
+        "preview_source_ref",
+        "get_source_index",
+        "get_source_index_coverage",
+        "validate_source_index",
+        "create_source_block",
+        "add_source_block_ref",
+        "mark_block_refs_done",
+        "create_source_link",
+        "mark_block_links_done",
+        "mark_block_completed",
+        "submit_source_index_builder_round",
+    } <= builder_tools | {tool.name for tool in reports["SourceIndexBuilderAgent"].submit_tools}
+    assert {
+        "scan_source_corpus",
+        "check_source_corpus_draft",
+        "read_source_range",
+        "validate_source_range",
+        "preview_source_ref",
+        "get_source_index",
+        "get_source_index_coverage",
+        "validate_source_index",
+    } <= reviewer_tools
+    assert {
+        "set_source_index_overview",
+        "create_source_block",
+        "update_source_block",
+        "add_source_block_ref",
+        "remove_source_block_ref",
+        "mark_block_refs_done",
+        "create_source_link",
+        "mark_block_links_done",
+        "mark_block_completed",
+        "set_file_survey_status",
+        "set_file_indexing_status",
+        "submit_source_index_builder_round",
+    }.isdisjoint(reviewer_tools)
+
+
+def test_source_index_surfaces_are_role_callable() -> None:
+    _assert_surface_tools_allow_role("SourceIndexBuilderAgent", "worker")
+    _assert_surface_tools_allow_role("SourceIndexReviewerAgent", "reviewer")
+
+
+def test_root_interface_prepare_surface_uses_root_specific_tools() -> None:
+    reports = build_agent_surface_reports()
+    report = reports["RootInterfacePrepareAgent"]
+    tools = {tool.name for tool in report.application_tools}
+
+    assert {
+        "get_preparation_input",
+        "get_source_index",
+        "get_source_index_coverage",
+        "read_source_range",
+        "validate_source_range",
+        "preview_source_ref",
+        "list_root_interfaces",
+        "add_root_interface",
+        "update_root_interface",
+        "remove_root_interface",
+        "check_root_main_handoff_interfaces",
+    } <= tools
+    assert {
+        "get_preparation_start_preflight",
+        "list_node_interfaces",
+        "add_node_interface",
+        "update_node_interface",
+        "remove_node_interface",
+        "bind_node_interface",
+        "unbind_node_interface",
+        "list_scope_export_candidates",
+        "list_scope_exports",
+        "add_scope_export",
+        "remove_scope_export",
+    }.isdisjoint(tools)
+    assert report.skills == []
+
+
+def test_root_interface_prepare_surface_is_worker_role_callable() -> None:
+    _assert_surface_tools_allow_role("RootInterfacePrepareAgent", "worker")
+
+
+def test_adapter_decl_catalog_surface_matches_catalog_only_boundary() -> None:
+    reports = build_agent_surface_reports()
+    report = reports["AdapterDeclCatalogAgent"]
+    tools = {tool.name for tool in report.application_tools}
+
+    assert {
+        "get_preparation_input",
+        "list_preparation_requirements",
+        "get_preparation_requirement",
+        "inspect_adapter_input",
+        "list_root_interfaces",
+        "get_adapter_upstream_metadata",
+        "get_adapter_upstream_status",
+        "search_upstream_declarations",
+        "capture_upstream_declaration_code",
+        "list_adapter_decls",
+        "find_adapter_decl_by_upstream",
+        "create_adapter_decl",
+        "set_adapter_statement_formal",
+        "set_adapter_statement_nl",
+        "finalize_adapter_decl",
+        "list_unbound_adapter_interfaces",
+        "bind_adapter_interface",
+        "validate_adapter_interface_bindings",
+        "preview_adapter_import_modules",
+        "check_adapter_catalog_ready_preflight",
+        "check_adapter_ready",
+    } <= tools
+    assert {
+        "get_preparation_start_preflight",
+        "list_open_requirement_groups",
+        "get_requirement_group",
+        "write_adapter_upstream_metadata",
+        "mark_upstream_build_trusted",
+        "record_visible_upstream_modules",
+        "ensure_adapter_decl_catalog",
+        "refresh_adapter_projection",
+        "add_root_interface",
+        "update_root_interface",
+        "remove_root_interface",
+    }.isdisjoint(tools)
+    assert {
+        "repo_preparation_input_read",
+        "repo_preparation_requirement_read",
+        "adapter_input_read",
+        "root_interface_state_read",
+        "upstream_metadata_read",
+        "upstream_navigation",
+        "adapter_decl_catalog_read",
+        "adapter_decl_catalog_write",
+        "adapter_interface_binding_read",
+        "adapter_interface_binding_write",
+        "adapter_projection_check",
+        "adapter_ready_read",
+    } == set(report.application_group_keys)
+
+
+def test_adapter_decl_catalog_surface_is_worker_role_callable() -> None:
+    _assert_surface_tools_allow_role("AdapterDeclCatalogAgent", "worker")
 
 
 def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
@@ -185,4 +351,6 @@ def test_source_prepare_and_resource_curator_keep_acquisition_boundaries() -> No
     assert resource_write_tools.isdisjoint(source_tools)
     assert resource_write_tools <= curator_tools
     assert source_write_tools.isdisjoint(curator_tools)
-    assert {"scan_source_corpus", "search_material_text", "get_source_index"} <= curator_tools
+    assert {"scan_source_corpus", "search_source_text", "search_resource_text", "get_source_index"} <= curator_tools
+    assert {"get_resource_draft", "check_resource_draft"} <= curator_tools
+    assert {"allocate_resource_draft", "abandon_resource_draft"}.isdisjoint(curator_tools)

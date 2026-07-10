@@ -87,6 +87,7 @@ def test_production_server_bootstraps_main_native_repo_and_starts_preparation_dr
     config = LeanAppConfig(
         workspace_root=workspace,
         scheduler_enabled=False,
+        materialize_agent_homes=False,
         native_lake_project=NativeLakeProjectConfig(
             local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template)
         ),
@@ -110,6 +111,14 @@ def test_production_server_bootstraps_main_native_repo_and_starts_preparation_dr
         repo_root = Path(shell.json()["value"]["repo_root"])
         source_dir = repo_root / source_relpath
         source_dir.mkdir(parents=True)
+        (source_dir / "README.md").write_text(
+            "# Source corpus\n\n"
+            "Source provenance: local production server real-test fixture.\n\n"
+            "Reading order: read source.tex after this README.\n\n"
+            "Main material: source.tex contains the theorem statement fixture.\n\n"
+            "Known gaps/extraction limits: fixture is intentionally minimal and has no extracted proof context.\n",
+            encoding="utf-8",
+        )
         (source_dir / "source.tex").write_text(
             r"""
 \begin{theorem}[Smoke]
@@ -148,7 +157,7 @@ For every natural number n, n = n.
     assert written.status_code == 200, written.text
     assert validated.status_code == 200, validated.text
     assert validated.json()["value"]["passed"] is True
-    assert validated.json()["value"]["file_count"] == 1
+    assert validated.json()["value"]["file_count"] == 2
     assert skeleton.status_code == 200, skeleton.text
     assert skeleton.json()["value"]["linked_packages"]
     assert preparation.status_code == 200, preparation.text

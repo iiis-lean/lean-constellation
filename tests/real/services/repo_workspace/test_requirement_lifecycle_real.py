@@ -6,9 +6,28 @@ import pytest
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus, SourceCorpusMode
-from lean_constellation.services.repo_workspace import RepoWorkspaceService
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services import LeanProviderOverrides
+from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.node import DeclPublicView
+
+
+class FakePublicDeclProvider:
+    def __init__(self, foundation: FoundationService, decls: dict[tuple[str, str], list[DeclPublicView]]) -> None:
+        self.foundation = foundation
+        self.decls = decls
+
+    def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
+        return self.foundation.ok(self.decls.get((str(Path(repo_root)), node_path), []))
+
+
+def _runtime_with_public_decls(decls: dict[tuple[str, str], list[DeclPublicView]]):
+    base = make_runtime()
+    return make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=FakePublicDeclProvider(base.foundation, decls)))
 
 
 @pytest.mark.real
@@ -16,9 +35,30 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
     workspace = tmp_path / "workspace"
     consumer_a = workspace / "consumer_a"
     consumer_b = workspace / "consumer_b"
+    provider = workspace / "analysis_provider"
     workspace.mkdir()
 
-    service = make_runtime().repo_workspace
+    service = _runtime_with_public_decls(
+        {
+            (str(provider), "Main.Core"): [
+                DeclPublicView(
+                    ref=DeclRef(repo=None, node="Main.Core", name="shared_fixed_point", revision=1),
+                    kind=DeclKind.THEOREM.value,
+                    summary="Shared fixed point theorem.",
+                ),
+                DeclPublicView(
+                    ref=DeclRef(repo=None, node="Main.Core", name="metric_support", revision=1),
+                    kind=DeclKind.DEFINITION.value,
+                    summary="Metric support definitions.",
+                ),
+                DeclPublicView(
+                    ref=DeclRef(repo=None, node="Main.Core", name="supporting_bound", revision=1),
+                    kind=DeclKind.LEMMA.value,
+                    summary="Supporting bound lemma.",
+                ),
+            ]
+        }
+    ).repo_workspace
     assert service.metadata.ensure_repo_model(consumer_a).ok
     assert service.metadata.ensure_repo_model(consumer_b).ok
 
@@ -50,7 +90,7 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
         interfaces=[
             {
                 "name": "shared_fixed_point",
-                "kind": DeclKind.LEMMA.value,
+                "kind": DeclKind.THEOREM.value,
                 "summary": "Conflicting summary from consumer B.",
             },
             {
@@ -92,9 +132,14 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
     shell = service.create_provider_repo_shell_from_group(workspace, target_repo="analysis_provider")
     assert shell.ok
     assert shell.value is not None
-    provider = workspace / "analysis_provider"
     assert (provider / ".lean_constellation" / "repo.json").exists()
     assert (provider / ".lean_constellation" / "preparation_input.json").exists()
+    configured = service.metadata.update_repo_config(
+        provider,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert configured.ok, configured.issues
 
     bootstrap = service.validate_requirement_bootstrap_input(provider)
     assert bootstrap.ok
@@ -111,6 +156,98 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
         "shared_fixed_point",
         "supporting_bound",
     ]
+
+    assert service.runtime.node.node_tree.ensure_root_scope_node(provider).ok
+    assert service.runtime.node.create_content_node(
+        provider,
+        path="Main.Core",
+        goal="Provider public interface goal.",
+        boundary="Provider public interface boundary.",
+        objective="Expose the requested requirement interfaces.",
+        success_criteria="Main exports all requested interface declarations.",
+    ).ok
+    strategy = service.runtime.decl_graph.ensure_open_strategy(
+        provider,
+        node_path="Main.Core",
+        objective="Provide requirement lifecycle interface declarations.",
+    )
+    assert strategy.ok and strategy.value is not None, strategy.issues
+    round_record = service.runtime.decl_graph.create_round_draft(
+        provider,
+        node_path="Main.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Seed public interface declarations for provider ready validation.",
+    )
+    assert round_record.ok and round_record.value is not None, round_record.issues
+    seeded_decls = (
+        ("shared_fixed_point", DeclKind.THEOREM.value),
+        ("metric_support", DeclKind.DEFINITION.value),
+        ("supporting_bound", DeclKind.LEMMA.value),
+    )
+    for name, kind in seeded_decls:
+        created = service.runtime.decl_graph.create_decl(
+            provider,
+            node_path="Main.Core",
+            round_id=round_record.value.round_id,
+            name=name,
+            kind=kind,
+            objective=f"Create {name}.",
+            summary=f"{name} summary.",
+            public=True,
+            end_after_state=DeclState.DECLARED,
+        )
+        assert created.ok, created.issues
+    started = service.runtime.decl_graph.start_round(provider, node_path="Main.Core", round_id=round_record.value.round_id)
+    assert started.ok, started.issues
+    for name, kind in seeded_decls:
+        assert service.runtime.decl_graph.write_statement_nl(
+            provider,
+            node_path="Main.Core",
+            round_id=round_record.value.round_id,
+            decl_name=name,
+            nl=f"{name} is provided by the real requirement lifecycle fixture.",
+            deps=[],
+        ).ok
+        assert service.runtime.decl_graph.write_statement_formal(
+            provider,
+            node_path="Main.Core",
+            round_id=round_record.value.round_id,
+            decl_name=name,
+            lean_code=f"theorem {name} : True := by\n  trivial",
+            lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+            deps=[],
+        ).ok
+        if kind in {DeclKind.THEOREM.value, DeclKind.LEMMA.value}:
+            assert service.runtime.decl_graph.write_proof_nl(
+                provider,
+                node_path="Main.Core",
+                round_id=round_record.value.round_id,
+                decl_name=name,
+                nl="The proof is by triviality in this lifecycle fixture.",
+                deps=[],
+            ).ok
+            assert service.runtime.decl_graph.write_proof_formal(
+                provider,
+                node_path="Main.Core",
+                round_id=round_record.value.round_id,
+                decl_name=name,
+                lean_code=f"theorem {name} : True := by\n  trivial",
+                lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+                deps=[],
+            ).ok
+            target_state = DeclState.PROVED
+        else:
+            target_state = DeclState.DECLARED
+        committed = service.runtime.decl_graph.commit_decl_revision(
+            provider,
+            node_path="Main.Core",
+            name=name,
+            state=target_state,
+        )
+        assert committed.ok, committed.issues
+    for name in ("shared_fixed_point", "metric_support", "supporting_bound"):
+        exported = service.runtime.node.export.add_scope_export(provider, scope_path="Main", decl_node="Main.Core", decl_name=name)
+        assert exported.ok, exported.issues
 
     ready = service.mark_provider_repo_ready(provider, summary="Provider repo completed for real lifecycle test.")
     assert ready.ok

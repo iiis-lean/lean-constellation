@@ -42,6 +42,7 @@ def test_adapter_service_public_wrappers_have_explicit_signatures() -> None:
         "finalize_adapter_decl",
         "bind_adapter_interface",
         "unbind_adapter_interface",
+        "check_adapter_catalog_ready_preflight",
     ]
 
     for name in wrapper_names:
@@ -795,11 +796,19 @@ def test_adapter_interface_binding_projection_and_ready_gate(tmp_path: Path) -> 
     assert ready.ok
     assert ready.value is not None
     assert ready.value.passed is True
+    provider_ready_before = service.runtime.repo_workspace.metadata.get_provider_ready(tmp_path)
+    assert provider_ready_before.ok
+    assert provider_ready_before.value is not None
+    assert provider_ready_before.value.ready is False
 
     submitted = service.submit_adapter_catalog_ready(tmp_path, summary="Adapter catalog is ready.")
     assert submitted.ok
     assert submitted.value is not None
     assert submitted.value.accepted is True
+    provider_ready_after = service.runtime.repo_workspace.metadata.get_provider_ready(tmp_path)
+    assert provider_ready_after.ok
+    assert provider_ready_after.value is not None
+    assert provider_ready_after.value.ready is False
 
 
 def test_adapter_interface_binding_failures_unbind_and_validation(tmp_path: Path) -> None:
@@ -947,7 +956,7 @@ def test_adapter_ready_gate_aggregates_service_issues_and_submit_failures(tmp_pa
     assert preflight.value is not None
     assert preflight.value.passed is False
     issue_kinds = {issue.kind for issue in preflight.value.issues}
-    assert {"adapter_interface_unbound", "adapter_interfaces_missing"} <= issue_kinds
+    assert "adapter_interface_unbound" in issue_kinds
 
     ready_without_summary = service.submit_adapter_catalog_ready(tmp_path, summary=" ")
     assert not ready_without_summary.ok
@@ -960,6 +969,14 @@ def test_adapter_ready_gate_aggregates_service_issues_and_submit_failures(tmp_pa
     blocked_without_reason = service.submit_adapter_catalog_blocked(tmp_path, reason=" ")
     assert not blocked_without_reason.ok
     assert blocked_without_reason.issues[0].kind == "adapter_blocked_reason_required"
+
+    blocked_without_evidence = service.submit_adapter_catalog_blocked(
+        tmp_path,
+        reason="Need upstream theorem not present in catalog.",
+        missing_interfaces=["main_result"],
+    )
+    assert not blocked_without_evidence.ok
+    assert blocked_without_evidence.issues[0].kind == "adapter_blocked_evidence_required"
 
     blocked = service.submit_adapter_catalog_blocked(
         tmp_path,

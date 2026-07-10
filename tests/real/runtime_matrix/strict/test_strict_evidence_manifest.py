@@ -15,7 +15,7 @@ def test_strict_runtime_surface_is_loaded_from_registries() -> None:
     assert len(surface.flows) == 10
     assert len(surface.logic_steps) == 24
     assert len(surface.agent_steps) == 14
-    assert len(surface.application_tools) == 208
+    assert len(surface.application_tools) == 247
     assert len(surface.submit_tools) == 29
 
 

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
+from lean_constellation.tools import build_application_tool_specs
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
 
@@ -18,6 +19,7 @@ def test_resource_tools_are_registered() -> None:
         "import_resource_material",
         "normalize_resource_text_material",
         "read_resource_range",
+        "search_resource_text",
         "list_resources",
         "get_resource",
         "allocate_resource_draft",
@@ -43,8 +45,25 @@ def test_resource_groups_expose_expected_tools() -> None:
         "resource_acquisition",
         {"acquire_resource_material", "extract_resource_artifact", "import_resource_material", "normalize_resource_text_material"},
     )
-    assert_group_contains("resource_library_read", {"read_resource_range", "list_resources", "get_resource"})
-    assert_group_contains("resource_draft_write", {"allocate_resource_draft", "get_resource_draft", "check_resource_draft", "abandon_resource_draft"})
+    assert_group_contains("resource_library_read", {"read_resource_range", "search_resource_text", "list_resources", "get_resource"})
+    assert_group_contains("resource_draft_current_read", {"get_resource_draft", "check_resource_draft"})
+    assert_group_contains("resource_draft_lifecycle_write", {"allocate_resource_draft", "abandon_resource_draft"})
+
+
+def test_resource_acquisition_schemas_use_resource_draft_language() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+    for tool_name in {
+        "acquire_resource_material",
+        "extract_resource_artifact",
+        "import_resource_material",
+        "normalize_resource_text_material",
+    }:
+        schema_text = str(specs[tool_name].args_model.model_json_schema())
+        assert "Source draft" not in schema_text
+        assert "source draft area" not in schema_text
+        assert "Source target" not in schema_text
+        assert "acquire_source_material" not in schema_text
+        assert "resource draft" in schema_text.lower() or "Resource target" in schema_text
 
 
 def _resource_raw(repo_root: Path, *, flow_id: str = "flow_resource") -> RawToolCallContext:
@@ -115,7 +134,8 @@ def test_resource_acquisition_writes_active_draft_not_source_corpus(tmp_path: Pa
 
     assert imported.ok and imported.value is not None and imported.value.ok is True
     assert normalized.ok and normalized.value is not None and normalized.value.ok is True
+    assert normalized.value.value["primary_material_ref"] == "normalized/raw.txt"
     draft_root = Path(draft.value.draft_root)
     assert (draft_root / "original" / "raw.txt").is_file()
-    assert any((draft_root / "normalized").iterdir())
+    assert (draft_root / "normalized" / "raw.txt").is_file()
     assert not (tmp_path / ".lean_constellation" / "source" / "original" / "raw.txt").exists()

@@ -126,9 +126,10 @@ def test_coordinator_agent_step_requirement_ready_and_incomplete_results(tmp_pat
     assert requirement.result.outcome == "repo_requirement"
     assert requirement.result.repo_requirement.requirement_name == "provider_req"
 
+    ready_flow_id = _start_host_flow(runtime, tmp_path)
     ready = _run_step(
         runtime,
-        CoordinatorAgentStep(step_id="coordinator_ready_step", flow_id=flow_id, scope_id="repo:Repo", state=_state()),
+        CoordinatorAgentStep(step_id="coordinator_ready_step", flow_id=ready_flow_id, scope_id="repo:Repo", state=_state()),
         CoordinatorRepoReadySubmission(
             submission_id=new_submission_id("sub"),
             submission_type="coordinator_repo_ready",
@@ -141,9 +142,10 @@ def test_coordinator_agent_step_requirement_ready_and_incomplete_results(tmp_pat
     assert ready.result.outcome == "repo_ready"
     assert ready.result.repo_ready.repo_summary == "Repo exposes the completed public interface."
 
+    incomplete_flow_id = _start_host_flow(runtime, tmp_path)
     incomplete = _run_step(
         runtime,
-        CoordinatorAgentStep(step_id="coordinator_incomplete_step", flow_id=flow_id, scope_id="repo:Repo", state=_state()),
+        CoordinatorAgentStep(step_id="coordinator_incomplete_step", flow_id=incomplete_flow_id, scope_id="repo:Repo", state=_state()),
     )
     assert isinstance(incomplete.result, CoordinatorStepResult)
     assert incomplete.result.outcome == "incomplete"

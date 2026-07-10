@@ -65,7 +65,14 @@ def test_s1_s3_checkpoint_scope_policy_and_manifest(tmp_path: Path) -> None:
     (repo_root / "Main.lean").write_text("import Std\n", encoding="utf-8")
     source_root = repo_root / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text("# Source\n\nCheckpoint scope policy corpus.\n", encoding="utf-8")
+    (source_root / "README.md").write_text(
+        "# Source\n\n"
+        "Source provenance: local checkpoint scope policy fixture.\n"
+        "Reading order: read this README.md entry as the main material.\n"
+        "Main material: checkpoint scope policy corpus.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
+        encoding="utf-8",
+    )
     (repo_root / ".lake").mkdir()
     (repo_root / ".lake" / "cache.txt").write_text("do not snapshot", encoding="utf-8")
     (repo_root / ".git").mkdir()

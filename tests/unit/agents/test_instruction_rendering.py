@@ -97,6 +97,77 @@ def test_repo_format_discovery_instruction_spells_out_scoped_remote_workflow() -
     assert "native_repo_name" not in text
 
 
+def test_source_index_instructions_match_builder_reviewer_boundaries() -> None:
+    builder = render_agent_instruction("SourceIndexBuilderAgent")
+    reviewer = render_agent_instruction("SourceIndexReviewerAgent")
+
+    assert "create_draft_source_index" not in builder
+    assert "current draft SourceIndex" in builder
+    assert "validate_source_range" in builder
+    assert "preview_source_ref" in builder
+    assert "mark_block_refs_done" in builder
+    assert "mark_block_links_done" in builder
+    assert "mark_block_completed" in builder
+    assert "submit_source_index_builder_round" in builder
+    assert "If submit succeeds, stop" in builder
+    assert "Do not prepare or rewrite source corpus material" in builder
+
+    assert "create_source_block" not in reviewer
+    assert "add_source_block_ref" not in reviewer
+    assert "set_source_index_overview" not in reviewer
+    assert "get_source_index" in reviewer
+    assert "get_source_index_coverage" in reviewer
+    assert "validate_source_index" in reviewer
+    assert "validate_source_range" in reviewer
+    assert "preview_source_ref" in reviewer
+    assert "submit_source_index_review_round" in reviewer
+    assert "After an accepted submit, stop" in reviewer
+
+
+def test_node_dir_recon_instruction_spells_out_dependency_evidence_policy() -> None:
+    text = render_agent_instruction("NodeDirDependencyReconAgent")
+
+    assert "remove_current_node_dep" in text
+    assert "clearly stale, wrong, or outside the current node objective" in text
+    assert "expected_public_decl_names" in text
+    assert "structured evidence, not a free-form note" in text
+    assert "unresolved_within_visible_boundaries" in text
+    assert "If the evidence is uncertain" in text
+
+
+def test_root_interface_prepare_instruction_uses_root_specific_tools() -> None:
+    text = render_agent_instruction("RootInterfacePrepareAgent")
+
+    assert "list_root_interfaces" in text
+    assert "add_root_interface" in text
+    assert "update_root_interface" in text
+    assert "remove_root_interface" in text
+    assert "submit_root_interface_prepare_ready" in text
+    assert "Protected interfaces come from the preparation input" in text
+    assert "After an accepted submit, stop" in text
+    assert "add_node_interface" not in text
+    assert "bind_node_interface" not in text
+    assert "add_scope_export" not in text
+
+
+def test_adapter_decl_catalog_instruction_matches_catalog_boundary() -> None:
+    text = render_agent_instruction("AdapterDeclCatalogAgent")
+
+    assert "list_preparation_requirements" in text
+    assert "get_preparation_requirement" in text
+    assert "list_root_interfaces" in text
+    assert "find_adapter_decl_by_upstream" in text
+    assert "check_adapter_catalog_ready_preflight" in text
+    assert "submit_adapter_catalog_ready" in text
+    assert "submit_adapter_catalog_blocked" in text
+    assert "After an accepted submit, stop" in text
+    assert "selected upstream as fixed" in text
+    assert "write_adapter_upstream_metadata" in text
+    assert "Never call" in text
+    assert "refresh_adapter_projection" in text
+    assert "root interface edits" in text
+
+
 def test_all_runtime_instructions_are_english_and_tool_refs_resolve() -> None:
     for spec in build_agent_type_specs():
         text = render_agent_instruction(spec)
@@ -125,9 +196,14 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "check_statement_formal_policy" not in statement_reviewer
     assert "run_lean_file_diagnostics" not in statement_reviewer
     assert "check_decl_file_snapshot_sync" not in statement_reviewer
+    assert "Do not prepare files, capture files, write Lean code, or run formal diagnostics" in statement_reviewer
     assert "check_proof_formal_policy" not in statement_reviewer
     assert "record_statement_formal_review_passed" in statement_reviewer
     assert "record_statement_formal_review_rejected" in statement_reviewer
+    assert "unavailable_repo_decl_dependency" in statement_reviewer
+    assert "unresolved_mathlib_dependency" in statement_reviewer
+    assert "proof_only_dependency_in_statement_deps" in statement_reviewer
+    assert "same_round_repo_decl_dependency" in statement_reviewer
     assert "record_decl_review" not in statement_reviewer
 
     proof_nl_worker = render_agent_instruction("ProofNLWorkerAgent")
@@ -152,6 +228,8 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "check_proof_formal_policy" not in proof_reviewer
     assert "run_lean_file_diagnostics" not in proof_reviewer
     assert "check_decl_file_snapshot_sync" not in proof_reviewer
+    assert "Do not prepare files, capture files, write Lean code, or run formal diagnostics" in proof_reviewer
+    assert "After editing, use the available capture and check workflow" not in proof_reviewer
     assert "record_proof_formal_review_passed" in proof_reviewer
     assert "record_proof_formal_review_rejected" in proof_reviewer
     assert "record_decl_review" not in proof_reviewer

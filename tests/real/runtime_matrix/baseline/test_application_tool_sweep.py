@@ -31,13 +31,13 @@ CALLED_READ_ONLY_TOOLS = {
 }
 
 CALLED_CHECKPOINTED_WRITE_TOOLS = {
-    "allocate_resource_draft",
+    "add_root_interface",
 }
 
 
 def test_application_tool_sweep_classifies_every_registered_tool() -> None:
     specs = build_application_tool_specs()
-    assert len(specs) == 183
+    assert len(specs) == 247
     classified = {item.tool_name: item for item in (_classify_tool(spec) for spec in specs)}
     assert set(classified) == {spec.name for spec in specs}
     assert {classified[name].mode for name in CALLED_READ_ONLY_TOOLS} == {"called_success"}
@@ -136,27 +136,37 @@ def test_checkpointed_write_application_tool_sweep_restore(
 ) -> None:
     ws = runtime_matrix_workspace
     ws.provider_repo.mkdir(parents=True, exist_ok=True)
+    ws.write_bootstrap_preparation(ws.provider_repo)
+    assert ws.runtime.node.ensure_native_root_main_contract(ws.provider_repo).ok
     checkpoint = checkpoint_branch(
         ws.admin,
         ws.provider_repo,
         scope_ids=["repo:Provider"],
         label="runtime_matrix_tool_sweep_write",
     )
-    server = unwrap(create_mcp_server(ws.runtime, view_keys=["resource_curator"]))
-    draft = unwrap(
+    server = unwrap(create_mcp_server(ws.runtime, view_keys=["root_interface_prepare"]))
+    added = unwrap(
         server.call_tool(
-            "resource_curator",
-            "allocate_resource_draft",
-            {"target": ws.resources.web_url, "title_hint": "Runtime Matrix sweep resource"},
-            runtime_context=_ctx(ws.provider_repo, view="resource_curator", agent_type="ResourceCuratorAgent"),
+            "root_interface_prepare",
+            "add_root_interface",
+            {"name": "baseline_tool_sweep_iface", "kind": "theorem", "summary": "Baseline ToolSweep interface."},
+            runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
         )
     )
-    assert draft.ok is True, draft.issues
-    draft_root = Path(draft.value["draft_root"])
-    assert draft_root.exists()
+    assert added.ok is True, added.issues
+    assert any(item["name"] == "baseline_tool_sweep_iface" for item in added.value["contract"]["interfaces"])
 
     restore_branch(ws.admin, ws.provider_repo, checkpoint.snapshot_id)
-    assert not draft_root.exists()
+    restored = unwrap(
+        server.call_tool(
+            "root_interface_prepare",
+            "list_root_interfaces",
+            {},
+            runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
+        )
+    )
+    assert restored.ok is True, restored.issues
+    assert all(item["name"] != "baseline_tool_sweep_iface" for item in restored.value["interfaces"])
 
 
 def _ctx(

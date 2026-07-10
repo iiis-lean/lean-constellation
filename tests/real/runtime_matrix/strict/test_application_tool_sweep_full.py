@@ -26,9 +26,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 240
-    assert len(implemented_tool_cases()) == 200
-    assert len(pending_tool_cases()) == 40
+    assert len(cases) == 247
+    assert len(implemented_tool_cases()) == 198
+    assert len(pending_tool_cases()) == 49
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -121,6 +121,69 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert handoff_gate.value["passed"] is True
 
+    root_interfaces = call_tool_with_evidence(
+        server,
+        "root_interface_prepare",
+        "list_root_interfaces",
+        {},
+        runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
+        recorder=evidence_recorder,
+        assertion_summary="Root Main interfaces were listed.",
+    )
+    assert root_interfaces.value["node_path"] == "Main"
+
+    root_interface_checkpoint = checkpoint_with_evidence(
+        ws.admin,
+        ws.provider_repo,
+        scope_ids=["repo:Provider"],
+        label="strict_tool_sweep_root_interfaces",
+        recorder=evidence_recorder,
+    )
+    added_root_interface = call_tool_with_evidence(
+        server,
+        "root_interface_prepare",
+        "add_root_interface",
+        {"name": "strict_supplement", "kind": "theorem", "summary": "Strict supplement interface."},
+        runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
+        recorder=evidence_recorder,
+        assertion_summary="Root supplement interface was added.",
+    )
+    assert any(item["name"] == "strict_supplement" for item in added_root_interface.value["contract"]["interfaces"])
+
+    updated_root_interface = call_tool_with_evidence(
+        server,
+        "root_interface_prepare",
+        "update_root_interface",
+        {"name": "strict_supplement", "summary": "Updated strict supplement interface."},
+        runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
+        recorder=evidence_recorder,
+        assertion_summary="Root supplement interface was updated.",
+    )
+    assert any(item["summary"] == "Updated strict supplement interface." for item in updated_root_interface.value["contract"]["interfaces"])
+
+    removed_root_interface = call_tool_with_evidence(
+        server,
+        "root_interface_prepare",
+        "remove_root_interface",
+        {"name": "strict_supplement"},
+        runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
+        recorder=evidence_recorder,
+        assertion_summary="Root supplement interface was removed.",
+    )
+    assert all(item["name"] != "strict_supplement" for item in removed_root_interface.value["contract"]["interfaces"])
+    restore_with_evidence(
+        ws.admin,
+        ws.provider_repo,
+        root_interface_checkpoint.snapshot_id,
+        scope_ids=["repo:Provider"],
+        label="strict_tool_sweep_root_interfaces",
+        recorder=evidence_recorder,
+    )
+    assert ws.runtime.repo_workspace.mark_provider_repo_ready(
+        ws.provider_repo,
+        summary="Strict ToolSweep provider ready before coordinator checks.",
+    ).ok
+
     coordinator_ctx = _ctx(ws.consumer_repo, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
     workspace = call_tool_with_evidence(
         server,
@@ -177,6 +240,22 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert deps_before.value["items"] == []
 
+    assert ws.runtime.repo_workspace.mark_provider_repo_ready(
+        ws.provider_repo,
+        summary="Strict ToolSweep provider ready before resume candidate check.",
+    ).ok
+    assert ws.runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        ws.consumer_repo,
+        requirement_name="need_provider",
+        provider_repo="Provider",
+        reason="Strict ToolSweep waits for provider callback.",
+    ).ok
+    assert ws.runtime.repo_workspace.requirement.mark_requirement_satisfied(
+        ws.consumer_repo,
+        requirement_name="need_provider",
+        provider_repo="Provider",
+        note="Strict ToolSweep provider ready.",
+    ).ok
     resume_candidates = call_tool_with_evidence(
         server,
         "native_repo_coordinator",
@@ -371,16 +450,16 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert deleted.value["changed"] is True
 
-    visible_boundaries = call_tool_with_evidence(
+    visible_nodes = call_tool_with_evidence(
         server,
         "content_plan",
-        "list_current_visible_node_boundaries",
+        "list_visible_nodes",
         {},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Visible node boundary list returned committed Helper boundary.",
+        assertion_summary="Visible node list returned committed Helper boundary.",
     )
-    assert any(item["node_path"] == "Main.Topic.Helper" for item in visible_boundaries.value["boundaries"])
+    assert any(item["node_path"] == "Main.Topic.Helper" for item in visible_nodes.value["nodes"])
 
     added_dep = call_tool_with_evidence(
         server,
@@ -669,6 +748,17 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert "runtime matrix" in resource_range.value["text_with_line_numbers"].lower()
 
+    resource_hits = call_tool_with_evidence(
+        server,
+        "resource_curator",
+        "search_resource_text",
+        {"query": "Runtime Matrix", "regex": False, "limit": 5},
+        runtime_context=_ctx(ws.provider_repo, view="resource_curator", agent_type="ResourceCuratorAgent"),
+        recorder=evidence_recorder,
+        assertion_summary="Resource text search found normalized resource text.",
+    )
+    assert resource_hits.value["hits"]
+
     draft_view = call_tool_with_evidence(
         server,
         "resource_curator",
@@ -691,34 +781,6 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert draft_gate.value["passed"] is True
 
-    abandon_checkpoint = checkpoint_with_evidence(
-        ws.admin,
-        ws.provider_repo,
-        scope_ids=["repo:Provider"],
-        label="strict_tool_sweep_abandon_resource_draft",
-        recorder=evidence_recorder,
-    )
-    abandoned = call_tool_with_evidence(
-        server,
-        "resource_curator",
-        "abandon_resource_draft",
-        {"draft_id": existing_draft_id, "reason": "Strict ToolSweep abandon rollback check."},
-        runtime_context=_ctx(ws.provider_repo, view="resource_curator", agent_type="ResourceCuratorAgent"),
-        recorder=evidence_recorder,
-        assertion_summary="Resource draft abandon changed draft status.",
-    )
-    assert str(abandoned.value["draft"]["status"]) == "abandoned"
-    restore_with_evidence(
-        ws.admin,
-        ws.provider_repo,
-        abandon_checkpoint.snapshot_id,
-        scope_ids=["repo:Provider"],
-        label="strict_tool_sweep_abandon_resource_draft",
-        recorder=evidence_recorder,
-    )
-    restored_draft = unwrap(ws.runtime.material.get_resource_draft(ws.provider_repo, draft_id=existing_draft_id))
-    assert restored_draft.draft.status != "abandoned"
-
     source_ctx = _ctx(ws.provider_repo, view="source_index_builder", agent_type="SourceIndexBuilderAgent")
     source_scan = call_tool_with_evidence(
         server,
@@ -727,9 +789,9 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         {},
         runtime_context=source_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Source corpus scan returned source.md.",
+        assertion_summary="Source corpus scan returned canonical README.md entry.",
     )
-    assert source_scan.value["entry_path"] == "source.md"
+    assert source_scan.value["entry_path"] == "README.md"
 
     source_gate = call_tool_with_evidence(
         server,
@@ -749,16 +811,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         label="strict_tool_sweep_source_index",
         recorder=evidence_recorder,
     )
-    source_index = call_tool_with_evidence(
-        server,
-        "source_index_builder",
-        "create_draft_source_index",
-        {},
-        runtime_context=source_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Source index draft was created.",
-    )
-    assert source_index.value["status"] == "draft"
+    created = ws.runtime.material.create_draft_source_index(ws.provider_repo)
+    assert created.ok and created.value is not None
 
     loaded_source_index = call_tool_with_evidence(
         server,
@@ -899,6 +953,28 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert indexing.value["indexing_status"] == "indexed"
 
+    readme_survey = call_tool_with_evidence(
+        server,
+        "source_index_builder",
+        "set_file_survey_status",
+        {"path": "README.md", "status": "skipped", "summary": "Entry file only; source.md contains indexed material."},
+        runtime_context=source_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Source README survey status was skipped.",
+    )
+    assert readme_survey.value["survey_status"] == "skipped"
+
+    readme_indexing = call_tool_with_evidence(
+        server,
+        "source_index_builder",
+        "set_file_indexing_status",
+        {"path": "README.md", "status": "skipped"},
+        runtime_context=source_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Source README indexing status was skipped.",
+    )
+    assert readme_indexing.value["indexing_status"] == "skipped"
+
     valid_index = call_tool_with_evidence(
         server,
         "source_index_builder",
@@ -920,7 +996,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         assertion_summary="Source index coverage returned completed block and file counts.",
     )
     assert coverage.value["completed_block_count"] == 1
-    assert coverage.value["indexed_file_count"] == 1
+    assert coverage.value["indexed_file_count"] == 2
 
     removed_ref = call_tool_with_evidence(
         server,
@@ -948,8 +1024,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     material_hits = call_tool_with_evidence(
         server,
         "source_index_builder",
-        "search_material_text",
-        {"query": "Runtime Matrix", "scope": "source", "regex": False, "limit": 5},
+        "search_source_text",
+        {"query": "Runtime Matrix", "regex": False, "limit": 5},
         runtime_context=source_ctx,
         recorder=evidence_recorder,
         assertion_summary="Source material search found source text.",
@@ -966,6 +1042,28 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         assertion_summary="Source range returned line-numbered text.",
     )
     assert "Runtime Matrix" in source_range.value["text_with_line_numbers"]
+
+    valid_source_range = call_tool_with_evidence(
+        server,
+        "source_index_builder",
+        "validate_source_range",
+        {"path": "source.md", "start_line": 1, "end_line": 2},
+        runtime_context=source_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Source range validation accepted an existing range.",
+    )
+    assert valid_source_range.value["path"] == "source.md"
+
+    source_ref_preview = call_tool_with_evidence(
+        server,
+        "source_index_builder",
+        "preview_source_ref",
+        {"path": "source.md", "start_line": 1, "end_line": 2, "context_lines": 0},
+        runtime_context=source_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Source ref preview returned source context.",
+    )
+    assert source_ref_preview.value["material_kind"] == "source"
 
     _run_local_acquisition_tool_sweep(ws, server, evidence_recorder)
 
@@ -1196,34 +1294,6 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         assertion_summary="Current node dependency list returned.",
     )
     assert deps.value["node_path"] == "Main.Core"
-
-    checkpoint = checkpoint_with_evidence(
-        ws.admin,
-        ws.provider_repo,
-        scope_ids=["repo:Provider"],
-        label="strict_tool_sweep_allocate_resource_draft",
-        recorder=evidence_recorder,
-    )
-    draft = call_tool_with_evidence(
-        server,
-        "resource_curator",
-        "allocate_resource_draft",
-        {"target": ws.resources.web_url, "title_hint": "Strict Runtime Matrix sweep resource"},
-        runtime_context=_ctx(ws.provider_repo, view="resource_curator", agent_type="ResourceCuratorAgent"),
-        recorder=evidence_recorder,
-        assertion_summary="Resource draft allocation changed the repo state.",
-    )
-    draft_root = Path(draft.value["draft_root"])
-    assert draft_root.exists()
-    restore_with_evidence(
-        ws.admin,
-        ws.provider_repo,
-        checkpoint.snapshot_id,
-        scope_ids=["repo:Provider"],
-        label="strict_tool_sweep_allocate_resource_draft",
-        recorder=evidence_recorder,
-    )
-    assert not draft_root.exists()
 
     evidence_recorder.record_runtime_state(ws.runtime)
     assert core_tool_sweep_names() <= evidence_recorder.evidence.application_tool_names
@@ -1506,49 +1576,6 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         label="strict_tool_sweep_adapter_core",
         recorder=recorder,
     )
-    written_metadata = call_tool_with_evidence(
-        server,
-        "adapter_repo_import",
-        "write_adapter_upstream_metadata",
-        {
-            "source_kind": "local_path",
-            "git_url": None,
-            "revision": None,
-            "subdir": None,
-            "local_path": str(ws.upstream_repo),
-            "package_name": "upstream",
-            "dependency_name": "upstream",
-            "evidence_summary": "Strict ToolSweep local upstream metadata.",
-            "setup_summary": "Adapter ToolSweep metadata write.",
-            "visible_modules": ["Upstream", "Upstream.Extra"],
-        },
-        runtime_context=adapter_ctx,
-        recorder=recorder,
-        assertion_summary="Adapter upstream metadata write updated visible modules.",
-    )
-    assert written_metadata.value["visible_module_count"] == 2
-
-    trusted = call_tool_with_evidence(
-        server,
-        "adapter_repo_import",
-        "mark_upstream_build_trusted",
-        {"summary": "Strict ToolSweep trusted local upstream build."},
-        runtime_context=adapter_ctx,
-        recorder=recorder,
-        assertion_summary="Adapter upstream build trust marker was updated.",
-    )
-    assert trusted.value["trusted_build"] is True
-
-    visible_modules = call_tool_with_evidence(
-        server,
-        "adapter_repo_import",
-        "record_visible_upstream_modules",
-        {"modules": ["Upstream"], "summary": "Strict ToolSweep visible module reset."},
-        runtime_context=adapter_ctx,
-        recorder=recorder,
-        assertion_summary="Adapter visible upstream module list was recorded.",
-    )
-    assert visible_modules.value["visible_module_count"] == 1
 
     upstream_decl_search = call_tool_with_evidence(
         server,
@@ -1630,17 +1657,6 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
     )
     assert "upstream" in upstream_imports.value["package_hints"]
 
-    catalog = call_tool_with_evidence(
-        server,
-        "adapter_repo_import",
-        "ensure_adapter_decl_catalog",
-        {},
-        runtime_context=adapter_ctx,
-        recorder=recorder,
-        assertion_summary="Adapter declaration catalog was initialized.",
-    )
-    assert catalog.value["main_catalog_ready"] is True
-
     _create_complete_adapter_decl(
         server,
         adapter_ctx,
@@ -1690,6 +1706,16 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         assertion_summary="Main adapter formal statement was written.",
     )
     assert statement_formal.value["revision"]["statement"]["formal"]["code"]
+    matched_by_upstream = call_tool_with_evidence(
+        server,
+        "adapter_repo_import",
+        "find_adapter_decl_by_upstream",
+        {"module": "Upstream", "upstream_decl_name": "upstreamSmoke", "adapter_name_query": None},
+        runtime_context=adapter_ctx,
+        recorder=recorder,
+        assertion_summary="Adapter duplicate lookup found the main declaration by upstream declaration.",
+    )
+    assert any(_item_field(item, "name") == "main_result" for item in matched_by_upstream.value["matches"])
 
     statement_nl = call_tool_with_evidence(
         server,
@@ -1953,38 +1979,27 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
     )
     assert projection_before.value["passed"] is False
 
-    refreshed = call_tool_with_evidence(
+    catalog_preflight = call_tool_with_evidence(
         server,
         "adapter_repo_import",
-        "refresh_adapter_projection",
+        "check_adapter_catalog_ready_preflight",
         {},
         runtime_context=adapter_ctx,
         recorder=recorder,
-        assertion_summary="Adapter projection was refreshed.",
+        assertion_summary="Adapter catalog preflight passed before Flow-owned projection refresh.",
     )
-    assert refreshed.value["path"].endswith("Main/Interfaces.lean")
+    assert catalog_preflight.value["passed"] is True
 
-    projection_after = call_tool_with_evidence(
-        server,
-        "adapter_repo_import",
-        "check_adapter_projection",
-        {},
-        runtime_context=adapter_ctx,
-        recorder=recorder,
-        assertion_summary="Adapter projection gate passed after refresh.",
-    )
-    assert projection_after.value["passed"] is True
-
-    ready = call_tool_with_evidence(
+    ready_before_projection = call_tool_with_evidence(
         server,
         "adapter_repo_import",
         "check_adapter_ready",
         {},
         runtime_context=adapter_ctx,
         recorder=recorder,
-        assertion_summary="Adapter ready gate passed after catalog, binding, and projection.",
+        assertion_summary="Full adapter ready gate remains blocked until Flow-owned projection refresh.",
     )
-    assert ready.value["passed"] is True
+    assert ready_before_projection.value["passed"] is False
 
     restore_with_evidence(
         ws.admin,
@@ -2090,7 +2105,7 @@ def _ensure_workspace_requirements(ws: RuntimeMatrixWorkspace) -> None:
         target_repo="Provider",
         source_description="Strict ToolSweep provider requirement.",
         reason="Exercise requirement tools.",
-        interfaces=[{"name": "main_result", "kind": "theorem", "summary": "Need Provider.main_result."}],
+        interfaces=[],
     )
     assert created.ok, created.issues
     open_created = ws.runtime.repo_workspace.create_requirement_with_interfaces(
@@ -2102,19 +2117,3 @@ def _ensure_workspace_requirements(ws: RuntimeMatrixWorkspace) -> None:
         interfaces=[],
     )
     assert open_created.ok, open_created.issues
-    ready = ws.runtime.repo_workspace.mark_provider_repo_ready(ws.provider_repo, summary="Strict ToolSweep provider ready.")
-    assert ready.ok, ready.issues
-    satisfied = ws.runtime.repo_workspace.requirement.mark_requirement_satisfied(
-        ws.consumer_repo,
-        requirement_name="need_provider",
-        provider_repo="Provider",
-        note="Strict ToolSweep provider ready.",
-    )
-    assert satisfied.ok, satisfied.issues
-    waiting = ws.runtime.repo_workspace.mark_requirement_waiting_for_provider(
-        ws.consumer_repo,
-        requirement_name="need_provider",
-        provider_repo="Provider",
-        reason="Strict ToolSweep waits for provider callback.",
-    )
-    assert waiting.ok, waiting.issues

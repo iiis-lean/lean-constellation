@@ -804,17 +804,19 @@ def test_strict_real_codex_adapter_decl_catalog_resources_tools_and_submit(
     tools_called = set(data["application_tools_called"])
     assert {
         "inspect_adapter_input",
+        "list_preparation_requirements",
+        "list_root_interfaces",
         "get_adapter_upstream_metadata",
         "get_adapter_upstream_status",
-        "ensure_adapter_decl_catalog",
         "create_adapter_decl",
         "set_adapter_statement_nl",
         "set_adapter_statement_formal",
+        "find_adapter_decl_by_upstream",
         "set_adapter_proof_nl",
         "set_adapter_proof_formal",
         "finalize_adapter_decl",
         "bind_adapter_interface",
-        "refresh_adapter_projection",
+        "check_adapter_catalog_ready_preflight",
     }.issubset(tools_called)
     assert data["submit_tool_called"] == "submit_adapter_catalog_ready"
     assert data["decl_name"] == "main_result"
@@ -1137,16 +1139,16 @@ You are inside a controlled AdapterDeclCatalog AgentStep. This is a scheduling/r
 Do these exact actions:
 1. Read the developer instructions and find the first token that starts with RTCODEX_DEV_MARKER_ADAPTER_DECL_CATALOG_STRICT_.
 2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report the actual skill directory names you see, even if the list is empty.
-3. Call application MCP tools "inspect_adapter_input", "get_adapter_upstream_metadata", and "get_adapter_upstream_status".
-4. Call application MCP tool "ensure_adapter_decl_catalog".
-5. Call application MCP tool "create_adapter_decl" with name "main_result", kind "theorem", module "Upstream", and plan_summary "Expose the upstream smoke theorem."
-6. Call application MCP tool "set_adapter_statement_nl" for "main_result" with summary "The upstream smoke theorem states True." and detail "Runtime Matrix real Codex adapter probe."
-7. Call application MCP tool "set_adapter_statement_formal" for "main_result" with code exactly "theorem upstreamSmoke : True := by\\n  trivial" and upstream_decl_name "upstreamSmoke".
+3. Call application MCP tools "inspect_adapter_input", "list_preparation_requirements", "list_root_interfaces", "get_adapter_upstream_metadata", and "get_adapter_upstream_status".
+4. Call application MCP tool "create_adapter_decl" with name "main_result", kind "theorem", module "Upstream", and plan_summary "Expose the upstream smoke theorem."
+5. Call application MCP tool "set_adapter_statement_nl" for "main_result" with summary "The upstream smoke theorem states True." and detail "Runtime Matrix real Codex adapter probe."
+6. Call application MCP tool "set_adapter_statement_formal" for "main_result" with code exactly "theorem upstreamSmoke : True := by\\n  trivial" and upstream_decl_name "upstreamSmoke".
+7. Call application MCP tool "find_adapter_decl_by_upstream" with module "Upstream", upstream_decl_name "upstreamSmoke", and adapter_name_query null.
 8. Call application MCP tool "set_adapter_proof_nl" for "main_result" with summary "Use triviality." and detail "The upstream theorem is already proved by triviality."
 9. Call application MCP tool "set_adapter_proof_formal" for "main_result" with code exactly "theorem upstreamSmoke : True := by\\n  trivial" and upstream_decl_name "upstreamSmoke".
 10. Call application MCP tool "finalize_adapter_decl" with name "main_result".
 11. Call application MCP tool "bind_adapter_interface" with interface_name "main_result", decl_name "main_result", and binding_summary "Runtime Matrix real Codex binds required interface to finalized adapter declaration."
-12. Call application MCP tool "refresh_adapter_projection".
+12. Call application MCP tool "check_adapter_catalog_ready_preflight".
 13. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
     prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, decl_name.
     Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called. Use "main_result" for decl_name.
@@ -1697,19 +1699,7 @@ def _complete_review_stage(
             {"decl_name": round_fixture.decl_name, "summary": summary},
         )
     else:
-        review_action = (
-            "application",
-            "record_decl_review",
-            {
-                "round_id": round_fixture.round_id,
-                "stage": stage,
-                "decl_name": round_fixture.decl_name,
-                "passed": True,
-                "summary": summary,
-                "issue_kind": None,
-                "suggested_fix": None,
-            },
-        )
+        raise AssertionError(f"unsupported decl review stage: {stage}")
     run_external_actions_with_evidence(
         ws.admin,
         step_id,

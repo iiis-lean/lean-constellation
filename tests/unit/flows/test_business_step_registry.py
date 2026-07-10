@@ -44,8 +44,11 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                         "unresolved_in_mathlib",
                         "unresolved_material_needs",
                         "blocked_needs",
+                        "known_risks",
+                        "searched_targets",
+                        "rejected_candidates",
                     }:
-                    payload[key] = []
+                        payload[key] = []
                 elif key == "feedback" and "reviewed_decl_names" in fields:
                     payload[key] = []
                 elif key in {"approved", "accepted", "retry_required"}:

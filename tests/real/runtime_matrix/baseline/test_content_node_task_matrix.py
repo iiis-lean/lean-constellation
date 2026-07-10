@@ -182,7 +182,18 @@ def test_content_node_task_decl_round_dispatch_callback_branch(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("ContentPlanAgent", "StatementNLWorkerAgent", cli_type="codex")
+    ws.create_homes(
+        "ContentPlanAgent",
+        "StatementNLWorkerAgent",
+        "StatementNLReviewerAgent",
+        "StatementFormalWorkerAgent",
+        "StatementFormalReviewerAgent",
+        "ProofNLWorkerAgent",
+        "ProofNLReviewerAgent",
+        "ProofFormalWorkerAgent",
+        "ProofFormalReviewerAgent",
+        cli_type="codex",
+    )
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_content_task(ws, round_fixture.node_path)
 

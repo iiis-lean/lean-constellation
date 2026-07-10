@@ -16,6 +16,7 @@ from lean_constellation.services.external_clients import (
 )
 from lean_constellation.services.foundation import FoundationService, ServiceResult
 from lean_constellation.services.lean_projection import LeanCheckView, LeanProjectionService
+from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.node import DeclPublicView, ExportComponent, NodeTreeComponent
 
 
@@ -41,7 +42,7 @@ class DictRevisionProvider:
             return self.foundation.fail(
                 self.foundation.issue("decl_revision_missing", "Decl revision missing.", object_ref=f"{node_path}:{decl_name}")
             )
-        return self.foundation.ok(revision)
+        return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
     def save_statement_formal_capture(
         self,
@@ -120,20 +121,22 @@ def _create_content_node(repo_root: Path) -> None:
 
 def _revision() -> dict[str, Any]:
     return {
-        "name": "main_result",
+        "decl_name": "main_result",
+        "revision": 1,
         "kind": "theorem",
         "state": "specified",
+        "version_status": "open",
         "statement": {
             "nl": {
                 "text": "The real LeanProjection smoke statement asserts True.",
-                "origin": {"kind": "real_test"},
+                "origin": [],
             },
             "deps": [],
         },
         "proof": {
             "nl": {
                 "text": "The theorem follows by triviality.",
-                "origin": {"kind": "real_test"},
+                "origin": [],
             },
             "deps": [],
         },

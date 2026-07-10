@@ -19,7 +19,14 @@ def test_material_context_view_real_small_source_resource_node_fixture(tmp_path:
 
     source_root = repo_root / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text("# Real context source\n", encoding="utf-8")
+    (source_root / "README.md").write_text(
+        "# Real context source\n\n"
+        "Source provenance: local real material context fixture.\n"
+        "Reading order: read this entry, then read chapter.md as the main material.\n"
+        "Main material: chapter.md contains the definition, theorem, and proof lines.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
+        encoding="utf-8",
+    )
     (source_root / "chapter.md").write_text("definition line\ntheorem line\nproof line\n", encoding="utf-8")
     assert material.submit_source_corpus_prepared(
         repo_root,

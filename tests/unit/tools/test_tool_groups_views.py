@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.tools import build_application_tool_specs
+from lean_constellation.tools.internal.source_material import _COMMITTED_SOURCE_INDEX_VIEWS
+from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
+from lean_constellation.tools.views import build_application_tool_views
 
 
 def test_every_application_view_expands_without_overlap() -> None:
@@ -16,6 +19,16 @@ def test_every_application_view_expands_without_overlap() -> None:
         assert len(expanded.value) == len(set(expanded.value))
 
 
+def test_source_index_committed_read_views_match_handler_routing() -> None:
+    committed_read_views = {
+        view.key
+        for view in build_application_tool_views()
+        if AppGroup.SOURCE_INDEX_COMMITTED_READ.value in view.group_keys
+    }
+
+    assert _COMMITTED_SOURCE_INDEX_VIEWS == committed_read_views
+
+
 def test_representative_agent_type_resolves_expected_view() -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
 
@@ -24,6 +37,7 @@ def test_representative_agent_type_resolves_expected_view() -> None:
     statement_worker = runtime.tool_facade.build_tool_view("StatementNLWorkerAgent", {"stage": "statement_nl"})
     statement_reviewer = runtime.tool_facade.build_tool_view("StatementNLReviewerAgent", {"stage": "statement_nl"})
     formal_reviewer = runtime.tool_facade.build_tool_view("StatementFormalReviewerAgent", {"stage": "statement_formal"})
+    adapter_catalog = runtime.tool_facade.build_tool_view("AdapterDeclCatalogAgent")
 
     assert coordinator.ok
     assert coordinator.value is not None
@@ -40,6 +54,9 @@ def test_representative_agent_type_resolves_expected_view() -> None:
     assert formal_reviewer.ok
     assert formal_reviewer.value is not None
     assert formal_reviewer.value.key == "statement_formal_reviewer"
+    assert adapter_catalog.ok
+    assert adapter_catalog.value is not None
+    assert adapter_catalog.value.key == "adapter_repo_import"
 
 
 def test_repo_format_discovery_view_exposes_scoped_remote_tools_only() -> None:
@@ -80,8 +97,35 @@ def test_resource_discovery_tools_visible_to_coordinator_and_resource_recon() ->
 
     assert coordinator.ok and coordinator.value is not None
     assert resource_recon.ok and resource_recon.value is not None
-    assert {"search_material_text", "search_arxiv_theorems"} <= set(coordinator.value)
-    assert {"search_material_text", "search_arxiv_theorems"} <= set(resource_recon.value)
+    assert {"search_source_text", "search_resource_text", "search_arxiv_theorems"} <= set(coordinator.value)
+    assert {"search_source_text", "search_resource_text", "search_arxiv_theorems"} <= set(resource_recon.value)
+
+
+def test_adapter_decl_catalog_view_exposes_catalog_boundary_only() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    view = runtime.tool_facade.tool_view.tool_names_for_view("adapter_repo_import")
+
+    assert view.ok and view.value is not None
+    tools = set(view.value)
+    assert {
+        "list_preparation_requirements",
+        "get_preparation_requirement",
+        "list_root_interfaces",
+        "find_adapter_decl_by_upstream",
+        "check_adapter_catalog_ready_preflight",
+    } <= tools
+    assert {
+        "get_preparation_start_preflight",
+        "list_open_requirement_groups",
+        "get_requirement_group",
+        "write_adapter_upstream_metadata",
+        "mark_upstream_build_trusted",
+        "record_visible_upstream_modules",
+        "ensure_adapter_decl_catalog",
+        "refresh_adapter_projection",
+        "add_root_interface",
+    }.isdisjoint(tools)
 
 
 def test_repo_work_config_tool_visible_to_coordinator_and_content_plan_only() -> None:
@@ -164,10 +208,6 @@ def test_legacy_decl_readiness_tools_are_not_in_production_views() -> None:
     for view_key in sorted(runtime.tool_facade.tool_view._views):
         expanded = runtime.tool_facade.tool_view.tool_names_for_view(view_key)
         assert expanded.ok and expanded.value is not None
-        if view_key in {"statement_nl_reviewer", "statement_formal_reviewer", "proof_nl_worker", "proof_nl_reviewer", "proof_formal_worker", "proof_formal_reviewer"}:
-            allowed_for_decl_detail_reader = {"list_current_decls", "get_decl", "get_decl_revision", "get_decl_change"}
-            assert (legacy_tools - allowed_for_decl_detail_reader).isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
-            continue
         assert legacy_tools.isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
 
 

@@ -34,6 +34,7 @@ def test_adapter_tools_are_registered() -> None:
         "inspect_adapter_decl",
         "list_registered_adapter_modules",
         "check_adapter_decl_completeness",
+        "find_adapter_decl_by_upstream",
         "finalize_adapter_decl",
         "bind_adapter_interface",
         "unbind_adapter_interface",
@@ -43,6 +44,7 @@ def test_adapter_tools_are_registered() -> None:
         "refresh_adapter_projection",
         "check_adapter_projection",
         "check_adapter_ready",
+        "check_adapter_catalog_ready_preflight",
     }
 
     assert_tools_registered(expected)
@@ -53,10 +55,11 @@ def test_adapter_groups_expose_expected_tools() -> None:
     assert_group_contains("upstream_metadata_read", {"get_adapter_upstream_metadata", "get_adapter_upstream_status"})
     assert_group_contains("upstream_metadata_write", {"write_adapter_upstream_metadata", "mark_upstream_build_trusted"})
     assert_group_contains("upstream_navigation", {"search_upstream_declarations", "capture_upstream_declaration_code"})
-    assert_group_contains("adapter_decl_catalog_write", {"ensure_adapter_decl_catalog", "create_adapter_decl", "finalize_adapter_decl"})
-    assert_group_contains("adapter_decl_catalog_read", {"list_adapter_decls", "inspect_adapter_decl"})
+    assert_group_contains("adapter_decl_catalog_init_write", {"ensure_adapter_decl_catalog"})
+    assert_group_contains("adapter_decl_catalog_write", {"create_adapter_decl", "finalize_adapter_decl"})
+    assert_group_contains("adapter_decl_catalog_read", {"list_adapter_decls", "inspect_adapter_decl", "find_adapter_decl_by_upstream"})
     assert_group_contains("adapter_interface_binding_write", {"bind_adapter_interface", "unbind_adapter_interface"})
     assert_group_contains("adapter_interface_binding_read", {"list_unbound_adapter_interfaces", "validate_adapter_interface_bindings"})
     assert_group_contains("adapter_projection_check", {"preview_adapter_import_modules", "check_adapter_projection"})
     assert_group_contains("adapter_projection_write", {"refresh_adapter_projection"})
-    assert_group_contains("adapter_ready_read", {"check_adapter_ready"})
+    assert_group_contains("adapter_ready_read", {"check_adapter_ready", "check_adapter_catalog_ready_preflight"})

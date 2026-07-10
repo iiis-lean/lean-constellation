@@ -243,22 +243,7 @@ def _review_actions(round_fixture: DeclRoundFixture, stage: str, *, passed: bool
             ),
             ("submit", "submit_stage_review", {"summary": f"{stage} accepted by strict Runtime Matrix."}),
         ]
-    return [
-        (
-            "application",
-            "record_decl_review",
-            {
-                "round_id": round_fixture.round_id,
-                "stage": stage,
-                "decl_name": round_fixture.decl_name,
-                "passed": passed,
-                "summary": f"{stage} accepted by strict Runtime Matrix.",
-                "issue_kind": None,
-                "suggested_fix": None,
-            },
-        ),
-        ("submit", "submit_stage_review", {"summary": f"{stage} accepted by strict Runtime Matrix."}),
-    ]
+    raise AssertionError(f"unsupported decl review stage: {stage}")
 
 
 def _decl_file_path(ws: RuntimeMatrixWorkspace, round_fixture: DeclRoundFixture) -> Path:

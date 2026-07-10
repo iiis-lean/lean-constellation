@@ -83,6 +83,65 @@ def test_material_context_view_source_only_with_source_index(tmp_path: Path) -> 
     }
 
 
+def test_material_context_committed_source_index_mode_omits_draft_blocks(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    material = runtime.material
+    _write_source(tmp_path)
+    assert material.create_draft_source_index(tmp_path).ok
+    assert material.set_source_index_overview(tmp_path, overview="Draft overview").ok
+    block = material.create_source_block(
+        tmp_path,
+        parent_id="root",
+        kind="theorem",
+        title="Draft theorem",
+        summary="Draft-only source block.",
+    )
+    assert block.ok and block.value is not None
+    assert material.add_source_block_ref(
+        tmp_path,
+        block_id=block.value.block_id,
+        path="chapter.md",
+        start_line=2,
+        end_line=2,
+        role="statement",
+    ).ok
+
+    draft_context = material.get_material_context_view(tmp_path, include_source=True, include_resources=False)
+    committed_only_draft = material.get_material_context_view(
+        tmp_path,
+        include_source=True,
+        include_resources=False,
+        require_committed_source_index=True,
+    )
+
+    assert draft_context.ok and draft_context.value is not None
+    assert draft_context.value.source_index_overview == "Draft overview"
+    assert len(draft_context.value.source_blocks) == 1
+    assert committed_only_draft.ok and committed_only_draft.value is not None
+    assert committed_only_draft.value.source_index_overview is None
+    assert committed_only_draft.value.source_blocks == []
+
+    assert material.mark_block_refs_done(tmp_path, block_id=block.value.block_id).ok
+    assert material.mark_block_links_done(tmp_path, block_id=block.value.block_id).ok
+    assert material.mark_block_completed(tmp_path, block_id=block.value.block_id).ok
+    assert material.set_file_survey_status(tmp_path, path="README.md", status="surveyed", summary="Read.").ok
+    assert material.set_file_indexing_status(tmp_path, path="README.md", status="indexed").ok
+    assert material.set_file_survey_status(tmp_path, path="chapter.md", status="surveyed", summary="Read.").ok
+    assert material.set_file_indexing_status(tmp_path, path="chapter.md", status="indexed").ok
+    assert material.commit_source_index(tmp_path).ok
+
+    committed_context = material.get_material_context_view(
+        tmp_path,
+        include_source=True,
+        include_resources=False,
+        require_committed_source_index=True,
+    )
+
+    assert committed_context.ok and committed_context.value is not None
+    assert committed_context.value.source_index_overview == "Draft overview"
+    assert [item.title for item in committed_context.value.source_blocks] == ["Draft theorem"]
+
+
 def test_material_context_view_resource_only_and_query_filter(tmp_path: Path) -> None:
     runtime = make_runtime()
     material = runtime.material

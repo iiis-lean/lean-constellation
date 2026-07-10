@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.domain.refs import DeclRef, MathlibRef
 from lean_constellation.services import create_test_runtime_services
@@ -16,8 +18,8 @@ from lean_constellation.services.tool_facade import (
     SubmitBehavior,
     ToolExecutionContext,
 )
-from lean_constellation.tools.submit_args import SubmitStageReviewArgs, SubmitStageWorkerCompletedArgs
-from lean_constellation.tools.submit_handlers import submit_stage_review, submit_stage_worker_completed
+from lean_constellation.tools.submit_args import SubmitStageReviewArgs, SubmitStageWorkerBlockedArgs, SubmitStageWorkerCompletedArgs
+from lean_constellation.tools.submit_handlers import submit_stage_review, submit_stage_worker_blocked, submit_stage_worker_completed
 from tests.unit.tools._submit_family_helpers import assert_submit_tools
 
 
@@ -372,6 +374,41 @@ def test_stage_review_submission_maps_passed_to_accepted_and_retry(tmp_path: Pat
     assert rejected.value is not None
     assert rejected.value.submission.accepted is False
     assert rejected.value.submission.retry_required is True
+
+
+@pytest.mark.parametrize("stage", ["statement_nl", "statement_formal", "proof_nl", "proof_formal"])
+def test_stage_worker_blocked_rejects_affected_decl_outside_current_batch(tmp_path: Path, stage: str) -> None:
+    runtime = create_test_runtime_services()
+    ctx = _worker_ctx(tmp_path, round_id="round_1", stage=stage, batch_decls=["main_result"])
+
+    blocked = submit_stage_worker_blocked(
+        runtime,
+        ctx,
+        SubmitStageWorkerBlockedArgs(reason="Need planning help.", affected_decl_names=["other_decl"]),
+    )
+
+    assert not blocked.ok
+    assert blocked.issues[0].kind == "stage_worker_blocked_decl_outside_batch"
+
+
+def test_stage_worker_blocked_accepts_current_batch_subset(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services()
+    ctx = _worker_ctx(tmp_path, round_id="round_1", stage="proof_nl", batch_decls=["main_result", "helper"])
+
+    blocked = submit_stage_worker_blocked(
+        runtime,
+        ctx,
+        SubmitStageWorkerBlockedArgs(reason="Need a helper declaration.", affected_decl_names=["helper"]),
+    )
+
+    assert blocked.ok
+    assert blocked.value is not None
+    assert blocked.value.submission.affected_decl_names == ["helper"]
+
+
+def test_stage_worker_blocked_reason_cannot_be_blank() -> None:
+    with pytest.raises(ValueError, match="reason must be non-empty"):
+        SubmitStageWorkerBlockedArgs(reason="   ")
 
 
 def test_statement_nl_worker_completed_rejects_invalid_origin_and_mathlib_dep(tmp_path: Path) -> None:

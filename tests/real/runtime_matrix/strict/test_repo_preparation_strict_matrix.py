@@ -211,7 +211,14 @@ def test_strict_adapter_preparation_ready_and_blocked_evidence(
         ws.runtime,
         {
             "AdapterDeclCatalogAgent": [
-                ("submit_adapter_catalog_blocked", {"reason": "Strict adapter blocked.", "missing_interfaces": ["main_result"]}),
+                (
+                    "submit_adapter_catalog_blocked",
+                    {
+                        "reason": "Strict adapter blocked.",
+                        "missing_interfaces": ["main_result"],
+                        "evidence_summary": "Strict blocked path confirms the required root interface has no usable upstream binding.",
+                    },
+                ),
             ]
         },
         evidence_recorder=evidence_recorder,

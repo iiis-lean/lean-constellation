@@ -28,6 +28,10 @@ def test_node_contract_tools_are_registered() -> None:
         "list_current_node_material_refs",
         "list_node_material_refs",
         "list_node_interfaces",
+        "list_root_interfaces",
+        "add_root_interface",
+        "update_root_interface",
+        "remove_root_interface",
         "add_node_interface",
         "update_node_interface",
         "remove_node_interface",
@@ -65,6 +69,8 @@ def test_node_contract_groups_expose_expected_tools() -> None:
     assert_group_contains("node_contract_material_coordinator_write", {"add_node_material_ref", "remove_node_material_ref"})
     assert_group_contains("scope_export_interface_read", {"list_node_interfaces", "list_scope_exports", "list_scope_export_candidates"})
     assert_group_contains("scope_export_interface_write", {"add_node_interface", "bind_node_interface", "add_scope_export"})
+    assert_group_contains("root_interface_state_read", {"list_root_interfaces"})
+    assert_group_contains("root_interface_write", {"add_root_interface", "update_root_interface", "remove_root_interface"})
     assert_group_contains("scope_contract_coordinator_commit", {"commit_scope_contract"})
     assert_group_contains(
         "content_task_result_coordinator_finalize",

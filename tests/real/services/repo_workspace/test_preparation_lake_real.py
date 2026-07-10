@@ -9,17 +9,21 @@ import pytest
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.domain.preparation import UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
-from lean_constellation.services.repo_workspace import RepoWorkspaceService
 
 
-def _require_real_lake() -> int:
+def _require_real_lake() -> tuple[int, Path | None]:
     for command in ("lake", "lean", "git"):
         if shutil.which(command) is None:
             pytest.skip(f"`{command}` is required for real repo workspace Lake tests.")
-    return int(os.environ.get("LEAN_CONSTELLATION_REAL_LAKE_TIMEOUT", "180"))
+    template_value = os.environ.get("LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PROJECT_ROOT")
+    template = Path(template_value).expanduser() if template_value else None
+    if template is not None and not (template / ".lake" / "packages" / "mathlib").exists():
+        pytest.skip(f"Local Lake package cache mathlib package is missing: {template / '.lake' / 'packages' / 'mathlib'}")
+    return int(os.environ.get("LEAN_CONSTELLATION_REAL_LAKE_TIMEOUT", "180")), template
 
 
 def _make_buildable_without_mathlib(repo_root: Path, project_name: str) -> None:
@@ -82,7 +86,7 @@ def _create_local_upstream_git_repo(repo_root: Path) -> None:
 
 @pytest.mark.real
 def test_repo_workspace_real_lake_native_adapter_and_workspace_dependency(tmp_path: Path) -> None:
-    timeout = _require_real_lake()
+    timeout, template = _require_real_lake()
     workspace = tmp_path / "workspace"
     consumer = workspace / "Consumer"
     provider = workspace / "Provider"
@@ -91,7 +95,12 @@ def test_repo_workspace_real_lake_native_adapter_and_workspace_dependency(tmp_pa
     workspace.mkdir()
 
     service = make_runtime(
-        external_overrides={"lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout))}
+        external_overrides={"lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout))},
+        native_lake_project_config=NativeLakeProjectConfig(
+            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template)
+        )
+        if template is not None
+        else None,
     ).repo_workspace
 
     consumer_init = service.initialize_repo_as_native(consumer, project_name="Consumer")
@@ -124,7 +133,8 @@ def test_repo_workspace_real_lake_native_adapter_and_workspace_dependency(tmp_pa
     deps = service.lake_dependency.parse_lake_dependencies(consumer)
     assert deps.ok
     assert deps.value is not None
-    assert [(dep.name, dep.source, dep.path) for dep in deps.value.dependencies] == [("Provider", "path", "../Provider")]
+    parsed_deps = [(dep.name, dep.source, dep.path) for dep in deps.value.dependencies]
+    assert ("Provider", "path", "../Provider") in parsed_deps
 
     consumer_build_after_attach = service.lake_dependency.run_lake_build(consumer)
     assert consumer_build_after_attach.ok, consumer_build_after_attach.issues

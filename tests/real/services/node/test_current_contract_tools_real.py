@@ -7,14 +7,37 @@ import pytest
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.services.foundation import FoundationContext, WriteMode
-from lean_constellation.services.node import NodeContractSnapshot, NodeService
+from lean_constellation.services import LeanProviderOverrides
+from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.node import DeclPublicView, NodeService
+
+
+class FakePublicDeclProvider:
+    def __init__(self, foundation: FoundationService, decls: dict[tuple[str, str], list[DeclPublicView]]) -> None:
+        self.foundation = foundation
+        self.decls = decls
+
+    def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
+        return self.foundation.ok(self.decls.get((str(Path(repo_root)), node_path), []))
+
+
+def _runtime_with_public_decls(decls: dict[tuple[str, str], list[DeclPublicView]]):
+    base = make_runtime()
+    return make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=FakePublicDeclProvider(base.foundation, decls)))
 
 
 def _create_tree(repo_root: Path, service: NodeService) -> None:
     assert service.node_tree.ensure_root_scope_node(repo_root).ok
     assert service.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal.", boundary="Topic boundary.").ok
     assert service.create_scope_node(repo_root, path="Main.Topic.Provider", goal="Provider goal.", boundary="Provider boundary.").ok
+    assert service.create_content_node(
+        repo_root,
+        path="Main.Topic.Provider.Core",
+        goal="Provider core goal.",
+        boundary="Provider core boundary.",
+        objective="Expose helper.",
+        success_criteria="Provider exports helper.",
+    ).ok
     assert service.create_content_node(
         repo_root,
         path="Main.Topic.Consumer",
@@ -26,11 +49,13 @@ def _create_tree(repo_root: Path, service: NodeService) -> None:
 
 
 def _commit_provider(repo_root: Path, service: NodeService) -> None:
-    path = service.runtime.foundation.layout.node_contract_path(FoundationContext(repo_root=repo_root), "Main.Topic.Provider", 1)
-    loaded = service.runtime.foundation.store.read_json(path, NodeContractSnapshot)
-    assert loaded.ok and loaded.value is not None
-    loaded.value.exports = [DeclRef(repo=None, node="Main.Topic.Provider", name="helper", revision=1)]
-    assert service.runtime.foundation.store.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
+    added = service.export.add_scope_export(
+        repo_root,
+        scope_path="Main.Topic.Provider",
+        decl_node="Main.Topic.Provider.Core",
+        decl_name="helper",
+    )
+    assert added.ok, added.issues
     committed = service.commit_scope_contract(repo_root, scope_path="Main.Topic.Provider", summary="Provider exposes helper.")
     assert committed.ok, committed.issues
 
@@ -45,7 +70,20 @@ def _write_source(repo_root: Path) -> None:
 def test_current_contract_tool_wrappers_persist_and_reload_real(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    runtime = make_runtime()
+    runtime = _runtime_with_public_decls(
+        {
+            (str(repo_root), "Main.Topic.Provider.Core"): [
+                DeclPublicView(
+                    ref=DeclRef(repo=None, node="Main.Topic.Provider.Core", name="helper", revision=1),
+                    kind="theorem",
+                    summary="Provider helper.",
+                    ready=True,
+                    stale=False,
+                    source="test_provider",
+                )
+            ]
+        }
+    )
     service = runtime.node
     _create_tree(repo_root, service)
     _commit_provider(repo_root, service)

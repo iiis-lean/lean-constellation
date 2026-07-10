@@ -181,12 +181,12 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     ),
     "allocate_resource_draft": ToolCase(
         tool_name="allocate_resource_draft",
-        status="implemented",
-        category="resource_draft_write",
-        reason="Checkpointed resource draft allocation call covered by strict ToolSweep runner.",
-        view_key="resource_curator",
-        agent_type="ResourceCuratorAgent",
-        restore_policy="checkpoint",
+        status="pending_fixture",
+        category="resource_draft_lifecycle_write",
+        reason=(
+            "Resource draft allocation is lifecycle/service-owned after ResourceCurationFlow "
+            "pre-creates the active draft; no production Agent view should call it directly."
+        ),
     ),
     "get_material_context": ToolCase(
         tool_name="get_material_context",
@@ -228,6 +228,14 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="resource_curator",
         agent_type="ResourceCuratorAgent",
     ),
+    "search_resource_text": ToolCase(
+        tool_name="search_resource_text",
+        status="implemented",
+        category="resource_library_read",
+        reason="Read-only resource text search call covered by strict ToolSweep runner.",
+        view_key="resource_curator",
+        agent_type="ResourceCuratorAgent",
+    ),
     "get_resource_draft": ToolCase(
         tool_name="get_resource_draft",
         status="implemented",
@@ -246,12 +254,13 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     ),
     "abandon_resource_draft": ToolCase(
         tool_name="abandon_resource_draft",
-        status="implemented",
-        category="resource_draft_write",
-        reason="Checkpointed resource draft abandon call covered by strict ToolSweep runner.",
-        view_key="resource_curator",
-        agent_type="ResourceCuratorAgent",
-        restore_policy="checkpoint",
+        status="pending_fixture",
+        category="resource_draft_lifecycle_write",
+        reason=(
+            "Resource draft abandon is lifecycle/service-owned after ResourceCurationFlow "
+            "manages duplicate, external, rejected, and cleanup branches; no production Agent "
+            "view should call it directly."
+        ),
     ),
     "scan_source_corpus": ToolCase(
         tool_name="scan_source_corpus",
@@ -268,15 +277,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         reason="Read-only source corpus draft gate call covered by strict ToolSweep runner.",
         view_key="source_index_builder",
         agent_type="SourceIndexBuilderAgent",
-    ),
-    "create_draft_source_index": ToolCase(
-        tool_name="create_draft_source_index",
-        status="implemented",
-        category="source_index_write",
-        reason="Checkpointed source index draft creation covered by strict ToolSweep runner.",
-        view_key="source_index_builder",
-        agent_type="SourceIndexBuilderAgent",
-        restore_policy="checkpoint",
     ),
     "get_source_index": ToolCase(
         tool_name="get_source_index",
@@ -401,8 +401,8 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="source_index_builder",
         agent_type="SourceIndexBuilderAgent",
     ),
-    "search_material_text": ToolCase(
-        tool_name="search_material_text",
+    "search_source_text": ToolCase(
+        tool_name="search_source_text",
         status="implemented",
         category="source_material_read",
         reason="Read-only source material search call covered by strict ToolSweep runner.",
@@ -414,6 +414,22 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         status="implemented",
         category="source_material_read",
         reason="Read-only source range call covered by strict ToolSweep runner.",
+        view_key="source_index_builder",
+        agent_type="SourceIndexBuilderAgent",
+    ),
+    "validate_source_range": ToolCase(
+        tool_name="validate_source_range",
+        status="implemented",
+        category="source_material_read",
+        reason="Read-only source range validation call covered by strict ToolSweep runner.",
+        view_key="source_index_builder",
+        agent_type="SourceIndexBuilderAgent",
+    ),
+    "preview_source_ref": ToolCase(
+        tool_name="preview_source_ref",
+        status="implemented",
+        category="source_material_read",
+        reason="Read-only source ref preview call covered by strict ToolSweep runner.",
         view_key="source_index_builder",
         agent_type="SourceIndexBuilderAgent",
     ),
@@ -468,6 +484,41 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         reason="Read-only root handoff interface gate covered by strict ToolSweep runner.",
         view_key="root_interface_prepare",
         agent_type="RootInterfacePrepareAgent",
+    ),
+    "list_root_interfaces": ToolCase(
+        tool_name="list_root_interfaces",
+        status="implemented",
+        category="root_interface_prepare_read",
+        reason="Read-only root Main interface listing covered by strict ToolSweep runner.",
+        view_key="root_interface_prepare",
+        agent_type="RootInterfacePrepareAgent",
+    ),
+    "add_root_interface": ToolCase(
+        tool_name="add_root_interface",
+        status="implemented",
+        category="root_interface_prepare_write",
+        reason="Checkpointed root Main supplement interface add covered by strict ToolSweep runner.",
+        view_key="root_interface_prepare",
+        agent_type="RootInterfacePrepareAgent",
+        restore_policy="checkpoint",
+    ),
+    "update_root_interface": ToolCase(
+        tool_name="update_root_interface",
+        status="implemented",
+        category="root_interface_prepare_write",
+        reason="Checkpointed root Main supplement interface update covered by strict ToolSweep runner.",
+        view_key="root_interface_prepare",
+        agent_type="RootInterfacePrepareAgent",
+        restore_policy="checkpoint",
+    ),
+    "remove_root_interface": ToolCase(
+        tool_name="remove_root_interface",
+        status="implemented",
+        category="root_interface_prepare_write",
+        reason="Checkpointed root Main supplement interface removal covered by strict ToolSweep runner.",
+        view_key="root_interface_prepare",
+        agent_type="RootInterfacePrepareAgent",
+        restore_policy="checkpoint",
     ),
     "inspect_workspace_for_coordinator": ToolCase(
         tool_name="inspect_workspace_for_coordinator",
@@ -613,9 +664,18 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     ),
     "list_current_visible_node_boundaries": ToolCase(
         tool_name="list_current_visible_node_boundaries",
+        status="pending_fixture",
+        category="node_boundary_read_legacy",
+        reason=(
+            "Legacy current-boundary list remains registered for compatibility, but production Agent views use "
+            "list_visible_nodes instead and do not expose this legacy tool."
+        ),
+    ),
+    "list_visible_nodes": ToolCase(
+        tool_name="list_visible_nodes",
         status="implemented",
-        category="node_boundary_read",
-        reason="Read-only visible node boundary list covered by strict ToolSweep runner.",
+        category="node_visibility_read_current",
+        reason="Read-only visible node list covered by strict ToolSweep runner.",
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),
@@ -926,33 +986,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="adapter_repo_import",
         agent_type="AdapterDeclCatalogAgent",
     ),
-    "write_adapter_upstream_metadata": ToolCase(
-        tool_name="write_adapter_upstream_metadata",
-        status="implemented",
-        category="upstream_metadata_write",
-        reason="Checkpointed adapter upstream metadata write covered by strict ToolSweep runner.",
-        view_key="adapter_repo_import",
-        agent_type="AdapterDeclCatalogAgent",
-        restore_policy="checkpoint",
-    ),
-    "mark_upstream_build_trusted": ToolCase(
-        tool_name="mark_upstream_build_trusted",
-        status="implemented",
-        category="upstream_metadata_write",
-        reason="Checkpointed adapter upstream trusted marker write covered by strict ToolSweep runner.",
-        view_key="adapter_repo_import",
-        agent_type="AdapterDeclCatalogAgent",
-        restore_policy="checkpoint",
-    ),
-    "record_visible_upstream_modules": ToolCase(
-        tool_name="record_visible_upstream_modules",
-        status="implemented",
-        category="upstream_metadata_write",
-        reason="Checkpointed adapter visible upstream modules write covered by strict ToolSweep runner.",
-        view_key="adapter_repo_import",
-        agent_type="AdapterDeclCatalogAgent",
-        restore_policy="checkpoint",
-    ),
     "search_upstream_declarations": ToolCase(
         tool_name="search_upstream_declarations",
         status="implemented",
@@ -1008,15 +1041,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         reason="Local upstream module import inspection covered through ToolFacade/MCP with LeanToolchain fallback.",
         view_key="adapter_repo_import",
         agent_type="AdapterDeclCatalogAgent",
-    ),
-    "ensure_adapter_decl_catalog": ToolCase(
-        tool_name="ensure_adapter_decl_catalog",
-        status="implemented",
-        category="adapter_decl_catalog_write",
-        reason="Checkpointed adapter declaration catalog initialization covered by strict ToolSweep runner.",
-        view_key="adapter_repo_import",
-        agent_type="AdapterDeclCatalogAgent",
-        restore_policy="checkpoint",
     ),
     "create_adapter_decl": ToolCase(
         tool_name="create_adapter_decl",
@@ -1149,6 +1173,14 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="adapter_repo_import",
         agent_type="AdapterDeclCatalogAgent",
     ),
+    "find_adapter_decl_by_upstream": ToolCase(
+        tool_name="find_adapter_decl_by_upstream",
+        status="implemented",
+        category="adapter_decl_catalog_read",
+        reason="Read-only duplicate upstream declaration lookup covered by strict ToolSweep runner.",
+        view_key="adapter_repo_import",
+        agent_type="AdapterDeclCatalogAgent",
+    ),
     "finalize_adapter_decl": ToolCase(
         tool_name="finalize_adapter_decl",
         status="implemented",
@@ -1200,15 +1232,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="adapter_repo_import",
         agent_type="AdapterDeclCatalogAgent",
     ),
-    "refresh_adapter_projection": ToolCase(
-        tool_name="refresh_adapter_projection",
-        status="implemented",
-        category="adapter_projection_write",
-        reason="Checkpointed adapter projection refresh covered by strict ToolSweep runner.",
-        view_key="adapter_repo_import",
-        agent_type="AdapterDeclCatalogAgent",
-        restore_policy="checkpoint",
-    ),
     "check_adapter_projection": ToolCase(
         tool_name="check_adapter_projection",
         status="implemented",
@@ -1222,6 +1245,14 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         status="implemented",
         category="adapter_ready_read",
         reason="Read-only adapter ready gate covered by strict ToolSweep runner.",
+        view_key="adapter_repo_import",
+        agent_type="AdapterDeclCatalogAgent",
+    ),
+    "check_adapter_catalog_ready_preflight": ToolCase(
+        tool_name="check_adapter_catalog_ready_preflight",
+        status="implemented",
+        category="adapter_ready_read",
+        reason="Read-only adapter catalog ready preflight covered by strict ToolSweep runner.",
         view_key="adapter_repo_import",
         agent_type="AdapterDeclCatalogAgent",
     ),
@@ -1446,15 +1477,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         reason="Statement and proof consistency gates covered by strict real Lake DeclStage ToolSweep.",
         view_key="statement_formal_worker",
         agent_type="StatementFormalWorkerAgent",
-    ),
-    "record_decl_review": ToolCase(
-        tool_name="record_decl_review",
-        status="pending_fixture",
-        category="decl_stage_review_mark_write",
-        reason="Legacy generic review mark tool remains registered for internal/backward compatibility but is no longer exposed by production reviewer ToolViews.",
-        view_key=None,
-        agent_type=None,
-        restore_policy="checkpoint",
     ),
     "record_statement_nl_review_passed": ToolCase(
         tool_name="record_statement_nl_review_passed",
@@ -1724,37 +1746,56 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="ContentPlanAgent",
         restore_policy="checkpoint",
     ),
-    "list_current_decls": ToolCase(
-        tool_name="list_current_decls",
+    "list_current_node_decls": ToolCase(
+        tool_name="list_current_node_decls",
         status="implemented",
-        category="decl_detail_read",
-        reason="Declaration list read covered by strict DeclGraph ToolSweep.",
+        category="current_node_decl_read",
+        reason="Current-node declaration list read covered by strict DeclGraph ToolSweep.",
         view_key="content_plan",
         agent_type="ContentPlanAgent",
+    ),
+    "inspect_current_node_decl": ToolCase(
+        tool_name="inspect_current_node_decl",
+        status="implemented",
+        category="current_node_decl_read",
+        reason="Current-node declaration inspection covered by strict DeclGraph ToolSweep.",
+        view_key="content_plan",
+        agent_type="ContentPlanAgent",
+    ),
+    "list_current_decls": ToolCase(
+        tool_name="list_current_decls",
+        status="pending_fixture",
+        category="decl_detail_read_legacy",
+        reason=(
+            "Legacy decl-detail list remains registered for compatibility, but production Agent views use "
+            "list_current_node_decls instead and do not expose this legacy tool."
+        ),
     ),
     "get_decl": ToolCase(
         tool_name="get_decl",
-        status="implemented",
-        category="decl_detail_read",
-        reason="Declaration detail read covered by strict DeclGraph ToolSweep.",
-        view_key="content_plan",
-        agent_type="ContentPlanAgent",
+        status="pending_fixture",
+        category="decl_detail_read_legacy",
+        reason=(
+            "Legacy decl-detail read remains registered for compatibility, but production Agent views use "
+            "inspect_current_node_decl instead and do not expose this legacy tool."
+        ),
     ),
     "get_decl_revision": ToolCase(
         tool_name="get_decl_revision",
-        status="implemented",
-        category="decl_history_read",
-        reason="Declaration revision read covered by strict DeclGraph ToolSweep.",
-        view_key="content_plan",
-        agent_type="ContentPlanAgent",
+        status="pending_fixture",
+        category="decl_history_read_legacy",
+        reason=(
+            "Decl revision history read remains registered for compatibility, but production Agent views use "
+            "inspect_current_node_decl with revision instead and do not expose this legacy tool."
+        ),
     ),
     "get_decl_change": ToolCase(
         tool_name="get_decl_change",
-        status="implemented",
-        category="decl_history_read",
-        reason="Declaration change read covered by strict DeclGraph ToolSweep.",
-        view_key="content_plan",
-        agent_type="ContentPlanAgent",
+        status="pending_fixture",
+        category="decl_history_read_legacy",
+        reason=(
+            "Decl change read remains registered for compatibility and is not exposed by current production Agent views."
+        ),
     ),
     "preview_decl_delete_closure": ToolCase(
         tool_name="preview_decl_delete_closure",
@@ -1774,27 +1815,38 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     ),
     "compute_decl_dependency_closure": ToolCase(
         tool_name="compute_decl_dependency_closure",
+        status="pending_fixture",
+        category="decl_readiness_read_legacy",
+        reason=(
+            "Legacy dependency closure tool is not in the current ContentPlan view; ContentPlan uses "
+            "compute_current_node_decl_dependency_closure. Needs a dedicated production-view fixture before it can count as implemented."
+        ),
+    ),
+    "compute_current_node_decl_dependency_closure": ToolCase(
+        tool_name="compute_current_node_decl_dependency_closure",
         status="implemented",
-        category="decl_readiness_read",
-        reason="Dependency closure read covered by strict DeclGraph ToolSweep.",
+        category="decl_dependency_analysis_read",
+        reason="Current-node dependency closure read covered by strict DeclGraph ToolSweep.",
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),
     "check_decl_ready": ToolCase(
         tool_name="check_decl_ready",
-        status="implemented",
-        category="decl_readiness_read",
-        reason="Declaration readiness read covered by strict DeclGraph ToolSweep.",
-        view_key="content_plan",
-        agent_type="ContentPlanAgent",
+        status="pending_fixture",
+        category="decl_readiness_read_legacy",
+        reason=(
+            "Legacy declaration readiness tool is not in the current ContentPlan view. Current completion "
+            "coverage uses check_current_content_node_completion."
+        ),
     ),
     "list_content_public_decls": ToolCase(
         tool_name="list_content_public_decls",
-        status="implemented",
-        category="decl_readiness_read",
-        reason="Content public declaration list covered by strict DeclGraph ToolSweep.",
-        view_key="content_plan",
-        agent_type="ContentPlanAgent",
+        status="pending_fixture",
+        category="decl_readiness_read_legacy",
+        reason=(
+            "Legacy content public declaration list is not in the current ContentPlan view. "
+            "Needs a dedicated production-view fixture before it can count as implemented."
+        ),
     ),
     "list_active_decl_names": ToolCase(
         tool_name="list_active_decl_names",
@@ -1806,9 +1858,26 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
     ),
     "check_content_node_ready": ToolCase(
         tool_name="check_content_node_ready",
+        status="pending_fixture",
+        category="decl_readiness_read_legacy",
+        reason=(
+            "Legacy content readiness tool is not in the current ContentPlan view; ContentPlan uses "
+            "check_current_content_node_completion."
+        ),
+    ),
+    "check_current_content_node_completion": ToolCase(
+        tool_name="check_current_content_node_completion",
         status="implemented",
-        category="decl_readiness_read",
-        reason="Content node readiness gate covered by strict DeclGraph ToolSweep.",
+        category="content_completion_gate_read",
+        reason="Current content-node completion gate covered by strict DeclGraph ToolSweep.",
+        view_key="content_plan",
+        agent_type="ContentPlanAgent",
+    ),
+    "get_current_repo_work_config": ToolCase(
+        tool_name="get_current_repo_work_config",
+        status="implemented",
+        category="content_completion_gate_read",
+        reason="Current repo work config covered by strict declared-interface maturity smoke.",
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),

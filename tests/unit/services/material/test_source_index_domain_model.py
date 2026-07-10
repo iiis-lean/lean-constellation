@@ -9,7 +9,14 @@ from tests.unit_services_helpers import make_runtime
 def _prepare_source(repo_root: Path) -> None:
     source_root = repo_root / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text("# Entry\n\nMain source overview.\n", encoding="utf-8")
+    (source_root / "README.md").write_text(
+        "# Entry\n\n"
+        "Source provenance: local markdown fixture.\n"
+        "Reading order: start here, then read `chapter.md` as the main material.\n"
+        "Main material: `chapter.md` contains the indexed definitions and lemmas.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
+        encoding="utf-8",
+    )
     (source_root / "chapter.md").write_text("Definition A.\nLemma B.\nTheorem C.\n", encoding="utf-8")
 
 

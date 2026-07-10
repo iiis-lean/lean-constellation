@@ -370,8 +370,11 @@ def _prepare_native_full_path_repo(runtime, repo_root: Path) -> None:
     source_root.mkdir(parents=True, exist_ok=True)
     (source_root / "README.md").write_text(
         "Compactness fact\n"
+        "Source provenance: local semireal native full-path fixture.\n"
+        "Reading order: read this README.md entry as the main material.\n"
         "Every finite cover has a finite subcover in this toy source.\n"
-        "The implementation path intentionally stops after one content task terminal result.\n",
+        "The implementation path intentionally stops after one content task terminal result.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
         encoding="utf-8",
     )
     initialized = runtime.repo_workspace.initialize_repo_as_native(repo_root, project_name=repo_root.name)

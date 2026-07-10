@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
+from lean_constellation.domain.preparation import RepoPreparationInput, RepoRequirementRef, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
+from lean_constellation.services.material import ResourceMetadataInput
 from lean_constellation.services.node import DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 
@@ -460,11 +464,21 @@ class _FakeStepService:
         self.store = _FakeStepStore(step_id=step_id)
 
 
+def _source_readme_text() -> str:
+    return (
+        "Source overview.\n"
+        "Source provenance: local source fixture.\n"
+        "Reading order: use this README as the entry and main material.\n"
+        "Main material: this entry contains the source material used by the test.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n"
+    )
+
+
 def test_source_corpus_tool_invokes_material_service(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text("source text\n", encoding="utf-8")
+    (source_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
 
     result = runtime.tool_facade.invoke_agent_tool(
         _raw(tmp_path, view="source_corpus_prepare", agent_type="source_corpus_prepare"),
@@ -477,6 +491,114 @@ def test_source_corpus_tool_invokes_material_service(tmp_path: Path) -> None:
     assert result.value.ok is True
     assert result.value.value is not None
     assert result.value.value["files"][0]["path"] == "README.md"
+
+
+def test_source_index_reviewer_can_read_source_corpus(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
+    raw = _raw(tmp_path, view="source_index_reviewer", agent_type="SourceIndexReviewerAgent", role="reviewer")
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="scan_source_corpus",
+        flat_args={"relpath": ".lean_constellation/source"},
+    )
+    gate = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="check_source_corpus_draft",
+        flat_args={"relpath": ".lean_constellation/source", "entry_path": "README.md"},
+    )
+
+    assert result.ok
+    assert result.value is not None
+    assert result.value.ok is True
+    assert result.value.value is not None
+    assert result.value.value["files"][0]["path"] == "README.md"
+    assert gate.ok
+    assert gate.value is not None
+    assert gate.value.ok is True
+    assert gate.value.value is not None
+    assert gate.value.value["passed"] is True
+
+
+def test_source_range_validation_and_preview_tools_invoke_material_service(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "source.md").write_text("line one\nline two\nline three\n", encoding="utf-8")
+
+    raw = _raw(tmp_path, view="source_index_builder", agent_type="SourceIndexBuilderAgent")
+    validated = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="validate_source_range",
+            flat_args={"path": "source.md", "start_line": 1, "end_line": 2},
+        )
+    )
+    preview = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="preview_source_ref",
+            flat_args={"path": "source.md", "start_line": 2, "end_line": 2, "context_lines": 1},
+        )
+    )
+    invalid = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="validate_source_range",
+            flat_args={"path": "source.md", "start_line": 2, "end_line": 99},
+        )
+    )
+
+    assert validated["path"] == "source.md"
+    assert preview["material_kind"] == "source"
+    assert preview["preview"]["path"] == "source.md"
+    assert invalid["valid"] is False
+    assert invalid["issue_code"] == "source_ref_range_invalid"
+
+
+def test_source_and_resource_text_search_tools_enforce_material_boundary(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "source.md").write_text("shared needle from source\n", encoding="utf-8")
+
+    target = runtime.material.normalize_resource_target("https://example.com/resource")
+    assert target.ok and target.value is not None
+    temp = tmp_path / "resource_tmp"
+    (temp / "normalized").mkdir(parents=True)
+    (temp / "normalized" / "resource.md").write_text("shared needle from resource\n", encoding="utf-8")
+    registered = runtime.material.register_local_resource(
+        tmp_path,
+        target=target.value,
+        temp_dir=temp,
+        metadata=ResourceMetadataInput(title="Resource", source_url="https://example.com/resource"),
+    )
+    assert registered.ok and registered.value is not None
+
+    source_raw = _raw(tmp_path, view="source_index_builder", agent_type="SourceIndexBuilderAgent")
+    resource_raw = _raw(tmp_path, view="resource_curator", agent_type="ResourceCuratorAgent")
+    source_hits = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            source_raw,
+            tool_name="search_source_text",
+            flat_args={"query": "shared needle", "regex": False, "limit": 10},
+        )
+    )
+    resource_hits = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            resource_raw,
+            tool_name="search_resource_text",
+            flat_args={"query": "shared needle", "regex": False, "limit": 10},
+        )
+    )
+
+    assert {hit["material_kind"] for hit in source_hits["hits"]} == {"source"}
+    assert {hit["material_kind"] for hit in resource_hits["hits"]} == {"resource"}
+    assert source_hits["hits"][0]["line_text"] == "shared needle from source"
+    assert resource_hits["hits"][0]["line_text"] == "shared needle from resource"
 
 
 def test_resource_target_tool_invokes_material_service(tmp_path: Path) -> None:
@@ -863,10 +985,10 @@ def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) 
     runtime = create_test_runtime_services(register_application_tools=True)
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
-    (source_root / "notes.md").write_text("source notes\n", encoding="utf-8")
+    (source_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
     assert runtime.material.submit_source_corpus_prepared(
         tmp_path,
-        entry_path="notes.md",
+        entry_path="README.md",
         overview="Source overview.",
         preparation_summary="Prepared source.",
     ).ok
@@ -894,18 +1016,140 @@ def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) 
     assert coverage_read[0].kind == "source_index_not_committed"
 
 
-def test_resource_draft_and_mathlib_write_tools_invoke_services(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("view", "agent_type", "role", "stage"),
+    [
+        ("statement_formal_reviewer", "StatementFormalReviewerAgent", "reviewer", "statement_formal"),
+        ("proof_nl_worker", "ProofNLWorkerAgent", "worker", "proof_nl"),
+        ("proof_nl_reviewer", "ProofNLReviewerAgent", "reviewer", "proof_nl"),
+        ("proof_formal_worker", "ProofFormalWorkerAgent", "worker", "proof_formal"),
+        ("proof_formal_reviewer", "ProofFormalReviewerAgent", "reviewer", "proof_formal"),
+    ],
+)
+def test_decl_stage_source_index_reads_require_committed_index(
+    tmp_path: Path,
+    view: str,
+    agent_type: str,
+    role: str,
+    stage: str,
+) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
+    assert runtime.material.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="README.md",
+        overview="Source overview.",
+        preparation_summary="Prepared source.",
+    ).ok
+    assert runtime.material.create_draft_source_index(tmp_path).ok
+
+    raw = _raw(
+        tmp_path,
+        view=view,
+        agent_type=agent_type,
+        role=role,
+        node_path="Main.Topic",
+        stage=stage,
+        round_id="round_1",
+        batch_decls=["target_decl"],
+    )
+
+    draft_read = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_source_index",
+            flat_args={},
+        )
+    )
+    coverage_read = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_source_index_coverage",
+            flat_args={},
+        )
+    )
+
+    assert draft_read[0].kind == "source_index_not_committed"
+    assert coverage_read[0].kind == "source_index_not_committed"
+
+
+def test_root_interface_prepare_tools_are_root_scoped_and_worker_callable(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.repo_workspace.preparation.write_preparation_input(
+        tmp_path,
+        input=RepoPreparationInput(
+            goal="Prepare root interfaces.",
+            source_corpus_mode=SourceCorpusMode.EXISTING,
+            interface_inputs=[],
+        ),
+    ).ok
+    raw = _raw(tmp_path, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent")
+
+    added = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="add_root_interface",
+            flat_args={"name": "core_definition", "kind": "definition", "summary": "Expose the core definition."},
+        )
+    )
+    listed = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="list_root_interfaces",
+            flat_args={},
+        )
+    )
+    updated = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="update_root_interface",
+            flat_args={"name": "core_definition", "summary": "Updated core definition."},
+        )
+    )
+    no_op_update = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="update_root_interface",
+            flat_args={"name": "core_definition"},
+        )
+    )
+    removed = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="remove_root_interface",
+            flat_args={"name": "core_definition"},
+        )
+    )
+
+    assert added["node_path"] == "Main"
+    assert listed["node_path"] == "Main"
+    assert listed["interfaces"][0]["name"] == "core_definition"
+    assert updated["contract"]["interfaces"][0]["summary"] == "Updated core definition."
+    assert no_op_update[0].kind == "interface_update_field_required"
+    assert removed["contract"]["interfaces"] == []
+
+
+def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: Path) -> None:
     dispatcher = _FakeMathlibToolkit()
     runtime = create_test_runtime_services(
         register_application_tools=True,
         external_overrides={"lean_mcp_toolkit": LeanMcpToolkitClient(dispatcher=dispatcher)},
     )
+    allocated = runtime.material.allocate_resource_draft(
+        tmp_path,
+        target="https://example.com/resource",
+        title_hint="Example resource",
+    )
+    assert allocated.ok and allocated.value is not None
 
     draft = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             _raw(tmp_path, view="resource_curator", agent_type="resource_curator"),
-            tool_name="allocate_resource_draft",
-            flat_args={"target": "https://example.com/resource", "title_hint": "Example resource"},
+            tool_name="get_resource_draft",
+            flat_args={"draft_id": allocated.value.draft.draft_id},
         )
     )
     assert draft["draft"]["target"]["canonical_locator"] == "https://example.com/resource"
@@ -1083,16 +1327,77 @@ def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: 
 
 def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
-    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    workspace = tmp_path / "workspace"
+    provider = workspace / "Provider"
+    consumer = workspace / "Consumer"
+    provider.mkdir(parents=True)
+    consumer.mkdir(parents=True)
+    assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
     assert runtime.repo_workspace.metadata.set_repo_format(
-        tmp_path,
+        provider,
         repo_format=RepoFormat.ADAPTER,
         reason="adapter tool smoke",
     ).ok
+    assert runtime.repo_workspace.requirement.create_requirement(
+        consumer,
+        name="need_provider",
+        target_repo="Provider",
+        source_description="Need a provider theorem.",
+        reason="The adapter catalog should expose this theorem.",
+    ).ok
+    assert runtime.repo_workspace.requirement.create_requirement(
+        consumer,
+        name="other_need",
+        target_repo="Provider",
+        source_description="Requirement outside current preparation refs.",
+        reason=None,
+    ).ok
+    assert runtime.repo_workspace.preparation.write_preparation_input(
+        provider,
+        input=RepoPreparationInput(
+            goal="Expose an upstream theorem through an adapter repo.",
+            source_corpus_mode=SourceCorpusMode.NONE,
+            source_corpus_relpath=None,
+            requirement_refs=[RepoRequirementRef(consumer_repo="Consumer", requirement_name="need_provider")],
+        ),
+    ).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(provider).ok
+    assert runtime.adapter.write_adapter_upstream_metadata(
+        provider,
+        git_url="https://github.com/example/upstream.git",
+        package_name="upstream",
+        dependency_name="upstream",
+        evidence_summary="Adapter tool smoke upstream.",
+        visible_modules=["Upstream.Basic"],
+    ).ok
+    assert runtime.adapter.mark_upstream_build_trusted(provider, summary="Adapter tool smoke trusted build.").ok
+    raw = _raw(provider, view="adapter_repo_import", agent_type="AdapterDeclCatalogAgent")
+
+    requirements = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_preparation_requirements", flat_args={})
+    )
+    requirement = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_preparation_requirement",
+            flat_args={"consumer_repo": "Consumer", "requirement_name": "need_provider"},
+        )
+    )
+    denied_requirement = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_preparation_requirement",
+            flat_args={"consumer_repo": "Consumer", "requirement_name": "other_need"},
+        )
+    )
+    root_interfaces = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_root_interfaces", flat_args={})
+    )
 
     created = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
-            _raw(tmp_path, view="adapter_repo_import", agent_type="adapter_repo_import"),
+            raw,
             tool_name="create_adapter_decl",
             flat_args={
                 "name": "main_result",
@@ -1103,11 +1408,40 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
         )
     )
 
+    formal = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="set_adapter_statement_formal",
+            flat_args={
+                "name": "main_result",
+                "code": "theorem main_result : True := by\n  sorry",
+                "upstream_decl_name": "upstreamSmoke",
+            },
+        )
+    )
+    matches = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="find_adapter_decl_by_upstream",
+            flat_args={"module": "Upstream.Basic", "upstream_decl_name": "upstreamSmoke"},
+        )
+    )
+    preflight = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(raw, tool_name="check_adapter_catalog_ready_preflight", flat_args={})
+    )
+
+    assert [item["requirement"]["name"] for item in requirements["requirements"]] == ["need_provider"]
+    assert requirement["requirement"]["name"] == "need_provider"
+    assert denied_requirement[0].kind == "preparation_requirement_ref_not_allowed"
+    assert root_interfaces["node_path"] == "Main"
     assert created["name"] == "main_result"
     assert created["decl"]["name"] == "main_result"
+    assert formal["revision"]["statement"]["formal"]["upstream_decl_name"] == "upstreamSmoke"
+    assert [item["name"] for item in matches["matches"]] == ["main_result"]
+    assert preflight["passed"] is False
     inspected = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
-            _raw(tmp_path, view="adapter_repo_import", agent_type="adapter_repo_import"),
+            raw,
             tool_name="inspect_adapter_decl",
             flat_args={"name": "main_result"},
         )

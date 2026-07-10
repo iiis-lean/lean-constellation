@@ -254,6 +254,79 @@ def test_content_node_task_reuses_content_plan_agent_from_prior_same_node_task(t
     assert second_flow.agent_bindings.get("content_plan") == first_agent_id
 
 
+def test_content_node_task_skips_missing_prior_content_plan_binding(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+
+    prior_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, prior_flow_id)
+    runtime.flow_service.store.update_flow_record(
+        prior_flow_id,
+        lambda flow: flow.agent_bindings.by_role.__setitem__("content_plan", "missing_agent"),
+    )
+
+    current_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, current_flow_id)
+    _advance_and_run(runtime, current_flow_id)
+    current_agent_id = runtime.agent_service.start_records[-1].agent_id
+
+    assert current_agent_id != "missing_agent"
+    assert runtime.flow_service.get_flow(current_flow_id).agent_bindings.get("content_plan") == current_agent_id
+
+
+def test_content_node_task_skips_prior_content_plan_binding_with_wrong_agent_type(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    wrong_agent = runtime.agent_service.create_agent(
+        f"repo:{repo_root.name}:node:Main.Core",
+        "MathlibReconAgent",
+        home_id="MathlibReconAgent",
+    )
+
+    prior_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, prior_flow_id)
+    runtime.flow_service.store.update_flow_record(
+        prior_flow_id,
+        lambda flow: flow.agent_bindings.by_role.__setitem__("content_plan", wrong_agent.agent_id),
+    )
+
+    current_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, current_flow_id)
+    _advance_and_run(runtime, current_flow_id)
+    current_agent_id = runtime.agent_service.start_records[-1].agent_id
+
+    assert current_agent_id != wrong_agent.agent_id
+    assert runtime.flow_service.get_flow(current_flow_id).agent_bindings.get("content_plan") == current_agent_id
+
+
+def test_content_node_task_skips_prior_content_plan_binding_with_wrong_scope(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    wrong_scope_agent = runtime.agent_service.create_agent(
+        f"repo:{repo_root.name}:node:Main.Other",
+        "ContentPlanAgent",
+        home_id="ContentPlanAgent",
+    )
+
+    prior_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, prior_flow_id)
+    runtime.flow_service.store.update_flow_record(
+        prior_flow_id,
+        lambda flow: flow.agent_bindings.by_role.__setitem__("content_plan", wrong_scope_agent.agent_id),
+    )
+
+    current_flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, current_flow_id)
+    _advance_and_run(runtime, current_flow_id)
+    current_agent_id = runtime.agent_service.start_records[-1].agent_id
+
+    assert current_agent_id != wrong_scope_agent.agent_id
+    assert runtime.flow_service.get_flow(current_flow_id).agent_bindings.get("content_plan") == current_agent_id
+
+
 def test_content_node_task_does_not_inherit_content_plan_agent_from_different_node_scope(tmp_path: Path) -> None:
     runtime, lean_runtime = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"

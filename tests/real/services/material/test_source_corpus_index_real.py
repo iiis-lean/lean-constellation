@@ -17,6 +17,10 @@ def _write_real_source_corpus(repo_root: Path) -> None:
             [
                 "# Real source corpus",
                 "",
+                "Source provenance: local real source corpus fixture.",
+                "Reading order: read this entry, then read chapter1.md as the main material.",
+                "Main material: chapter1.md contains the definition, lemma, theorem, and proof.",
+                "Known gaps and extraction limits: no missing source sections are known.",
                 "This corpus states a compact fixed point argument.",
                 "Chapter one contains a definition and a theorem.",
             ]

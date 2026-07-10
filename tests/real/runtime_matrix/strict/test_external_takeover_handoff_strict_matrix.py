@@ -92,7 +92,7 @@ def test_strict_external_takeover_handoff_payload_for_repo_coordinator_resource_
         resource_step_id,
         agent_type="ResourceCuratorControlledTestAgent",
         marker="strict-handoff-resource-curator",
-        expected_workdir=resource_ws.provider_repo / ".lean_constellation" / "resources" / ".drafts",
+        expected_workdir=None,
         app_view="resource_curator",
         submit_view="resource_curator_submit",
         app_call=("normalize_resource_target", {"target": resource_ws.resources.web_url}),
@@ -251,7 +251,7 @@ def _assert_handoff_payload_and_tools(
     *,
     agent_type: str,
     marker: str,
-    expected_workdir: Path,
+    expected_workdir: Path | None,
     app_view: str,
     submit_view: str,
     app_call: tuple[str, dict[str, Any]],
@@ -277,7 +277,10 @@ def _assert_handoff_payload_and_tools(
     assert env["LEAN_CONSTELLATION_AGENT_TYPE"] == agent_type
     assert env["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] == app_view
     assert env["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"] == submit_view
-    assert payload["workdir"] == str(expected_workdir)
+    if expected_workdir is None:
+        assert payload["workdir"].startswith(str(ws.provider_repo / ".lean_constellation" / "resources" / ".drafts" / "draft_"))
+    else:
+        assert payload["workdir"] == str(expected_workdir)
     assert payload["agent_id"]
     assert payload["home_id"] == agent_type
 

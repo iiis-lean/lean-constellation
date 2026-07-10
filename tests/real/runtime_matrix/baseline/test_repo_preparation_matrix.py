@@ -171,7 +171,14 @@ def test_adapter_preparation_ready_and_blocked_branches(
         ws.runtime,
         {
             "AdapterDeclCatalogAgent": [
-                ("submit_adapter_catalog_blocked", {"reason": "Runtime Matrix adapter blocked.", "missing_interfaces": ["main_result"]}),
+                (
+                    "submit_adapter_catalog_blocked",
+                    {
+                        "reason": "Runtime Matrix adapter blocked.",
+                        "missing_interfaces": ["main_result"],
+                        "evidence_summary": "Runtime Matrix blocked path confirms no usable upstream binding for main_result.",
+                    },
+                ),
             ]
         },
     )
@@ -221,8 +228,11 @@ def _write_source_corpus_entry(ws: RuntimeMatrixWorkspace) -> None:
     source_root.mkdir(parents=True, exist_ok=True)
     (source_root / "README.md").write_text(
         "Runtime Matrix source corpus.\n"
+        "Source provenance: local Runtime Matrix preparation fixture.\n"
+        "Reading order: read this README.md entry as the main material.\n"
         "The source supports a tiny theorem whose proof is trivial.\n"
-        "This file is fully indexed by the scheduler test.\n",
+        "This file is fully indexed by the scheduler test.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
         encoding="utf-8",
     )
 
@@ -259,6 +269,20 @@ def _complete_source_index_builder_actions(summary: str, *, path: str = "README.
         ("application", "mark_block_completed", {"block_id": "root"}),
         ("application", "set_file_survey_status", {"path": path, "status": "surveyed", "summary": "Read in full."}),
         ("application", "set_file_indexing_status", {"path": path, "status": "indexed"}),
+        (
+            "application",
+            "set_file_survey_status",
+            {
+                "path": "README.md",
+                "status": "skipped" if path != "README.md" else "surveyed",
+                "summary": "Entry file only; source.md contains the indexed material.",
+            },
+        ),
+        (
+            "application",
+            "set_file_indexing_status",
+            {"path": "README.md", "status": "skipped" if path != "README.md" else "indexed"},
+        ),
         ("submit", "submit_source_index_builder_round", {"summary": summary}),
     ]
 
@@ -321,7 +345,6 @@ def _complete_adapter_catalog_actions():
                 "binding_summary": "Runtime Matrix binds required interface to finalized adapter declaration.",
             },
         ),
-        ("application", "refresh_adapter_projection", {}),
         ("submit", "submit_adapter_catalog_ready", {"summary": "Adapter catalog is ready."}),
     ]
 

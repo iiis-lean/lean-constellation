@@ -115,7 +115,14 @@ def test_snapshot_restore_real_filesystem_checkpoint_roundtrip(tmp_path: Path) -
     _write_real_preparation_input(foundation, repo_root)
     source_root = repo_root / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
-    (source_root / "README.md").write_text("# Source\n\nReadable corpus entry.\n", encoding="utf-8")
+    (source_root / "README.md").write_text(
+        "# Source\n\n"
+        "Source provenance: local snapshot restore fixture.\n"
+        "Reading order: read this README.md entry as the main material.\n"
+        "Main material: readable corpus entry.\n"
+        "Known gaps and extraction limits: no missing source sections are known.\n",
+        encoding="utf-8",
+    )
     (repo_root / "Main.lean").write_text("import Std\n", encoding="utf-8")
     (repo_root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\n", encoding="utf-8")
     (repo_root / ".lake").mkdir()

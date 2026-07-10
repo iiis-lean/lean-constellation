@@ -24,7 +24,8 @@ def test_repo_preparation_tools_are_registered() -> None:
 
 
 def test_repo_preparation_groups_expose_expected_tools() -> None:
-    assert_group_contains("repo_preparation_input_read", {"get_preparation_input", "get_preparation_start_preflight"})
+    assert_group_contains("repo_preparation_input_read", {"get_preparation_input"})
+    assert_group_contains("repo_preparation_start_preflight_read", {"get_preparation_start_preflight"})
     assert_group_contains("workspace_provider_catalog_read", {"inspect_workspace_for_coordinator", "list_ready_provider_repos"})
     assert_group_contains(
         "workspace_requirement_read",

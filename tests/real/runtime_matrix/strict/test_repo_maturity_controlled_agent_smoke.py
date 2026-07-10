@@ -166,6 +166,10 @@ def test_declared_interface_content_plan_controlled_agent_smoke(
         "StatementNLReviewerAgent",
         "StatementFormalWorkerAgent",
         "StatementFormalReviewerAgent",
+        "ProofNLWorkerAgent",
+        "ProofNLReviewerAgent",
+        "ProofFormalWorkerAgent",
+        "ProofFormalReviewerAgent",
         cli_type="codex",
     )
     unwrap(ws.admin.resume_runtime())
