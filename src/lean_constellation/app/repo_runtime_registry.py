@@ -39,6 +39,9 @@ class RepoRuntimeStatusView(StrictModel):
 
 class RepoRuntimeListView(StrictModel):
     workspace_root: str
+    scheduler_enabled: bool
+    server_start_paused: bool
+    test_control_enabled: bool
     repos: list[RepoRuntimeStatusView] = Field(default_factory=list)
     summary: str
 
@@ -166,6 +169,9 @@ class RepoRuntimeRegistry:
         return self.result.ok(
             RepoRuntimeListView(
                 workspace_root=str(self.workspace_root),
+                scheduler_enabled=self.config.scheduler_enabled,
+                server_start_paused=self.config.server_start_paused,
+                test_control_enabled=self.config.test_control_enabled,
                 repos=statuses,
                 summary=f"Found {len(statuses)} repo runtime records.",
             )

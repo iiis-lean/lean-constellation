@@ -40,7 +40,7 @@ from lean_constellation.flows.testing import (
     CONTROLLED_AGENT_RECORD_KEY,
     ControlledAgentOverrideSpec,
 )
-from lean_constellation.services.foundation import FoundationContext, ServiceIssue, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
 from lean_constellation.services.repo_workspace import RepoSkeletonView
 from lean_constellation.services.runtime import LeanRuntimeServices
 
@@ -362,6 +362,8 @@ class WriteMainRepoPreparationInput(StrictModel):
 class ValidateMainSourceCorpusInput(StrictModel):
     repo_root: Path
     require_files: bool = True
+    check_draft_gate: bool = False
+    entry_path: str | None = None
 
     @field_validator("repo_root", mode="before")
     @classmethod
@@ -376,6 +378,7 @@ class MainSourceCorpusValidationView(StrictModel):
     source_corpus_path: str | None = None
     exists: bool
     file_count: int
+    draft_gate: GateReport | None = None
     passed: bool
     issues: list[ServiceIssue] = Field(default_factory=list)
     summary: str
@@ -599,6 +602,7 @@ class LeanAdminApi:
         source_path: Path | None = None
         exists = False
         file_count = 0
+        draft_gate: GateReport | None = None
         if preparation.source_corpus_mode == SourceCorpusMode.NONE:
             issues.append(
                 self.runtime.foundation.issue(
@@ -644,6 +648,18 @@ class LeanAdminApi:
                                 object_ref=str(source_path),
                             )
                         )
+                    if input_model.check_draft_gate:
+                        checked = self.runtime.material.check_source_corpus_draft(
+                            input_model.repo_root,
+                            relpath=preparation.source_corpus_relpath or ".lean_constellation/source",
+                            entry_path=input_model.entry_path,
+                        )
+                        if not checked.ok or checked.value is None:
+                            issues.extend(checked.issues)
+                        else:
+                            draft_gate = checked.value
+                            if not draft_gate.passed:
+                                issues.extend(draft_gate.issues)
         passed = not issues
         view = MainSourceCorpusValidationView(
             repo_root=str(input_model.repo_root),
@@ -652,6 +668,7 @@ class LeanAdminApi:
             source_corpus_path=str(source_path) if source_path is not None else None,
             exists=exists,
             file_count=file_count,
+            draft_gate=draft_gate,
             passed=passed,
             issues=issues,
             summary="Main source corpus validation passed." if passed else f"Main source corpus validation found {len(issues)} issues.",

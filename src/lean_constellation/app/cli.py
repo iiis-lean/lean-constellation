@@ -206,13 +206,16 @@ def main(argv: list[str] | None = None) -> int:
             ),
             flush=True,
         )
-        anyio.run(
-            lambda: run_production_app_server(
-                config,
-                view_keys=args.view_key,
-                log_level=args.log_level,
+        try:
+            anyio.run(
+                lambda: run_production_app_server(
+                    config,
+                    view_keys=args.view_key,
+                    log_level=args.log_level,
+                )
             )
-        )
+        except KeyboardInterrupt:
+            pass
         return 0
 
     if args.command == "status":
@@ -279,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             _request_json(
                 "GET",
                 _url_with_query(
-                    f"{admin_base_url}/admin/external/health",
+                    f"{admin_base_url}/admin/workspace/external/health",
                     {
                         "required_toolkit_groups": ",".join(args.required_toolkit_group) if args.required_toolkit_group else None,
                         "required_toolkit_tools": ",".join(args.required_toolkit_tool) if args.required_toolkit_tool else None,

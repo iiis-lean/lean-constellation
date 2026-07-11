@@ -84,6 +84,21 @@ def test_cli_serve_prints_redacted_server_payload(tmp_path, capsys, monkeypatch)
     assert calls[0][1] == {"view_keys": ["resource_curator"], "log_level": "info"}
 
 
+def test_cli_serve_treats_keyboard_interrupt_as_clean_shutdown(tmp_path, capsys, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(f'workspace_root = "{tmp_path / "workspace"}"\n', encoding="utf-8")
+
+    def interrupted_run(_callable):  # noqa: ANN001
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("lean_constellation.app.cli.anyio.run", interrupted_run)
+
+    exit_code = main(["--config", str(config_path), "serve"])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["command"] == "serve"
+
+
 def test_cli_start_flow_uses_admin_http(tmp_path, capsys, monkeypatch) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -150,6 +165,41 @@ def test_cli_agent_turn_uses_admin_http_query(tmp_path, capsys, monkeypatch) -> 
         (
             "GET",
             "http://admin.test/root/admin/repos/Repo/agents/agent-1/turn?index=2",
+            None,
+        )
+    ]
+
+
+def test_cli_external_health_uses_workspace_admin_route(tmp_path, capsys, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'workspace_root = "{tmp_path / "workspace"}"\nadmin_http_base_url = "http://admin.test"\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_request_json(method, url, payload=None):  # noqa: ANN001
+        calls.append((method, url, payload))
+        return {"ok": True, "value": {"health": {"lean_toolkit_available": True}}}
+
+    monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
+
+    exit_code = main(
+        [
+            "--config",
+            str(config_path),
+            "external-health",
+            "--required-toolkit-tool",
+            "diagnostics.file",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["value"]["health"]["lean_toolkit_available"] is True
+    assert calls == [
+        (
+            "GET",
+            "http://admin.test/admin/workspace/external/health?required_toolkit_tools=diagnostics.file",
             None,
         )
     ]

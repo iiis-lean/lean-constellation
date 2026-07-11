@@ -357,7 +357,19 @@ def create_workspace_admin_http_routes(
 ) -> list[Route]:
     """Create Admin HTTP routes for a workspace server with repo-local runtimes."""
 
-    del toolkit_state
+    async def workspace_external_health(request: Request) -> JSONResponse:
+        query = request.query_params
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            toolkit_state=toolkit_state,
+        )
+        return _service_result_response(
+            admin.get_external_health(
+                required_toolkit_groups=_query_csv(query.get("required_toolkit_groups")),
+                required_toolkit_tools=_query_csv(query.get("required_toolkit_tools")),
+            )
+        )
 
     async def workspace_status(request: Request) -> JSONResponse:
         del request
@@ -902,6 +914,7 @@ def create_workspace_admin_http_routes(
     return [
         Route("/admin/workspace/status", workspace_status, methods=["GET"]),
         Route("/admin/workspace/repos", workspace_repos, methods=["GET"]),
+        Route("/admin/workspace/external/health", workspace_external_health, methods=["GET"]),
         Route("/admin/workspace/requirements/waiting", workspace_waiting_requirements, methods=["GET"]),
         Route("/admin/workspace/requirements/resume-candidates", workspace_requirement_resume_candidates, methods=["GET"]),
         Route("/admin/workspace/requirements/bootstrap", workspace_start_requirement_bootstrap, methods=["POST"]),
@@ -967,6 +980,7 @@ def create_workspace_admin_http_routes(
         Route("/admin/requirements/resume-candidates", workspace_requirement_resume_candidates, methods=["GET"]),
         Route("/admin/requirements/bootstrap", workspace_start_requirement_bootstrap, methods=["POST"]),
         Route("/admin/requirements/resume", workspace_resume_requirement, methods=["POST"]),
+        Route("/admin/external/health", workspace_external_health, methods=["GET"]),
         Route("/admin/snapshots/create", legacy_repo_route(repo_create_snapshot), methods=["POST"]),
         Route("/admin/snapshots/list", legacy_repo_route(repo_list_snapshots), methods=["POST"]),
         Route("/admin/snapshots/restore", legacy_repo_route(repo_restore_snapshot), methods=["POST"]),
