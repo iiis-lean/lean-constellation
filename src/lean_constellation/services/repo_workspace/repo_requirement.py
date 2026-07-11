@@ -109,6 +109,7 @@ class RepoRequirementComponent:
         kind: DeclKind | str,
         summary: str,
         statement_hint: str | None = None,
+        expected_statement_lean_code: str | None = None,
     ) -> ServiceResult[RequirementView]:
         requirement = self._load_open(repo_root, requirement_name)
         if not requirement.ok or requirement.value is None:
@@ -118,6 +119,7 @@ class RepoRequirementComponent:
             name=interface_name.strip(),
             kind=DeclKind(kind),
             summary=summary.strip(),
+            expected_statement_lean_code=self._strip_or_none(expected_statement_lean_code),
             note=self._strip_or_none(statement_hint),
         )
         for existing in value.interfaces:
@@ -439,6 +441,17 @@ class RepoRequirementComponent:
                     )
                 )
                 continue
+            statement_contract = self._validate_provider_interface_statement_contract(
+                provider_root,
+                provider_key=provider_key,
+                interface=interface,
+                node_path=valid_match.ref.node,
+                decl_name=valid_match.ref.name,
+                revision=valid_match.ref.revision,
+            )
+            if not statement_contract.ok:
+                issues.extend(statement_contract.issues)
+                continue
             satisfied = self.runtime.decl_graph.check_decl_proof_policy_satisfied(
                 provider_root,
                 node_path=valid_match.ref.node,
@@ -462,6 +475,76 @@ class RepoRequirementComponent:
                 )
         if issues:
             return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(None)
+
+    def _validate_provider_interface_statement_contract(
+        self,
+        provider_root: Path,
+        *,
+        provider_key: str,
+        interface: DeclInterface,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+    ) -> ServiceResult[None]:
+        expected = interface.expected_statement_lean_code
+        if expected is None:
+            return self.runtime.foundation.ok(None)
+        if interface.kind not in {DeclKind.THEOREM, DeclKind.LEMMA}:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_interface_statement_contract_kind_unsupported",
+                    "Exact provider statement contracts currently support theorem-like interfaces.",
+                    object_ref=f"{provider_key}:{node_path}:{decl_name}@{revision}",
+                    current=interface.kind.value,
+                    expected="theorem | lemma",
+                )
+            )
+        loaded = self.runtime.decl_graph.get_decl_revision(
+            provider_root,
+            node_path=node_path,
+            name=decl_name,
+            revision=revision,
+        )
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_interface_statement_contract_revision_missing",
+                    "The provider declaration revision required by the exact statement contract is unavailable.",
+                    object_ref=f"{provider_key}:{node_path}:{decl_name}@{revision}",
+                )
+            )
+        statement_code = loaded.value.statement_lean_code
+        if statement_code is None or not statement_code.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_interface_statement_contract_actual_missing",
+                    "The provider declaration has no captured formal statement to compare.",
+                    object_ref=f"{provider_key}:{node_path}:{decl_name}@{revision}",
+                )
+            )
+        actual_codes = [("statement", statement_code)]
+        if loaded.value.proof_lean_code is not None and loaded.value.proof_lean_code.strip():
+            actual_codes.append(("proof", loaded.value.proof_lean_code))
+        for stage, actual in actual_codes:
+            compared = self.runtime.lean_projection.annotation.compare_theorem_header(
+                expected,
+                actual,
+                decl_name=decl_name,
+            )
+            comparison_issues = compared.issues if not compared.ok or compared.value is None else compared.value.issues
+            if comparison_issues:
+                return self.runtime.foundation.fail(
+                    [
+                        issue.model_copy(
+                            update={
+                                "kind": "provider_interface_statement_contract_mismatch",
+                                "object_ref": f"{provider_key}:{node_path}:{decl_name}@{revision}:{stage}",
+                            }
+                        )
+                        for issue in comparison_issues
+                    ]
+                )
         return self.runtime.foundation.ok(None)
 
     def mark_requirement_result_observed(

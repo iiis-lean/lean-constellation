@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from lean_constellation.services.decl_graph import DeclStage, DeclState
 from tests.unit.flows.decl_round._helpers import (
     NODE_PATH,
@@ -16,12 +18,32 @@ from tests.unit.flows.decl_round._helpers import (
 )
 
 
-def test_declared_definition_round_skips_proof_stages(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("kind", "lean_code", "lean_check"),
+    [
+        (
+            "definition",
+            "def main_result : True := by\n  trivial",
+            {"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+        ),
+        (
+            "theorem",
+            "theorem main_result : True := by\n  sorry",
+            {"status": "passed", "allow_sorry": "true", "contains_sorry": "true"},
+        ),
+    ],
+)
+def test_declared_round_skips_proof_stages(
+    tmp_path: Path,
+    kind: str,
+    lean_code: str,
+    lean_check: dict[str, str],
+) -> None:
     runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
     strategy_id, round_id, round_index = create_round_with_decl(
         lean_runtime,
         repo_root,
-        kind="definition",
+        kind=kind,
         end_after_state=DeclState.DECLARED,
     )
     flow_id = start_decl_round_flow(
@@ -60,8 +82,8 @@ def test_declared_definition_round_skips_proof_stages(tmp_path: Path) -> None:
         node_path=NODE_PATH,
         round_id=round_id,
         decl_name="main_result",
-        lean_code="def main_result : True := by\n  trivial",
-        lean_check={"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+        lean_code=lean_code,
+        lean_check=lean_check,
     )
     assert statement_formal.ok, statement_formal.issues
     synced = lean_runtime.lean_projection.sync_decl_file_after_revision_reset(

@@ -11,8 +11,8 @@ from pydantic import Field, TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef, NodeRef
+from lean_constellation.domain.repo import RepoPublicationStatus
 from lean_constellation.services.foundation import (
-    FoundationContext,
     GateReport,
     IssueSeverity,
     ServiceIssue,
@@ -579,19 +579,46 @@ class DependencyComponent:
         deps = repo_workspace.workspace_catalog.list_current_lake_dependency_repos(repo_root)
         if not deps.ok or deps.value is None:
             return self.runtime.foundation.fail(deps.issues)
-        boundaries = [
-            VisibleNodeBoundaryItem(
-                repo=dep.name,
-                node_path="Main",
-                node_kind=NodeKind.SCOPE.value,
-                ready=True,
-                import_module=f"{dep.name}.Main.Interfaces",
-                exported_decl_refs=[],
-                interface_names=[],
-                summary=f"Attached Lake dependency boundary {dep.name}:Main.",
+        boundaries: list[VisibleNodeBoundaryItem] = []
+        for dep in deps.value:
+            if dep.path is None:
+                continue
+            provider_root = (Path(repo_root) / dep.path).resolve(strict=False)
+            expected_root = (Path(repo_root).parent / dep.name).resolve(strict=False)
+            if provider_root != expected_root or not (provider_root / ".lean_constellation").is_dir():
+                continue
+            publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_root)
+            if (
+                not publication.ok
+                or publication.value is None
+                or publication.value.publication.status != RepoPublicationStatus.STABLE
+            ):
+                continue
+            exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
+            if not exports.ok or exports.value is None:
+                return self.runtime.foundation.fail(exports.issues)
+            exported_refs = [
+                DeclRef(
+                    repo=dep.name,
+                    node=item.ref.node,
+                    name=item.ref.name,
+                    revision=item.ref.revision,
+                )
+                for item in exports.value
+                if item.valid
+            ]
+            boundaries.append(
+                VisibleNodeBoundaryItem(
+                    repo=dep.name,
+                    node_path="Main",
+                    node_kind=NodeKind.SCOPE.value,
+                    ready=True,
+                    import_module=f"{dep.name}.Main.Interfaces",
+                    exported_decl_refs=exported_refs,
+                    interface_names=[ref.name for ref in exported_refs],
+                    summary=f"Attached stable workspace dependency boundary {dep.name}:Main.",
+                )
             )
-            for dep in deps.value
-        ]
         return self.runtime.foundation.ok(boundaries)
 
     def _refresh_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[object]:

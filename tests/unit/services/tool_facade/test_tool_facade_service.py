@@ -69,7 +69,12 @@ def _write_preparation_input(repo_root: Path) -> None:
         source_corpus_mode=SourceCorpusMode.PREPARE,
         source_corpus_relpath=".lean_constellation/source",
         interface_inputs=[
-            DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the main theorem.")
+            DeclInterface(
+                name="main_result",
+                kind=DeclKind.THEOREM,
+                summary="Expose the main theorem.",
+                expected_statement_lean_code="theorem main_result : True := by sorry",
+            )
         ],
     )
     path = foundation.layout.preparation_input_path(FoundationContext(repo_root=repo_root))
@@ -233,6 +238,9 @@ def test_context_resolver_parses_runtime_and_protected_interfaces(tmp_path: Path
     assert protected.ok
     assert protected.value is not None
     assert protected.value.protected_names == ["main_result"]
+    assert protected.value.expected_statement_lean_code == {
+        "main_result": "theorem main_result : True := by sorry"
+    }
 
     mismatch = service.context_resolver.resolve_tool_context(
         RawToolCallContext(endpoint_view_key="other_view", runtime_context=_runtime(tmp_path))

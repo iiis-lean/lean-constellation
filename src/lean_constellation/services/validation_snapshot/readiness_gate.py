@@ -520,10 +520,20 @@ class ReadinessGateComponent:
             else self.runtime.foundation.gate_passed("repo_ready_base", summary="Repo ready base checks passed.")
         )
 
+        protected_interfaces = self.node.check_root_main_handoff_interfaces(repo_root)
+        if not protected_interfaces.ok or protected_interfaces.value is None:
+            return self.runtime.foundation.fail(protected_interfaces.issues)
+        reports.append(protected_interfaces.value)
+
         public_boundary = self._check_repo_public_boundary_proof_policy(repo_root)
         if not public_boundary.ok or public_boundary.value is None:
             return self.runtime.foundation.fail(public_boundary.issues)
         reports.append(public_boundary.value)
+
+        statement_contracts = self.node.check_root_interface_statement_contracts(repo_root)
+        if not statement_contracts.ok or statement_contracts.value is None:
+            return self.runtime.foundation.fail(statement_contracts.issues)
+        reports.append(statement_contracts.value)
 
         source = self.consistency.check_source_corpus_consistency(repo_root)
         if source.ok and source.value is not None:

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 from agent_runtime_kit.flow.models import BaseSubmission, ChildFlowDispatchSubmission, FlowRequest
 
@@ -759,11 +760,35 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoRequirementArgs) -> ServiceResult[PreparedSubmissionView]:
+    if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", args.name) is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "requirement_name_invalid",
+                "Requirement name must be a consumer-local lower_snake_case identity.",
+                field="name",
+                current=args.name,
+            )
+        )
     try:
         requirement_name = runtime.foundation.layout.ensure_safe_key(args.name)
         target_repo = runtime.foundation.layout.ensure_safe_key(args.target_repo)
     except ValueError as exc:
         return runtime.foundation.fail(runtime.foundation.issue("requirement_key_invalid", str(exc)))
+    invalid_target_name = (
+        not target_repo[0].isupper()
+        or not target_repo.isalnum()
+        or target_repo.lower().endswith(("provider", "repo", "repository", "dependency"))
+    )
+    if invalid_target_name:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "requirement_target_repo_name_invalid",
+                "Requirement target_repo must be an UpperCamelCase mathematical project name without Provider, Repo, Repository, or Dependency suffixes.",
+                field="target_repo",
+                current=target_repo,
+                suggested_action="Use a reusable mathematical scope name such as WeightedSieve.",
+            )
+        )
     if not (args.source_description and args.source_description.strip()) and not (args.reason and args.reason.strip()):
         return runtime.foundation.fail(
             runtime.foundation.issue(
@@ -780,6 +805,7 @@ def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: Submi
             )
         )
     interfaces = []
+    interface_names: set[str] = set()
     for item in args.interfaces:
         try:
             kind = DeclKind(item.kind)
@@ -793,12 +819,28 @@ def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: Submi
                     field="interfaces",
                 )
             )
+        interface_name = item.name.strip()
+        if interface_name in interface_names:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "requirement_interface_name_duplicate",
+                    "Requirement interface names must be unique within one requirement.",
+                    field="interfaces.name",
+                    current=interface_name,
+                )
+            )
+        interface_names.add(interface_name)
         interfaces.append(
             {
-                "name": item.name.strip(),
+                "name": interface_name,
                 "kind": kind.value,
                 "summary": item.summary.strip(),
                 **({"statement_hint": item.statement_hint.strip()} if item.statement_hint and item.statement_hint.strip() else {}),
+                **(
+                    {"expected_statement_lean_code": item.expected_statement_lean_code.strip()}
+                    if item.expected_statement_lean_code and item.expected_statement_lean_code.strip()
+                    else {}
+                ),
             }
         )
     required_proof_availability = runtime.repo_workspace.requirement_proof_availability_for_repo(ctx.repo_root)

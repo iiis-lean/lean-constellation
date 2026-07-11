@@ -8,6 +8,7 @@ from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.tools import register_submit_tooling
+from lean_constellation.tools.submit_args import RequirementInterfaceArg, SubmitRepoRequirementArgs
 
 
 class FakeSubmissionGateway:
@@ -477,10 +478,18 @@ def test_submit_repo_requirement_builds_submission_without_waiting_state(tmp_pat
         tool_name="submit_repo_requirement",
         flat_args={
             "name": "need_provider",
-            "target_repo": "Provider",
+            "target_repo": "ReusableMath",
             "summary": "Need provider repo.",
             "reason": "Need provider theorem.",
             "source_description": "A source dependency mentions the provider theorem.",
+            "interfaces": [
+                {
+                    "name": "ReusableMath.main_result",
+                    "kind": "theorem",
+                    "summary": "Expose the exact provider theorem.",
+                    "expected_statement_lean_code": "theorem ReusableMath.main_result : True := by sorry",
+                }
+            ],
         },
     )
 
@@ -494,6 +503,28 @@ def test_submit_repo_requirement_builds_submission_without_waiting_state(tmp_pat
     assert gateway.accepted[0].submission_type == "coordinator_repo_requirement"
     assert gateway.accepted[0].required_proof_availability == ProofAvailability.DECLARED
     assert gateway.accepted[0].requirement_name == "need_provider"
+    assert gateway.accepted[0].interfaces[0]["expected_statement_lean_code"] == (
+        "theorem ReusableMath.main_result : True := by sorry"
+    )
+
+
+def test_submit_repo_requirement_schema_documents_business_field_contracts() -> None:
+    fields = SubmitRepoRequirementArgs.model_fields
+    interface_fields = RequirementInterfaceArg.model_fields
+
+    assert "consumer-local" in (fields["name"].description or "")
+    assert "lower_snake_case" in (fields["name"].description or "")
+    assert "UpperCamelCase" in (fields["target_repo"].description or "")
+    assert "mathematical source" in (fields["source_description"].description or "")
+    assert "independent repository dependency" in (fields["reason"].description or "")
+    assert "Minimal stable public API" in (fields["interfaces"].description or "")
+    assert "public interface identity" in (interface_fields["name"].description or "")
+    assert "supported DeclKind" in (interface_fields["kind"].description or "")
+    assert "informal" in (interface_fields["statement_hint"].description or "")
+    assert "preserve and satisfy verbatim" in (interface_fields["expected_statement_lean_code"].description or "")
+    assert "affected_node_paths" not in fields
+    assert "flow_id" not in fields
+    assert "proof_availability" not in fields
 
 
 def test_submit_repo_requirement_uses_consumer_repo_default_proof_availability(tmp_path: Path) -> None:
@@ -522,7 +553,7 @@ def test_submit_repo_requirement_uses_consumer_repo_default_proof_availability(t
         tool_name="submit_repo_requirement",
         flat_args={
             "name": "need_proved_provider",
-            "target_repo": "Provider",
+            "target_repo": "ReusableMath",
             "summary": "Need proved provider repo.",
             "reason": "Need provider theorem with proof availability.",
         },
@@ -554,7 +585,7 @@ def test_submit_repo_requirement_gateway_missing_does_not_write_requirement(tmp_
         tool_name="submit_repo_requirement",
         flat_args={
             "name": "need_provider",
-            "target_repo": "Provider",
+            "target_repo": "ReusableMath",
             "summary": "Need provider repo.",
             "reason": "Need provider theorem.",
         },
@@ -567,6 +598,162 @@ def test_submit_repo_requirement_gateway_missing_does_not_write_requirement(tmp_
     requirement = runtime.repo_workspace.requirement.get_requirement(tmp_path, name="need_provider")
     assert not requirement.ok
     assert requirement.issues[0].kind == "requirement_not_found"
+
+
+def test_submit_repo_requirement_rejects_role_suffix_repo_name(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_repo_requirement",
+        flat_args={
+            "name": "weighted_sieve_seven_forms",
+            "target_repo": "WeightedSieveProvider",
+            "summary": "Need weighted sieve mathematics.",
+            "reason": "Need a reusable seven-form sieve result.",
+        },
+    )
+
+    assert result.ok and result.value is not None and result.value.ok is False
+    assert result.value.issues[0].kind == "requirement_target_repo_name_invalid"
+    assert gateway.accepted == []
+
+
+def test_submit_repo_requirement_rejects_non_lower_snake_case_name(tmp_path: Path) -> None:
+    invalid_names = ["NeedProvider", "need-provider", "need__provider", "_need_provider", "need_provider_"]
+
+    for invalid_name in invalid_names:
+        gateway = FakeSubmissionGateway()
+        runtime = _runtime(gateway)
+        assert register_submit_tooling(runtime).ok
+        raw = RawToolCallContext(
+            endpoint_view_key="native_repo_coordinator_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="native_repo_coordinator_submit",
+                role="coordinator",
+                agent_type="CoordinatorAgent",
+            ),
+        )
+
+        result = runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="submit_repo_requirement",
+            flat_args={
+                "name": invalid_name,
+                "target_repo": "ReusableMath",
+                "summary": "Need provider repo.",
+                "reason": "Need provider theorem.",
+            },
+        )
+
+        assert result.ok and result.value is not None and result.value.ok is False
+        assert result.value.issues[0].kind == "requirement_name_invalid"
+        assert gateway.accepted == []
+
+
+def test_submit_repo_requirement_rejects_invalid_or_duplicate_interfaces(tmp_path: Path) -> None:
+    cases = [
+        (
+            [{"name": "main_result", "kind": "not_a_decl_kind", "summary": "Main result."}],
+            "requirement_interface_kind_invalid",
+        ),
+        (
+            [
+                {"name": "main_result", "kind": "theorem", "summary": "Main result."},
+                {"name": "main_result", "kind": "theorem", "summary": "Duplicate result."},
+            ],
+            "requirement_interface_name_duplicate",
+        ),
+    ]
+
+    for interfaces, expected_issue in cases:
+        gateway = FakeSubmissionGateway()
+        runtime = _runtime(gateway)
+        assert register_submit_tooling(runtime).ok
+        result = runtime.tool_facade.invoke_agent_tool(
+            RawToolCallContext(
+                endpoint_view_key="native_repo_coordinator_submit",
+                runtime_context=_runtime_ctx(
+                    tmp_path,
+                    view="native_repo_coordinator_submit",
+                    role="coordinator",
+                    agent_type="CoordinatorAgent",
+                ),
+            ),
+            tool_name="submit_repo_requirement",
+            flat_args={
+                "name": "need_provider",
+                "target_repo": "ReusableMath",
+                "summary": "Need provider repo.",
+                "reason": "Need provider theorem.",
+                "interfaces": interfaces,
+            },
+        )
+
+        assert result.ok and result.value is not None and result.value.ok is False
+        assert result.value.issues[0].kind == expected_issue
+        assert gateway.accepted == []
+
+
+def test_submit_repo_requirement_rejects_duplicate_consumer_name_and_extra_control_fields(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    assert runtime.repo_workspace.create_requirement_with_interfaces(
+        tmp_path,
+        name="need_provider",
+        target_repo="ReusableMath",
+        reason="Existing requirement.",
+    ).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    duplicate = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_repo_requirement",
+        flat_args={
+            "name": "need_provider",
+            "target_repo": "ReusableMath",
+            "summary": "Duplicate provider repo.",
+            "reason": "Duplicate requirement.",
+        },
+    )
+    extra = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_repo_requirement",
+        flat_args={
+            "name": "another_provider",
+            "target_repo": "AnotherMath",
+            "summary": "Need another provider repo.",
+            "reason": "Need another theorem.",
+            "affected_node_paths": ["Main.Core"],
+        },
+    )
+
+    assert duplicate.ok and duplicate.value is not None and duplicate.value.ok is False
+    assert duplicate.value.issues[0].kind == "requirement_name_duplicate"
+    assert extra.ok and extra.value is not None and extra.value.ok is False
+    assert extra.value.issues[0].kind == "tool_arguments_invalid"
+    assert gateway.accepted == []
 
 
 def test_submit_content_node_tasks_passes_open_contract_version(tmp_path: Path) -> None:

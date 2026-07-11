@@ -172,3 +172,23 @@ def test_compare_theorem_header_non_theorem_and_multiline_by_terminator() -> Non
     assert same.ok
     assert same.value is not None
     assert same.value.passed
+
+
+def test_compare_theorem_header_ignores_comments_and_lexical_whitespace_only() -> None:
+    component = make_runtime().lean_projection.annotation
+    expected = "theorem foo_bar (n : Nat) : {x : Nat | x = n}.Nonempty := by sorry"
+    reformatted = """theorem foo_bar
+      (n:Nat) :
+      { x : Nat | /- the same predicate -/ x=n }.Nonempty := by
+      exact ⟨n, rfl⟩
+    """
+
+    same = component.compare_theorem_header(expected, reformatted, decl_name="foo_bar")
+
+    assert same.ok and same.value is not None
+    assert same.value.passed is True
+
+    merged_identifier = "theorem foo_bar (n : Nat) : {x : Nat | x = nn}.Nonempty := by sorry"
+    changed = component.compare_theorem_header(expected, merged_identifier, decl_name="foo_bar")
+    assert changed.ok and changed.value is not None
+    assert changed.value.passed is False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -414,7 +415,115 @@ class AnnotationComponent:
         return "\n".join(lines)
 
     def _normalize_header(self, value: str) -> str:
-        return re.sub(r"\s+", " ", value).strip()
+        without_comments = self._strip_lean_comments(value)
+        tokens: list[str] = []
+        index = 0
+        while index < len(without_comments):
+            char = without_comments[index]
+            if char.isspace():
+                index += 1
+                continue
+            if char == '"':
+                end = index + 1
+                escaped = False
+                while end < len(without_comments):
+                    current = without_comments[end]
+                    if current == '"' and not escaped:
+                        end += 1
+                        break
+                    if current == "\\" and not escaped:
+                        escaped = True
+                    else:
+                        escaped = False
+                    end += 1
+                tokens.append(without_comments[index:end])
+                index = end
+                continue
+            if char == "`":
+                end = without_comments.find("`", index + 1)
+                if end >= 0:
+                    tokens.append(without_comments[index : end + 1])
+                    index = end + 1
+                    continue
+            if self._is_identifier_start(char):
+                end = index + 1
+                while end < len(without_comments) and self._is_identifier_continue(without_comments[end]):
+                    end += 1
+                tokens.append(without_comments[index:end])
+                index = end
+                continue
+            if char.isdigit():
+                end = index + 1
+                while end < len(without_comments) and without_comments[end].isdigit():
+                    end += 1
+                tokens.append(without_comments[index:end])
+                index = end
+                continue
+            tokens.append(char)
+            index += 1
+        return " ".join(tokens)
+
+    def _strip_lean_comments(self, value: str) -> str:
+        output: list[str] = []
+        index = 0
+        block_depth = 0
+        in_string = False
+        escaped = False
+        while index < len(value):
+            pair = value[index : index + 2]
+            char = value[index]
+            if in_string:
+                output.append(char)
+                if char == '"' and not escaped:
+                    in_string = False
+                if char == "\\" and not escaped:
+                    escaped = True
+                else:
+                    escaped = False
+                index += 1
+                continue
+            if block_depth:
+                if pair == "/-":
+                    block_depth += 1
+                    index += 2
+                    continue
+                if pair == "-/":
+                    block_depth -= 1
+                    index += 2
+                    if block_depth == 0:
+                        output.append(" ")
+                    continue
+                if char == "\n":
+                    output.append("\n")
+                index += 1
+                continue
+            if pair == "--":
+                newline = value.find("\n", index + 2)
+                if newline < 0:
+                    output.append(" ")
+                    break
+                output.append("\n")
+                index = newline + 1
+                continue
+            if pair == "/-":
+                block_depth = 1
+                index += 2
+                continue
+            output.append(char)
+            if char == '"':
+                in_string = True
+                escaped = False
+            index += 1
+        return "".join(output)
+
+    @staticmethod
+    def _is_identifier_start(char: str) -> bool:
+        return char == "_" or unicodedata.category(char).startswith("L")
+
+    @classmethod
+    def _is_identifier_continue(cls, char: str) -> bool:
+        category = unicodedata.category(char)
+        return cls._is_identifier_start(char) or char == "'" or category.startswith(("M", "N"))
 
     def _line_number(self, text: str, offset: int) -> int:
         return text.count("\n", 0, offset) + 1

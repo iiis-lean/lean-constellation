@@ -22,10 +22,18 @@ from lean_constellation.domain.preparation import (
     SourceCorpusMode,
     UpstreamDependencyInput,
 )
-from lean_constellation.domain.repo import WorkspaceConfig, WorkspaceCoordinatorView, proof_availability_satisfies
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoPublicationStatus,
+    RepoWorkMode,
+    WorkspaceConfig,
+    WorkspaceCoordinatorView,
+    proof_availability_satisfies,
+)
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.repo_workspace.lake_dependency import (
     AdapterSetupView,
+    LakeDependencyAttachView,
     LakeDependencyComponent,
     RepoSkeletonView,
 )
@@ -100,12 +108,18 @@ class RepoWorkspaceService:
         source_description: str | None = None,
         reason: str | None = None,
         interfaces: list[dict[str, str]] | None = None,
+        required_proof_availability: ProofAvailability | str | None = None,
     ) -> ServiceResult[object]:
+        required = (
+            ProofAvailability(required_proof_availability)
+            if required_proof_availability is not None
+            else self._requirement_proof_availability_for_repo(repo_root)
+        )
         created = self.requirement.create_requirement(
             repo_root,
             name=name,
             target_repo=target_repo,
-            required_proof_availability=self._requirement_proof_availability_for_repo(repo_root),
+            required_proof_availability=required,
             source_description=source_description,
             reason=reason,
         )
@@ -120,6 +134,7 @@ class RepoWorkspaceService:
                 kind=DeclKind(interface["kind"]),
                 summary=interface["summary"],
                 statement_hint=interface.get("statement_hint"),
+                expected_statement_lean_code=interface.get("expected_statement_lean_code"),
             )
             if not current.ok:
                 return self.runtime.foundation.fail(current.issues)
@@ -210,7 +225,24 @@ class RepoWorkspaceService:
         requirement = self.requirement.get_requirement(consumer_repo_root, name=requirement_name)
         if not requirement.ok or requirement.value is None:
             return self.runtime.foundation.fail(requirement.issues)
-        provider_repo = requirement.value.requirement.provider_repo
+        requirement_value = requirement.value.requirement
+        if requirement_value.status not in {
+            RepoDependencyRequirementStatus.SATISFIED,
+            RepoDependencyRequirementStatus.HANDLED,
+        }:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_not_satisfied",
+                    "Provider dependency attachment requires a satisfied or already handled requirement.",
+                    object_ref=requirement_name,
+                    current=requirement_value.status.value,
+                    expected=(
+                        f"{RepoDependencyRequirementStatus.SATISFIED.value}|"
+                        f"{RepoDependencyRequirementStatus.HANDLED.value}"
+                    ),
+                )
+            )
+        provider_repo = requirement_value.provider_repo
         if not provider_repo:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -219,27 +251,88 @@ class RepoWorkspaceService:
                     object_ref=requirement_name,
                 )
             )
-        attached = self.lake_dependency.attach_workspace_repo_dependency(
-            consumer_repo_root,
-            provider_repo_key=provider_repo,
-        )
-        if not attached.ok:
-            return self.runtime.foundation.fail(attached.issues)
-        handled = self.requirement.mark_requirement_handled(
+        valid = self.requirement.validate_requirement_provider_truth(
             consumer_repo_root,
             requirement_name=requirement_name,
-            note=f"Attached provider repo {provider_repo}.",
+            provider_repo=provider_repo,
+            require_stable=True,
         )
-        if not handled.ok:
-            return self.runtime.foundation.fail(handled.issues)
+        if not valid.ok:
+            return self.runtime.foundation.fail(valid.issues)
+        dependencies = self.lake_dependency.parse_lake_dependencies(consumer_repo_root)
+        if not dependencies.ok or dependencies.value is None:
+            return self.runtime.foundation.fail(dependencies.issues)
+        already_attached = any(item.name == provider_repo for item in dependencies.value.dependencies)
+        if not already_attached:
+            attached = self.lake_dependency.attach_workspace_repo_dependency(
+                consumer_repo_root,
+                provider_repo_key=provider_repo,
+            )
+            if not attached.ok:
+                return self.runtime.foundation.fail(attached.issues)
+        if requirement_value.status == RepoDependencyRequirementStatus.SATISFIED:
+            handled = self.requirement.mark_requirement_handled(
+                consumer_repo_root,
+                requirement_name=requirement_name,
+                note=f"Attached provider repo {provider_repo}.",
+            )
+            if not handled.ok:
+                return self.runtime.foundation.fail(handled.issues)
         return self.runtime.foundation.ok(
             RequirementConsumeView(
                 requirement_name=requirement_name,
                 provider_repo=provider_repo,
                 attached=True,
                 handled=True,
-                summary=f"Attached and handled requirement {requirement_name}.",
+                summary=(
+                    f"Provider repo {provider_repo} was already attached and requirement {requirement_name} was already handled."
+                    if already_attached and requirement_value.status == RepoDependencyRequirementStatus.HANDLED
+                    else f"Attached and handled requirement {requirement_name}."
+                ),
             )
+        )
+
+    def attach_ready_workspace_repo_dependency(
+        self,
+        consumer_repo_root: Path,
+        *,
+        provider_repo: str,
+    ) -> ServiceResult[LakeDependencyAttachView]:
+        provider_repo = self.runtime.foundation.layout.ensure_safe_key(provider_repo)
+        consumer_repo_root = Path(consumer_repo_root)
+        if provider_repo == consumer_repo_root.name:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_repo_self_dependency",
+                    "A repo cannot attach itself as a workspace dependency.",
+                    object_ref=provider_repo,
+                )
+            )
+        provider_root = consumer_repo_root.parent / provider_repo
+        if not provider_root.exists() or not provider_root.is_dir():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_repo_not_found",
+                    f"Provider repo does not exist in workspace: {provider_repo}",
+                    object_ref=str(provider_root),
+                )
+            )
+        publication = self.metadata.get_repo_publication(provider_root)
+        if not publication.ok or publication.value is None:
+            return self.runtime.foundation.fail(publication.issues)
+        if publication.value.publication.status != RepoPublicationStatus.STABLE:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_repo_not_ready",
+                    "Direct workspace dependency attachment requires a stable provider repo.",
+                    object_ref=provider_repo,
+                    current=publication.value.publication.status.value,
+                    expected=RepoPublicationStatus.STABLE.value,
+                )
+            )
+        return self.lake_dependency.attach_workspace_repo_dependency(
+            consumer_repo_root,
+            provider_repo_key=provider_repo,
         )
 
     def mark_requirement_waiting_for_provider(
@@ -308,11 +401,21 @@ class RepoWorkspaceService:
         project_name: str | None = None,
     ) -> ServiceResult[AdapterSetupView]:
         project_name = project_name or Path(repo_root).name
-        return self.lake_dependency.initialize_adapter_repo_skeleton(
+        initialized = self.lake_dependency.initialize_adapter_repo_skeleton(
             repo_root,
             project_name=project_name,
             upstream=upstream,
         )
+        if not initialized.ok or initialized.value is None:
+            return self.runtime.foundation.fail(initialized.issues)
+        configured = self.metadata.update_repo_config(
+            repo_root,
+            target_proof_availability=ProofAvailability.PROVED,
+            work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        )
+        if not configured.ok:
+            return self.runtime.foundation.fail(configured.issues)
+        return initialized
 
     def initialize_repo_as_native(
         self,

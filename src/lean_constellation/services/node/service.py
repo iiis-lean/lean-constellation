@@ -257,6 +257,9 @@ class NodeService:
     def check_root_main_handoff_interfaces(self, repo_root: Path) -> ServiceResult[GateReport]:
         return self.interface.check_root_interfaces_include_preparation_inputs(repo_root, node_path="Main")
 
+    def check_root_interface_statement_contracts(self, repo_root: Path) -> ServiceResult[GateReport]:
+        return self.interface.check_root_interface_statement_contracts(repo_root, node_path="Main")
+
     def prepare_content_task_admission(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         return self.contract.check_content_task_admission(repo_root, node_path=node_path)
 

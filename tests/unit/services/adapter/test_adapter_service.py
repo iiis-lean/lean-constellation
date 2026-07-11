@@ -811,6 +811,58 @@ def test_adapter_interface_binding_projection_and_ready_gate(tmp_path: Path) -> 
     assert provider_ready_after.value.ready is False
 
 
+def test_adapter_exact_interface_statement_contract_rejects_binding_and_later_drift(tmp_path: Path) -> None:
+    matching_interface = DeclInterface(
+        name="main_result",
+        kind=DeclKind.THEOREM,
+        summary="Expose the exact main theorem.",
+        expected_statement_lean_code="theorem main_result : /- exact target -/ True := by sorry",
+    )
+    service = _service(tmp_path, interfaces=[matching_interface])
+    assert service.ensure_flat_main_catalog(tmp_path).ok
+    _finalize_theorem(service, tmp_path)
+    bound = service.bind_adapter_interface(
+        tmp_path,
+        interface_name="main_result",
+        decl_name="main_result",
+        binding_summary="The exact upstream theorem is exposed.",
+    )
+    assert bound.ok, bound.issues
+
+    assert service.set_adapter_proof_formal(
+        tmp_path,
+        name="main_result",
+        code="theorem main_result : False := by\n  contradiction",
+    ).ok
+    drifted = service.validate_adapter_interface_bindings(tmp_path)
+
+    assert drifted.ok and drifted.value is not None
+    assert drifted.value.passed is False
+    assert {issue.kind for issue in drifted.value.issues} == {
+        "adapter_interface_statement_contract_mismatch"
+    }
+
+    mismatch_root = tmp_path / "mismatch"
+    mismatching_interface = DeclInterface(
+        name="main_result",
+        kind=DeclKind.THEOREM,
+        summary="Expose a different theorem.",
+        expected_statement_lean_code="theorem main_result : False := by sorry",
+    )
+    mismatch_service = _service(mismatch_root, interfaces=[mismatching_interface])
+    assert mismatch_service.ensure_flat_main_catalog(mismatch_root).ok
+    _finalize_theorem(mismatch_service, mismatch_root)
+    rejected = mismatch_service.bind_adapter_interface(
+        mismatch_root,
+        interface_name="main_result",
+        decl_name="main_result",
+        binding_summary="Attempt a mismatched binding.",
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "adapter_interface_statement_contract_mismatch"
+
+
 def test_adapter_interface_binding_failures_unbind_and_validation(tmp_path: Path) -> None:
     interfaces = [
         DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose main theorem."),

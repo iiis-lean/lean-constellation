@@ -34,6 +34,7 @@ class InterfaceView(StrictModel):
     kind: DeclKind
     summary: str
     protected: bool = False
+    expected_statement_lean_code: str | None = None
     bound_decl: DeclRef | None = None
     note: str | None = None
 
@@ -287,6 +288,7 @@ class InterfaceComponent:
                 kind=interface.kind,
                 summary=interface.summary,
                 protected=interface.name in protected.value,
+                expected_statement_lean_code=interface.expected_statement_lean_code,
                 bound_decl=interface.bound_decl,
                 note=interface.note,
             )
@@ -377,6 +379,54 @@ class InterfaceComponent:
     ) -> ServiceResult[GateReport]:
         return self.check_protected_root_interfaces(repo_root, node_path=node_path)
 
+    def check_root_interface_statement_contracts(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str = "Main",
+    ) -> ServiceResult[GateReport]:
+        current = self.contract.get_current_contract(repo_root, node_path=node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        issues = []
+        checked = 0
+        for interface in current.value.contract.interfaces:
+            if interface.expected_statement_lean_code is None:
+                continue
+            checked += 1
+            if interface.bound_decl is None:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "interface_statement_contract_unbound",
+                        "An exact statement interface must be bound before its statement can be checked.",
+                        object_ref=node_path,
+                        field=interface.name,
+                    )
+                )
+                continue
+            statement = self._validate_binding_statement_contract(
+                repo_root,
+                node_path=node_path,
+                interface=interface,
+                ref=interface.bound_decl,
+            )
+            if not statement.ok:
+                issues.extend(statement.issues)
+        if issues:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "root_interface_statement_contracts",
+                    issues,
+                    summary=f"{len(issues)} exact interface statement checks failed.",
+                )
+            )
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
+                "root_interface_statement_contracts",
+                summary=f"{checked} exact interface statement contracts are satisfied.",
+            )
+        )
+
     def submit_root_interface_prepare_ready(
         self,
         repo_root: Path,
@@ -460,17 +510,29 @@ class InterfaceComponent:
         if not decl_name or not decl_name.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("decl_name_required", "Decl name is required.", field="decl_name"))
         if node_kind == NodeKind.CONTENT:
-            return self._resolve_content_binding(repo_root, node_path=node_path, interface=interface, decl_name=decl_name.strip(), decl_node=decl_node)
-        if node_kind == NodeKind.SCOPE:
-            return self._resolve_scope_binding(repo_root, scope_path=node_path, interface=interface, decl_name=decl_name.strip(), decl_node=decl_node)
-        return self.runtime.foundation.fail(
-            self.runtime.foundation.issue(
-                "interface_binding_node_kind_unsupported",
-                "Interface binding only supports Scope and Content nodes.",
-                object_ref=node_path,
-                current=str(node_kind),
+            resolved = self._resolve_content_binding(repo_root, node_path=node_path, interface=interface, decl_name=decl_name.strip(), decl_node=decl_node)
+        elif node_kind == NodeKind.SCOPE:
+            resolved = self._resolve_scope_binding(repo_root, scope_path=node_path, interface=interface, decl_name=decl_name.strip(), decl_node=decl_node)
+        else:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_node_kind_unsupported",
+                    "Interface binding only supports Scope and Content nodes.",
+                    object_ref=node_path,
+                    current=str(node_kind),
+                )
             )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        statement = self._validate_binding_statement_contract(
+            repo_root,
+            node_path=node_path,
+            interface=interface,
+            ref=resolved.value,
         )
+        if not statement.ok:
+            return self.runtime.foundation.fail(statement.issues)
+        return self.runtime.foundation.ok(resolved.value, warnings=resolved.issues)
 
     def _resolve_content_binding(
         self,
@@ -634,6 +696,77 @@ class InterfaceComponent:
                     expected=interface.kind.value,
                 )
             )
+        return self.runtime.foundation.ok(None)
+
+    def _validate_binding_statement_contract(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        interface: DeclInterface,
+        ref: DeclRef,
+    ) -> ServiceResult[None]:
+        expected = interface.expected_statement_lean_code
+        if expected is None:
+            return self.runtime.foundation.ok(None)
+        if interface.kind not in {DeclKind.THEOREM, DeclKind.LEMMA}:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_statement_contract_kind_unsupported",
+                    "Exact statement contracts currently support theorem-like interfaces.",
+                    object_ref=node_path,
+                    current=interface.kind.value,
+                    expected="theorem | lemma",
+                )
+            )
+        target_root = Path(repo_root)
+        if ref.repo is not None:
+            target_root = target_root.parent / self.runtime.foundation.layout.ensure_safe_key(ref.repo)
+        revision = self.runtime.decl_graph.get_decl_revision(
+            target_root,
+            node_path=ref.node,
+            name=ref.name,
+            revision=ref.revision,
+        )
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_statement_contract_decl_revision_missing",
+                    "The bound declaration revision required by the exact statement contract is unavailable.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                )
+            )
+        statement_code = revision.value.statement_lean_code
+        if statement_code is None or not statement_code.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_statement_contract_actual_missing",
+                    "The bound declaration has no captured formal statement to compare.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                )
+            )
+        actual_codes = [("statement", statement_code)]
+        if revision.value.proof_lean_code is not None and revision.value.proof_lean_code.strip():
+            actual_codes.append(("proof", revision.value.proof_lean_code))
+        for stage, actual in actual_codes:
+            compared = self.runtime.lean_projection.annotation.compare_theorem_header(
+                expected,
+                actual,
+                decl_name=ref.name,
+            )
+            comparison_issues = compared.issues if not compared.ok or compared.value is None else compared.value.issues
+            if comparison_issues:
+                return self.runtime.foundation.fail(
+                    [
+                        issue.model_copy(
+                            update={
+                                "kind": "interface_statement_contract_mismatch",
+                                "object_ref": f"{ref.node}:{ref.name}@{ref.revision}:{stage}",
+                            }
+                        )
+                        for issue in comparison_issues
+                    ]
+                )
         return self.runtime.foundation.ok(None)
 
     def _refresh_interfaces(self, repo_root: Path, node_path: str) -> ServiceResult[object]:

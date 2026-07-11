@@ -14,7 +14,7 @@ from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.preparation import UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.external_clients.lean_toolchain import ToolchainCommandView, ToolchainLeanCheckView
-from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
+from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
 
 if TYPE_CHECKING:
@@ -144,10 +144,12 @@ class LakeDependencyComponent:
                         object_ref=str(lakefile),
                     )
                 )
+        original_lakefile = lakefile.read_text(encoding="utf-8")
         block = f'\n[[require]]\nname = "{provider_repo_key}"\npath = "{rel_path}"\n'
-        lakefile.write_text(lakefile.read_text(encoding="utf-8") + block, encoding="utf-8")
+        lakefile.write_text(original_lakefile + block, encoding="utf-8")
         update = self.run_lake_update(consumer_root)
         if not update.ok or update.value is None:
+            lakefile.write_text(original_lakefile, encoding="utf-8")
             return self.runtime.foundation.fail(update.issues)
         dep = LakeDependencyEntry(name=provider_repo_key, source="path", path=rel_path)
         return self.runtime.foundation.ok(

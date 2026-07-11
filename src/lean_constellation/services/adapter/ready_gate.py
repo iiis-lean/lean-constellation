@@ -96,6 +96,11 @@ class ReadyGateComponent:
             return self.runtime.foundation.fail(bindings.issues)
         reports.append(bindings.value)
 
+        protected_interfaces = self.runtime.node.check_root_main_handoff_interfaces(repo_root)
+        if not protected_interfaces.ok or protected_interfaces.value is None:
+            return self.runtime.foundation.fail(protected_interfaces.issues)
+        reports.append(protected_interfaces.value)
+
         if include_projection:
             projection = self.projection.check_adapter_projection(repo_root)
             if not projection.ok or projection.value is None:

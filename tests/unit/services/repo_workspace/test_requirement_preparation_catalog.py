@@ -69,6 +69,7 @@ def test_requirement_lifecycle_and_interface_rules(tmp_path: Path) -> None:
         interface_name="banach_fixed_point",
         kind=DeclKind.THEOREM,
         summary="Banach fixed point theorem.",
+        expected_statement_lean_code="theorem banach_fixed_point : True := by sorry",
     )
     assert added.ok
     assert added.value is not None
@@ -414,6 +415,7 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
         interface_name="banach_fixed_point",
         kind=DeclKind.THEOREM,
         summary="Banach fixed point theorem.",
+        expected_statement_lean_code="theorem banach_fixed_point : True := by sorry",
     )
 
     group = preparation.aggregate_requirement_group(workspace, target_repo="fixed_point_provider")
@@ -432,6 +434,10 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
         "complete_space",
         "banach_fixed_point",
     }
+    exact_interface = next(
+        interface for interface in draft.value.input.interface_inputs if interface.name == "banach_fixed_point"
+    )
+    assert exact_interface.expected_statement_lean_code == "theorem banach_fixed_point : True := by sorry"
     assert "consumer_a" in draft.value.input.goal
     assert "consumer_b" in draft.value.input.goal
     assert "supporting public definitions and lemmas" in draft.value.input.goal

@@ -111,12 +111,17 @@ def test_visible_node_boundaries_use_active_committed_contract_not_open_draft(tm
 
 def test_list_visible_node_boundaries_includes_lake_dependency_boundaries(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
+    provider = tmp_path.parent / "ProviderRepo"
+    runtime = make_runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(provider).ok
+    assert runtime.repo_workspace.metadata.mark_repo_stable(provider, summary="Stable provider.").ok
     (tmp_path / "lakefile.toml").write_text(
         'name = "consumer"\n\n'
         '[[require]]\nname = "ProviderRepo"\npath = "../ProviderRepo"\n',
         encoding="utf-8",
     )
-    component = make_runtime().node.dependency
+    component = runtime.node.dependency
 
     visible = component.list_visible_node_boundaries(tmp_path, node_path="Main.Topic.Consumer")
 

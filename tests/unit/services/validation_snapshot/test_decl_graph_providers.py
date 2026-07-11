@@ -152,7 +152,12 @@ def _seed_ready_public_theorem(runtime: LeanRuntimeServices, repo_root: Path) ->
     assert projection.ok, projection.issues
 
 
-def _seed_declared_public_theorem(runtime: LeanRuntimeServices, repo_root: Path) -> None:
+def _seed_declared_public_theorem(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+    *,
+    statement_lean_code: str = "theorem main_result : True := by\n  sorry",
+) -> None:
     _create_content_node(runtime, repo_root)
     round_id = _create_round(runtime, repo_root)
     _create_decl(runtime, repo_root, round_id=round_id, name="main_result", public=True, end_after_state=DeclState.DECLARED)
@@ -171,7 +176,7 @@ def _seed_declared_public_theorem(runtime: LeanRuntimeServices, repo_root: Path)
         node_path=NODE_PATH,
         round_id=round_id,
         decl_name="main_result",
-        lean_code="theorem main_result : True := by\n  sorry",
+        lean_code=statement_lean_code,
         lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
         deps=[],
     ).ok
@@ -386,6 +391,52 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     assert completion.ok and completion.value is not None
     assert completion.value.ready_to_submit is True
     assert completion.value.target_proof_availability == ProofAvailability.PROVED
+
+
+def test_provider_requirement_rejects_exact_statement_drift(tmp_path: Path) -> None:
+    workspace = tmp_path
+    consumer = workspace / "Consumer"
+    provider = workspace / "Provider"
+    consumer.mkdir()
+    runtime = _runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    created = runtime.repo_workspace.create_requirement_with_interfaces(
+        consumer,
+        name="need_provider_result",
+        target_repo="Provider",
+        source_description="Consumer proof needs one exact provider theorem.",
+        reason="The provider statement is part of the dependency contract.",
+        interfaces=[
+            {
+                "name": "main_result",
+                "kind": "theorem",
+                "summary": "Exact provider theorem interface.",
+                "expected_statement_lean_code": "theorem main_result : False := by sorry",
+            }
+        ],
+    )
+    assert created.ok, created.issues
+    waiting = runtime.repo_workspace.requirement.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_provider_result",
+        provider_repo="Provider",
+    )
+    assert waiting.ok, waiting.issues
+    shell = runtime.repo_workspace.create_provider_repo_shell_from_group(workspace, target_repo="Provider")
+    assert shell.ok, shell.issues
+    _seed_declared_public_theorem(runtime, provider)
+    _export_main_result_from_provider_main(runtime, provider)
+
+    marked = runtime.repo_workspace.mark_provider_repo_ready(
+        provider,
+        summary="Provider publishes a theorem with the wrong statement.",
+    )
+
+    assert not marked.ok
+    assert marked.issues[0].kind == "provider_interface_statement_contract_mismatch"
+    publication = runtime.repo_workspace.metadata.get_repo_publication(provider)
+    assert publication.ok and publication.value is not None
+    assert publication.value.publication.status == "developing"
 
 
 def test_cross_repo_dependency_requires_provider_public_export(tmp_path: Path) -> None:

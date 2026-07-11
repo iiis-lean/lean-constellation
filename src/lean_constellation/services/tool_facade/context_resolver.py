@@ -110,6 +110,7 @@ class ActorContext(StrictModel):
 class ProtectedInterfaceView(StrictModel):
     protected_names: list[str] = Field(default_factory=list)
     protected_kinds: dict[str, str] = Field(default_factory=dict)
+    expected_statement_lean_code: dict[str, str] = Field(default_factory=dict)
     summary: str
 
 
@@ -347,10 +348,16 @@ class ContextResolverComponent:
             return self.runtime.foundation.fail(prep.issues)
         names = sorted({interface.name for interface in prep.value.input.interface_inputs})
         kinds = {interface.name: interface.kind.value for interface in prep.value.input.interface_inputs}
+        expected_statements = {
+            interface.name: interface.expected_statement_lean_code
+            for interface in prep.value.input.interface_inputs
+            if interface.expected_statement_lean_code is not None
+        }
         return self.runtime.foundation.ok(
             ProtectedInterfaceView(
                 protected_names=names,
                 protected_kinds=kinds,
+                expected_statement_lean_code=expected_statements,
                 summary=f"Resolved {len(names)} protected root interfaces from preparation input.",
             )
         )

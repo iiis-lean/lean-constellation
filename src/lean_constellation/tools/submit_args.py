@@ -139,18 +139,35 @@ class SubmitContentNodeTasksArgs(SummarySubmitArgs):
 
 
 class RequirementInterfaceArg(StrictModel):
-    name: str = Field(description="Interface name requested from the provider repo.")
-    kind: str = Field(description="Interface kind expected from the provider repo, such as theorem, definition, or namespace.")
-    summary: str = Field(description="Short summary of what this requested interface should provide.")
-    statement_hint: str | None = Field(default=None, description="Optional informal statement or signature hint for the requested interface.")
+    name: str = Field(description="Stable public interface identity that the provider repository must expose.")
+    kind: str = Field(description="Required public declaration kind, using one of the supported DeclKind values.")
+    summary: str = Field(description="Concise mathematical meaning of the public interface required from the provider.")
+    statement_hint: str | None = Field(default=None, description="Optional informal statement or signature guidance when no exact Lean header is required.")
+    expected_statement_lean_code: str | None = Field(
+        default=None,
+        description="Optional exact Lean theorem declaration whose header the provider must preserve and satisfy verbatim.",
+    )
 
 
 class SubmitRepoRequirementArgs(SummarySubmitArgs):
-    name: str = Field(description="Requirement name in the current consumer repo.")
-    target_repo: str = Field(description="Provider repo key to request.")
-    source_description: str | None = Field(default=None, description="Optional source or context description motivating the provider repo requirement.")
-    reason: str | None = Field(default=None, description="Why the current repo needs this provider repo requirement.")
-    interfaces: list[RequirementInterfaceArg] = Field(default_factory=list, description="Interfaces requested from the provider repo.")
+    name: str = Field(
+        description="Unique consumer-local requirement identity in lower_snake_case within the current repository."
+    )
+    target_repo: str = Field(
+        description="Independent UpperCamelCase mathematical repo key to request; do not add role suffixes such as Provider, Repo, or Dependency."
+    )
+    source_description: str | None = Field(
+        default=None,
+        description="Optional description of the mathematical source, target material, or independent scope the provider repository should cover.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Why the consumer needs this capability as an independent repository dependency instead of current-repo, Mathlib, or Resource work.",
+    )
+    interfaces: list[RequirementInterfaceArg] = Field(
+        default_factory=list,
+        description="Minimal stable public API boundary that the provider repository must expose.",
+    )
 
 
 class SubmitRepoReadyArgs(SummarySubmitArgs):

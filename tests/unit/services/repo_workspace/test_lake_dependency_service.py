@@ -273,6 +273,7 @@ def test_attach_workspace_dependency_failure_branches(tmp_path: Path) -> None:
     update_failed = component.attach_workspace_repo_dependency(consumer, provider_repo_key="provider")
     assert not update_failed.ok
     assert update_failed.issues[0].kind == "lake_update_failed"
+    assert 'name = "provider"' not in (consumer / "lakefile.toml").read_text(encoding="utf-8")
 
 
 def test_initialize_native_skeleton_validation_and_check_gate(tmp_path: Path) -> None:
@@ -417,3 +418,95 @@ def test_repo_workspace_service_marks_provider_ready_and_attach(tmp_path: Path) 
     assert handled.ok
     assert handled.value is not None
     assert handled.value.requirement.status == "handled"
+
+
+def test_attach_provider_rejects_open_waiting_requirement_before_lake_mutation(tmp_path: Path) -> None:
+    workspace = tmp_path
+    consumer = workspace / "consumer"
+    provider = workspace / "provider"
+    external = FakeExternal()
+    service = make_runtime(external_overrides={"lake": external.lake}).repo_workspace
+    assert service.metadata.ensure_repo_model(consumer).ok
+    assert service.metadata.ensure_repo_model(provider).ok
+    assert service.lake_dependency.initialize_native_repo_skeleton(consumer, project_name="Consumer").ok
+    assert service.lake_dependency.initialize_native_repo_skeleton(provider, project_name="Provider").ok
+    created = service.requirement.create_requirement(
+        consumer,
+        name="need_provider",
+        target_repo="provider",
+        reason="Need provider content.",
+    )
+    assert created.ok
+    waiting = service.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="provider",
+    )
+    assert waiting.ok
+    lakefile_before = (consumer / "lakefile.toml").read_text(encoding="utf-8")
+
+    attached = service.attach_provider_for_requirement(consumer, requirement_name="need_provider")
+
+    assert not attached.ok
+    assert attached.issues[0].kind == "requirement_not_satisfied"
+    assert (consumer / "lakefile.toml").read_text(encoding="utf-8") == lakefile_before
+
+
+def test_attach_provider_for_requirement_is_idempotent_after_handled(tmp_path: Path) -> None:
+    workspace = tmp_path
+    consumer = workspace / "consumer"
+    provider = workspace / "provider"
+    external = FakeExternal()
+    service = make_runtime(external_overrides={"lake": external.lake}).repo_workspace
+    assert service.metadata.ensure_repo_model(consumer).ok
+    assert service.metadata.ensure_repo_model(provider).ok
+    assert service.lake_dependency.initialize_native_repo_skeleton(consumer, project_name="Consumer").ok
+    assert service.lake_dependency.initialize_native_repo_skeleton(provider, project_name="Provider").ok
+    assert service.requirement.create_requirement(
+        consumer,
+        name="need_provider",
+        target_repo="provider",
+        reason="Need provider content.",
+    ).ok
+    assert service.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="provider",
+    ).ok
+    assert service.metadata.set_provider_ready(provider, summary="Provider ready.").ok
+    assert service.requirement.mark_requirement_satisfied(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="provider",
+    ).ok
+    assert service.mark_requirement_result_observed(consumer, requirement_name="need_provider").ok
+
+    first = service.attach_provider_for_requirement(consumer, requirement_name="need_provider")
+    lakefile_after_first = (consumer / "lakefile.toml").read_text(encoding="utf-8")
+    second = service.attach_provider_for_requirement(consumer, requirement_name="need_provider")
+
+    assert first.ok and first.value is not None
+    assert second.ok and second.value is not None
+    assert second.value.handled is True
+    assert (consumer / "lakefile.toml").read_text(encoding="utf-8") == lakefile_after_first
+
+
+def test_attach_ready_workspace_repo_dependency_requires_stable_repo(tmp_path: Path) -> None:
+    consumer = tmp_path / "consumer"
+    provider = tmp_path / "provider"
+    external = FakeExternal()
+    service = make_runtime(external_overrides={"lake": external.lake}).repo_workspace
+    assert service.lake_dependency.initialize_native_repo_skeleton(consumer, project_name="Consumer").ok
+    assert service.lake_dependency.initialize_native_repo_skeleton(provider, project_name="Provider").ok
+
+    developing = service.attach_ready_workspace_repo_dependency(consumer, provider_repo="provider")
+
+    assert not developing.ok
+    assert developing.issues[0].kind == "provider_repo_not_ready"
+    assert service.metadata.mark_repo_stable(provider, summary="Reusable mathematical repo.").ok
+
+    attached = service.attach_ready_workspace_repo_dependency(consumer, provider_repo="provider")
+
+    assert attached.ok and attached.value is not None
+    assert attached.value.provider_repo_key == "provider"
+    assert 'name = "provider"' in (consumer / "lakefile.toml").read_text(encoding="utf-8")

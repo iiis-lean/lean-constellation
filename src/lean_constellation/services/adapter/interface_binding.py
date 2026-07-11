@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.interface import DeclKind
+from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.services.adapter.adapter_decl_catalog import AdapterDeclCatalogComponent, AdapterDeclSummaryView
+from lean_constellation.services.adapter.adapter_decl_catalog import AdapterDeclCatalogComponent, AdapterDeclView
 from lean_constellation.services.foundation import GateReport, ServiceResult, WriteMode
 from lean_constellation.services.node.contract import ContractComponent
 
@@ -91,10 +91,12 @@ class InterfaceBindingComponent:
                     expected=interface.kind.value,
                 )
             )
+        statement = self._validate_statement_contract(interface, view)
+        if not statement.ok:
+            return self.runtime.foundation.fail(statement.issues)
         new_ref = DeclRef(repo=None, node="Main", name=view.name, revision=view.revision.revision)
-        changed = interface.bound_decl != new_ref or interface.note != binding_summary.strip()
+        changed = interface.bound_decl != new_ref
         interface.bound_decl = new_ref
-        interface.note = binding_summary.strip()
         if changed:
             saved = self.runtime.foundation.store.write_json_atomic(
                 self._contract_path(repo_root, opened.value.version),
@@ -108,7 +110,7 @@ class InterfaceBindingComponent:
                 interface_name=interface.name,
                 bound_decl=interface.bound_decl,
                 decl_kind=view.kind,
-                binding_summary=interface.note,
+                binding_summary=binding_summary.strip(),
                 changed=changed,
                 summary=("Bound adapter interface." if changed else "Adapter interface binding was already current."),
             )
@@ -123,9 +125,8 @@ class InterfaceBindingComponent:
         interface = next((item for item in opened.value.contract.interfaces if item.name == interface_name), None)
         if interface is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_interface_missing", f"Adapter interface not found: {interface_name}", object_ref="Main"))
-        changed = interface.bound_decl is not None or interface.note != f"Unbound: {reason.strip()}"
+        changed = interface.bound_decl is not None
         interface.bound_decl = None
-        interface.note = f"Unbound: {reason.strip()}"
         if changed:
             saved = self.runtime.foundation.store.write_json_atomic(
                 self._contract_path(repo_root, opened.value.version),
@@ -138,7 +139,7 @@ class InterfaceBindingComponent:
             InterfaceBindingView(
                 interface_name=interface.name,
                 bound_decl=None,
-                binding_summary=interface.note,
+                binding_summary=f"Unbound: {reason.strip()}",
                 changed=changed,
                 summary=("Unbound adapter interface." if changed else "Adapter interface was already unbound."),
             )
@@ -211,6 +212,10 @@ class InterfaceBindingComponent:
                         expected=interface.kind.value,
                     )
                 )
+                continue
+            statement = self._validate_statement_contract(interface, view)
+            if not statement.ok:
+                issues.extend(statement.issues)
         if issues:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed(
@@ -237,3 +242,55 @@ class InterfaceBindingComponent:
             return True
         theorem_like = {DeclKind.THEOREM, DeclKind.LEMMA}
         return required in theorem_like and actual in theorem_like
+
+    def _validate_statement_contract(
+        self,
+        interface: DeclInterface,
+        decl: AdapterDeclView,
+    ) -> ServiceResult[None]:
+        expected = interface.expected_statement_lean_code
+        if expected is None:
+            return self.runtime.foundation.ok(None)
+        name = decl.name
+        if interface.kind not in {DeclKind.THEOREM, DeclKind.LEMMA}:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_interface_statement_contract_kind_unsupported",
+                    "Exact adapter statement contracts currently support theorem-like interfaces.",
+                    object_ref=interface.name,
+                    current=interface.kind.value,
+                    expected="theorem | lemma",
+                )
+            )
+        statement_code = decl.revision.statement_lean_code
+        if statement_code is None or not statement_code.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_interface_statement_contract_actual_missing",
+                    "The adapter declaration has no formal statement to compare.",
+                    object_ref=interface.name,
+                )
+            )
+        actual_codes = [("statement", statement_code)]
+        if decl.revision.proof_lean_code is not None and decl.revision.proof_lean_code.strip():
+            actual_codes.append(("proof", decl.revision.proof_lean_code))
+        for stage, actual in actual_codes:
+            compared = self.runtime.lean_projection.annotation.compare_theorem_header(
+                expected,
+                actual,
+                decl_name=name,
+            )
+            comparison_issues = compared.issues if not compared.ok or compared.value is None else compared.value.issues
+            if comparison_issues:
+                return self.runtime.foundation.fail(
+                    [
+                        issue.model_copy(
+                            update={
+                                "kind": "adapter_interface_statement_contract_mismatch",
+                                "object_ref": f"{interface.name}:{stage}",
+                            }
+                        )
+                        for issue in comparison_issues
+                    ]
+                )
+        return self.runtime.foundation.ok(None)

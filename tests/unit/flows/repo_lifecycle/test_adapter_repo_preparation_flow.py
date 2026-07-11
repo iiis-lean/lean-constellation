@@ -97,6 +97,12 @@ def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
 def _prepare_adapter_repo(lean_runtime, repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
     lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root)
+    configured_as_requirement_provider = lean_runtime.repo_workspace.metadata.update_repo_config(
+        repo_root,
+        target_proof_availability=ProofAvailability.DECLARED,
+        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+    )
+    assert configured_as_requirement_provider.ok
     written = lean_runtime.repo_workspace.preparation.write_preparation_input(
         repo_root,
         input=RepoPreparationInput(
