@@ -37,6 +37,13 @@ def _get_requirement_group(runtime, ctx, args: TargetRepoArgs):
     return runtime.repo_workspace.workspace_catalog.get_requirement_group(_workspace_root(ctx), target_repo=args.target_repo)
 
 
+def _get_current_repo_requirement(runtime, ctx, args: RequirementNameArgs):
+    return runtime.repo_workspace.requirement.get_requirement(
+        ctx.repo_root,
+        name=args.requirement_name,
+    )
+
+
 def _list_ready_provider_repos(runtime, ctx, args: NoArgs):
     del args
     return runtime.repo_workspace.workspace_catalog.list_ready_provider_repos(
@@ -166,7 +173,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="inspect_workspace_for_coordinator",
-            description="Read the workspace repo catalog and stable provider repos for the current coordinator.",
+            description="Read the current workspace repository catalog and its stable provider repositories.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             backing_service="repo_workspace",
@@ -225,6 +232,16 @@ def build_tool_specs() -> list[ToolSpec]:
             roles={"coordinator", "admin"},
             handler=_get_requirement_group,
         ),
+        handler_tool(
+            name="get_current_repo_requirement",
+            description="Read one dependency requirement from the current repo by requirement name.",
+            args_model=RequirementNameArgs,
+            capability=ToolCapability.READ,
+            result_view="requirement",
+            groups={AppGroup.WORKSPACE_REQUIREMENT_READ},
+            roles={"coordinator", "admin"},
+            handler=_get_current_repo_requirement,
+        ),
         direct_tool(
             name="list_current_lake_dependencies",
             description="List Lake dependencies declared by the current repo.",
@@ -238,6 +255,17 @@ def build_tool_specs() -> list[ToolSpec]:
             roles={"coordinator", "admin"},
         ),
         direct_tool(
+            name="attach_ready_workspace_repo_dependency",
+            description="Attach one stable existing workspace repo as a Lake dependency without creating a requirement.",
+            args_model=ProviderRepoArgs,
+            capability=ToolCapability.WRITE,
+            backing_service="repo_workspace",
+            backing_method="attach_ready_workspace_repo_dependency",
+            result_view="lake_dependency_attach",
+            groups={AppGroup.LAKE_DEPENDENCY_WRITE},
+            roles={"coordinator", "admin"},
+        ),
+        direct_tool(
             name="attach_requirement_provider_dependency",
             description="Attach the satisfied provider repo for one requirement as a Lake dependency and mark it handled.",
             args_model=RequirementNameArgs,
@@ -245,8 +273,8 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="repo_workspace",
             backing_method="attach_provider_for_requirement",
             result_view="requirement_consume",
-            groups={AppGroup.LAKE_DEPENDENCY_WRITE},
-            roles={"coordinator", "admin"},
+            groups={AppGroup.REQUIREMENT_PROVIDER_ADMIN_WRITE},
+            roles={"admin"},
         ),
         handler_tool(
             name="list_requirement_resume_candidates",
@@ -254,8 +282,8 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ProviderRepoArgs,
             capability=ToolCapability.READ,
             result_view="requirement_resume_candidates",
-            groups={AppGroup.WORKSPACE_REQUIREMENT_READ},
-            roles={"coordinator", "admin"},
+            groups={AppGroup.WORKSPACE_REQUIREMENT_CONTROL_READ},
+            roles={"admin"},
             handler=_list_resume_candidates,
         ),
         direct_tool(
@@ -266,8 +294,8 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="repo_workspace",
             backing_method="mark_requirement_result_observed",
             result_view="requirement_waiting",
-            groups={AppGroup.WORKSPACE_REQUIREMENT_WRITE},
-            roles={"coordinator", "admin"},
+            groups={AppGroup.WORKSPACE_REQUIREMENT_CONTROL_WRITE},
+            roles={"admin"},
         ),
         direct_tool(
             name="search_github_lean_repositories",

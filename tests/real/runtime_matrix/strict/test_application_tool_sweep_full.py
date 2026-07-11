@@ -26,9 +26,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 247
-    assert len(implemented_tool_cases()) == 198
-    assert len(pending_tool_cases()) == 49
+    assert len(cases) == 253
+    assert len(implemented_tool_cases()) == 195
+    assert len(pending_tool_cases()) == 58
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -256,16 +256,13 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         provider_repo="Provider",
         note="Strict ToolSweep provider ready.",
     ).ok
-    resume_candidates = call_tool_with_evidence(
-        server,
-        "native_repo_coordinator",
-        "list_requirement_resume_candidates",
-        {"provider_repo": "Provider"},
-        runtime_context=coordinator_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Resume candidates returned waiting Consumer requirement.",
+    resume_candidates = unwrap(
+        ws.runtime.repo_workspace.list_resume_candidates_for_requirement(
+            ws.consumer_repo.parent,
+            provider_repo="Provider",
+        )
     )
-    assert any(item.requirement_name == "need_provider" for item in resume_candidates.value["items"])
+    assert any(item.requirement_name == "need_provider" for item in resume_candidates)
 
     requirement_checkpoint = checkpoint_with_evidence(
         ws.admin,
@@ -274,28 +271,23 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         label="strict_tool_sweep_requirement_observe_attach",
         recorder=evidence_recorder,
     )
-    observed = call_tool_with_evidence(
-        server,
-        "native_repo_coordinator",
-        "mark_requirement_result_observed",
-        {"requirement_name": "need_provider", "note": "Strict ToolSweep observed provider result."},
-        runtime_context=coordinator_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Requirement provider result was marked observed.",
+    observed = unwrap(
+        ws.runtime.repo_workspace.mark_requirement_result_observed(
+            ws.consumer_repo,
+            requirement_name="need_provider",
+            note="Strict ToolSweep observed provider result.",
+        )
     )
-    assert observed.value["result_observed"] is True
+    assert observed.result_observed is True
 
-    attached = call_tool_with_evidence(
-        server,
-        "native_repo_coordinator",
-        "attach_requirement_provider_dependency",
-        {"requirement_name": "need_provider"},
-        runtime_context=coordinator_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Provider dependency was attached and requirement handled.",
+    attached = unwrap(
+        ws.runtime.repo_workspace.attach_provider_for_requirement(
+            ws.consumer_repo,
+            requirement_name="need_provider",
+        )
     )
-    assert attached.value["attached"] is True
-    assert attached.value["handled"] is True
+    assert attached.attached is True
+    assert attached.handled is True
 
     deps_after = call_tool_with_evidence(
         server,

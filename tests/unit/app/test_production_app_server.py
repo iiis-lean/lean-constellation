@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 
+from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 from starlette.testclient import TestClient
 
 from lean_constellation.app import (
@@ -14,6 +15,7 @@ from lean_constellation.app import (
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.services.external_clients import LeanMcpToolkitClient
 
 
 def _make_repo(workspace: Path, name: str) -> Path:
@@ -33,6 +35,7 @@ def test_production_app_server_exposes_workspace_registry_admin_and_repo_mcp(tmp
     with TestClient(app) as client:
         health = client.get("/health")
         repos = client.get("/admin/workspace/repos")
+        workspace_status = client.get("/admin/workspace/status")
         loaded = client.post("/admin/workspace/repos/MainRepo/load")
         status = client.get("/admin/repos/MainRepo/runtime/status")
         resumed = client.post("/admin/repos/MainRepo/runtime/resume", json={})
@@ -43,6 +46,10 @@ def test_production_app_server_exposes_workspace_registry_admin_and_repo_mcp(tmp
     assert health.json()["mcp_base_url"] == "http://127.0.0.1:8766"
     assert repos.status_code == 200
     assert repos.json()["value"]["repos"][0]["repo_key"] == "MainRepo"
+    assert workspace_status.status_code == 200
+    assert workspace_status.json()["value"]["scheduler_enabled"] is False
+    assert workspace_status.json()["value"]["server_start_paused"] is True
+    assert workspace_status.json()["value"]["test_control_enabled"] is False
     assert loaded.status_code == 200
     assert loaded.json()["value"]["runtime_root"].endswith("workspace/MainRepo/.agent_runtime")
     assert status.status_code == 200
@@ -52,6 +59,29 @@ def test_production_app_server_exposes_workspace_registry_admin_and_repo_mcp(tmp
     assert mcp_index.status_code == 200
     assert mcp_index.json()["views"] == ["resource_curator"]
     assert app.state.lean_constellation_registry is registry
+
+
+def test_production_app_server_exposes_workspace_external_health(tmp_path) -> None:
+    toolkit = LeanMcpToolkitClient(dispatcher=lambda tool, payload: {"ok": True})
+    config = LeanAppConfig(
+        workspace_root=tmp_path / "workspace",
+        scheduler_enabled=False,
+        materialize_agent_homes=False,
+    )
+    app_result = create_production_app_server(
+        config,
+        external_overrides={"lean_mcp_toolkit": toolkit},
+    )
+
+    assert app_result.ok and app_result.value is not None
+    with TestClient(app_result.value) as client:
+        canonical = client.get("/admin/workspace/external/health")
+        compatibility = client.get("/admin/external/health")
+
+    assert canonical.status_code == 200
+    assert canonical.json()["value"]["health"]["lean_toolkit_available"] is True
+    assert compatibility.status_code == 200
+    assert compatibility.json()["value"]["health"]["lean_toolkit_available"] is True
 
 
 def test_production_app_server_repo_routes_isolate_flow_state(tmp_path) -> None:
@@ -158,29 +188,61 @@ def test_production_app_server_workspace_requirement_resume_wakes_consumer_runti
 
     assert app_result.ok and app_result.value is not None
     registry = app_result.value.state.lean_constellation_registry
-    control = registry.workspace_runtime()
-    assert control.repo_workspace.metadata.ensure_repo_model(consumer).ok
-    assert control.repo_workspace.metadata.ensure_repo_model(provider).ok
-    assert control.repo_workspace.create_requirement_with_interfaces(
+    loaded_consumer = registry.get_or_load("Consumer", refresh_homes=False)
+    assert loaded_consumer.ok and loaded_consumer.value is not None
+    consumer_runtime = loaded_consumer.value
+    assert consumer_runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    assert consumer_runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
+    assert consumer_runtime.repo_workspace.create_requirement_with_interfaces(
         consumer,
         name="need_provider",
         target_repo="Provider",
         source_description="Need provider source.",
         reason="Expose helper theorem.",
     ).ok
-    assert control.repo_workspace.mark_requirement_waiting_for_provider(
+    assert consumer_runtime.repo_workspace.mark_requirement_waiting_for_provider(
         consumer,
         requirement_name="need_provider",
         provider_repo="Provider",
         reason="Waiting for provider.",
     ).ok
-    assert control.repo_workspace.requirement.mark_requirement_satisfied(
+    assert consumer_runtime.repo_workspace.requirement.mark_requirement_satisfied(
         consumer,
         requirement_name="need_provider",
         provider_repo="Provider",
         note="Provider ready.",
     ).ok
-    assert control.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.").ok
+    assert consumer_runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.").ok
+    scope_id = "repo:Consumer"
+    original_flow_id = consumer_runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="native_repo_coordinator",
+            scope_id=scope_id,
+            params={
+                "repo_key": "Consumer",
+                "repo_root": str(consumer),
+                "start_mode": "admin_start",
+                "start_reason": "HTTP resume test",
+            },
+        ),
+        enqueue=False,
+    )
+    coordinator = consumer_runtime.ark.agent_service.store.create_agent_record(
+        scope_id=scope_id,
+        agent_type="CoordinatorAgent",
+        cli_type="codex",
+        home_id="CoordinatorAgent",
+        thread_id="thread-consumer",
+    )
+
+    def mark_waiting(flow) -> None:
+        flow.status = FlowStatus.WAITING
+        flow.state.position.phase = "waiting_requirement"
+        flow.state.waiting_requirement_name = "need_provider"
+        flow.agent_bindings.by_role["coordinator"] = coordinator.agent_id
+
+    consumer_runtime.ark.flow_service.store.update_flow_record(original_flow_id, mark_waiting)
+    assert registry.unload("Consumer", require_stable=False).ok
     assert registry.try_get_loaded("Consumer") is None
 
     with TestClient(app_result.value) as client:
@@ -200,7 +262,9 @@ def test_production_app_server_workspace_requirement_resume_wakes_consumer_runti
     assert consumer_runtime is not None
     flows = consumer_runtime.ark.flow_service.list_flows(flow_type="native_repo_coordinator")
     assert len(flows) == 1
-    assert flows[0].input.start_mode == "requirement_resume"
+    assert flows[0].flow_id == original_flow_id
+    assert flows[0].input.start_mode == "admin_start"
+    assert flows[0].agent_bindings.get("coordinator") == coordinator.agent_id
 
 
 def test_production_app_server_workspace_main_repo_admin_routes_create_shell_and_status(tmp_path) -> None:
@@ -227,11 +291,32 @@ def test_production_app_server_workspace_main_repo_admin_routes_create_shell_and
                 ).model_dump(mode="json"),
             },
         )
+        source_root = repo_root / ".lean_constellation" / "source"
+        source_root.mkdir(parents=True)
+        (source_root / "README.md").write_text(
+            "# Mathematical source\n\n"
+            "Source provenance: transcribed from the supplied article.\n\n"
+            "Reading order: read this main material first.\n\n"
+            "Main theorem and definitions are stated here.\n\n"
+            "Known gaps and extraction limits: no known gaps.\n",
+            encoding="utf-8",
+        )
+        validated = client.post(
+            "/admin/workspace/main-repo/source-corpus/validate",
+            json={
+                "repo_root": str(repo_root),
+                "require_files": True,
+                "check_draft_gate": True,
+                "entry_path": "README.md",
+            },
+        )
         status = client.get("/admin/main-repo/status", params={"repo_root": str(repo_root)})
 
     assert shell.status_code == 200
     assert shell.json()["value"]["repo_name"] == "MainRepo"
     assert written.status_code == 200
+    assert validated.status_code == 200
+    assert validated.json()["value"]["draft_gate"]["passed"] is True
     assert status.status_code == 200
     assert status.json()["value"]["repo_exists"] is True
     assert status.json()["value"]["preparation_input_exists"] is True

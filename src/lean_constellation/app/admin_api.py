@@ -1384,6 +1384,32 @@ class LeanAdminApi:
                     object_ref=input_model.requirement_name,
                 )
             )
+        matching = self._find_requirement_resume_flow(
+            consumer_repo_root=input_model.consumer_repo_root,
+            requirement_name=input_model.requirement_name,
+        )
+        if not matching.ok or matching.value is None:
+            return self.runtime.foundation.fail(matching.issues)
+        flow = matching.value
+        binding = self._validate_requirement_resume_binding(flow)
+        if not binding.ok:
+            return self.runtime.foundation.fail(binding.issues)
+        schedule_service = self.runtime.ark.schedule_service
+        if input_model.enqueue and schedule_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "schedule_service_missing",
+                    "Requirement resume requested enqueue but the runtime schedule service is unavailable.",
+                )
+            )
+        provider_truth = self.runtime.repo_workspace.requirement.validate_requirement_provider_truth(
+            input_model.consumer_repo_root,
+            requirement_name=input_model.requirement_name,
+            provider_repo=expected_provider,
+            require_stable=True,
+        )
+        if not provider_truth.ok:
+            return self.runtime.foundation.fail(provider_truth.issues)
         observed = self.runtime.repo_workspace.mark_requirement_result_observed(
             input_model.consumer_repo_root,
             requirement_name=input_model.requirement_name,
@@ -1391,34 +1417,131 @@ class LeanAdminApi:
         )
         if not observed.ok or observed.value is None:
             return self.runtime.foundation.fail(observed.issues)
-        started = self.start_arbitrary_flow(
-            StartFlowInput(
-                flow_type="native_repo_coordinator",
-                scope_id=f"repo:{input_model.consumer_repo_root.name}",
-                enqueue=input_model.enqueue,
-                params={
-                    "repo_key": input_model.consumer_repo_root.name,
-                    "repo_root": str(input_model.consumer_repo_root),
-                    "start_mode": "requirement_resume",
-                    "start_reason": f"Provider requirement {input_model.requirement_name} is satisfied.",
-                    "resumed_requirement_name": input_model.requirement_name,
-                    "admin_note": input_model.admin_note,
-                },
-            ),
+        if input_model.enqueue:
+            assert schedule_service is not None
+            schedule_service.enqueue_flow(flow.flow_id)
+        resumed = AdminFlowStartView(
+            flow_id=flow.flow_id,
+            flow_type=flow.flow_type,
+            scope_id=flow.scope_id,
+            enqueued=input_model.enqueue,
             repo_root=str(input_model.consumer_repo_root),
+            summary=f"Resumed existing waiting coordinator flow {flow.flow_id}.",
         )
-        if not started.ok or started.value is None:
-            return self.runtime.foundation.fail(started.issues)
         return self.runtime.foundation.ok(
             RequirementResumeView(
                 requirement_name=input_model.requirement_name,
                 consumer_repo_root=str(input_model.consumer_repo_root),
                 provider_repo=input_model.provider_repo,
                 observed=observed.value.result_observed,
-                resume_flow=started.value,
-                summary=f"Marked requirement {input_model.requirement_name} observed and started coordinator resume flow.",
+                resume_flow=resumed,
+                summary=f"Marked requirement {input_model.requirement_name} observed and resumed its existing coordinator flow.",
             )
         )
+
+    def _find_requirement_resume_flow(
+        self,
+        *,
+        consumer_repo_root: Path,
+        requirement_name: str,
+    ) -> ServiceResult[object]:
+        flow_service = self.runtime.ark.flow_service
+        if flow_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("flow_service_missing", "ARK flow service is not configured.")
+            )
+        scope_id = f"repo:{consumer_repo_root.name}"
+        flows = flow_service.list_flows(scope_id=scope_id, flow_type="native_repo_coordinator")
+        waiting = [
+            flow
+            for flow in flows
+            if flow.status is FlowStatus.WAITING
+            and getattr(getattr(flow.state, "position", None), "phase", None) == "waiting_requirement"
+            and getattr(flow.state, "waiting_requirement_name", None) == requirement_name
+        ]
+        if len(waiting) > 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "waiting_coordinator_flow_ambiguous",
+                    "Multiple waiting Coordinator Flows match this requirement; explicit admin repair is required.",
+                    object_ref=requirement_name,
+                    details={"flow_ids": ",".join(flow.flow_id for flow in waiting)},
+                )
+            )
+        if waiting:
+            return self.runtime.foundation.ok(waiting[0])
+
+        resuming = [
+            flow
+            for flow in flows
+            if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+            and getattr(getattr(flow.state, "position", None), "phase", None)
+            in {"requirement_resume_gate", "coordinator_requirement_resume"}
+            and (
+                getattr(flow.state, "waiting_requirement_name", None) == requirement_name
+                or getattr(flow.state, "resuming_requirement_name", None) == requirement_name
+            )
+        ]
+        if len(resuming) > 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "waiting_coordinator_flow_ambiguous",
+                    "Multiple active Coordinator Flows match this resumed requirement; explicit admin repair is required.",
+                    object_ref=requirement_name,
+                    details={"flow_ids": ",".join(flow.flow_id for flow in resuming)},
+                )
+            )
+        if resuming:
+            return self.runtime.foundation.ok(resuming[0])
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "waiting_coordinator_flow_not_found",
+                "No original waiting Coordinator Flow matches this requirement; explicit admin repair is required.",
+                object_ref=requirement_name,
+                expected=f"{scope_id}:waiting_requirement",
+            )
+        )
+
+    def _validate_requirement_resume_binding(self, flow) -> ServiceResult[object]:
+        agent_id = flow.agent_bindings.get("coordinator")
+        if not agent_id:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "waiting_coordinator_binding_invalid",
+                    "The original waiting Flow has no Coordinator Agent binding.",
+                    object_ref=flow.flow_id,
+                )
+            )
+        agent_service = self.runtime.ark.agent_service
+        if agent_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "waiting_coordinator_binding_invalid",
+                    "The runtime cannot validate the original Coordinator Agent binding.",
+                    object_ref=flow.flow_id,
+                )
+            )
+        try:
+            agent = agent_service.get_agent(agent_id)
+        except Exception:  # noqa: BLE001 - normalize runtime store lookup at the admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "waiting_coordinator_binding_invalid",
+                    "The original Flow-bound Coordinator Agent does not exist.",
+                    object_ref=agent_id,
+                )
+            )
+        if agent.scope_id != flow.scope_id or agent.agent_type != "CoordinatorAgent":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "waiting_coordinator_binding_invalid",
+                    "The original Flow binding does not reference a CoordinatorAgent in the same repo scope.",
+                    object_ref=agent_id,
+                    current=f"{agent.scope_id}:{agent.agent_type}",
+                    expected=f"{flow.scope_id}:CoordinatorAgent",
+                )
+            )
+        return self.runtime.foundation.ok(agent)
 
     def complete_external_takeover(
         self,

@@ -642,6 +642,14 @@ class NodePublicDeclInspectArgs(NodePathArgs, DeclInspectArgs):
     pass
 
 
+class NodeDeclListArgs(NodePathArgs):
+    pass
+
+
+class NodeDeclInspectArgs(NodePathArgs, DeclInspectArgs):
+    pass
+
+
 class RepoPublicDeclListArgs(RepoKeyArgs):
     pass
 

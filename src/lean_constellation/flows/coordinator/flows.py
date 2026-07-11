@@ -9,6 +9,7 @@ from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlow
 from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, AgentStepState, DispatchStep, DispatchStepResult, DispatchStepState
 from pydantic import Field
 
+from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
@@ -20,6 +21,8 @@ from lean_constellation.flows.coordinator.submissions import (
 from lean_constellation.flows.coordinator.steps import (
     CoordinatorContentBatchSnapshotStep,
     CoordinatorContentBatchSnapshotStepResult,
+    CoordinatorRequirementResumeGateStep,
+    CoordinatorRequirementResumeGateStepResult,
     CoordinatorStepResult,
     MarkCoordinatorRepoReadyStep,
     MarkCoordinatorRepoReadyStepResult,
@@ -67,6 +70,8 @@ class NativeRepoCoordinatorState(BaseFlowState):
     waiting_dispatch_step_id: str | None = None
     waiting_requirement_name: str | None = None
     waiting_reason: str | None = None
+    resuming_requirement_name: str | None = None
+    resuming_provider_repo: str | None = None
     coordinator_turn_index: int = 0
     pending_dispatch_source_step_id: str | None = None
     pending_dispatch_source_submission_id: str | None = None
@@ -116,6 +121,28 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
 
     def can_exit_waiting(self, ctx: FlowReadContext) -> bool:
         state = _require_native_coordinator_state(self.state)
+        if state.position.phase == "waiting_requirement":
+            if not state.waiting_requirement_name:
+                return False
+            repo_workspace = getattr(ctx.app, "repo_workspace", None)
+            repo_root = _coordinator_repo_root(_require_native_coordinator_input(self.input))
+            if repo_workspace is None or repo_root is None:
+                return False
+            loaded = repo_workspace.requirement.get_requirement(
+                repo_root,
+                name=state.waiting_requirement_name,
+            )
+            if not loaded.ok or loaded.value is None:
+                return False
+            requirement = loaded.value.requirement
+            return (
+                requirement.status
+                in {
+                    RepoDependencyRequirementStatus.SATISFIED,
+                    RepoDependencyRequirementStatus.HANDLED,
+                }
+                and repo_workspace.requirement.is_requirement_result_observed(requirement)
+            )
         if state.position.phase not in {"waiting_content_tasks", "waiting_resource_request"}:
             return False
         if not state.waiting_dispatch_step_id:
@@ -134,7 +161,9 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             )
             state.position = FlowPosition(phase="after_content_task_batch_snapshot")
         elif state.position.phase == "waiting_resource_request":
-            state.position = FlowPosition(phase="coordinator_callback")
+            state.position = FlowPosition(phase="after_resource_request_terminal_snapshot")
+        elif state.position.phase == "waiting_requirement":
+            state.position = FlowPosition(phase="requirement_resume_gate")
         super().on_exit_waiting(ctx)
 
     def create_next_step(self, ctx: FlowContext) -> str | None:
@@ -144,6 +173,24 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             return ctx.create_step(_coordinator_agent_step(self, input_model, state, callback=False))
         if state.position.phase == "coordinator_callback":
             return ctx.create_step(_coordinator_agent_step(self, input_model, state, callback=True))
+        if state.position.phase == "requirement_resume_gate":
+            return ctx.create_step(
+                CoordinatorRequirementResumeGateStep(
+                    step_id=new_coordinator_step_id("requirement_resume_gate"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                )
+            )
+        if state.position.phase == "coordinator_requirement_resume":
+            return ctx.create_step(
+                _coordinator_agent_step(
+                    self,
+                    input_model,
+                    state,
+                    callback=False,
+                    requirement_resume=True,
+                )
+            )
         if state.position.phase == "before_content_task_dispatch_snapshot":
             return ctx.create_step(
                 CoordinatorContentBatchSnapshotStep(
@@ -158,6 +205,15 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             return ctx.create_step(_dispatch_step_from_pending(ctx, self, state, expected_submission=CoordinatorContentTasksSubmission))
         if state.position.phase == "dispatch_resource_request":
             return ctx.create_step(_dispatch_step_from_pending(ctx, self, state, expected_submission=CoordinatorResourceRequestSubmission))
+        if state.position.phase == "before_resource_request_dispatch_snapshot":
+            return ctx.create_step(
+                CoordinatorContentBatchSnapshotStep(
+                    step_id=new_coordinator_step_id("before_resource_request_dispatch_snapshot"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                    checkpoint_kind="before_resource_request_dispatch",
+                )
+            )
         if state.position.phase == "after_content_task_batch_snapshot":
             return ctx.create_step(
                 CoordinatorContentBatchSnapshotStep(
@@ -166,6 +222,15 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
                     scope_id=self.scope_id,
                     checkpoint_kind="after_content_task_batch_terminal",
                     node_paths=list(state.pending_content_node_paths),
+                )
+            )
+        if state.position.phase == "after_resource_request_terminal_snapshot":
+            return ctx.create_step(
+                CoordinatorContentBatchSnapshotStep(
+                    step_id=new_coordinator_step_id("after_resource_request_terminal_snapshot"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                    checkpoint_kind="after_resource_request_terminal",
                 )
             )
         if state.position.phase == "mark_repo_ready":
@@ -196,6 +261,8 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         result = ctx.step.result
         if ctx.step.step_type == "coordinator_agent_step":
             self._consume_coordinator_agent_result(ctx, state, result, ctx.step.submission, ctx.step.step_id)
+        elif isinstance(result, CoordinatorRequirementResumeGateStepResult):
+            self._consume_requirement_resume_gate_result(state, result)
         elif isinstance(result, CoordinatorContentBatchSnapshotStepResult):
             self._consume_content_snapshot_result(state, result)
         elif isinstance(result, DispatchStepResult):
@@ -266,6 +333,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         submission: object | None,
         step_id: str,
     ) -> None:
+        requirement_resume_turn = state.position.phase == "coordinator_requirement_resume"
         state.coordinator_turn_index += 1
         if isinstance(result, AgentStepIncompleteResult) or result is None:
             self._fail_coordinator("coordinator_agent_incomplete", "CoordinatorAgent did not submit a valid result.")
@@ -279,6 +347,9 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         if result.outcome == "incomplete":
             self._fail_coordinator("coordinator_agent_incomplete", result.incomplete_reason or result.summary or "CoordinatorAgent incomplete.")
             return
+        if requirement_resume_turn:
+            state.resuming_requirement_name = None
+            state.resuming_provider_repo = None
         if result.outcome == "content_tasks" and isinstance(submission, CoordinatorContentTasksSubmission) and result.content_tasks is not None:
             state.pending_dispatch_source_step_id = step_id
             state.pending_dispatch_source_submission_id = submission.submission_id
@@ -293,7 +364,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             state.pending_dispatch_source_submission_id = submission.submission_id
             state.pending_dispatch_kind = "resource_request"
             state.pending_resource_target_summary = f"{result.resource_request.target_kind}:{result.resource_request.target}"
-            state.position = FlowPosition(phase="dispatch_resource_request")
+            state.position = FlowPosition(phase="before_resource_request_dispatch_snapshot")
             return
         if (
             result.outcome == "repo_requirement"
@@ -312,6 +383,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
                 source_description=submission.source_description,
                 reason=submission.reason,
                 interfaces=list(submission.interfaces),
+                required_proof_availability=submission.required_proof_availability,
             )
             if not created.ok or created.value is None:
                 message = created.issues[0].message if created.issues else "Failed to create repo requirement."
@@ -337,6 +409,38 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             return
         self._fail_coordinator("coordinator_agent_submission_mismatch", "CoordinatorAgent result did not match its accepted submission.")
 
+    def _consume_requirement_resume_gate_result(
+        self,
+        state: NativeRepoCoordinatorState,
+        result: CoordinatorRequirementResumeGateStepResult,
+    ) -> None:
+        if result.outcome == "still_waiting":
+            state.position = FlowPosition(phase="waiting_requirement")
+            return
+        if result.outcome != "resumed":
+            self._fail_coordinator(
+                result.issue_code or "coordinator_requirement_resume_invalid",
+                result.summary or "Requirement resume gate rejected the current provider truth.",
+            )
+            return
+        if not result.requirement_name or not result.provider_repo:
+            self._fail_coordinator(
+                "coordinator_requirement_resume_result_invalid",
+                "Requirement resume gate completed without requirement/provider identity.",
+            )
+            return
+        if not result.requirement_handled or not result.lake_dependency_attached:
+            self._fail_coordinator(
+                "coordinator_requirement_resume_postcondition_failed",
+                "Requirement resume gate did not satisfy handled and Lake dependency postconditions.",
+            )
+            return
+        state.resuming_requirement_name = result.requirement_name
+        state.resuming_provider_repo = result.provider_repo
+        state.waiting_requirement_name = None
+        state.waiting_reason = None
+        state.position = FlowPosition(phase="coordinator_requirement_resume")
+
     def _consume_content_snapshot_result(
         self,
         state: NativeRepoCoordinatorState,
@@ -348,7 +452,16 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         if result.checkpoint_kind == "before_content_task_dispatch":
             state.position = FlowPosition(phase="dispatch_content_tasks")
             return
-        state.position = FlowPosition(phase="coordinator_callback")
+        if result.checkpoint_kind == "after_content_task_batch_terminal":
+            state.position = FlowPosition(phase="coordinator_callback")
+            return
+        if result.checkpoint_kind == "before_resource_request_dispatch":
+            state.position = FlowPosition(phase="dispatch_resource_request")
+            return
+        if result.checkpoint_kind == "after_resource_request_terminal":
+            state.position = FlowPosition(phase="coordinator_callback")
+            return
+        self._fail_coordinator("coordinator_snapshot_kind_unsupported", f"Unsupported checkpoint kind: {result.checkpoint_kind}.")
 
     def _consume_dispatch_result(
         self,
@@ -481,27 +594,42 @@ def _coordinator_agent_step(
     state: NativeRepoCoordinatorState,
     *,
     callback: bool,
+    requirement_resume: bool = False,
 ):
     from lean_constellation.flows.common.agent_steps import CoordinatorAgentStep
 
     return CoordinatorAgentStep(
-        step_id=new_coordinator_step_id("coordinator_callback" if callback else "coordinator"),
+        step_id=new_coordinator_step_id(
+            "coordinator_callback"
+            if callback
+            else "coordinator_requirement_resume"
+            if requirement_resume
+            else "coordinator"
+        ),
         flow_id=flow.flow_id,
         scope_id=flow.scope_id,
         state=AgentStepState(
             agent_role="coordinator",
             agent_type="CoordinatorAgent",
             home_id="CoordinatorAgent",
-            create_agent_if_missing=True,
+            create_agent_if_missing=not requirement_resume,
             bind_created_agent_to="flow",
             variables={
                 "repo_key": input_model.repo_key,
                 "start_mode": input_model.start_mode,
                 "coordinator_turn_index": state.coordinator_turn_index,
                 "waiting_requirement_name": state.waiting_requirement_name,
+                "resuming_requirement_name": state.resuming_requirement_name,
+                "resuming_provider_repo": state.resuming_provider_repo,
             },
             prompt_mode="callback" if callback else "initial",
-            prompt_override=None if callback else _coordinator_initial_prompt(input_model),
+            prompt_override=(
+                None
+                if callback
+                else _coordinator_requirement_resume_prompt(state)
+                if requirement_resume
+                else _coordinator_initial_prompt(input_model)
+            ),
             callback_dispatch_step_id=state.waiting_dispatch_step_id if callback else None,
             env_overrides={
                 "LEAN_CONSTELLATION_AGENT_TYPE": "CoordinatorAgent",
@@ -530,6 +658,19 @@ def _coordinator_initial_prompt(input_model: NativeRepoCoordinatorInput) -> str:
         "resource request, repo requirement, or repo ready."
     )
     return "\n".join(parts)
+
+
+def _coordinator_requirement_resume_prompt(state: NativeRepoCoordinatorState) -> str:
+    requirement_name = state.resuming_requirement_name or "the resumed requirement"
+    provider_repo = state.resuming_provider_repo or "the provider repo"
+    return "\n".join(
+        [
+            f"Resume coordination after requirement {requirement_name} was satisfied by provider {provider_repo}.",
+            "The deterministic resume gate verified the provider contract, automatically attached the provider as a Lake dependency, and marked the requirement handled.",
+            f"Use get_current_repo_requirement for {requirement_name}, then re-read the current Lake dependencies, provider public API, and node tree truth.",
+            "Close out the effect of this requirement result, return to the normal next-action decision loop, and submit exactly one normal coordination move: content node tasks, resource request, repo requirement, or repo ready.",
+        ]
+    )
 
 
 def _dispatch_step_from_pending(

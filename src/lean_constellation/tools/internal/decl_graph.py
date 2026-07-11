@@ -13,6 +13,8 @@ from lean_constellation.tools.args import (
     DeclNamesArgs,
     DeclReadyArgs,
     DeclRevisionArgs,
+    NodeDeclInspectArgs,
+    NodeDeclListArgs,
     DeclUpdateArgs,
     NodePublicDeclInspectArgs,
     NodePublicDeclListArgs,
@@ -141,6 +143,14 @@ def _graph_store(runtime, ctx, args: NoArgs):
     return runtime.decl_graph.get_decl_graph_store_view(ctx.repo_root, node_path=_node(ctx))
 
 
+def _node_graph_index(runtime, ctx, args: NodeDeclListArgs):
+    return runtime.decl_graph.get_decl_graph_index(ctx.repo_root, node_path=args.node_path)
+
+
+def _node_graph_store(runtime, ctx, args: NodeDeclListArgs):
+    return runtime.decl_graph.get_decl_graph_store_view(ctx.repo_root, node_path=args.node_path)
+
+
 def _rebuild_graph(runtime, ctx, args: NoArgs):
     del args
     return runtime.decl_graph.rebuild_decl_graph_index(ctx.repo_root, node_path=_node(ctx))
@@ -247,6 +257,13 @@ def _list_current_node_decls(runtime, ctx, args: NoArgs):
     return runtime.foundation.ok([_decl_list_item(runtime, ctx.repo_root, item) for item in views.value], warnings=views.issues)
 
 
+def _list_node_decls(runtime, ctx, args: NodeDeclListArgs):
+    views = runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=args.node_path)
+    if not views.ok or views.value is None:
+        return runtime.foundation.fail(views.issues)
+    return runtime.foundation.ok([_decl_list_item(runtime, ctx.repo_root, item) for item in views.value], warnings=views.issues)
+
+
 def _get_decl(runtime, ctx, args: DeclNameArgs):
     return runtime.decl_graph.get_decl_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
 
@@ -265,6 +282,25 @@ def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):
         view = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
     else:
         view = runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name, revision=args.revision)
+    if not view.ok or view.value is None:
+        return runtime.foundation.fail(view.issues)
+    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
+
+
+def _inspect_node_decl(runtime, ctx, args: NodeDeclInspectArgs):
+    if args.revision is None:
+        view = runtime.decl_graph.current_decl_revision_view(
+            ctx.repo_root,
+            node_path=args.node_path,
+            name=args.decl_name,
+        )
+    else:
+        view = runtime.decl_graph.get_decl_revision_view(
+            ctx.repo_root,
+            node_path=args.node_path,
+            name=args.decl_name,
+            revision=args.revision,
+        )
     if not view.ok or view.value is None:
         return runtime.foundation.fail(view.issues)
     return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
@@ -467,6 +503,28 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_graph_store,
         ),
         handler_tool(
+            name="get_node_decl_graph_index",
+            description="Read the DeclGraph index for one node in the Coordinator's current repo.",
+            args_model=NodeDeclListArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_graph_index",
+            groups={AppGroup.DECL_GRAPH_READ_COORDINATOR},
+            roles={"coordinator", "admin"},
+            handler=_node_graph_index,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="get_node_decl_graph_store",
+            description="Read DeclGraph store counts and paths for one node in the Coordinator's current repo.",
+            args_model=NodeDeclListArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_graph_store",
+            groups={AppGroup.DECL_GRAPH_READ_COORDINATOR},
+            roles={"coordinator", "admin"},
+            handler=_node_graph_store,
+            required_context={"repo"},
+        ),
+        handler_tool(
             name="rebuild_current_decl_graph_index",
             description="Rebuild the current content node DeclGraph index.",
             args_model=NoArgs,
@@ -627,6 +685,17 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_list_current_node_decls,
         ),
         handler_tool(
+            name="list_node_decls",
+            description="List all public and private declarations in one node of the Coordinator's current repo.",
+            args_model=NodeDeclListArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_list",
+            groups={AppGroup.DECL_GRAPH_READ_COORDINATOR},
+            roles={"coordinator", "admin"},
+            handler=_list_node_decls,
+            required_context={"repo"},
+        ),
+        handler_tool(
             name="get_decl",
             description="Inspect a declaration catalog entry in the current content node.",
             args_model=DeclNameArgs,
@@ -645,6 +714,17 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.CURRENT_NODE_DECL_READ},
             roles=roles,
             handler=_inspect_current_node_decl,
+        ),
+        handler_tool(
+            name="inspect_node_decl",
+            description="Inspect one public or private declaration revision in a node of the Coordinator's current repo.",
+            args_model=NodeDeclInspectArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_revision",
+            groups={AppGroup.DECL_GRAPH_READ_COORDINATOR},
+            roles={"coordinator", "admin"},
+            handler=_inspect_node_decl,
+            required_context={"repo"},
         ),
         handler_tool(
             name="get_decl_revision",
@@ -742,18 +822,18 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="visible_nodes",
-            groups={AppGroup.NODE_VISIBILITY_READ_CURRENT, AppGroup.NODE_VISIBILITY_READ_COORDINATOR},
+            groups={AppGroup.NODE_VISIBILITY_READ_CURRENT},
             roles=roles,
             handler=_list_visible_nodes,
             required_context={"repo"},
         ),
         handler_tool(
             name="list_imported_repos",
-            description="List imported provider repos whose public interface is visible in the current context.",
+            description="List provider repository boundaries visible in the current context.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="imported_repos",
-            groups={AppGroup.NODE_VISIBILITY_READ_CURRENT, AppGroup.NODE_VISIBILITY_READ_COORDINATOR},
+            groups={AppGroup.NODE_VISIBILITY_READ_CURRENT},
             roles=roles,
             handler=_list_imported_repos,
             required_context={"repo"},
@@ -802,7 +882,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_repo_public_decls",
-            description="List public declarations exposed by a visible imported repo interface.",
+            description="List public declarations exposed by a repository boundary visible in the current context.",
             args_model=RepoPublicDeclListArgs,
             capability=ToolCapability.READ,
             result_view="public_decls",
@@ -813,7 +893,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="inspect_repo_public_decl",
-            description="Inspect one public declaration exposed by a visible imported repo interface.",
+            description="Inspect one public declaration exposed by a repository boundary visible in the current context.",
             args_model=RepoPublicDeclInspectArgs,
             capability=ToolCapability.READ,
             result_view="decl_revision",

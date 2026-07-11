@@ -11,6 +11,7 @@ from agent_runtime_kit.flow.models import BaseStep, BaseStepResult, BaseStepStat
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 
@@ -71,7 +72,12 @@ class CoordinatorStepResult(LeanRenderableStepResult):
 class CoordinatorContentBatchSnapshotStepResult(LeanRenderableStepResult):
     result_type: Literal["coordinator_content_batch_snapshot"] = "coordinator_content_batch_snapshot"
     outcome: Literal["snapshot_created", "blocked"]
-    checkpoint_kind: Literal["before_content_task_dispatch", "after_content_task_batch_terminal"]
+    checkpoint_kind: Literal[
+        "before_content_task_dispatch",
+        "after_content_task_batch_terminal",
+        "before_resource_request_dispatch",
+        "after_resource_request_terminal",
+    ]
     snapshot_id: str | None = None
     node_paths: list[str] = Field(default_factory=list)
     error_code: str | None = None
@@ -110,6 +116,32 @@ class MarkCoordinatorRepoReadyStepResult(LeanRenderableStepResult):
         }
 
 
+class CoordinatorRequirementResumeGateStepResult(LeanRenderableStepResult):
+    result_type: Literal["coordinator_requirement_resume_gate"] = "coordinator_requirement_resume_gate"
+    outcome: Literal["resumed", "still_waiting", "invalid_requirement"]
+    requirement_name: str | None = None
+    provider_repo: str | None = None
+    requirement_status: str | None = None
+    result_observed: bool = False
+    lake_dependency_attached: bool = False
+    requirement_handled: bool = False
+    coordinator_agent_id: str | None = None
+    issue_code: str | None = None
+
+    def agent_fields(self) -> dict[str, object]:
+        return {
+            "outcome": self.outcome,
+            "requirement_name": self.requirement_name,
+            "provider_repo": self.provider_repo,
+            "requirement_status": self.requirement_status,
+            "result_observed": self.result_observed,
+            "lake_dependency_attached": self.lake_dependency_attached,
+            "requirement_handled": self.requirement_handled,
+            "coordinator_agent_id": self.coordinator_agent_id,
+            "issue_code": self.issue_code,
+        }
+
+
 class CoordinatorContentBatchSnapshotStep(BaseStep):
     step_type: ClassVar[str] = "coordinator_content_batch_snapshot_step"
     State: ClassVar[type[BaseStepState]] = BaseStepState
@@ -118,7 +150,12 @@ class CoordinatorContentBatchSnapshotStep(BaseStep):
         "coordinator_content_batch_snapshot": CoordinatorContentBatchSnapshotStepResult,
     }
 
-    checkpoint_kind: Literal["before_content_task_dispatch", "after_content_task_batch_terminal"]
+    checkpoint_kind: Literal[
+        "before_content_task_dispatch",
+        "after_content_task_batch_terminal",
+        "before_resource_request_dispatch",
+        "after_resource_request_terminal",
+    ]
     node_paths: list[str] = Field(default_factory=list)
 
     def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
@@ -136,7 +173,7 @@ class CoordinatorContentBatchSnapshotStep(BaseStep):
                     summary="Coordinator content task snapshot cannot run without repo_root.",
                 )
             )
-        if not self.node_paths:
+        if self.checkpoint_kind in {"before_content_task_dispatch", "after_content_task_batch_terminal"} and not self.node_paths:
             return ctx.complete_step(
                 CoordinatorContentBatchSnapshotStepResult(
                     outcome="blocked",
@@ -153,6 +190,180 @@ class CoordinatorContentBatchSnapshotStep(BaseStep):
                 checkpoint_kind=self.checkpoint_kind,
                 node_paths=list(self.node_paths),
                 summary="Checkpoint will be created after the step reaches a stable terminal state.",
+            )
+        )
+
+
+class CoordinatorRequirementResumeGateStep(BaseStep):
+    step_type: ClassVar[str] = "coordinator_requirement_resume_gate_step"
+    State: ClassVar[type[BaseStepState]] = BaseStepState
+    Result: ClassVar[type[BaseStepResult]] = CoordinatorRequirementResumeGateStepResult
+    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
+        "coordinator_requirement_resume_gate": CoordinatorRequirementResumeGateStepResult,
+    }
+
+    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
+        flow = _load_native_coordinator_flow(ctx)
+        input_model = _require_native_coordinator_input(flow.input)
+        repo_root = _repo_root(input_model)
+        requirement_name = getattr(flow.state, "waiting_requirement_name", None)
+        coordinator_agent_id = flow.agent_bindings.get("coordinator")
+
+        if repo_root is None:
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    requirement_name=requirement_name,
+                    coordinator_agent_id=coordinator_agent_id,
+                    issue_code="repo_root_missing",
+                    summary="Requirement resume gate requires repo_root in Flow input.",
+                )
+            )
+        if not requirement_name:
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    coordinator_agent_id=coordinator_agent_id,
+                    issue_code="waiting_requirement_name_missing",
+                    summary="Requirement resume gate has no waiting requirement name.",
+                )
+            )
+        binding_issue = _validate_coordinator_binding(ctx, flow, coordinator_agent_id)
+        if binding_issue is not None:
+            code, message = binding_issue
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    requirement_name=requirement_name,
+                    coordinator_agent_id=coordinator_agent_id,
+                    issue_code=code,
+                    summary=message,
+                )
+            )
+
+        repo_workspace = _repo_workspace(ctx)
+        loaded = repo_workspace.requirement.get_requirement(repo_root, name=requirement_name)
+        if not loaded.ok or loaded.value is None:
+            code, message = _first_issue(loaded.issues, fallback_code="requirement_not_found")
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    requirement_name=requirement_name,
+                    coordinator_agent_id=coordinator_agent_id,
+                    issue_code=code,
+                    summary=message,
+                )
+            )
+        requirement = loaded.value.requirement
+        provider_repo = repo_workspace.requirement.effective_provider_repo(requirement)
+        result_observed = repo_workspace.requirement.is_requirement_result_observed(requirement)
+        if requirement.status not in {
+            RepoDependencyRequirementStatus.SATISFIED,
+            RepoDependencyRequirementStatus.HANDLED,
+        } or not result_observed:
+            return ctx.complete_step(
+                CoordinatorRequirementResumeGateStepResult(
+                    outcome="still_waiting",
+                    requirement_name=requirement_name,
+                    provider_repo=provider_repo,
+                    requirement_status=requirement.status.value,
+                    result_observed=result_observed,
+                    coordinator_agent_id=coordinator_agent_id,
+                    summary=f"Requirement {requirement_name} is not yet ready to resume.",
+                )
+            )
+
+        valid = repo_workspace.requirement.validate_requirement_provider_truth(
+            repo_root,
+            requirement_name=requirement_name,
+            provider_repo=provider_repo,
+            require_stable=True,
+        )
+        if not valid.ok:
+            code, message = _first_issue(valid.issues, fallback_code="requirement_provider_truth_invalid")
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    requirement_name=requirement_name,
+                    provider_repo=provider_repo,
+                    requirement_status=requirement.status.value,
+                    result_observed=result_observed,
+                    coordinator_agent_id=coordinator_agent_id,
+                    issue_code=code,
+                    summary=message,
+                )
+            )
+
+        attached = repo_workspace.attach_provider_for_requirement(
+            repo_root,
+            requirement_name=requirement_name,
+        )
+        if not attached.ok or attached.value is None:
+            code, message = _first_issue(attached.issues, fallback_code="requirement_provider_attach_failed")
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    requirement_name=requirement_name,
+                    provider_repo=provider_repo,
+                    requirement_status=requirement.status.value,
+                    result_observed=result_observed,
+                    coordinator_agent_id=coordinator_agent_id,
+                    issue_code=code,
+                    summary=message,
+                )
+            )
+
+        current = repo_workspace.requirement.get_requirement(repo_root, name=requirement_name)
+        dependencies = repo_workspace.lake_dependency.parse_lake_dependencies(repo_root)
+        if not current.ok or current.value is None:
+            code, message = _first_issue(current.issues, fallback_code="requirement_postcondition_missing")
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    requirement_name=requirement_name,
+                    provider_repo=provider_repo,
+                    result_observed=result_observed,
+                    coordinator_agent_id=coordinator_agent_id,
+                    issue_code=code,
+                    summary=message,
+                )
+            )
+        if not dependencies.ok or dependencies.value is None:
+            code, message = _first_issue(dependencies.issues, fallback_code="lake_dependency_postcondition_failed")
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    requirement_name=requirement_name,
+                    provider_repo=provider_repo,
+                    requirement_status=current.value.requirement.status.value,
+                    result_observed=result_observed,
+                    coordinator_agent_id=coordinator_agent_id,
+                    issue_code=code,
+                    summary=message,
+                )
+            )
+        requirement_handled = current.value.requirement.status == RepoDependencyRequirementStatus.HANDLED
+        lake_dependency_attached = any(item.name == provider_repo for item in dependencies.value.dependencies)
+        current_provider = repo_workspace.requirement.effective_provider_repo(current.value.requirement)
+        current_observed = repo_workspace.requirement.is_requirement_result_observed(current.value.requirement)
+        provider_matches = current_provider == provider_repo == attached.value.provider_repo
+        if not requirement_handled or not lake_dependency_attached or not current_observed or not provider_matches:
+            return ctx.complete_step(
+                _requirement_resume_gate_invalid(
+                    requirement_name=requirement_name,
+                    provider_repo=provider_repo,
+                    requirement_status=current.value.requirement.status.value,
+                    result_observed=current_observed,
+                    coordinator_agent_id=coordinator_agent_id,
+                    lake_dependency_attached=lake_dependency_attached,
+                    requirement_handled=requirement_handled,
+                    issue_code="requirement_resume_postcondition_failed",
+                    summary="Requirement resume attach did not satisfy provider, observed, handled, and Lake dependency postconditions.",
+                )
+            )
+        return ctx.complete_step(
+            CoordinatorRequirementResumeGateStepResult(
+                outcome="resumed",
+                requirement_name=requirement_name,
+                provider_repo=provider_repo,
+                requirement_status=current.value.requirement.status.value,
+                result_observed=current_observed,
+                lake_dependency_attached=True,
+                requirement_handled=True,
+                coordinator_agent_id=coordinator_agent_id,
+                summary=f"Requirement {requirement_name} is handled and provider {provider_repo} is attached.",
             )
         )
 
@@ -276,6 +487,49 @@ def _repo_workspace(ctx: StepRunContext):
     return repo_workspace
 
 
+def _validate_coordinator_binding(ctx: StepRunContext, flow, coordinator_agent_id: str | None) -> tuple[str, str] | None:
+    if not coordinator_agent_id:
+        return "waiting_coordinator_binding_invalid", "Requirement resume requires a Flow-bound Coordinator Agent."
+    agent_service = getattr(ctx.ark, "agent_service", None)
+    if agent_service is None:
+        return "waiting_coordinator_binding_invalid", "Requirement resume cannot validate the Coordinator Agent binding."
+    try:
+        agent = agent_service.get_agent(coordinator_agent_id)
+    except Exception:  # noqa: BLE001 - normalize runtime store lookup as a gate result.
+        return "waiting_coordinator_binding_invalid", "The Flow-bound Coordinator Agent does not exist."
+    if getattr(agent, "scope_id", None) != flow.scope_id:
+        return "waiting_coordinator_binding_invalid", "The Flow-bound Coordinator Agent belongs to a different scope."
+    if getattr(agent, "agent_type", None) != "CoordinatorAgent":
+        return "waiting_coordinator_binding_invalid", "The Flow binding does not reference a CoordinatorAgent."
+    return None
+
+
+def _requirement_resume_gate_invalid(
+    *,
+    issue_code: str,
+    summary: str,
+    requirement_name: str | None = None,
+    provider_repo: str | None = None,
+    requirement_status: str | None = None,
+    result_observed: bool = False,
+    lake_dependency_attached: bool = False,
+    requirement_handled: bool = False,
+    coordinator_agent_id: str | None = None,
+) -> CoordinatorRequirementResumeGateStepResult:
+    return CoordinatorRequirementResumeGateStepResult(
+        outcome="invalid_requirement",
+        requirement_name=requirement_name,
+        provider_repo=provider_repo,
+        requirement_status=requirement_status,
+        result_observed=result_observed,
+        lake_dependency_attached=lake_dependency_attached,
+        requirement_handled=requirement_handled,
+        coordinator_agent_id=coordinator_agent_id,
+        issue_code=issue_code,
+        summary=summary,
+    )
+
+
 def _first_issue(issues: list[object], *, fallback_code: str) -> tuple[str, str]:
     if issues:
         issue = issues[0]
@@ -288,5 +542,6 @@ def _first_issue(issues: list[object], *, fallback_code: str) -> tuple[str, str]
 
 COORDINATOR_STEP_TYPES: tuple[type[BaseStep], ...] = (
     CoordinatorContentBatchSnapshotStep,
+    CoordinatorRequirementResumeGateStep,
     MarkCoordinatorRepoReadyStep,
 )

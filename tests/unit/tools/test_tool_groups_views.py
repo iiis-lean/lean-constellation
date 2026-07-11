@@ -143,6 +143,33 @@ def test_repo_work_config_tool_visible_to_coordinator_and_content_plan_only() ->
     assert "get_current_repo_work_config" not in statement_worker.value
 
 
+def test_current_requirement_read_replaces_requirement_attach_on_coordinator_surface() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    coordinator = runtime.tool_facade.tool_view.tool_names_for_view("native_repo_coordinator")
+
+    assert coordinator.ok and coordinator.value is not None
+    assert "get_current_repo_requirement" in coordinator.value
+    assert "attach_requirement_provider_dependency" not in coordinator.value
+    assert "list_requirement_resume_candidates" not in coordinator.value
+    assert "mark_requirement_result_observed" not in coordinator.value
+
+
+def test_coordinator_uses_workspace_and_tree_reads_instead_of_node_visibility_tools() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    coordinator = runtime.tool_facade.tool_view.tool_names_for_view("native_repo_coordinator")
+
+    assert coordinator.ok and coordinator.value is not None
+    assert {"list_visible_nodes", "list_imported_repos"}.isdisjoint(coordinator.value)
+    assert {
+        "get_node_tree",
+        "list_ready_provider_repos",
+        "list_repo_public_decls",
+        "inspect_repo_public_decl",
+    } <= set(coordinator.value)
+
+
 def test_public_decl_read_tools_visible_to_coordinator_plan_and_recon() -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
 
@@ -166,7 +193,8 @@ def test_public_decl_read_tools_visible_to_coordinator_plan_and_recon() -> None:
         "list_repo_public_decls",
         "inspect_repo_public_decl",
     }
-    assert visibility_tools | path_public_decl_tools <= set(coordinator.value)
+    assert visibility_tools.isdisjoint(coordinator.value)
+    assert path_public_decl_tools <= set(coordinator.value)
     assert current_public_decl_tools.isdisjoint(coordinator.value)
     assert visibility_tools | current_public_decl_tools | path_public_decl_tools <= set(content_plan.value)
     assert visibility_tools | current_public_decl_tools | path_public_decl_tools <= set(node_dir.value)
@@ -189,6 +217,15 @@ def test_current_node_decl_read_tools_visible_to_content_plan_only() -> None:
     assert dependency_analysis_tools.isdisjoint(node_dir.value)
     assert current_node_decl_tools.isdisjoint(node_dir.value)
     assert current_node_decl_tools.isdisjoint(coordinator.value)
+    coordinator_node_decl_tools = {
+        "get_node_decl_graph_index",
+        "get_node_decl_graph_store",
+        "list_node_decls",
+        "inspect_node_decl",
+    }
+    assert coordinator_node_decl_tools <= set(coordinator.value)
+    assert coordinator_node_decl_tools.isdisjoint(content_plan.value)
+    assert coordinator_node_decl_tools.isdisjoint(node_dir.value)
 
 
 def test_legacy_decl_readiness_tools_are_not_in_production_views() -> None:

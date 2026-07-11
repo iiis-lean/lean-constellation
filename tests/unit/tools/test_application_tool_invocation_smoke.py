@@ -104,7 +104,15 @@ class _FakePublicDeclProvider:
         return self.runtime.foundation.ok(self.decls.get((str(Path(repo_root)), node_path), []))
 
 
-def _create_public_decl(runtime, repo_root: Path, *, node_path: str, name: str, kind: str = "definition"):
+def _create_public_decl(
+    runtime,
+    repo_root: Path,
+    *,
+    node_path: str,
+    name: str,
+    kind: str = "definition",
+    public: bool = True,
+):
     assert runtime.decl_graph.ensure_decl_graph(repo_root, node_path=node_path).ok
     strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=node_path, objective=f"Create {name}.")
     assert strategy.ok and strategy.value is not None
@@ -123,7 +131,7 @@ def _create_public_decl(runtime, repo_root: Path, *, node_path: str, name: str, 
         kind=kind,
         objective=f"Create {name}.",
         summary=f"{name} summary.",
-        public=True,
+        public=public,
         end_after_state=DeclState.DECLARED,
     )
     assert created.ok and created.value is not None
@@ -206,6 +214,109 @@ def test_get_current_repo_work_config_tool_reads_repo_config(tmp_path: Path) -> 
     assert value["repo_key"] == "Repo"
     assert value["target_proof_availability"] == "declared"
     assert value["work_mode"] == "declared_interface"
+
+
+def test_get_current_repo_requirement_is_read_only_for_coordinator(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    assert runtime.repo_workspace.create_requirement_with_interfaces(
+        repo_root,
+        name="need_provider",
+        target_repo="Provider",
+        reason="Need provider API.",
+        interfaces=[
+            {
+                "name": "main_result",
+                "kind": "theorem",
+                "summary": "Main provider theorem.",
+                "expected_statement_lean_code": "theorem main_result : True := by trivial",
+            }
+        ],
+    ).ok
+    before = runtime.repo_workspace.requirement.get_requirement(repo_root, name="need_provider")
+    assert before.ok and before.value is not None
+
+    value = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(repo_root, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="get_current_repo_requirement",
+            flat_args={"requirement_name": "need_provider"},
+        )
+    )
+
+    assert value["requirement"]["name"] == "need_provider"
+    assert value["requirement"]["interfaces"][0]["expected_statement_lean_code"].startswith("theorem main_result")
+    after = runtime.repo_workspace.requirement.get_requirement(repo_root, name="need_provider")
+    assert after.ok and after.value is not None
+    assert after.value.requirement == before.value.requirement
+
+    issues = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(repo_root, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+            tool_name="attach_requirement_provider_dependency",
+            flat_args={"requirement_name": "need_provider"},
+        )
+    )
+    assert issues[0].kind in {"tool_not_in_view", "tool_role_not_allowed", "role_not_allowed"}
+
+    for tool_name, flat_args in (
+        ("list_requirement_resume_candidates", {"provider_repo": "Provider"}),
+        ("mark_requirement_result_observed", {"requirement_name": "need_provider"}),
+    ):
+        control_issues = _unwrap_tool_failure(
+            runtime.tool_facade.invoke_agent_tool(
+                _raw(repo_root, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+                tool_name=tool_name,
+                flat_args=flat_args,
+            )
+        )
+        assert control_issues[0].kind in {"tool_not_in_view", "tool_role_not_allowed", "role_not_allowed"}
+
+
+def test_coordinator_can_read_all_decls_in_any_current_repo_node(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    assert runtime.node.create_content_node(
+        repo_root,
+        path="Main.Core",
+        goal="Build internal declarations.",
+        boundary="Core internal boundary.",
+        objective="Create an internal helper.",
+        success_criteria="The helper is declared.",
+    ).ok
+    _create_public_decl(runtime, repo_root, node_path="Main.Core", name="internal_helper", public=False)
+    raw = _raw(repo_root, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
+
+    index = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_node_decl_graph_index",
+            flat_args={"node_path": "Main.Core"},
+        )
+    )
+    listed = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="list_node_decls",
+            flat_args={"node_path": "Main.Core"},
+        )
+    )
+    inspected = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="inspect_node_decl",
+            flat_args={"node_path": "Main.Core", "decl_name": "internal_helper"},
+        )
+    )
+
+    assert index["node_path"] == "Main.Core"
+    assert listed["items"][0]["name"] == "internal_helper"
+    assert listed["items"][0]["public"] is False
+    assert inspected["decl_name"] == "internal_helper"
 
 
 def test_coordinator_content_task_result_tools_read_callback_results(tmp_path: Path) -> None:
@@ -810,7 +921,7 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     assert runtime.repo_workspace.metadata.mark_repo_stable(provider, summary="Provider stable.").ok
     raw = _raw(consumer, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
 
-    imported = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_imported_repos", flat_args={}))
+    candidates = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_ready_provider_repos", flat_args={}))
     public = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_repo_public_decls", flat_args={"repo_key": "Provider"})
     )
@@ -822,7 +933,7 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
         )
     )
 
-    assert [repo["repo_key"] for repo in imported["repos"]] == ["Provider"]
+    assert [repo.repo_key for repo in candidates["items"]] == ["Provider"]
     assert public["items"][0]["ref"]["repo"] == "Provider"
     assert "ready" not in public["items"][0]
     assert "stale" not in public["items"][0]

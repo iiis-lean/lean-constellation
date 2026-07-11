@@ -24,6 +24,7 @@ class ApplicationToolGroupKey(StrEnum):
     DECL_DETAIL_READ = "decl_detail_read"
     DECL_GRAPH_CURRENT_WRITE = "decl_graph_current_write"
     DECL_GRAPH_READ_CURRENT = "decl_graph_read_current"
+    DECL_GRAPH_READ_COORDINATOR = "decl_graph_read_coordinator"
     DECL_HISTORY_READ = "decl_history_read"
     DECL_READINESS_READ = "decl_readiness_read"
     DECL_ROUND_CHANGE_WRITE = "decl_round_change_write"
@@ -47,13 +48,13 @@ class ApplicationToolGroupKey(StrEnum):
     PROOF_FORMAL_DIAGNOSTICS_READ = "proof_formal_diagnostics_read"
     LAKE_DEPENDENCY_READ = "lake_dependency_read"
     LAKE_DEPENDENCY_WRITE = "lake_dependency_write"
+    REQUIREMENT_PROVIDER_ADMIN_WRITE = "requirement_provider_admin_write"
     MATERIAL_CONTEXT_READ = "material_context_read"
     MATHLIB_INDEX_READ = "mathlib_index_read"
     MATHLIB_INDEX_WRITE = "mathlib_index_write"
     MATHLIB_NAVIGATION = "mathlib_navigation"
     MATHLIB_SEMANTIC_SEARCH = "mathlib_semantic_search"
     NODE_BOUNDARY_READ_CURRENT = "node_boundary_read_current"
-    NODE_VISIBILITY_READ_COORDINATOR = "node_visibility_read_coordinator"
     NODE_VISIBILITY_READ_CURRENT = "node_visibility_read_current"
     NODE_CONTRACT_CORE_COORDINATOR_WRITE = "node_contract_core_coordinator_write"
     NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE = "node_contract_dependency_coordinator_write"
@@ -102,7 +103,8 @@ class ApplicationToolGroupKey(StrEnum):
     WORKSPACE_PROVIDER_CATALOG_READ = "workspace_provider_catalog_read"
     WORKSPACE_REPO_CATALOG_READ = "workspace_repo_catalog_read"
     WORKSPACE_REQUIREMENT_READ = "workspace_requirement_read"
-    WORKSPACE_REQUIREMENT_WRITE = "workspace_requirement_write"
+    WORKSPACE_REQUIREMENT_CONTROL_READ = "workspace_requirement_control_read"
+    WORKSPACE_REQUIREMENT_CONTROL_WRITE = "workspace_requirement_control_write"
 
 
 class SubmitToolGroupKey(StrEnum):

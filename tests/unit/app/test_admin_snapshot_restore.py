@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import (
     LeanAdminApi,
+    RequirementResumeInput,
     SnapshotCreateInput,
     SnapshotRestoreInput,
     create_app_runtime_services,
@@ -114,3 +117,171 @@ def test_admin_snapshot_restore_restores_decl_review_step_state(tmp_path) -> Non
     restored_step = runtime.ark.step_service.store.get_step(step_id)
     assert isinstance(restored_step.state, DeclStageReviewerStepState)
     assert [mark.decl_name for mark in restored_step.state.review_marks] == ["main_result"]
+
+
+def test_requirement_resume_after_snapshot_restore_uses_original_flow_and_agent(tmp_path) -> None:
+    consumer = tmp_path / "Consumer"
+    provider = tmp_path / "Provider"
+    runtime = create_app_runtime_services(runtime_root=consumer / ".agent_runtime")
+    assert initialize_repo_runtime(runtime, consumer).ok
+    assert initialize_repo_runtime(runtime, provider).ok
+    assert runtime.repo_workspace.create_requirement_with_interfaces(
+        consumer,
+        name="need_provider",
+        target_repo="Provider",
+        reason="Need provider result.",
+    ).ok
+    assert runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="Provider",
+    ).ok
+    scope_id = "repo:Consumer"
+    flow_id = runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="native_repo_coordinator",
+            scope_id=scope_id,
+            params={
+                "repo_key": "Consumer",
+                "repo_root": str(consumer),
+                "start_mode": "admin_start",
+                "start_reason": "snapshot resume test",
+            },
+        ),
+        enqueue=False,
+    )
+    agent = runtime.ark.agent_service.store.create_agent_record(
+        scope_id=scope_id,
+        agent_type="CoordinatorAgent",
+        cli_type="codex",
+        home_id="CoordinatorAgent",
+        thread_id="thread-original",
+    )
+
+    def mark_waiting(flow) -> None:
+        flow.status = FlowStatus.WAITING
+        flow.state.position.phase = "waiting_requirement"
+        flow.state.waiting_requirement_name = "need_provider"
+        flow.agent_bindings.by_role["coordinator"] = agent.agent_id
+
+    runtime.ark.flow_service.store.update_flow_record(flow_id, mark_waiting)
+    admin = LeanAdminApi(runtime)
+    created = admin.create_snapshot(
+        SnapshotCreateInput(
+            repo_root=consumer,
+            checkpoint_kind="manual_test_stable_point",
+            scope_ids=[scope_id],
+            label="waiting requirement",
+        )
+    )
+    assert created.ok and created.value is not None, created.issues
+
+    def corrupt(flow) -> None:
+        flow.status = FlowStatus.RUNNING
+        flow.state.position.phase = "coordinator_agent"
+        flow.state.waiting_requirement_name = None
+        flow.agent_bindings.by_role.clear()
+
+    runtime.ark.flow_service.store.update_flow_record(flow_id, corrupt)
+    restored = admin.restore_snapshot(
+        SnapshotRestoreInput(
+            repo_root=consumer,
+            snapshot_id=created.value.snapshot_id,
+            leave_runtime_paused=True,
+        )
+    )
+    assert restored.ok and restored.value is not None, restored.issues
+    restored_flow = runtime.ark.flow_service.get_flow(flow_id)
+    assert restored_flow.status is FlowStatus.WAITING
+    assert restored_flow.state.position.phase == "waiting_requirement"
+    assert restored_flow.agent_bindings.get("coordinator") == agent.agent_id
+    assert runtime.ark.agent_service.get_agent(agent.agent_id).thread_id == "thread-original"
+
+    assert runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.").ok
+    assert runtime.repo_workspace.requirement.mark_requirement_satisfied(
+        consumer,
+        requirement_name="need_provider",
+        provider_repo="Provider",
+    ).ok
+    resumed = admin.resume_requirement(
+        RequirementResumeInput(
+            consumer_repo_root=consumer,
+            requirement_name="need_provider",
+            provider_repo="Provider",
+            enqueue=False,
+        )
+    )
+
+    assert resumed.ok and resumed.value is not None, resumed.issues
+    assert resumed.value.resume_flow.flow_id == flow_id
+    assert len(runtime.ark.flow_service.list_flows(flow_type="native_repo_coordinator")) == 1
+
+
+def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp_path) -> None:
+    repo_root = tmp_path / "Repo"
+    runtime_root = repo_root / ".agent_runtime"
+    runtime = create_app_runtime_services(runtime_root=runtime_root)
+    assert initialize_repo_runtime(runtime, repo_root).ok
+    store = runtime.ark.agent_service.store
+    repo_scope = "repo:Repo"
+    node_scope = "repo:Repo:node:n_core"
+    late_scope = "repo:Repo:node:n_late"
+    store.create_agent_record(scope_id=repo_scope, agent_type="CoordinatorAgent")
+    node_agent = store.create_agent_record(scope_id=node_scope, agent_type="ContentPlanAgent")
+    node_report = store.report_dir(node_agent.agent_id) / "latest.json"
+    node_report.parent.mkdir(parents=True)
+    node_report.write_text('{"version": "before"}\n', encoding="utf-8")
+    admin = LeanAdminApi(runtime)
+
+    created = admin.create_snapshot(
+        SnapshotCreateInput(
+            repo_root=repo_root,
+            checkpoint_kind="manual_test_stable_point",
+            scope_ids=[repo_scope],
+            label="all runtime scopes",
+        )
+    )
+
+    assert created.ok and created.value is not None, created.issues
+    assert set(created.value.ark_runtime_scope_ids) == {repo_scope, node_scope}
+    ark_manifest_path = (
+        runtime_root
+        / "snapshots"
+        / "runtime"
+        / created.value.ark_runtime_snapshot_id
+        / "snapshot.json"
+    )
+    ark_manifest = json.loads(ark_manifest_path.read_text(encoding="utf-8"))
+    assert set(ark_manifest["scope_snapshot_ids"]) == {repo_scope, node_scope}
+
+    second = admin.create_snapshot(
+        SnapshotCreateInput(
+            repo_root=repo_root,
+            checkpoint_kind="manual_test_stable_point",
+            scope_ids=[repo_scope],
+            label="refresh repo scope only",
+        )
+    )
+    assert second.ok and second.value is not None, second.issues
+    second_ark_manifest_path = (
+        runtime_root
+        / "snapshots"
+        / "runtime"
+        / second.value.ark_runtime_snapshot_id
+        / "snapshot.json"
+    )
+    second_ark_manifest = json.loads(second_ark_manifest_path.read_text(encoding="utf-8"))
+    assert set(second_ark_manifest["scope_snapshot_ids"]) == {repo_scope, node_scope}
+    assert second_ark_manifest["scope_snapshot_ids"][repo_scope] != ark_manifest["scope_snapshot_ids"][repo_scope]
+    assert second_ark_manifest["scope_snapshot_ids"][node_scope] == ark_manifest["scope_snapshot_ids"][node_scope]
+
+    node_report.write_text('{"version": "after"}\n', encoding="utf-8")
+    store.create_agent_record(scope_id=late_scope, agent_type="ContentPlanAgent")
+    assert late_scope in store.list_scope_ids()
+    restored = admin.restore_snapshot(
+        SnapshotRestoreInput(repo_root=repo_root, snapshot_id=second.value.snapshot_id)
+    )
+
+    assert restored.ok and restored.value is not None, restored.issues
+    assert set(store.list_scope_ids()) == {repo_scope, node_scope}
+    assert json.loads(node_report.read_text(encoding="utf-8"))["version"] == "before"

@@ -5,7 +5,7 @@ from pathlib import Path
 from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import RepoPublicationStatus
+from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
@@ -17,9 +17,45 @@ from lean_constellation.flows.coordinator.submissions import (
     CoordinatorResourceRequestSubmission,
 )
 from lean_constellation.flows.resource_request.flows import ResourceCurationResult
+from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind, ValidationSnapshotService
 from tests.unit_services_helpers import make_runtime
+
+
+class FakeLakeClient:
+    def run_lake_update(self, repo_root: Path) -> ExternalCommandResult:
+        return ExternalCommandResult(
+            ok=True,
+            command=["lake", "update"],
+            cwd=str(repo_root),
+            exit_code=0,
+            summary="lake update ok",
+        )
+
+    def run_lake_build(self, repo_root: Path, target: str | None = None) -> ExternalCommandResult:
+        return ExternalCommandResult(
+            ok=True,
+            command=["lake", "build"],
+            cwd=str(repo_root),
+            exit_code=0,
+            summary="lake build ok",
+        )
+
+    def run_minimal_import_check(self, repo_root: Path, module: str) -> LeanCheckSummaryView:
+        return LeanCheckSummaryView(ok=True, module=module, command=["lean"], summary=f"import {module} ok")
+
+    def summarize_command_result(self, result: ExternalCommandResult):
+        from lean_constellation.services.external_clients import LakeCommandSummaryView
+
+        return LakeCommandSummaryView(
+            ok=result.ok,
+            command=result.command,
+            summary=result.summary or "",
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+            stderr_excerpt=result.stderr_excerpt,
+        )
 
 
 class FakeRuntimeStabilityProvider:
@@ -78,7 +114,7 @@ class FakeConsistencyForReadiness:
 
 
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object, FakeRuntimeStabilityProvider, FakeArkSnapshotProvider]:
-    lean_runtime = make_runtime()
+    lean_runtime = make_runtime(external_overrides={"lake": FakeLakeClient()})
     foundation = lean_runtime.foundation
     runtime_stability = FakeRuntimeStabilityProvider(foundation)
     ark_snapshot = FakeArkSnapshotProvider(foundation)
@@ -143,6 +179,41 @@ def _complete_child_flow(runtime: FakeLeanFlowRuntime, child_flow_id: str, resul
     )
 
 
+def _prepare_requirement_resume_gate(runtime: FakeLeanFlowRuntime, lean_runtime, repo_root: Path):
+    provider_root = repo_root.parent / "Provider"
+    flow_id = _start_coordinator(runtime, repo_root)
+    repo_root.mkdir(parents=True, exist_ok=True)
+    provider_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "lakefile.toml").write_text('name = "Repo"\n', encoding="utf-8")
+    assert lean_runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
+    assert lean_runtime.repo_workspace.metadata.set_provider_ready(provider_root, summary="Provider ready.").ok
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoRequirementSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_requirement",
+            tool_name="submit_repo_requirement",
+            repo_key="Repo",
+            requirement_name="provider_req",
+            target_repo="Provider",
+            reason="Need the provider API.",
+            summary="Wait for provider.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    assert lean_runtime.repo_workspace.requirement.mark_requirement_satisfied(
+        repo_root,
+        requirement_name="provider_req",
+        provider_repo="Provider",
+    ).ok
+    assert lean_runtime.repo_workspace.mark_requirement_result_observed(
+        repo_root,
+        requirement_name="provider_req",
+    ).ok
+    gate_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert gate_step_id is not None
+    return flow_id, gate_step_id, provider_root
+
+
 def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> None:
     runtime, lean_runtime, runtime_stability, ark_snapshot = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
@@ -199,6 +270,7 @@ def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> 
             repo_key="Repo",
             requirement_name="provider_req",
             target_repo="Provider",
+            required_proof_availability=ProofAvailability.PROVED,
             reason="Need external provider.",
             summary="Wait for provider.",
         )
@@ -208,13 +280,16 @@ def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> 
     assert flow.status is FlowStatus.WAITING
     assert flow.state.position.phase == "waiting_requirement"
     assert flow.state.waiting_requirement_name == "provider_req"
+    requirement = lean_runtime.repo_workspace.requirement.get_requirement(repo_root, name="provider_req")
+    assert requirement.ok and requirement.value is not None
+    assert requirement.value.requirement.required_proof_availability == ProofAvailability.PROVED
     assert len(runtime.agent_service.start_records) == 2
     assert runtime.agent_service.start_records[0].agent_id == runtime.agent_service.start_records[1].agent_id
     assert "The child workflows you requested have finished." in (runtime.agent_service.start_records[1].prompt or "")
 
 
 def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
-    runtime, _, _, _ = _runtime(tmp_path)
+    runtime, _, runtime_stability, ark_snapshot = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
     flow_id = _start_coordinator(runtime, repo_root)
 
@@ -241,6 +316,11 @@ def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
         )
     )
     _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "before_resource_request_dispatch_snapshot"
+
+    before_snapshot_step_id = _advance_and_run(runtime, flow_id)
+    before_snapshot_step = runtime.flow_service.get_step(before_snapshot_step_id)
+    assert before_snapshot_step.result.checkpoint_kind == "before_resource_request_dispatch"
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "dispatch_resource_request"
 
     dispatch_step_id = _advance_and_run(runtime, flow_id)
@@ -261,11 +341,15 @@ def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
             summary="Duplicate resource.",
         ),
     )
-    callback_step_id = runtime.flow_service.advance_flow(flow_id)
-    assert callback_step_id is not None
+    after_snapshot_step_id = _advance_and_run(runtime, flow_id)
+    after_snapshot_step = runtime.flow_service.get_step(after_snapshot_step_id)
+    assert after_snapshot_step.result.checkpoint_kind == "after_resource_request_terminal"
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.RUNNING
     assert flow.state.position.phase == "coordinator_callback"
+
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert callback_step_id is not None
 
     runtime.agent_service.queue_submission(
         CoordinatorRepoRequirementSubmission(
@@ -280,6 +364,150 @@ def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
     )
     runtime.run_step(callback_step_id)
     assert "Duplicate resource." in (runtime.agent_service.start_records[1].prompt or "")
+    assert runtime_stability.calls == [
+        (RepoCheckpointKind.BEFORE_RESOURCE_REQUEST_DISPATCH, []),
+        (RepoCheckpointKind.AFTER_RESOURCE_REQUEST_TERMINAL, []),
+    ]
+    assert ark_snapshot.created == [
+        (["repo:Repo"], "before_resource_request_dispatch for Repo"),
+        (["repo:Repo"], "after_resource_request_terminal for Repo"),
+    ]
+
+
+def test_requirement_resume_reuses_flow_agent_and_automatically_attaches_provider(tmp_path: Path) -> None:
+    runtime, lean_runtime, _, ark_snapshot = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    provider_root = repo_root.parent / "Provider"
+    flow_id = _start_coordinator(runtime, repo_root)
+    repo_root.mkdir(parents=True, exist_ok=True)
+    provider_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "lakefile.toml").write_text('name = "Repo"\n', encoding="utf-8")
+    assert lean_runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
+    assert lean_runtime.repo_workspace.metadata.set_provider_ready(provider_root, summary="Provider ready.").ok
+
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoRequirementSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_requirement",
+            tool_name="submit_repo_requirement",
+            repo_key="Repo",
+            requirement_name="provider_req",
+            target_repo="Provider",
+            reason="Need the provider API.",
+            summary="Wait for provider.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    waiting_flow = runtime.flow_service.get_flow(flow_id)
+    coordinator_agent_id = waiting_flow.agent_bindings.get("coordinator")
+    assert coordinator_agent_id is not None
+    runtime.agent_service.agents[coordinator_agent_id].thread_id = "thread-original"
+    assert waiting_flow.status is FlowStatus.WAITING
+    assert runtime.flow_service.can_advance_flow(flow_id) is False
+
+    assert lean_runtime.repo_workspace.requirement.mark_requirement_satisfied(
+        repo_root,
+        requirement_name="provider_req",
+        provider_repo="Provider",
+    ).ok
+    assert runtime.flow_service.can_advance_flow(flow_id) is False
+    assert lean_runtime.repo_workspace.mark_requirement_result_observed(
+        repo_root,
+        requirement_name="provider_req",
+    ).ok
+    assert runtime.flow_service.can_advance_flow(flow_id) is True
+
+    gate_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert gate_step_id is not None
+    gate_step = runtime.flow_service.get_step(gate_step_id)
+    assert gate_step.step_type == "coordinator_requirement_resume_gate_step"
+    runtime.run_step(gate_step_id)
+    gate_step = runtime.flow_service.get_step(gate_step_id)
+    assert gate_step.result.outcome == "resumed"
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "coordinator_requirement_resume"
+
+    requirement = lean_runtime.repo_workspace.requirement.get_requirement(repo_root, name="provider_req")
+    assert requirement.ok and requirement.value is not None
+    assert requirement.value.requirement.status == "handled"
+    dependencies = lean_runtime.repo_workspace.workspace_catalog.list_current_lake_dependency_repos(repo_root)
+    assert dependencies.ok and dependencies.value is not None
+    assert [dependency.name for dependency in dependencies.value] == ["Provider"]
+
+    resume_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert resume_step_id is not None
+    resume_step = runtime.flow_service.get_step(resume_step_id)
+    assert resume_step.step_type == "coordinator_agent_step"
+    assert resume_step.state.prompt_mode == "initial"
+    assert resume_step.state.callback_dispatch_step_id is None
+    assert resume_step.state.create_agent_if_missing is False
+    assert resume_step.state.prompt_override is not None
+    assert "provider_req" in resume_step.state.prompt_override
+    assert "Provider" in resume_step.state.prompt_override
+    assert "automatically attached" in resume_step.state.prompt_override
+    assert flow_id not in resume_step.state.prompt_override
+
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoRequirementSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_requirement",
+            tool_name="submit_repo_requirement",
+            repo_key="Repo",
+            requirement_name="next_provider_req",
+            target_repo="NextProvider",
+            reason="Continue normal coordination.",
+            summary="Wait for another provider.",
+        )
+    )
+    runtime.run_step(resume_step_id)
+    resumed_flow = runtime.flow_service.get_flow(flow_id)
+    assert resumed_flow.flow_id == flow_id
+    assert resumed_flow.agent_bindings.get("coordinator") == coordinator_agent_id
+    assert runtime.agent_service.start_records[-1].agent_id == coordinator_agent_id
+    assert runtime.agent_service.get_agent(coordinator_agent_id).thread_id == "thread-original"
+    assert resumed_flow.state.position.phase == "waiting_requirement"
+    assert len(runtime.flow_service.list_flows(flow_type="native_repo_coordinator")) == 1
+    assert len(ark_snapshot.created) == 2
+
+
+def test_requirement_resume_gate_rechecks_provider_truth_before_attach(tmp_path: Path) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id, gate_step_id, provider_root = _prepare_requirement_resume_gate(runtime, lean_runtime, repo_root)
+    assert lean_runtime.repo_workspace.metadata.mark_repo_developing(provider_root).ok
+
+    runtime.run_step(gate_step_id)
+
+    gate_step = runtime.flow_service.get_step(gate_step_id)
+    assert gate_step.result.outcome == "invalid_requirement"
+    assert gate_step.result.issue_code == "provider_repo_not_ready"
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.FAILED
+    assert flow.error.error_type == "provider_repo_not_ready"
+    dependencies = lean_runtime.repo_workspace.workspace_catalog.list_current_lake_dependency_repos(repo_root)
+    assert dependencies.ok and dependencies.value == []
+
+
+def test_requirement_resume_gate_returns_to_waiting_when_observed_truth_races(tmp_path: Path) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id, gate_step_id, _ = _prepare_requirement_resume_gate(runtime, lean_runtime, repo_root)
+    assert lean_runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        repo_root,
+        requirement_name="provider_req",
+        provider_repo="Provider",
+        reason="Provider result must be observed again.",
+    ).ok
+
+    runtime.run_step(gate_step_id)
+
+    gate_step = runtime.flow_service.get_step(gate_step_id)
+    assert gate_step.result.outcome == "still_waiting"
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.WAITING
+    assert flow.state.position.phase == "waiting_requirement"
+    dependencies = lean_runtime.repo_workspace.workspace_catalog.list_current_lake_dependency_repos(repo_root)
+    assert dependencies.ok and dependencies.value == []
 
 
 def test_repo_ready_submission_marks_provider_ready_and_completes(tmp_path: Path) -> None:

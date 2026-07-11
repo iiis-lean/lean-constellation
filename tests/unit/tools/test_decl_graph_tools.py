@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from lean_constellation.tools import build_application_tool_specs
+
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
 
@@ -8,6 +10,8 @@ def test_decl_graph_tools_are_registered() -> None:
         "ensure_current_decl_graph",
         "get_current_decl_graph_index",
         "get_current_decl_graph_store",
+        "get_node_decl_graph_index",
+        "get_node_decl_graph_store",
         "rebuild_current_decl_graph_index",
         "ensure_open_decl_strategy",
         "close_decl_strategy",
@@ -26,6 +30,8 @@ def test_decl_graph_tools_are_registered() -> None:
         "list_current_node_decls",
         "get_decl",
         "inspect_current_node_decl",
+        "list_node_decls",
+        "inspect_node_decl",
         "get_decl_revision",
         "get_decl_change",
         "preview_decl_delete_closure",
@@ -54,6 +60,10 @@ def test_decl_graph_tools_are_registered() -> None:
 
 def test_decl_graph_groups_expose_expected_tools() -> None:
     assert_group_contains("decl_graph_read_current", {"get_current_decl_graph_index", "list_decl_strategies"})
+    assert_group_contains(
+        "decl_graph_read_coordinator",
+        {"get_node_decl_graph_index", "get_node_decl_graph_store", "list_node_decls", "inspect_node_decl"},
+    )
     assert_group_contains("decl_graph_current_write", {"ensure_current_decl_graph", "rebuild_current_decl_graph_index"})
     assert_group_contains("decl_strategy_write", {"ensure_open_decl_strategy", "close_decl_strategy"})
     assert_group_contains("decl_round_change_write", {"create_decl_round_draft", "plan_create_decl", "validate_decl_round_draft"})
@@ -73,3 +83,18 @@ def test_decl_graph_groups_expose_expected_tools() -> None:
         {"list_current_node_public_decls", "inspect_current_node_public_decl", "list_node_public_decls", "inspect_node_public_decl"},
     )
     assert_group_contains("content_completion_gate_read", {"check_current_content_node_completion"})
+
+
+def test_public_boundary_tool_descriptions_are_role_neutral() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    for name in (
+        "list_visible_nodes",
+        "list_imported_repos",
+        "list_repo_public_decls",
+        "inspect_repo_public_decl",
+    ):
+        description = specs[name].description
+        assert "Coordinator" not in description
+        assert "worker" not in description
+        assert "current context" in description
