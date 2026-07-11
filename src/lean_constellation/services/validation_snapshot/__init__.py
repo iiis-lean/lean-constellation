@@ -30,6 +30,7 @@ from lean_constellation.services.validation_snapshot.readiness_gate import (
 )
 from lean_constellation.services.validation_snapshot.service import ValidationSnapshotService
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
+    ArkRuntimeSnapshotRef,
     ArkRuntimeSnapshotProvider,
     RepoCheckpointKind,
     RepoCheckpointPolicy,
@@ -45,6 +46,7 @@ from lean_constellation.services.validation_snapshot.snapshot_restore import (
 
 __all__ = [
     "AdminRepairComponent",
+    "ArkRuntimeSnapshotRef",
     "ArkRuntimeSnapshotProvider",
     "AuditComponent",
     "AuditFinding",

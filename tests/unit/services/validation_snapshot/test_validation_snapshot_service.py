@@ -983,6 +983,10 @@ def test_snapshot_stable_point_kind_branches(tmp_path: Path) -> None:
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.ADAPTER_PREPARATION_TERMINAL,
     )
+    before_source = requirement_component.check_repo_stable_point(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_SOURCE_PROCESSING,
+    )
     native_missing_index = requirement_component.check_repo_stable_point(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_COORDINATOR_DISPATCH,
@@ -997,15 +1001,26 @@ def test_snapshot_stable_point_kind_branches(tmp_path: Path) -> None:
         checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL,
         node_paths=["Main.Topic.Core"],
     )
+    before_resource = requirement_component.check_repo_stable_point(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.BEFORE_RESOURCE_REQUEST_DISPATCH,
+    )
+    after_resource = requirement_component.check_repo_stable_point(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.AFTER_RESOURCE_REQUEST_TERMINAL,
+    )
 
     assert requirement.ok and requirement.value is not None and requirement.value.passed is True
     assert adapter_pass.ok and adapter_pass.value is not None and adapter_pass.value.passed is True
     assert adapter_fail.ok and adapter_fail.value is not None and adapter_fail.value.passed is False
     assert adapter_fail.value.issues[0].kind == "adapter_not_ready"
+    assert before_source.ok and before_source.value is not None and before_source.value.passed is True
     assert not native_missing_index.ok
     assert native_missing_index.issues[0].kind == "source_index_missing"
     assert before_tasks.ok and before_tasks.value is not None and before_tasks.value.passed is True
     assert after_tasks.ok and after_tasks.value is not None and after_tasks.value.passed is True
+    assert before_resource.ok and before_resource.value is not None and before_resource.value.passed is True
+    assert after_resource.ok and after_resource.value is not None and after_resource.value.passed is True
 
 
 def test_snapshot_create_copy_failure_cleans_manifest_without_ark_rollback(tmp_path: Path, monkeypatch) -> None:
@@ -1063,6 +1078,70 @@ def test_restore_preflights_missing_archive_before_ark_restore(tmp_path: Path) -
     assert (tmp_path / "Main.lean").read_text(encoding="utf-8") == "-- modified after snapshot\n"
 
 
+def test_restore_preflights_archive_checksum_before_ark_restore(tmp_path: Path) -> None:
+    foundation = make_runtime().foundation
+    _write_preparation_input(tmp_path)
+    (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    ark = FakeArkSnapshotProvider(foundation)
+    service = ValidationSnapshotService(
+        foundation.runtime,
+        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot_provider=ark,
+    )
+    created = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
+    )
+    assert created.ok and created.value is not None
+    files_manifest = foundation.store.read_json(Path(created.value.root) / "files_manifest.json", SnapshotFilesManifest)
+    assert files_manifest.ok and files_manifest.value is not None
+    main_entry = next(entry for entry in files_manifest.value.entries if entry.source_relpath == "Main.lean")
+    assert main_entry.sha256 is not None
+    archive = Path(created.value.root) / "files" / main_entry.archive_relpath
+    archive.write_text("import Math\n", encoding="utf-8")
+
+    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
+
+    assert not restored.ok
+    assert restored.issues[0].kind == "repo_checkpoint_archive_file_mismatch"
+    assert ark.restored == []
+
+
+def test_restore_rejects_manifest_path_escape_before_ark_restore(tmp_path: Path) -> None:
+    foundation = make_runtime().foundation
+    _write_preparation_input(tmp_path)
+    (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
+    outside_archive = tmp_path.parent / "outside_snapshot_file"
+    outside_archive.write_text("import Main\n", encoding="utf-8")
+    outside_target = tmp_path.parent / "escaped.lean"
+    outside_target.write_text("keep me\n", encoding="utf-8")
+    ark = FakeArkSnapshotProvider(foundation)
+    service = ValidationSnapshotService(
+        foundation.runtime,
+        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot_provider=ark,
+    )
+    created = service.create_repo_stable_point_snapshot(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
+    )
+    assert created.ok and created.value is not None
+    files_manifest_path = Path(created.value.root) / "files_manifest.json"
+    files_manifest = foundation.store.read_json(files_manifest_path, SnapshotFilesManifest)
+    assert files_manifest.ok and files_manifest.value is not None
+    main_entry = next(entry for entry in files_manifest.value.entries if entry.source_relpath == "Main.lean")
+    main_entry.source_relpath = "../escaped.lean"
+    main_entry.archive_relpath = str(outside_archive)
+    assert foundation.store.write_json_atomic(files_manifest_path, files_manifest.value).ok
+
+    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
+
+    assert not restored.ok
+    assert restored.issues[0].kind == "repo_checkpoint_archive_path_unsafe"
+    assert ark.restored == []
+    assert outside_target.read_text(encoding="utf-8") == "keep me\n"
+
+
 def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
@@ -1083,6 +1162,9 @@ def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
     assert created.ok and created.value is not None
     (tmp_path / "Main.lean").write_text("-- modified after snapshot\n", encoding="utf-8")
     (tmp_path / "Extra.lean").write_text("-- extra file should not be pruned\n", encoding="utf-8")
+    lake_build = tmp_path / ".lake" / "build"
+    lake_build.mkdir(parents=True)
+    (lake_build / "stale.olean").write_text("stale\n", encoding="utf-8")
 
     restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
 
@@ -1090,6 +1172,8 @@ def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
     assert restored.value is not None
     assert (tmp_path / "Main.lean").read_text(encoding="utf-8") == "import Main\n"
     assert (tmp_path / "Extra.lean").exists()
+    assert not lake_build.exists()
+    assert restored.value.invalidated_paths == [".lake/build"]
     assert builder.calls == 2
     rebuilt_index = foundation.index.read_index(ctx, builder.index_name)
     assert rebuilt_index.ok and rebuilt_index.value is not None
@@ -1128,17 +1212,9 @@ def test_restore_rebuilds_node_and_decl_graph_indexes_from_truth(tmp_path: Path)
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
     assert snapshot.ok and snapshot.value is not None
-    snapshot_root = Path(snapshot.value.root)
-    (snapshot_root / "files" / "lean_constellation" / "index" / "nodes.json").write_text("{bad-index", encoding="utf-8")
-    (
-        snapshot_root
-        / "files"
-        / "lean_constellation"
-        / "nodes"
-        / node_id
-        / "decl_graph"
-        / "index.json"
-    ).write_text("{bad-decl-graph-index", encoding="utf-8")
+    (tmp_path / ".lean_constellation" / "index" / "nodes.json").write_text("{bad-index", encoding="utf-8")
+    graph_index_path = node_service.node_tree.node_store.decl_graph_dir(tmp_path, node_id=node_id) / "index.json"
+    graph_index_path.write_text("{bad-decl-graph-index", encoding="utf-8")
 
     restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=snapshot.value.snapshot_id)
 

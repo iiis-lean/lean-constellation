@@ -228,6 +228,8 @@ def test_native_preparation_existing_source_handoff_dispatches_coordinator(tmp_p
     flow_id = _start_native(runtime, repo_root)
 
     _run_to_builder(runtime, lean_runtime, flow_id, repo_root)
+    assert ark_snapshot.created[0][1] == ["repo:Provider"]
+    assert ark_snapshot.created[0][2] == "before native source processing for Provider"
     runtime.agent_service.queue_submission(
         SourceIndexBuilderRoundSubmission(
             submission_id=new_submission_id("sub"),
@@ -256,8 +258,9 @@ def test_native_preparation_existing_source_handoff_dispatches_coordinator(tmp_p
     _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
     _advance_and_run(runtime, flow_id)
-    assert ark_snapshot.created
-    assert ark_snapshot.created[0][1] == ["repo:Provider"]
+    assert len(ark_snapshot.created) == 2
+    assert ark_snapshot.created[1][1] == ["repo:Provider"]
+    assert ark_snapshot.created[1][2] == "before native coordinator dispatch for Provider"
     _advance_and_run(runtime, flow_id)
 
     flow = runtime.flow_service.get_flow(flow_id)

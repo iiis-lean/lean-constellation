@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from enum import StrEnum
 from pathlib import Path
@@ -26,10 +27,13 @@ if TYPE_CHECKING:
 class RepoCheckpointKind(StrEnum):
     REQUIREMENT_BOOTSTRAP_TERMINAL = "requirement_bootstrap_terminal"
     ADAPTER_PREPARATION_TERMINAL = "adapter_preparation_terminal"
+    BEFORE_NATIVE_SOURCE_PROCESSING = "before_native_source_processing"
     BEFORE_NATIVE_COORDINATOR_DISPATCH = "before_native_coordinator_dispatch"
     COORDINATOR_REQUIREMENT_WAITING = "coordinator_requirement_waiting"
     BEFORE_CONTENT_TASK_DISPATCH = "before_content_task_dispatch"
     AFTER_CONTENT_TASK_BATCH_TERMINAL = "after_content_task_batch_terminal"
+    BEFORE_RESOURCE_REQUEST_DISPATCH = "before_resource_request_dispatch"
+    AFTER_RESOURCE_REQUEST_TERMINAL = "after_resource_request_terminal"
     MANUAL_TEST_STABLE_POINT = "manual_test_stable_point"
 
 
@@ -46,6 +50,7 @@ class SnapshotFileEntry(StrictModel):
     source_relpath: str
     archive_relpath: str
     file_size: int
+    sha256: str | None = None
 
 
 class SnapshotFilesManifest(StrictModel):
@@ -60,6 +65,11 @@ class SnapshotNodeRef(StrictModel):
     scope_id: str
 
 
+class ArkRuntimeSnapshotRef(StrictModel):
+    snapshot_id: str
+    scope_ids: list[str] = Field(default_factory=list)
+
+
 class RepoCheckpointSnapshotManifest(StrictModel):
     snapshot_id: str
     checkpoint_kind: RepoCheckpointKind
@@ -68,6 +78,7 @@ class RepoCheckpointSnapshotManifest(StrictModel):
     repo_root: str
     ark_runtime_snapshot_id: str
     refreshed_scope_ids: list[str] = Field(default_factory=list)
+    ark_runtime_scope_ids: list[str] = Field(default_factory=list)
     node_refs: list[SnapshotNodeRef] = Field(default_factory=list)
     files_manifest_relpath: str
     summary: str
@@ -80,6 +91,7 @@ class RepoCheckpointSnapshotView(StrictModel):
     root: str
     ark_runtime_snapshot_id: str
     refreshed_scope_ids: list[str] = Field(default_factory=list)
+    ark_runtime_scope_ids: list[str] = Field(default_factory=list)
     node_refs: list[SnapshotNodeRef] = Field(default_factory=list)
     file_count: int
     summary: str
@@ -90,7 +102,9 @@ class SnapshotRestoreView(StrictModel):
     dry_run: bool
     restored_files: list[str] = Field(default_factory=list)
     would_restore_files: list[str] = Field(default_factory=list)
+    would_invalidate_paths: list[str] = Field(default_factory=list)
     pruned_files: list[str] = Field(default_factory=list)
+    invalidated_paths: list[str] = Field(default_factory=list)
     ark_runtime_snapshot_id: str
     leave_runtime_paused: bool = True
     summary: str
@@ -118,7 +132,7 @@ class ArkRuntimeSnapshotProvider(Protocol):
         *,
         scope_ids: list[str],
         label: str | None = None,
-    ) -> ServiceResult[str]:
+    ) -> ServiceResult[ArkRuntimeSnapshotRef | str]:
         ...
 
     def restore_runtime_snapshot(
@@ -227,6 +241,11 @@ class SnapshotRestoreComponent:
                 gate_name="adapter_preparation_terminal_stable_point",
                 summary="Adapter preparation has reached a terminal stable point.",
             ),
+            RepoCheckpointKind.BEFORE_NATIVE_SOURCE_PROCESSING: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_SOURCE_PROCESSING,
+                gate_name="before_native_source_processing_stable_point",
+                summary="Native preparation is initialized before source, index, and interface Agent work.",
+            ),
             RepoCheckpointKind.BEFORE_NATIVE_COORDINATOR_DISPATCH: RepoCheckpointPolicy(
                 checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_COORDINATOR_DISPATCH,
                 gate_name="before_native_coordinator_dispatch_stable_point",
@@ -248,6 +267,16 @@ class SnapshotRestoreComponent:
                 gate_name="after_content_task_batch_terminal_stable_point",
                 summary="A content task batch has reached terminal flow states.",
                 include_node_scopes=True,
+            ),
+            RepoCheckpointKind.BEFORE_RESOURCE_REQUEST_DISPATCH: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.BEFORE_RESOURCE_REQUEST_DISPATCH,
+                gate_name="before_resource_request_dispatch_stable_point",
+                summary="Coordinator is about to dispatch a resource request.",
+            ),
+            RepoCheckpointKind.AFTER_RESOURCE_REQUEST_TERMINAL: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.AFTER_RESOURCE_REQUEST_TERMINAL,
+                gate_name="after_resource_request_terminal_stable_point",
+                summary="A resource request has reached a terminal flow state.",
             ),
             RepoCheckpointKind.MANUAL_TEST_STABLE_POINT: RepoCheckpointPolicy(
                 checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
@@ -352,6 +381,12 @@ class SnapshotRestoreComponent:
         ark = self.ark_snapshot_provider.create_runtime_snapshot(repo_root, scope_ids=effective_scope_ids, label=label)
         if not ark.ok or ark.value is None:
             return self.runtime.foundation.fail(ark.issues)
+        if isinstance(ark.value, ArkRuntimeSnapshotRef):
+            ark_snapshot_id = ark.value.snapshot_id
+            ark_runtime_scope_ids = list(ark.value.scope_ids)
+        else:
+            ark_snapshot_id = str(ark.value)
+            ark_runtime_scope_ids = list(effective_scope_ids)
 
         try:
             snapshot_root.mkdir(parents=True, exist_ok=False)
@@ -379,8 +414,9 @@ class SnapshotRestoreComponent:
             label=label.strip() if label else None,
             created_at=utc_now_iso(),
             repo_root=str(repo_root),
-            ark_runtime_snapshot_id=ark.value,
+            ark_runtime_snapshot_id=ark_snapshot_id,
             refreshed_scope_ids=effective_scope_ids,
+            ark_runtime_scope_ids=ark_runtime_scope_ids,
             node_refs=node_refs.value,
             files_manifest_relpath="files_manifest.json",
             summary=gate.value.summary or f"Created repo checkpoint snapshot {snapshot_id}.",
@@ -399,8 +435,9 @@ class SnapshotRestoreComponent:
                 checkpoint_kind=kind,
                 label=manifest.label,
                 root=str(snapshot_root),
-                ark_runtime_snapshot_id=ark.value,
+                ark_runtime_snapshot_id=ark_snapshot_id,
                 refreshed_scope_ids=effective_scope_ids,
+                ark_runtime_scope_ids=ark_runtime_scope_ids,
                 node_refs=node_refs.value,
                 file_count=len(entries),
                 summary=f"Created {kind.value} checkpoint snapshot with {len(entries)} files.",
@@ -428,11 +465,13 @@ class SnapshotRestoreComponent:
         if not archive_preflight.ok:
             return self.runtime.foundation.fail(archive_preflight.issues)
         if dry_run:
+            would_invalidate = self._lake_build_paths_to_invalidate(repo_root)
             return self.runtime.foundation.ok(
                 SnapshotRestoreView(
                     snapshot_id=snapshot_id,
                     dry_run=True,
                     would_restore_files=would_restore,
+                    would_invalidate_paths=would_invalidate,
                     ark_runtime_snapshot_id=manifest.value.ark_runtime_snapshot_id,
                     leave_runtime_paused=leave_runtime_paused,
                     summary=f"Dry-run restore would restore {len(would_restore)} files.",
@@ -448,15 +487,20 @@ class SnapshotRestoreComponent:
             return self.runtime.foundation.fail(ark.issues)
         restored: list[str] = []
         pruned: list[str] = []
+        invalidated: list[str] = []
         try:
             if prune_extra_files:
                 pruned = self._prune_extra_files_for_restore(repo_root, files.value)
             for entry in files.value.entries:
-                source_archive = self._snapshot_dir(repo_root, snapshot_id) / "files" / entry.archive_relpath
-                target = repo_root / entry.source_relpath
+                source_archive = self._resolve_managed_relative_path(
+                    self._snapshot_dir(repo_root, snapshot_id) / "files",
+                    entry.archive_relpath,
+                )
+                target = self._resolve_managed_relative_path(repo_root, entry.source_relpath)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_archive, target)
                 restored.append(entry.source_relpath)
+            invalidated = self._invalidate_lake_build_artifacts(repo_root)
         except OSError as exc:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -474,11 +518,13 @@ class SnapshotRestoreComponent:
                 dry_run=False,
                 restored_files=restored,
                 pruned_files=pruned,
+                invalidated_paths=invalidated,
                 ark_runtime_snapshot_id=manifest.value.ark_runtime_snapshot_id,
                 leave_runtime_paused=leave_runtime_paused,
                 summary=(
                     f"Restored {len(restored)} files from repo checkpoint snapshot"
                     f"{f' and pruned {len(pruned)} extra files' if prune_extra_files else ''}; "
+                    f"invalidated {len(invalidated)} stale Lake build paths; "
                     f"{rebuilt.value.summary if rebuilt.value else 'rebuilt derived indexes after restore.'}"
                 ),
             )
@@ -555,6 +601,7 @@ class SnapshotRestoreComponent:
                         root=str(child),
                         ark_runtime_snapshot_id=loaded.value.ark_runtime_snapshot_id,
                         refreshed_scope_ids=loaded.value.refreshed_scope_ids,
+                        ark_runtime_scope_ids=loaded.value.ark_runtime_scope_ids,
                         node_refs=loaded.value.node_refs,
                         file_count=file_count,
                         summary=loaded.value.summary,
@@ -850,10 +897,33 @@ class SnapshotRestoreComponent:
             SnapshotFileEntry(
                 source_relpath=source.relative_to(source_prefix).as_posix(),
                 archive_relpath=target.relative_to(archive_prefix).as_posix(),
-                file_size=source.stat().st_size,
+                file_size=target.stat().st_size,
+                sha256=self._sha256_file(target),
             )
         )
         return entries
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _lake_build_paths_to_invalidate(self, repo_root: Path) -> list[str]:
+        build_root = repo_root / ".lake" / "build"
+        return [".lake/build"] if build_root.exists() or build_root.is_symlink() else []
+
+    def _invalidate_lake_build_artifacts(self, repo_root: Path) -> list[str]:
+        build_root = repo_root / ".lake" / "build"
+        if build_root.is_symlink() or build_root.is_file():
+            build_root.unlink()
+            return [".lake/build"]
+        if build_root.is_dir():
+            shutil.rmtree(build_root)
+            return [".lake/build"]
+        return []
 
     def _load_manifest(self, repo_root: Path, snapshot_id: str) -> ServiceResult[RepoCheckpointSnapshotManifest]:
         return self.runtime.foundation.store.read_json(self._snapshot_dir(repo_root, snapshot_id) / "snapshot.json", RepoCheckpointSnapshotManifest)
@@ -868,11 +938,54 @@ class SnapshotRestoreComponent:
         files_manifest: SnapshotFilesManifest,
     ) -> ServiceResult[MutationSummaryView]:
         missing: list[str] = []
+        mismatched: list[dict[str, object]] = []
+        unsafe: list[dict[str, str]] = []
         snapshot_files_root = self._snapshot_dir(repo_root, snapshot_id) / "files"
         for entry in files_manifest.entries:
-            archive_file = snapshot_files_root / entry.archive_relpath
+            try:
+                archive_file = self._resolve_managed_relative_path(snapshot_files_root, entry.archive_relpath)
+                self._resolve_managed_relative_path(repo_root, entry.source_relpath)
+            except ValueError as exc:
+                unsafe.append(
+                    {
+                        "source_relpath": entry.source_relpath,
+                        "archive_relpath": entry.archive_relpath,
+                        "error": str(exc),
+                    }
+                )
+                continue
             if not archive_file.is_file():
                 missing.append(entry.archive_relpath)
+                continue
+            actual_size = archive_file.stat().st_size
+            if actual_size != entry.file_size:
+                mismatched.append(
+                    {
+                        "archive_relpath": entry.archive_relpath,
+                        "expected_size": entry.file_size,
+                        "actual_size": actual_size,
+                    }
+                )
+                continue
+            if entry.sha256 is not None:
+                actual_sha256 = self._sha256_file(archive_file)
+                if actual_sha256 != entry.sha256:
+                    mismatched.append(
+                        {
+                            "archive_relpath": entry.archive_relpath,
+                            "expected_sha256": entry.sha256,
+                            "actual_sha256": actual_sha256,
+                        }
+                    )
+        if unsafe:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_checkpoint_archive_path_unsafe",
+                    "Repo checkpoint manifest contains paths outside the managed archive or repo root.",
+                    object_ref=snapshot_id,
+                    details={"unsafe_entries": unsafe},
+                )
+            )
         if missing:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -882,6 +995,15 @@ class SnapshotRestoreComponent:
                     details={"missing_archive_relpaths": missing},
                 )
             )
+        if mismatched:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_checkpoint_archive_file_mismatch",
+                    "Repo checkpoint archive contains files whose size or checksum does not match the manifest.",
+                    object_ref=snapshot_id,
+                    details={"mismatched_archive_files": mismatched},
+                )
+            )
         return self.runtime.foundation.ok(
             self.runtime.foundation.mutation_view(
                 object_ref=snapshot_id,
@@ -889,3 +1011,16 @@ class SnapshotRestoreComponent:
                 summary=f"Restore archive preflight passed for {len(files_manifest.entries)} files.",
             )
         )
+
+    @staticmethod
+    def _resolve_managed_relative_path(root: Path, relpath: str) -> Path:
+        relative = Path(relpath)
+        if not relpath or relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            raise ValueError(f"unsafe relative path: {relpath!r}")
+        resolved_root = root.resolve(strict=False)
+        resolved_path = (root / relative).resolve(strict=False)
+        try:
+            resolved_path.relative_to(resolved_root)
+        except ValueError as exc:
+            raise ValueError(f"path escapes managed root: {relpath!r}") from exc
+        return resolved_path

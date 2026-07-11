@@ -603,6 +603,19 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
         super().on_step_terminal(ctx)
 
     def after_step_terminal_stable(self, ctx: StableStepTerminalContext) -> None:
+        if ctx.step.step_type == "validate_initialize_native_preparation_step":
+            result = ctx.step.result
+            if not isinstance(result, ValidateAndInitializeNativePreparationStepResult) or result.outcome != "initialized":
+                return
+            input_model = _require_native_preparation_input(self.input)
+            _record_stable_repo_snapshot(
+                ctx,
+                _native_repo_root(input_model),
+                checkpoint_kind="before_native_source_processing",
+                label=f"before native source processing for {input_model.repo_key}",
+                failure_type="native_source_processing_stable_snapshot_failed",
+            )
+            return
         if ctx.step.step_type != "prepare_coordinator_dispatch_step":
             return
         result = ctx.step.result

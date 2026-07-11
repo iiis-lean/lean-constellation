@@ -7,7 +7,6 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from threading import current_thread
-from typing import Any
 
 from agent_runtime_kit.agent.snapshots import AgentSnapshotService
 from agent_runtime_kit.agent.service import AgentService
@@ -32,7 +31,7 @@ from lean_constellation.services.foundation import GateReport, MutationSummaryVi
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_lean_runtime_services
 from lean_constellation.services.external_clients import ExternalClientConfig, LeanMcpToolkitClientConfig
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
-from lean_constellation.services.validation_snapshot.snapshot_restore import RepoCheckpointKind
+from lean_constellation.services.validation_snapshot.snapshot_restore import ArkRuntimeSnapshotRef, RepoCheckpointKind
 from lean_constellation.tools import register_submit_tooling
 
 
@@ -338,12 +337,26 @@ class ArkRuntimeSnapshotProviderAdapter:
         *,
         scope_ids: list[str],
         label: str | None = None,
-    ) -> ServiceResult[str]:
+    ) -> ServiceResult[ArkRuntimeSnapshotRef]:
         del repo_root, label
+        refresh_scope_ids: list[str] = []
+        for scope_id in scope_ids:
+            normalized = str(scope_id)
+            if normalized not in refresh_scope_ids:
+                refresh_scope_ids.append(normalized)
+        selected_scope_ids: list[str] = []
+        for scope_id in [*refresh_scope_ids, *self.snapshot_service.store.list_scope_ids()]:
+            normalized = str(scope_id)
+            if normalized not in selected_scope_ids:
+                selected_scope_ids.append(normalized)
+        for scope_id in selected_scope_ids:
+            if scope_id not in refresh_scope_ids and self.snapshot_service.get_latest_scope_snapshot(scope_id) is None:
+                refresh_scope_ids.append(scope_id)
         with self._filter_current_terminal_step_from_running_list():
             result = self.snapshot_service.create_runtime_snapshot_for_scopes(
-                refresh_scope_ids=list(scope_ids),
-                scope_ids=list(scope_ids),
+                refresh_scope_ids=refresh_scope_ids,
+                scope_ids=selected_scope_ids,
+                reuse_latest_for_other_scopes=True,
                 wait=False,
             )
         if result.status != "created" or result.snapshot_id is None:
@@ -353,7 +366,12 @@ class ArkRuntimeSnapshotProviderAdapter:
                     f"ARK runtime snapshot failed with status {result.status}.",
                 )
             )
-        return self.runtime.foundation.ok(result.snapshot_id)
+        return self.runtime.foundation.ok(
+            ArkRuntimeSnapshotRef(
+                snapshot_id=result.snapshot_id,
+                scope_ids=list(result.scope_snapshot_ids),
+            )
+        )
 
     def restore_runtime_snapshot(
         self,
@@ -363,7 +381,11 @@ class ArkRuntimeSnapshotProviderAdapter:
         leave_runtime_paused: bool = True,
     ) -> ServiceResult[MutationSummaryView]:
         del repo_root
-        result = self.snapshot_service.restore_runtime_snapshot(snapshot_id, leave_paused=leave_runtime_paused)
+        result = self.snapshot_service.restore_runtime_snapshot(
+            snapshot_id,
+            leave_paused=leave_runtime_paused,
+            prune_extra_scopes=True,
+        )
         if result.status != "created":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(

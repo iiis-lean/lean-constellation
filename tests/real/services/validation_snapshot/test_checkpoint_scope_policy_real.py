@@ -73,6 +73,15 @@ def test_s1_s3_checkpoint_scope_policy_and_manifest(tmp_path: Path) -> None:
         "Known gaps and extraction limits: no missing source sections are known.\n",
         encoding="utf-8",
     )
+    resource_root = repo_root / ".lean_constellation" / "resources" / "items" / "proof_notes"
+    resource_root.mkdir(parents=True)
+    (resource_root / "resource.json").write_text('{"resource_key": "proof_notes"}\n', encoding="utf-8")
+    mathlib_index = repo_root / ".lean_constellation" / "indexes" / "mathlib.json"
+    mathlib_index.parent.mkdir(parents=True)
+    mathlib_index.write_text('{"modules": {}, "decls": {}}\n', encoding="utf-8")
+    source_index = repo_root / ".lean_constellation" / "source_index" / "index.json"
+    source_index.parent.mkdir(parents=True)
+    source_index.write_text('{"status": "committed"}\n', encoding="utf-8")
     (repo_root / ".lake").mkdir()
     (repo_root / ".lake" / "cache.txt").write_text("do not snapshot", encoding="utf-8")
     (repo_root / ".git").mkdir()
@@ -166,6 +175,10 @@ def test_s1_s3_checkpoint_scope_policy_and_manifest(tmp_path: Path) -> None:
     captured = {entry.source_relpath for entry in files_manifest.value.entries}
     assert "Main.lean" in captured
     assert ".lean_constellation/source/README.md" in captured
+    assert ".lean_constellation/resources/items/proof_notes/resource.json" in captured
+    assert ".lean_constellation/indexes/mathlib.json" in captured
+    assert ".lean_constellation/source_index/index.json" in captured
+    assert all(entry.sha256 for entry in files_manifest.value.entries)
     assert not any(path.startswith(".lake/") for path in captured)
     assert not any(path.startswith(".git/") for path in captured)
     assert not any(path.startswith(".agent_runtime/") for path in captured)
