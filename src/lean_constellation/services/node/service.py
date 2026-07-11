@@ -468,6 +468,37 @@ class NodeService:
                 )
             )
 
+        if current.value.version_status == ContractVersionStatus.COMMITTED:
+            existing_summary = (current.value.contract.summary or "").strip()
+            requested_summary = coordinator_summary.strip()
+            if existing_summary != requested_summary:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "content_task_already_finalized",
+                        "Content task result is already finalized for this contract version; its committed Coordinator summary cannot be replaced.",
+                        object_ref=node_path,
+                        current=existing_summary,
+                        expected=requested_summary,
+                    )
+                )
+            gate = self.runtime.foundation.gate_passed(
+                "content_task_finalize_already_committed",
+                summary="Content task result was already finalized for this committed contract version.",
+            )
+            return self.runtime.foundation.ok(
+                self._content_task_finalize_view(
+                    node_path=node_path,
+                    task_result=parsed_result.value,
+                    coordinator_summary=existing_summary,
+                    contract=current.value,
+                    gate=gate,
+                    finalized=True,
+                    contract_summary_written=True,
+                    contract_committed=True,
+                    summary="Content task result was already finalized; returned the existing committed contract state.",
+                )
+            )
+
         if parsed_result.value.outcome == ContentTaskOutcome.READY:
             gate = self._check_content_task_ready(repo_root, node_path=node_path)
             if not gate.ok or gate.value is None:

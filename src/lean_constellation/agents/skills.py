@@ -133,7 +133,7 @@ Coordinator responsibilities:
 3. Assign content node contracts with explicit public interfaces, required declarations, source/material references, visible dependencies, and expected proof completion.
 4. Plan exports for lemmas or theorems that must be reused across sibling nodes.
 5. Dispatch content node tasks only when their boundaries and visible dependencies are clear enough for node-local work.
-6. After callbacks, use current repo truth and completion gates to decide whether to update contracts, create follow-up nodes, dispatch more content tasks, request providers/resources, or submit repo ready.
+6. Evaluate every structural and dispatch candidate against current proof-policy satisfaction and completion gates.
 
 Non-theorem-like foundations such as definitions, structures, predicates, namespaces, notation, and theorem statement prerequisites must be declared/formalized when they are needed by public interfaces or theorem statements. Do not hide proof work inside scope nodes or oversized content nodes.
 """
@@ -246,7 +246,7 @@ The node can complete when contract-required public declarations reach declared-
 SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
     SkillKey.NODE_CONTRACT_DESIGN.value: LeanSkillDefinition(
         name="node-contract-design",
-        description="Designs and updates Lean Constellation scope and content node contracts.",
+        description="Use when a Coordinator must design or update the semantic contract of a Scope or Content node.",
         group="node",
         required_tool_groups=_groups(
             AppGroup.NODE_CONTRACT_READ_COORDINATOR,
@@ -332,11 +332,12 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
     ),
     SkillKey.SCOPE_EXPORT_INTERFACE_CURATION.value: LeanSkillDefinition(
         name="scope-export-interface-curation",
-        description="Curates Lean Constellation scope exports and interface bindings.",
+        description="Use inside Scope lifecycle work when concrete public exports or interface bindings must be curated.",
         group="node",
         required_tool_groups=_groups(
             AppGroup.SCOPE_EXPORT_INTERFACE_READ,
             AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
+            AppGroup.SCOPE_CLOSE_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -346,7 +347,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Read required interfaces and current export candidates with `list_node_interfaces`, `list_scope_export_candidates`, and `list_scope_exports`.",
                 "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
-                "When your role has scope-close read tools, use the available scope close/readiness view to confirm exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
+                "Use `get_scope_close_view` to confirm exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
             ),
             (
                 "Do not export unstable private implementation details.",
@@ -425,47 +426,100 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
     ),
     SkillKey.EXTERNAL_RESOURCE_DISCOVERY.value: LeanSkillDefinition(
         name="external-resource-discovery",
-        description="Guides agents that are allowed to discover new external material targets before submitting explicit resource requests.",
+        description="Use when existing evidence is insufficient and an Agent must discover a precise arXiv theorem-like resource target.",
         group="resource",
         required_tool_groups=_groups(AppGroup.EXTERNAL_RESOURCE_DISCOVERY),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "external-resource-discovery",
-            "Use this skill when existing source and resource material is insufficient and the agent must find a precise arXiv, web, or local-file target without broad duplicate searching.",
-            (
-                "Use external discovery only after the current source, resources, visible dependencies, and Mathlib context are not enough for the task.",
-                "Keep search narrow and tied to the current mathematical need.",
-                "Prefer reliable mathematical sources and stable URLs.",
-                "Use `search_arxiv_theorems` only for arXiv theorem-like candidates, and choose one accurate target rather than a broad search result list.",
-                "Submit or report the target with evidence for why it is needed.",
-            ),
-            (
-                "Do not create duplicate resources for material already available.",
-                "Do not use vague web search output as if it were curated evidence.",
-            ),
-        ),
+        body="""# External Resource Discovery
+
+Use this Skill only after current source material, accepted Resources, visible dependencies, and Mathlib context do not answer a concrete mathematical need.
+
+## Workflow
+
+1. State the theorem-like concept, assumptions, and evidence gap precisely.
+2. Call `search_arxiv_theorems` with a narrow query tied to that gap.
+3. Compare candidates by mathematical scope, assumptions, version, and source reliability.
+4. Select one accurate arXiv target or report that the search was inconclusive.
+5. Carry the selected identifier and the reason it matters into the caller's resource-request workflow.
+
+## Capability Boundary
+
+This Skill supports arXiv theorem-like discovery through the registered tool. It does not discover arbitrary websites or local files. A web URL or local path may be requested only when it already comes from user input, prepared source, or another visible and trustworthy result.
+
+Do not treat search snippets as curated evidence, and do not request a broad result list as one Resource.
+""",
     ),
-    SkillKey.RESOURCE_REQUEST_HANDLING.value: LeanSkillDefinition(
-        name="resource-request-handling",
-        description="Guides callers of Lean Constellation resource requests.",
+    SkillKey.RESOURCE_REQUEST_SUBMISSION.value: LeanSkillDefinition(
+        name="resource-request-submission",
+        description="Use when an Agent has identified one precise supporting-material target and may submit a Resource curation request.",
         group="resource",
-        required_tool_groups=_groups(SubmitGroup.RESOURCE_REQUEST_SUBMIT),
-        source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "resource-request-handling",
-            "Use this skill when an agent can submit an explicit resource target to ResourceCurationFlow and later interpret duplicate, local resource, external repo required, or rejected callback results.",
-            (
-                "Check existing material before submitting a request.",
-                "Call `submit_resource_request` only for precise targets with a clear reason.",
-                "After a duplicate result, use the returned existing reference when relevant.",
-                "After a local resource result, decide whether your current role should attach it through visible node material or contract tools, or report it for the role that owns that attachment.",
-                "After an external repository result, decide whether the current task must return to Coordinator-level handling.",
-            ),
-            (
-                "Do not let declaration workers directly dispatch resource curation in the first version.",
-                "Do not treat a rejected resource as evidence.",
-            ),
+        required_tool_groups=_groups(
+            AppGroup.MATERIAL_CONTEXT_READ,
+            AppGroup.RESOURCE_TARGET_PREFLIGHT_READ,
+            SubmitGroup.RESOURCE_REQUEST_SUBMIT,
         ),
+        source_design_doc="dev_docs/design/agents/skill_bundles",
+        body="""# Resource Request Submission
+
+Use this Skill after the caller has identified one precise paper, webpage, or local target that should remain supporting material rather than become an independent Lean repository.
+
+## Preflight
+
+1. Call `get_material_context` and confirm that current source and accepted Resources do not already cover the need.
+2. Call `normalize_resource_target` for the proposed target.
+3. Call `find_duplicate_resource` with the normalized target.
+4. If accepted source or Resource material already covers the target, do not dispatch a duplicate request. Return to the caller's current workflow and use the stable existing reference.
+
+## Submit
+
+Call `submit_resource_request` only when the target is explicit, narrow, trustworthy enough to curate, and accompanied by a concrete mathematical reason.
+
+If the submit is rejected, read the returned issues, repair the target or reason within the same AgentStep, and repeat the preflight against current truth.
+
+If the submit is accepted, stop immediately. ResourceCurationFlow owns acquisition, duplicate classification, local Resource creation, external-repository classification, and rejection.
+
+## Postcondition
+
+The Skill ends in one of two states:
+
+- no request was needed, so the caller returns to its next-action loop with an existing stable material reference; or
+- one Resource request was accepted, so the AgentStep stops and waits for the callback.
+
+Do not continue state-changing calls after an accepted submit.
+""",
+    ),
+    SkillKey.RESOURCE_RESULT_CLOSEOUT.value: LeanSkillDefinition(
+        name="resource-result-closeout",
+        description="Use after a Resource curation callback to reconcile duplicate, local-resource, external-repository, or rejected outcomes.",
+        group="resource",
+        required_tool_groups=_groups(
+            AppGroup.MATERIAL_CONTEXT_READ,
+            AppGroup.RESOURCE_LIBRARY_READ,
+        ),
+        source_design_doc="dev_docs/design/agents/skill_bundles",
+        body="""# Resource Result Closeout
+
+Use this Skill when the current turn follows a terminal ResourceCurationFlow callback. The callback is a locator; re-read current material truth before recording consequences.
+
+## Reconcile The Outcome
+
+Call `get_material_context` first. Use `get_resource` when a returned Resource key needs inspection.
+
+Handle exactly the outcome that was returned:
+
+- For a duplicate, verify the existing source or Resource reference and use that stable reference when it supports the current work.
+- For a local Resource, verify the finalized Resource and record it through the caller's role-appropriate semantic material mutation when it belongs to the caller's contract.
+- For an external repository result, do not treat the target as a Resource. A Coordinator may return to its provider-dependency action; a node-scoped caller must carry the need to its own Coordinator-facing blocked or completion boundary.
+- For a rejected result, record the reason as an unresolved direction when relevant, but never use the rejected target as evidence.
+
+Do not name caller-private material-write tools in this shared procedure. Apply only mutations authorized by the current role and Instruction.
+
+## Postcondition
+
+Closeout is complete when the terminal outcome has been checked against current truth, every authorized durable material change has been made, and any external-repository or rejected boundary is explicit.
+
+Then stop using this Skill and return to the caller's next-action loop in the same AgentStep. Do not submit a second Resource request from inside result closeout.
+""",
     ),
     SkillKey.RESOURCE_DRAFT_CURATION.value: LeanSkillDefinition(
         name="resource-draft-curation",
@@ -495,111 +549,344 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
     ),
     SkillKey.COORDINATOR_NODE_DECOMPOSITION.value: LeanSkillDefinition(
         name="coordinator-node-decomposition",
-        description="Guides a native repo Coordinator in decomposing the repository node tree from Main into scope nodes and content nodes.",
+        description="Use when a Coordinator must create, split, merge, repair, or remove Scope and Content node boundaries.",
         group="coordinator",
         required_tool_groups=_groups(
+            AppGroup.REPO_PREPARATION_INPUT_READ,
+            AppGroup.REPO_WORK_CONFIG_READ,
             AppGroup.NODE_TREE_COORDINATOR_READ,
             AppGroup.NODE_TREE_COORDINATOR_WRITE,
             AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE,
             AppGroup.SOURCE_CORPUS_READ,
             AppGroup.SOURCE_INDEX_COMMITTED_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "coordinator-node-decomposition",
-            "Use this skill when deciding whether to create or revise a Scope node or Content node, splitting mathematical regions, assigning sibling boundaries, or repairing an over-broad or over-fragmented node structure.",
-            (
-                "Start from repo work config, preparation input, root interfaces, SourceCorpus, committed SourceIndex, current tree from `get_node_tree`, and stable provider context from `list_ready_provider_repos`.",
-                "Choose scope nodes for broad mathematical areas and content nodes for focused declaration work.",
-                "Write node contracts through `create_scope_node`, `create_content_node`, and `update_node_contract_text`.",
-                "Use `preview_delete_node` before deleting or replacing tree structure.",
-                "Leave the tree in a state that can dispatch content tasks without hidden boundary guesses.",
-            ),
-            (
-                "Do not split only by source file layout.",
-                "Do not put actual declaration work directly in scope nodes.",
-            ),
-        ),
+        body="""# Coordinator Node Decomposition
+
+Use this Skill when the current repository needs a new mathematical boundary, an existing node is too broad or fragmented, sibling ownership overlaps, or obsolete structure must be removed.
+
+## Establish The Boundary
+
+1. Read `get_current_repo_work_config`, `get_preparation_input`, and the current tree with `get_node_tree`.
+2. Read the relevant node contracts and source/index regions rather than decomposing from filenames alone.
+3. Use the current mode policy to choose the required graph granularity.
+4. Choose Scope nodes for broad mathematical regions and Content nodes for coherent declaration work.
+5. Make sibling ownership disjoint and preserve protected root interfaces.
+
+## Apply Structural Changes
+
+Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for semantic changes. Use `node-contract-design` when detailed goals, boundaries, objectives, success criteria, material references, dependencies, Mathlib hints, or interfaces must be written.
+
+Before deletion, call `preview_delete_node`. Delete only when the previewed descendants and contract effects are intended and current truth proves the node obsolete.
+
+Do not place declaration implementation work in a Scope node, and do not create an oversized Content node merely to avoid deciding a mathematical boundary.
+
+## Postcondition
+
+The current tree and affected contracts express stable mathematical ownership without hidden boundary guesses. Re-read `get_node_tree`, then return to the Coordinator next-action loop. Do not dispatch Content work from this Skill.
+""",
     ),
     SkillKey.COORDINATOR_SCOPE_LIFECYCLE.value: LeanSkillDefinition(
         name="coordinator-scope-lifecycle",
-        description="Guides a Coordinator through the lifecycle of one Scope node.",
+        description="Use when a Coordinator must create, maintain, or close a Scope contract and its public boundary.",
         group="coordinator",
         required_tool_groups=_groups(
+            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.NODE_TREE_COORDINATOR_READ,
             AppGroup.SCOPE_EXPORT_INTERFACE_READ,
             AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
             AppGroup.SCOPE_CONTRACT_COORDINATOR_COMMIT,
             AppGroup.SCOPE_CLOSE_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "coordinator-scope-lifecycle",
-            "Use this skill when creating or updating a scope contract, analyzing child nodes, curating exports and interface bindings, committing the scope contract, and deciding follow-up work.",
-            (
-                "Create or update the scope contract before child work depends on it.",
-                "Plan required public interfaces and child responsibilities.",
-                "Analyze children with `get_scope_close_view` when they become ready.",
-                "Use `list_scope_export_candidates`, `add_scope_export`, and `bind_node_interface` for export and binding details.",
-                "Call `commit_scope_contract` only after readiness and projection checks pass through the available scope tools.",
-            ),
-            (
-                "Do not close a scope while required child work is unresolved.",
-                "Do not export declarations merely because they exist.",
-            ),
-        ),
+        body="""# Coordinator Scope Lifecycle
+
+Use this Skill for one Scope node after its mathematical boundary exists. Scope work owns child-boundary coherence, required interfaces, selected exports, interface bindings, projection state, and contract commitment.
+
+## Maintain The Scope
+
+1. Read the Scope contract, current child tree, interfaces, and exports.
+2. Confirm that child goals cover the Scope boundary without unresolved overlap.
+3. Update the Scope contract or child structure before downstream work relies on an incorrect boundary.
+4. Call `get_scope_close_view` when children may be ready for closeout.
+
+When concrete export selection or interface binding is required, read `scope-export-interface-curation` and follow that supporting guidance inside this same Scope workflow. It is not a separate runtime action.
+
+## Commit
+
+Call `commit_scope_contract` only after required children are complete, exports and bindings satisfy the contract, and the close view reports stable projection and readiness. If the gate rejects, repair only Coordinator-owned semantic state and re-read the close view.
+
+Do not export a declaration merely because it exists, and do not hide an unsatisfied interface behind an unrelated export.
+
+## Postcondition
+
+The Scope is either durably maintained but not yet closable, or its stable contract is committed. Re-read the affected Scope and return to the Coordinator next-action loop. Do not select follow-up work inside this Skill.
+""",
     ),
-    SkillKey.COORDINATOR_CONTENT_TASK_LIFECYCLE.value: LeanSkillDefinition(
-        name="coordinator-content-task-lifecycle",
-        description="Guides a Coordinator through one content node task cycle.",
+    SkillKey.COORDINATOR_CONTENT_RESULT_CLOSEOUT.value: LeanSkillDefinition(
+        name="coordinator-content-result-closeout",
+        description="Use after terminal Content task callbacks to reconcile every result before choosing another repository action.",
         group="coordinator",
         required_tool_groups=_groups(
-            SubmitGroup.COORDINATOR_SUBMIT,
-            AppGroup.CONTENT_TASK_ADMISSION_READ,
-            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
             AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE,
+            AppGroup.DECL_GRAPH_READ_COORDINATOR,
+            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "coordinator-content-task-lifecycle",
-            "Use this skill when preparing content node contracts before dispatch, submitting runnable content tasks, processing callbacks, committing summaries, and deciding follow-up actions.",
-            (
-                "Check that candidate content nodes are runnable with `check_content_task_admission` before dispatch.",
-                "Prepare each task contract with current objective and constraints.",
-                "Submit runnable tasks through `submit_content_node_tasks`.",
-                "After callbacks, read terminal task results with `list_recent_content_task_results` or `inspect_content_task_result`.",
-                "Call `commit_content_contract` for each reviewed ready, blocked, or failed Content task result before planning follow-up work.",
-                "Decide whether to update contracts, create follow-up tasks, call `submit_resource_request`, call `submit_repo_requirement`, or close scopes.",
-            ),
-            (
-                "Do not dispatch tasks whose dependencies are not visible or whose boundaries are unclear.",
-                "Do not handle content-node internal worker stages from the Coordinator role.",
-            ),
+        body="""# Coordinator Content Result Closeout
+
+Use this Skill when the current Coordinator turn follows one or more terminal Content node task results. Consume every returned result and commit each reviewed Content contract before planning new work.
+
+## Read The Complete Callback Batch
+
+Call `list_recent_content_task_results` before acting. Process every result in the callback batch. Use `inspect_content_task_result` when the list view is insufficient for a node.
+
+For each result, identify the node path, ready/blocked/failed outcome, returned contract version, summary, reason, and any current state that must be inspected before commitment.
+
+## Inspect Current State Selectively
+
+Read the current node contract. When a result is suspicious or incomplete, use `get_node_decl_graph_index`, `list_node_decls`, and `inspect_node_decl` only for declarations that determine the outcome.
+
+For blocked or failed results, classify the concrete consequence without solving it inside closeout: missing source or Resource, missing Mathlib support, missing same-repository work, provider need, incorrect contract, or Scope/interface work.
+
+## Commit Every Reviewed Result
+
+Call `commit_content_contract` once for each reviewed terminal result. Write a concise Coordinator summary that states what was established, the accepted outcome, the resulting boundary, and any unresolved prerequisite.
+
+Check the returned finalize view. If a claimed ready result fails its deterministic gate, do not weaken the gate or hide the inconsistency. Identify it as child-result or control-plane inconsistency unless Coordinator-owned semantic state can legitimately repair it.
+
+Collect consequences as candidates, not a persisted or immutable action list.
+
+## Postcondition
+
+Every terminal result in the callback batch has been reviewed, every reviewable result is finalized and committed, and every deterministic inconsistency is explicit. Stop using this Skill and return to the Coordinator next-action loop in the same AgentStep.
+
+Do not call a normal Coordinator submit from inside this closeout.
+""",
+    ),
+    SkillKey.COORDINATOR_REQUIREMENT_RESULT_CLOSEOUT.value: LeanSkillDefinition(
+        name="coordinator-requirement-result-closeout",
+        description="Use after requirement resume to reconcile the automatically attached provider dependency before choosing follow-up work.",
+        group="coordinator",
+        required_tool_groups=_groups(
+            AppGroup.WORKSPACE_REQUIREMENT_READ,
+            AppGroup.LAKE_DEPENDENCY_READ,
+            AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
+            AppGroup.PUBLIC_DECL_READ_COORDINATOR,
+            AppGroup.NODE_TREE_COORDINATOR_READ,
+            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
         ),
+        source_design_doc="dev_docs/design/agents/skill_bundles",
+        body="""# Coordinator Requirement Result Closeout
+
+Use this Skill only on the Coordinator turn resumed after a provider requirement became available. The requirement resume gate has already revalidated publication, proof availability, requested interfaces, exact statements, Lake attachment, and handled status.
+
+## Reconcile Current Truth
+
+1. Call `get_current_repo_requirement` for the resumed requirement and confirm its effective provider and handled status.
+2. Call `list_current_lake_dependencies` and confirm the provider is attached.
+3. Call `list_ready_provider_repos`, then inspect the effective provider through `list_repo_public_decls` and `inspect_repo_public_decl` as needed.
+4. Call `get_node_tree` and re-read the contracts that originally exposed the mathematical gap.
+5. Identify which current Content or Scope boundaries the attached public API now enables.
+
+Do not attach the provider again. Do not silently add the dependency to every node, and do not treat provider-private declarations as visible.
+
+## Postcondition
+
+The accepted requirement, attached Lake dependency, stable provider public API, and current node tree have been reconciled. Candidate node-contract updates or runnable work are understood but not persisted as a fixed queue. Return to the Coordinator next-action loop in the same AgentStep.
+""",
+    ),
+    SkillKey.COORDINATOR_DEPENDENCY_READINESS.value: LeanSkillDefinition(
+        name="coordinator-dependency-readiness",
+        description="Use when upcoming repository work may lack source evidence, Resources, Mathlib support, or a provider dependency boundary.",
+        group="coordinator",
+        required_tool_groups=_groups(
+            AppGroup.NODE_TREE_COORDINATOR_READ,
+            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.SOURCE_INDEX_COMMITTED_READ,
+            AppGroup.RESOURCE_LIBRARY_READ,
+            AppGroup.MATERIAL_CONTEXT_READ,
+            AppGroup.MATHLIB_INDEX_READ,
+            AppGroup.LAKE_DEPENDENCY_READ,
+            AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
+            AppGroup.WORKSPACE_REQUIREMENT_READ,
+        ),
+        source_design_doc="dev_docs/design/agents/skill_bundles",
+        body="""# Coordinator Dependency Readiness
+
+Use this Skill before dispatching a mathematical region when its evidence or dependency boundary is uncertain.
+
+## Inspect In Increasing Scope
+
+1. Read `get_node_tree` and the relevant node contract.
+2. Read the committed SourceIndex through `get_source_index` and `get_source_index_coverage`.
+3. Read `get_material_context` and accepted Resources.
+4. Search the repo MathlibIndex with `search_mathlib_index`; use the Mathlib recon/search/curation Skills only when the index is insufficient.
+5. Call `list_current_lake_dependencies` and check already attached public APIs.
+6. Call `list_ready_provider_repos` and current requirement reads only if an external Lean boundary may be needed.
+
+Classify the smallest unresolved need:
+
+- an existing source or Resource reference;
+- a precise supporting Resource target;
+- Mathlib knowledge or index curation;
+- same-repository node or contract work;
+- an already attached provider boundary;
+- a stable workspace repository that can be directly attached;
+- a new independently meaningful provider requirement.
+
+Use `resource-request-submission` only for supporting material. Use `coordinator-provider-dependency-lifecycle` only for an independent Lean repository boundary. Do not turn proof difficulty alone into an external dependency.
+
+## Postcondition
+
+The dependency gap is either resolved synchronously or classified into one precise action branch. If no submit was accepted, return to the Coordinator next-action loop and choose the appropriate action from current truth.
+""",
+    ),
+    SkillKey.COORDINATOR_CONTENT_TASK_DISPATCH.value: LeanSkillDefinition(
+        name="coordinator-content-task-dispatch",
+        description="Use when one or more Content nodes have stable contracts and may form a runnable dispatch batch.",
+        group="coordinator",
+        required_tool_groups=_groups(
+            AppGroup.CONTENT_TASK_ADMISSION_READ,
+            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.NODE_TREE_COORDINATOR_READ,
+            SubmitGroup.COORDINATOR_SUBMIT,
+        ),
+        source_design_doc="dev_docs/design/agents/skill_bundles",
+        body="""# Coordinator Content Task Dispatch
+
+Use this Skill only after candidate Content nodes have clear mathematical boundaries, current contracts, visible dependencies, and sufficient source/resource/Mathlib context.
+
+## Admission And Batch
+
+1. Read each candidate contract and current tree position.
+2. Call `check_content_task_admission` for each candidate.
+3. Use `list_runnable_content_nodes` for orientation when several nodes may run.
+4. Call `check_content_node_batch` for the exact proposed batch.
+5. If admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
+
+## Submit
+
+Call `submit_content_node_tasks` only for the validated runnable batch. If rejected, read the issues, re-check current truth, repair within authority, and retry in the same AgentStep.
+
+If accepted, stop immediately and wait for all child task results.
+
+## Postcondition
+
+Either no dispatch occurred and the Coordinator returns to its next-action loop with an explicit admission gap, or exactly one Content batch submit was accepted and the AgentStep stops.
+""",
+    ),
+    SkillKey.COORDINATOR_PROVIDER_DEPENDENCY_LIFECYCLE.value: LeanSkillDefinition(
+        name="coordinator-provider-dependency-lifecycle",
+        description="Use when a Coordinator must reuse or request an independent mathematical Lean repository dependency.",
+        group="coordinator",
+        required_tool_groups=_groups(
+            AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
+            AppGroup.WORKSPACE_REQUIREMENT_READ,
+            AppGroup.PUBLIC_DECL_READ_COORDINATOR,
+            AppGroup.LAKE_DEPENDENCY_READ,
+            AppGroup.LAKE_DEPENDENCY_WRITE,
+            SubmitGroup.COORDINATOR_SUBMIT,
+        ),
+        source_design_doc="dev_docs/design/agents/skill_bundles",
+        body="""# Coordinator Provider Dependency Lifecycle
+
+Use this Skill after deciding that a missing boundary should be supplied by another independently meaningful Lean repository. Do not use it for ordinary current-repo work, a same-repo Content node, a Mathlib fact, supporting material, or a temporary proof-search direction.
+
+## Define The Public Boundary
+
+Describe the smallest reusable provider API from current consumer contracts, protected interfaces, source context, work mode, and proof-availability policy. Request public mathematical objects, not the consumer's private proof plan. When a theorem header is immutable, use the exact-statement field exposed by the submit schema.
+
+## Check Current Dependencies And Workspace Repositories
+
+1. Call `list_current_lake_dependencies`. If the needed provider is already attached, do not attach it again; return to the next-action loop.
+2. Call `list_ready_provider_repos` before creating a requirement.
+3. For each plausible stable candidate, call `list_repo_public_decls` and selectively `inspect_repo_public_decl`.
+4. Check mathematical meaning, declaration kind, namespace, assumptions, proof availability, and exact-statement obligations. Never rely on private declarations or near matches.
+
+If a stable existing repository supplies the boundary, call `attach_ready_workspace_repo_dependency`. This explicit-consent path has no prior requirement contract. Confirm with `list_current_lake_dependencies`, then return to the Coordinator next-action loop. Node-level dependency registration is a later contract decision.
+
+If direct attachment is rejected, inspect the reported publication, compatibility, or argument issue. Repair a stale argument or re-check current publication truth when possible. Do not bypass a failed stable-publication or interface check by submitting a weaker requirement for the same unsuitable repository.
+
+## Avoid Duplicate Requirements
+
+Call `get_current_repo_requirement` when a known consumer-local requirement may already represent the need. Use the broader requirement reads when necessary. Do not submit an equivalent open, waiting, satisfied, or handled requirement.
+
+## Submit A New Requirement
+
+Call `submit_repo_requirement` only when no current dependency or stable workspace repository satisfies a precise, independently useful provider boundary. Follow the tool schema for requirement identity, repository identity, source description, reason, interfaces, and exact statements; do not restate those field-format rules here.
+
+If rejected, repair the requirement from returned issues and re-check current truth. If accepted, stop immediately and wait.
+
+Do not attach the future provider from this Skill. The requirement resume gate later validates the satisfied contract, automatically attaches the provider, marks the requirement handled, and resumes the same Coordinator Flow. The resumed turn uses `coordinator-requirement-result-closeout`.
+
+## Postconditions
+
+- Already attached: return to the next-action loop.
+- Existing stable repository directly attached and verified: return to the next-action loop.
+- New requirement accepted: stop the AgentStep and wait.
+""",
+    ),
+    SkillKey.COORDINATOR_REPO_READY_LIFECYCLE.value: LeanSkillDefinition(
+        name="coordinator-repo-ready-lifecycle",
+        description="Use when the Main Scope and repository-level obligations appear complete and the Coordinator may submit repository readiness.",
+        group="coordinator",
+        required_tool_groups=_groups(
+            AppGroup.REPO_PREPARATION_INPUT_READ,
+            AppGroup.NODE_TREE_COORDINATOR_READ,
+            AppGroup.SCOPE_EXPORT_INTERFACE_READ,
+            AppGroup.SCOPE_CLOSE_READ,
+            AppGroup.LAKE_DEPENDENCY_READ,
+            AppGroup.REPO_READY_READ,
+            SubmitGroup.COORDINATOR_SUBMIT,
+        ),
+        source_design_doc="dev_docs/design/agents/skill_bundles",
+        body="""# Coordinator Repository Ready Lifecycle
+
+Use this Skill only when all expected Content work is reconciled, required Scopes are committed, protected interfaces and public exports appear satisfied, dependencies are stable, and proof-policy obligations match the repository work mode.
+
+## Verify Readiness
+
+1. Re-read `get_preparation_input`, `get_node_tree`, and current Lake dependencies.
+2. Call `get_scope_close_view` for Main and any relevant unverified Scope.
+3. Check Main interfaces and exports against protected root contracts.
+4. Call `get_repo_ready_node_view` and inspect every reported issue.
+5. If the deterministic view is not ready, repair only the owning semantic state and return to the next-action loop.
+
+## Submit
+
+Call `submit_repo_ready` only when the deterministic gate is expected to pass. If rejected, use the returned issues to repair current truth and re-run the readiness view. If accepted, stop immediately; repository completion is terminal for this Coordinator Flow.
+
+## Postcondition
+
+Either readiness remains unresolved and the Coordinator returns to its next-action loop with a concrete gate issue, or one repository-ready submit is accepted and the AgentStep stops.
+""",
     ),
     SkillKey.COORDINATOR_PROVED_FULL_GRAPH_MODE.value: LeanSkillDefinition(
         name="coordinator-proved-full-graph-mode",
-        description="Guides Coordinator node-tree planning for proved full graph repositories.",
+        description="Use when current repo work mode is proved_full_graph to apply its Coordinator planning and completion policy.",
         group="coordinator",
         source_design_doc="dev_docs/design/repo_maturity_modes/04_Coordinator工作模式设计.md",
         body=_COORDINATOR_PROVED_FULL_GRAPH_MODE_BODY,
     ),
     SkillKey.COORDINATOR_DECLARED_FULL_GRAPH_MODE.value: LeanSkillDefinition(
         name="coordinator-declared-full-graph-mode",
-        description="Guides Coordinator node-tree planning for declared full graph repositories.",
+        description="Use when current repo work mode is declared_full_graph to apply its Coordinator planning and completion policy.",
         group="coordinator",
         source_design_doc="dev_docs/design/repo_maturity_modes/04_Coordinator工作模式设计.md",
         body=_COORDINATOR_DECLARED_FULL_GRAPH_MODE_BODY,
     ),
     SkillKey.COORDINATOR_DECLARED_INTERFACE_MODE.value: LeanSkillDefinition(
         name="coordinator-declared-interface-mode",
-        description="Guides Coordinator node-tree planning for declared interface repositories.",
+        description="Use when current repo work mode is declared_interface to apply its minimal provider-interface policy.",
         group="coordinator",
         source_design_doc="dev_docs/design/repo_maturity_modes/04_Coordinator工作模式设计.md",
         body=_COORDINATOR_DECLARED_INTERFACE_MODE_BODY,
     ),
     SkillKey.MATHLIB_INDEX_FIRST_RECON.value: LeanSkillDefinition(
         name="mathlib-index-first-recon",
-        description="Use repo-level MathlibIndex before running broader Mathlib search.",
+        description="Use when Mathlib support may be needed so repo-level MathlibIndex is checked before broader search.",
         group="mathlib",
         required_tool_groups=_groups(AppGroup.MATHLIB_INDEX_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
@@ -607,7 +894,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "mathlib-index-first-recon",
             "Use this skill when finding Mathlib modules or declarations for a Lean Constellation node while avoiding repeated global search.",
             (
-                "Read node-local Mathlib hints first when current-node hint tools are visible.",
+                "Read curated node-local Mathlib hints first when the current task context includes them.",
                 "Translate the node objective into search directions.",
                 "Search the repo MathlibIndex with `search_mathlib_index` before external search.",
                 "Identify index gaps explicitly.",
@@ -621,7 +908,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
     ),
     SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION.value: LeanSkillDefinition(
         name="mathlib-semantic-search-navigation",
-        description="Search Mathlib with LeanExplore and inspect Mathlib modules/source context through navigation tools.",
+        description="Use when MathlibIndex is insufficient and semantic search plus module/declaration inspection is required.",
         group="mathlib",
         required_tool_groups=_groups(AppGroup.MATHLIB_SEMANTIC_SEARCH, AppGroup.MATHLIB_NAVIGATION),
         source_design_doc="dev_docs/design/agents/skill_bundles",
@@ -643,7 +930,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
     ),
     SkillKey.MATHLIB_INDEX_ENTRY_CURATION.value: LeanSkillDefinition(
         name="mathlib-index-entry-curation",
-        description="Record verified Mathlib modules and declarations into the repo-level MathlibIndex.",
+        description="Use after verifying reusable Mathlib knowledge to record stable module and declaration entries.",
         group="mathlib",
         required_tool_groups=_groups(AppGroup.MATHLIB_INDEX_WRITE),
         source_design_doc="dev_docs/design/agents/skill_bundles",

@@ -39,7 +39,9 @@ def test_skill_registry_builds_all_fixed_skills() -> None:
     assert "material-acquisition" in specs
     assert "source-material-acquisition" in specs
     assert "resource-material-acquisition" in specs
-    assert "resource-request-handling" in specs
+    assert "resource-request-submission" in specs
+    assert "resource-result-closeout" in specs
+    assert "resource-request-handling" not in specs
     assert "lean-proof-formalization" in specs
     assert specs["source-material-acquisition"].description
     assert "## Workflow" in specs["source-material-acquisition"].body
@@ -48,11 +50,11 @@ def test_skill_registry_builds_all_fixed_skills() -> None:
 def test_skill_materialization_writes_skill_md_and_references(tmp_path: Path) -> None:
     paths = materialize_skill_specs(
         tmp_path,
-        ["source-material-acquisition", "resource-request-handling"],
+        ["source-material-acquisition", "resource-request-submission"],
     )
 
     material_skill = paths["source-material-acquisition"]
-    request_skill = paths["resource-request-handling"]
+    request_skill = paths["resource-request-submission"]
 
     assert (material_skill / "SKILL.md").read_text(encoding="utf-8").startswith("---")
     assert 'name: "source-material-acquisition"' in (material_skill / "SKILL.md").read_text(encoding="utf-8")
@@ -66,15 +68,33 @@ def test_multiple_agent_types_reuse_same_skill_spec() -> None:
     coordinator = get_agent_type_spec("CoordinatorAgent")
     plan = get_agent_type_spec("ContentPlanAgent")
 
-    assert "resource-request-handling" in coordinator.skill_keys
-    assert "resource-request-handling" in plan.skill_keys
+    assert "resource-request-submission" in coordinator.skill_keys
+    assert "resource-result-closeout" in coordinator.skill_keys
+    assert "coordinator-provider-dependency-lifecycle" in coordinator.skill_keys
+    assert "coordinator-requirement-result-closeout" in coordinator.skill_keys
+    assert "resource-request-submission" in plan.skill_keys
+    assert "resource-result-closeout" in plan.skill_keys
 
 
 def test_shared_resource_request_skill_does_not_reference_content_plan_only_attachment_tool() -> None:
-    body = build_skill_specs()["resource-request-handling"].body
+    specs = build_skill_specs()
+    request_body = specs["resource-request-submission"].body
+    closeout_body = specs["resource-result-closeout"].body
 
-    assert "add_current_material_ref" not in body
-    assert "visible node material or contract tools" in body
+    assert "add_current_material_ref" not in request_body
+    assert "add_current_material_ref" not in closeout_body
+    assert "role-appropriate semantic" in closeout_body
+
+
+def test_coordinator_repo_requirement_skill_defines_independent_repo_naming() -> None:
+    body = build_skill_specs()["coordinator-provider-dependency-lifecycle"].body
+
+    assert "attach_ready_workspace_repo_dependency" in body
+    assert "submit_repo_requirement" in body
+    assert "get_current_repo_requirement" in body
+    assert "attach_requirement_provider_dependency" not in body
+    assert "requirement resume gate" in body
+    assert "lower_snake_case" not in body
 
 
 def test_alignment_related_shared_skill_tool_refs_are_visible_to_all_users() -> None:
@@ -88,7 +108,8 @@ def test_alignment_related_shared_skill_tool_refs_are_visible_to_all_users() -> 
         "external-resource-discovery",
         "mathlib-index-first-recon",
         "mathlib-semantic-search-navigation",
-        "resource-request-handling",
+        "resource-request-submission",
+        "resource-result-closeout",
         "scope-export-interface-curation",
         "visible-node-dependency-recon",
     }
@@ -102,6 +123,64 @@ def test_alignment_related_shared_skill_tool_refs_are_visible_to_all_users() -> 
             report = reports[agent_spec.agent_type]
             visible = {tool.name for tool in report.application_tools} | {tool.name for tool in report.submit_tools}
             assert refs <= visible, f"{skill_key}: {report.agent_type}"
+
+
+def test_coordinator_skill_inventory_and_workflow_boundaries() -> None:
+    coordinator = get_agent_type_spec("CoordinatorAgent")
+    specs = build_skill_specs()
+
+    assert len(coordinator.skill_keys) == 19
+    for removed in (
+        "coordinator-content-task-lifecycle",
+        "coordinator-repo-requirement-lifecycle",
+        "resource-request-handling",
+    ):
+        assert removed not in specs
+        assert removed not in coordinator.skill_keys
+
+    for key in (
+        "coordinator-content-result-closeout",
+        "resource-result-closeout",
+        "coordinator-requirement-result-closeout",
+    ):
+        body = specs[key].body
+        assert "Postcondition" in body
+        assert "next-action loop" in body
+
+    for key in (
+        "coordinator-dependency-readiness",
+        "coordinator-node-decomposition",
+        "coordinator-scope-lifecycle",
+        "coordinator-content-task-dispatch",
+        "resource-request-submission",
+        "coordinator-provider-dependency-lifecycle",
+        "coordinator-repo-ready-lifecycle",
+    ):
+        body = specs[key].body
+        assert "Postcondition" in body or "Postconditions" in body
+
+
+def test_coordinator_skill_metadata_is_discoverable_and_compact() -> None:
+    coordinator = get_agent_type_spec("CoordinatorAgent")
+    specs = build_skill_specs()
+
+    for key in coordinator.skill_keys:
+        spec = specs[key]
+        assert spec.name == key
+        assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", spec.name)
+        assert spec.description.startswith(("Use when", "Use after", "Use inside"))
+        assert len(spec.body.splitlines()) < 500
+        assert "creates a new AgentStep" not in spec.body
+        assert "starts a new Flow" not in spec.body
+
+
+def test_external_resource_discovery_matches_arxiv_only_tool_capability() -> None:
+    spec = build_skill_specs()["external-resource-discovery"]
+
+    combined = f"{spec.description}\n{spec.body}".lower()
+    assert "search_arxiv_theorems" in spec.body
+    assert "generic web" not in combined
+    assert "local-file discovery" not in combined
 
 
 def test_visible_node_dependency_recon_skill_spells_out_dependency_evidence_policy() -> None:

@@ -12,11 +12,11 @@ EXPECTED_SURFACE_COUNTS = {
     "RootInterfacePrepareAgent": (6, 12, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 21, 1, 4, 2),
-    "CoordinatorAgent": (34, 81, 2, 4, 13),
-    "ContentPlanAgent": (25, 73, 3, 6, 16),
+    "CoordinatorAgent": (33, 82, 2, 4, 19),
+    "ContentPlanAgent": (25, 73, 3, 6, 17),
     "NodeDirDependencyReconAgent": (4, 13, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
-    "ResourceReconAgent": (8, 19, 2, 3, 3),
+    "ResourceReconAgent": (8, 19, 2, 3, 4),
     "StatementNLWorkerAgent": (12, 49, 1, 2, 4),
     "StatementNLReviewerAgent": (12, 41, 1, 1, 2),
     "StatementFormalWorkerAgent": (16, 53, 1, 2, 8),
@@ -148,6 +148,35 @@ def test_repo_format_discovery_surface_matches_remote_only_design() -> None:
         "checkout_repository",
         "probe_lean_repo",
     }.isdisjoint(tools)
+
+
+def test_coordinator_surface_matches_specific_agent_refactor() -> None:
+    report = build_agent_surface_reports()["CoordinatorAgent"]
+    tools = {tool.name for tool in report.application_tools}
+
+    assert report.application_tool_view_key == "native_repo_coordinator"
+    assert report.submit_tool_view_key == "native_repo_coordinator_submit"
+    assert len(report.skills) == 19
+    assert len(report.application_group_keys) == 33
+    assert len(report.application_tools) == 82
+    assert len(report.submit_group_keys) == 2
+    assert len(report.submit_tools) == 4
+    assert {
+        "list_requirement_resume_candidates",
+        "mark_requirement_result_observed",
+        "attach_requirement_provider_dependency",
+        "list_visible_nodes",
+        "list_imported_repos",
+    }.isdisjoint(tools)
+    assert {
+        "get_current_repo_requirement",
+        "list_ready_provider_repos",
+        "list_repo_public_decls",
+        "inspect_repo_public_decl",
+        "attach_ready_workspace_repo_dependency",
+        "get_node_tree",
+        "get_node_decl_graph_index",
+    } <= tools
 
 
 def test_source_index_builder_and_reviewer_surfaces_match_draft_boundary() -> None:

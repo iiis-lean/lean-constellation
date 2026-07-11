@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from lean_constellation.agents import build_agent_type_specs, get_agent_type_spec, render_agent_instruction
+from lean_constellation.agents.instructions import PUBLIC_INSTRUCTION_FRAGMENTS
 from lean_constellation.agents.surface import build_agent_surface_reports
 from lean_constellation.tools import build_application_tool_specs, build_submit_tool_specs
 
@@ -34,9 +35,72 @@ def test_instruction_renderer_combines_public_and_agent_specific_fragments() -> 
     assert "## Operating Contract" in text
     assert "## Native Repository Coordinator" in text
     assert "get_current_repo_work_config" in text
-    assert "matching Coordinator mode skill" in text
+    assert "Coordinator mode skill matching" in text
     assert "coordinator-node-decomposition" in text
-    assert "Do not write DeclGraph artifacts" in text
+    assert "write DeclGraph artifacts" in text
+
+
+def test_coordinator_instruction_routes_closeout_then_repeated_next_actions() -> None:
+    text = render_agent_instruction("CoordinatorAgent")
+
+    assert "### Stage One: Reconcile The Wake Result" in text
+    assert "coordinator-content-result-closeout" in text
+    assert "resource-result-closeout" in text
+    assert "coordinator-requirement-result-closeout" in text
+    assert "### Stage Two: Next-Action Loop" in text
+    assert "Repeat the following loop until a submit is accepted" in text
+    assert "coordinator-dependency-readiness" in text
+    assert "coordinator-node-decomposition" in text
+    assert "coordinator-scope-lifecycle" in text
+    assert "coordinator-content-task-dispatch" in text
+    assert "coordinator-provider-dependency-lifecycle" in text
+    assert "coordinator-repo-ready-lifecycle" in text
+    assert "The resume gate has already validated and attached" in text
+    assert "scope-export-interface-curation" in text
+    assert "not a separate runtime action" in text
+    assert "If a submit is rejected" in text
+    assert "If a submit is accepted, do not make further state-changing calls" in text
+    assert "UpperCamelCase" not in text
+    assert "lower_snake_case" not in text
+    assert "coordinator-content-task-lifecycle" not in text
+    assert "coordinator-repo-requirement-lifecycle" not in text
+    assert "resource-request-handling" not in text
+    assert "attach_requirement_provider_dependency" not in text
+
+
+def test_coordinator_instruction_lists_exact_normal_submit_boundary() -> None:
+    text = render_agent_instruction("CoordinatorAgent")
+    expected = {
+        "submit_content_node_tasks",
+        "submit_resource_request",
+        "submit_repo_requirement",
+        "submit_repo_ready",
+    }
+
+    assert expected <= _tool_refs(text)
+    assert "A normal Coordinator AgentStep must eventually produce exactly one accepted submit" in text
+
+
+def test_shared_resource_skill_routes_are_visible_in_plan_and_recon_instructions() -> None:
+    for agent_type in ("ContentPlanAgent", "ResourceReconAgent"):
+        text = render_agent_instruction(agent_type)
+        assert "resource-request-submission" in text
+        assert "resource-result-closeout" in text
+
+
+def test_common_runtime_contract_is_the_single_truth_and_tool_authority() -> None:
+    runtime = PUBLIC_INSTRUCTION_FRAGMENTS["common.runtime_contract"]
+    submit = PUBLIC_INSTRUCTION_FRAGMENTS["common.submit_contract"]
+
+    assert "common.truth_and_tool_contract" not in PUBLIC_INSTRUCTION_FRAGMENTS
+    assert "structured repository and runtime views" in runtime
+    assert "Conversation memory and callback summaries" in runtime
+    assert "semantic tools" in runtime
+    assert "requested mutation was not accepted" in runtime
+    assert "accepted submit" not in runtime.lower()
+    assert "blocked result" not in runtime.lower()
+    assert "accepted submit" in submit.lower()
+    assert "hand control back" in submit.lower()
 
 
 def test_instruction_renderer_deduplicates_public_fragments() -> None:
@@ -54,6 +118,29 @@ def test_instruction_renderer_deduplicates_public_fragments() -> None:
     text = render_agent_instruction(duplicate)
 
     assert text.count("## Operating Contract") == 1
+
+
+def test_all_rendered_instructions_have_unique_nonempty_fragment_headings() -> None:
+    for spec in build_agent_type_specs():
+        text = render_agent_instruction(spec)
+        headings = [line for line in text.splitlines() if line.startswith("## ")]
+
+        assert text.strip(), spec.agent_type
+        assert headings[0] == "## Operating Contract", spec.agent_type
+        assert headings.count("## Operating Contract") == 1, spec.agent_type
+        assert headings.count("## Submit Contract") == 1, spec.agent_type
+        assert "## Truth and Tool Contract" not in headings, spec.agent_type
+        assert len(headings) == len(set(headings)), spec.agent_type
+        assert all(PUBLIC_INSTRUCTION_FRAGMENTS[key].strip() for key in spec.instruction_fragment_keys)
+
+
+def test_node_contract_public_fragment_is_business_context_not_permission_guessing() -> None:
+    text = PUBLIC_INSTRUCTION_FRAGMENTS["node.node_contract_context"]
+
+    assert "if your available tools allow it" not in text
+    assert "goal" in text.lower()
+    assert "boundary" in text.lower()
+    assert "Interfaces, materials, node dependencies, and Mathlib context" in text
 
 
 def test_runtime_instruction_output_is_english() -> None:

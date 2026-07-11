@@ -263,7 +263,7 @@ def test_finalize_rejects_contract_version_mismatch(tmp_path: Path) -> None:
     assert current.value.contract.summary is None
 
 
-def test_finalize_rejects_duplicate_commit_when_contract_already_committed(tmp_path: Path) -> None:
+def test_finalize_duplicate_commit_is_idempotent_but_cannot_replace_summary(tmp_path: Path) -> None:
     service, _ready_gate = _make_service_with_content_node(tmp_path)
     task_result = ContentTaskResultView(
         outcome=ContentTaskOutcome.BLOCKED,
@@ -282,9 +282,20 @@ def test_finalize_rejects_duplicate_commit_when_contract_already_committed(tmp_p
         tmp_path,
         node_path="Main.Topic.Core",
         task_result=task_result,
-        coordinator_summary="Coordinator tries duplicate commit.",
+        coordinator_summary="Coordinator recorded blocked task.",
+    )
+    conflicting = service.finalize_content_task_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_result=task_result,
+        coordinator_summary="Coordinator tries to replace the committed summary.",
     )
 
     assert first.ok
-    assert not second.ok
-    assert second.issues[0].kind == "contract_not_open"
+    assert second.ok and second.value is not None
+    assert second.value.finalized is True
+    assert second.value.contract_committed is True
+    assert second.value.coordinator_summary == "Coordinator recorded blocked task."
+    assert "already finalized" in second.value.summary
+    assert not conflicting.ok
+    assert conflicting.issues[0].kind == "content_task_already_finalized"
