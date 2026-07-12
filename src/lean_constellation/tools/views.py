@@ -137,6 +137,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.REPO_PREPARATION_INPUT_READ,
                 AppGroup.REPO_WORK_CONFIG_READ,
+                AppGroup.REPO_RUN_CONTEXT_READ,
                 AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
                 AppGroup.WORKSPACE_REQUIREMENT_READ,
                 AppGroup.LAKE_DEPENDENCY_READ,

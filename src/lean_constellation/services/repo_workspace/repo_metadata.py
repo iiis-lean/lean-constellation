@@ -345,11 +345,15 @@ class RepoMetadataComponent:
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
         availability = self.runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
-        if not availability.ok or availability.value is None:
-            return self.runtime.foundation.fail(availability.issues)
-        ready_flag = availability.value.passed
+        ready_flag = availability.ok and availability.value is not None and availability.value.passed
+        availability_issues = (
+            availability.issues
+            if not availability.ok or availability.value is None
+            else []
+        )
         issues = [] if model.ok else model.issues
         issues.extend(requirement_warnings)
+        issues.extend(availability_issues)
         summary = "Repo state view built."
         if issues:
             summary = "Repo state view built with warnings."
@@ -378,7 +382,6 @@ class RepoMetadataComponent:
             warnings=[
                 issue.model_copy(update={"severity": IssueSeverity.WARNING})
                 for issue in issues
-                if issue.kind == "repo_model_missing"
             ],
         )
 

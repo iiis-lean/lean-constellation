@@ -255,9 +255,15 @@ def test_standalone_flow_commits_scoped_delta_and_exposes_agent_boundaries(tmp_p
     assert terminal.result.appended_block_ids
     builder_record = runtime.agent_service.start_records[0]
     assert builder_record.variables["active_file_scope"] == ["chapter.md"]
-    assert builder_record.variables["baseline_digest"]
+    assert "active_update_id" not in builder_record.variables
+    assert "baseline_digest" not in builder_record.variables
+    assert "Baseline digest" not in (builder_record.prompt or "")
     assert "forbidden_boundaries" in builder_record.variables
     assert "system injects update ownership" in (builder_record.prompt or "")
+    reviewer_record = runtime.agent_service.start_records[1]
+    assert "active_update_id" not in reviewer_record.variables
+    assert "baseline_digest" not in reviewer_record.variables
+    assert "Baseline digest" not in (reviewer_record.prompt or "")
 
 
 def test_review_rejection_loops_then_commits(tmp_path: Path) -> None:

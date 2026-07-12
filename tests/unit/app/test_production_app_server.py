@@ -114,6 +114,92 @@ def test_repo_lifecycle_route_serializes_concurrent_continuations(tmp_path) -> N
     assert failed.json()["issues"][0]["kind"] == "repo_lifecycle_flow_conflict"
 
 
+def test_canonical_repo_run_route_rejects_route_owned_and_internal_fields(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "Provider")
+    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    app_result = create_production_app_server(config)
+    assert app_result.ok and app_result.value is not None
+
+    with TestClient(app_result.value) as client:
+        assert client.post("/admin/workspace/repos/Provider/load").status_code == 200
+        identity = client.post("/admin/repos/Provider/runs/continue", json={
+            "repo_root": str(workspace / "Provider"), "run_objective": "Continue.",
+        })
+        internal = client.post("/admin/repos/Provider/runs/continue", json={
+            "run_objective": "Continue.", "base_release_id": "release-r1",
+        })
+
+    assert identity.status_code == 422
+    assert "route-owned fields" in identity.json()["issues"][0]["message"]
+    assert internal.status_code == 422
+    assert "base_release_id" in internal.json()["issues"][0]["message"]
+
+
+def test_canonical_and_compatibility_continue_routes_share_lifecycle_truth(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "Provider")
+    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    app_result = create_production_app_server(config)
+    assert app_result.ok and app_result.value is not None
+    app = app_result.value
+
+    with TestClient(app) as client:
+        assert client.post("/admin/workspace/repos/Provider/load").status_code == 200
+        loaded = app.state.lean_constellation_registry.get_or_load("Provider", refresh_homes=False)
+        assert loaded.ok and loaded.value is not None
+        assert initialize_repo_runtime(loaded.value, repo_root).ok
+        assert loaded.value.foundation.store.write_json_atomic(
+            loaded.value.repo_workspace.metadata._repo_publication_path(repo_root),
+            {"status": "stable", "latest_release_id": "release-r1"},
+        ).ok
+        canonical = client.post(
+            "/admin/repos/Provider/runs/continue",
+            json={"run_objective": "Continue through the canonical route.", "enqueue": False},
+        )
+        compatibility = client.post(
+            "/admin/repos/Provider/continue",
+            json={"run_objective": "Try the compatibility route.", "enqueue": False},
+        )
+
+    assert canonical.status_code == 200
+    assert canonical.json()["value"]["flow_type"] == "native_repo_continuation"
+    assert compatibility.status_code == 400
+    assert compatibility.json()["issues"][0]["kind"] == "repo_lifecycle_flow_conflict"
+
+
+def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "Provider")
+    _make_repo(workspace, "Other")
+    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    app_result = create_production_app_server(config)
+    assert app_result.ok and app_result.value is not None
+    app = app_result.value
+
+    with TestClient(app) as client:
+        assert client.post("/admin/workspace/repos/Provider/load").status_code == 200
+        loaded = app.state.lean_constellation_registry.get_or_load("Provider", refresh_homes=False)
+        assert loaded.ok and loaded.value is not None
+        assert initialize_repo_runtime(loaded.value, repo_root).ok
+        release = publish_native_provider_release(loaded.value, repo_root, release_id="release-r1")
+
+        listed = client.get("/admin/repos/Provider/releases")
+        shown = client.get(f"/admin/repos/Provider/releases/{release.release_id}")
+        unsafe = client.get("/admin/repos/Provider/releases/unsafe!release")
+        rejected = client.post(f"/admin/repos/Provider/releases/{release.release_id}/restore", json={
+            "repo_root": str(workspace / "Other"), "dry_run": True,
+        })
+
+    assert listed.status_code == 200
+    assert [item["release"]["release_id"] for item in listed.json()["value"]["releases"]] == ["release-r1"]
+    assert shown.status_code == 200
+    assert shown.json()["value"]["release"]["release_id"] == "release-r1"
+    assert unsafe.status_code == 422
+    assert rejected.status_code == 422
+    assert "route-owned fields" in rejected.json()["issues"][0]["message"]
+
+
 def test_production_app_server_exposes_workspace_external_health(tmp_path) -> None:
     toolkit = LeanMcpToolkitClient(dispatcher=lambda tool, payload: {"ok": True})
     config = LeanAppConfig(

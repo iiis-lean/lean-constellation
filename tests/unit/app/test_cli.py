@@ -31,6 +31,10 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "agent-turns" in help_text
     assert "agent-event" in help_text
     assert "agent-trace-report" in help_text
+    assert "repo-run-initial" in help_text
+    assert "repo-run-continue" in help_text
+    assert "repo-release-preview" in help_text
+    assert "repo-release-restore" in help_text
 
 
 def test_cli_config_view_prints_redacted_config(tmp_path, capsys) -> None:
@@ -224,3 +228,64 @@ def test_cli_admin_http_connection_failure_prints_structured_error(tmp_path, cap
     assert payload["ok"] is False
     assert payload["issues"][0]["kind"] == "admin_http_request_failed"
     assert "http://127.0.0.1:65534/admin/workspace/status" in payload["issues"][0]["message"]
+
+
+def test_cli_repo_run_initial_builds_semantic_http_payload(tmp_path, capsys, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'workspace_root = "{tmp_path / "workspace"}"\nadmin_http_base_url = "http://admin.test"\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_request_json(method, url, payload=None):  # noqa: ANN001
+        calls.append((method, url, payload))
+        return {"ok": True, "value": {"flow_id": "flow-initial"}}
+
+    monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
+    exit_code = main([
+        "--config", str(config_path), "repo-run-initial", "--repo-key", "Provider",
+        "--run-objective", "Declare chapter ten interfaces.", "--source-scope", "selected",
+        "--source-selector", "book/chapter10.tex", "--work-mode", "declared_interface",
+    ])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["value"]["flow_id"] == "flow-initial"
+    assert calls == [(
+        "POST", "http://admin.test/admin/repos/Provider/runs/initial",
+        {
+            "request": {
+                "run_objective": "Declare chapter ten interfaces.",
+                "work_mode": "declared_interface",
+                "source_scope": {"mode": "selected", "selectors": ["book/chapter10.tex"]},
+            },
+            "admin_notes": None,
+            "enqueue": True,
+        },
+    )]
+
+
+def test_cli_release_restore_uses_only_semantic_restore_options(tmp_path, capsys, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'workspace_root = "{tmp_path / "workspace"}"\nadmin_http_base_url = "http://admin.test"\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_request_json(method, url, payload=None):  # noqa: ANN001
+        calls.append((method, url, payload))
+        return {"ok": True, "value": {"dry_run": True}}
+
+    monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
+    exit_code = main([
+        "--config", str(config_path), "repo-release-restore", "--repo-key", "Provider",
+        "release-r2", "--dry-run",
+    ])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert calls == [(
+        "POST", "http://admin.test/admin/repos/Provider/releases/release-r2/restore",
+        {"dry_run": True, "leave_runtime_paused": True},
+    )]

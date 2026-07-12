@@ -59,6 +59,11 @@ def _decl_list_item(runtime, repo_root, view) -> dict[str, object]:
         proof_policy_satisfied = False
     else:
         proof_policy_satisfied = bool(report.value.proof_policy_satisfied)
+    release = runtime.repo_workspace.release.get_decl_release_status(
+        repo_root, node_path=view.node_path, decl_name=view.name
+    )
+    released_state = release.value.released_state if release.ok and release.value is not None else None
+    release_protected = bool(release.value.release_protected) if release.ok and release.value is not None else False
     return {
         "name": view.name,
         "node_path": view.node_path,
@@ -72,6 +77,8 @@ def _decl_list_item(runtime, repo_root, view) -> dict[str, object]:
         "state": view.state.value if view.state is not None and hasattr(view.state, "value") else view.state,
         "status": view.status.value if view.status is not None and hasattr(view.status, "value") else view.status,
         "proof_policy_satisfied": proof_policy_satisfied,
+        "released_state": released_state,
+        "release_protected": release_protected,
         "summary": view.summary,
         "updated_at": view.updated_at,
     }
@@ -82,6 +89,11 @@ def _decl_revision_item(runtime, repo_root, view, args: DeclInspectArgs) -> dict
     proof_policy_satisfied = bool(report.value.proof_policy_satisfied) if report.ok and report.value is not None else False
     data = view.model_dump(mode="json")
     data["proof_policy_satisfied"] = proof_policy_satisfied
+    release = runtime.repo_workspace.release.get_decl_release_status(
+        repo_root, node_path=view.node_path, decl_name=view.decl_name
+    )
+    data["released_state"] = release.value.released_state if release.ok and release.value is not None else None
+    data["release_protected"] = bool(release.value.release_protected) if release.ok and release.value is not None else False
     if not args.include_statement_nl:
         data.pop("statement_nl", None)
     if not args.include_statement_formal:
@@ -108,24 +120,32 @@ def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
     if not decl.ok or decl.value is None or not revision.ok or revision.value is None:
         return {
             "ref": ref.model_dump(mode="json"),
+            "anchor_revision": ref.revision,
             "resolved_revision": public_decl.resolved_revision,
+            "compatible": bool(public_decl.ready and not public_decl.stale),
             "resolution_reason": public_decl.resolution_reason,
             "kind": public_decl.kind,
             "summary": public_decl.summary,
             "public": public_decl.public,
             "state": None,
             "proof_policy_satisfied": False,
+            "released_state": public_decl.released_state,
+            "release_protected": public_decl.release_protected,
             "source": public_decl.source,
         }
     return {
         "ref": ref.model_dump(mode="json"),
+        "anchor_revision": ref.revision,
         "resolved_revision": public_decl.resolved_revision,
+        "compatible": bool(public_decl.ready and not public_decl.stale),
         "resolution_reason": public_decl.resolution_reason,
         "kind": revision.value.kind,
         "summary": decl.value.summary,
         "public": decl.value.public,
         "state": revision.value.state.value,
         "proof_policy_satisfied": public_decl.ready and not public_decl.stale,
+        "released_state": public_decl.released_state,
+        "release_protected": public_decl.release_protected,
         "source": public_decl.source,
     }
 
@@ -534,7 +554,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="get_node_decl_graph_index",
-            description="Read the DeclGraph index for one node in the Coordinator's current repo.",
+            description="Read the DeclGraph index for one permitted node in the current repository.",
             args_model=NodeDeclListArgs,
             capability=ToolCapability.READ,
             result_view="decl_graph_index",
@@ -545,7 +565,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="get_node_decl_graph_store",
-            description="Read DeclGraph store counts and paths for one node in the Coordinator's current repo.",
+            description="Read DeclGraph store counts and paths for one permitted node in the current repository.",
             args_model=NodeDeclListArgs,
             capability=ToolCapability.READ,
             result_view="decl_graph_store",
@@ -716,7 +736,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_node_decls",
-            description="List all public and private declarations in one node of the Coordinator's current repo.",
+            description="List all public and private declarations in one permitted node of the current repository.",
             args_model=NodeDeclListArgs,
             capability=ToolCapability.READ,
             result_view="decl_list",
@@ -747,7 +767,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="inspect_node_decl",
-            description="Inspect one public or private declaration revision in a node of the Coordinator's current repo.",
+            description="Inspect one public or private declaration revision in a permitted node of the current repository.",
             args_model=NodeDeclInspectArgs,
             capability=ToolCapability.READ,
             result_view="decl_revision",

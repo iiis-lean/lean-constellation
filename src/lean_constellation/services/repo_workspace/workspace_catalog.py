@@ -21,7 +21,7 @@ from lean_constellation.domain.repo import (
     WorkspaceCoordinatorView,
     WorkspaceRepoSummary,
 )
-from lean_constellation.services.foundation import FoundationContext, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, IssueSeverity, ServiceResult
 from lean_constellation.services.repo_workspace.lake_dependency import LakeDependencyComponent, LakeDependencyEntry
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
@@ -60,8 +60,9 @@ class WorkspaceCatalogComponent:
         if not workspace_root.exists() or not workspace_root.is_dir():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("workspace_not_found", f"Workspace root not found: {workspace_root}")
-            )
+        )
         repos: list[WorkspaceRepoSummary] = []
+        warnings = []
         for repo_dir in sorted(path for path in workspace_root.iterdir() if path.is_dir()):
             ctx = FoundationContext(repo_root=repo_dir)
             if not self.runtime.foundation.layout.constellation_root(ctx).exists():
@@ -69,6 +70,7 @@ class WorkspaceCatalogComponent:
             state = self.metadata.get_repo_state_view(repo_dir)
             if not state.ok or state.value is None:
                 return self.runtime.foundation.fail(state.issues)
+            warnings = _merge_warnings(warnings, state.issues)
             repos.append(
                 WorkspaceRepoSummary(
                     repo_key=repo_dir.name,
@@ -83,7 +85,7 @@ class WorkspaceCatalogComponent:
                     open_requirement_count=state.value.open_requirement_count,
                 )
             )
-        return self.runtime.foundation.ok(repos)
+        return self.runtime.foundation.ok(repos, warnings=warnings)
 
     def get_workspace_catalog(
         self,
@@ -98,7 +100,10 @@ class WorkspaceCatalogComponent:
         if current_repo is not None:
             current_key = Path(current_repo).name
             values = sorted(values, key=lambda item: (item.repo_key != current_key, item.repo_key))
-        return self.runtime.foundation.ok(WorkspaceCatalogView(workspace_root=str(Path(workspace_root)), repos=values))
+        return self.runtime.foundation.ok(
+            WorkspaceCatalogView(workspace_root=str(Path(workspace_root)), repos=values),
+            warnings=repos.issues,
+        )
 
     def list_ready_provider_repos(
         self,
@@ -111,15 +116,17 @@ class WorkspaceCatalogComponent:
             return self.runtime.foundation.fail(catalog.issues)
         current_key = Path(current_repo).name if current_repo else None
         ready: list[WorkspaceRepoSummary] = []
+        warnings = list(catalog.issues)
         for repo in catalog.value.repos:
             if current_key is not None and repo.repo_key == current_key:
                 continue
             availability = self.runtime.repo_workspace.provider_availability.check_provider_available(Path(repo.repo_root))
             if not availability.ok or availability.value is None:
-                return self.runtime.foundation.fail(availability.issues)
+                warnings = _merge_warnings(warnings, availability.issues)
+                continue
             if availability.value.passed:
                 ready.append(repo.model_copy(update={"provider_ready": True}))
-        return self.runtime.foundation.ok(ready)
+        return self.runtime.foundation.ok(ready, warnings=warnings)
 
     def list_open_requirement_groups(self, workspace_root: Path) -> ServiceResult[list[RequirementGroupSummaryView]]:
         groups: dict[str, list[RequirementGroupItem]] = defaultdict(list)
@@ -224,5 +231,16 @@ class WorkspaceCatalogComponent:
                 current_repo_root=str(current_repo_root),
                 catalog=catalog.value,
                 ready_provider_repos=ready.value,
-            )
+            ),
+            warnings=_merge_warnings(catalog.issues, ready.issues),
         )
+
+
+def _merge_warnings(*groups):  # noqa: ANN002, ANN202
+    merged = []
+    for group in groups:
+        for issue in group:
+            warning = issue.model_copy(update={"severity": IssueSeverity.WARNING})
+            if warning not in merged:
+                merged.append(warning)
+    return merged

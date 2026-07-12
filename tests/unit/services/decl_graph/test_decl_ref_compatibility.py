@@ -205,3 +205,15 @@ def test_public_ref_propagates_provider_availability_read_failure(tmp_path: Path
 
     assert not resolved.ok
     assert resolved.issues[0].kind == "read_failed"
+
+
+def test_public_ref_listing_returns_empty_warning_for_unavailable_provider(tmp_path: Path) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+
+    listed = runtime.decl_graph.ref_compatibility.list_public_decl_refs(
+        tmp_path,
+        required_availability=ProofAvailability.DECLARED,
+    )
+
+    assert listed.ok and listed.value == []
+    assert [issue.kind for issue in listed.issues] == ["provider_not_stable"]

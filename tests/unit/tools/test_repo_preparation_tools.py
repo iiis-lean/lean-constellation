@@ -6,6 +6,7 @@ from tests.unit.tools._family_helpers import assert_group_contains, assert_tools
 def test_repo_preparation_tools_are_registered() -> None:
     expected = {
         "get_preparation_input",
+        "get_current_repo_run_context",
         "get_preparation_start_preflight",
         "inspect_workspace_for_coordinator",
         "list_ready_provider_repos",
@@ -27,6 +28,7 @@ def test_repo_preparation_tools_are_registered() -> None:
 
 def test_repo_preparation_groups_expose_expected_tools() -> None:
     assert_group_contains("repo_preparation_input_read", {"get_preparation_input"})
+    assert_group_contains("repo_run_context_read", {"get_current_repo_run_context"})
     assert_group_contains("repo_preparation_start_preflight_read", {"get_preparation_start_preflight"})
     assert_group_contains("workspace_provider_catalog_read", {"inspect_workspace_for_coordinator", "list_ready_provider_repos"})
     assert_group_contains(
@@ -61,3 +63,4 @@ def test_requirement_control_tools_are_admin_only() -> None:
     assert specs["mark_requirement_result_observed"].allowed_roles == {"admin"}
     assert specs["attach_requirement_provider_dependency"].allowed_roles == {"admin"}
     assert specs["get_current_repo_requirement"].allowed_roles == {"coordinator", "admin"}
+    assert specs["get_current_repo_run_context"].allowed_roles == {"coordinator", "admin"}

@@ -67,6 +67,7 @@ from lean_constellation.flows.resource_request.submissions import (
 )
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.tool_facade import PreparedSubmissionView, ToolExecutionContext
+from lean_constellation.tools.source_index_ownership import resolve_source_index_update_owner
 from lean_constellation.tools.submit_args import (
     SubmitAdapterCatalogBlockedArgs,
     SubmitAdapterCatalogReadyArgs,
@@ -445,7 +446,17 @@ def submit_source_corpus_blocked(runtime: Any, ctx: ToolExecutionContext, args: 
 
 
 def submit_source_index_builder_round(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceIndexBuilderRoundArgs) -> ServiceResult[PreparedSubmissionView]:
-    gate = runtime.material.submit_source_index_builder_round(ctx.repo_root, summary=args.summary, ctx=ctx)
+    owner = resolve_source_index_update_owner(
+        runtime, ctx, allowed_step_types={"source_index_builder_agent_step"}
+    )
+    if not owner.ok or owner.value is None:
+        return runtime.foundation.fail(owner.issues)
+    gate = runtime.material.submit_source_index_builder_round(
+        ctx.repo_root,
+        summary=args.summary,
+        expected_update_id=owner.value,
+        ctx=ctx,
+    )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
     return _prepared(
@@ -459,7 +470,19 @@ def submit_source_index_builder_round(runtime: Any, ctx: ToolExecutionContext, a
 
 
 def submit_source_index_review_round(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceIndexReviewRoundArgs) -> ServiceResult[PreparedSubmissionView]:
-    gate = runtime.material.submit_source_index_review_round(ctx.repo_root, approved=args.approved, summary=args.summary, feedback=args.feedback, ctx=ctx)
+    owner = resolve_source_index_update_owner(
+        runtime, ctx, allowed_step_types={"source_index_reviewer_agent_step"}
+    )
+    if not owner.ok or owner.value is None:
+        return runtime.foundation.fail(owner.issues)
+    gate = runtime.material.submit_source_index_review_round(
+        ctx.repo_root,
+        approved=args.approved,
+        summary=args.summary,
+        feedback=args.feedback,
+        expected_update_id=owner.value,
+        ctx=ctx,
+    )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
     return _prepared(
@@ -866,16 +889,34 @@ def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: Submi
 
 
 def submit_repo_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoReadyArgs) -> ServiceResult[PreparedSubmissionView]:
-    gate = runtime.validation_snapshot.check_repo_ready(ctx.repo_root, summary=args.summary)
-    if not gate.ok or gate.value is None:
-        return runtime.foundation.fail(gate.issues)
-    passed = _gate_or_fail(runtime, gate.value)
+    if not ctx.runtime.flow_id:
+        return _fail(runtime, "coordinator_flow_context_required", "Repository-ready submission requires the current Coordinator Flow.")
+    flow = runtime.get_flow(ctx.runtime.flow_id)
+    flow_input = getattr(flow, "input", None)
+    if getattr(flow, "flow_type", None) != "native_repo_coordinator" or str(
+        getattr(flow_input, "repo_root", "")
+    ) != str(ctx.repo_root):
+        return _fail(runtime, "coordinator_flow_context_invalid", "Current Flow does not own this repository-ready submission.")
+    run_context = getattr(flow_input, "run_context", None)
+    preview = runtime.validation_snapshot.preview_candidate_release(
+        ctx.repo_root,
+        base_release_id=getattr(run_context, "base_release_id", None),
+        summary=args.summary,
+        owner_flow_id=ctx.runtime.flow_id,
+    )
+    if not preview.ok or preview.value is None:
+        return runtime.foundation.fail(preview.issues)
+    passed = _gate_or_fail(runtime, preview.value.gate)
     if not passed.ok:
         return runtime.foundation.fail(passed.issues)
     return _prepared(
         runtime,
         CoordinatorRepoReadySubmission(**_base_kwargs(ctx, tool_name="submit_repo_ready", summary=args.summary)),
-        agent_view={"gate": gate.value.model_dump(mode="json")},
+        agent_view={
+            "gate": preview.value.gate.model_dump(mode="json"),
+            "blocking_issue_kinds": list(preview.value.blocking_issue_kinds),
+            "summary": preview.value.summary,
+        },
     )
 
 

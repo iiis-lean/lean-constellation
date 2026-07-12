@@ -38,6 +38,7 @@ from lean_constellation.domain.repo import (
     RepoWorkMode,
 )
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
+from lean_constellation.domain.repo_release import RepoReleaseListView
 from lean_constellation.flows.repo_lifecycle.source_index import SourceIndexBuildResult
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind
 from lean_constellation.flows.testing import (
@@ -377,6 +378,19 @@ class RepoRunRequestInput(RepoRunOptions):
         return Path(value).expanduser()
 
 
+class RepoRunStartInput(StrictModel):
+    repo_root: Path
+    repo_key: str | None = None
+    request: RepoRunOptions = Field(default_factory=RepoRunOptions)
+    admin_notes: str | None = None
+    enqueue: bool = True
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
 class StandaloneSourceIndexRunInput(StrictModel):
     repo_root: Path
     repo_key: str | None = None
@@ -393,6 +407,31 @@ class StandaloneRootInterfaceRunInput(StrictModel):
     root_interface_policy: Literal["auto", "prepare", "reuse"] = "auto"
     additional_required_interfaces: list[DeclInterface] = Field(default_factory=list)
     enqueue: bool = True
+
+
+class RepoReleasePreviewInput(StrictModel):
+    repo_root: Path
+    summary: str = "Admin release preview."
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class RepoReleaseIdInput(StrictModel):
+    repo_root: Path
+    release_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class RepoReleaseRestoreInput(RepoReleaseIdInput):
+    dry_run: bool = False
+    leave_runtime_paused: bool = True
 
 
 class CreateMainRepoShellInput(StrictModel):
@@ -607,6 +646,25 @@ class LeanAdminApi:
                 "repo_lifecycle_lock_busy", str(exc), object_ref=str(input_model.repo_root)
             ))
 
+    def start_initial_native_repo_run(self, input_model: RepoRunStartInput) -> ServiceResult[AdminFlowStartView]:
+        return self.start_native_preparation(StartPreparationInput(
+            repo_root=input_model.repo_root,
+            repo_key=input_model.repo_key,
+            start_reason="admin",
+            admin_notes=input_model.admin_notes,
+            enqueue=input_model.enqueue,
+            run_request=input_model.request,
+        ))
+
+    def start_native_repo_continuation(self, input_model: RepoRunRequestInput) -> ServiceResult[AdminFlowStartView]:
+        return self.continue_native_repo(input_model)
+
+    def start_source_index_run(self, input_model: StandaloneSourceIndexRunInput) -> ServiceResult[AdminFlowStartView]:
+        return self.start_standalone_source_index(input_model)
+
+    def start_root_interface_run(self, input_model: StandaloneRootInterfaceRunInput) -> ServiceResult[AdminFlowStartView]:
+        return self.start_standalone_root_interfaces(input_model)
+
     def _start_native_preparation_locked(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:
         repo_key = input_model.repo_key or input_model.repo_root.name
         active = [flow for flow in self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{repo_key}")
@@ -807,6 +865,66 @@ class LeanAdminApi:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
                 "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
             ))
+
+    def list_repo_releases(self, repo_root: Path) -> ServiceResult[RepoReleaseListView]:
+        listed = self.runtime.repo_workspace.release.list_releases(repo_root)
+        if not listed.ok or listed.value is None:
+            return self.runtime.foundation.fail(listed.issues)
+        return self.runtime.foundation.ok(RepoReleaseListView(
+            repo_root=str(repo_root),
+            releases=listed.value,
+            summary=f"Listed {len(listed.value)} repository releases.",
+        ))
+
+    def get_repo_release(self, repo_root: Path, *, release_id: str):  # noqa: ANN201
+        return self.runtime.repo_workspace.release.get_release(
+            repo_root, release_id=release_id
+        )
+
+    def preview_repo_release(self, repo_root: Path, *, summary: str = "Admin release preview."):  # noqa: ANN201
+        try:
+            with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
+                publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+                if not publication.ok or publication.value is None:
+                    return self.runtime.foundation.fail(publication.issues)
+                return self.runtime.validation_snapshot.release_finalizer.preview_candidate_release(
+                    repo_root,
+                    base_release_id=publication.value.publication.latest_release_id,
+                    summary=summary,
+                )
+        except RepoLifecycleLockBusyError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
+            ))
+
+    def restore_repo_release(self, input_model: RepoReleaseRestoreInput):  # noqa: ANN201
+        return self.runtime.validation_snapshot.release_finalizer.restore_repo_release(
+            input_model.repo_root,
+            release_id=input_model.release_id,
+            dry_run=input_model.dry_run,
+            leave_runtime_paused=input_model.leave_runtime_paused,
+        )
+
+    def audit_repo_releases(self, repo_root: Path):  # noqa: ANN201
+        try:
+            with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
+                return self.runtime.validation_snapshot.release_finalizer.audit_repo_release_storage(repo_root)
+        except RepoLifecycleLockBusyError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
+            ))
+
+    def reconcile_repo_requirements(self, repo_root: Path, *, release_id: str):  # noqa: ANN201
+        try:
+            with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
+                return self.runtime.validation_snapshot.release_finalizer.reconcile_provider_requirements(
+                    repo_root, release_id=release_id
+                )
+        except RepoLifecycleLockBusyError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
+            ))
+
     def start_adapter_preparation(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:
         repo_key = input_model.repo_key or input_model.repo_root.name
         return self.start_arbitrary_flow(

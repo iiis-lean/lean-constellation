@@ -591,18 +591,24 @@ class DependencyComponent:
                 return self.runtime.foundation.fail(availability.issues)
             if not availability.value.passed:
                 continue
-            exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
-            if not exports.ok or exports.value is None:
-                return self.runtime.foundation.fail(exports.issues)
+            config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
+            if not config.ok or config.value is None:
+                return self.runtime.foundation.fail(config.issues)
+            public_refs = self.runtime.decl_graph.ref_compatibility.list_public_decl_refs(
+                provider_root,
+                required_availability=config.value.config.target_proof_availability,
+            )
+            if not public_refs.ok or public_refs.value is None:
+                return self.runtime.foundation.fail(public_refs.issues)
             exported_refs = [
                 DeclRef(
                     repo=dep.name,
-                    node=item.ref.node,
-                    name=item.ref.name,
-                    revision=item.ref.revision,
+                    node=item.anchor.node,
+                    name=item.anchor.name,
+                    revision=item.anchor.revision,
                 )
-                for item in exports.value
-                if item.valid
+                for item in public_refs.value
+                if item.compatible
             ]
             boundaries.append(
                 VisibleNodeBoundaryItem(

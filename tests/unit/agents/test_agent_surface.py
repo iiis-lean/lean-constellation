@@ -9,10 +9,10 @@ EXPECTED_SURFACE_COUNTS = {
     "SourceCorpusPrepareAgent": (3, 7, 1, 2, 1),
     "SourceIndexBuilderAgent": (4, 21, 1, 1, 0),
     "SourceIndexReviewerAgent": (3, 10, 1, 1, 0),
-    "RootInterfacePrepareAgent": (5, 10, 1, 1, 0),
+    "RootInterfacePrepareAgent": (5, 11, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 21, 1, 4, 2),
-    "CoordinatorAgent": (33, 82, 2, 4, 19),
+    "CoordinatorAgent": (34, 83, 2, 4, 19),
     "ContentPlanAgent": (25, 73, 3, 6, 17),
     "NodeDirDependencyReconAgent": (4, 13, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
@@ -157,8 +157,8 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
     assert len(report.skills) == 19
-    assert len(report.application_group_keys) == 33
-    assert len(report.application_tools) == 82
+    assert len(report.application_group_keys) == 34
+    assert len(report.application_tools) == 83
     assert len(report.submit_group_keys) == 2
     assert len(report.submit_tools) == 4
     assert {
@@ -169,6 +169,7 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
         "list_imported_repos",
     }.isdisjoint(tools)
     assert {
+        "get_current_repo_run_context",
         "get_current_repo_requirement",
         "list_ready_provider_repos",
         "list_repo_public_decls",
@@ -177,6 +178,13 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
         "get_node_tree",
         "get_node_decl_graph_index",
     } <= tools
+    assert {
+        "allocate_release_id",
+        "create_release",
+        "prepare_candidate_release",
+        "commit_prepared_release",
+        "mark_repo_stable",
+    }.isdisjoint(tools)
 
 
 def test_source_index_builder_and_reviewer_surfaces_match_draft_boundary() -> None:
@@ -192,6 +200,7 @@ def test_source_index_builder_and_reviewer_surfaces_match_draft_boundary() -> No
         "validate_source_range",
         "preview_source_ref",
         "get_source_index",
+        "get_source_index_update_context",
         "get_source_index_coverage",
         "validate_source_index",
         "create_source_block",
@@ -240,6 +249,7 @@ def test_root_interface_prepare_surface_uses_root_specific_tools() -> None:
 
     assert {
         "get_preparation_input",
+        "get_root_interface_run_context",
         "get_source_index",
         "get_source_index_coverage",
         "read_source_range",

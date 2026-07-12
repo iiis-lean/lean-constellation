@@ -87,6 +87,45 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot.add_argument("--kind", default="requirement_bootstrap_terminal")
     snapshot.add_argument("--label", default=None)
 
+    repo_run_initial = sub.add_parser("repo-run-initial", help="Start an initial native repository run.")
+    _add_repo_run_arguments(repo_run_initial, objective_required=False)
+    repo_run_initial.add_argument("--admin-notes", default=None)
+    repo_run_continue = sub.add_parser("repo-run-continue", help="Continue a stable native repository.")
+    _add_repo_run_arguments(repo_run_continue, objective_required=True)
+    repo_run_source_index = sub.add_parser("repo-run-source-index", help="Run standalone SourceIndex preprocessing.")
+    repo_run_source_index.add_argument("--repo-key", required=True)
+    repo_run_source_index.add_argument("--run-objective", required=True)
+    _add_source_scope_arguments(repo_run_source_index)
+    repo_run_source_index.set_defaults(source_scope_default="all")
+    repo_run_source_index.add_argument("--index-policy", choices=["auto", "update", "reuse"], default="auto")
+    repo_run_source_index.add_argument("--no-enqueue", action="store_true")
+    repo_run_root = sub.add_parser("repo-run-root-interfaces", help="Run standalone root-interface preparation.")
+    repo_run_root.add_argument("--repo-key", required=True)
+    repo_run_root.add_argument("--run-objective", required=True)
+    repo_run_root.add_argument("--root-interface-policy", choices=["auto", "prepare", "reuse"], default="auto")
+    repo_run_root.add_argument("--no-enqueue", action="store_true")
+
+    releases_list = sub.add_parser("repo-releases-list", help="List repository releases.")
+    releases_list.add_argument("--repo-key", required=True)
+    release_show = sub.add_parser("repo-release-show", help="Show one repository release.")
+    release_show.add_argument("--repo-key", required=True)
+    release_show.add_argument("release_id")
+    release_preview = sub.add_parser("repo-release-preview", help="Preview the current release candidate gates.")
+    release_preview.add_argument("--repo-key", required=True)
+    release_preview.add_argument("--summary", default="Admin release preview.")
+    release_restore = sub.add_parser("repo-release-restore", help="Restore the current latest repository release.")
+    release_restore.add_argument("--repo-key", required=True)
+    release_restore.add_argument("release_id")
+    release_restore.add_argument("--dry-run", action="store_true")
+    release_restore.add_argument("--resume-runtime", action="store_true")
+    release_audit = sub.add_parser("repo-release-audit", help="Audit repository release storage.")
+    release_audit.add_argument("--repo-key", required=True)
+    release_reconcile = sub.add_parser(
+        "repo-release-reconcile-requirements", help="Reconcile requirements for the latest provider release."
+    )
+    release_reconcile.add_argument("--repo-key", required=True)
+    release_reconcile.add_argument("release_id")
+
     external_list = sub.add_parser("external-list", help="Debug/local: list external takeover handoffs from a local runtime root.")
     external_list.add_argument("--status", default=None, help="Filter by pending/completed/failed/cancelled.")
     external_list.add_argument("--handoff-dirname", default="external_turns")
@@ -329,6 +368,61 @@ def main(argv: list[str] | None = None) -> int:
                 },
             )
         )
+    if args.command in {"repo-run-initial", "repo-run-continue"}:
+        request_payload = _repo_run_payload(args)
+        payload = (
+            {"request": request_payload, "admin_notes": args.admin_notes, "enqueue": not args.no_enqueue}
+            if args.command == "repo-run-initial"
+            else {**request_payload, "enqueue": not args.no_enqueue}
+        )
+        kind = "initial" if args.command == "repo-run-initial" else "continue"
+        return _print_http_result(_request_json(
+            "POST", f"{admin_base_url}/admin/repos/{args.repo_key}/runs/{kind}", payload
+        ))
+    if args.command == "repo-run-source-index":
+        return _print_http_result(_request_json(
+            "POST", f"{admin_base_url}/admin/repos/{args.repo_key}/runs/source-index",
+            {
+                "run_objective": args.run_objective,
+                "source_scope": _source_scope_payload(args),
+                "index_policy": args.index_policy,
+                "enqueue": not args.no_enqueue,
+            },
+        ))
+    if args.command == "repo-run-root-interfaces":
+        return _print_http_result(_request_json(
+            "POST", f"{admin_base_url}/admin/repos/{args.repo_key}/runs/root-interfaces",
+            {
+                "run_objective": args.run_objective,
+                "root_interface_policy": args.root_interface_policy,
+                "enqueue": not args.no_enqueue,
+            },
+        ))
+    if args.command == "repo-releases-list":
+        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/releases"))
+    if args.command == "repo-release-show":
+        return _print_http_result(_request_json(
+            "GET", f"{admin_base_url}/admin/repos/{args.repo_key}/releases/{args.release_id}"
+        ))
+    if args.command == "repo-release-preview":
+        return _print_http_result(_request_json(
+            "POST", f"{admin_base_url}/admin/repos/{args.repo_key}/releases/preview", {"summary": args.summary}
+        ))
+    if args.command == "repo-release-restore":
+        return _print_http_result(_request_json(
+            "POST", f"{admin_base_url}/admin/repos/{args.repo_key}/releases/{args.release_id}/restore",
+            {"dry_run": args.dry_run, "leave_runtime_paused": not args.resume_runtime},
+        ))
+    if args.command == "repo-release-audit":
+        return _print_http_result(_request_json(
+            "GET", f"{admin_base_url}/admin/repos/{args.repo_key}/releases/audit"
+        ))
+    if args.command == "repo-release-reconcile-requirements":
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/releases/{args.release_id}/reconcile-requirements",
+            {},
+        ))
     if args.command == "agent-rollout-info":
         return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/rollout"))
     if args.command == "agent-turns":
@@ -481,6 +575,45 @@ def _parse_params(values: list[str]) -> dict[str, str]:
         key, value = item.split("=", 1)
         params[key] = value
     return params
+
+
+def _add_source_scope_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--source-scope", choices=["none", "selected", "all"], default=None)
+    parser.add_argument("--source-selector", action="append", default=[])
+
+
+def _add_repo_run_arguments(parser: argparse.ArgumentParser, *, objective_required: bool) -> None:
+    parser.add_argument("--repo-key", required=True)
+    parser.add_argument("--run-objective", required=objective_required)
+    parser.add_argument("--target-proof-availability", choices=["declared", "proved"], default=None)
+    parser.add_argument(
+        "--work-mode", choices=["declared_interface", "declared_full_graph", "proved_full_graph"], default=None
+    )
+    _add_source_scope_arguments(parser)
+    parser.add_argument("--index-policy", choices=["auto", "update", "reuse"], default=None)
+    parser.add_argument("--root-interface-policy", choices=["auto", "prepare", "reuse"], default=None)
+    parser.add_argument("--no-enqueue", action="store_true")
+
+
+def _source_scope_payload(args) -> dict | None:  # noqa: ANN001
+    mode = args.source_scope or (
+        "selected" if args.source_selector else getattr(args, "source_scope_default", None)
+    )
+    if mode is None:
+        return None
+    return {"mode": mode, "selectors": args.source_selector}
+
+
+def _repo_run_payload(args) -> dict:  # noqa: ANN001
+    values = {
+        "run_objective": args.run_objective,
+        "target_proof_availability": args.target_proof_availability,
+        "work_mode": args.work_mode,
+        "source_scope": _source_scope_payload(args),
+        "index_policy": args.index_policy,
+        "root_interface_policy": args.root_interface_policy,
+    }
+    return {key: value for key, value in values.items() if value is not None}
 
 
 def _print_result(result) -> int:

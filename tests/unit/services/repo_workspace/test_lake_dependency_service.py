@@ -1,4 +1,4 @@
-from tests.unit_services_helpers import make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import make_runtime, publish_adapter_provider_ready, publish_native_provider_release
 
 from pathlib import Path
 
@@ -505,3 +505,23 @@ def test_attach_ready_workspace_repo_dependency_requires_stable_repo(tmp_path: P
     assert attached.ok and attached.value is not None
     assert attached.value.provider_repo_key == "provider"
     assert 'name = "provider"' in (consumer / "lakefile.toml").read_text(encoding="utf-8")
+
+
+def test_attach_ready_workspace_repo_dependency_accepts_ready_adapter_without_release(tmp_path: Path) -> None:
+    consumer = tmp_path / "consumer"
+    provider = tmp_path / "adapter_provider"
+    external = FakeExternal()
+    service = make_runtime(external_overrides={"lake": external.lake}).repo_workspace
+    assert service.lake_dependency.initialize_native_repo_skeleton(consumer, project_name="Consumer").ok
+    publish_adapter_provider_ready(service.runtime, provider, summary="Reusable adapter provider.")
+
+    attached = service.attach_ready_workspace_repo_dependency(
+        consumer,
+        provider_repo="adapter_provider",
+    )
+
+    assert attached.ok and attached.value is not None
+    assert attached.value.provider_repo_key == "adapter_provider"
+    publication = service.metadata.get_repo_publication(provider)
+    assert publication.ok and publication.value is not None
+    assert publication.value.publication.latest_release_id is None

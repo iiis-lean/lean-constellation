@@ -713,11 +713,31 @@ def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tm
     flows = {
         "flow_source_index_builder": SimpleNamespace(
             flow_type="source_index_build",
+            input=SimpleNamespace(
+                repo_root=str(tmp_path),
+                run_objective="Index the selected source.",
+                target_proof_availability=ProofAvailability.DECLARED,
+                work_mode=RepoWorkMode.DECLARED_INTERFACE,
+                source_scope=SourceScope(mode="all"),
+                start_reason="initial",
+            ),
             state=SimpleNamespace(active_update_id="owned-update"),
         ),
         "flow_source_index_reviewer": SimpleNamespace(
             flow_type="source_index_build",
-            state=SimpleNamespace(active_update_id="owned-update"),
+            input=SimpleNamespace(
+                repo_root=str(tmp_path),
+                run_objective="Index the selected source.",
+                target_proof_availability=ProofAvailability.DECLARED,
+                work_mode=RepoWorkMode.DECLARED_INTERFACE,
+                source_scope=SourceScope(mode="all"),
+                start_reason="initial",
+            ),
+            state=SimpleNamespace(
+                active_update_id="owned-update",
+                review_round=1,
+                latest_reviewer_feedback="Tighten the theorem range.",
+            ),
         ),
     }
     steps = {
@@ -755,6 +775,73 @@ def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tm
         )
     )
     assert review_context["active_file_scope"] == ["README.md"]
+    assert review_context["run_objective"] == "Index the selected source."
+    assert review_context["work_mode"] == "declared_interface"
+    assert review_context["reviewer_feedback"] == "Tighten the theorem range."
+    assert "active_update_id" not in review_context
+    assert "baseline_digest" not in review_context
+
+    validated = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(
+                tmp_path,
+                view="source_index_reviewer",
+                agent_type="SourceIndexReviewerAgent",
+                role="reviewer",
+            ),
+            tool_name="validate_source_index",
+            flat_args={},
+        )
+    )
+    assert "passed" in validated
+
+    flows["flow_source_index_reviewer"].state.active_update_id = "stale-update"
+    stale_validate_result = runtime.tool_facade.invoke_agent_tool(
+        _raw(
+            tmp_path,
+            view="source_index_reviewer",
+            agent_type="SourceIndexReviewerAgent",
+            role="reviewer",
+        ),
+        tool_name="validate_source_index",
+        flat_args={},
+    )
+    stale_validate = _unwrap_tool_failure(stale_validate_result)
+    assert stale_validate[0].kind == "source_index_update_owner_mismatch"
+    assert stale_validate[0].current is None and stale_validate[0].expected is None
+    serialized_validate = stale_validate_result.value.model_dump_json()
+    assert "stale-update" not in serialized_validate and "owned-update" not in serialized_validate
+    flows["flow_source_index_reviewer"].state.active_update_id = "owned-update"
+    steps["step_source_index_reviewer"] = SimpleNamespace(
+        flow_id="flow_source_index_reviewer",
+        step_type="native_repo_coordinator_agent_step",
+    )
+    wrong_step_validate = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(
+                tmp_path,
+                view="source_index_reviewer",
+                agent_type="SourceIndexReviewerAgent",
+                role="reviewer",
+            ),
+            tool_name="validate_source_index",
+            flat_args={},
+        )
+    )
+    assert wrong_step_validate[0].kind == "source_index_update_owner_mismatch"
+
+    flows["flow_source_index_builder"].state.active_update_id = "stale-write-update"
+    stale_write_result = runtime.tool_facade.invoke_agent_tool(
+        _raw(tmp_path, view="source_index_builder", agent_type="SourceIndexBuilderAgent"),
+        tool_name="set_source_index_overview",
+        flat_args={"overview": "Must remain rejected."},
+    )
+    stale_write = _unwrap_tool_failure(stale_write_result)
+    assert stale_write[0].kind == "source_index_update_owner_mismatch"
+    assert stale_write[0].current is None and stale_write[0].expected is None
+    serialized_write = stale_write_result.value.model_dump_json()
+    assert "stale-write-update" not in serialized_write and "owned-update" not in serialized_write
+    flows["flow_source_index_builder"].state.active_update_id = "owned-update"
 
     steps["step_source_index_builder"] = SimpleNamespace(
         flow_id="another-flow",
@@ -1098,7 +1185,11 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     assert [repo.repo_key for repo in candidates["items"]] == ["Provider"]
     assert public["items"][0]["ref"]["repo"] == "Provider"
     assert public["items"][0]["ref"]["revision"] == 1
+    assert public["items"][0]["anchor_revision"] == 1
     assert public["items"][0]["resolved_revision"] == 1
+    assert public["items"][0]["compatible"] is True
+    assert public["items"][0]["released_state"] == "proved"
+    assert public["items"][0]["release_protected"] is True
     assert public["items"][0]["state"] == "proved"
     assert public["items"][0]["proof_policy_satisfied"] is True
     assert "ready" not in public["items"][0]

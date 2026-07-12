@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
+from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
     ExpectedFormatArgs,
     GitHubCodeSearchArgs,
@@ -122,6 +122,57 @@ def _get_preparation_requirement(runtime, ctx, args: PreparationRequirementRefAr
     )
 
 
+def _get_current_repo_run_context(runtime, ctx: ToolExecutionContext, args: NoArgs):
+    del args
+    flow_id = ctx.runtime.flow_id
+    if not flow_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("repo_run_flow_context_required", "Repository run context requires the current Coordinator Flow.")
+        )
+    flow = runtime.get_flow(flow_id)
+    if getattr(flow, "flow_type", None) != "native_repo_coordinator":
+        return runtime.foundation.fail(
+            runtime.foundation.issue("repo_run_flow_context_invalid", "Current Flow is not a native repository Coordinator Flow.")
+        )
+    flow_input = getattr(flow, "input", None)
+    if str(getattr(flow_input, "repo_root", "")) != str(ctx.repo_root):
+        return runtime.foundation.fail(
+            runtime.foundation.issue("repo_run_repo_context_mismatch", "Current Coordinator Flow is bound to a different repository.")
+        )
+    run_context = getattr(flow_input, "run_context", None)
+    if run_context is None:
+        return runtime.foundation.ok(
+            {
+                "start_mode": getattr(flow_input, "start_mode", None),
+                "start_reason": getattr(flow_input, "start_reason", None),
+                "run_context_available": False,
+                "summary": "This Coordinator run predates structured RepoRunContext handoff.",
+            }
+        )
+    publication = runtime.repo_workspace.metadata.get_repo_publication(ctx.repo_root)
+    if not publication.ok or publication.value is None:
+        return runtime.foundation.fail(publication.issues)
+    latest_release_id = publication.value.publication.latest_release_id
+    return runtime.foundation.ok(
+        {
+            "start_mode": getattr(flow_input, "start_mode", None),
+            "start_kind": run_context.start_kind,
+            "run_objective": run_context.run_spec.run_objective,
+            "target_proof_availability": run_context.run_spec.target_proof_availability.value,
+            "work_mode": run_context.run_spec.work_mode.value,
+            "source_scope": run_context.run_spec.source_scope.model_dump(mode="json"),
+            "resolved_source_files": list(run_context.resolved_source_files),
+            "source_index_delta_summary": run_context.source_index_delta_summary,
+            "root_interface_delta_summary": run_context.root_interface_delta_summary,
+            "config_change_summary": run_context.config_change_summary,
+            "base_release_id": run_context.base_release_id,
+            "latest_release_compatible_with_base": latest_release_id == run_context.base_release_id,
+            "publication_status": publication.value.publication.status.value,
+            "summary": "Current structured repository run context.",
+        }
+    )
+
+
 def build_tool_specs() -> list[ToolSpec]:
     roles = {"coordinator", "plan", "worker", "reviewer", "admin"}
     return [
@@ -148,6 +199,16 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="repo_work_config",
             groups={AppGroup.REPO_WORK_CONFIG_READ},
             roles={"coordinator", "plan", "admin"},
+        ),
+        handler_tool(
+            name="get_current_repo_run_context",
+            description="Read the objective, target, work mode, source responsibility, preparation deltas, and release baseline for the current repository run.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="repo_run_context",
+            groups={AppGroup.REPO_RUN_CONTEXT_READ},
+            roles={"coordinator", "admin"},
+            handler=_get_current_repo_run_context,
         ),
         direct_tool(
             name="get_preparation_start_preflight",

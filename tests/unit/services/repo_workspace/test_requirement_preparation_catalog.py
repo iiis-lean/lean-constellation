@@ -16,7 +16,7 @@ from lean_constellation.domain.repo import (
     RepoWorkMode,
     WorkspaceConfig,
 )
-from lean_constellation.services.foundation import FoundationService
+from lean_constellation.services.foundation import FoundationContext, FoundationService
 from lean_constellation.services.repo_workspace import (
     RepoMetadataComponent,
     RepoPreparationComponent,
@@ -313,6 +313,73 @@ def test_workspace_catalog_ready_filter_and_coordinator_view(tmp_path: Path) -> 
     assert coordinator_view.value is not None
     assert coordinator_view.value.current_repo_root == str(current)
     assert [repo.repo_key for repo in coordinator_view.value.ready_provider_repos] == ["ready_provider"]
+
+
+def test_workspace_catalog_degrades_broken_provider_to_not_ready_warning(tmp_path: Path) -> None:
+    _, metadata, _, _, catalog = _catalog_components()
+    workspace = tmp_path
+    consumer = workspace / "consumer"
+    broken = workspace / "broken"
+    metadata.ensure_repo_model(consumer)
+    release = publish_native_provider_release(metadata.runtime, broken, summary="Broken provider fixture.")
+    checkpoint_manifest = (
+        metadata.runtime.foundation.layout.snapshot_root(
+            FoundationContext(repo_root=broken)
+        )
+        / "repo_checkpoints"
+        / release.repo_checkpoint_id
+        / "snapshot.json"
+    )
+    checkpoint_manifest.unlink()
+
+    state = metadata.get_repo_state_view(broken)
+    ready = catalog.list_ready_provider_repos(workspace, current_repo="consumer")
+    coordinator = catalog.inspect_workspace_for_coordinator(consumer)
+
+    assert state.ok and state.value is not None
+    assert state.value.provider_ready is False
+    assert [issue.kind for issue in state.issues] == ["provider_native_checkpoint_missing"]
+    assert ready.ok and ready.value == []
+    assert [issue.kind for issue in ready.issues] == ["provider_native_checkpoint_missing"]
+    assert coordinator.ok and coordinator.value is not None
+    assert coordinator.value.ready_provider_repos == []
+
+
+def test_workspace_catalog_preserves_corrupt_requirement_warning_without_hiding_ready_provider(
+    tmp_path: Path,
+) -> None:
+    _, metadata, _, _, catalog = _catalog_components()
+    consumer = tmp_path / "consumer"
+    provider = tmp_path / "provider"
+    metadata.ensure_repo_model(consumer)
+    publish_native_provider_release(metadata.runtime, provider, summary="Ready provider with corrupt requirement.")
+    requirement_root = metadata.runtime.foundation.layout.requirements_root(
+        FoundationContext(repo_root=provider)
+    )
+    requirement_root.mkdir(parents=True, exist_ok=True)
+    (requirement_root / "corrupt.json").write_text("{not-json", encoding="utf-8")
+
+    state = metadata.get_repo_state_view(provider)
+    repos = catalog.list_workspace_repos(tmp_path)
+    workspace = catalog.get_workspace_catalog(tmp_path, current_repo="consumer")
+    ready = catalog.list_ready_provider_repos(tmp_path, current_repo="consumer")
+    coordinator = catalog.inspect_workspace_for_coordinator(consumer)
+
+    expected = {"invalid_json", "read_failed", "schema_validation_failed"}
+    assert state.ok and state.value is not None
+    assert state.value.provider_ready is True
+    assert state.value.open_requirement_count == 0
+    assert {issue.kind for issue in state.issues} & expected
+    assert repos.ok and repos.value is not None
+    assert {issue.kind for issue in repos.issues} & expected
+    assert workspace.ok and workspace.value is not None
+    assert {issue.kind for issue in workspace.issues} & expected
+    assert ready.ok and ready.value is not None
+    assert [repo.repo_key for repo in ready.value] == ["provider"]
+    assert {issue.kind for issue in ready.issues} & expected
+    assert coordinator.ok and coordinator.value is not None
+    assert [repo.repo_key for repo in coordinator.value.ready_provider_repos] == ["provider"]
+    assert {issue.kind for issue in coordinator.issues} & expected
 
 
 def test_workspace_catalog_requirement_groups_and_lake_dependency_wrapper(tmp_path: Path) -> None:

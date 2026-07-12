@@ -4,16 +4,10 @@ from __future__ import annotations
 
 from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
-    DraftIdArgs,
-    DraftIdReasonArgs,
     FileIndexingStatusArgs,
     FileStatusArgs,
     SourceArtifactExtractArgs,
     NoArgs,
-    ResourceDraftTargetArgs,
-    ResourceKeyArgs,
-    ResourceListArgs,
-    ResourceRangeArgs,
     SourceBlockCreateArgs,
     SourceBlockIdArgs,
     SourceBlockRefArgs,
@@ -33,6 +27,7 @@ from lean_constellation.tools.args import (
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.keys import ApplicationToolViewKey as AppView
 from lean_constellation.tools.specs import direct_tool, handler_tool
+from lean_constellation.tools.source_index_ownership import resolve_source_index_update_owner
 
 
 _COMMITTED_SOURCE_INDEX_VIEWS = {
@@ -67,61 +62,51 @@ def _get_source_index_coverage(runtime, ctx: ToolExecutionContext, _args: NoArgs
 
 
 def _get_source_index_update_context(runtime, ctx: ToolExecutionContext, _args: NoArgs):
-    owner = _source_index_update_owner(runtime, ctx, require_builder=False)
+    owner = resolve_source_index_update_owner(
+        runtime,
+        ctx,
+        allowed_step_types={"source_index_builder_agent_step", "source_index_reviewer_agent_step"},
+    )
     if not owner.ok or owner.value is None:
         return runtime.foundation.fail(owner.issues)
-    return runtime.material.get_source_index_update_context(ctx.repo_root)
-
-
-def _source_index_update_owner(runtime, ctx: ToolExecutionContext, *, require_builder: bool = True):
-    flow_id = ctx.runtime.flow_id
-    step_id = ctx.runtime.step_id
-    if not flow_id or not step_id:
+    flow = runtime.get_flow(ctx.runtime.flow_id)
+    flow_input = getattr(flow, "input", None)
+    if getattr(flow_input, "repo_root", None) is not None and str(flow_input.repo_root) != str(ctx.repo_root):
         return runtime.foundation.fail(
             runtime.foundation.issue(
-                "source_index_flow_context_required",
-                "SourceIndex mutation requires the current SourceIndexBuildFlow context.",
+                "source_index_repo_context_mismatch",
+                "The owning SourceIndex Flow is bound to a different repository.",
             )
         )
-    try:
-        flow = runtime.get_flow(flow_id)
-        step = runtime.get_step(step_id)
-    except Exception as exc:  # noqa: BLE001 - normalize runtime identity failures.
-        return runtime.foundation.fail(
-            runtime.foundation.issue("source_index_flow_context_invalid", str(exc), object_ref=flow_id)
-        )
-    update_id = getattr(getattr(flow, "state", None), "active_update_id", None)
-    if getattr(flow, "flow_type", None) != "source_index_build" or not update_id:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "source_index_update_owner_mismatch",
-                "Current Flow does not own the active SourceIndex update.",
-                object_ref=flow_id,
-            )
-        )
-    allowed_step_types = (
-        {"source_index_builder_agent_step"}
-        if require_builder
-        else {"source_index_builder_agent_step", "source_index_reviewer_agent_step"}
+    context = runtime.material.get_source_index_update_context(ctx.repo_root)
+    if not context.ok or context.value is None:
+        return runtime.foundation.fail(context.issues)
+    state = getattr(flow, "state", None)
+    return runtime.foundation.ok(
+        {
+            "run_objective": getattr(flow_input, "run_objective", None),
+            "target_proof_availability": getattr(getattr(flow_input, "target_proof_availability", None), "value", getattr(flow_input, "target_proof_availability", None)),
+            "work_mode": getattr(getattr(flow_input, "work_mode", None), "value", getattr(flow_input, "work_mode", None)),
+            "source_scope": (
+                flow_input.source_scope.model_dump(mode="json")
+                if getattr(flow_input, "source_scope", None) is not None
+                else None
+            ),
+            "start_reason": getattr(flow_input, "start_reason", None),
+            "review_round": getattr(state, "review_round", 0),
+            "reviewer_feedback": getattr(state, "latest_reviewer_feedback", None),
+            **context.value.model_dump(mode="json"),
+        }
     )
-    if getattr(step, "flow_id", None) != flow_id or getattr(step, "step_type", None) not in allowed_step_types:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "source_index_update_owner_mismatch",
-                (
-                    "Only the Builder step of the owning SourceIndexBuildFlow may mutate the draft."
-                    if require_builder
-                    else "Only Builder and Reviewer steps of the owning SourceIndexBuildFlow may read update context."
-                ),
-                object_ref=step_id,
-            )
-        )
-    return runtime.foundation.ok(str(update_id))
 
 
 def _source_index_write_handler(method_name: str):
     def handler(runtime, ctx: ToolExecutionContext, args):  # noqa: ANN001
-        owner = _source_index_update_owner(runtime, ctx)
+        owner = resolve_source_index_update_owner(
+            runtime,
+            ctx,
+            allowed_step_types={"source_index_builder_agent_step"},
+        )
         if not owner.ok or owner.value is None:
             return runtime.foundation.fail(owner.issues)
         kwargs = args.model_dump(exclude_unset=True)
@@ -129,6 +114,17 @@ def _source_index_write_handler(method_name: str):
         return getattr(runtime.material, method_name)(ctx.repo_root, **kwargs)
 
     return handler
+
+
+def _validate_source_index(runtime, ctx: ToolExecutionContext, _args: NoArgs):
+    owner = resolve_source_index_update_owner(
+        runtime,
+        ctx,
+        allowed_step_types={"source_index_builder_agent_step", "source_index_reviewer_agent_step"},
+    )
+    if not owner.ok or owner.value is None:
+        return runtime.foundation.fail(owner.issues)
+    return runtime.material.validate_source_index(ctx.repo_root, expected_update_id=owner.value)
 
 
 def build_source_index_tool_specs() -> list[ToolSpec]:
@@ -262,19 +258,18 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="source_index_update_context",
             groups={AppGroup.SOURCE_INDEX_DRAFT_READ},
-            roles=read_roles,
+            roles={"worker", "reviewer", "admin"},
             handler=_get_source_index_update_context,
         ),
-        direct_tool(
+        handler_tool(
             name="validate_source_index",
             description="Validate the draft SourceIndex without submitting it.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
-            backing_service="material",
-            backing_method="validate_source_index",
             result_view="gate_report",
             groups={AppGroup.SOURCE_INDEX_DRAFT_READ},
             roles=read_roles,
+            handler=_validate_source_index,
         ),
         handler_tool(
             name="get_source_index_coverage",

@@ -293,6 +293,19 @@ def test_append_only_update_rejects_old_payload_change_and_baseline_drift(tmp_pa
         tmp_path, update_id="second", resolved_scope=second_scope, index_policy="auto"
     )
     assert second.ok and second.value.baseline_digest == baseline_digest
+    index_path = tmp_path / ".lean_constellation" / "source_index" / "index.json"
+    before_overview_attempts = index_path.read_bytes()
+    unchanged_overview = runtime.material.set_source_index_overview(
+        tmp_path, overview=baseline.overview, expected_update_id="second"
+    )
+    assert unchanged_overview.ok
+    assert index_path.read_bytes() == before_overview_attempts
+    changed_overview = runtime.material.set_source_index_overview(
+        tmp_path, overview="A changed committed overview.", expected_update_id="second"
+    )
+    assert not changed_overview.ok
+    assert changed_overview.issues[0].kind == "source_index_baseline_overview_changed"
+    assert index_path.read_bytes() == before_overview_attempts
     appended_old_ref = runtime.material.add_source_block_ref(
         tmp_path,
         block_id=block_id,
@@ -310,8 +323,8 @@ def test_append_only_update_rejects_old_payload_change_and_baseline_drift(tmp_pa
         expected_update_id="second",
     )
     assert changed.ok
-    index_path = tmp_path / ".lean_constellation" / "source_index" / "index.json"
     changed_payload = json.loads(index_path.read_text(encoding="utf-8"))
+    changed_payload["overview"] = "Direct baseline overview mutation."
     changed_payload["blocks"][block_id]["refs"][0]["role"] = "secondary"
     changed_payload["links"][link_id]["evidence_refs"][0]["ref"]["start_line"] = 2
     index_path.write_text(json.dumps(changed_payload, indent=2) + "\n", encoding="utf-8")
@@ -324,6 +337,7 @@ def test_append_only_update_rejects_old_payload_change_and_baseline_drift(tmp_pa
         require_completed=True,
     )
     assert gate.ok and gate.value is not None and not gate.value.gate.passed
+    assert "source_index_baseline_overview_changed" in gate.value.gate_issue_kinds
     assert "source_index_baseline_block_changed" in gate.value.gate_issue_kinds
     assert "source_index_baseline_ref_adjacency_changed" in gate.value.gate_issue_kinds
     assert "source_index_baseline_ref_changed" in gate.value.gate_issue_kinds

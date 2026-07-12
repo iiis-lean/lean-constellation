@@ -624,7 +624,7 @@ def test_semireal_external_takeover_resource_request_callback(tmp_path: Path) ->
                     {
                         "summary": "Wait for provider after callback.",
                         "name": "provider_req",
-                        "target_repo": "ProviderRepo",
+                        "target_repo": "WeightedSieve",
                         "reason": "Need reusable provider.",
                     },
                 ),
@@ -1305,7 +1305,7 @@ def test_semireal_resource_request_dispatch_and_callback_prompt(tmp_path: Path) 
                     {
                         "summary": "Wait for provider.",
                         "name": "provider_req",
-                        "target_repo": "ProviderRepo",
+                        "target_repo": "WeightedSieve",
                         "reason": "Need reusable provider.",
                     },
                 ),
@@ -1616,7 +1616,7 @@ def test_semireal_snapshot_restore_pauses_and_resume_continues_scheduler(tmp_pat
                     {
                         "summary": "Wait for provider after restore.",
                         "name": "provider_req",
-                        "target_repo": "ProviderRepo",
+                        "target_repo": "WeightedSieve",
                         "reason": "Need provider.",
                     },
                 )

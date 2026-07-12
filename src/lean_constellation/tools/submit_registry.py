@@ -206,7 +206,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
         ),
         _submit_tool(
             name="submit_repo_ready",
-            description="Submit that the current repo satisfies its ready gate.",
+            description="Submit the current repository as a release candidate after the repository-ready preview passes.",
             args_model=SubmitRepoReadyArgs,
             groups={SubmitGroup.COORDINATOR_SUBMIT},
             roles={"coordinator", "admin"},

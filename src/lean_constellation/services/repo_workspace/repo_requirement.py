@@ -387,21 +387,51 @@ class RepoRequirementComponent:
             )
         if not requirement.interfaces:
             return self.runtime.foundation.ok(None)
-        exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
-        if not exports.ok or exports.value is None:
-            return self.runtime.foundation.fail(
-                [
-                    self.runtime.foundation.issue(
-                        "provider_interface_missing",
-                        "Provider repo public interface is missing requested requirement interfaces.",
-                        object_ref=f"{provider_key}:Main",
-                        details={"issues": "; ".join(issue.kind for issue in exports.issues)},
-                    )
-                ]
+        if require_stable:
+            public_refs = self.runtime.decl_graph.ref_compatibility.list_public_decl_refs(
+                provider_root,
+                required_availability=target,
             )
+            if not public_refs.ok or public_refs.value is None:
+                return self.runtime.foundation.fail(
+                    [
+                        self.runtime.foundation.issue(
+                            "provider_interface_missing",
+                            "Provider repo public interface is missing requested requirement interfaces.",
+                            object_ref=f"{provider_key}:Main",
+                            details={"issues": "; ".join(issue.kind for issue in public_refs.issues)},
+                        )
+                    ]
+                )
+            public_entries = [
+                (item.anchor, item.resolved_revision, item.compatible, item.reason)
+                for item in public_refs.value
+            ]
+        else:
+            exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
+            if not exports.ok or exports.value is None:
+                return self.runtime.foundation.fail(
+                    [
+                        self.runtime.foundation.issue(
+                            "provider_interface_missing",
+                            "Provider repo public interface is missing requested requirement interfaces.",
+                            object_ref=f"{provider_key}:Main",
+                            details={"issues": "; ".join(issue.kind for issue in exports.issues)},
+                        )
+                    ]
+                )
+            public_entries = [
+                (
+                    item.ref,
+                    item.resolved_revision or item.ref.revision,
+                    item.valid,
+                    None if item.valid else "; ".join(issue.kind for issue in item.issues),
+                )
+                for item in exports.value
+            ]
         issues = []
         for interface in requirement.interfaces:
-            matches = [item for item in exports.value if item.ref.name == interface.name]
+            matches = [item for item in public_entries if item[0].name == interface.name]
             if not matches:
                 issues.append(
                     self.runtime.foundation.issue(
@@ -412,7 +442,10 @@ class RepoRequirementComponent:
                     )
                 )
                 continue
-            valid_match = next((item for item in matches if item.valid), None)
+            valid_match = next(
+                (item for item in matches if item[2] and item[1] is not None),
+                None,
+            )
             if valid_match is None:
                 issues.append(
                     self.runtime.foundation.issue(
@@ -420,14 +453,14 @@ class RepoRequirementComponent:
                         "Provider repo public interface exists but is not currently valid.",
                         object_ref=f"{provider_key}:Main:{interface.name}",
                         field=interface.name,
-                        details={"issues": "; ".join(issue.kind for match in matches for issue in match.issues)},
+                        details={"issues": "; ".join(match[3] or "incompatible" for match in matches)},
                     )
                 )
                 continue
             decl = self.runtime.decl_graph.get_decl(
                 provider_root,
-                node_path=valid_match.ref.node,
-                name=valid_match.ref.name,
+                node_path=valid_match[0].node,
+                name=valid_match[0].name,
             )
             if not decl.ok or decl.value is None:
                 return self.runtime.foundation.fail(decl.issues)
@@ -436,7 +469,7 @@ class RepoRequirementComponent:
                     self.runtime.foundation.issue(
                         "provider_interface_kind_mismatch",
                         "Provider repo public interface has a different declaration kind than requested.",
-                        object_ref=f"{provider_key}:{valid_match.ref.node}:{valid_match.ref.name}",
+                        object_ref=f"{provider_key}:{valid_match[0].node}:{valid_match[0].name}",
                         field=interface.name,
                         current=decl.value.kind,
                         expected=interface.kind.value,
@@ -447,17 +480,17 @@ class RepoRequirementComponent:
                 provider_root,
                 provider_key=provider_key,
                 interface=interface,
-                node_path=valid_match.ref.node,
-                decl_name=valid_match.ref.name,
-                revision=valid_match.ref.revision,
+                node_path=valid_match[0].node,
+                decl_name=valid_match[0].name,
+                revision=valid_match[1],
             )
             if not statement_contract.ok:
                 issues.extend(statement_contract.issues)
                 continue
             satisfied = self.runtime.decl_graph.check_decl_proof_policy_satisfied(
                 provider_root,
-                node_path=valid_match.ref.node,
-                decl_name=valid_match.ref.name,
+                node_path=valid_match[0].node,
+                decl_name=valid_match[0].name,
                 target_proof_availability=target,
             )
             if not satisfied.ok or satisfied.value is None:
@@ -467,7 +500,7 @@ class RepoRequirementComponent:
                     self.runtime.foundation.issue(
                         "provider_interface_proof_policy_unsatisfied",
                         "Provider public interface does not satisfy the provider proof availability policy.",
-                        object_ref=f"{provider_key}:{valid_match.ref.node}:{valid_match.ref.name}",
+                        object_ref=f"{provider_key}:{valid_match[0].node}:{valid_match[0].name}",
                         field=interface.name,
                         details={
                             "reason": satisfied.value.reason.value if satisfied.value.reason is not None else "unknown",

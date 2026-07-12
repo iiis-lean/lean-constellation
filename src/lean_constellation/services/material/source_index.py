@@ -714,6 +714,15 @@ class SourceIndexComponent:
         overview = overview.strip()
         if not overview:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_overview_empty", "SourceIndex overview must be non-empty."))
+        if index.value.status == "updating":
+            if index.value.overview == overview:
+                return self.runtime.foundation.ok(self._to_index_view(repo_root, index.value))
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_index_baseline_overview_changed",
+                    "A committed SourceIndex overview is immutable during an incremental update.",
+                )
+            )
         index.value.overview = overview
         index.value.updated_at = utc_now_iso()
         index.value.summary = "Updated source index overview."
@@ -1153,10 +1162,16 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._to_file_view(file.value))
 
-    def validate_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
+    def validate_source_index(
+        self, repo_root: Path, *, expected_update_id: str | None = None
+    ) -> ServiceResult[GateReport]:
         index = self.get_source_index_model(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
+        if expected_update_id is not None:
+            owner = self._assert_update_owner(index.value, expected_update_id)
+            if owner is not None:
+                return self.runtime.foundation.fail(owner)
         if index.value.active_file_scope:
             file_scope: set[str] | None = set(index.value.active_file_scope)
         elif index.value.status == "committed":
@@ -1212,7 +1227,14 @@ class SourceIndexComponent:
         )
         return self.runtime.foundation.ok(coverage)
 
-    def submit_source_index_builder_round(self, repo_root: Path, *, summary: str, ctx: object | None = None) -> ServiceResult[SubmissionView]:
+    def submit_source_index_builder_round(
+        self,
+        repo_root: Path,
+        *,
+        summary: str,
+        expected_update_id: str | None = None,
+        ctx: object | None = None,
+    ) -> ServiceResult[SubmissionView]:
         del ctx
         if not summary.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_submission_summary", "Builder submission requires a summary."))
@@ -1221,7 +1243,11 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(index.issues)
         if index.value.status not in {"draft", "updating"}:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_not_draft", "Builder can only submit a mutable SourceIndex."))
-        validation = self.validate_source_index(repo_root)
+        if expected_update_id is not None:
+            owner = self._assert_update_owner(index.value, expected_update_id)
+            if owner is not None:
+                return self.runtime.foundation.fail(owner)
+        validation = self.validate_source_index(repo_root, expected_update_id=expected_update_id)
         if not validation.ok or validation.value is None:
             return self.runtime.foundation.fail(validation.issues)
         coverage = self.get_source_index_coverage(repo_root)
@@ -1246,6 +1272,7 @@ class SourceIndexComponent:
         approved: bool,
         summary: str,
         feedback: str | None = None,
+        expected_update_id: str | None = None,
         ctx: object | None = None,
     ) -> ServiceResult[SubmissionView]:
         del ctx
@@ -1258,6 +1285,10 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(index.issues)
         if index.value.status not in {"draft", "updating"}:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_not_draft", "Reviewer can only submit a mutable SourceIndex."))
+        if expected_update_id is not None:
+            owner = self._assert_update_owner(index.value, expected_update_id)
+            if owner is not None:
+                return self.runtime.foundation.fail(owner)
         return self.runtime.foundation.ok(
             SubmissionView(
                 submission_kind="source_index_review_round",
@@ -1341,6 +1372,13 @@ class SourceIndexComponent:
         baseline_refs = set(baseline_ref_models)
 
         if baseline_index is not None:
+            if current.overview != baseline_index.overview:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_index_baseline_overview_changed",
+                        "The committed SourceIndex overview changed during an incremental update.",
+                    )
+                )
             for block_id, old in baseline_index.blocks.items():
                 new = current.blocks.get(block_id)
                 if new is None:
@@ -1888,8 +1926,6 @@ class SourceIndexComponent:
             return self.runtime.foundation.issue(
                 "source_index_update_owner_mismatch",
                 "SourceIndex update id does not match the active owner.",
-                current=index.active_update_id,
-                expected=update_id,
             )
         return None
 

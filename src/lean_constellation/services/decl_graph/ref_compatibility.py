@@ -12,7 +12,7 @@ from lean_constellation.domain.repo_release import ResolvedDeclRefView
 from lean_constellation.services.decl_graph.declared_api import DeclaredApiFingerprintComponent
 from lean_constellation.services.decl_graph.availability_policy import required_state_for_availability
 from lean_constellation.services.decl_graph.models import DeclLifecycle, DeclRevisionStatus, DeclState
-from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.services.foundation import IssueSeverity, ServiceResult
 from lean_constellation.services.node.node_tree import NodeKind
 
 if TYPE_CHECKING:
@@ -238,7 +238,13 @@ class DeclRefCompatibilityComponent:
         if not available.ok or available.value is None:
             return self.runtime.foundation.fail(available.issues)
         if not available.value.passed:
-            return self.runtime.foundation.ok([], warnings=available.value.issues)
+            return self.runtime.foundation.ok(
+                [],
+                warnings=[
+                    issue.model_copy(update={"severity": IssueSeverity.WARNING})
+                    for issue in available.value.issues
+                ],
+            )
         repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_repo_root)
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)

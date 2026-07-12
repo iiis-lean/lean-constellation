@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     ContractCoreUpdateArgs,
@@ -223,6 +221,46 @@ def _list_root_interfaces(runtime, ctx, args: NoArgs):
     return runtime.node.interface.list_interfaces(ctx.repo_root, node_path="Main")
 
 
+def _get_root_interface_run_context(runtime, ctx, args: NoArgs):
+    del args
+    flow_id = ctx.runtime.flow_id
+    if not flow_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("root_interface_flow_context_required", "Root-interface run context requires the current preparation Flow.")
+        )
+    flow = runtime.get_flow(flow_id)
+    if getattr(flow, "flow_type", None) != "root_interface_preparation":
+        return runtime.foundation.fail(
+            runtime.foundation.issue("root_interface_flow_context_invalid", "Current Flow is not a root-interface preparation Flow.")
+        )
+    flow_input = getattr(flow, "input", None)
+    if str(getattr(flow_input, "repo_root", "")) != str(ctx.repo_root):
+        return runtime.foundation.fail(
+            runtime.foundation.issue("root_interface_repo_context_mismatch", "Current root-interface Flow is bound to a different repository.")
+        )
+    listed = runtime.node.interface.list_interfaces(ctx.repo_root, node_path="Main")
+    if not listed.ok or listed.value is None:
+        return runtime.foundation.fail(listed.issues)
+    run_context = flow_input.run_context
+    state = getattr(flow, "state", None)
+    protected = set(listed.value.protected_names)
+    return runtime.foundation.ok(
+        {
+            "start_kind": run_context.start_kind,
+            "run_objective": run_context.run_spec.run_objective,
+            "root_interface_policy": run_context.run_spec.root_interface_policy,
+            "resolved_source_files": list(run_context.resolved_source_files),
+            "source_index_delta_summary": getattr(flow_input.source_index_delta, "coverage_summary", None),
+            "additional_required_interface_names": [item.name for item in run_context.run_spec.additional_required_interfaces],
+            "previous_interface_names": sorted(getattr(state, "previous_interfaces", {})),
+            "protected_interface_names": sorted(protected),
+            "supplement_interface_names": sorted(item.name for item in listed.value.interfaces if item.name not in protected),
+            "current_candidate_interface_names": sorted(item.name for item in listed.value.interfaces),
+            "summary": "Current incremental root-interface preparation context.",
+        }
+    )
+
+
 def _add_root_interface(runtime, ctx, args: RootInterfaceAddArgs):
     return runtime.node.interface.add_interface(
         ctx.repo_root,
@@ -356,6 +394,54 @@ def _resolve_content_task_result_items(runtime, ctx, *, node_path: str | None):
         if node_path is None or result.node_path == node_path
     ]
     return runtime.foundation.ok(items)
+
+
+def _coordinator_release_context(runtime, ctx):
+    flow_id = ctx.runtime.flow_id
+    if not flow_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("coordinator_flow_context_required", "Release-candidate preview requires the current Coordinator Flow.")
+        )
+    flow = runtime.get_flow(flow_id)
+    if getattr(flow, "flow_type", None) != "native_repo_coordinator":
+        return runtime.foundation.fail(
+            runtime.foundation.issue("coordinator_flow_context_invalid", "Current Flow is not a native repository Coordinator Flow.")
+        )
+    flow_input = getattr(flow, "input", None)
+    if str(getattr(flow_input, "repo_root", "")) != str(ctx.repo_root):
+        return runtime.foundation.fail(
+            runtime.foundation.issue("coordinator_repo_context_mismatch", "Current Coordinator Flow is bound to a different repository.")
+        )
+    run_context = getattr(flow_input, "run_context", None)
+    return runtime.foundation.ok((flow_id, getattr(run_context, "base_release_id", None)))
+
+
+def _get_repo_ready_node_view(runtime, ctx, args: NoArgs):
+    del args
+    owner = _coordinator_release_context(runtime, ctx)
+    if not owner.ok or owner.value is None:
+        return runtime.foundation.fail(owner.issues)
+    node_view = runtime.node.get_repo_ready_node_view(ctx.repo_root)
+    if not node_view.ok or node_view.value is None:
+        return runtime.foundation.fail(node_view.issues)
+    flow_id, base_release_id = owner.value
+    preview = runtime.validation_snapshot.preview_candidate_release(
+        ctx.repo_root,
+        base_release_id=base_release_id,
+        summary="Repository release candidate preview.",
+        owner_flow_id=flow_id,
+    )
+    if not preview.ok or preview.value is None:
+        return runtime.foundation.fail(preview.issues)
+    return runtime.foundation.ok(
+        {
+            "main_scope": node_view.value.model_dump(mode="json"),
+            "candidate_gate": preview.value.gate.model_dump(mode="json"),
+            "blocking_issue_kinds": list(preview.value.blocking_issue_kinds),
+            "ready": bool(preview.value.gate.passed),
+            "summary": preview.value.summary,
+        }
+    )
 
 
 def _content_task_results_for_callback(runtime, ctx):
@@ -694,6 +780,16 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_list_root_interfaces,
         ),
         handler_tool(
+            name="get_root_interface_run_context",
+            description="Read the current root-interface objective, source delta, protected baseline, required additions, and candidate interface names.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="root_interface_run_context",
+            groups={AppGroup.ROOT_INTERFACE_PREPARE_READ},
+            roles={"worker", "admin"},
+            handler=_get_root_interface_run_context,
+        ),
+        handler_tool(
             name="add_root_interface",
             description="Add a supplement interface to root Main.",
             args_model=RootInterfaceAddArgs,
@@ -872,16 +968,15 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.SCOPE_CLOSE_READ},
             roles=coordinator_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="get_repo_ready_node_view",
-            description="Read repository ready state through the Main scope and repo ready gates.",
+            description="Preview whether the current repository state is a valid release candidate and return its blocking findings.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
-            backing_service="node",
-            backing_method="get_repo_ready_node_view",
             result_view="repo_ready_node_view",
             groups={AppGroup.REPO_READY_READ},
             roles=coordinator_roles,
+            handler=_get_repo_ready_node_view,
         ),
         direct_tool(
             name="check_content_task_admission",

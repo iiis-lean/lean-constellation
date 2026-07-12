@@ -124,6 +124,8 @@ _COORDINATOR_PROVED_FULL_GRAPH_MODE_BODY = """# coordinator-proved-full-graph-mo
 
 Use this skill when the current repo work mode is proved_full_graph.
 
+The current mode may advance released declarations but never lowers a declaration's released state floor or changes a release-protected statement.
+
 The goal is a complete proof-oriented native repository. Design the node tree so theorem-like public outputs and proof-relevant internal lemmas can eventually become proved-level proof-policy satisfied.
 
 Coordinator responsibilities:
@@ -143,6 +145,8 @@ _COORDINATOR_DECLARED_FULL_GRAPH_MODE_BODY = """# coordinator-declared-full-grap
 
 Use this skill when the current repo work mode is declared_full_graph.
 
+The current mode does not downgrade any released state floor or reopen a release-protected statement.
+
 The goal is a full declaration skeleton for the mathematical source, not a completed proof graph. The node tree should be close to the future proved_full_graph structure, but theorem-like declarations may stop at declared statements.
 
 Coordinator responsibilities:
@@ -160,6 +164,8 @@ This mode is not a minimal provider shortcut. It should preserve the mathematica
 _COORDINATOR_DECLARED_INTERFACE_MODE_BODY = """# coordinator-declared-interface-mode
 
 Use this skill when the current repo work mode is declared_interface.
+
+The minimal interface target still preserves every previously released public statement and its protected statement closure.
 
 The goal is the smallest stable provider boundary that can satisfy external consumers. Create only the node tree needed to expose the required public interface, while keeping the structure compatible with future expansion into a full proved graph.
 
@@ -179,6 +185,8 @@ The resulting tree should be a stable subtree or skeleton of the future proved_f
 _CONTENT_PLAN_PROVED_FULL_GRAPH_MODE_BODY = """# content-plan-proved-full-graph-mode
 
 Use this skill when the current repo work mode is proved_full_graph.
+
+For declarations carried from an earlier release, add or repair proof work without resetting a release-protected statement layer.
 
 The goal is a complete proof-oriented content node. Public or contract-required theorem-like declarations should eventually become proved-level proof-policy satisfied. Non-theorem-like foundations should become declared-level satisfied.
 
@@ -205,6 +213,8 @@ _CONTENT_PLAN_DECLARED_FULL_GRAPH_MODE_BODY = """# content-plan-declared-full-gr
 
 Use this skill when the current repo work mode is declared_full_graph.
 
+Do not lower a released state floor or rewrite a release-protected statement while expanding the declaration skeleton.
+
 The goal is a full declaration skeleton for the content node, not completed formal proofs. Include important definitions, theorem statements, lemma statements, and intermediate mathematical declarations from the source material, while theorem-like declarations may stop at declared-level satisfaction.
 
 Bottom-up skeleton strategy:
@@ -228,6 +238,8 @@ Do not add proof formal stages merely to link these statements. Future proof rel
 _CONTENT_PLAN_DECLARED_INTERFACE_MODE_BODY = """# content-plan-declared-interface-mode
 
 Use this skill when the current repo work mode is declared_interface.
+
+Do not lower a released state floor or rewrite a release-protected statement while adding the smallest new interface delta.
 
 The goal is the smallest useful declared interface for this content node. Expose the public declarations required by its contract and external consumers while avoiding proof-only internal lemma work in the initial pass.
 
@@ -345,6 +357,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             "Use this skill when closing a scope node, selecting public declarations from ready children, binding scope interfaces, checking projection/readiness, or preparing a scope contract commit.",
             (
                 "Read required interfaces and current export candidates with `list_node_interfaces`, `list_scope_export_candidates`, and `list_scope_exports`.",
+                "Preserve historical public export chains as compatible anchors; append new exports without silently replacing a released boundary.",
                 "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
                 "Use `get_scope_close_view` to confirm exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
@@ -578,7 +591,7 @@ Use this Skill when the current repository needs a new mathematical boundary, an
 
 Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for semantic changes. Use `node-contract-design` when detailed goals, boundaries, objectives, success criteria, material references, dependencies, Mathlib hints, or interfaces must be written.
 
-Before deletion, call `preview_delete_node`. Delete only when the previewed descendants and contract effects are intended and current truth proves the node obsolete.
+Before deletion, call `preview_delete_node`. A node containing release-protected declarations or a protected historical Scope chain cannot be deleted. A historical private node is a warning rather than an automatic blocker when no protected declaration or current dependency still needs it. Delete only when the deterministic preview permits it.
 
 Do not place declaration implementation work in a Scope node, and do not create an oversized Content node merely to avoid deciding a mathematical boundary.
 
@@ -833,6 +846,7 @@ Do not attach the future provider from this Skill. The requirement resume gate l
         description="Use when the Main Scope and repository-level obligations appear complete and the Coordinator may submit repository readiness.",
         group="coordinator",
         required_tool_groups=_groups(
+            AppGroup.REPO_RUN_CONTEXT_READ,
             AppGroup.REPO_PREPARATION_INPUT_READ,
             AppGroup.NODE_TREE_COORDINATOR_READ,
             AppGroup.SCOPE_EXPORT_INTERFACE_READ,
@@ -848,15 +862,15 @@ Use this Skill only when all expected Content work is reconciled, required Scope
 
 ## Verify Readiness
 
-1. Re-read `get_preparation_input`, `get_node_tree`, and current Lake dependencies.
+1. Re-read `get_current_repo_run_context`, `get_preparation_input`, `get_node_tree`, and current Lake dependencies. Confirm the bound release baseline still matches current truth.
 2. Call `get_scope_close_view` for Main and any relevant unverified Scope.
 3. Check Main interfaces and exports against protected root contracts.
-4. Call `get_repo_ready_node_view` and inspect every reported issue.
+4. Call `get_repo_ready_node_view`. It previews the authoritative candidate release gate across active contract heads, DeclGraphs, files/projections, compatibility, target policy, and build preconditions; inspect every reported issue.
 5. If the deterministic view is not ready, repair only the owning semantic state and return to the next-action loop.
 
 ## Submit
 
-Call `submit_repo_ready` only when the deterministic gate is expected to pass. If rejected, use the returned issues to repair current truth and re-run the readiness view. If accepted, stop immediately; repository completion is terminal for this Coordinator Flow.
+Call `submit_repo_ready` only when the preview passes. This submit expresses candidate intent only; the following deterministic Flow step owns build, checkpoint, release creation, and publication. If rejected, use the returned issues to repair current truth and re-run the readiness view. If accepted, stop immediately.
 
 ## Postcondition
 
@@ -1171,7 +1185,7 @@ Helper lemmas that matter to later work should be tracked as their own declarati
 
 ## Update Changes
 
-Use `plan_update_decl` when an existing declaration needs a targeted repair or stage advancement. Say which part should be repaired or advanced, such as statement meaning, formal statement, proof idea, proof dependencies, or formal proof. Include start_before_state when the update depends on the current state, plus the intended end_after_state and require_target_state_satisfied.
+Use `plan_update_decl` when an existing declaration needs a targeted repair or stage advancement. The start-before-state field is the requested reset point for this round, not merely an assertion. For a release-protected declaration it cannot cross beneath the accepted formal statement: restarting proof work at declared is allowed, while resetting statement work is not. A proof-planned reset clears proof artifacts/checks only. Include the intended end_after_state and require_target_state_satisfied.
 
 Do not use an update change to silently change a previously accepted mathematical meaning.
 
@@ -1183,7 +1197,7 @@ Keep `require_target_state_satisfied=true` unless the selected mode skill explic
 
 ## Delete Changes
 
-Before deleting a declaration, call `preview_decl_delete_closure`. Use `plan_delete_decl` only when the closure is acceptable and the deletion is part of the current strategy.
+Before deleting a declaration, call `preview_decl_delete_closure`. Never plan deletion of a release-protected declaration. Private declarations may be removed only when current references and the preview permit it.
 
 ## Validation And Submit
 

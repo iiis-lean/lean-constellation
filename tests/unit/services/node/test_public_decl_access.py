@@ -199,6 +199,51 @@ def test_coordinator_reads_stable_provider_repo_main_exports(tmp_path: Path) -> 
     ]
 
 
+def test_node_scoped_actor_only_sees_attached_available_provider_boundary(tmp_path: Path) -> None:
+    consumer = tmp_path / "Consumer"
+    provider = tmp_path / "Provider"
+    consumer.mkdir()
+    provider.mkdir()
+    _create_consumer_tree(consumer)
+    _create_provider_repo(provider)
+    runtime = make_runtime()
+
+    unattached = runtime.node.public_decl_access.list_imported_repos(
+        consumer,
+        actor_role="plan",
+        current_node_path="Main.Topic.Consumer",
+    )
+    denied = runtime.node.public_decl_access.list_repo_public_decls(
+        consumer,
+        repo_key="Provider",
+        actor_role="plan",
+        current_node_path="Main.Topic.Consumer",
+    )
+    assert unattached.ok and unattached.value is not None and unattached.value.repos == []
+    assert not denied.ok and denied.issues[0].kind == "repo_public_decl_not_visible"
+
+    (consumer / "lakefile.toml").write_text(
+        'name = "Consumer"\n\n[[require]]\nname = "Provider"\npath = "../Provider"\n',
+        encoding="utf-8",
+    )
+    attached = runtime.node.public_decl_access.list_imported_repos(
+        consumer,
+        actor_role="plan",
+        current_node_path="Main.Topic.Consumer",
+    )
+    public = runtime.node.public_decl_access.list_repo_public_decls(
+        consumer,
+        repo_key="Provider",
+        actor_role="plan",
+        current_node_path="Main.Topic.Consumer",
+    )
+
+    assert attached.ok and attached.value is not None
+    assert [item.repo_key for item in attached.value.repos] == ["Provider"]
+    assert public.ok and public.value is not None
+    assert [(item.ref.repo, item.ref.name) for item in public.value] == [("Provider", "provider_result")]
+
+
 def test_coordinator_reads_ready_adapter_bound_main_interface(tmp_path: Path) -> None:
     from lean_constellation.domain.interface import DeclInterface, DeclKind
     from tests.unit.services.adapter.test_adapter_service import _finalize_theorem, _service

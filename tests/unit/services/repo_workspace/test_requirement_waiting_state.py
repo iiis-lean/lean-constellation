@@ -167,6 +167,45 @@ def test_requirement_resume_candidates_require_sufficient_provider_proof_availab
     assert [candidate.requirement_name for candidate in candidates.value] == []
 
 
+def test_stable_requirement_truth_uses_semantic_provider_public_boundary(
+    tmp_path: Path, monkeypatch
+) -> None:  # noqa: ANN001
+    from tests.unit.services.node.test_public_decl_access import _create_provider_repo
+
+    consumer = tmp_path / "consumer"
+    provider = tmp_path / "provider"
+    runtime = make_runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
+    _create_provider_repo(provider, provider_name="provider")
+    assert runtime.repo_workspace.requirement.create_requirement(
+        consumer,
+        name="need_provider_result",
+        target_repo="provider",
+        reason="Use the released provider theorem.",
+    ).ok
+    assert runtime.repo_workspace.requirement.add_requirement_interface(
+        consumer,
+        requirement_name="need_provider_result",
+        interface_name="provider_result",
+        kind=DeclKind.THEOREM,
+        summary="Released provider theorem.",
+    ).ok
+    monkeypatch.setattr(
+        runtime.node.export,
+        "list_scope_exports",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("working exports must not be read")),
+    )
+
+    valid = runtime.repo_workspace.requirement.validate_requirement_provider_truth(
+        consumer,
+        requirement_name="need_provider_result",
+        provider_repo="provider",
+        require_stable=True,
+    )
+
+    assert valid.ok
+
+
 def test_mark_provider_ready_rejects_stale_requirement_ref_without_ready_marker(tmp_path: Path) -> None:
     runtime, _, _, provider = _setup_consumer_provider(tmp_path)
     written = runtime.repo_workspace.write_preparation_input(

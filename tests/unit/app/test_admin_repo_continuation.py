@@ -59,3 +59,29 @@ def test_continuation_rejects_any_active_repo_scoped_flow(tmp_path) -> None:
     assert not result.ok
     assert result.issues[0].kind == "repo_lifecycle_flow_conflict"
     assert result.issues[0].object_ref == active_id
+
+
+def test_release_preview_derives_latest_baseline_inside_admin_boundary(tmp_path, monkeypatch) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    root = tmp_path / "Provider"
+    assert initialize_repo_runtime(runtime, root).ok
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.repo_workspace.metadata._repo_publication_path(root),
+        RepoPublicationState(status=RepoPublicationStatus.STABLE, latest_release_id="release-r7"),
+    ).ok
+    calls = []
+
+    def fake_preview(repo_root, *, base_release_id, summary, owner_flow_id=None):  # noqa: ANN001
+        calls.append((repo_root, base_release_id, summary, owner_flow_id))
+        return runtime.foundation.ok({"passed": True})
+
+    monkeypatch.setattr(
+        runtime.validation_snapshot.release_finalizer,
+        "preview_candidate_release",
+        fake_preview,
+    )
+
+    result = LeanAdminApi(runtime).preview_repo_release(root, summary="Preview release seven.")
+
+    assert result.ok
+    assert calls == [(root, "release-r7", "Preview release seven.", None)]

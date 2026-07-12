@@ -98,3 +98,15 @@ def test_public_boundary_tool_descriptions_are_role_neutral() -> None:
         assert "Coordinator" not in description
         assert "worker" not in description
         assert "current context" in description
+
+
+def test_cross_node_decl_tool_descriptions_are_actor_neutral() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+    expected = {
+        "get_node_decl_graph_index": "Read the DeclGraph index for one permitted node in the current repository.",
+        "get_node_decl_graph_store": "Read DeclGraph store counts and paths for one permitted node in the current repository.",
+        "list_node_decls": "List all public and private declarations in one permitted node of the current repository.",
+        "inspect_node_decl": "Inspect one public or private declaration revision in a permitted node of the current repository.",
+    }
+
+    assert {name: specs[name].description for name in expected} == expected

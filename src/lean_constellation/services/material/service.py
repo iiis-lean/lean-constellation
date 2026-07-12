@@ -909,8 +909,10 @@ class MaterialService:
             repo_root, path=path, status=status, expected_update_id=expected_update_id
         )
 
-    def validate_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
-        return self.source_index.validate_source_index(repo_root)
+    def validate_source_index(
+        self, repo_root: Path, *, expected_update_id: str | None = None
+    ) -> ServiceResult[GateReport]:
+        return self.source_index.validate_source_index(repo_root, expected_update_id=expected_update_id)
 
     def get_source_index_coverage(self, repo_root: Path) -> ServiceResult[SourceIndexCoverageView]:
         return self.source_index.get_source_index_coverage(repo_root)
@@ -918,8 +920,20 @@ class MaterialService:
     def get_committed_source_index_coverage(self, repo_root: Path) -> ServiceResult[SourceIndexCoverageView]:
         return self.source_index.get_committed_source_index_coverage(repo_root)
 
-    def submit_source_index_builder_round(self, repo_root: Path, *, summary: str, ctx: object | None = None) -> ServiceResult[SubmissionView]:
-        return self.source_index.submit_source_index_builder_round(repo_root, summary=summary, ctx=ctx)
+    def submit_source_index_builder_round(
+        self,
+        repo_root: Path,
+        *,
+        summary: str,
+        expected_update_id: str | None = None,
+        ctx: object | None = None,
+    ) -> ServiceResult[SubmissionView]:
+        return self.source_index.submit_source_index_builder_round(
+            repo_root,
+            summary=summary,
+            expected_update_id=expected_update_id,
+            ctx=ctx,
+        )
 
     def submit_source_index_review_round(
         self,
@@ -928,9 +942,17 @@ class MaterialService:
         approved: bool,
         summary: str,
         feedback: str | None = None,
+        expected_update_id: str | None = None,
         ctx: object | None = None,
     ) -> ServiceResult[SubmissionView]:
-        return self.source_index.submit_source_index_review_round(repo_root, approved=approved, summary=summary, feedback=feedback, ctx=ctx)
+        return self.source_index.submit_source_index_review_round(
+            repo_root,
+            approved=approved,
+            summary=summary,
+            feedback=feedback,
+            expected_update_id=expected_update_id,
+            ctx=ctx,
+        )
 
     def commit_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
         return self.source_index.commit_source_index(repo_root)

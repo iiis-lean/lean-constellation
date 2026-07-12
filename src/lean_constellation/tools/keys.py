@@ -73,6 +73,7 @@ class ApplicationToolGroupKey(StrEnum):
     REPO_PREPARATION_START_PREFLIGHT_READ = "repo_preparation_start_preflight_read"
     REPO_PREPARATION_REQUIREMENT_READ = "repo_preparation_requirement_read"
     REPO_WORK_CONFIG_READ = "repo_work_config_read"
+    REPO_RUN_CONTEXT_READ = "repo_run_context_read"
     REPO_READY_READ = "repo_ready_read"
     PUBLIC_DECL_READ_COORDINATOR = "public_decl_read_coordinator"
     PUBLIC_DECL_READ = "public_decl_read"

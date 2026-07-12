@@ -441,9 +441,7 @@ def _agent_context(input_model: SourceIndexBuildInput, state: SourceIndexBuildSt
         "work_mode": input_model.work_mode.value,
         "start_reason": input_model.start_reason,
         "round_index": state.review_round,
-        "active_update_id": state.active_update_id,
         "active_file_scope": list(state.resolved_file_paths),
-        "baseline_digest": state.baseline_digest,
         "new_file_paths": list(state.new_file_paths),
         "already_committed_file_paths": list(state.already_committed_file_paths),
         "forbidden_boundaries": [
@@ -459,7 +457,6 @@ def _builder_prompt(input_model: SourceIndexBuildInput, state: SourceIndexBuildS
         f"Build SourceIndex round {state.review_round} for {input_model.repo_key}.",
         f"Run objective: {input_model.run_objective}",
         f"Active files: {', '.join(state.resolved_file_paths) or '(none)'}",
-        f"Baseline digest: {state.baseline_digest}",
         "Append index material only for the active files. Existing committed semantic content is immutable.",
         "Use the Flow-provided SourceIndex tools; the system injects update ownership.",
         "Submit the builder round only after the scoped draft is ready for review.",
@@ -474,7 +471,6 @@ def _reviewer_prompt(input_model: SourceIndexBuildInput, state: SourceIndexBuild
         f"Review SourceIndex round {state.review_round} for {input_model.repo_key}.",
         f"Run objective: {input_model.run_objective}",
         f"Active files: {', '.join(state.resolved_file_paths) or '(none)'}",
-        f"Baseline digest: {state.baseline_digest}",
         "Reject edits to committed baseline semantics, evidence outside the active scope, incomplete blocks, or source drift.",
         "Approve only the scoped delta; final deterministic validation remains authoritative.",
     ]
