@@ -1,4 +1,4 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 from pathlib import Path
 
@@ -10,8 +10,6 @@ from lean_constellation.domain.repo import (
     RepoPublicationStatus,
     RepoWorkMode,
 )
-from lean_constellation.services.foundation import FoundationService
-from lean_constellation.services.repo_workspace import RepoMetadataComponent
 
 
 def test_ensure_repo_model_is_idempotent_and_rejects_conflict(tmp_path: Path) -> None:
@@ -78,7 +76,8 @@ def test_repo_format_policy_and_state_view(tmp_path: Path) -> None:
     ready = component.set_provider_ready(tmp_path, summary="Ready provider summary.")
     assert ready.ok
     assert ready.value is not None
-    assert ready.value.ready is True
+    assert ready.value.ready is False
+    publish_native_provider_release(component.runtime, tmp_path, summary="Ready provider summary.")
 
     model = component.get_repo_model(tmp_path)
     assert model.ok

@@ -24,7 +24,6 @@ from lean_constellation.domain.preparation import (
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
-    RepoPublicationStatus,
     RepoWorkMode,
     WorkspaceConfig,
     WorkspaceCoordinatorView,
@@ -44,6 +43,8 @@ from lean_constellation.services.repo_workspace.repo_preparation import (
     RepoPreparationComponent,
 )
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
+from lean_constellation.services.repo_workspace.repo_release import RepoReleaseComponent
+from lean_constellation.services.repo_workspace.provider_availability import ProviderAvailabilityComponent
 from lean_constellation.services.repo_workspace.workspace_catalog import WorkspaceCatalogComponent
 
 if TYPE_CHECKING:
@@ -71,12 +72,16 @@ class RepoWorkspaceService:
         lake_dependency: LakeDependencyComponent | None = None,
         preparation: RepoPreparationComponent | None = None,
         workspace_catalog: WorkspaceCatalogComponent | None = None,
+        release: RepoReleaseComponent | None = None,
+        provider_availability: ProviderAvailabilityComponent | None = None,
         native_lake_project_config: NativeLakeProjectConfig | None = None,
         workspace_config: WorkspaceConfig | None = None,
     ) -> None:
         self.runtime = runtime
         self.workspace_config = workspace_config or WorkspaceConfig()
         self.metadata = metadata or RepoMetadataComponent(runtime)
+        self.release = release or RepoReleaseComponent(runtime)
+        self.provider_availability = provider_availability or ProviderAvailabilityComponent(runtime, self.metadata, self.release)
         self.requirement = requirement or RepoRequirementComponent(runtime)
         self.lake_dependency = lake_dependency or LakeDependencyComponent(
             runtime,
@@ -317,17 +322,16 @@ class RepoWorkspaceService:
                     object_ref=str(provider_root),
                 )
             )
-        publication = self.metadata.get_repo_publication(provider_root)
-        if not publication.ok or publication.value is None:
-            return self.runtime.foundation.fail(publication.issues)
-        if publication.value.publication.status != RepoPublicationStatus.STABLE:
+        availability = self.provider_availability.check_provider_available(provider_root)
+        if not availability.ok or availability.value is None:
+            return self.runtime.foundation.fail(availability.issues)
+        if not availability.value.passed:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "provider_repo_not_ready",
-                    "Direct workspace dependency attachment requires a stable provider repo.",
+                    "Direct workspace dependency attachment requires an available provider repo.",
                     object_ref=provider_repo,
-                    current=publication.value.publication.status.value,
-                    expected=RepoPublicationStatus.STABLE.value,
+                    details={"issues": "; ".join(issue.kind for issue in availability.value.issues)},
                 )
             )
         return self.lake_dependency.attach_workspace_repo_dependency(

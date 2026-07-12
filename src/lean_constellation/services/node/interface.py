@@ -12,9 +12,10 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult, WriteMode
 from lean_constellation.services.node.contract import ContractComponent, NodeContractView
-from lean_constellation.services.node.export import DeclPublicView, ExportComponent, ScopeExportCandidate
+from lean_constellation.services.node.export import DeclPublicView, ExportComponent
 from lean_constellation.services.node.node_tree import NodeKind
 
 if TYPE_CHECKING:
@@ -612,18 +613,17 @@ class InterfaceComponent:
                     current=", ".join(sorted(ref.node for ref in export_matches)),
                 )
             )
-        candidates = self.export.list_scope_export_candidates(repo_root, scope_path=scope_path)
-        if not candidates.ok or candidates.value is None:
-            return self.runtime.foundation.fail(candidates.issues)
-        candidate = self._find_candidate(candidates.value.candidates, export_matches[0])
-        if candidate is None:
+        candidate_result = self.export._find_visible_candidate(repo_root, scope_path=scope_path, ref=export_matches[0])
+        if not candidate_result.ok or candidate_result.value is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "interface_binding_export_candidate_missing",
                     f"Scope export has no valid public candidate: {decl_name}",
                     object_ref=scope_path,
+                    details={"issues": "; ".join(issue.kind for issue in candidate_result.issues)},
                 )
             )
+        candidate = candidate_result.value
         if not candidate.ready or candidate.stale:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -722,11 +722,27 @@ class InterfaceComponent:
         target_root = Path(repo_root)
         if ref.repo is not None:
             target_root = target_root.parent / self.runtime.foundation.layout.ensure_safe_key(ref.repo)
+        resolved = self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
+            repo_root,
+            ref=ref,
+            required_availability=ProofAvailability.DECLARED,
+        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        if not resolved.value.compatible or resolved.value.resolved_revision is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_statement_contract_decl_ref_incompatible",
+                    "The bound declaration anchor is not compatible with the current public target.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    current=resolved.value.reason,
+                )
+            )
         revision = self.runtime.decl_graph.get_decl_revision(
             target_root,
             node_path=ref.node,
             name=ref.name,
-            revision=ref.revision,
+            revision=resolved.value.resolved_revision,
         )
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(
@@ -807,14 +823,6 @@ class InterfaceComponent:
         for interface in interfaces:
             if interface.name == name:
                 return interface
-        return None
-
-    @staticmethod
-    def _find_candidate(candidates: list[ScopeExportCandidate], ref: DeclRef) -> ScopeExportCandidate | None:
-        key = (ref.repo, ref.node, ref.name, ref.revision)
-        for candidate in candidates:
-            if (candidate.ref.repo, candidate.ref.node, candidate.ref.name, candidate.ref.revision) == key:
-                return candidate
         return None
 
     @staticmethod

@@ -344,7 +344,10 @@ class RepoMetadataComponent:
         publication = self.get_repo_publication(repo_root)
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
-        ready_flag = publication.value.publication.status == RepoPublicationStatus.STABLE
+        availability = self.runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
+        if not availability.ok or availability.value is None:
+            return self.runtime.foundation.fail(availability.issues)
+        ready_flag = availability.value.passed
         issues = [] if model.ok else model.issues
         issues.extend(requirement_warnings)
         summary = "Repo state view built."
@@ -400,7 +403,13 @@ class RepoMetadataComponent:
         )
 
     def mark_repo_developing(self, repo_root: Path) -> ServiceResult[RepoPublicationView]:
-        state = RepoPublicationState(status=RepoPublicationStatus.DEVELOPING)
+        current = self.get_repo_publication(repo_root)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        state = RepoPublicationState(
+            status=RepoPublicationStatus.DEVELOPING,
+            latest_release_id=current.value.publication.latest_release_id,
+        )
         written = self.runtime.foundation.store.write_json_atomic(self._repo_publication_path(repo_root), state)
         if not written.ok:
             return self.runtime.foundation.fail(written.issues)
@@ -413,25 +422,29 @@ class RepoMetadataComponent:
         updated_summary = self.set_repo_summary(repo_root, summary=summary)
         if not updated_summary.ok:
             return self.runtime.foundation.fail(updated_summary.issues)
-        state = RepoPublicationState(status=RepoPublicationStatus.STABLE)
+        current = self.get_repo_publication(repo_root)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        state = RepoPublicationState(
+            status=RepoPublicationStatus.STABLE,
+            latest_release_id=current.value.publication.latest_release_id,
+        )
         written = self.runtime.foundation.store.write_json_atomic(self._repo_publication_path(repo_root), state)
         if not written.ok:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(RepoPublicationView(repo_root=str(Path(repo_root)), publication=state))
 
     def get_provider_ready(self, repo_root: Path) -> ServiceResult[ProviderReadyState]:
-        publication = self.get_repo_publication(repo_root)
-        if not publication.ok or publication.value is None:
-            return self.runtime.foundation.fail(publication.issues)
-        return self.runtime.foundation.ok(
-            ProviderReadyState(ready=publication.value.publication.status == RepoPublicationStatus.STABLE)
-        )
+        availability = self.runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
+        if not availability.ok or availability.value is None:
+            return self.runtime.foundation.fail(availability.issues)
+        return self.runtime.foundation.ok(ProviderReadyState(ready=availability.value.passed))
 
     def set_provider_ready(self, repo_root: Path, *, summary: str) -> ServiceResult[ProviderReadyState]:
         stable = self.mark_repo_stable(repo_root, summary=summary)
         if not stable.ok:
             return self.runtime.foundation.fail(stable.issues)
-        return self.runtime.foundation.ok(ProviderReadyState(ready=True))
+        return self.get_provider_ready(repo_root)
 
     def _ctx(self, repo_root: Path) -> FoundationContext:
         return FoundationContext(repo_root=Path(repo_root))

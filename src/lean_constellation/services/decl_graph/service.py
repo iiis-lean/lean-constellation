@@ -38,6 +38,8 @@ from lean_constellation.services.decl_graph.readiness import DeclReadinessCompon
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
 from lean_constellation.services.decl_graph.stage_mutation import StageMutationComponent
 from lean_constellation.services.decl_graph.views import DeclGraphViewMapper
+from lean_constellation.services.decl_graph.declared_api import DeclaredApiFingerprintComponent
+from lean_constellation.services.decl_graph.ref_compatibility import DeclRefCompatibilityComponent
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.lean_projection.lean_check import LeanCheckView
 from lean_constellation.services.node.export import DeclPublicView
@@ -62,6 +64,8 @@ class DeclGraphService:
         dependency: DeclDependencyComponent | None = None,
         readiness: DeclReadinessComponent | None = None,
         view_mapper: DeclGraphViewMapper | None = None,
+        declared_api: DeclaredApiFingerprintComponent | None = None,
+        ref_compatibility: DeclRefCompatibilityComponent | None = None,
     ) -> None:
         self.runtime = runtime
         self.views = view_mapper or DeclGraphViewMapper()
@@ -81,6 +85,8 @@ class DeclGraphService:
             self.decl_catalog,
         )
         self.dependency = dependency or DeclDependencyComponent(runtime, self.decl_catalog)
+        self.declared_api = declared_api or DeclaredApiFingerprintComponent(runtime)
+        self.ref_compatibility = ref_compatibility or DeclRefCompatibilityComponent(runtime, self.declared_api)
         self.readiness = readiness or DeclReadinessComponent(runtime, self.decl_catalog, self.dependency)
 
     def ensure_decl_graph(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphStoreView]:
@@ -518,7 +524,12 @@ class DeclGraphService:
             return self.runtime.foundation.fail(decl.issues)
         revision = self.get_decl_revision(repo_root, node_path=node_path, name=name, revision=decl.value.current_revision)
         revision_value = revision.value if revision.ok else None
-        return self.runtime.foundation.ok(self.views.decl_view(decl.value, revision_value))
+        return self._add_release_status(
+            repo_root,
+            node_path=node_path,
+            decl_name=name,
+            view=self.views.decl_view(decl.value, revision_value),
+        )
 
     def list_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[Decl]]:
         return self.decl_catalog.list_decls(repo_root, node_path=node_path)
@@ -531,7 +542,15 @@ class DeclGraphService:
         for decl in decls.value:
             revision = self.get_decl_revision(repo_root, node_path=node_path, name=decl.name, revision=decl.current_revision)
             revision_value = revision.value if revision.ok else None
-            views.append(self.views.decl_view(decl, revision_value))
+            enriched = self._add_release_status(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl.name,
+                view=self.views.decl_view(decl, revision_value),
+            )
+            if not enriched.ok or enriched.value is None:
+                return self.runtime.foundation.fail(enriched.issues)
+            views.append(enriched.value)
         return self.runtime.foundation.ok(views)
 
     def get_decl_revision(
@@ -558,13 +577,36 @@ class DeclGraphService:
         revision_result = self.get_decl_revision(repo_root, node_path=node_path, name=name, revision=revision)
         if not revision_result.ok or revision_result.value is None:
             return self.runtime.foundation.fail(revision_result.issues)
-        return self.runtime.foundation.ok(self.views.revision_tool_view(decl=decl.value, revision=revision_result.value))
+        return self._add_release_status(
+            repo_root,
+            node_path=node_path,
+            decl_name=name,
+            view=self.views.revision_tool_view(decl=decl.value, revision=revision_result.value),
+        )
 
     def current_decl_revision_view(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[DeclRevisionToolView]:
         decl = self.get_decl(repo_root, node_path=node_path, name=name)
         if not decl.ok or decl.value is None:
             return self.runtime.foundation.fail(decl.issues)
         return self.get_decl_revision_view(repo_root, node_path=node_path, name=name, revision=decl.value.current_revision)
+
+    def _add_release_status(self, repo_root: Path, *, node_path: str, decl_name: str, view):
+        status = self.runtime.repo_workspace.release.get_decl_release_status(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+        if not status.ok or status.value is None:
+            return self.runtime.foundation.fail(status.issues)
+        released_state = DeclState(status.value.released_state) if status.value.released_state is not None else None
+        return self.runtime.foundation.ok(
+            view.model_copy(
+                update={
+                    "released_state": released_state,
+                    "release_protected": status.value.release_protected,
+                }
+            )
+        )
 
     def get_decl_change(self, repo_root: Path, *, node_path: str, change_id: str) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.get_decl_change(repo_root, node_path=node_path, change_id=change_id)

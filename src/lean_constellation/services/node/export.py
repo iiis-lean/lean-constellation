@@ -9,8 +9,8 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.services.foundation import FoundationContext, GateReport, IssueSeverity, ServiceIssue, ServiceResult, WriteMode
-from lean_constellation.services.node.contract import ContractComponent, NodeContractView
+from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult, WriteMode
+from lean_constellation.services.node.contract import ContractComponent
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent, NodeView
 
 if TYPE_CHECKING:
@@ -20,12 +20,16 @@ if TYPE_CHECKING:
 
 class DeclPublicView(StrictModel):
     ref: DeclRef
+    resolved_revision: int | None = None
+    resolution_reason: str | None = None
     kind: str | None = None
     summary: str | None = None
     public: bool = True
     ready: bool = True
     stale: bool = False
     source: str = "provider"
+    released_state: str | None = None
+    release_protected: bool = False
 
 
 class DeclRefView(StrictModel):
@@ -35,6 +39,8 @@ class DeclRefView(StrictModel):
     node: str
     name: str
     revision: int
+    resolved_revision: int | None = None
+    resolution_reason: str | None = None
     valid: bool
     source: str | None = None
     summary: str
@@ -406,7 +412,15 @@ class ExportComponent:
             if not public.ok or public.value is None:
                 return self.runtime.foundation.fail(public.issues)
             for decl in public.value:
-                if self._decl_ref_key(decl.ref) == self._decl_ref_key(ref) and decl.public:
+                if (decl.ref.repo, decl.ref.node, decl.ref.name) != (ref.repo, ref.node, ref.name) or not decl.public:
+                    continue
+                compatible_revision = decl.ref.revision == ref.revision
+                if not compatible_revision:
+                    compatible = self._resolve_semantic_ref(repo_root, ref)
+                    if not compatible.ok or compatible.value is None:
+                        return self.runtime.foundation.fail(compatible.issues)
+                    compatible_revision = compatible.value.compatible and compatible.value.resolved_revision == decl.ref.revision
+                if compatible_revision:
                     return self.runtime.foundation.ok(
                         ScopeExportCandidate(
                             ref=decl.ref,
@@ -435,7 +449,27 @@ class ExportComponent:
                 )
             )
         for child_ref in child_contract.value.contract.exports:
-            if self._decl_ref_key(child_ref) == self._decl_ref_key(ref):
+            if (child_ref.repo, child_ref.node, child_ref.name) != (ref.repo, ref.node, ref.name):
+                continue
+            if child_ref.revision == ref.revision:
+                return self.runtime.foundation.ok(
+                    ScopeExportCandidate(
+                        ref=child_ref,
+                        source_child=direct_child,
+                        source_kind=NodeKind.SCOPE.value,
+                    )
+                )
+            parent_resolved = self._resolve_semantic_ref(repo_root, ref)
+            child_resolved = self._resolve_semantic_ref(repo_root, child_ref)
+            if not parent_resolved.ok or parent_resolved.value is None:
+                return self.runtime.foundation.fail(parent_resolved.issues)
+            if not child_resolved.ok or child_resolved.value is None:
+                return self.runtime.foundation.fail(child_resolved.issues)
+            if (
+                parent_resolved.value.compatible
+                and child_resolved.value.compatible
+                and parent_resolved.value.resolved_revision == child_resolved.value.resolved_revision
+            ):
                 return self.runtime.foundation.ok(
                     ScopeExportCandidate(
                         ref=child_ref,
@@ -451,8 +485,29 @@ class ExportComponent:
             )
         )
 
+    def _resolve_semantic_ref(self, repo_root: Path, ref: DeclRef):
+        config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        return self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
+            repo_root,
+            ref=ref,
+            required_availability=config.value.config.target_proof_availability,
+        )
+
     def _decl_ref_view(self, repo_root: Path, scope_path: str, ref: DeclRef, *, index: int) -> DeclRefView:
         candidate = self._find_visible_candidate(repo_root, scope_path=scope_path, ref=ref)
+        resolution = self._resolve_semantic_ref(repo_root, ref)
+        resolved_revision = (
+            resolution.value.resolved_revision
+            if resolution.ok and resolution.value is not None
+            else None
+        )
+        resolution_reason = (
+            resolution.value.reason
+            if resolution.ok and resolution.value is not None
+            else None
+        )
         if candidate.ok and candidate.value is not None:
             valid = candidate.value.ready and not candidate.value.stale
             return DeclRefView(
@@ -462,6 +517,8 @@ class ExportComponent:
                 node=ref.node,
                 name=ref.name,
                 revision=ref.revision,
+                resolved_revision=resolved_revision,
+                resolution_reason=resolution_reason,
                 valid=valid,
                 source=candidate.value.source_child,
                 summary=("Scope export is valid." if valid else "Scope export candidate is not ready."),
@@ -473,6 +530,8 @@ class ExportComponent:
             node=ref.node,
             name=ref.name,
             revision=ref.revision,
+            resolved_revision=resolved_revision,
+            resolution_reason=resolution_reason,
             valid=False,
             summary="Scope export is not currently valid.",
             issues=candidate.issues,

@@ -1,4 +1,4 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 from pathlib import Path
 
@@ -8,13 +8,7 @@ from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
-from lean_constellation.services.foundation import FoundationService
-from lean_constellation.services.repo_workspace import (
-    LakeDependencyComponent,
-    RepoMetadataComponent,
-    RepoRequirementComponent,
-    RepoWorkspaceService,
-)
+from lean_constellation.services.repo_workspace import LakeDependencyComponent
 
 
 class FakeLakeClient:
@@ -409,6 +403,7 @@ def test_repo_workspace_service_marks_provider_ready_and_attach(tmp_path: Path) 
     assert ready.value is not None
     assert ready.value.satisfied_requirement_count == 1
     assert ready.value.repo_summary == "provider ready"
+    publish_native_provider_release(service.runtime, provider, summary="provider ready")
 
     attach = service.attach_provider_for_requirement(consumer, requirement_name="need_provider")
     assert attach.ok
@@ -473,7 +468,7 @@ def test_attach_provider_for_requirement_is_idempotent_after_handled(tmp_path: P
         requirement_name="need_provider",
         provider_repo="provider",
     ).ok
-    assert service.metadata.set_provider_ready(provider, summary="Provider ready.").ok
+    publish_native_provider_release(service.runtime, provider, summary="Provider ready.")
     assert service.requirement.mark_requirement_satisfied(
         consumer,
         requirement_name="need_provider",
@@ -503,7 +498,7 @@ def test_attach_ready_workspace_repo_dependency_requires_stable_repo(tmp_path: P
 
     assert not developing.ok
     assert developing.issues[0].kind == "provider_repo_not_ready"
-    assert service.metadata.mark_repo_stable(provider, summary="Reusable mathematical repo.").ok
+    publish_native_provider_release(service.runtime, provider, summary="Reusable mathematical repo.")
 
     attached = service.attach_ready_workspace_repo_dependency(consumer, provider_repo="provider")
 

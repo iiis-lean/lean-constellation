@@ -1,10 +1,19 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
-from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.decl_graph.models import (
+    Decl,
+    DeclFormalSection,
+    DeclProof,
+    DeclRevision,
+    DeclRevisionStatus,
+    DeclState,
+    DeclStatement,
+)
+from lean_constellation.services.foundation import FoundationService, ServiceResult, WriteMode
 from lean_constellation.services.node import DeclPublicView
 
 
@@ -45,7 +54,8 @@ def _create_consumer_tree(repo_root: Path) -> None:
 
 
 def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider") -> None:
-    service = make_runtime().node
+    runtime = make_runtime()
+    service = runtime.node
     assert service.node_tree.ensure_root_scope_node(provider_root).ok
     assert service.create_content_node(
         provider_root,
@@ -55,24 +65,56 @@ def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider
         objective="Expose provider declarations.",
         success_criteria="Provider core is ready.",
     ).ok
-    decl = DeclRef(repo=None, node="Main.Core", name="provider_result", revision=1)
-    runtime = _runtime_with_public_decls(
-        {
-            (str(provider_root), "Main.Core"): [
-                DeclPublicView(
-                    ref=decl,
-                    kind="theorem",
-                    summary="Provider result.",
-                    ready=True,
-                    stale=False,
-                    source="test_provider",
-                )
-            ]
-        }
+    assert runtime.decl_graph.ensure_decl_graph(provider_root, node_path="Main.Core").ok
+    decl_record = Decl(
+        name="provider_result",
+        node_path="Main.Core",
+        kind="theorem",
+        public=True,
+        current_revision=1,
+        revision_ids=[1],
+        module="Main.Core.Theorems.provider_result",
     )
+    revision = DeclRevision(
+        decl_name="provider_result",
+        revision=1,
+        state=DeclState.PROVED,
+        status=DeclRevisionStatus.COMMITTED,
+        statement=DeclStatement(
+            formal=DeclFormalSection(
+                code="import Mathlib\n\ntheorem provider_result : True := by\n  sorry\n",
+                check={"status": "passed", "contains_sorry": True, "allow_sorry": True},
+            )
+        ),
+        proof=DeclProof(
+            formal=DeclFormalSection(
+                code="theorem provider_result : True := by\n  trivial\n",
+                check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+            )
+        ),
+        module="Main.Core.Theorems.provider_result",
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            provider_root,
+            node_path="Main.Core",
+            decl_name="provider_result",
+        ),
+        decl_record,
+        mode=WriteMode.OVERWRITE,
+    ).ok
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            provider_root,
+            node_path="Main.Core",
+            decl_name="provider_result",
+            revision=1,
+        ),
+        revision,
+        mode=WriteMode.OVERWRITE,
+    ).ok
     assert runtime.node.export.add_scope_export(provider_root, scope_path="Main", decl_node="Main.Core", decl_name="provider_result").ok
-    assert runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
-    assert runtime.repo_workspace.metadata.mark_repo_stable(provider_root, summary=f"{provider_name} stable.").ok
+    publish_native_provider_release(runtime, provider_root, summary=f"{provider_name} stable.")
 
 
 def test_coordinator_can_list_current_repo_nodes(tmp_path: Path) -> None:
@@ -155,3 +197,43 @@ def test_coordinator_reads_stable_provider_repo_main_exports(tmp_path: Path) -> 
     assert [(decl.ref.repo, decl.ref.node, decl.ref.name) for decl in public.value] == [
         ("Provider", "Main.Core", "provider_result")
     ]
+
+
+def test_coordinator_reads_ready_adapter_bound_main_interface(tmp_path: Path) -> None:
+    from lean_constellation.domain.interface import DeclInterface, DeclKind
+    from tests.unit.services.adapter.test_adapter_service import _finalize_theorem, _service
+
+    consumer = tmp_path / "Consumer"
+    provider = tmp_path / "AdapterProvider"
+    consumer.mkdir()
+    _create_consumer_tree(consumer)
+    service = _service(
+        provider,
+        interfaces=[DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Public theorem.")],
+    )
+    assert service.runtime.node.interface.sync_protected_root_interfaces_from_preparation_input(provider).ok
+    _finalize_theorem(service, provider)
+    assert service.bind_adapter_interface(
+        provider,
+        interface_name="main_result",
+        decl_name="main_result",
+        binding_summary="Expose the public theorem.",
+    ).ok
+    assert service.refresh_adapter_projection(provider).ok
+    assert service.runtime.repo_workspace.metadata.set_provider_ready(
+        provider, summary="Stable adapter provider."
+    ).ok
+
+    public = make_runtime().node.public_decl_access.list_repo_public_decls(
+        consumer,
+        repo_key="AdapterProvider",
+        actor_role="coordinator",
+    )
+
+    assert public.ok and public.value is not None
+    assert len(public.value) == 1
+    assert public.value[0].ref == DeclRef(
+        repo="AdapterProvider", node="Main", name="main_result", revision=1
+    )
+    assert public.value[0].resolved_revision == 1
+    assert public.value[0].ready is True

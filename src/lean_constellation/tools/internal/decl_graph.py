@@ -97,10 +97,19 @@ def _decl_revision_item(runtime, repo_root, view, args: DeclInspectArgs) -> dict
 
 def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
     ref = public_decl.ref
-    view = runtime.decl_graph.get_decl_view(repo_root, node_path=ref.node, name=ref.name)
-    if not view.ok or view.value is None:
+    resolved_revision = public_decl.resolved_revision or ref.revision
+    decl = runtime.decl_graph.get_decl_view(repo_root, node_path=ref.node, name=ref.name)
+    revision = runtime.decl_graph.get_decl_revision_view(
+        repo_root,
+        node_path=ref.node,
+        name=ref.name,
+        revision=resolved_revision,
+    )
+    if not decl.ok or decl.value is None or not revision.ok or revision.value is None:
         return {
             "ref": ref.model_dump(mode="json"),
+            "resolved_revision": public_decl.resolved_revision,
+            "resolution_reason": public_decl.resolution_reason,
             "kind": public_decl.kind,
             "summary": public_decl.summary,
             "public": public_decl.public,
@@ -108,14 +117,15 @@ def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
             "proof_policy_satisfied": False,
             "source": public_decl.source,
         }
-    item = _decl_list_item(runtime, repo_root, view.value)
     return {
         "ref": ref.model_dump(mode="json"),
-        "kind": item["kind"],
-        "summary": item["summary"],
-        "public": item["public"],
-        "state": item["state"],
-        "proof_policy_satisfied": item["proof_policy_satisfied"],
+        "resolved_revision": public_decl.resolved_revision,
+        "resolution_reason": public_decl.resolution_reason,
+        "kind": revision.value.kind,
+        "summary": decl.value.summary,
+        "public": decl.value.public,
+        "state": revision.value.state.value,
+        "proof_policy_satisfied": public_decl.ready and not public_decl.stale,
         "source": public_decl.source,
     }
 
@@ -410,8 +420,8 @@ def _inspect_node_public_decl(runtime, ctx, args: NodePublicDeclInspectArgs):
     )
     if not public.ok or public.value is None:
         return runtime.foundation.fail(public.issues)
-    ref = next((decl.ref for decl in public.value if decl.ref.name == args.decl_name), None)
-    if ref is None:
+    public_decl = next((decl for decl in public.value if decl.ref.name == args.decl_name), None)
+    if public_decl is None:
         return runtime.foundation.fail(
             runtime.foundation.issue(
                 "public_decl_not_found",
@@ -419,11 +429,21 @@ def _inspect_node_public_decl(runtime, ctx, args: NodePublicDeclInspectArgs):
                 object_ref=f"{args.node_path}:{args.decl_name}",
             )
         )
-    revision = args.revision or ref.revision
+    ref = public_decl.ref
+    revision = args.revision or public_decl.resolved_revision or ref.revision
     view = runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=ref.node, name=ref.name, revision=revision)
     if not view.ok or view.value is None:
         return runtime.foundation.fail(view.issues)
-    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
+    item = _decl_revision_item(runtime, ctx.repo_root, view.value, args)
+    item.update(
+        {
+            "anchor_ref": ref.model_dump(mode="json"),
+            "resolved_revision": public_decl.resolved_revision,
+            "resolution_reason": public_decl.resolution_reason,
+            "proof_policy_satisfied": public_decl.ready and not public_decl.stale,
+        }
+    )
+    return runtime.foundation.ok(item)
 
 
 def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
@@ -436,8 +456,8 @@ def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
     )
     if not public.ok or public.value is None:
         return runtime.foundation.fail(public.issues)
-    ref = next((decl.ref for decl in public.value if decl.ref.name == args.decl_name), None)
-    if ref is None:
+    public_decl = next((decl for decl in public.value if decl.ref.name == args.decl_name), None)
+    if public_decl is None:
         return runtime.foundation.fail(
             runtime.foundation.issue(
                 "public_decl_not_found",
@@ -445,12 +465,22 @@ def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
                 object_ref=f"{repo_key}:{args.decl_name}",
             )
         )
+    ref = public_decl.ref
     provider_root = ctx.repo_root.parent / repo_key
-    revision = args.revision or ref.revision
+    revision = args.revision or public_decl.resolved_revision or ref.revision
     view = runtime.decl_graph.get_decl_revision_view(provider_root, node_path=ref.node, name=ref.name, revision=revision)
     if not view.ok or view.value is None:
         return runtime.foundation.fail(view.issues)
-    return runtime.foundation.ok(_decl_revision_item(runtime, provider_root, view.value, args))
+    item = _decl_revision_item(runtime, provider_root, view.value, args)
+    item.update(
+        {
+            "anchor_ref": ref.model_dump(mode="json"),
+            "resolved_revision": public_decl.resolved_revision,
+            "resolution_reason": public_decl.resolution_reason,
+            "proof_policy_satisfied": public_decl.ready and not public_decl.stale,
+        }
+    )
+    return runtime.foundation.ok(item)
 
 
 def _list_active_decl_names(runtime, ctx, args: NoArgs):

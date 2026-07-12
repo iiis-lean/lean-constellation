@@ -9,7 +9,6 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import RepoPublicationStatus
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.node.dependency import DependencyComponent
 from lean_constellation.services.node.export import DeclPublicView, ExportComponent
@@ -199,20 +198,28 @@ class PublicDeclAccessResolver:
         exports = self.export.list_scope_exports(repo_root, scope_path=node_path)
         if not exports.ok or exports.value is None:
             return self.runtime.foundation.fail(exports.issues)
-        return self.runtime.foundation.ok(
-            [
+        values: list[DeclPublicView] = []
+        for view in exports.value:
+            status = self.runtime.repo_workspace.release.get_decl_release_status(
+                repo_root, node_path=view.ref.node, decl_name=view.ref.name
+            )
+            if not status.ok or status.value is None:
+                return self.runtime.foundation.fail(status.issues)
+            values.append(
                 DeclPublicView(
                     ref=view.ref,
+                    resolved_revision=view.resolved_revision,
+                    resolution_reason=view.resolution_reason,
                     public=True,
                     ready=view.valid,
                     stale=not view.valid,
                     source="scope_exports",
                     summary=view.summary,
+                    released_state=status.value.released_state,
+                    release_protected=status.value.release_protected,
                 )
-                for view in exports.value
-            ],
-            warnings=exports.issues,
-        )
+            )
+        return self.runtime.foundation.ok(values, warnings=exports.issues)
 
     def list_repo_public_decls(
         self,
@@ -226,23 +233,49 @@ class PublicDeclAccessResolver:
         if not visible.ok:
             return self.runtime.foundation.fail(visible.issues)
         provider_root = Path(repo_root).parent / self.runtime.foundation.layout.ensure_safe_key(repo_key)
-        exports = self.export.list_scope_exports(provider_root, scope_path="Main")
-        if not exports.ok or exports.value is None:
-            return self.runtime.foundation.fail(exports.issues)
-        return self.runtime.foundation.ok(
-            [
-                DeclPublicView(
-                    ref=self._with_repo(view.ref, repo_key=repo_key),
-                    public=True,
-                    ready=view.valid,
-                    stale=not view.valid,
-                    source="repo_main_exports",
-                    summary=view.summary,
-                )
-                for view in exports.value
-            ],
-            warnings=exports.issues,
+        config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        public_refs = self.runtime.decl_graph.ref_compatibility.list_public_decl_refs(
+            provider_root,
+            required_availability=config.value.config.target_proof_availability,
         )
+        if not public_refs.ok or public_refs.value is None:
+            return self.runtime.foundation.fail(public_refs.issues)
+        values: list[DeclPublicView] = []
+        seen: set[tuple[str, str, int]] = set()
+        for resolved in public_refs.value:
+            ref = resolved.anchor
+            key = (ref.node, ref.name, ref.revision)
+            if key in seen:
+                continue
+            seen.add(key)
+            decl = self.runtime.decl_graph.decl_catalog.get_decl(
+                provider_root, node_path=ref.node, name=ref.name
+            )
+            if not decl.ok or decl.value is None:
+                return self.runtime.foundation.fail(decl.issues)
+            status = self.runtime.repo_workspace.release.get_decl_release_status(
+                provider_root, node_path=ref.node, decl_name=ref.name
+            )
+            if not status.ok or status.value is None:
+                return self.runtime.foundation.fail(status.issues)
+            values.append(
+                DeclPublicView(
+                    ref=self._with_repo(ref, repo_key=repo_key),
+                    resolved_revision=resolved.resolved_revision,
+                    resolution_reason=resolved.reason,
+                    kind=decl.value.kind,
+                    public=True,
+                    ready=resolved.compatible,
+                    stale=not resolved.compatible,
+                    source="repo_main_public_boundary",
+                    summary=decl.value.summary,
+                    released_state=status.value.released_state,
+                    release_protected=status.value.release_protected,
+                )
+            )
+        return self.runtime.foundation.ok(values, warnings=public_refs.issues)
 
     def assert_node_visible(
         self,
@@ -283,17 +316,16 @@ class PublicDeclAccessResolver:
         if not visible.ok or visible.value is None:
             return self.runtime.foundation.fail(visible.issues)
         if any(item.repo_key == repo_key for item in visible.value.repos):
-            publication = self.runtime.repo_workspace.metadata.get_repo_publication(Path(repo_root).parent / repo_key)
-            if not publication.ok or publication.value is None:
-                return self.runtime.foundation.fail(publication.issues)
-            if publication.value.publication.status != RepoPublicationStatus.STABLE:
+            availability = self.runtime.repo_workspace.provider_availability.check_provider_available(Path(repo_root).parent / repo_key)
+            if not availability.ok or availability.value is None:
+                return self.runtime.foundation.fail(availability.issues)
+            if not availability.value.passed:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
                         "repo_public_decl_provider_not_stable",
-                        "Provider repo public declarations can only be read after stable publication.",
+                        "Provider repo public declarations can only be read when its format-aware availability gate passes.",
                         object_ref=repo_key,
-                        current=publication.value.publication.status.value,
-                        expected=RepoPublicationStatus.STABLE.value,
+                        details={"issues": "; ".join(issue.kind for issue in availability.value.issues)},
                     )
                 )
             return self.runtime.foundation.ok(None)

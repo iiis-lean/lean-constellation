@@ -41,6 +41,16 @@ from lean_constellation.services.decl_graph.models import (
 )
 from lean_constellation.services.decl_graph.views import DeclGraphViewMapper
 from lean_constellation.services.decl_graph.readiness import DeclReadinessComponent
+from lean_constellation.services.decl_graph.declared_api import (
+    DeclaredApiFingerprintComponent,
+    DeclaredApiFingerprintView,
+    canonicalize_statement_formal_code,
+)
+from lean_constellation.services.decl_graph.ref_compatibility import (
+    CurrentContractHeads,
+    DeclRefCompatibilityComponent,
+    RepoReleaseHeads,
+)
 from lean_constellation.services.decl_graph.review_gate import ReviewGateComponent
 from lean_constellation.services.decl_graph.service import DeclGraphService
 from lean_constellation.services.decl_graph.stage_mutation import StageMutationComponent
@@ -66,6 +76,12 @@ __all__ = [
     "DeclGraphStrategyView",
     "DeclLifecycle",
     "DeclReadinessComponent",
+    "DeclaredApiFingerprintComponent",
+    "DeclaredApiFingerprintView",
+    "canonicalize_statement_formal_code",
+    "CurrentContractHeads",
+    "DeclRefCompatibilityComponent",
+    "RepoReleaseHeads",
     "DeclReadinessReason",
     "DeclReadinessReport",
     "DeclReviewMarkRecord",

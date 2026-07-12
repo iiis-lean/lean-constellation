@@ -1,4 +1,4 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_adapter_provider_ready, publish_native_provider_release
 
 from pathlib import Path
 
@@ -12,14 +12,12 @@ from lean_constellation.domain.preparation import (
 from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoFormat,
-    RepoPublicationState,
     RepoPublicationStatus,
     RepoWorkMode,
     WorkspaceConfig,
 )
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.repo_workspace import (
-    LakeDependencyComponent,
     RepoMetadataComponent,
     RepoPreparationComponent,
     RepoRequirementComponent,
@@ -259,19 +257,17 @@ def test_workspace_catalog_lists_repos_and_current_repo_first(tmp_path: Path) ->
     metadata.ensure_repo_model(current)
     metadata.ensure_repo_model(provider)
     metadata.set_repo_format(current, repo_format=RepoFormat.NATIVE, reason="current")
-    metadata.set_repo_format(provider, repo_format=RepoFormat.ADAPTER, reason="provider")
-    metadata.set_provider_ready(provider, summary="Provider exposes the required public interface.")
-    adapter_state = metadata.get_repo_state_view(provider)
-    assert adapter_state.ok and adapter_state.value is not None
-    assert adapter_state.value.repo_format is RepoFormat.ADAPTER
-    assert adapter_state.value.publication_status is RepoPublicationStatus.STABLE
-    assert adapter_state.value.latest_release_id is None
-    assert adapter_state.value.provider_ready is True
-    publication_path = metadata._repo_publication_path(provider)
-    assert metadata.runtime.foundation.store.write_json_atomic(
-        publication_path,
-        RepoPublicationState(status=RepoPublicationStatus.STABLE, latest_release_id="release_1"),
-    ).ok
+    publish_adapter_provider_ready(
+        metadata.runtime,
+        provider,
+        summary="Provider exposes the required public interface.",
+    )
+    provider_state = metadata.get_repo_state_view(provider)
+    assert provider_state.ok and provider_state.value is not None
+    assert provider_state.value.repo_format is RepoFormat.ADAPTER
+    assert provider_state.value.publication_status is RepoPublicationStatus.STABLE
+    assert provider_state.value.latest_release_id is None
+    assert provider_state.value.provider_ready is True
     requirement.create_requirement(current, name="need_provider", target_repo="provider", reason="use provider")
 
     missing = catalog.list_workspace_repos(workspace / "missing")
@@ -285,7 +281,7 @@ def test_workspace_catalog_lists_repos_and_current_repo_first(tmp_path: Path) ->
     assert repos.value[0].open_requirement_count == 1
     assert repos.value[1].provider_ready is True
     assert repos.value[1].repo_summary == "Provider exposes the required public interface."
-    assert repos.value[1].latest_release_id == "release_1"
+    assert repos.value[1].latest_release_id is None
 
     view = catalog.get_workspace_catalog(workspace, current_repo="provider")
     assert view.ok
@@ -302,8 +298,8 @@ def test_workspace_catalog_ready_filter_and_coordinator_view(tmp_path: Path) -> 
     metadata.ensure_repo_model(current)
     metadata.ensure_repo_model(ready_provider)
     metadata.ensure_repo_model(not_ready_provider)
-    metadata.set_provider_ready(current, summary="current ready but should be excluded")
-    metadata.set_provider_ready(ready_provider, summary="Ready provider summary.")
+    publish_native_provider_release(metadata.runtime, current, summary="current ready but should be excluded")
+    publish_native_provider_release(metadata.runtime, ready_provider, summary="Ready provider summary.")
 
     ready = catalog.list_ready_provider_repos(workspace, current_repo="current")
     assert ready.ok

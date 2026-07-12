@@ -11,7 +11,6 @@ from pydantic import Field, TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef, NodeRef
-from lean_constellation.domain.repo import RepoPublicationStatus
 from lean_constellation.services.foundation import (
     GateReport,
     IssueSeverity,
@@ -587,12 +586,10 @@ class DependencyComponent:
             expected_root = (Path(repo_root).parent / dep.name).resolve(strict=False)
             if provider_root != expected_root or not (provider_root / ".lean_constellation").is_dir():
                 continue
-            publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_root)
-            if (
-                not publication.ok
-                or publication.value is None
-                or publication.value.publication.status != RepoPublicationStatus.STABLE
-            ):
+            availability = self.runtime.repo_workspace.provider_availability.check_provider_available(provider_root)
+            if not availability.ok or availability.value is None:
+                return self.runtime.foundation.fail(availability.issues)
+            if not availability.value.passed:
                 continue
             exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
             if not exports.ok or exports.value is None:

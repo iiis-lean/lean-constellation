@@ -274,10 +274,10 @@ class RepoRequirementComponent:
                     object_ref=str(provider_root),
                 )
             )
-        ready = self.runtime.repo_workspace.metadata.get_provider_ready(provider_root)
-        if not ready.ok:
+        ready = self.runtime.repo_workspace.provider_availability.check_provider_available(provider_root)
+        if not ready.ok or ready.value is None:
             return self.runtime.foundation.fail(ready.issues)
-        if ready.value is None or not ready.value.ready:
+        if not ready.value.passed:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "provider_repo_not_ready",
@@ -356,17 +356,19 @@ class RepoRequirementComponent:
                     object_ref=str(provider_root),
                 )
             )
-        publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_root)
-        if not publication.ok or publication.value is None:
-            return self.runtime.foundation.fail(publication.issues)
-        if require_stable and publication.value.publication.status.value != "stable":
+        if require_stable:
+            availability = self.runtime.repo_workspace.provider_availability.check_provider_available(provider_root)
+            if not availability.ok or availability.value is None:
+                return self.runtime.foundation.fail(availability.issues)
+        else:
+            availability = None
+        if availability is not None and not availability.value.passed:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "provider_repo_not_ready",
                     f"Provider repo is not ready: {provider_key}",
                     object_ref=str(provider_root),
-                    current=publication.value.publication.status.value,
-                    expected="stable",
+                    details={"issues": "; ".join(issue.kind for issue in availability.value.issues)},
                 )
             )
         provider_config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)

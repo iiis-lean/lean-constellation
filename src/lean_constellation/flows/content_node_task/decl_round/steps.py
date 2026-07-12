@@ -21,12 +21,12 @@ from lean_constellation.services.decl_graph.models import (
     DeclRevision,
     DeclRoundResultKind,
     DeclRoundStatus,
-    DeclStage,
     DeclState,
     DeclStrategyStatus,
 )
 from lean_constellation.services.decl_graph.proof_nl_validation import proof_nl_validation_message, validate_proof_deps
 from lean_constellation.services.decl_graph.statement_nl_validation import statement_nl_validation_message
+from lean_constellation.services.foundation import ServiceResult
 
 
 DeclStageName = Literal["statement_nl", "statement_formal", "proof_nl", "proof_formal"]
@@ -1166,24 +1166,29 @@ def _round_revision_satisfies_proof_policy(
     )
     for dep_ref, dep_target in requirements:
         dep_label = _decl_ref_label(dep_ref, fallback_node_path=node_path)
-        resolved = _resolve_dependency_ref(ctx, repo_root, ref=dep_ref, fallback_node_path=node_path, local_target=dep_target)
-        if resolved is None:
-            return False, f"Dependency {dep_label} could not be resolved or its provider is not stable."
-        dep_root, dep_node, effective_target = resolved
-        round_dep = round_revisions.get(dep_ref.name) if dep_root == repo_root and dep_node == node_path else None
-        if round_dep is not None:
+        dep_node = dep_ref.node
+        if dep_ref.repo is None and dep_node == "Main" and node_path != "Main":
+            dep_node = node_path
+        round_dep = round_revisions.get(dep_ref.name) if dep_ref.repo is None and dep_node == node_path else None
+        if round_dep is not None and round_dep.revision == dep_ref.revision:
             satisfied, reason = _round_revision_satisfies_proof_policy(
                 ctx,
                 repo_root,
                 node_path=node_path,
                 round_revisions=round_revisions,
                 revision=round_dep,
-                target_proof_availability=effective_target,
+                target_proof_availability=dep_target,
                 stack=[*stack, stack_key],
             )
             if not satisfied:
                 return False, reason
             continue
+        resolved = _resolve_dependency_ref(ctx, repo_root, ref=dep_ref, fallback_node_path=node_path, local_target=dep_target)
+        if not resolved.ok:
+            return False, _first_issue_message(resolved.issues, f"Dependency {dep_label} provider resolution failed.")
+        if resolved.value is None:
+            return False, f"Dependency {dep_label} could not be resolved or its provider is not stable."
+        dep_root, dep_node, effective_target = resolved.value
         dep_report = _decl_graph(ctx).check_decl_proof_policy_satisfied(
             dep_root,
             node_path=dep_node,
@@ -1204,38 +1209,43 @@ def _resolve_dependency_ref(
     ref: DeclRef,
     fallback_node_path: str,
     local_target: ProofAvailability,
-) -> tuple[Path, str, ProofAvailability] | None:
+) -> ServiceResult[tuple[Path, str, ProofAvailability] | None]:
+    foundation = getattr(ctx.app, "foundation", None)
+    if foundation is None:
+        raise FlowStepValidationError("Lean foundation service is not registered in app services.")
     if ref.repo:
-        foundation = getattr(ctx.app, "foundation", None)
         repo_workspace = getattr(ctx.app, "repo_workspace", None)
-        node_service = getattr(ctx.app, "node", None)
-        if foundation is None or repo_workspace is None or node_service is None:
-            return None
+        decl_graph = getattr(ctx.app, "decl_graph", None)
+        if repo_workspace is None or decl_graph is None:
+            return foundation.ok(None)
         provider_key = foundation.layout.ensure_safe_key(ref.repo)
         provider_root = Path(repo_root).parent / provider_key
-        publication = repo_workspace.metadata.get_repo_publication(provider_root)
-        if not publication.ok or publication.value is None or publication.value.publication.status.value != "stable":
-            return None
         config = repo_workspace.metadata.get_repo_config(provider_root)
         if not config.ok or config.value is None:
-            return None
-        exports = node_service.export.list_scope_exports(provider_root, scope_path="Main")
-        if not exports.ok or exports.value is None:
-            return None
-        for exported in exports.value:
-            candidate = exported.ref
-            if (
-                candidate.node == ref.node
-                and candidate.name == ref.name
-                and candidate.revision == ref.revision
-                and exported.valid
-            ):
-                return provider_root, candidate.node, config.value.config.target_proof_availability
-        return None
+            return foundation.fail(config.issues)
+        effective_target = config.value.config.target_proof_availability
+        compatible = decl_graph.ref_compatibility.resolve_public_decl_ref(
+            repo_root,
+            ref=ref,
+            required_availability=effective_target,
+        )
+        if not compatible.ok:
+            return foundation.fail(compatible.issues)
+        if compatible.value is None or not compatible.value.compatible:
+            return foundation.ok(None)
+        return foundation.ok((provider_root, ref.node, effective_target))
     dep_node = ref.node
     if dep_node == "Main" and fallback_node_path != "Main":
         dep_node = fallback_node_path
-    return Path(repo_root), dep_node, local_target
+    local_ref = ref.model_copy(update={"node": dep_node})
+    compatible = _decl_graph(ctx).ref_compatibility.resolve_decl_ref(
+        repo_root,
+        ref=local_ref,
+        required_availability=local_target,
+    )
+    if not compatible.ok or compatible.value is None or not compatible.value.compatible:
+        return foundation.ok(None)
+    return foundation.ok((Path(repo_root), dep_node, local_target))
 
 
 def _decl_ref_label(ref: DeclRef, *, fallback_node_path: str) -> str:

@@ -26,6 +26,8 @@ from lean_constellation.services.repo_workspace.workspace_catalog import (
     RequirementGroupSummaryView,
     WorkspaceCatalogComponent,
 )
+from lean_constellation.services.repo_workspace.repo_release import RepoReleaseComponent
+from lean_constellation.services.repo_workspace.provider_availability import ProviderAvailabilityComponent
 
 __all__ = [
     "AdapterSetupView",
@@ -46,4 +48,6 @@ __all__ = [
     "ProviderRepoRuntimeBootstrapProvider",
     "PreparationStartPreflightView",
     "WorkspaceCatalogComponent",
+    "RepoReleaseComponent",
+    "ProviderAvailabilityComponent",
 ]

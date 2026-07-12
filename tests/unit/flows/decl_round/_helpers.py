@@ -12,6 +12,7 @@ from lean_constellation.flows.content_node_task.decl_round.submissions import (
     DeclStageWorkerCompletedSubmission,
 )
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclStage, DeclState
+from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.runtime import LeanRuntimeServices
 from tests.unit_services_helpers import make_runtime
 
@@ -145,6 +146,30 @@ def seed_committed_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, dec
         reason=f"{strategy_id} seed completed.",
     )
     assert terminal.ok, terminal.issues
+
+
+def commit_content_contract_head(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+    *,
+    decl_graph_head: dict[str, int],
+) -> None:
+    current = runtime.node.contract.get_edit_contract(repo_root, node_path=NODE_PATH)
+    assert current.ok and current.value is not None, current.issues
+    current.value.contract.decl_graph_head.update(decl_graph_head)
+    path = runtime.node.node_tree.node_store.contract_path(
+        repo_root,
+        node_id=current.value.node_id,
+        version=current.value.contract.version,
+    )
+    written = runtime.foundation.store.write_json_atomic(
+        path,
+        current.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    )
+    assert written.ok, written.issues
+    committed = runtime.node.commit_content_contract(repo_root, node_path=NODE_PATH, summary="Commit tested declaration heads.")
+    assert committed.ok, committed.issues
 
 
 def start_decl_round_flow(

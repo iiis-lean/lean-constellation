@@ -16,7 +16,6 @@ from lean_constellation.domain.preparation import (
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
-    RepoPublicationStatus,
     RepoWorkMode,
     WorkspaceCatalogView,
     WorkspaceCoordinatorView,
@@ -111,14 +110,16 @@ class WorkspaceCatalogComponent:
         if not catalog.ok or catalog.value is None:
             return self.runtime.foundation.fail(catalog.issues)
         current_key = Path(current_repo).name if current_repo else None
-        return self.runtime.foundation.ok(
-            [
-                repo
-                for repo in catalog.value.repos
-                if repo.publication_status == RepoPublicationStatus.STABLE
-                and (current_key is None or repo.repo_key != current_key)
-            ]
-        )
+        ready: list[WorkspaceRepoSummary] = []
+        for repo in catalog.value.repos:
+            if current_key is not None and repo.repo_key == current_key:
+                continue
+            availability = self.runtime.repo_workspace.provider_availability.check_provider_available(Path(repo.repo_root))
+            if not availability.ok or availability.value is None:
+                return self.runtime.foundation.fail(availability.issues)
+            if availability.value.passed:
+                ready.append(repo.model_copy(update={"provider_ready": True}))
+        return self.runtime.foundation.ok(ready)
 
     def list_open_requirement_groups(self, workspace_root: Path) -> ServiceResult[list[RequirementGroupSummaryView]]:
         groups: dict[str, list[RequirementGroupItem]] = defaultdict(list)

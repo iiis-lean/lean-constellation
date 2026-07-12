@@ -677,6 +677,8 @@ class DeclView(StrictModel):
     module: str | None = None
     state: DeclState | None = None
     status: DeclRevisionStatus | None = None
+    released_state: DeclState | None = None
+    release_protected: bool = False
     summary: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -744,6 +746,8 @@ class DeclRevisionToolView(StrictModel):
     visibility: str
     state: DeclState
     status: DeclRevisionStatus
+    released_state: DeclState | None = None
+    release_protected: bool = False
     module: str | None = None
     change_id: str | None = None
     change_kind: DeclChangeKind | None = None

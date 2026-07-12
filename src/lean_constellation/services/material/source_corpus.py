@@ -15,7 +15,7 @@ from lean_constellation.services.external_clients import (
     AcquiredArtifactResult,
     ExtractedMaterialResult,
 )
-from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult, WriteMode
+from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -442,6 +442,26 @@ class SourceCorpusComponent:
         if path.exists():
             return self.runtime.foundation.store.read_json(path, SourceCorpusManifestView)
         return self.scan_source_corpus(repo_root, relpath=self._source_relpath(repo_root))
+
+    def refresh_source_corpus_manifest(self, repo_root: Path) -> ServiceResult[SourceCorpusManifestView]:
+        """Fresh-scan and persist the manifest while preserving descriptive metadata."""
+
+        existing = self.get_source_corpus_manifest(repo_root)
+        if not existing.ok or existing.value is None:
+            return self.runtime.foundation.fail(existing.issues)
+        scanned = self.scan_source_corpus(
+            repo_root,
+            relpath=existing.value.relpath,
+            overview=existing.value.overview,
+            entry_path=existing.value.entry_path,
+            created_from_mode=existing.value.created_from_mode,
+        )
+        if not scanned.ok or scanned.value is None:
+            return self.runtime.foundation.fail(scanned.issues)
+        written = self.runtime.foundation.store.write_json_atomic(self._manifest_path(repo_root), scanned.value)
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(scanned.value)
 
     def validate_source_ref(
         self,

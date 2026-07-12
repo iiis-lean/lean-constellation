@@ -9,6 +9,7 @@ from tests.unit.flows.decl_round._helpers import (
     NODE_PATH,
     advance_and_run,
     assert_completed,
+    commit_content_contract_head,
     create_round_with_decl,
     make_decl_round_runtime,
     queue_review,
@@ -310,6 +311,7 @@ def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path
     assert before_helper.value.failed_dependencies == ["missing_helper"]
 
     _prove_committed_helper_theorem(lean_runtime, repo_root, decl_name="missing_helper")
+    commit_content_contract_head(lean_runtime, repo_root, decl_graph_head={"missing_helper": 2})
     after_helper = lean_runtime.decl_graph.check_decl_proof_policy_satisfied(
         repo_root,
         node_path=NODE_PATH,

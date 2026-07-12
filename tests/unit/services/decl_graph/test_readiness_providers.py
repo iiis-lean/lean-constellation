@@ -4,6 +4,7 @@ from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclReadinessReason, DeclState
+from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.lean_projection.lean_check import (
     LeanCheckView,
     LeanDiagnosticsView,
@@ -157,6 +158,28 @@ def _declare_definition(tmp_path: Path, *, round_id: str, name: str) -> None:
     assert runtime.decl_graph.commit_decl_revision(tmp_path, node_path=NODE_PATH, name=name, state=DeclState.DECLARED).ok
 
 
+def _publish_committed_heads(tmp_path: Path, names: list[str]) -> None:
+    runtime = make_runtime()
+    contract = runtime.node.contract.get_edit_contract(tmp_path, node_path=NODE_PATH)
+    assert contract.ok and contract.value is not None
+    contract.value.contract.decl_graph_head.update(dict.fromkeys(names, 1))
+    path = runtime.node.node_tree.node_store.contract_path(
+        tmp_path,
+        node_id=contract.value.node_id,
+        version=contract.value.contract.version,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        path,
+        contract.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    assert runtime.node.commit_content_contract(
+        tmp_path,
+        node_path=NODE_PATH,
+        summary="Publish committed dependency heads for readiness.",
+    ).ok
+
+
 def _passed_check() -> LeanCheckView:
     return LeanCheckView(
         status="passed",
@@ -198,6 +221,7 @@ def test_theorem_ready_recurses_through_ready_dependencies(tmp_path: Path) -> No
     _start_round(tmp_path, round_id)
     _prove_theorem(tmp_path, round_id=round_id, name="supporting_lemma")
     _prove_theorem(tmp_path, round_id=round_id, name="main_result", deps=["supporting_lemma"])
+    _publish_committed_heads(tmp_path, ["supporting_lemma", "main_result"])
 
     runtime = make_runtime()
     report = runtime.decl_graph.check_decl_ready(tmp_path, node_path=NODE_PATH, decl_name="main_result")
@@ -235,6 +259,7 @@ def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(
     _start_round(tmp_path, round_id)
     _declare_definition(tmp_path, round_id=round_id, name="supporting_def")
     _declare_theorem(tmp_path, round_id=round_id, name="main_result", deps=["supporting_def"])
+    _publish_committed_heads(tmp_path, ["supporting_def", "main_result"])
 
     runtime = make_runtime()
     configured = runtime.repo_workspace.metadata.update_repo_config(
@@ -342,6 +367,7 @@ def test_cycle_is_reported_as_not_ready(tmp_path: Path) -> None:
     _start_round(tmp_path, round_id)
     _prove_theorem(tmp_path, round_id=round_id, name="a", deps=["b"])
     _prove_theorem(tmp_path, round_id=round_id, name="b", deps=["a"])
+    _publish_committed_heads(tmp_path, ["a", "b"])
 
     report = make_runtime().decl_graph.check_decl_ready(tmp_path, node_path=NODE_PATH, decl_name="a")
 

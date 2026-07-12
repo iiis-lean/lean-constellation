@@ -5,7 +5,7 @@ from pathlib import Path
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 
 def _setup_consumer_provider(tmp_path: Path):
@@ -110,7 +110,8 @@ def test_requirement_resume_candidates_require_ready_provider(tmp_path: Path) ->
         workspace,
         provider_repo="provider",
     )
-    ready = runtime.repo_workspace.metadata.set_provider_ready(
+    ready = publish_native_provider_release(
+        runtime,
         provider,
         summary="Provider exposes the requested repo interface.",
     )
@@ -121,7 +122,7 @@ def test_requirement_resume_candidates_require_ready_provider(tmp_path: Path) ->
 
     assert not not_ready.ok
     assert not_ready.issues[0].kind == "provider_repo_not_ready"
-    assert ready.ok
+    assert ready.release_id
     assert candidates.ok
     assert candidates.value is not None
     assert len(candidates.value) == 1
@@ -155,7 +156,7 @@ def test_requirement_resume_candidates_require_sufficient_provider_proof_availab
         work_mode=RepoWorkMode.DECLARED_INTERFACE,
     )
     assert configured_provider.ok
-    runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider exposes declared interfaces.")
+    publish_native_provider_release(runtime, provider, summary="Provider exposes declared interfaces.")
 
     candidates = runtime.repo_workspace.list_resume_candidates_for_requirement(
         workspace,
@@ -284,7 +285,7 @@ def test_mark_provider_ready_rejects_missing_requested_public_interface(tmp_path
         requirement_name="need_provider",
         provider_repo="provider",
     )
-    stable = runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider stable without exports.")
+    stable = publish_native_provider_release(runtime, provider, summary="Provider stable without exports.")
     observed = runtime.repo_workspace.mark_requirement_result_observed(
         consumer,
         requirement_name="need_provider",
@@ -298,7 +299,7 @@ def test_mark_provider_ready_rejects_missing_requested_public_interface(tmp_path
     assert not too_early.ok
     assert too_early.issues[0].kind == "requirement_not_resumable"
     assert satisfied.ok
-    assert stable.ok
+    assert stable.release_id
     assert not observed.ok
     assert observed.issues[0].kind == "provider_interface_missing"
 
@@ -318,7 +319,7 @@ def test_requirement_result_observed_removes_resume_candidate(tmp_path: Path) ->
         requirement_name="need_provider",
         provider_repo="provider",
     )
-    runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.")
+    publish_native_provider_release(runtime, provider, summary="Provider ready.")
 
     before = runtime.repo_workspace.list_resume_candidates_for_requirement(
         workspace,
@@ -368,7 +369,7 @@ def test_obsolete_requirement_is_not_resume_candidate(tmp_path: Path) -> None:
         requirement_name="need_provider",
         note="No longer needed.",
     )
-    runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.")
+    publish_native_provider_release(runtime, provider, summary="Provider ready.")
 
     candidates = runtime.repo_workspace.list_resume_candidates_for_requirement(
         workspace,

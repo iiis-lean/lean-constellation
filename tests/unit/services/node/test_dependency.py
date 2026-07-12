@@ -2,14 +2,13 @@ import json
 
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.refs import NodeRef
-from lean_constellation.services.foundation import FoundationContext, FoundationService, WriteMode
-from lean_constellation.services.node import ContractComponent, ContractVersionStatus, DependencyComponent, NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.services.foundation import FoundationContext, WriteMode
+from lean_constellation.services.node import ContractVersionStatus, NodeContractSnapshot
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
-from lean_constellation.services.repo_workspace import RepoWorkspaceService
 
 
 def _create_base_tree(tmp_path: Path) -> None:
@@ -113,9 +112,7 @@ def test_list_visible_node_boundaries_includes_lake_dependency_boundaries(tmp_pa
     _create_base_tree(tmp_path)
     provider = tmp_path.parent / "ProviderRepo"
     runtime = make_runtime()
-    assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
-    assert runtime.node.node_tree.ensure_root_scope_node(provider).ok
-    assert runtime.repo_workspace.metadata.mark_repo_stable(provider, summary="Stable provider.").ok
+    publish_native_provider_release(runtime, provider, summary="Stable provider.")
     (tmp_path / "lakefile.toml").write_text(
         'name = "consumer"\n\n'
         '[[require]]\nname = "ProviderRepo"\npath = "../ProviderRepo"\n',

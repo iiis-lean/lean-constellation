@@ -16,6 +16,7 @@ from lean_constellation.domain.preparation import RepoPreparationInput, SourceCo
 from lean_constellation.flows.common.agent_steps import DeclStageReviewerAgentStep
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.services.decl_graph import DeclReviewMarkRecord, DeclStage
+from tests.unit_services_helpers import publish_native_provider_release
 
 
 def test_admin_snapshot_create_and_restore_leaves_runtime_paused(tmp_path) -> None:
@@ -197,7 +198,7 @@ def test_requirement_resume_after_snapshot_restore_uses_original_flow_and_agent(
     assert restored_flow.agent_bindings.get("coordinator") == agent.agent_id
     assert runtime.ark.agent_service.get_agent(agent.agent_id).thread_id == "thread-original"
 
-    assert runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.").ok
+    publish_native_provider_release(runtime, provider, summary="Provider ready.")
     assert runtime.repo_workspace.requirement.mark_requirement_satisfied(
         consumer,
         requirement_name="need_provider",

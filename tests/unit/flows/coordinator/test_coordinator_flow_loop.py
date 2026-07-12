@@ -5,7 +5,7 @@ from pathlib import Path
 from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
@@ -20,7 +20,7 @@ from lean_constellation.flows.resource_request.flows import ResourceCurationResu
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind, ValidationSnapshotService
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 
 class FakeLakeClient:
@@ -185,8 +185,7 @@ def _prepare_requirement_resume_gate(runtime: FakeLeanFlowRuntime, lean_runtime,
     repo_root.mkdir(parents=True, exist_ok=True)
     provider_root.mkdir(parents=True, exist_ok=True)
     (repo_root / "lakefile.toml").write_text('name = "Repo"\n', encoding="utf-8")
-    assert lean_runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
-    assert lean_runtime.repo_workspace.metadata.set_provider_ready(provider_root, summary="Provider ready.").ok
+    publish_native_provider_release(lean_runtime, provider_root, summary="Provider ready.")
     runtime.agent_service.queue_submission(
         CoordinatorRepoRequirementSubmission(
             submission_id=new_submission_id("sub"),
@@ -382,8 +381,7 @@ def test_requirement_resume_reuses_flow_agent_and_automatically_attaches_provide
     repo_root.mkdir(parents=True, exist_ok=True)
     provider_root.mkdir(parents=True, exist_ok=True)
     (repo_root / "lakefile.toml").write_text('name = "Repo"\n', encoding="utf-8")
-    assert lean_runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
-    assert lean_runtime.repo_workspace.metadata.set_provider_ready(provider_root, summary="Provider ready.").ok
+    publish_native_provider_release(lean_runtime, provider_root, summary="Provider ready.")
 
     runtime.agent_service.queue_submission(
         CoordinatorRepoRequirementSubmission(
@@ -510,11 +508,16 @@ def test_requirement_resume_gate_returns_to_waiting_when_observed_truth_races(tm
     assert dependencies.ok and dependencies.value == []
 
 
-def test_repo_ready_submission_marks_provider_ready_and_completes(tmp_path: Path) -> None:
+def test_repo_ready_submission_marks_stable_but_requires_native_release_evidence(tmp_path: Path) -> None:
     runtime, lean_runtime, _, _ = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
     repo_root.mkdir(parents=True)
     lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root)
+    assert lean_runtime.repo_workspace.metadata.set_repo_format(
+        repo_root,
+        repo_format=RepoFormat.NATIVE,
+        reason="native coordinator fixture",
+    ).ok
     written = lean_runtime.repo_workspace.preparation.write_preparation_input(
         repo_root,
         input=RepoPreparationInput(
@@ -550,7 +553,10 @@ def test_repo_ready_submission_marks_provider_ready_and_completes(tmp_path: Path
     assert flow.result.outcome == "repo_ready"
     assert flow.result.provider_ready_marked is True
     ready = lean_runtime.repo_workspace.metadata.get_provider_ready(repo_root)
-    assert ready.ok and ready.value.ready is True
+    assert ready.ok and ready.value.ready is False
+    availability = lean_runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
+    assert availability.ok and availability.value is not None and availability.value.passed is False
+    assert availability.value.issues[0].kind == "provider_native_release_adoption_required"
     publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.STABLE

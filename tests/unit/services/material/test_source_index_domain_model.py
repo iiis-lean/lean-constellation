@@ -63,7 +63,11 @@ def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> 
 
     index_json = tmp_path / ".lean_constellation" / "source_index" / "index.json"
     persisted = json.loads(index_json.read_text(encoding="utf-8"))
-    assert persisted["schema_version"] == 2
+    assert persisted["schema_version"] == 3
+    assert persisted["active_update_id"] is None
+    assert persisted["active_file_scope"] == []
+    assert persisted["files"]["chapter.md"]["source_sha256"] is not None
+    assert persisted["files"]["chapter.md"]["committed"] is False
     assert "repo_root" not in persisted
     persisted_ref = persisted["blocks"][block.value.block_id]["refs"][0]
     assert "path" not in persisted_ref

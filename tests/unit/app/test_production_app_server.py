@@ -16,6 +16,7 @@ from lean_constellation.app import (
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
+from tests.unit_services_helpers import publish_native_provider_release
 
 
 def _make_repo(workspace: Path, name: str) -> Path:
@@ -212,7 +213,7 @@ def test_production_app_server_workspace_requirement_resume_wakes_consumer_runti
         provider_repo="Provider",
         note="Provider ready.",
     ).ok
-    assert consumer_runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.").ok
+    publish_native_provider_release(consumer_runtime, provider, summary="Provider ready.")
     scope_id = "repo:Consumer"
     original_flow_id = consumer_runtime.ark.flow_service.start_flow(
         FlowRequest(

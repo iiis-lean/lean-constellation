@@ -112,6 +112,17 @@ class ConsistencyCheckComponent:
         return self.material.check_source_corpus_draft(Path(repo_root), relpath=".lean_constellation/source")
 
     def check_source_index_consistency(self, repo_root: Path) -> ServiceResult[GateReport]:
+        committed = self.material.get_committed_source_index(Path(repo_root))
+        if not committed.ok:
+            if any(issue.kind == "source_index_missing" for issue in committed.issues):
+                return self.runtime.foundation.fail(committed.issues)
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "source_index_consistency",
+                    committed.issues,
+                    summary="Source index is not in a stable committed state.",
+                )
+            )
         return self.material.validate_source_index(Path(repo_root))
 
     def check_contract_consistency(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:

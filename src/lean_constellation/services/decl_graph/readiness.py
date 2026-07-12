@@ -9,6 +9,11 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
+from lean_constellation.services.decl_graph.availability_policy import (
+    is_theorem_like,
+    required_check_stage,
+    required_state_for_availability,
+)
 from lean_constellation.services.decl_graph.models import (
     DeclLifecycle,
     DeclFileFormalView,
@@ -33,7 +38,6 @@ if TYPE_CHECKING:
 class DeclReadinessComponent:
     """Compute dynamic Decl readiness and satisfy cross-service provider protocols."""
 
-    _THEOREM_LIKE_KINDS = {"theorem", "lemma", "proposition", "corollary"}
     _DECLARED_OR_HIGHER = {DeclState.DECLARED, DeclState.PROOF_PLANNED, DeclState.PROVED}
 
     def __init__(
@@ -109,15 +113,26 @@ class DeclReadinessComponent:
                         },
                     )
                 )
+            release_status = self.runtime.repo_workspace.release.get_decl_release_status(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl.name,
+            )
+            if not release_status.ok or release_status.value is None:
+                return self.runtime.foundation.fail(release_status.issues)
             public_decls.append(
                 DeclPublicView(
                     ref=DeclRef(repo=None, node=node_path, name=decl.name, revision=decl.current_revision),
+                    resolved_revision=decl.current_revision,
+                    resolution_reason="current_decl_revision",
                     kind=decl.kind,
                     summary=decl.summary,
                     public=True,
                     ready=satisfied.value.proof_policy_satisfied,
                     stale=self._is_stale_reason(satisfied.value.reason),
                     source="decl_graph",
+                    released_state=release_status.value.released_state,
+                    release_protected=release_status.value.release_protected,
                 )
             )
         return self.runtime.foundation.ok(
@@ -607,64 +622,55 @@ class DeclReadinessComponent:
         provider_target_override: ProofAvailability | None = None,
     ) -> ServiceResult[tuple[Path, str, ProofAvailability]]:
         if ref.repo:
-            provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
-            provider_root = Path(repo_root).parent / provider_key
-            publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_root)
-            if not publication.ok or publication.value is None:
-                return self.runtime.foundation.fail(publication.issues)
-            if publication.value.publication.status.value != "stable":
+            try:
+                provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
+            except ValueError as exc:
                 return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "dependency_provider_not_stable",
-                        "Cross-repo declaration dependency provider is not stable.",
-                        object_ref=provider_key,
-                        current=publication.value.publication.status.value,
-                        expected="stable",
-                    )
+                    self.runtime.foundation.issue("dependency_provider_invalid", str(exc), object_ref=ref.repo)
                 )
+            provider_root = Path(repo_root).parent / provider_key
             config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
             if not config.ok or config.value is None:
                 return self.runtime.foundation.fail(config.issues)
-            exported = self._resolve_provider_public_export(provider_root, provider_key=provider_key, ref=ref)
-            if not exported.ok or exported.value is None:
-                return self.runtime.foundation.fail(exported.issues)
             effective_target = provider_target_override or config.value.config.target_proof_availability
-            return self.runtime.foundation.ok((provider_root, exported.value.node, effective_target))
+            compatible = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+                repo_root,
+                ref=ref,
+                required_availability=effective_target,
+            )
+            if not compatible.ok or compatible.value is None:
+                return self.runtime.foundation.fail(compatible.issues)
+            if not compatible.value.compatible:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "dependency_decl_ref_incompatible",
+                        "Cross-repo declaration dependency anchor is not compatible with the provider release head.",
+                        object_ref=f"{provider_key}:{ref.node}:{ref.name}@{ref.revision}",
+                        current=compatible.value.reason,
+                    )
+                )
+            return self.runtime.foundation.ok((provider_root, ref.node, effective_target))
         dep_node = ref.node
         if dep_node == "Main" and fallback_node_path != "Main":
             dep_node = fallback_node_path
-        return self.runtime.foundation.ok((Path(repo_root), dep_node, local_target))
-
-    def _resolve_provider_public_export(self, provider_root: Path, *, provider_key: str, ref: DeclRef) -> ServiceResult[DeclRef]:
-        exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
-        if not exports.ok or exports.value is None:
-            return self.runtime.foundation.fail(exports.issues)
-        for exported in exports.value:
-            candidate = exported.ref
-            if candidate.name != ref.name:
-                continue
-            if candidate.node != ref.node:
-                continue
-            if candidate.revision != ref.revision:
-                continue
-            if not exported.valid:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "dependency_provider_public_decl_invalid",
-                        "Cross-repo declaration dependency is exported by the provider but is not currently valid.",
-                        object_ref=f"{provider_key}:Main:{ref.name}",
-                        details={"issues": "; ".join(issue.kind for issue in exported.issues)},
-                    )
-                )
-            return self.runtime.foundation.ok(candidate)
-        return self.runtime.foundation.fail(
-            self.runtime.foundation.issue(
-                "dependency_provider_decl_not_public",
-                "Cross-repo declaration dependencies must refer to the provider repo public interface.",
-                object_ref=f"{provider_key}:{ref.node}:{ref.name}",
-                expected="provider Main scope export",
-            )
+        local_ref = ref.model_copy(update={"node": dep_node})
+        compatible = self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
+            repo_root,
+            ref=local_ref,
+            required_availability=local_target,
         )
+        if not compatible.ok or compatible.value is None:
+            return self.runtime.foundation.fail(compatible.issues)
+        if not compatible.value.compatible:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "dependency_decl_ref_incompatible",
+                    "Declaration dependency anchor is not compatible with the current contract head.",
+                    object_ref=f"{dep_node}:{ref.name}@{ref.revision}",
+                    current=compatible.value.reason,
+                )
+            )
+        return self.runtime.foundation.ok((Path(repo_root), dep_node, local_target))
 
     def _decl_ref_label(self, ref: DeclRef, *, fallback_node_path: str) -> str:
         node = ref.node
@@ -704,14 +710,10 @@ class DeclReadinessComponent:
         )
 
     def _required_state_for_target(self, kind: str, target_proof_availability: ProofAvailability) -> DeclState:
-        if target_proof_availability == ProofAvailability.DECLARED:
-            return DeclState.DECLARED
-        return DeclState.PROVED if self._is_theorem_like(kind) else DeclState.DECLARED
+        return required_state_for_availability(kind, target_proof_availability)
 
     def _required_check_stage(self, kind: str, target_proof_availability: ProofAvailability) -> str:
-        if target_proof_availability == ProofAvailability.PROVED and self._is_theorem_like(kind):
-            return "proof"
-        return "statement"
+        return required_check_stage(kind, target_proof_availability)
 
     def _current_decl_and_revision(
         self,
@@ -839,7 +841,7 @@ class DeclReadinessComponent:
         return value is not None and value.strip().lower() in {"1", "true", "yes", "passed"}
 
     def _is_theorem_like(self, kind: str) -> bool:
-        return kind.strip().lower() in self._THEOREM_LIKE_KINDS
+        return is_theorem_like(kind)
 
     def _state_rank(self, state: DeclState) -> int:
         return {

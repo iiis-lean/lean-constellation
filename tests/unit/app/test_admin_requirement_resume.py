@@ -3,6 +3,7 @@ from __future__ import annotations
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import LeanAdminApi, RequirementResumeInput, create_app_runtime_services, initialize_repo_runtime
+from tests.unit_services_helpers import publish_native_provider_release
 
 
 def _prepare_satisfied_requirement(runtime, consumer, provider, *, name: str = "need_provider") -> None:
@@ -26,7 +27,7 @@ def _prepare_satisfied_requirement(runtime, consumer, provider, *, name: str = "
         provider_repo=provider.name,
         note="Provider is ready.",
     ).ok
-    assert runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider ready.").ok
+    publish_native_provider_release(runtime, provider, summary="Provider ready.")
 
 
 def _create_waiting_coordinator_flow(runtime, consumer, *, requirement_name: str = "need_provider", bind_agent: bool = True):

@@ -12,11 +12,18 @@ from lean_constellation.domain.preparation import RepoPreparationInput, RepoRequ
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.decl_graph.models import (
+    DeclFormalSection,
+    DeclProof,
+    DeclRevisionStatus,
+    DeclStatement,
+)
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
 from lean_constellation.services.material import ResourceMetadataInput
 from lean_constellation.services.node import DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
+from tests.unit_services_helpers import publish_native_provider_release
 
 
 def _raw(
@@ -901,7 +908,13 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
         objective="Expose provider result.",
         success_criteria="Provider ready.",
     ).ok
-    _create_public_decl(base_runtime, provider, node_path="Main.Core", name="provider_result", kind="theorem")
+    created_decl = _create_public_decl(
+        base_runtime,
+        provider,
+        node_path="Main.Core",
+        name="provider_result",
+        kind="theorem",
+    )
     provider_decl = DeclPublicView(
         ref=DeclRef(repo=None, node="Main.Core", name="provider_result", revision=1),
         kind="theorem",
@@ -916,9 +929,65 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
             content_public_decl_provider=_FakePublicDeclProvider(base_runtime, {(str(provider), "Main.Core"): [provider_decl]})
         ),
     )
+    revision = runtime.decl_graph.decl_catalog.get_decl_revision(
+        provider,
+        node_path="Main.Core",
+        name="provider_result",
+        revision=created_decl.revision,
+    )
+    assert revision.ok and revision.value is not None
+    revision.value.state = DeclState.PROVED
+    revision.value.status = DeclRevisionStatus.COMMITTED
+    revision.value.statement = DeclStatement(
+        formal=DeclFormalSection(
+            code="import Mathlib\n\ntheorem provider_result : True := by\n  sorry\n",
+            check={"status": "passed", "contains_sorry": True, "allow_sorry": True},
+        )
+    )
+    revision.value.proof = DeclProof(
+        formal=DeclFormalSection(
+            code="theorem provider_result : True := by\n  trivial\n",
+            check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+        )
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            provider,
+            node_path="Main.Core",
+            decl_name="provider_result",
+            revision=created_decl.revision,
+        ),
+        revision.value,
+        mode=WriteMode.OVERWRITE,
+    ).ok
     assert runtime.node.export.add_scope_export(provider, scope_path="Main", decl_node="Main.Core", decl_name="provider_result").ok
-    assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
-    assert runtime.repo_workspace.metadata.mark_repo_stable(provider, summary="Provider stable.").ok
+    publish_native_provider_release(runtime, provider, summary="Provider stable.")
+    decl = runtime.decl_graph.decl_catalog.get_decl(provider, node_path="Main.Core", name="provider_result")
+    assert decl.ok and decl.value is not None
+    decl.value.current_revision = 2
+    decl.value.revision_ids.append(2)
+    working_revision = revision.value.model_copy(
+        deep=True,
+        update={
+            "revision": 2,
+            "state": DeclState.SPECIFIED,
+            "status": DeclRevisionStatus.OPEN,
+        },
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.decl_record_path(
+            provider, node_path="Main.Core", decl_name="provider_result"
+        ),
+        decl.value,
+        mode=WriteMode.OVERWRITE,
+    ).ok
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            provider, node_path="Main.Core", decl_name="provider_result", revision=2
+        ),
+        working_revision,
+        mode=WriteMode.OVERWRITE,
+    ).ok
     raw = _raw(consumer, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
 
     candidates = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(raw, tool_name="list_ready_provider_repos", flat_args={}))
@@ -935,9 +1004,18 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
 
     assert [repo.repo_key for repo in candidates["items"]] == ["Provider"]
     assert public["items"][0]["ref"]["repo"] == "Provider"
+    assert public["items"][0]["ref"]["revision"] == 1
+    assert public["items"][0]["resolved_revision"] == 1
+    assert public["items"][0]["state"] == "proved"
+    assert public["items"][0]["proof_policy_satisfied"] is True
     assert "ready" not in public["items"][0]
     assert "stale" not in public["items"][0]
     assert inspected["decl_name"] == "provider_result"
+    assert inspected["revision"] == 1
+    assert inspected["anchor_ref"]["revision"] == 1
+    assert inspected["resolved_revision"] == 1
+    assert inspected["state"] == "proved"
+    assert inspected["proof_policy_satisfied"] is True
 
 
 def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp_path: Path) -> None:

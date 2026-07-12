@@ -11,7 +11,16 @@ from lean_constellation.services.material import MaterialService
 def test_material_service_source_index_wrappers_have_explicit_signatures() -> None:
     signature = inspect.signature(MaterialService.update_source_block)
     assert all(parameter.kind is not inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
-    assert set(signature.parameters) == {"self", "repo_root", "block_id", "title", "summary", "kind", "subtype"}
+    assert set(signature.parameters) == {
+        "self",
+        "repo_root",
+        "block_id",
+        "title",
+        "summary",
+        "kind",
+        "subtype",
+        "expected_update_id",
+    }
 
 
 def _prepare_source(service: MaterialService, repo_root: Path) -> None:

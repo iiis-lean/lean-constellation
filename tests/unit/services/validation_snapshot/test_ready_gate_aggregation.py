@@ -154,6 +154,24 @@ def _create_declared_main_public_theorem(runtime: LeanRuntimeServices, repo_root
         name=decl_name,
         state=DeclState.DECLARED,
     ).ok
+    contract = runtime.node.contract.get_edit_contract(repo_root, node_path=MAIN_CONTENT_NODE_PATH)
+    assert contract.ok and contract.value is not None
+    contract.value.contract.decl_graph_head[decl_name] = 1
+    contract_path = runtime.node.node_tree.node_store.contract_path(
+        repo_root,
+        node_id=contract.value.node_id,
+        version=contract.value.contract.version,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        contract_path,
+        contract.value.contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    assert runtime.node.commit_content_contract(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        summary="Publish the declared Main content head.",
+    ).ok
 
 
 def _validation_with_passing_consistency(runtime: LeanRuntimeServices) -> ValidationSnapshotService:

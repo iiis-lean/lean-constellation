@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
@@ -359,6 +359,7 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     assert shell.ok, shell.issues
     _seed_declared_public_theorem(runtime, provider)
     _export_main_result_from_provider_main(runtime, provider)
+    publish_native_provider_release(runtime, provider, summary="Provider publishes declared theorem interface.")
     marked = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider publishes declared theorem interface.")
     assert marked.ok, marked.issues
     assert runtime.repo_workspace.requirement.mark_requirement_result_observed(
@@ -454,7 +455,7 @@ def test_cross_repo_dependency_requires_provider_public_export(tmp_path: Path) -
         work_mode=RepoWorkMode.DECLARED_INTERFACE,
     ).ok
     _seed_declared_public_theorem(runtime, provider)
-    assert runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider marked stable without Main export.").ok
+    publish_native_provider_release(runtime, provider, summary="Provider marked stable without Main export.")
     assert runtime.repo_workspace.metadata.update_repo_config(
         consumer,
         target_proof_availability=ProofAvailability.PROVED,
@@ -490,7 +491,7 @@ def test_strict_proved_audit_does_not_downgrade_declared_provider_policy(tmp_pat
     ).ok
     _seed_declared_public_theorem(runtime, provider)
     _export_main_result_from_provider_main(runtime, provider)
-    assert runtime.repo_workspace.metadata.set_provider_ready(provider, summary="Provider publishes declared theorem interface.").ok
+    publish_native_provider_release(runtime, provider, summary="Provider publishes declared theorem interface.")
     assert runtime.repo_workspace.metadata.update_repo_config(
         consumer,
         target_proof_availability=ProofAvailability.PROVED,
