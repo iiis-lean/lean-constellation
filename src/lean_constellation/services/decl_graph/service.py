@@ -40,6 +40,7 @@ from lean_constellation.services.decl_graph.stage_mutation import StageMutationC
 from lean_constellation.services.decl_graph.views import DeclGraphViewMapper
 from lean_constellation.services.decl_graph.declared_api import DeclaredApiFingerprintComponent
 from lean_constellation.services.decl_graph.ref_compatibility import DeclRefCompatibilityComponent
+from lean_constellation.services.decl_graph.release_guard import DeclReleaseGuard
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.lean_projection.lean_check import LeanCheckView
 from lean_constellation.services.node.export import DeclPublicView
@@ -66,6 +67,7 @@ class DeclGraphService:
         view_mapper: DeclGraphViewMapper | None = None,
         declared_api: DeclaredApiFingerprintComponent | None = None,
         ref_compatibility: DeclRefCompatibilityComponent | None = None,
+        release_guard: DeclReleaseGuard | None = None,
     ) -> None:
         self.runtime = runtime
         self.views = view_mapper or DeclGraphViewMapper()
@@ -86,6 +88,8 @@ class DeclGraphService:
         )
         self.dependency = dependency or DeclDependencyComponent(runtime, self.decl_catalog)
         self.declared_api = declared_api or DeclaredApiFingerprintComponent(runtime)
+        self.release_guard = release_guard or DeclReleaseGuard(runtime)
+        self.decl_catalog.release_guard = self.release_guard
         self.ref_compatibility = ref_compatibility or DeclRefCompatibilityComponent(runtime, self.declared_api)
         self.readiness = readiness or DeclReadinessComponent(runtime, self.decl_catalog, self.dependency)
 

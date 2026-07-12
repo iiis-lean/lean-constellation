@@ -118,6 +118,15 @@ class PreparationStartPreflightView(StrictModel):
     suggested_next_action: str | None = None
 
 
+class PreparationInterfaceAppendView(StrictModel):
+    repo_root: str
+    added_names: list[str] = Field(default_factory=list)
+    existing_names: list[str] = Field(default_factory=list)
+    total_count: int
+    changed: bool
+    summary: str
+
+
 class RepoPreparationComponent:
     """Read/write repo preparation input and build provider repo shells."""
 
@@ -167,6 +176,114 @@ class RepoPreparationComponent:
                 repo_root=str(Path(repo_root)),
                 input=loaded.value,
                 summary="Loaded preparation input.",
+            )
+        )
+
+    def preview_preparation_interface_append(
+        self,
+        repo_root: Path,
+        *,
+        interfaces: list[DeclInterface],
+    ) -> ServiceResult[PreparationInterfaceAppendView]:
+        current = self.get_preparation_input(repo_root)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        requested_names: set[str] = set()
+        for interface in interfaces:
+            if interface.name in requested_names:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "interface_duplicate",
+                        f"Duplicate interface in append request: {interface.name}",
+                        field=interface.name,
+                    )
+                )
+            requested_names.add(interface.name)
+        existing_by_name = {
+            interface.name: interface for interface in current.value.input.interface_inputs
+        }
+        added_names: list[str] = []
+        existing_names: list[str] = []
+        for interface in interfaces:
+            existing = existing_by_name.get(interface.name)
+            if existing is None:
+                added_names.append(interface.name)
+                continue
+            if existing.model_dump(mode="json") != interface.model_dump(mode="json"):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "protected_interface_conflict",
+                        f"Protected preparation interface conflicts with the append request: {interface.name}",
+                        object_ref=str(Path(repo_root)),
+                        field=interface.name,
+                    )
+                )
+            existing_names.append(interface.name)
+        return self.runtime.foundation.ok(
+            PreparationInterfaceAppendView(
+                repo_root=str(Path(repo_root)),
+                added_names=added_names,
+                existing_names=existing_names,
+                total_count=len(current.value.input.interface_inputs) + len(added_names),
+                changed=bool(added_names),
+                summary=(
+                    f"Would append {len(added_names)} preparation interfaces and reuse "
+                    f"{len(existing_names)} existing interfaces."
+                ),
+            )
+        )
+
+    def append_preparation_interfaces(
+        self,
+        repo_root: Path,
+        *,
+        interfaces: list[DeclInterface],
+    ) -> ServiceResult[PreparationInterfaceAppendView]:
+        preview = self.preview_preparation_interface_append(repo_root, interfaces=interfaces)
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        if not preview.value.changed:
+            return self.runtime.foundation.ok(
+                preview.value.model_copy(
+                    update={
+                        "summary": (
+                            f"Reused {len(preview.value.existing_names)} existing preparation "
+                            "interfaces; no write was required."
+                        )
+                    }
+                )
+            )
+        current = self.get_preparation_input(repo_root)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        existing_names = {interface.name for interface in current.value.input.interface_inputs}
+        updated = current.value.input.model_copy(deep=True)
+        updated.interface_inputs.extend(
+            interface.model_copy(deep=True)
+            for interface in interfaces
+            if interface.name not in existing_names
+        )
+        validation = self._validate_input(updated)
+        if not validation.ok:
+            return self.runtime.foundation.fail(validation.issues)
+        path = self.runtime.foundation.layout.preparation_input_path(
+            FoundationContext(repo_root=Path(repo_root))
+        )
+        written = self.runtime.foundation.store.write_json_atomic(
+            path,
+            updated,
+            mode=WriteMode.UPDATE_EXISTING,
+        )
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(
+            preview.value.model_copy(
+                update={
+                    "summary": (
+                        f"Appended {len(preview.value.added_names)} preparation interfaces and "
+                        f"reused {len(preview.value.existing_names)} existing interfaces."
+                    )
+                }
             )
         )
 

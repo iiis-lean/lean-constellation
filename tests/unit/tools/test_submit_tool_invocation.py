@@ -5,6 +5,7 @@ from pathlib import Path
 from agent_runtime_kit.flow.models import BaseSubmission
 
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.tools import register_submit_tooling
@@ -353,13 +354,23 @@ def _prepare_valid_source_index(runtime, repo_root: Path) -> None:
         "Source overview\nThe main statement.\nThe proof outline.\n",
         encoding="utf-8",
     )
-    assert runtime.material.create_draft_source_index(repo_root).ok
+    update_id = "submit-tool-source-index"
+    resolved = runtime.material.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
+    assert resolved.ok and resolved.value is not None
+    opened = runtime.material.open_source_index_update(
+        repo_root,
+        update_id=update_id,
+        resolved_scope=resolved.value,
+        index_policy="auto",
+    )
+    assert opened.ok
     block = runtime.material.create_source_block(
         repo_root,
         parent_id="root",
         kind="section",
         title="Main source block",
         summary="Covers the main statement and proof outline.",
+        expected_update_id=update_id,
     )
     assert block.ok and block.value is not None
     assert runtime.material.add_source_block_ref(
@@ -369,12 +380,27 @@ def _prepare_valid_source_index(runtime, repo_root: Path) -> None:
         start_line=1,
         end_line=3,
         role="main",
+        expected_update_id=update_id,
     ).ok
-    assert runtime.material.mark_block_refs_done(repo_root, block_id=block.value.block_id).value.passed
-    assert runtime.material.mark_block_links_done(repo_root, block_id=block.value.block_id).value.passed
-    assert runtime.material.mark_block_completed(repo_root, block_id=block.value.block_id).value.passed
-    assert runtime.material.set_file_survey_status(repo_root, path="README.md", status="surveyed", summary="Read.").ok
-    assert runtime.material.set_file_indexing_status(repo_root, path="README.md", status="indexed").ok
+    assert runtime.material.mark_block_refs_done(
+        repo_root, block_id=block.value.block_id, expected_update_id=update_id
+    ).value.passed
+    assert runtime.material.mark_block_links_done(
+        repo_root, block_id=block.value.block_id, expected_update_id=update_id
+    ).value.passed
+    assert runtime.material.mark_block_completed(
+        repo_root, block_id=block.value.block_id, expected_update_id=update_id
+    ).value.passed
+    assert runtime.material.set_file_survey_status(
+        repo_root,
+        path="README.md",
+        status="surveyed",
+        summary="Read.",
+        expected_update_id=update_id,
+    ).ok
+    assert runtime.material.set_file_indexing_status(
+        repo_root, path="README.md", status="indexed", expected_update_id=update_id
+    ).ok
 
 
 def test_second_source_index_builder_submit_is_rejected_before_gateway(tmp_path: Path) -> None:

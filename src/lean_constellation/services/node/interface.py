@@ -13,10 +13,10 @@ from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
-from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult, WriteMode
+from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent, NodeContractView
 from lean_constellation.services.node.export import DeclPublicView, ExportComponent
-from lean_constellation.services.node.node_tree import NodeKind
+from lean_constellation.services.node.node_tree import NodeContract, NodeKind
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
@@ -106,7 +106,7 @@ class InterfaceComponent:
                     field=normalized.value.name,
                 )
             )
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         existing_names = [interface.name for interface in opened.value.contract.interfaces]
@@ -146,7 +146,7 @@ class InterfaceComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("protected_interface_update_forbidden", "Protected root interface cannot be modified.", object_ref=node_path, field=name)
             )
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         target = self._find_interface(opened.value.contract.interfaces, name)
@@ -178,7 +178,7 @@ class InterfaceComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("protected_interface_remove_forbidden", "Protected root interface cannot be removed.", object_ref=node_path, field=name)
             )
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         target = self._find_interface(opened.value.contract.interfaces, name)
@@ -203,7 +203,7 @@ class InterfaceComponent:
         decl_name: str,
         decl_node: str | None = None,
     ) -> ServiceResult[InterfaceBindingView]:
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         interface = self._find_interface(opened.value.contract.interfaces, interface_name)
@@ -248,7 +248,7 @@ class InterfaceComponent:
         node_path: str,
         interface_name: str,
     ) -> ServiceResult[InterfaceBindingView]:
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         interface = self._find_interface(opened.value.contract.interfaces, interface_name)
@@ -313,7 +313,7 @@ class InterfaceComponent:
         prep = self._load_preparation_input(repo_root)
         if not prep.ok or prep.value is None:
             return self.runtime.foundation.fail(prep.issues)
-        opened = self.contract.ensure_scope_contract(repo_root, scope_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         by_name = {interface.name: interface for interface in opened.value.contract.interfaces}
@@ -815,8 +815,17 @@ class InterfaceComponent:
         node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
-        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
-        return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
+        if node.value.kind == NodeKind.SCOPE and isinstance(contract, NodeContract):
+            guarded = self.runtime.node.release_guard.check_scope_contract_candidate(
+                repo_root, scope_path=node_path, candidate=contract
+            )
+            if not guarded.ok:
+                return self.runtime.foundation.fail(guarded.issues)
+        if not isinstance(contract, NodeContract):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("contract_candidate_invalid", "Node contract candidate has an invalid type.", object_ref=node_path)
+            )
+        return self.contract._persist_open_candidate(repo_root, node_path=node_path, candidate=contract)
 
     @staticmethod
     def _find_interface(interfaces: list[DeclInterface], name: str) -> DeclInterface | None:

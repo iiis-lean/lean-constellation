@@ -4,8 +4,9 @@ from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
 
+import lean_constellation.services.foundation.store as store_module
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.foundation import StoreComponent, WriteMode
+from lean_constellation.services.foundation import WriteMode
 
 
 class ExampleModel(StrictModel):
@@ -194,6 +195,136 @@ def test_mutation_session_cleans_prepared_temp_files_after_preflight_failure(tmp
     assert commit.issues[0].kind == "duplicate_file"
     assert not first_path.exists()
     assert not list(tmp_path.glob(".first.json.*.tmp"))
+
+
+def test_mutation_session_restores_exact_originals_after_second_replace_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = make_runtime().foundation.store
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    assert store.write_json_atomic(first_path, ExampleModel(name="first", value=1)).ok
+    assert store.write_json_atomic(second_path, ExampleModel(name="second", value=2)).ok
+    first_before = first_path.read_bytes()
+    second_before = second_path.read_bytes()
+    original_replace = store_module.os.replace
+    replace_calls = 0
+
+    def fail_second_replace(source, target) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 2:
+            raise OSError("injected second replace failure")
+        original_replace(source, target)
+
+    monkeypatch.setattr(store_module.os, "replace", fail_second_replace)
+    with store.mutation("injected_failure") as tx:
+        tx.stage_json(first_path, ExampleModel(name="updated-first", value=11))
+        tx.stage_json(second_path, ExampleModel(name="updated-second", value=22))
+        failed = tx.commit()
+
+    assert not failed.ok
+    assert [item.kind for item in failed.issues] == ["mutation_commit_failed"]
+    assert first_path.read_bytes() == first_before
+    assert second_path.read_bytes() == second_before
+
+    monkeypatch.setattr(store_module.os, "replace", original_replace)
+    with store.mutation("retry") as tx:
+        tx.stage_json(first_path, ExampleModel(name="updated-first", value=11))
+        tx.stage_json(second_path, ExampleModel(name="updated-second", value=22))
+        retried = tx.commit()
+
+    assert retried.ok
+    assert store.read_json(first_path, ExampleModel).value == ExampleModel(name="updated-first", value=11)
+    assert store.read_json(second_path, ExampleModel).value == ExampleModel(name="updated-second", value=22)
+
+
+def test_mutation_session_removes_new_file_during_partial_commit_rollback(tmp_path: Path, monkeypatch) -> None:
+    store = make_runtime().foundation.store
+    new_path = tmp_path / "new.json"
+    existing_path = tmp_path / "existing.json"
+    assert store.write_json_atomic(existing_path, ExampleModel(name="existing", value=1)).ok
+    existing_before = existing_path.read_bytes()
+    original_replace = store_module.os.replace
+    replace_calls = 0
+
+    def fail_second_replace(source, target) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 2:
+            raise OSError("injected second replace failure")
+        original_replace(source, target)
+
+    monkeypatch.setattr(store_module.os, "replace", fail_second_replace)
+    with store.mutation("new_file_failure") as tx:
+        tx.stage_json(new_path, ExampleModel(name="new", value=2), mode=WriteMode.CREATE_ONLY)
+        tx.stage_json(existing_path, ExampleModel(name="updated", value=3))
+        failed = tx.commit()
+
+    assert not failed.ok
+    assert not new_path.exists()
+    assert existing_path.read_bytes() == existing_before
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert not list(tmp_path.glob(".*.rollback-*"))
+
+
+def test_mutation_session_restores_deleted_file_when_later_write_fails(tmp_path: Path, monkeypatch) -> None:
+    store = make_runtime().foundation.store
+    deleted_path = tmp_path / "deleted.json"
+    written_path = tmp_path / "written.json"
+    assert store.write_json_atomic(deleted_path, ExampleModel(name="keep", value=1)).ok
+    assert store.write_json_atomic(written_path, ExampleModel(name="old", value=2)).ok
+    deleted_before = deleted_path.read_bytes()
+    written_before = written_path.read_bytes()
+
+    original_replace = store_module.os.replace
+    replace_calls = 0
+
+    def fail_first_replace(source, target) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 1:
+            raise OSError("injected write failure after delete")
+        original_replace(source, target)
+
+    monkeypatch.setattr(store_module.os, "replace", fail_first_replace)
+    with store.mutation("delete_then_write_failure") as tx:
+        tx.stage_delete(deleted_path)
+        tx.stage_json(written_path, ExampleModel(name="new", value=3))
+        failed = tx.commit()
+
+    assert not failed.ok
+    assert [item.kind for item in failed.issues] == ["mutation_commit_failed"]
+    assert deleted_path.read_bytes() == deleted_before
+    assert written_path.read_bytes() == written_before
+
+
+def test_mutation_session_reports_commit_and_rollback_failures(tmp_path: Path, monkeypatch) -> None:
+    store = make_runtime().foundation.store
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    assert store.write_json_atomic(first_path, ExampleModel(name="first", value=1)).ok
+    assert store.write_json_atomic(second_path, ExampleModel(name="second", value=2)).ok
+    original_replace = store_module.os.replace
+    replace_calls = 0
+
+    def fail_commit_and_rollback_replace(source, target) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls in {2, 3}:
+            raise OSError(f"injected replace failure {replace_calls}")
+        original_replace(source, target)
+
+    monkeypatch.setattr(store_module.os, "replace", fail_commit_and_rollback_replace)
+    with store.mutation("commit_and_rollback_failure") as tx:
+        tx.stage_json(first_path, ExampleModel(name="new-first", value=11))
+        tx.stage_json(second_path, ExampleModel(name="new-second", value=22))
+        failed = tx.commit()
+
+    assert not failed.ok
+    assert [item.kind for item in failed.issues] == ["mutation_commit_failed", "mutation_rollback_failed"]
+    assert "injected replace failure 2" in failed.issues[0].message
+    assert "injected replace failure 3" in failed.issues[1].details["failures"]
 
 
 def test_allocate_uuid_retries_collisions() -> None:

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from lean_constellation.services.repo_workspace import RepoWorkspaceService
     from lean_constellation.services.tool_facade import ToolFacadeService
     from lean_constellation.services.validation_snapshot import ValidationSnapshotService
+    from lean_constellation.services.validation_snapshot.source_index_checkpoint import SourceIndexCheckpointAdapter
 
 
 @dataclass
@@ -35,6 +36,7 @@ class LeanConstellationServices(AppServices):
     adapter: "AdapterService | None" = None
     decl_graph: "DeclGraphService | None" = None
     validation_snapshot: "ValidationSnapshotService | None" = None
+    source_index_checkpoint: "SourceIndexCheckpointAdapter | None" = None
     tool_facade: "ToolFacadeService | None" = None
 
     def validate(self) -> None:

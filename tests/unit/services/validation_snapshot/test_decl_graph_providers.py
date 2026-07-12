@@ -569,7 +569,7 @@ def test_round_local_audit_uses_default_decl_graph_provider(tmp_path: Path) -> N
     assert audit.value.findings[0].kind == "round_internal_dependency"
 
 
-def test_delete_sanity_audit_service_wrapper_uses_default_decl_graph_provider(tmp_path: Path) -> None:
+def test_delete_sanity_guard_rejects_inbound_current_refs_before_audit(tmp_path: Path) -> None:
     runtime = _runtime()
     _create_content_node(runtime, tmp_path)
     round_id = _create_round(runtime, tmp_path)
@@ -612,11 +612,5 @@ def test_delete_sanity_audit_service_wrapper_uses_default_decl_graph_provider(tm
         name="supporting_lemma",
         objective="Delete support only.",
     )
-    assert delete.ok, delete.issues
-
-    audit = runtime.validation_snapshot.run_delete_sanity_audit(tmp_path, node_path=NODE_PATH, round_id=delete_round_id)
-
-    assert audit.ok, audit.issues
-    assert audit.value is not None
-    assert audit.value.passed is False
-    assert audit.value.findings[0].kind == "delete_closure_incomplete"
+    assert not delete.ok
+    assert delete.issues[0].kind == "decl_delete_current_inbound_refs"

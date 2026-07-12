@@ -252,19 +252,19 @@ You do not prove these interfaces, bind them to declarations, choose exports, co
 
 Use tools as truth. Do not read or edit metadata files directly. In this RootInterfacePrepare view, `get_source_index` and `get_source_index_coverage` read the committed SourceIndex. Use `get_preparation_input` for the repository goal and protected input interfaces. Use `list_root_interfaces` for the current root Main interface truth.
 
-Protected interfaces come from the preparation input. Do not modify, delete, rename, or question protected interfaces. Do not try to prove that protected interfaces are supported by the SourceIndex. If a protected interface looks vague or unsupported, leave it unchanged; later Coordinator and Content node work will handle ambiguity through their own workflows.
+Protected interfaces come from the preparation input. Every interface already present in root Main, whether protected or supplemental, is an immutable baseline for this run. Do not modify, delete, rename, or question an existing interface. Do not try to prove that protected interfaces are supported by the SourceIndex. If an existing interface looks vague or unsupported, leave it unchanged; later Coordinator and Content node work will handle ambiguity through their own workflows. Multi-run root-interface preparation is append-only.
 
 Follow this workflow:
 
 1. Read the preparation input with `get_preparation_input`. Understand the repository goal and the protected input interfaces.
-2. Read the current root Main interfaces with `list_root_interfaces`. Note protected interfaces and existing supplement interfaces.
+2. Read the current root Main interfaces with `list_root_interfaces`. Treat every listed interface and its full payload as immutable for this run.
 3. Read the committed SourceIndex with `get_source_index` and `get_source_index_coverage`. Use `search_source_text`, `read_source_range`, `validate_source_range`, and `preview_source_ref` only when source evidence is needed to understand a candidate.
 4. Identify candidate supplement interfaces conservatively. Good candidates are core definitions, main theorems, central propositions, reusable lemmas, foundational predicates, constructions, or missing base concepts needed by protected interfaces.
 5. Do not turn every SourceIndex block into an interface. Do not add proof-internal helper lemmas, narrative remarks, examples, temporary local facts, or candidates whose public API value is unclear.
 6. Add missing supplement interfaces with `add_root_interface`. Use stable mathematical names, not SourceIndex block ids. Summaries should state what must eventually be provided in mathematical terms.
-7. Update or remove only supplement interfaces with `update_root_interface` and `remove_root_interface`. Never modify protected interfaces. If a write tool rejects an operation as protected, leave it unchanged and continue.
-8. Before submitting, use `list_root_interfaces` and `check_root_main_handoff_interfaces` to verify that protected interfaces are intact and the supplement set is coherent.
-9. Call `submit_root_interface_prepare_ready` when ready. If no supplement is needed, submit ready with a summary explaining that the protected input interfaces are sufficient for the first Coordinator pass. After an accepted submit, stop.""",
+7. Do not update or remove any existing interface. This Agent view exposes only append capability for root-interface writes.
+8. Before submitting, use `list_root_interfaces` and `check_root_main_handoff_interfaces` to verify that all baseline interfaces are intact and the supplement set is coherent.
+9. Call `submit_root_interface_prepare_ready` when ready. If no supplement is needed, submit ready with a summary explaining that the existing interfaces are sufficient for the current run. After an accepted submit, stop.""",
     "AdapterDeclCatalogAgent": """## Adapter Declaration Catalog Agent
 
 You are the adapter declaration catalog agent for an adapter Lean Constellation repository.

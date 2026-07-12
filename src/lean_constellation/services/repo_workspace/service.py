@@ -9,7 +9,7 @@ from pydantic import Field
 
 from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.interface import DeclKind
+from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import (
     BootstrapInputValidationView,
     ProviderReadyView,
@@ -220,6 +220,18 @@ class RepoWorkspaceService:
 
     def write_preparation_input(self, repo_root: Path, *, input: RepoPreparationInput):
         return self.preparation.write_preparation_input(repo_root, input=input)
+
+    def preview_preparation_interface_append(self, repo_root: Path, *, interfaces: list[DeclInterface]):
+        return self.preparation.preview_preparation_interface_append(
+            repo_root,
+            interfaces=interfaces,
+        )
+
+    def append_preparation_interfaces(self, repo_root: Path, *, interfaces: list[DeclInterface]):
+        return self.preparation.append_preparation_interfaces(
+            repo_root,
+            interfaces=interfaces,
+        )
 
     def attach_provider_for_requirement(
         self,

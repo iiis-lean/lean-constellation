@@ -193,6 +193,23 @@ class ValidationSnapshotService:
             scope_ids=scope_ids,
         )
 
+    def create_repo_stable_point_snapshot_with_id(
+        self,
+        repo_root: Path,
+        *,
+        snapshot_id: str,
+        checkpoint_kind: RepoCheckpointKind | str,
+        label: str | None = None,
+        scope_ids: list[str] | None = None,
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
+        return self.snapshot_restore.create_repo_stable_point_snapshot(
+            repo_root,
+            checkpoint_kind=checkpoint_kind,
+            label=label,
+            scope_ids=scope_ids,
+            snapshot_id=snapshot_id,
+        )
+
     def restore_repo_checkpoint_snapshot(
         self,
         repo_root: Path,

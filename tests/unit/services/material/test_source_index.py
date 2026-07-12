@@ -5,7 +5,96 @@ from pathlib import Path
 
 import pytest
 
+from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.material import MaterialService
+from lean_constellation.services.foundation import ServiceResult
+
+
+class _OwnedSourceIndexMaterial:
+    """Test adapter that exercises legacy domain assertions through an owned update."""
+
+    _MUTATIONS = {
+        "add_source_block_ref",
+        "create_source_block",
+        "create_source_link",
+        "mark_block_completed",
+        "mark_block_links_done",
+        "mark_block_refs_done",
+        "remove_source_block_ref",
+        "set_file_indexing_status",
+        "set_file_survey_status",
+        "set_source_index_overview",
+        "update_source_block",
+    }
+
+    def __init__(self, service: MaterialService) -> None:
+        self._service = service
+        self._update_id = "owned-domain-test"
+        self._baseline_digest: str | None = None
+        self._resolved_scope: list[str] = []
+
+    def __getattr__(self, name: str):  # noqa: ANN204
+        target = getattr(self._service, name)
+        if name not in self._MUTATIONS:
+            return target
+
+        def owned(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            kwargs.setdefault("expected_update_id", self._update_id)
+            return target(*args, **kwargs)
+
+        return owned
+
+    def create_draft_source_index(self, repo_root: Path):  # noqa: ANN201
+        resolved = self._service.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
+        if not resolved.ok or resolved.value is None:
+            return resolved
+        opened = self._service.open_source_index_update(
+            repo_root,
+            update_id=self._update_id,
+            resolved_scope=resolved.value,
+            index_policy="auto",
+            expected_baseline_digest=self._baseline_digest,
+        )
+        if not opened.ok or opened.value is None:
+            return opened
+        self._baseline_digest = opened.value.baseline_digest or self._baseline_digest
+        self._resolved_scope = list(resolved.value.resolved_file_paths)
+        return self._service.get_source_index(repo_root)
+
+    def commit_source_index(self, repo_root: Path):  # noqa: ANN201
+        current = self._service.get_source_index(repo_root)
+        if not current.ok or current.value is None or current.value.status == "committed":
+            return self._service.commit_source_index(repo_root)
+        validated = self._service.validate_source_index_update(
+            repo_root,
+            update_id=self._update_id,
+            baseline_index=None,
+            expected_baseline_digest=self._baseline_digest
+            or self._service.source_index.missing_source_index_digest(),
+            resolved_scope=self._resolved_scope,
+            require_completed=True,
+        )
+        if not validated.ok or validated.value is None:
+            return validated
+        if not validated.value.gate.passed:
+            return ServiceResult(ok=True, value=validated.value.gate)
+        committed = self._service.commit_source_index_update(
+            repo_root,
+            update_id=self._update_id,
+            validated=validated.value,
+        )
+        if not committed.ok:
+            return committed
+        return ServiceResult(
+            ok=True,
+            value=self._service.runtime.foundation.gate_passed(
+                "source_index_commit", summary="Owned SourceIndex update committed."
+            ),
+        )
+
+
+def _owned_material() -> _OwnedSourceIndexMaterial:
+    return _OwnedSourceIndexMaterial(make_runtime().material)
 
 
 def test_material_service_source_index_wrappers_have_explicit_signatures() -> None:
@@ -69,7 +158,7 @@ def _create_block_with_ref(service: MaterialService, repo_root: Path, *, title: 
 
 
 def test_source_index_lifecycle_submit_and_commit(tmp_path: Path) -> None:
-    service = make_runtime().material
+    service = _owned_material()
     _prepare_source(service, tmp_path)
 
     created = service.create_draft_source_index(tmp_path)
@@ -178,7 +267,7 @@ def test_source_index_lifecycle_submit_and_commit(tmp_path: Path) -> None:
 
 
 def test_source_index_ref_and_review_gates(tmp_path: Path) -> None:
-    service = make_runtime().material
+    service = _owned_material()
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
     block = service.create_source_block(
@@ -213,7 +302,7 @@ def test_source_index_ref_and_review_gates(tmp_path: Path) -> None:
 
 
 def test_source_index_create_get_and_overview_boundaries(tmp_path: Path) -> None:
-    service = make_runtime().material
+    service = _owned_material()
 
     missing = service.get_source_index(tmp_path)
     assert not missing.ok
@@ -235,7 +324,7 @@ def test_source_index_create_get_and_overview_boundaries(tmp_path: Path) -> None
 
 
 def test_source_index_block_create_update_and_ref_gates(tmp_path: Path) -> None:
-    service = make_runtime().material
+    service = _owned_material()
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
 
@@ -295,7 +384,7 @@ def test_source_index_block_create_update_and_ref_gates(tmp_path: Path) -> None:
 
 
 def test_source_index_lifecycle_order_and_file_status_gates(tmp_path: Path) -> None:
-    service = make_runtime().material
+    service = _owned_material()
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
     block = service.create_source_block(
@@ -333,7 +422,7 @@ def test_source_index_lifecycle_order_and_file_status_gates(tmp_path: Path) -> N
 
 
 def test_source_index_link_gates_and_validation_after_ref_removal(tmp_path: Path) -> None:
-    service = make_runtime().material
+    service = _owned_material()
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
     source = _create_block_with_ref(service, tmp_path, title="Source block")
@@ -407,7 +496,7 @@ def test_source_index_link_gates_and_validation_after_ref_removal(tmp_path: Path
 
 
 def test_source_index_builder_review_commit_failure_and_repeat_commit(tmp_path: Path) -> None:
-    service = make_runtime().material
+    service = _owned_material()
     _prepare_source(service, tmp_path)
     service.create_draft_source_index(tmp_path)
     block = _create_block_with_ref(service, tmp_path)

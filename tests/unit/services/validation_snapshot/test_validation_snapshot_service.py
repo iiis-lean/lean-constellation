@@ -8,6 +8,7 @@ from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus, RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.domain.refs import NodeRef
 from lean_constellation.services.adapter import AdapterDeclCompletenessView
 from lean_constellation.services.adapter.adapter_decl_catalog import AdapterModuleSummaryItem, AdapterModuleSummaryView
@@ -32,6 +33,7 @@ from lean_constellation.services.validation_snapshot import (
     SnapshotFilesManifest,
     ValidationSnapshotService,
 )
+from lean_constellation.services.validation_snapshot.source_index_checkpoint import SourceIndexCheckpointAdapter
 
 
 class FakeRuntimeStabilityProvider:
@@ -546,14 +548,22 @@ def _prepare_source_and_index(service: MaterialService, repo_root: Path) -> None
         preparation_summary="Prepared source files.",
     )
     assert prepared.ok
-    created = service.create_draft_source_index(repo_root)
-    assert created.ok and created.value is not None
+    scope = service.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
+    assert scope.ok and scope.value is not None
+    opened = service.open_source_index_update(
+        repo_root,
+        update_id="native-handoff-fixture",
+        resolved_scope=scope.value,
+        index_policy="auto",
+    )
+    assert opened.ok and opened.value is not None
     block = service.create_source_block(
         repo_root,
         parent_id="root",
         kind="section",
         title="Chapter",
         summary="Main source chapter.",
+        expected_update_id="native-handoff-fixture",
     )
     assert block.ok and block.value is not None
     assert service.add_source_block_ref(
@@ -563,14 +573,40 @@ def _prepare_source_and_index(service: MaterialService, repo_root: Path) -> None
         start_line=1,
         end_line=3,
         role="primary",
+        expected_update_id="native-handoff-fixture",
     ).ok
-    assert service.mark_block_refs_done(repo_root, block_id=block.value.block_id).ok
-    assert service.mark_block_links_done(repo_root, block_id=block.value.block_id).ok
-    assert service.mark_block_completed(repo_root, block_id=block.value.block_id).ok
+    assert service.mark_block_refs_done(
+        repo_root, block_id=block.value.block_id, expected_update_id="native-handoff-fixture"
+    ).ok
+    assert service.mark_block_links_done(
+        repo_root, block_id=block.value.block_id, expected_update_id="native-handoff-fixture"
+    ).ok
+    assert service.mark_block_completed(
+        repo_root, block_id=block.value.block_id, expected_update_id="native-handoff-fixture"
+    ).ok
     for path in ["README.md", "chapter.md"]:
-        assert service.set_file_survey_status(repo_root, path=path, status="surveyed", summary=f"Surveyed {path}.").ok
-        assert service.set_file_indexing_status(repo_root, path=path, status="indexed").ok
-    assert service.commit_source_index(repo_root).ok
+        assert service.set_file_survey_status(
+            repo_root,
+            path=path,
+            status="surveyed",
+            summary=f"Surveyed {path}.",
+            expected_update_id="native-handoff-fixture",
+        ).ok
+        assert service.set_file_indexing_status(
+            repo_root, path=path, status="indexed", expected_update_id="native-handoff-fixture"
+        ).ok
+    gate = service.validate_source_index_update(
+        repo_root,
+        update_id="native-handoff-fixture",
+        baseline_index=None,
+        expected_baseline_digest=opened.value.baseline_digest,
+        resolved_scope=scope.value.resolved_file_paths,
+        require_completed=True,
+    )
+    assert gate.ok and gate.value is not None and gate.value.gate.passed
+    assert service.commit_source_index_update(
+        repo_root, update_id="native-handoff-fixture", validated=gate.value
+    ).ok
 
 
 def _read_gate_gap_records(repo_root: Path) -> list[dict[str, Any]]:
@@ -681,6 +717,73 @@ def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> N
     assert restored.ok
     assert (tmp_path / "Main.lean").read_text(encoding="utf-8") == "import Main\n"
     assert ark.restored == [("ark_1", True)]
+
+
+def test_source_index_checkpoint_materialization_is_idempotent_and_loads_retry_baseline(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    _write_preparation_input(tmp_path)
+    ark = FakeArkSnapshotProvider(runtime.foundation)
+    service = ValidationSnapshotService(
+        runtime,
+        runtime_stability_provider=FakeRuntimeStabilityProvider(runtime.foundation),
+        ark_snapshot_provider=ark,
+    )
+    runtime.app.validation_snapshot = service
+    adapter = SourceIndexCheckpointAdapter(runtime)
+
+    first = adapter.materialize_source_index_baseline_checkpoint(
+        tmp_path,
+        checkpoint_id="source_index_cp_fixed",
+        scope_ids=[f"repo:{tmp_path.name}"],
+        label="before scoped SourceIndex update",
+    )
+    retried = adapter.materialize_source_index_baseline_checkpoint(
+        tmp_path,
+        checkpoint_id="source_index_cp_fixed",
+        scope_ids=[f"repo:{tmp_path.name}"],
+        label="before scoped SourceIndex update",
+    )
+
+    assert first.ok and retried.ok
+    assert first.value is not None and retried.value is not None
+    assert first.value.checkpoint_id == retried.value.checkpoint_id == "source_index_cp_fixed"
+    assert ark.created == [([f"repo:{tmp_path.name}"], "before scoped SourceIndex update")]
+    baseline = adapter.load_source_index_baseline(tmp_path, checkpoint_id="source_index_cp_fixed")
+    assert baseline.ok and baseline.value is None
+
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "README.md").write_text(
+        "# Fixture\n\n"
+        "Source provenance: local fixture.\n"
+        "Reading order: read this file.\n"
+        "Main material: a theorem.\n"
+        "Known gaps and extraction limits: none.\n",
+        encoding="utf-8",
+    )
+    assert runtime.material.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="README.md",
+        overview="Fixture.",
+        preparation_summary="Prepared.",
+    ).ok
+    scope = runtime.material.resolve_source_scope(tmp_path, source_scope=SourceScope(mode="all"))
+    assert scope.ok and scope.value is not None
+    opened = runtime.material.open_source_index_update(
+        tmp_path,
+        update_id="source-index-update",
+        resolved_scope=scope.value,
+        index_policy="auto",
+        expected_baseline_digest=first.value.baseline_digest,
+        retry_baseline_index=baseline.value,
+    )
+    assert opened.ok and opened.value is not None
+    assert opened.value.outcome == "opened"
+    validated_retry = adapter.validate_source_index_baseline_checkpoint(
+        tmp_path,
+        checkpoint_id="source_index_cp_fixed",
+    )
+    assert validated_retry.ok
 
 
 def test_repo_stable_point_snapshot_accepts_explicit_scope_ids(tmp_path: Path) -> None:
@@ -886,7 +989,10 @@ def test_content_task_checkpoint_rejects_conflicting_node_path_and_node_id(tmp_p
     ).ok
     original = node_service.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Core").value
     assert original is not None
-    assert node_service.node_tree.mark_node_deleted(tmp_path, path="Main.Core", reason="replace").ok
+    assert node_service.commit_content_contract(
+        tmp_path, node_path="Main.Core", summary="Original core complete."
+    ).ok
+    assert node_service.mark_node_deleted(tmp_path, path="Main.Core", reason="replace").ok
     assert node_service.create_content_node(
         tmp_path,
         path="Main.Core",

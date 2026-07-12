@@ -13,12 +13,21 @@ from lean_constellation.flows.content_node_task import CONTENT_NODE_TASK_FLOW_TY
 from lean_constellation.flows.content_node_task.decl_round import DECL_ROUND_FLOW_TYPES, DECL_ROUND_STEP_TYPES
 from lean_constellation.flows.content_node_task.preparation import PREPARATION_RECON_FLOW_TYPES
 from lean_constellation.flows.coordinator import COORDINATOR_FLOW_TYPES, COORDINATOR_STEP_TYPES
-from lean_constellation.flows.repo_lifecycle import REPO_LIFECYCLE_FLOW_TYPES, REPO_LIFECYCLE_STEP_TYPES
+from lean_constellation.flows.repo_lifecycle import (
+    REPO_LIFECYCLE_FLOW_TYPES,
+    REPO_LIFECYCLE_STEP_TYPES,
+    ROOT_INTERFACE_FLOW_TYPES,
+    ROOT_INTERFACE_STEP_TYPES,
+    SOURCE_INDEX_BUILD_FLOW_TYPES,
+    SOURCE_INDEX_BUILD_STEP_TYPES,
+)
 from lean_constellation.flows.resource_request import RESOURCE_REQUEST_FLOW_TYPES, RESOURCE_REQUEST_STEP_TYPES
 
 
 BUSINESS_FLOW_TYPES = (
     *REPO_LIFECYCLE_FLOW_TYPES,
+    *SOURCE_INDEX_BUILD_FLOW_TYPES,
+    *ROOT_INTERFACE_FLOW_TYPES,
     *RESOURCE_REQUEST_FLOW_TYPES,
     *COORDINATOR_FLOW_TYPES,
     *CONTENT_NODE_TASK_FLOW_TYPES,
@@ -29,6 +38,8 @@ BUSINESS_FLOW_TYPES = (
 STANDARD_STEP_TYPES = (DispatchStep,)
 BUSINESS_LOGIC_STEP_TYPES = (
     *REPO_LIFECYCLE_STEP_TYPES,
+    *SOURCE_INDEX_BUILD_STEP_TYPES,
+    *ROOT_INTERFACE_STEP_TYPES,
     *RESOURCE_REQUEST_STEP_TYPES,
     *COORDINATOR_STEP_TYPES,
     *CONTENT_NODE_TASK_STEP_TYPES,

@@ -154,6 +154,13 @@ def commit_content_contract_head(
     *,
     decl_graph_head: dict[str, int],
 ) -> None:
+    for decl_name in decl_graph_head:
+        synced = runtime.lean_projection.sync_decl_file_after_revision_reset(
+            repo_root,
+            node_path=NODE_PATH,
+            decl_name=decl_name,
+        )
+        assert synced.ok, synced.issues
     current = runtime.node.contract.get_edit_contract(repo_root, node_path=NODE_PATH)
     assert current.ok and current.value is not None, current.issues
     current.value.contract.decl_graph_head.update(decl_graph_head)

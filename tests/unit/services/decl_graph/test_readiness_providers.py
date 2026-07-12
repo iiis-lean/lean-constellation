@@ -4,7 +4,6 @@ from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclReadinessReason, DeclState
-from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.lean_projection.lean_check import (
     LeanCheckView,
     LeanDiagnosticsView,
@@ -160,19 +159,32 @@ def _declare_definition(tmp_path: Path, *, round_id: str, name: str) -> None:
 
 def _publish_committed_heads(tmp_path: Path, names: list[str]) -> None:
     runtime = make_runtime()
-    contract = runtime.node.contract.get_edit_contract(tmp_path, node_path=NODE_PATH)
-    assert contract.ok and contract.value is not None
-    contract.value.contract.decl_graph_head.update(dict.fromkeys(names, 1))
-    path = runtime.node.node_tree.node_store.contract_path(
-        tmp_path,
-        node_id=contract.value.node_id,
-        version=contract.value.contract.version,
-    )
-    assert runtime.foundation.store.write_json_atomic(
-        path,
-        contract.value.contract,
-        mode=WriteMode.UPDATE_EXISTING,
-    ).ok
+    for round_record in runtime.decl_graph.list_rounds(tmp_path, node_path=NODE_PATH).value:
+        if round_record.status.value in {"draft", "running"}:
+            for ref in round_record.revision_refs:
+                assert runtime.decl_graph.write_decl_change_summary(
+                    tmp_path,
+                    node_path=NODE_PATH,
+                    round_id=round_record.round_id,
+                    change_id=ref.change_id,
+                    summary=f"Completed {ref.decl_name}.",
+                ).ok
+            assert runtime.decl_graph.write_round_summary(
+                tmp_path,
+                node_path=NODE_PATH,
+                round_id=round_record.round_id,
+                summary="Completed readiness fixture round.",
+            ).ok
+            assert runtime.decl_graph.mark_round_terminal(
+                tmp_path,
+                node_path=NODE_PATH,
+                round_id=round_record.round_id,
+                result_kind="success",
+            ).ok
+    for name in names:
+        assert runtime.lean_projection.sync_decl_file_after_revision_reset(
+            tmp_path, node_path=NODE_PATH, decl_name=name
+        ).ok
     assert runtime.node.commit_content_contract(
         tmp_path,
         node_path=NODE_PATH,

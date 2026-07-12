@@ -36,12 +36,14 @@ def _view(
     group_keys: Sequence[StringKey],
     allowed_agent_types: Sequence[str],
     *,
+    extra_tool_names: Sequence[str] = (),
     flow_kind: str | None = None,
     stage: str | None = None,
 ) -> ToolViewSpec:
     return ToolViewSpec(
         key=_key(key),
         group_keys=[_key(group_key) for group_key in group_keys],
+        extra_tool_names=list(extra_tool_names),
         allowed_agent_types=list(allowed_agent_types),
         flow_kind=flow_kind,
         stage=stage,
@@ -93,10 +95,10 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
                 AppGroup.SOURCE_INDEX_COMMITTED_READ,
                 AppGroup.SOURCE_MATERIAL_TEXT_READ,
                 AppGroup.ROOT_INTERFACE_STATE_READ,
-                AppGroup.ROOT_INTERFACE_WRITE,
                 AppGroup.ROOT_INTERFACE_PREPARE_READ,
             ],
             _aliases("root_interface_prepare", "RootInterfacePrepareAgent"),
+            extra_tool_names=["add_root_interface"],
         ),
         _view(
             AppView.ADAPTER_REPO_IMPORT,

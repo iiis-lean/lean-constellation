@@ -4,18 +4,17 @@ from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
+import lean_constellation.services.foundation.store as store_module
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef, NodeRef
-from lean_constellation.services.foundation import FoundationContext, FoundationService, WriteMode
+from lean_constellation.services.foundation import FoundationContext, WriteMode
 from lean_constellation.services.node import (
-    ContractComponent,
     ContractVersionStatus,
     NodeContractSnapshot,
     NodeKind,
     NodeLifecycle,
     NodeMetadata,
-    NodeTreeComponent,
 )
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 
@@ -101,7 +100,9 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     assert current.value.version == 1
     assert current.value.version_status == ContractVersionStatus.OPEN
 
-    committed = component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary="Initial core contract complete.")
+    committed = make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Initial core contract complete."
+    )
     assert committed.ok
     assert committed.value is not None
     assert committed.value.status == ContractVersionStatus.COMMITTED
@@ -154,6 +155,52 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     persisted = _contract_path(tmp_path, "Main.Topic.Core", 2).read_text(encoding="utf-8")
     assert '"status"' in persisted
     assert '"version_status"' not in persisted
+
+
+def test_commit_content_contract_rolls_back_contract_and_node_pointer_on_replace_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _create_topic_content(tmp_path)
+    runtime = make_runtime()
+    node = runtime.node.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Topic.Core")
+    assert node.ok and node.value is not None
+    contract_path = _contract_path(tmp_path, "Main.Topic.Core")
+    node_path = runtime.node.node_tree.node_store.node_file(tmp_path, node_id=node.value.node_id)
+    contract_before = contract_path.read_bytes()
+    node_before = node_path.read_bytes()
+    original_replace = store_module.os.replace
+    replace_calls = 0
+
+    def fail_second_replace(source, target) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 2:
+            raise OSError("injected node pointer replace failure")
+        original_replace(source, target)
+
+    monkeypatch.setattr(store_module.os, "replace", fail_second_replace)
+    failed = runtime.node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Commit must be atomic."
+    )
+
+    assert not failed.ok
+    assert failed.issues[0].kind == "mutation_commit_failed"
+    assert contract_path.read_bytes() == contract_before
+    assert node_path.read_bytes() == node_before
+    open_contract = runtime.node.contract.get_open_contract(tmp_path, node_path="Main.Topic.Core")
+    current_node = runtime.node.node_tree.node_store.resolve_active_node(tmp_path, path="Main.Topic.Core")
+    assert open_contract.ok and open_contract.value is not None
+    assert open_contract.value.status == ContractVersionStatus.OPEN
+    assert current_node.ok and current_node.value is not None
+    assert current_node.value.open_contract_version == 1
+    assert current_node.value.active_contract_version is None
+
+    monkeypatch.setattr(store_module.os, "replace", original_replace)
+    retried = runtime.node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Commit succeeds on retry."
+    )
+    assert retried.ok and retried.value is not None
+    assert retried.value.status == ContractVersionStatus.COMMITTED
 
 
 def test_get_current_contract_reports_missing_node_and_missing_contract_versions(tmp_path: Path) -> None:
@@ -217,7 +264,9 @@ def test_old_contract_json_without_decl_graph_head_loads_without_rewrite(tmp_pat
 def test_update_contract_text_fields_creates_open_version_and_protects_main_goal(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
     component = make_runtime().node.contract
-    assert component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary="Committed.").ok
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Committed."
+    ).ok
 
     updated = component.update_contract_text_fields(
         tmp_path,
@@ -363,7 +412,7 @@ def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path
     )
     assert initialized.ok
 
-    unbound = component.commit_scope_contract(tmp_path, scope_path="Main", summary="Ready.")
+    unbound = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main", summary="Ready.")
     assert not unbound.ok
     assert unbound.issues[0].kind == "interface_unbound"
 
@@ -376,7 +425,7 @@ def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path
     loaded.value.interfaces[0].bound_decl = ref
     assert foundation.store.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
 
-    committed = component.commit_scope_contract(tmp_path, scope_path="Main", summary="Main scope exposes the required interface.")
+    committed = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main", summary="Main scope exposes the required interface.")
     assert committed.ok
     assert committed.value is not None
     assert committed.value.version_status == ContractVersionStatus.COMMITTED
@@ -384,38 +433,44 @@ def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path
 
 def test_commit_content_contract_rejects_summary_scope_node_and_committed_contract(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = make_runtime().node.contract
 
-    missing_summary = component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary=" ")
+    missing_summary = make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary=" "
+    )
     assert not missing_summary.ok
     assert missing_summary.issues[0].kind == "contract_summary_required"
 
-    scope_node = component.commit_content_contract(tmp_path, node_path="Main.Topic", summary="Scope is not content.")
+    scope_node = make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic", summary="Scope is not content."
+    )
     assert not scope_node.ok
     assert scope_node.issues[0].kind == "node_not_content"
 
-    committed = component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary="Committed.")
+    committed = make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Committed."
+    )
     assert committed.ok
-    already_committed = component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary="Committed again.")
+    already_committed = make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Committed again."
+    )
     assert not already_committed.ok
     assert already_committed.issues[0].kind == "contract_not_open"
 
 
 def test_commit_scope_contract_rejects_summary_content_node_and_committed_contract(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
-    component = make_runtime().node.contract
 
-    missing_summary = component.commit_scope_contract(tmp_path, scope_path="Main.Topic", summary="")
+    missing_summary = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main.Topic", summary="")
     assert not missing_summary.ok
     assert missing_summary.issues[0].kind == "contract_summary_required"
 
-    content_node = component.commit_scope_contract(tmp_path, scope_path="Main.Topic.Core", summary="Content is not scope.")
+    content_node = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main.Topic.Core", summary="Content is not scope.")
     assert not content_node.ok
     assert content_node.issues[0].kind == "node_not_scope"
 
-    committed = component.commit_scope_contract(tmp_path, scope_path="Main.Topic", summary="Topic scope committed.")
+    committed = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main.Topic", summary="Topic scope committed.")
     assert committed.ok
-    already_committed = component.commit_scope_contract(tmp_path, scope_path="Main.Topic", summary="Topic scope committed again.")
+    already_committed = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main.Topic", summary="Topic scope committed again.")
     assert not already_committed.ok
     assert already_committed.issues[0].kind == "contract_not_open"
 
@@ -490,7 +545,9 @@ def test_content_task_admission_reports_wrong_kind_missing_required_fields_and_c
     contract.objective = "Build core."
     contract.success_criteria = "Ready."
     _write_contract(tmp_path, "Main.Topic.Core", contract)
-    assert component.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary="Committed.").ok
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Committed."
+    ).ok
 
     committed_admission = component.check_content_task_admission(tmp_path, node_path="Main.Topic.Core")
     assert committed_admission.ok

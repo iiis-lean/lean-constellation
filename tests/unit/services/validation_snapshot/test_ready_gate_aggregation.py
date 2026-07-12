@@ -154,6 +154,37 @@ def _create_declared_main_public_theorem(runtime: LeanRuntimeServices, repo_root
         name=decl_name,
         state=DeclState.DECLARED,
     ).ok
+    round_after_commit = runtime.decl_graph.get_round(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+    )
+    assert round_after_commit.ok and round_after_commit.value is not None
+    for change_id in round_after_commit.value.change_ids:
+        assert runtime.decl_graph.write_decl_change_summary(
+            repo_root,
+            node_path=MAIN_CONTENT_NODE_PATH,
+            round_id=round_record.value.round_id,
+            change_id=change_id,
+            summary=f"Declared {decl_name}.",
+        ).ok
+    assert runtime.decl_graph.write_round_summary(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+        summary=f"Declared {decl_name} for the Main export.",
+    ).ok
+    assert runtime.decl_graph.mark_round_terminal(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+        result_kind="success",
+    ).ok
+    assert runtime.lean_projection.sync_decl_file_after_revision_reset(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        decl_name=decl_name,
+    ).ok
     contract = runtime.node.contract.get_edit_contract(repo_root, node_path=MAIN_CONTENT_NODE_PATH)
     assert contract.ok and contract.value is not None
     contract.value.contract.decl_graph_head[decl_name] = 1

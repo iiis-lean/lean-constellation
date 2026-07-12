@@ -69,8 +69,11 @@ def test_delete_and_recreate_same_path_uses_new_node_id(tmp_path: Path) -> None:
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     first = runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal", boundary="Topic boundary")
     assert first.ok and first.value is not None
+    assert runtime.node.commit_scope_contract(
+        tmp_path, scope_path="Main.Topic", summary="Topic scope complete."
+    ).ok
 
-    deleted = runtime.node.node_tree.mark_node_deleted(tmp_path, path="Main.Topic", reason="Replace topic.")
+    deleted = runtime.node.mark_node_deleted(tmp_path, path="Main.Topic", reason="Replace topic.")
     assert deleted.ok
     second = runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="New topic goal", boundary="New topic boundary")
     assert second.ok and second.value is not None

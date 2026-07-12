@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,7 @@ from lean_constellation.flows.content_node_task.decl_round.steps import DeclStag
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
+from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.domain.preparation import RepoPreparationInput, RepoRequirementRef, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
@@ -677,6 +679,97 @@ def test_source_range_validation_and_preview_tools_invoke_material_service(tmp_p
     assert invalid["issue_code"] == "source_ref_range_invalid"
 
 
+def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(
+        "# Fixture\n\n"
+        "Source provenance: local fixture.\n"
+        "Reading order: read this file.\n"
+        "Main material: a theorem.\n"
+        "Known gaps and extraction limits: none.\n",
+        encoding="utf-8",
+    )
+    assert runtime.material.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="README.md",
+        overview="Fixture.",
+        preparation_summary="Prepared.",
+    ).ok
+    resolved = runtime.material.resolve_source_scope(
+        tmp_path,
+        source_scope=SourceScope(mode="all"),
+    )
+    assert resolved.ok and resolved.value is not None
+    opened = runtime.material.open_source_index_update(
+        tmp_path,
+        update_id="owned-update",
+        resolved_scope=resolved.value,
+        index_policy="auto",
+    )
+    assert opened.ok
+
+    flows = {
+        "flow_source_index_builder": SimpleNamespace(
+            flow_type="source_index_build",
+            state=SimpleNamespace(active_update_id="owned-update"),
+        ),
+        "flow_source_index_reviewer": SimpleNamespace(
+            flow_type="source_index_build",
+            state=SimpleNamespace(active_update_id="owned-update"),
+        ),
+    }
+    steps = {
+        "step_source_index_builder": SimpleNamespace(
+            flow_id="flow_source_index_builder",
+            step_type="source_index_builder_agent_step",
+        ),
+        "step_source_index_reviewer": SimpleNamespace(
+            flow_id="flow_source_index_reviewer",
+            step_type="source_index_reviewer_agent_step",
+        ),
+    }
+    runtime.ark.flow_service = SimpleNamespace(get_flow=lambda flow_id: flows[flow_id])
+    runtime.ark.step_service = SimpleNamespace(get_step=lambda step_id: steps[step_id])
+
+    updated = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="source_index_builder", agent_type="SourceIndexBuilderAgent"),
+            tool_name="set_source_index_overview",
+            flat_args={"overview": "Owned update."},
+        )
+    )
+    assert updated["overview"] == "Owned update."
+
+    review_context = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(
+                tmp_path,
+                view="source_index_reviewer",
+                agent_type="SourceIndexReviewerAgent",
+                role="reviewer",
+            ),
+            tool_name="get_source_index_update_context",
+            flat_args={},
+        )
+    )
+    assert review_context["active_file_scope"] == ["README.md"]
+
+    steps["step_source_index_builder"] = SimpleNamespace(
+        flow_id="another-flow",
+        step_type="source_index_builder_agent_step",
+    )
+    issues = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(tmp_path, view="source_index_builder", agent_type="SourceIndexBuilderAgent"),
+            tool_name="set_source_index_overview",
+            flat_args={"overview": "Must be rejected."},
+        )
+    )
+    assert issues[0].kind == "source_index_update_owner_mismatch"
+
+
 def test_source_and_resource_text_search_tools_enforce_material_boundary(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     source_root = tmp_path / ".lean_constellation" / "source"
@@ -1291,21 +1384,14 @@ def test_root_interface_prepare_tools_are_root_scoped_and_worker_callable(tmp_pa
             flat_args={},
         )
     )
-    updated = _unwrap_tool_result(
+    update_rejected = _unwrap_tool_failure(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="update_root_interface",
             flat_args={"name": "core_definition", "summary": "Updated core definition."},
         )
     )
-    no_op_update = _unwrap_tool_failure(
-        runtime.tool_facade.invoke_agent_tool(
-            raw,
-            tool_name="update_root_interface",
-            flat_args={"name": "core_definition"},
-        )
-    )
-    removed = _unwrap_tool_result(
+    remove_rejected = _unwrap_tool_failure(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="remove_root_interface",
@@ -1316,9 +1402,8 @@ def test_root_interface_prepare_tools_are_root_scoped_and_worker_callable(tmp_pa
     assert added["node_path"] == "Main"
     assert listed["node_path"] == "Main"
     assert listed["interfaces"][0]["name"] == "core_definition"
-    assert updated["contract"]["interfaces"][0]["summary"] == "Updated core definition."
-    assert no_op_update[0].kind == "interface_update_field_required"
-    assert removed["contract"]["interfaces"] == []
+    assert update_rejected[0].kind == "tool_not_in_view"
+    assert remove_rejected[0].kind == "tool_not_in_view"
 
 
 def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: Path) -> None:

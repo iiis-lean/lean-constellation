@@ -295,21 +295,8 @@ class NodeTreeComponent:
             )
         )
 
-    def mark_node_deleted(self, repo_root: Path, *, path: str, reason: str) -> ServiceResult[MutationSummaryView]:
-        if not reason or not reason.strip():
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("delete_reason_required", "Node deletion requires a reason.", field="reason"))
-        preview = self.preview_delete_node(repo_root, path=path)
-        if not preview.ok or preview.value is None:
-            return self.runtime.foundation.fail(preview.issues)
-        if not preview.value.deletable:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "node_delete_blocked",
-                    "Node deletion is blocked by active impacts.",
-                    object_ref=path,
-                    details={"blocking_reasons": ",".join(preview.value.blocking_reasons)},
-                )
-            )
+    def _mark_node_deleted_after_guard(self, repo_root: Path, *, path: str, reason: str) -> ServiceResult[MutationSummaryView]:
+        """System-only soft-delete primitive after an aggregate guard passes."""
         node = self._load_active_node(repo_root, path)
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)

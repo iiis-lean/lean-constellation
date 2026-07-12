@@ -66,6 +66,71 @@ def _get_source_index_coverage(runtime, ctx: ToolExecutionContext, _args: NoArgs
     return runtime.material.get_source_index_coverage(ctx.repo_root)
 
 
+def _get_source_index_update_context(runtime, ctx: ToolExecutionContext, _args: NoArgs):
+    owner = _source_index_update_owner(runtime, ctx, require_builder=False)
+    if not owner.ok or owner.value is None:
+        return runtime.foundation.fail(owner.issues)
+    return runtime.material.get_source_index_update_context(ctx.repo_root)
+
+
+def _source_index_update_owner(runtime, ctx: ToolExecutionContext, *, require_builder: bool = True):
+    flow_id = ctx.runtime.flow_id
+    step_id = ctx.runtime.step_id
+    if not flow_id or not step_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "source_index_flow_context_required",
+                "SourceIndex mutation requires the current SourceIndexBuildFlow context.",
+            )
+        )
+    try:
+        flow = runtime.get_flow(flow_id)
+        step = runtime.get_step(step_id)
+    except Exception as exc:  # noqa: BLE001 - normalize runtime identity failures.
+        return runtime.foundation.fail(
+            runtime.foundation.issue("source_index_flow_context_invalid", str(exc), object_ref=flow_id)
+        )
+    update_id = getattr(getattr(flow, "state", None), "active_update_id", None)
+    if getattr(flow, "flow_type", None) != "source_index_build" or not update_id:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "source_index_update_owner_mismatch",
+                "Current Flow does not own the active SourceIndex update.",
+                object_ref=flow_id,
+            )
+        )
+    allowed_step_types = (
+        {"source_index_builder_agent_step"}
+        if require_builder
+        else {"source_index_builder_agent_step", "source_index_reviewer_agent_step"}
+    )
+    if getattr(step, "flow_id", None) != flow_id or getattr(step, "step_type", None) not in allowed_step_types:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "source_index_update_owner_mismatch",
+                (
+                    "Only the Builder step of the owning SourceIndexBuildFlow may mutate the draft."
+                    if require_builder
+                    else "Only Builder and Reviewer steps of the owning SourceIndexBuildFlow may read update context."
+                ),
+                object_ref=step_id,
+            )
+        )
+    return runtime.foundation.ok(str(update_id))
+
+
+def _source_index_write_handler(method_name: str):
+    def handler(runtime, ctx: ToolExecutionContext, args):  # noqa: ANN001
+        owner = _source_index_update_owner(runtime, ctx)
+        if not owner.ok or owner.value is None:
+            return runtime.foundation.fail(owner.issues)
+        kwargs = args.model_dump(exclude_unset=True)
+        kwargs["expected_update_id"] = owner.value
+        return getattr(runtime.material, method_name)(ctx.repo_root, **kwargs)
+
+    return handler
+
+
 def build_source_index_tool_specs() -> list[ToolSpec]:
     builder_roles = {"worker", "admin"}
     read_roles = {"coordinator", "plan", "worker", "reviewer", "admin"}
@@ -80,126 +145,125 @@ def build_source_index_tool_specs() -> list[ToolSpec]:
             roles=read_roles,
             handler=_get_source_index,
         ),
-        direct_tool(
+        handler_tool(
             name="set_source_index_overview",
             description="Set the draft SourceIndex overview.",
             args_model=SourceIndexOverviewArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="set_source_index_overview",
             result_view="source_index",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("set_source_index_overview"),
         ),
-        direct_tool(
+        handler_tool(
             name="create_source_block",
             description="Create a semantic block in the draft SourceIndex.",
             args_model=SourceBlockCreateArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="create_source_block",
             result_view="source_block",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("create_source_block"),
         ),
-        direct_tool(
+        handler_tool(
             name="update_source_block",
             description="Update title, summary, kind, or subtype of a draft SourceIndex block.",
             args_model=SourceBlockUpdateArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="update_source_block",
             result_view="source_block",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("update_source_block"),
         ),
-        direct_tool(
+        handler_tool(
             name="add_source_block_ref",
             description="Attach a source range to a draft SourceIndex block.",
             args_model=SourceBlockRefArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="add_source_block_ref",
             result_view="source_block",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("add_source_block_ref"),
         ),
-        direct_tool(
+        handler_tool(
             name="remove_source_block_ref",
             description="Remove a draft-local source range ref from a SourceIndex block.",
             args_model=SourceBlockRefRemoveArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="remove_source_block_ref",
             result_view="source_block",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("remove_source_block_ref"),
         ),
-        direct_tool(
+        handler_tool(
             name="mark_block_refs_done",
             description="Run the refs-done gate for a draft SourceIndex block.",
             args_model=SourceBlockIdArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="mark_block_refs_done",
             result_view="gate_report",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("mark_block_refs_done"),
         ),
-        direct_tool(
+        handler_tool(
             name="create_source_link",
             description="Create a semantic relationship between SourceIndex blocks.",
             args_model=SourceLinkCreateArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="create_source_link",
             result_view="source_link",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("create_source_link"),
         ),
-        direct_tool(
+        handler_tool(
             name="mark_block_links_done",
             description="Run the links-done gate for a draft SourceIndex block.",
             args_model=SourceBlockIdArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="mark_block_links_done",
             result_view="gate_report",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("mark_block_links_done"),
         ),
-        direct_tool(
+        handler_tool(
             name="mark_block_completed",
             description="Run the completed gate for a draft SourceIndex block.",
             args_model=SourceBlockIdArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="mark_block_completed",
             result_view="gate_report",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("mark_block_completed"),
         ),
-        direct_tool(
+        handler_tool(
             name="set_file_survey_status",
             description="Set the SourceIndex survey status for a source corpus file.",
             args_model=FileStatusArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="set_file_survey_status",
             result_view="source_file_index",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("set_file_survey_status"),
         ),
-        direct_tool(
+        handler_tool(
             name="set_file_indexing_status",
             description="Set the SourceIndex indexing status for a source corpus file.",
             args_model=FileIndexingStatusArgs,
             capability=ToolCapability.WRITE,
-            backing_service="material",
-            backing_method="set_file_indexing_status",
             result_view="source_file_index",
             groups={AppGroup.SOURCE_INDEX_DRAFT_WRITE},
             roles=builder_roles,
+            handler=_source_index_write_handler("set_file_indexing_status"),
+        ),
+        handler_tool(
+            name="get_source_index_update_context",
+            description="Read the active file scope, committed baseline split, and current delta for the owning SourceIndex build Flow.",
+            args_model=NoArgs,
+            capability=ToolCapability.READ,
+            result_view="source_index_update_context",
+            groups={AppGroup.SOURCE_INDEX_DRAFT_READ},
+            roles=read_roles,
+            handler=_get_source_index_update_context,
         ),
         direct_tool(
             name="validate_source_index",

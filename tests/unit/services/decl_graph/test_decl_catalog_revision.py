@@ -3,7 +3,7 @@ from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
-from lean_constellation.services.decl_graph import DeclChangeKind, DeclRoundResultKind, DeclState
+from lean_constellation.services.decl_graph import DeclChangeKind, DeclState
 from lean_constellation.services.decl_graph.models import DeclRevision
 from lean_constellation.services.foundation import WriteMode
 
@@ -278,30 +278,15 @@ def test_delete_closure_and_round_draft_validation(tmp_path: Path) -> None:
     assert closure.value.closure_decl_names == ["A", "B", "C"]
 
     _, delete_round_id = _create_round(tmp_path, objective="Delete part of the chain.")
-    assert service.mark_decl_delete(
+    blocked = service.mark_decl_delete(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=delete_round_id,
         name="A",
         objective="Delete A.",
-    ).ok
-    incomplete = service.validate_round_draft(tmp_path, node_path="Main.Topic.Core", round_id=delete_round_id)
-    assert incomplete.ok and incomplete.value is not None
-    assert incomplete.value.passed is False
-    assert incomplete.value.issues[0].kind == "delete_closure_incomplete"
-
-    _, complete_round_id = _create_round(tmp_path, objective="Delete the full chain.")
-    for name in ["A", "B", "C"]:
-        assert service.mark_decl_delete(
-            tmp_path,
-            node_path="Main.Topic.Core",
-            round_id=complete_round_id,
-            name=name,
-            objective=f"Delete {name}.",
-        ).ok
-    complete = service.validate_round_draft(tmp_path, node_path="Main.Topic.Core", round_id=complete_round_id)
-    assert complete.ok and complete.value is not None
-    assert complete.value.passed is True
+    )
+    assert not blocked.ok
+    assert blocked.issues[0].kind == "decl_delete_current_inbound_refs"
 
 
 def test_round_draft_validation_rejects_internal_update_dependency(tmp_path: Path) -> None:

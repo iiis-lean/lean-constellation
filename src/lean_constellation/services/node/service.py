@@ -22,8 +22,10 @@ from lean_constellation.services.node.export import (
 )
 from lean_constellation.services.node.interface import InterfaceComponent, InterfaceListView
 from lean_constellation.services.node.material_ref import MaterialRefComponent, NodeMaterialRefsView
-from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent, NodeView
+from lean_constellation.services.node.node_tree import DeleteImpactView, NodeKind, NodeTreeComponent, NodeView
 from lean_constellation.services.node.public_decl_access import PublicDeclAccessResolver
+from lean_constellation.services.node.release_guard import NodeReleaseGuard
+from lean_constellation.services.foundation import MutationSummaryView
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -162,6 +164,7 @@ class NodeService:
         self._content_ready_gate = content_ready_gate
         self.node_tree = node_tree or NodeTreeComponent(runtime)
         self.contract = contract or ContractComponent(runtime, self.node_tree)
+        self.release_guard = NodeReleaseGuard(runtime)
         self.export = export or ExportComponent(
             runtime,
             node_tree=self.node_tree,
@@ -267,10 +270,59 @@ class NodeService:
         return self.dependency.check_content_batch_independent(repo_root, node_paths=node_paths)
 
     def commit_scope_contract(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[NodeContractView]:
-        return self.contract.commit_scope_contract(repo_root, scope_path=scope_path, summary=summary)
+        current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        guarded = self.release_guard.check_scope_contract_candidate(
+            repo_root, scope_path=scope_path, candidate=current.value.contract
+        )
+        if not guarded.ok:
+            return self.runtime.foundation.fail(guarded.issues)
+        return self.contract._commit_scope_contract_after_guard(repo_root, scope_path=scope_path, summary=summary)
 
     def commit_content_contract(self, repo_root: Path, *, node_path: str, summary: str) -> ServiceResult[NodeContractView]:
-        return self.contract.commit_content_contract(repo_root, node_path=node_path, summary=summary)
+        if not summary or not summary.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("contract_summary_required", "Contract summary is required.", field="summary")
+            )
+        node = self.node_tree.get_node(repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        if node.value.kind != NodeKind.CONTENT:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("node_not_content", "Content contract commit requires a Content node.", object_ref=node_path)
+            )
+        head = self.release_guard.capture_content_contract_head(repo_root, node_path=node_path)
+        if not head.ok or head.value is None:
+            return self.runtime.foundation.fail(head.issues)
+        return self.contract._commit_content_contract_with_head(
+            repo_root,
+            node_path=node_path,
+            summary=summary,
+            decl_graph_head=head.value,
+        )
+
+    def preview_delete_node(self, repo_root: Path, *, path: str) -> ServiceResult[DeleteImpactView]:
+        return self.release_guard.preview_delete_node(repo_root, path=path)
+
+    def mark_node_deleted(self, repo_root: Path, *, path: str, reason: str) -> ServiceResult[MutationSummaryView]:
+        if not reason or not reason.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("delete_reason_required", "Node deletion requires a reason.", field="reason")
+            )
+        preview = self.preview_delete_node(repo_root, path=path)
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        if not preview.value.deletable:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "node_delete_blocked",
+                    "Node deletion is blocked by current or released impacts.",
+                    object_ref=path,
+                    details={"blocking_reasons": ",".join(preview.value.blocking_reasons)},
+                )
+            )
+        return self.node_tree._mark_node_deleted_after_guard(repo_root, path=path, reason=reason)
 
     def get_current_contract_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[CurrentNodeContractView]:
         contract = self.contract.get_current_contract(repo_root, node_path=node_path)
@@ -516,7 +568,7 @@ class NodeService:
                     summary="Content task claimed ready, but the ready gate did not pass.",
                 )
                 return ServiceResult[ContentTaskFinalizeView](ok=False, value=view, issues=gate.value.issues)
-            committed = self.contract.commit_content_contract(repo_root, node_path=node_path, summary=coordinator_summary)
+            committed = self.commit_content_contract(repo_root, node_path=node_path, summary=coordinator_summary)
             if not committed.ok or committed.value is None:
                 return self.runtime.foundation.fail(committed.issues)
             return self.runtime.foundation.ok(
@@ -538,7 +590,7 @@ class NodeService:
             gate_name,
             summary=f"Content task {parsed_result.value.outcome.value} result is accepted for contract commit.",
         )
-        committed = self.contract.commit_content_contract(repo_root, node_path=node_path, summary=coordinator_summary)
+        committed = self.commit_content_contract(repo_root, node_path=node_path, summary=coordinator_summary)
         if not committed.ok or committed.value is None:
             return self.runtime.foundation.fail(committed.issues)
         return self.runtime.foundation.ok(

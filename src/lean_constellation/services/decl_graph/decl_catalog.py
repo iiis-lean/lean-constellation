@@ -19,6 +19,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclRevisionStatus,
     DeclGraphRound,
     DeclRoundStatus,
+    DeclStatement,
     DeclState,
 )
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
@@ -26,6 +27,7 @@ from lean_constellation.services.foundation import GateReport, ServiceResult, Wr
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
+    from lean_constellation.services.decl_graph.release_guard import DeclReleaseGuard
 
 
 class DeclCatalogComponent:
@@ -38,10 +40,12 @@ class DeclCatalogComponent:
         runtime: LeanRuntimeServices,
         graph_store: GraphStoreComponent,
         strategy_round: StrategyRoundComponent,
+        release_guard: "DeclReleaseGuard | None" = None,
     ) -> None:
         self.runtime = runtime
         self.graph_store = graph_store
         self.strategy_round = strategy_round
+        self.release_guard = release_guard
 
     def create_decl(
         self,
@@ -176,22 +180,47 @@ class DeclCatalogComponent:
         next_revision.updated_at = utc_now_iso()
         self._reset_revision_to_state(next_revision, start_state)
 
+        if self.release_guard is not None:
+            guarded = self.release_guard.check_update_candidate(
+                repo_root,
+                node_path=node_path,
+                decl=decl.value,
+                candidate=next_revision,
+            )
+            if not guarded.ok:
+                return self.runtime.foundation.fail(guarded.issues)
+
         decl.value.current_revision = next_revision_id
         decl.value.revision_ids.append(next_revision_id)
         decl.value.updated_at = utc_now_iso()
-        written_revision = self.runtime.foundation.store.write_json_atomic(
-            self.graph_store.revision_path(repo_root, node_path=node_path, decl_name=name, revision=next_revision_id),
-            next_revision,
-            mode=WriteMode.CREATE_ONLY,
-        )
-        if not written_revision.ok:
-            return self.runtime.foundation.fail(written_revision.issues)
-        decl_write = self._write_decl(repo_root, node_path=node_path, decl=decl.value)
-        if not decl_write.ok:
-            return self.runtime.foundation.fail(decl_write.issues)
-        attached = self._attach_revision_to_round(repo_root, node_path=node_path, round_id=round_id, revision=next_revision)
-        if not attached.ok:
-            return self.runtime.foundation.fail(attached.issues)
+        round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        ref = self._revision_ref(next_revision)
+        if ref.change_id not in round_record.value.change_ids:
+            round_record.value.revision_refs.append(ref)
+        with self.runtime.foundation.store.mutation("open_decl_update") as mutation:
+            mutation.stage_json(
+                self.graph_store.revision_path(repo_root, node_path=node_path, decl_name=name, revision=next_revision_id),
+                next_revision,
+                mode=WriteMode.CREATE_ONLY,
+            )
+            mutation.stage_json(
+                self.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=name),
+                decl.value,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            mutation.stage_json(
+                self.graph_store.round_path(repo_root, node_path=node_path, round_id=round_id),
+                round_record.value,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
+        rebuilt = self.graph_store.rebuild_index(repo_root, node_path=node_path)
+        if not rebuilt.ok:
+            return self.runtime.foundation.fail(rebuilt.issues)
         return self.runtime.foundation.ok(self._change_view_from_revision(node_path=node_path, round_id=round_id, revision=next_revision))
 
     def mark_decl_delete(
@@ -217,6 +246,19 @@ class DeclCatalogComponent:
         )
         if not latest.ok or latest.value is None:
             return self.runtime.foundation.fail(latest.issues)
+        if latest.value.version_status == "open":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_revision_already_open",
+                    "Current declaration revision is already open.",
+                    object_ref=name,
+                    current=str(latest.value.revision),
+                )
+            )
+        if self.release_guard is not None:
+            guarded = self.release_guard.check_delete(repo_root, node_path=node_path, decl_name=name)
+            if not guarded.ok:
+                return self.runtime.foundation.fail(guarded.issues)
         next_revision_id = max(decl.value.revision_ids) + 1
         next_revision = latest.value.model_copy(deep=True)
         next_revision.revision = next_revision_id
@@ -232,19 +274,34 @@ class DeclCatalogComponent:
         decl.value.current_revision = next_revision_id
         decl.value.revision_ids.append(next_revision_id)
         decl.value.updated_at = utc_now_iso()
-        written_revision = self.runtime.foundation.store.write_json_atomic(
-            self.graph_store.revision_path(repo_root, node_path=node_path, decl_name=name, revision=next_revision_id),
-            next_revision,
-            mode=WriteMode.CREATE_ONLY,
-        )
-        if not written_revision.ok:
-            return self.runtime.foundation.fail(written_revision.issues)
-        decl_write = self._write_decl(repo_root, node_path=node_path, decl=decl.value)
-        if not decl_write.ok:
-            return self.runtime.foundation.fail(decl_write.issues)
-        attached = self._attach_revision_to_round(repo_root, node_path=node_path, round_id=round_id, revision=next_revision)
-        if not attached.ok:
-            return self.runtime.foundation.fail(attached.issues)
+        round_record = self.strategy_round.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        ref = self._revision_ref(next_revision)
+        if ref.change_id not in round_record.value.change_ids:
+            round_record.value.revision_refs.append(ref)
+        with self.runtime.foundation.store.mutation("mark_decl_delete") as mutation:
+            mutation.stage_json(
+                self.graph_store.revision_path(repo_root, node_path=node_path, decl_name=name, revision=next_revision_id),
+                next_revision,
+                mode=WriteMode.CREATE_ONLY,
+            )
+            mutation.stage_json(
+                self.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=name),
+                decl.value,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            mutation.stage_json(
+                self.graph_store.round_path(repo_root, node_path=node_path, round_id=round_id),
+                round_record.value,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
+        rebuilt = self.graph_store.rebuild_index(repo_root, node_path=node_path)
+        if not rebuilt.ok:
+            return self.runtime.foundation.fail(rebuilt.issues)
         return self.runtime.foundation.ok(self._change_view_from_revision(node_path=node_path, round_id=round_id, revision=next_revision))
 
     def commit_decl_revision(
@@ -272,11 +329,53 @@ class DeclCatalogComponent:
                     current=record.value.version_status,
                 )
             )
+        if target_revision != decl.value.current_revision:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_revision_not_current",
+                    "Only the declaration's current open revision can be committed.",
+                    object_ref=name,
+                    current=str(target_revision),
+                    expected=str(decl.value.current_revision),
+                )
+            )
         if state is not None:
             record.value.state = DeclState(state)
+        if self.release_guard is not None:
+            guarded = self.release_guard.check_update_candidate(
+                repo_root,
+                node_path=node_path,
+                decl=decl.value,
+                candidate=record.value,
+            )
+            if not guarded.ok:
+                return self.runtime.foundation.fail(guarded.issues)
         record.value.version_status = "committed"
         record.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=record.value)
+        if record.value.state == DeclState.OBSOLETE:
+            decl.value.lifecycle = DeclLifecycle.DELETED
+            decl.value.updated_at = utc_now_iso()
+        with self.runtime.foundation.store.mutation("commit_decl_revision") as mutation:
+            mutation.stage_json(
+                self.graph_store.revision_path(
+                    repo_root, node_path=node_path, decl_name=name, revision=target_revision
+                ),
+                record.value,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            if record.value.state == DeclState.OBSOLETE:
+                mutation.stage_json(
+                    self.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=name),
+                    decl.value,
+                    mode=WriteMode.UPDATE_EXISTING,
+                )
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
+        rebuilt = self.graph_store.rebuild_index(repo_root, node_path=node_path)
+        if not rebuilt.ok:
+            return self.runtime.foundation.fail(rebuilt.issues)
+        return self.runtime.foundation.ok(record.value)
 
     def get_decl(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[Decl]:
         ensured = self.graph_store.ensure_graph(repo_root, node_path=node_path)
@@ -680,30 +779,18 @@ class DeclCatalogComponent:
     def _reset_revision_to_state(self, revision: DeclRevision, state: DeclState) -> None:
         revision.state = state
         if state == DeclState.PLANNED:
-            revision.statement_nl = None
-            revision.statement_origin = []
-            revision.statement_deps = []
-            revision.statement_lean_code = None
-            revision.statement_lean_check = None
-            revision.proof_nl = None
-            revision.proof_origin = []
-            revision.proof_deps = []
-            revision.proof_lean_code = None
-            revision.proof_lean_check = None
+            revision.statement = DeclStatement()
+            revision.proof = None
         elif state == DeclState.SPECIFIED:
-            revision.statement_lean_code = None
-            revision.statement_lean_check = None
-            revision.proof_nl = None
-            revision.proof_origin = []
-            revision.proof_deps = []
-            revision.proof_lean_code = None
-            revision.proof_lean_check = None
+            revision.statement.formal = None
+            revision.proof = None
         elif state == DeclState.DECLARED:
-            revision.proof_nl = None
-            revision.proof_origin = []
-            revision.proof_deps = []
-            revision.proof_lean_code = None
-            revision.proof_lean_check = None
+            revision.proof = None
+        elif state == DeclState.PROOF_PLANNED:
+            if revision.proof is not None:
+                revision.proof.formal = None
+                if revision.proof.nl is None and not revision.proof.deps:
+                    revision.proof = None
 
     def _reverse_dependency_map(
         self,

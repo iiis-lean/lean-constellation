@@ -7,9 +7,9 @@ from lean_constellation.tools import build_application_tool_specs, build_submit_
 EXPECTED_SURFACE_COUNTS = {
     "RepoFormatDiscoveryAgent": (6, 12, 1, 2, 0),
     "SourceCorpusPrepareAgent": (3, 7, 1, 2, 1),
-    "SourceIndexBuilderAgent": (4, 20, 1, 1, 0),
-    "SourceIndexReviewerAgent": (3, 9, 1, 1, 0),
-    "RootInterfacePrepareAgent": (6, 12, 1, 1, 0),
+    "SourceIndexBuilderAgent": (4, 21, 1, 1, 0),
+    "SourceIndexReviewerAgent": (3, 10, 1, 1, 0),
+    "RootInterfacePrepareAgent": (5, 10, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 21, 1, 4, 2),
     "CoordinatorAgent": (33, 82, 2, 4, 19),
@@ -247,8 +247,6 @@ def test_root_interface_prepare_surface_uses_root_specific_tools() -> None:
         "preview_source_ref",
         "list_root_interfaces",
         "add_root_interface",
-        "update_root_interface",
-        "remove_root_interface",
         "check_root_main_handoff_interfaces",
     } <= tools
     assert {
@@ -263,6 +261,8 @@ def test_root_interface_prepare_surface_uses_root_specific_tools() -> None:
         "list_scope_exports",
         "add_scope_export",
         "remove_scope_export",
+        "update_root_interface",
+        "remove_root_interface",
     }.isdisjoint(tools)
     assert report.skills == []
 

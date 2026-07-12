@@ -6,7 +6,7 @@ import pytest
 
 from tests.unit_services_helpers import make_runtime
 
-from lean_constellation.services.material import MaterialService
+from lean_constellation.domain.repo_run import SourceScope
 
 
 def _write_real_source_corpus(repo_root: Path) -> None:
@@ -94,10 +94,17 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
     assert source_valid.ok and source_valid.value is not None
     assert source_valid.value.valid
 
-    created = service.create_draft_source_index(repo_root)
-    assert created.ok
-    assert created.value is not None
-    assert set(created.value.files) == {"README.md", "appendix.txt", "chapter1.md"}
+    update_id = "real-source-index-lifecycle"
+    resolved = service.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
+    assert resolved.ok and resolved.value is not None
+    opened = service.open_source_index_update(
+        repo_root,
+        update_id=update_id,
+        resolved_scope=resolved.value,
+        index_policy="auto",
+    )
+    assert opened.ok and opened.value is not None
+    assert set(opened.value.active_file_scope) == {"README.md", "appendix.txt", "chapter1.md"}
 
     definition = service.create_source_block(
         repo_root,
@@ -105,6 +112,7 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         kind="definition",
         title="Contraction definition",
         summary="The source definition describing contractions.",
+        expected_update_id=update_id,
     )
     theorem = service.create_source_block(
         repo_root,
@@ -112,6 +120,7 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         kind="theorem",
         title="Fixed point theorem",
         summary="The main fixed point theorem and proof sketch.",
+        expected_update_id=update_id,
     )
     assert definition.ok and definition.value is not None
     assert theorem.ok and theorem.value is not None
@@ -123,6 +132,7 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         start_line=1,
         end_line=1,
         role="definition statement",
+        expected_update_id=update_id,
     )
     theorem_ref = service.add_source_block_ref(
         repo_root,
@@ -131,12 +141,15 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         start_line=3,
         end_line=4,
         role="main theorem and proof sketch",
+        expected_update_id=update_id,
     )
     assert definition_ref.ok and definition_ref.value is not None
     assert theorem_ref.ok and theorem_ref.value is not None
 
     for block_id in (definition.value.block_id, theorem.value.block_id):
-        refs_done = service.mark_block_refs_done(repo_root, block_id=block_id)
+        refs_done = service.mark_block_refs_done(
+            repo_root, block_id=block_id, expected_update_id=update_id
+        )
         assert refs_done.ok
         assert refs_done.value is not None
         assert refs_done.value.passed
@@ -148,23 +161,36 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         target_hint=None,
         link_kind="uses-definition",
         evidence_ref_ids=[theorem_ref.value.refs[0].ref_id],
+        expected_update_id=update_id,
     )
     assert link.ok
     assert link.value is not None
 
     for block_id in (definition.value.block_id, theorem.value.block_id):
-        links_done = service.mark_block_links_done(repo_root, block_id=block_id)
+        links_done = service.mark_block_links_done(
+            repo_root, block_id=block_id, expected_update_id=update_id
+        )
         assert links_done.ok
         assert links_done.value is not None
         assert links_done.value.passed
-        completed = service.mark_block_completed(repo_root, block_id=block_id)
+        completed = service.mark_block_completed(
+            repo_root, block_id=block_id, expected_update_id=update_id
+        )
         assert completed.ok
         assert completed.value is not None
         assert completed.value.passed
 
     for path in ("README.md", "appendix.txt", "chapter1.md"):
-        surveyed = service.set_file_survey_status(repo_root, path=path, status="surveyed", summary=f"Surveyed {path}.")
-        indexed = service.set_file_indexing_status(repo_root, path=path, status="indexed")
+        surveyed = service.set_file_survey_status(
+            repo_root,
+            path=path,
+            status="surveyed",
+            summary=f"Surveyed {path}.",
+            expected_update_id=update_id,
+        )
+        indexed = service.set_file_indexing_status(
+            repo_root, path=path, status="indexed", expected_update_id=update_id
+        )
         assert surveyed.ok
         assert indexed.ok
 
@@ -179,7 +205,18 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         approved=True,
         summary="Reviewer approved real-test SourceIndex.",
     )
-    commit = service.commit_source_index(repo_root)
+    update_gate = service.validate_source_index_update(
+        repo_root,
+        update_id=update_id,
+        baseline_index=None,
+        expected_baseline_digest=opened.value.baseline_digest,
+        resolved_scope=resolved.value.resolved_file_paths,
+        require_completed=True,
+    )
+    assert update_gate.ok and update_gate.value is not None and update_gate.value.gate.passed
+    commit = service.commit_source_index_update(
+        repo_root, update_id=update_id, validated=update_gate.value
+    )
     committed = service.get_source_index(repo_root)
 
     assert validation.ok and validation.value is not None and validation.value.passed
@@ -191,7 +228,7 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
     assert builder_submit.value.coverage is not None
     assert reviewer_submit.ok and reviewer_submit.value is not None
     assert reviewer_submit.value.approved is True
-    assert commit.ok and commit.value is not None and commit.value.passed
+    assert commit.ok and commit.value is not None
     assert committed.ok and committed.value is not None
     assert committed.value.status == "committed"
     assert committed.value.links[link.value.link_id].target_block_id == definition.value.block_id

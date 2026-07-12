@@ -89,11 +89,11 @@ def _get_node(runtime, ctx, args: NodePathArgs):
 
 
 def _preview_delete_node(runtime, ctx, args: NodePathArgs):
-    return runtime.node.node_tree.preview_delete_node(ctx.repo_root, path=args.node_path)
+    return runtime.node.preview_delete_node(ctx.repo_root, path=args.node_path)
 
 
 def _delete_node(runtime, ctx, args: NodeDeleteArgs):
-    return runtime.node.node_tree.mark_node_deleted(ctx.repo_root, path=args.node_path, reason=args.reason)
+    return runtime.node.mark_node_deleted(ctx.repo_root, path=args.node_path, reason=args.reason)
 
 
 def _add_current_node_dep(runtime, ctx, args: CurrentNodeDependencyAddArgs):

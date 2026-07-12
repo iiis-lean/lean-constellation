@@ -1611,30 +1611,12 @@ class SourceIndexComponent:
             if owner is not None:
                 return self.runtime.foundation.fail(owner)
             return index
-        if (
-            expected_update_id is None
-            and self._stored_schema_version(repo_root) == 3
-            and index.value.status == "draft"
-            and not index.value.active_file_scope
-            and index.value.committed_at is None
-            and not any(item.committed for item in index.value.files.values())
-        ):
-            return index
         return self.runtime.foundation.fail(
             self.runtime.foundation.issue(
                 "source_index_update_context_required",
                 "Mutable SourceIndex operations require the active system update id.",
             )
         )
-
-    def _stored_schema_version(self, repo_root: Path) -> int | None:
-        payload = self._read_stored_payload(repo_root)
-        if not payload.ok or payload.value is None:
-            return None
-        try:
-            return int(payload.value.get("schema_version", 2))
-        except (TypeError, ValueError):
-            return None
 
     def _save_model(self, repo_root: Path, index: SourceIndex) -> ServiceResult[SourceIndex]:
         write = self.runtime.foundation.store.write_json_atomic(self._index_path(repo_root), index)

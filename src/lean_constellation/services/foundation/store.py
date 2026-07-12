@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
@@ -16,7 +17,6 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation.result_error import (
-    IssueSeverity,
     ResultErrorComponent,
     ServiceResult,
 )
@@ -64,6 +64,12 @@ class _StagedDelete(StrictModel):
     missing_ok: bool
 
 
+@dataclass(frozen=True)
+class _OriginalFileState:
+    existed: bool
+    contents: bytes | None
+
+
 class MutationSession:
     """A small single-process staging helper for related store writes."""
 
@@ -101,8 +107,12 @@ class MutationSession:
     def commit(self) -> ServiceResult[MutationCommitResult]:
         self._assert_open()
         prepared_writes: list[tuple[_StagedWrite, Path]] = []
+        original_states: dict[Path, _OriginalFileState] = {}
+        applied_paths: list[Path] = []
         try:
             for item in self._staged:
+                if item.path not in original_states:
+                    original_states[item.path] = self._capture_original_state(item.path)
                 if isinstance(item, _StagedWrite):
                     preflight = self._store._check_write_mode(item.path, item.mode)
                     if not preflight.ok:
@@ -126,11 +136,13 @@ class MutationSession:
             for item in self._staged:
                 if isinstance(item, _StagedWrite):
                     os.replace(temp_by_path[item.path], item.path)
+                    applied_paths.append(item.path)
                     self._store._fsync_parent(item.path)
                     written.append(str(item.path))
                 else:
                     if item.path.exists():
                         item.path.unlink()
+                        applied_paths.append(item.path)
                         self._store._fsync_parent(item.path)
                         deleted.append(str(item.path))
 
@@ -144,14 +156,27 @@ class MutationSession:
                 )
             )
         except Exception as exc:  # noqa: BLE001 - converted to ServiceResult.
+            rollback_failures = self._restore_original_states(original_states, applied_paths)
             self._cleanup_prepared_writes(prepared_writes)
-            return self._store.result.fail(
+            issues = [
                 self._store.result.issue(
                     "mutation_commit_failed",
                     f"Mutation commit failed: {exc}",
                     details={"action_name": self.action_name},
                 )
-            )
+            ]
+            if rollback_failures:
+                issues.append(
+                    self._store.result.issue(
+                        "mutation_rollback_failed",
+                        "Mutation rollback also failed after the commit error.",
+                        details={
+                            "action_name": self.action_name,
+                            "failures": "; ".join(rollback_failures),
+                        },
+                    )
+                )
+            return self._store.result.fail(issues)
 
     def rollback(self) -> None:
         self._staged.clear()
@@ -160,6 +185,57 @@ class MutationSession:
     def _assert_open(self) -> None:
         if self._closed:
             raise RuntimeError("mutation session is closed")
+
+    @staticmethod
+    def _capture_original_state(path: Path) -> _OriginalFileState:
+        if not path.exists():
+            return _OriginalFileState(existed=False, contents=None)
+        return _OriginalFileState(existed=True, contents=path.read_bytes())
+
+    def _restore_original_states(
+        self,
+        original_states: dict[Path, _OriginalFileState],
+        applied_paths: list[Path],
+    ) -> list[str]:
+        failures: list[str] = []
+        restored: set[Path] = set()
+        for path in reversed(applied_paths):
+            if path in restored:
+                continue
+            restored.add(path)
+            state = original_states[path]
+            rollback_temp: Path | None = None
+            try:
+                if state.existed:
+                    if state.contents is None:
+                        raise RuntimeError("existing file snapshot has no contents")
+                    rollback_temp = self._write_temp_bytes(path, state.contents)
+                    os.replace(rollback_temp, path)
+                    self._store._fsync_parent(path)
+                elif path.exists():
+                    path.unlink()
+                    self._store._fsync_parent(path)
+            except Exception as exc:  # noqa: BLE001 - preserve the original commit issue too.
+                failures.append(f"{path}: {exc}")
+            finally:
+                if rollback_temp is not None and rollback_temp.exists():
+                    rollback_temp.unlink(missing_ok=True)
+        return failures
+
+    @staticmethod
+    def _write_temp_bytes(path: Path, contents: bytes) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, raw_path = tempfile.mkstemp(prefix=f".{path.name}.rollback-", dir=path.parent)
+        temp_path = Path(raw_path)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(contents)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+        return temp_path
 
     @staticmethod
     def _cleanup_prepared_writes(prepared_writes: list[tuple[_StagedWrite, Path]]) -> None:

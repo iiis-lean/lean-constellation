@@ -227,10 +227,11 @@ def test_root_interface_prepare_instruction_uses_root_specific_tools() -> None:
 
     assert "list_root_interfaces" in text
     assert "add_root_interface" in text
-    assert "update_root_interface" in text
-    assert "remove_root_interface" in text
+    assert "update_root_interface" not in text
+    assert "remove_root_interface" not in text
     assert "submit_root_interface_prepare_ready" in text
     assert "Protected interfaces come from the preparation input" in text
+    assert "Multi-run root-interface preparation is append-only" in text
     assert "After an accepted submit, stop" in text
     assert "add_node_interface" not in text
     assert "bind_node_interface" not in text

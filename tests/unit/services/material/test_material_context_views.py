@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.material import ResourceMetadataInput
 from lean_constellation.services.node import MaterialRefActor
 
@@ -46,17 +47,48 @@ def _create_content_node(runtime, repo_root: Path) -> None:
     ).ok
 
 
+def _open_source_index(material, repo_root: Path) -> str:  # noqa: ANN001
+    update_id = "material-context-test"
+    resolved = material.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
+    assert resolved.ok and resolved.value is not None
+    opened = material.open_source_index_update(
+        repo_root,
+        update_id=update_id,
+        resolved_scope=resolved.value,
+        index_policy="auto",
+    )
+    assert opened.ok
+    return update_id
+
+
+def _commit_source_index(material, repo_root: Path, update_id: str) -> None:  # noqa: ANN001
+    current = material.source_index.get_source_index_model(repo_root).value
+    gate = material.validate_source_index_update(
+        repo_root,
+        update_id=update_id,
+        baseline_index=None,
+        expected_baseline_digest=material.source_index.missing_source_index_digest(),
+        resolved_scope=list(current.active_file_scope),
+        require_completed=True,
+    )
+    assert gate.ok and gate.value is not None and gate.value.gate.passed
+    assert material.commit_source_index_update(
+        repo_root, update_id=update_id, validated=gate.value
+    ).ok
+
+
 def test_material_context_view_source_only_with_source_index(tmp_path: Path) -> None:
     runtime = make_runtime()
     material = runtime.material
     _write_source(tmp_path)
-    assert material.create_draft_source_index(tmp_path).ok
+    update_id = _open_source_index(material, tmp_path)
     block = material.create_source_block(
         tmp_path,
         parent_id="root",
         kind="theorem",
         title="Beta theorem",
         summary="The indexed theorem statement.",
+        expected_update_id=update_id,
     )
     assert block.ok and block.value is not None
     added_ref = material.add_source_block_ref(
@@ -66,6 +98,7 @@ def test_material_context_view_source_only_with_source_index(tmp_path: Path) -> 
         start_line=2,
         end_line=2,
         role="statement",
+        expected_update_id=update_id,
     )
     assert added_ref.ok and added_ref.value is not None
 
@@ -87,14 +120,17 @@ def test_material_context_committed_source_index_mode_omits_draft_blocks(tmp_pat
     runtime = make_runtime()
     material = runtime.material
     _write_source(tmp_path)
-    assert material.create_draft_source_index(tmp_path).ok
-    assert material.set_source_index_overview(tmp_path, overview="Draft overview").ok
+    update_id = _open_source_index(material, tmp_path)
+    assert material.set_source_index_overview(
+        tmp_path, overview="Draft overview", expected_update_id=update_id
+    ).ok
     block = material.create_source_block(
         tmp_path,
         parent_id="root",
         kind="theorem",
         title="Draft theorem",
         summary="Draft-only source block.",
+        expected_update_id=update_id,
     )
     assert block.ok and block.value is not None
     assert material.add_source_block_ref(
@@ -104,6 +140,7 @@ def test_material_context_committed_source_index_mode_omits_draft_blocks(tmp_pat
         start_line=2,
         end_line=2,
         role="statement",
+        expected_update_id=update_id,
     ).ok
 
     draft_context = material.get_material_context_view(tmp_path, include_source=True, include_resources=False)
@@ -121,14 +158,28 @@ def test_material_context_committed_source_index_mode_omits_draft_blocks(tmp_pat
     assert committed_only_draft.value.source_index_overview is None
     assert committed_only_draft.value.source_blocks == []
 
-    assert material.mark_block_refs_done(tmp_path, block_id=block.value.block_id).ok
-    assert material.mark_block_links_done(tmp_path, block_id=block.value.block_id).ok
-    assert material.mark_block_completed(tmp_path, block_id=block.value.block_id).ok
-    assert material.set_file_survey_status(tmp_path, path="README.md", status="surveyed", summary="Read.").ok
-    assert material.set_file_indexing_status(tmp_path, path="README.md", status="indexed").ok
-    assert material.set_file_survey_status(tmp_path, path="chapter.md", status="surveyed", summary="Read.").ok
-    assert material.set_file_indexing_status(tmp_path, path="chapter.md", status="indexed").ok
-    assert material.commit_source_index(tmp_path).ok
+    assert material.mark_block_refs_done(
+        tmp_path, block_id=block.value.block_id, expected_update_id=update_id
+    ).ok
+    assert material.mark_block_links_done(
+        tmp_path, block_id=block.value.block_id, expected_update_id=update_id
+    ).ok
+    assert material.mark_block_completed(
+        tmp_path, block_id=block.value.block_id, expected_update_id=update_id
+    ).ok
+    assert material.set_file_survey_status(
+        tmp_path, path="README.md", status="surveyed", summary="Read.", expected_update_id=update_id
+    ).ok
+    assert material.set_file_indexing_status(
+        tmp_path, path="README.md", status="indexed", expected_update_id=update_id
+    ).ok
+    assert material.set_file_survey_status(
+        tmp_path, path="chapter.md", status="surveyed", summary="Read.", expected_update_id=update_id
+    ).ok
+    assert material.set_file_indexing_status(
+        tmp_path, path="chapter.md", status="indexed", expected_update_id=update_id
+    ).ok
+    _commit_source_index(material, tmp_path, update_id)
 
     committed_context = material.get_material_context_view(
         tmp_path,

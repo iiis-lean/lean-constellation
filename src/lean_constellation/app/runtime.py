@@ -32,6 +32,7 @@ from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServic
 from lean_constellation.services.external_clients import ExternalClientConfig, LeanMcpToolkitClientConfig
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.services.validation_snapshot.snapshot_restore import ArkRuntimeSnapshotRef, RepoCheckpointKind
+from lean_constellation.services.validation_snapshot.source_index_checkpoint import SourceIndexCheckpointAdapter
 from lean_constellation.tools import register_submit_tooling
 
 
@@ -145,6 +146,7 @@ def create_app_runtime_services(
     ark_snapshot_provider = ArkRuntimeSnapshotProviderAdapter(runtime, ark.snapshot_service)
     runtime.validation_snapshot.snapshot_restore.runtime_stability_provider = ark_snapshot_provider
     runtime.validation_snapshot.snapshot_restore.ark_snapshot_provider = ark_snapshot_provider
+    runtime.app.source_index_checkpoint = SourceIndexCheckpointAdapter(runtime)
 
     if register_submit_tools:
         registered = register_submit_tooling(runtime)

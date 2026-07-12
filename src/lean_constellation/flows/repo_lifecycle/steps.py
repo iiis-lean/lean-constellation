@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import ClassVar, Literal
 import uuid
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from agent_runtime_kit.flow.contexts import StepRunContext
-from agent_runtime_kit.flow.models import BaseStep, BaseStepResult, BaseStepState, FlowRequest, FlowStepValidationError, StepTerminalReceipt
+from agent_runtime_kit.flow.models import (
+    BaseStep,
+    BaseStepResult,
+    BaseStepState,
+    ChildFlowDispatchSubmission,
+    FlowRequest,
+    FlowStepValidationError,
+    StepTerminalReceipt,
+)
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
@@ -15,12 +23,17 @@ from lean_constellation.domain.preparation import RepoRequirementRef, SourceCorp
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.repo_lifecycle.submissions import (
-    AdapterCatalogBlockedSubmission,
-    AdapterCatalogReadySubmission,
     NativeCoordinatorHandoffSubmission,
     RepoFormatAdapterChoiceSubmission,
     RepoFormatNativeChoiceSubmission,
 )
+
+if TYPE_CHECKING:
+    from lean_constellation.flows.repo_lifecycle.flows import (
+        AdapterRepoPreparationInput,
+        NativeRepoPreparationInput,
+        RequirementGroupRepoBootstrapInput,
+    )
 
 
 class RequirementBootstrapStepError(StrictModel):
@@ -461,6 +474,119 @@ class PrepareCoordinatorDispatchStepResult(LeanRenderableStepResult):
             "snapshot_id": self.snapshot_id,
             "error_code": self.error.code if self.error else None,
         }
+
+
+class PrepareNativeLifecycleChildStepResult(LeanRenderableStepResult):
+    result_type: Literal["prepare_native_lifecycle_child"] = "prepare_native_lifecycle_child"
+    outcome: Literal["prepared", "blocked"]
+    child_kind: Literal["source_index", "root_interface"] | None = None
+    error: NativePreparationStepError | None = None
+
+
+class PrepareNativeLifecycleChildStep(BaseStep):
+    """Persist a standard callback dispatch request for a reusable preparation child."""
+
+    step_type: ClassVar[str] = "prepare_native_lifecycle_child_step"
+    State: ClassVar[type[BaseStepState]] = BaseStepState
+    Result: ClassVar[type[BaseStepResult]] = PrepareNativeLifecycleChildStepResult
+    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
+        "prepare_native_lifecycle_child": PrepareNativeLifecycleChildStepResult,
+    }
+    Submissions: ClassVar[dict[str, type[ChildFlowDispatchSubmission]]] = {
+        "child_flow_dispatch": ChildFlowDispatchSubmission,
+    }
+    SubmitTools: ClassVar[set[str] | None] = {"prepare_native_lifecycle_child"}
+
+    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
+        flow = _load_native_preparation_flow(ctx)
+        input_model = _require_native_preparation_input(flow.input)
+        state = flow.state
+        run_spec = getattr(input_model, "run_spec", None)
+        checkpoint_id = getattr(state, "pre_run_mutation_checkpoint_id", None)
+        if run_spec is None or not checkpoint_id:
+            return ctx.complete_step(
+                PrepareNativeLifecycleChildStepResult(
+                    outcome="blocked",
+                    error=NativePreparationStepError(
+                        code="native_child_run_context_missing",
+                        message="Native preparation child dispatch requires RepoRunSpec and a pre-mutation checkpoint.",
+                    ),
+                    summary="Native preparation child dispatch is missing run context.",
+                )
+            )
+        repo_root = _native_repo_root(input_model)
+        if state.position.phase == "prepare_source_index_child":
+            child_kind: Literal["source_index", "root_interface"] = "source_index"
+            request = FlowRequest(
+                flow_type="source_index_build",
+                scope_id=ctx.scope_id,
+                params={
+                    "repo_key": input_model.repo_key,
+                    "repo_root": str(repo_root),
+                    "run_objective": run_spec.run_objective,
+                    "target_proof_availability": run_spec.target_proof_availability,
+                    "work_mode": run_spec.work_mode,
+                    "source_scope": run_spec.source_scope.model_dump(mode="json"),
+                    "index_policy": run_spec.index_policy,
+                    "start_reason": "initial",
+                    "max_review_rounds": state.max_source_index_rounds,
+                    "pre_update_checkpoint_id": checkpoint_id,
+                },
+            )
+        elif state.position.phase == "prepare_root_interface_child":
+            from lean_constellation.domain.repo_run import RepoRunContext
+
+            source_result = getattr(state, "source_index_child_result", None)
+            if source_result is None:
+                return ctx.complete_step(
+                    PrepareNativeLifecycleChildStepResult(
+                        outcome="blocked",
+                        error=NativePreparationStepError(
+                            code="source_index_child_result_missing",
+                            message="Root-interface child dispatch requires the terminal SourceIndex child result.",
+                        ),
+                        summary="SourceIndex child result is missing.",
+                    )
+                )
+            child_kind = "root_interface"
+            run_context = RepoRunContext(
+                start_kind="initial",
+                run_spec=run_spec,
+                resolved_source_files=list(source_result.resolved_file_paths),
+                source_index_delta_summary=source_result.summary,
+            )
+            request = FlowRequest(
+                flow_type="root_interface_preparation",
+                scope_id=ctx.scope_id,
+                params={
+                    "repo_key": input_model.repo_key,
+                    "repo_root": str(repo_root),
+                    "run_context": run_context.model_dump(mode="json"),
+                    "source_index_delta": source_result.model_dump(mode="json"),
+                    "start_reason": "initial",
+                    "pre_run_mutation_checkpoint_id": checkpoint_id,
+                },
+            )
+        else:
+            raise FlowStepValidationError(
+                f"PrepareNativeLifecycleChildStep cannot run in phase {state.position.phase}"
+            )
+        submission = ChildFlowDispatchSubmission(
+            submission_id=new_submission_id(f"native_{child_kind}_child"),
+            submission_type="child_flow_dispatch",
+            tool_name="prepare_native_lifecycle_child",
+            summary=f"Dispatch native preparation {child_kind} child Flow.",
+            requests=[request],
+            continuation="wait_for_callback",
+        )
+        ctx.accept_step_submission(submission)
+        return ctx.complete_step(
+            PrepareNativeLifecycleChildStepResult(
+                outcome="prepared",
+                child_kind=child_kind,
+                summary=submission.summary,
+            )
+        )
 
 
 class ValidateAndInitializeNativePreparationStep(BaseStep):
@@ -1406,6 +1532,7 @@ REPO_LIFECYCLE_STEP_TYPES: tuple[type[BaseStep], ...] = (
     RootInterfaceDirectReadyStep,
     HandoffGateStep,
     PrepareCoordinatorDispatchStep,
+    PrepareNativeLifecycleChildStep,
     ValidateAdapterPreparationInputStep,
     EnsureAdapterMainCatalogStep,
     FinalizeAdapterReadyStep,
@@ -1437,6 +1564,8 @@ __all__ = [
     "NativePreparationStepError",
     "PrepareCoordinatorDispatchStep",
     "PrepareCoordinatorDispatchStepResult",
+    "PrepareNativeLifecycleChildStep",
+    "PrepareNativeLifecycleChildStepResult",
     "REPO_LIFECYCLE_STEP_TYPES",
     "RepoFormatDiscoveryStepResult",
     "RequirementBootstrapStepError",

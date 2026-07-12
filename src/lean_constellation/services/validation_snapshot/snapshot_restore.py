@@ -28,6 +28,7 @@ class RepoCheckpointKind(StrEnum):
     REQUIREMENT_BOOTSTRAP_TERMINAL = "requirement_bootstrap_terminal"
     ADAPTER_PREPARATION_TERMINAL = "adapter_preparation_terminal"
     BEFORE_NATIVE_SOURCE_PROCESSING = "before_native_source_processing"
+    BEFORE_NATIVE_RUN_MUTATION = "before_native_run_mutation"
     BEFORE_NATIVE_COORDINATOR_DISPATCH = "before_native_coordinator_dispatch"
     COORDINATOR_REQUIREMENT_WAITING = "coordinator_requirement_waiting"
     BEFORE_CONTENT_TASK_DISPATCH = "before_content_task_dispatch"
@@ -246,6 +247,11 @@ class SnapshotRestoreComponent:
                 gate_name="before_native_source_processing_stable_point",
                 summary="Native preparation is initialized before source, index, and interface Agent work.",
             ),
+            RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION,
+                gate_name="before_native_run_mutation_stable_point",
+                summary="Native repo truth is stable before the first mutation of this run.",
+            ),
             RepoCheckpointKind.BEFORE_NATIVE_COORDINATOR_DISPATCH: RepoCheckpointPolicy(
                 checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_COORDINATOR_DISPATCH,
                 gate_name="before_native_coordinator_dispatch_stable_point",
@@ -341,6 +347,7 @@ class SnapshotRestoreComponent:
         node_paths: list[str] | None = None,
         node_ids: list[str] | None = None,
         scope_ids: list[str] | None = None,
+        snapshot_id: str | None = None,
     ) -> ServiceResult[RepoCheckpointSnapshotView]:
         repo_root = Path(repo_root)
         kind = RepoCheckpointKind(checkpoint_kind)
@@ -361,14 +368,28 @@ class SnapshotRestoreComponent:
         if not gate.value.passed:
             return self.runtime.foundation.fail(gate.value.issues)
 
-        snapshot_id_result = self.runtime.foundation.store.allocate_uuid(
-            lambda candidate: self._snapshot_dir(repo_root, candidate).exists(),
-            prefix="repo_cp",
-        )
-        if not snapshot_id_result.ok or snapshot_id_result.value is None:
-            return self.runtime.foundation.fail(snapshot_id_result.issues)
-        snapshot_id = snapshot_id_result.value
+        if snapshot_id is None:
+            snapshot_id_result = self.runtime.foundation.store.allocate_uuid(
+                lambda candidate: self._snapshot_dir(repo_root, candidate).exists(),
+                prefix="repo_cp",
+            )
+            if not snapshot_id_result.ok or snapshot_id_result.value is None:
+                return self.runtime.foundation.fail(snapshot_id_result.issues)
+            snapshot_id = snapshot_id_result.value
+        else:
+            try:
+                snapshot_id = self.runtime.foundation.layout.ensure_safe_key(snapshot_id.strip())
+            except ValueError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "repo_checkpoint_snapshot_id_invalid",
+                        str(exc),
+                        object_ref=snapshot_id,
+                    )
+                )
         snapshot_root = self._snapshot_dir(repo_root, snapshot_id)
+        if snapshot_root.exists():
+            return self._load_existing_snapshot_view(repo_root, snapshot_id, expected_kind=kind)
         files_root = snapshot_root / "files"
         lc_archive = files_root / "lean_constellation"
         project_archive = files_root / "project"
@@ -441,6 +462,51 @@ class SnapshotRestoreComponent:
                 node_refs=node_refs.value,
                 file_count=len(entries),
                 summary=f"Created {kind.value} checkpoint snapshot with {len(entries)} files.",
+            )
+        )
+
+    def _load_existing_snapshot_view(
+        self,
+        repo_root: Path,
+        snapshot_id: str,
+        *,
+        expected_kind: RepoCheckpointKind,
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
+        manifest = self._load_manifest(repo_root, snapshot_id)
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_checkpoint_snapshot_id_conflict",
+                    "The requested checkpoint id already exists but is not a complete checkpoint.",
+                    object_ref=snapshot_id,
+                )
+            )
+        if manifest.value.checkpoint_kind != expected_kind or Path(manifest.value.repo_root) != Path(repo_root):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_checkpoint_snapshot_id_conflict",
+                    "The requested checkpoint id belongs to a different repository or checkpoint kind.",
+                    object_ref=snapshot_id,
+                )
+            )
+        files = self._load_files_manifest(repo_root, snapshot_id)
+        if not files.ok or files.value is None:
+            return self.runtime.foundation.fail(files.issues)
+        archive = self._preflight_restore_archive_files(repo_root, snapshot_id, files.value)
+        if not archive.ok:
+            return self.runtime.foundation.fail(archive.issues)
+        return self.runtime.foundation.ok(
+            RepoCheckpointSnapshotView(
+                snapshot_id=manifest.value.snapshot_id,
+                checkpoint_kind=manifest.value.checkpoint_kind,
+                label=manifest.value.label,
+                root=str(self._snapshot_dir(repo_root, snapshot_id)),
+                ark_runtime_snapshot_id=manifest.value.ark_runtime_snapshot_id,
+                refreshed_scope_ids=manifest.value.refreshed_scope_ids,
+                ark_runtime_scope_ids=manifest.value.ark_runtime_scope_ids,
+                node_refs=manifest.value.node_refs,
+                file_count=len(files.value.entries),
+                summary=manifest.value.summary,
             )
         )
 

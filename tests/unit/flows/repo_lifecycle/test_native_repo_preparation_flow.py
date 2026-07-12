@@ -2,21 +2,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_runtime_kit.flow.models import FlowPosition, FlowStatus
+import pytest
+from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.repo_lifecycle.submissions import (
-    RootInterfacePrepareReadySubmission,
     SourceCorpusPreparedSubmission,
     SourceIndexBuilderRoundSubmission,
     SourceIndexReviewerRoundSubmission,
 )
+from lean_constellation.flows.repo_lifecycle.root_interface import RootInterfacePreparationResult
+from lean_constellation.flows.repo_lifecycle.source_index import SourceIndexBuildResult
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 from lean_constellation.services.foundation import GateReport, ServiceResult
+from lean_constellation.services.validation_snapshot.source_index_checkpoint import SourceIndexCheckpointAdapter
 from tests.unit_services_helpers import make_runtime
 
 
@@ -105,6 +108,7 @@ def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object, FakeArkSnapsh
         ark_services=lean_runtime.ark,
         app_services=lean_runtime.app,
     )
+    lean_runtime.app.source_index_checkpoint = SourceIndexCheckpointAdapter(lean_runtime)
     return flow_runtime, lean_runtime, ark_snapshot
 
 
@@ -165,6 +169,25 @@ def _prepare_native_repo_for_source_prepare(lean_runtime, repo_root: Path, *, so
 
 
 def _start_native(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
+    flow_id = runtime.start_flow(
+        "native_repo_preparation",
+        {
+            "repo_key": repo_root.name,
+            "repo_root": str(repo_root),
+            "start_reason": "bootstrap",
+        },
+        scope_id=f"repo:{repo_root.name}",
+    )
+    # Preserve explicit coverage for historical serialized inline flows. New
+    # production builds keep the default reusable-child mode.
+    runtime.flow_service.store.update_flow_record(
+        flow_id,
+        lambda flow: setattr(flow.state, "use_reusable_preparation_children", False),
+    )
+    return flow_id
+
+
+def _start_native_with_children(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
     return runtime.start_flow(
         "native_repo_preparation",
         {
@@ -183,143 +206,300 @@ def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:
     return step_id
 
 
-def _complete_minimal_source_index(lean_runtime, repo_root: Path) -> None:
-    material = lean_runtime.material
-    overview = material.set_source_index_overview(repo_root, overview="A compactness theorem and proof outline.")
-    assert overview.ok
-    block = material.create_source_block(
+def _complete_child_flow(runtime: FakeLeanFlowRuntime, child_flow_id: str, result) -> None:  # noqa: ANN001
+    runtime.flow_service.store.update_flow_record(
+        child_flow_id,
+        lambda flow: (
+            setattr(flow, "result", result),
+            setattr(flow, "status", FlowStatus.COMPLETED),
+            setattr(flow, "current_step_id", None),
+        ),
+    )
+
+
+def _run_to_source_child_waiting(
+    runtime: FakeLeanFlowRuntime,
+    repo_root: Path,
+) -> tuple[str, str]:
+    flow_id = _start_native_with_children(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    children = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )
+    assert len(children) == 1
+    assert runtime.flow_service.get_flow(flow_id).status is FlowStatus.WAITING
+    return flow_id, children[0].flow_id
+
+
+def test_historical_inline_source_index_state_is_read_only_without_owned_flow(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
+    flow_id = _start_native(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "source_index_builder"
+    mutation = lean_runtime.material.set_source_index_overview(
+        repo_root, overview="Historical inline mutation must not resume."
+    )
+    commit = lean_runtime.material.commit_source_index(repo_root)
+    assert not mutation.ok and mutation.issues[0].kind == "source_index_update_context_required"
+    assert not commit.ok and commit.issues[0].kind == "source_index_update_context_required"
+
+
+def test_fresh_native_preparation_dispatches_reusable_children_and_resumes_after_restart(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
+    flow_id = _start_native_with_children(runtime, repo_root)
+
+    _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.pre_run_mutation_checkpoint_id is not None
+    assert flow.state.position.phase == "source_corpus"
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "prepare_source_index_child"
+
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "dispatch_preparation_child"
+    source_dispatch_step_id = _advance_and_run(runtime, flow_id)
+    parent = runtime.flow_service.get_flow(flow_id)
+    assert parent.status is FlowStatus.WAITING
+    assert parent.state.position.phase == "waiting_source_index_child"
+    source_children = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=source_dispatch_step_id,
+    )
+    assert len(source_children) == 1
+    assert source_children[0].flow_type == "source_index_build"
+    assert source_children[0].input.pre_update_checkpoint_id == parent.state.pre_run_mutation_checkpoint_id
+
+    _complete_child_flow(
+        runtime,
+        source_children[0].flow_id,
+        SourceIndexBuildResult(
+            outcome="committed",
+            repo_key="Provider",
+            resolved_file_paths=["README.md"],
+            newly_committed_file_paths=["README.md"],
+            coverage_summary="Indexed the selected source scope.",
+            summary="SourceIndex child committed.",
+        ),
+    )
+    restarted = create_fake_lean_flow_runtime(
+        runtime.root,
+        ark_services=lean_runtime.ark,
+        app_services=lean_runtime.app,
+    )
+    root_prepare_step_id = restarted.flow_service.advance_flow(flow_id)
+    assert root_prepare_step_id is not None
+    restarted.run_step(root_prepare_step_id)
+    assert restarted.flow_service.get_flow(flow_id).state.position.phase == "dispatch_preparation_child"
+
+    root_dispatch_step_id = _advance_and_run(restarted, flow_id)
+    parent = restarted.flow_service.get_flow(flow_id)
+    assert parent.status is FlowStatus.WAITING
+    assert parent.state.position.phase == "waiting_root_interface_child"
+    root_children = restarted.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=root_dispatch_step_id,
+    )
+    assert len(root_children) == 1
+    assert root_children[0].flow_type == "root_interface_preparation"
+    assert root_children[0].input.source_index_delta.summary == "SourceIndex child committed."
+
+    _complete_child_flow(
+        restarted,
+        root_children[0].flow_id,
+        RootInterfacePreparationResult(
+            outcome="ready",
+            repo_key="Provider",
+            invocation_kind="child",
+            summary="Root interfaces are ready.",
+        ),
+    )
+    restarted_again = create_fake_lean_flow_runtime(
+        runtime.root,
+        ark_services=lean_runtime.ark,
+        app_services=lean_runtime.app,
+    )
+    handoff_gate_step_id = restarted_again.flow_service.advance_flow(flow_id)
+    assert handoff_gate_step_id is not None
+    parent = restarted_again.flow_service.get_flow(flow_id)
+    assert parent.status is FlowStatus.RUNNING
+    assert parent.state.position.phase == "handoff_gate"
+    assert parent.state.source_index_child_result.outcome == "committed"
+    assert parent.state.root_interface_child_result.outcome == "ready"
+
+
+def test_fresh_native_parent_runs_real_source_child_into_real_root_validation(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
+    parent_id, source_child_id = _run_to_source_child_waiting(runtime, repo_root)
+    parent = runtime.flow_service.get_flow(parent_id)
+    checkpoints = lean_runtime.validation_snapshot.list_repo_checkpoint_snapshots(repo_root).value
+    checkpoint = next(item for item in checkpoints if item.snapshot_id == parent.state.pre_run_mutation_checkpoint_id)
+    assert checkpoint.checkpoint_kind.value == "before_native_source_processing"
+
+    for _ in range(4):
+        _advance_and_run(runtime, source_child_id)
+    source_flow = runtime.flow_service.get_flow(source_child_id)
+    assert source_flow.state.position.phase == "builder"
+    update_id = source_flow.state.active_update_id
+    assert lean_runtime.material.set_source_index_overview(
+        repo_root,
+        overview="Topology source index.",
+        expected_update_id=update_id,
+    ).ok
+    block = lean_runtime.material.create_source_block(
         repo_root,
         parent_id="root",
         kind="statement",
-        title="Compactness theorem",
-        summary="Main theorem about finite subcovers.",
+        title="Topology fact",
+        summary="The selected topology fact.",
+        expected_update_id=update_id,
     )
-    assert block.ok
-    ref = material.add_source_block_ref(
+    assert block.ok and block.value is not None
+    assert lean_runtime.material.add_source_block_ref(
         repo_root,
         block_id=block.value.block_id,
         path="README.md",
         start_line=1,
-        end_line=3,
-        role="main",
-    )
-    assert ref.ok
-    assert material.mark_block_refs_done(repo_root, block_id=block.value.block_id).value.passed
-    assert material.mark_block_links_done(repo_root, block_id=block.value.block_id).value.passed
-    assert material.mark_block_completed(repo_root, block_id=block.value.block_id).value.passed
-    assert material.set_file_survey_status(repo_root, path="README.md", status="surveyed", summary="Read.").ok
-    assert material.set_file_indexing_status(repo_root, path="README.md", status="indexed").ok
-
-
-def _run_to_builder(runtime: FakeLeanFlowRuntime, lean_runtime, flow_id: str, repo_root: Path) -> None:
-    _advance_and_run(runtime, flow_id)
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_corpus"
-    _advance_and_run(runtime, flow_id)
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_index_create"
-    _advance_and_run(runtime, flow_id)
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_index_builder"
-    _complete_minimal_source_index(lean_runtime, repo_root)
-
-
-def test_native_preparation_existing_source_handoff_dispatches_coordinator(tmp_path: Path) -> None:
-    runtime, lean_runtime, ark_snapshot = _runtime(tmp_path)
-    repo_root = tmp_path / "workspace" / "Provider"
-    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
-    flow_id = _start_native(runtime, repo_root)
-
-    _run_to_builder(runtime, lean_runtime, flow_id, repo_root)
-    assert ark_snapshot.created[0][1] == ["repo:Provider"]
-    assert ark_snapshot.created[0][2] == "before native source processing for Provider"
+        end_line=5,
+        role="primary",
+        expected_update_id=update_id,
+    ).ok
+    assert lean_runtime.material.mark_block_refs_done(
+        repo_root,
+        block_id=block.value.block_id,
+        expected_update_id=update_id,
+    ).value.passed
+    assert lean_runtime.material.mark_block_links_done(
+        repo_root,
+        block_id=block.value.block_id,
+        expected_update_id=update_id,
+    ).value.passed
+    assert lean_runtime.material.mark_block_completed(
+        repo_root,
+        block_id=block.value.block_id,
+        expected_update_id=update_id,
+    ).value.passed
+    assert lean_runtime.material.set_file_survey_status(
+        repo_root,
+        path="README.md",
+        status="surveyed",
+        summary="Surveyed.",
+        expected_update_id=update_id,
+    ).ok
+    assert lean_runtime.material.set_file_indexing_status(
+        repo_root,
+        path="README.md",
+        status="indexed",
+        expected_update_id=update_id,
+    ).ok
     runtime.agent_service.queue_submission(
         SourceIndexBuilderRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_builder_round",
+            submission_id=new_submission_id("builder"),
             tool_name="submit_source_index_builder_round",
-            summary="Builder round ready.",
+            summary="Builder completed the selected scope.",
+            validation_summary="Scoped draft completed.",
         )
     )
-    _advance_and_run(runtime, flow_id)
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_index_reviewer"
-
+    _advance_and_run(runtime, source_child_id)
     runtime.agent_service.queue_submission(
         SourceIndexReviewerRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_reviewer_round",
+            submission_id=new_submission_id("reviewer"),
             tool_name="submit_source_index_review_round",
+            summary="Reviewer approved the selected scope.",
             approved=True,
-            summary="Approved.",
         )
     )
-    _advance_and_run(runtime, flow_id)
-    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "source_index_commit"
+    _advance_and_run(runtime, source_child_id)
+    _advance_and_run(runtime, source_child_id)
+    source_flow = runtime.flow_service.get_flow(source_child_id)
+    assert source_flow.status is FlowStatus.COMPLETED
+    assert source_flow.result.outcome == "committed"
 
-    _advance_and_run(runtime, flow_id)
-    assert lean_runtime.material.get_source_index(repo_root).value.status == "committed"
-    _advance_and_run(runtime, flow_id)
-    _advance_and_run(runtime, flow_id)
-    _advance_and_run(runtime, flow_id)
-    assert len(ark_snapshot.created) == 2
-    assert ark_snapshot.created[1][1] == ["repo:Provider"]
-    assert ark_snapshot.created[1][2] == "before native coordinator dispatch for Provider"
-    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, parent_id)
+    root_dispatch_step_id = _advance_and_run(runtime, parent_id)
+    root_children = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=parent_id,
+        parent_dispatch_step_id=root_dispatch_step_id,
+    )
+    assert len(root_children) == 1
+    root_child = root_children[0]
+    assert root_child.input.start_reason == "initial"
+    assert root_child.input.invocation_kind == "child"
 
-    flow = runtime.flow_service.get_flow(flow_id)
-    assert flow.status is FlowStatus.COMPLETED
-    assert flow.result is not None
-    assert flow.result.outcome == "handoff_dispatched"
-    coordinator_flows = runtime.flow_service.list_flows(flow_type="native_repo_coordinator")
-    assert len(coordinator_flows) == 1
-    assert coordinator_flows[0].input.start_mode == "native_preparation_handoff"
+    root_validate_step_id = _advance_and_run(runtime, root_child.flow_id)
+    root_validate = runtime.flow_service.get_step(root_validate_step_id)
+    assert root_validate.result.outcome == "valid"
 
 
-def test_native_preparation_interface_supplement_uses_root_interface_agent(tmp_path: Path) -> None:
+@pytest.mark.parametrize("child_outcome", ["blocked", "invalid_input"])
+def test_native_source_child_business_terminal_completes_parent_without_next_step(
+    tmp_path: Path,
+    child_outcome: str,
+) -> None:
     runtime, lean_runtime, _ = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Provider"
-    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=True)
-    flow_id = _start_native(runtime, repo_root)
-
-    _run_to_builder(runtime, lean_runtime, flow_id, repo_root)
-    runtime.agent_service.queue_submission(
-        SourceIndexBuilderRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_builder_round",
-            tool_name="submit_source_index_builder_round",
-            summary="Builder round ready.",
-        )
+    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
+    flow_id, child_flow_id = _run_to_source_child_waiting(runtime, repo_root)
+    _complete_child_flow(
+        runtime,
+        child_flow_id,
+        SourceIndexBuildResult(
+            outcome=child_outcome,
+            repo_key="Provider",
+            reason=f"child {child_outcome}",
+            summary=f"child {child_outcome}",
+        ),
     )
-    _advance_and_run(runtime, flow_id)
-    runtime.agent_service.queue_submission(
-        SourceIndexReviewerRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_reviewer_round",
-            tool_name="submit_source_index_review_round",
-            approved=True,
-            summary="Approved.",
-        )
+    restarted = create_fake_lean_flow_runtime(
+        runtime.root,
+        ark_services=lean_runtime.ark,
+        app_services=lean_runtime.app,
     )
-    _advance_and_run(runtime, flow_id)
-    _advance_and_run(runtime, flow_id)
+    assert restarted.flow_service.prepare_flow_for_advance(flow_id)
+    parent = restarted.flow_service.get_flow(flow_id)
+    assert parent.status is FlowStatus.COMPLETED
+    assert parent.result.outcome == child_outcome
+    assert parent.result.blocked_reason == f"child {child_outcome}"
+    assert not restarted.flow_service.can_advance_flow(flow_id)
 
-    flow = runtime.flow_service.get_flow(flow_id)
-    assert flow.state.position.phase == "root_interface_prepare"
-    root_step_id = runtime.flow_service.advance_flow(flow_id)
-    assert root_step_id is not None
-    root_step = runtime.flow_service.get_step(root_step_id)
-    assert root_step.step_type == "root_interface_prepare_agent_step"
 
-    runtime.agent_service.queue_submission(
-        RootInterfacePrepareReadySubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="root_interface_prepare_ready",
-            tool_name="submit_root_interface_prepare_ready",
-            summary="Root interfaces are ready.",
-        )
+def test_native_source_child_runtime_failure_fails_parent_without_next_step(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
+    flow_id, child_flow_id = _run_to_source_child_waiting(runtime, repo_root)
+
+    def fail_child(flow) -> None:  # noqa: ANN001
+        flow.error = BaseFlowError(error_type="child_runtime_failed", message="child runtime exploded")
+        flow.status = FlowStatus.FAILED
+        flow.current_step_id = None
+
+    runtime.flow_service.store.update_flow_record(child_flow_id, fail_child)
+    restarted = create_fake_lean_flow_runtime(
+        runtime.root,
+        ark_services=lean_runtime.ark,
+        app_services=lean_runtime.app,
     )
-    runtime.run_step(root_step_id)
-
-    flow = runtime.flow_service.get_flow(flow_id)
-    assert flow.state.root_interface_ready is True
-    assert flow.state.position.phase == "handoff_gate"
+    assert restarted.flow_service.prepare_flow_for_advance(flow_id)
+    parent = restarted.flow_service.get_flow(flow_id)
+    assert parent.status is FlowStatus.FAILED
+    assert parent.result is None
+    assert parent.error.error_type == "native_preparation_child_failed"
+    assert parent.error.message == "child runtime exploded"
+    assert parent.error.details["child_error_type"] == "child_runtime_failed"
+    assert not restarted.flow_service.can_advance_flow(flow_id)
 
 
 def test_native_preparation_source_prepare_workdir_uses_preparation_relpath(tmp_path: Path) -> None:
@@ -376,119 +556,3 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
     assert manifest.ok and manifest.value is not None
     assert manifest.value.relpath == "custom_sources"
     assert manifest.value.entry_path == "README.md"
-
-
-def test_source_index_review_loop_prompts_include_builder_summary_and_feedback(tmp_path: Path) -> None:
-    runtime, lean_runtime, _ = _runtime(tmp_path)
-    repo_root = tmp_path / "workspace" / "Provider"
-    _prepare_native_repo(lean_runtime, repo_root)
-    flow_id = _start_native(runtime, repo_root)
-
-    _run_to_builder(runtime, lean_runtime, flow_id, repo_root)
-    runtime.agent_service.queue_submission(
-        SourceIndexBuilderRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_builder_round",
-            tool_name="submit_source_index_builder_round",
-            summary="Indexed compactness theorem and proof outline.",
-        )
-    )
-    _advance_and_run(runtime, flow_id)
-
-    reviewer_step_id = runtime.flow_service.advance_flow(flow_id)
-    assert reviewer_step_id is not None
-    reviewer_step = runtime.flow_service.get_step(reviewer_step_id)
-    assert "Latest builder summary:" in reviewer_step.state.prompt_override
-    assert "Indexed compactness theorem and proof outline." in reviewer_step.state.prompt_override
-
-    runtime.agent_service.queue_submission(
-        SourceIndexReviewerRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_reviewer_round",
-            tool_name="submit_source_index_review_round",
-            approved=False,
-            feedback="Add a separate block for the finite subcover proof.",
-            summary="Rejected.",
-        )
-    )
-    runtime.run_step(reviewer_step_id)
-
-    retry_step_id = runtime.flow_service.advance_flow(flow_id)
-    assert retry_step_id is not None
-    retry_step = runtime.flow_service.get_step(retry_step_id)
-    assert "Previous reviewer feedback:" in retry_step.state.prompt_override
-    assert "Add a separate block for the finite subcover proof." in retry_step.state.prompt_override
-
-
-def test_commit_source_index_requires_reviewer_approval(tmp_path: Path) -> None:
-    runtime, lean_runtime, _ = _runtime(tmp_path)
-    repo_root = tmp_path / "workspace" / "Provider"
-    _prepare_native_repo(lean_runtime, repo_root)
-    flow_id = _start_native(runtime, repo_root)
-
-    _run_to_builder(runtime, lean_runtime, flow_id, repo_root)
-    def force_commit_without_review(flow) -> None:  # noqa: ANN001
-        flow.state.position = FlowPosition(phase="source_index_commit", round_index=flow.state.source_index_round)
-        flow.state.last_source_index_review_approved = False
-
-    runtime.flow_service.store.update_flow_record(flow_id, force_commit_without_review)
-
-    step_id = runtime.flow_service.advance_flow(flow_id)
-    assert step_id is not None
-    runtime.run_step(step_id)
-
-    step = runtime.flow_service.get_step(step_id)
-    assert step.result.outcome == "blocked"
-    assert step.result.error.code == "source_index_review_approval_required"
-    assert lean_runtime.material.get_source_index(repo_root).value.status == "draft"
-
-
-def test_native_preparation_rejected_review_reuses_builder_agent(tmp_path: Path) -> None:
-    runtime, lean_runtime, _ = _runtime(tmp_path)
-    repo_root = tmp_path / "workspace" / "Provider"
-    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
-    flow_id = _start_native(runtime, repo_root)
-
-    _run_to_builder(runtime, lean_runtime, flow_id, repo_root)
-    runtime.agent_service.queue_submission(
-        SourceIndexBuilderRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_builder_round",
-            tool_name="submit_source_index_builder_round",
-            summary="Round one.",
-        )
-    )
-    _advance_and_run(runtime, flow_id)
-    runtime.agent_service.queue_submission(
-        SourceIndexReviewerRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_reviewer_round",
-            tool_name="submit_source_index_review_round",
-            approved=False,
-            feedback="Add clearer proof coverage.",
-            summary="Rejected.",
-        )
-    )
-    _advance_and_run(runtime, flow_id)
-    flow = runtime.flow_service.get_flow(flow_id)
-    assert flow.state.position.phase == "source_index_builder"
-    assert flow.state.source_index_round == 2
-
-    runtime.agent_service.queue_submission(
-        SourceIndexBuilderRoundSubmission(
-            submission_id=new_submission_id("sub"),
-            submission_type="source_index_builder_round",
-            tool_name="submit_source_index_builder_round",
-            summary="Round two.",
-        )
-    )
-    _advance_and_run(runtime, flow_id)
-
-    builder_records = [
-        record
-        for record in runtime.agent_service.start_records
-        if record.env["LEAN_CONSTELLATION_AGENT_TYPE"] == "SourceIndexBuilderAgent"
-    ]
-    assert len(builder_records) == 2
-    assert builder_records[0].agent_id == builder_records[1].agent_id
-    assert runtime.flow_service.get_flow(flow_id).state.position.round_index == 2

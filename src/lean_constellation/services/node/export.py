@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -9,7 +10,7 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult, WriteMode
+from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent, NodeView
 
@@ -208,9 +209,10 @@ class ExportComponent:
         ref = self._build_decl_ref(decl_repo=decl_repo, decl_node=decl_node, decl_name=decl_name, revision=revision)
         if not ref.ok or ref.value is None:
             return self.runtime.foundation.fail(ref.issues)
-        opened = self.contract.ensure_scope_contract(repo_root, scope_path=scope_path)
-        if not opened.ok or opened.value is None:
-            return self.runtime.foundation.fail(opened.issues)
+        current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        candidate_contract = deepcopy(current.value.contract)
         candidate = self._find_visible_candidate(repo_root, scope_path=scope_path, ref=ref.value)
         if not candidate.ok or candidate.value is None:
             return self.runtime.foundation.fail(candidate.issues)
@@ -224,7 +226,7 @@ class ExportComponent:
                     expected="ready=True, stale=False",
                 )
             )
-        keys = {self._decl_ref_key(ref) for ref in opened.value.contract.exports}
+        keys = {self._decl_ref_key(ref) for ref in candidate_contract.exports}
         changed = False
         warnings: list[ServiceIssue] = []
         if self._decl_ref_key(ref.value) in keys:
@@ -237,15 +239,22 @@ class ExportComponent:
                 )
             ]
         else:
-            opened.value.contract.exports.append(ref.value)
+            candidate_contract.exports.append(ref.value)
             changed = True
         if bind_interface_name is not None:
-            bound = self._bind_interface(opened.value.contract, bind_interface_name, ref.value)
+            bound = self._bind_interface(candidate_contract, bind_interface_name, ref.value)
             if not bound.ok:
                 return self.runtime.foundation.fail(bound.issues)
             changed = True
         if changed:
-            saved = self._save_contract(repo_root, scope_path, opened.value.contract)
+            guarded = self.runtime.node.release_guard.check_scope_contract_candidate(
+                repo_root, scope_path=scope_path, candidate=candidate_contract
+            )
+            if not guarded.ok:
+                return self.runtime.foundation.fail(guarded.issues)
+            saved = self.contract._persist_open_candidate(
+                repo_root, node_path=scope_path, candidate=candidate_contract
+            )
             if not saved.ok:
                 return self.runtime.foundation.fail(saved.issues)
             refreshed = self._refresh_interfaces(repo_root, scope_path)
@@ -279,15 +288,16 @@ class ExportComponent:
                 )
             )
         ref = listed.value[index].ref
-        opened = self.contract.ensure_scope_contract(repo_root, scope_path=scope_path)
-        if not opened.ok or opened.value is None:
-            return self.runtime.foundation.fail(opened.issues)
+        current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        candidate_contract = deepcopy(current.value.contract)
         key = self._decl_ref_key(ref)
-        if not any(self._decl_ref_key(ref) == key for ref in opened.value.contract.exports):
+        if not any(self._decl_ref_key(ref) == key for ref in candidate_contract.exports):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("scope_export_missing", f"Scope export not found at index: {index}", object_ref=scope_path, field="index")
             )
-        bound_interfaces = [interface.name for interface in opened.value.contract.interfaces if interface.bound_decl and self._decl_ref_key(interface.bound_decl) == key]
+        bound_interfaces = [interface.name for interface in candidate_contract.interfaces if interface.bound_decl and self._decl_ref_key(interface.bound_decl) == key]
         if bound_interfaces:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -298,8 +308,15 @@ class ExportComponent:
                     suggested_action="Unbind or rebind the interfaces before removing the export.",
                 )
             )
-        opened.value.contract.exports = [ref for ref in opened.value.contract.exports if self._decl_ref_key(ref) != key]
-        saved = self._save_contract(repo_root, scope_path, opened.value.contract)
+        candidate_contract.exports = [ref for ref in candidate_contract.exports if self._decl_ref_key(ref) != key]
+        guarded = self.runtime.node.release_guard.check_scope_contract_candidate(
+            repo_root, scope_path=scope_path, candidate=candidate_contract
+        )
+        if not guarded.ok:
+            return self.runtime.foundation.fail(guarded.issues)
+        saved = self.contract._persist_open_candidate(
+            repo_root, node_path=scope_path, candidate=candidate_contract
+        )
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
         refreshed = self._refresh_interfaces(repo_root, scope_path)
@@ -591,13 +608,6 @@ class ExportComponent:
         remaining = ref_node[len(scope_path) + 1 :]
         first = remaining.split(".", 1)[0]
         return f"{scope_path}.{first}"
-
-    def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
-        if not node.ok or node.value is None:
-            return self.runtime.foundation.fail(node.issues)
-        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
-        return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
 
     def _refresh_interfaces(self, repo_root: Path, scope_path: str) -> ServiceResult[object]:
         projection = self.node_projection

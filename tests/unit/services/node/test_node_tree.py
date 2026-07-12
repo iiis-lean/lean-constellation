@@ -129,11 +129,14 @@ def test_node_tree_children_delete_preview_and_soft_delete(tmp_path: Path) -> No
     assert blocked.value.deletable is False
     assert blocked.value.affected_children == ["Main.Topic.Core"]
 
-    no_reason = component.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="")
+    no_reason = make_runtime().node.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="")
     assert not no_reason.ok
     assert no_reason.issues[0].kind == "delete_reason_required"
 
-    deleted = component.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="No longer needed.")
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Core node complete."
+    ).ok
+    deleted = make_runtime().node.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="No longer needed.")
     assert deleted.ok
     core = component.get_node(tmp_path, path="Main.Topic.Core")
     assert not core.ok
@@ -160,7 +163,10 @@ def test_get_node_missing_and_tree_hides_obsolete_nodes(tmp_path: Path) -> None:
     assert not missing.ok
     assert missing.issues[0].kind == "node_missing"
 
-    deleted = component.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="Hide from active tree.")
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.Core", summary="Core node complete."
+    ).ok
+    deleted = make_runtime().node.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="Hide from active tree.")
     assert deleted.ok
 
     tree = component.get_node_tree(tmp_path)
@@ -235,7 +241,7 @@ def test_preview_delete_detects_contract_inbound_refs(tmp_path: Path) -> None:
     assert "Main.Topic.Consumer:deps" in preview.value.inbound_refs
     assert "Main.Topic:exports" in preview.value.inbound_refs
 
-    blocked = component.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="Still referenced.")
+    blocked = make_runtime().node.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="Still referenced.")
     assert not blocked.ok
     assert blocked.issues[0].kind == "node_delete_blocked"
 
@@ -359,10 +365,6 @@ def test_ensure_root_rejects_invalid_path_and_obsolete_root(tmp_path: Path) -> N
     assert wrong_path.issues[0].kind == "root_scope_path_invalid"
 
     assert component.ensure_root_scope_node(tmp_path).ok
-    deleted = component.mark_node_deleted(tmp_path, path="Main", reason="Exercise obsolete root branch.")
-    assert deleted.ok
-
-    recreated = component.ensure_root_scope_node(tmp_path)
-    assert recreated.ok
-    assert recreated.value is not None
-    assert recreated.value.path == "Main"
+    deleted = make_runtime().node.mark_node_deleted(tmp_path, path="Main", reason="Exercise obsolete root branch.")
+    assert not deleted.ok
+    assert "root_main" in deleted.issues[0].details["blocking_reasons"]

@@ -572,7 +572,7 @@ def test_v2_draft_migration_is_explicitly_blocked_and_cannot_use_legacy_bridge(t
     assert not bypass.ok and bypass.issues[0].kind == "source_index_update_context_required"
 
 
-def test_fresh_v3_legacy_draft_bridge_survives_runtime_rebuild(tmp_path: Path) -> None:
+def test_fresh_v3_unowned_draft_cannot_resume_after_runtime_rebuild(tmp_path: Path) -> None:
     runtime = _prepare_source(tmp_path)
     assert runtime.material.create_draft_source_index(tmp_path).ok
 
@@ -582,25 +582,11 @@ def test_fresh_v3_legacy_draft_bridge_survives_runtime_rebuild(tmp_path: Path) -
         parent_id="root",
         kind="statement",
         title="Legacy restart theorem",
-        summary="Legacy fresh initial draft remains resumable after runtime rebuild.",
+        summary="Unowned fresh drafts require lifecycle migration.",
     )
-    assert block.ok and block.value is not None, block.issues
-    assert restarted.material.add_source_block_ref(
-        tmp_path,
-        block_id=block.value.block_id,
-        path="chapters/one.md",
-        start_line=1,
-        end_line=2,
-        role="primary",
-    ).ok
-    assert restarted.material.mark_block_refs_done(tmp_path, block_id=block.value.block_id).value.passed
-    assert restarted.material.mark_block_links_done(tmp_path, block_id=block.value.block_id).value.passed
-    assert restarted.material.mark_block_completed(tmp_path, block_id=block.value.block_id).value.passed
-    for path in ["README.md", "chapters/one.md", "chapters/two.md"]:
-        assert restarted.material.set_file_survey_status(tmp_path, path=path, status="surveyed").ok
-        assert restarted.material.set_file_indexing_status(tmp_path, path=path, status="indexed").ok
+    assert not block.ok and block.issues[0].kind == "source_index_update_context_required"
     committed = restarted.material.commit_source_index(tmp_path)
-    assert committed.ok and committed.value is not None and committed.value.passed
+    assert not committed.ok and committed.issues[0].kind == "source_index_update_context_required"
 
 
 def test_same_committed_file_can_append_new_blocks_without_changing_old_payload(tmp_path: Path) -> None:
@@ -691,32 +677,66 @@ def test_commit_rechecks_source_hash_after_successful_validation(tmp_path: Path)
     assert current.value.active_file_scope == ["chapters/one.md"]
 
 
-def test_v2_committed_migration_succeeds_without_rewriting_semantic_ids(tmp_path: Path) -> None:
-    runtime = _prepare_source(tmp_path)
-    assert runtime.material.create_draft_source_index(tmp_path).ok
+def _build_owned_committed_legacy_fixture(runtime, repo_root: Path):  # noqa: ANN001, ANN202
+    scope = runtime.material.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all")).value
+    opened = runtime.material.open_source_index_update(
+        repo_root,
+        update_id="legacy-fixture",
+        resolved_scope=scope,
+        index_policy="auto",
+    ).value
     block = runtime.material.create_source_block(
-        tmp_path,
+        repo_root,
         parent_id="root",
         kind="statement",
         title="Legacy theorem",
         summary="Legacy theorem statement.",
+        expected_update_id="legacy-fixture",
     )
     assert block.ok and block.value is not None
     assert runtime.material.add_source_block_ref(
-        tmp_path,
+        repo_root,
         block_id=block.value.block_id,
         path="chapters/one.md",
         start_line=1,
         end_line=2,
         role="primary",
+        expected_update_id="legacy-fixture",
     ).ok
-    assert runtime.material.mark_block_refs_done(tmp_path, block_id=block.value.block_id).value.passed
-    assert runtime.material.mark_block_links_done(tmp_path, block_id=block.value.block_id).value.passed
-    assert runtime.material.mark_block_completed(tmp_path, block_id=block.value.block_id).value.passed
+    assert runtime.material.mark_block_refs_done(
+        repo_root, block_id=block.value.block_id, expected_update_id="legacy-fixture"
+    ).value.passed
+    assert runtime.material.mark_block_links_done(
+        repo_root, block_id=block.value.block_id, expected_update_id="legacy-fixture"
+    ).value.passed
+    assert runtime.material.mark_block_completed(
+        repo_root, block_id=block.value.block_id, expected_update_id="legacy-fixture"
+    ).value.passed
     for path in ["README.md", "chapters/one.md", "chapters/two.md"]:
-        assert runtime.material.set_file_survey_status(tmp_path, path=path, status="surveyed").ok
-        assert runtime.material.set_file_indexing_status(tmp_path, path=path, status="indexed").ok
-    assert runtime.material.commit_source_index(tmp_path).value.passed
+        assert runtime.material.set_file_survey_status(
+            repo_root, path=path, status="surveyed", expected_update_id="legacy-fixture"
+        ).ok
+        assert runtime.material.set_file_indexing_status(
+            repo_root, path=path, status="indexed", expected_update_id="legacy-fixture"
+        ).ok
+    gate = runtime.material.validate_source_index_update(
+        repo_root,
+        update_id="legacy-fixture",
+        baseline_index=None,
+        expected_baseline_digest=opened.baseline_digest,
+        resolved_scope=scope.resolved_file_paths,
+        require_completed=True,
+    ).value
+    assert gate.gate.passed
+    assert runtime.material.commit_source_index_update(
+        repo_root, update_id="legacy-fixture", validated=gate
+    ).ok
+    return block.value
+
+
+def test_v2_committed_migration_succeeds_without_rewriting_semantic_ids(tmp_path: Path) -> None:
+    runtime = _prepare_source(tmp_path)
+    block = _build_owned_committed_legacy_fixture(runtime, tmp_path)
 
     index_path = tmp_path / ".lean_constellation" / "source_index" / "index.json"
     payload = json.loads(index_path.read_text(encoding="utf-8"))
@@ -737,38 +757,15 @@ def test_v2_committed_migration_succeeds_without_rewriting_semantic_ids(tmp_path
     assert migrated.ok and migrated.value is not None
     assert migrated.value.stored_schema_version == 3
     assert migrated.value.status == "committed"
-    assert block.value.block_id in migrated.value.blocks
+    assert block.block_id in migrated.value.blocks
     persisted = json.loads(index_path.read_text(encoding="utf-8"))
     assert persisted["schema_version"] == 3
-    assert persisted["blocks"][block.value.block_id]["block_id"] == block.value.block_id
+    assert persisted["blocks"][block.block_id]["block_id"] == block.block_id
 
 
 def test_v2_inspection_reports_invalid_ref_ranges_and_link_graph_without_writing(tmp_path: Path) -> None:
     runtime = _prepare_source(tmp_path)
-    assert runtime.material.create_draft_source_index(tmp_path).ok
-    block = runtime.material.create_source_block(
-        tmp_path,
-        parent_id="root",
-        kind="statement",
-        title="Invalid legacy theorem",
-        summary="Legacy theorem used to exercise migration dry-run validation.",
-    ).value
-    ref = runtime.material.add_source_block_ref(
-        tmp_path,
-        block_id=block.block_id,
-        path="chapters/one.md",
-        start_line=1,
-        end_line=2,
-        role="primary",
-    ).value
-    assert ref is not None
-    assert runtime.material.mark_block_refs_done(tmp_path, block_id=block.block_id).value.passed
-    assert runtime.material.mark_block_links_done(tmp_path, block_id=block.block_id).value.passed
-    assert runtime.material.mark_block_completed(tmp_path, block_id=block.block_id).value.passed
-    for path in ["README.md", "chapters/one.md", "chapters/two.md"]:
-        assert runtime.material.set_file_survey_status(tmp_path, path=path, status="surveyed").ok
-        assert runtime.material.set_file_indexing_status(tmp_path, path=path, status="indexed").ok
-    assert runtime.material.commit_source_index(tmp_path).value.passed
+    block = _build_owned_committed_legacy_fixture(runtime, tmp_path)
 
     index_path = tmp_path / ".lean_constellation" / "source_index" / "index.json"
     payload = json.loads(index_path.read_text(encoding="utf-8"))

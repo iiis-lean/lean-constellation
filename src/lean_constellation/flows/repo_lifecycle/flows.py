@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, Literal
 
-from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowStepContext, StableStepTerminalContext
-from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, FlowPosition, FlowStatus, utc_now_iso
+from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowReadContext, FlowStepContext, StableStepTerminalContext
+from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, ChildFlowDispatchSubmission, FlowPosition, FlowStatus, utc_now_iso
 from agent_runtime_kit.flow.standard_steps import (
     AgentStepIncompleteResult,
     AgentStepState,
@@ -16,6 +16,7 @@ from agent_runtime_kit.flow.standard_steps import (
 )
 from pydantic import Field
 
+from lean_constellation.domain.repo_run import RepoRunSpec, SourceScope
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.repo_lifecycle.steps import (
@@ -39,6 +40,8 @@ from lean_constellation.flows.repo_lifecycle.steps import (
     MarkAdapterProviderReadyStepResult,
     PrepareCoordinatorDispatchStep,
     PrepareCoordinatorDispatchStepResult,
+    PrepareNativeLifecycleChildStep,
+    PrepareNativeLifecycleChildStepResult,
     RootInterfaceDirectReadyStep,
     RootInterfaceDirectReadyStepResult,
     ValidateBootstrapInputStep,
@@ -47,6 +50,8 @@ from lean_constellation.flows.repo_lifecycle.steps import (
     ValidateAndInitializeNativePreparationStepResult,
     new_repo_lifecycle_step_id,
 )
+from lean_constellation.flows.repo_lifecycle.root_interface import RootInterfacePreparationResult
+from lean_constellation.flows.repo_lifecycle.source_index import SourceIndexBuildResult
 from lean_constellation.flows.repo_lifecycle.submissions import (
     NativeCoordinatorHandoffSubmission,
     AdapterCatalogBlockedSubmission,
@@ -319,6 +324,7 @@ class NativeRepoPreparationParams(LeanFlowParams):
     preparation_input_ref: str = ".lean_constellation/preparation_input.json"
     start_reason: Literal["admin", "bootstrap", "repair_resume"] = "admin"
     admin_notes: str | None = None
+    run_spec: RepoRunSpec | None = None
 
 
 class NativeRepoPreparationInput(LeanRenderableFlowInput):
@@ -328,12 +334,17 @@ class NativeRepoPreparationInput(LeanRenderableFlowInput):
     preparation_input_ref: str = ".lean_constellation/preparation_input.json"
     start_reason: Literal["admin", "bootstrap", "repair_resume"] = "admin"
     admin_notes: str | None = None
+    run_spec: RepoRunSpec | None = None
 
     def agent_title(self) -> str:
         return f"Prepare native repo {self.repo_key}"
 
     def agent_fields(self) -> dict[str, object]:
-        return {"start_reason": self.start_reason, "admin_notes": self.admin_notes}
+        return {
+            "start_reason": self.start_reason,
+            "admin_notes": self.admin_notes,
+            "run_spec": self.run_spec.model_dump(mode="json") if self.run_spec is not None else None,
+        }
 
 
 class NativeRepoPreparationState(BaseFlowState):
@@ -352,6 +363,12 @@ class NativeRepoPreparationState(BaseFlowState):
     root_interface_ready: bool = False
     handoff_gate_passed: bool = False
     waiting_dispatch_step_id: str | None = None
+    use_reusable_preparation_children: bool = False
+    pre_run_mutation_checkpoint_id: str | None = None
+    pending_child_source_step_id: str | None = None
+    waiting_child_kind: Literal["source_index", "root_interface"] | None = None
+    source_index_child_result: SourceIndexBuildResult | None = None
+    root_interface_child_result: RootInterfacePreparationResult | None = None
 
 
 class NativeRepoPreparationResult(LeanRenderableFlowResult):
@@ -375,14 +392,82 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
     @classmethod
     def build_from_request(cls, ctx: FlowBuildContext) -> "NativeRepoPreparationFlow":
         params = NativeRepoPreparationParams.model_validate(ctx.params)
+        run_spec = params.run_spec or _default_initial_run_spec(ctx, params)
         return cls._build(
             ctx,
             input_model=NativeRepoPreparationInput(
                 summary=f"Prepare native repo {params.repo_key}.",
-                **params.model_dump(),
+                **params.model_dump(exclude={"run_spec"}),
+                run_spec=run_spec,
             ),
-            state=NativeRepoPreparationState(),
+            state=NativeRepoPreparationState(use_reusable_preparation_children=True),
         )
+
+    def can_exit_waiting(self, ctx: FlowReadContext) -> bool:
+        state = _require_native_preparation_state(self.state)
+        if state.position.phase not in {"waiting_source_index_child", "waiting_root_interface_child"}:
+            return False
+        children = _native_children_for_dispatch(ctx, self.flow_id, state.waiting_dispatch_step_id)
+        return bool(children) and all(child.status in {FlowStatus.COMPLETED, FlowStatus.FAILED} for child in children)
+
+    def on_exit_waiting(self, ctx: FlowContext) -> None:
+        state = _require_native_preparation_state(self.state)
+        input_model = _require_native_preparation_input(self.input)
+        children = _native_children_for_dispatch(ctx, self.flow_id, state.waiting_dispatch_step_id)
+        if len(children) != 1:
+            reason = "Native preparation callback did not resolve exactly one child Flow."
+            self.error = BaseFlowError(
+                error_type="native_preparation_child_resolution_failed",
+                message=reason,
+                details={"child_count": len(children)},
+            )
+        elif children[0].status is FlowStatus.FAILED:
+            child = children[0]
+            reason = child.error.message if child.error is not None else "Native preparation child Flow failed."
+            self.error = BaseFlowError(
+                error_type="native_preparation_child_failed",
+                message=reason,
+                details={
+                    "child_flow_id": child.flow_id,
+                    "child_flow_type": child.flow_type,
+                    "child_error_type": child.error.error_type if child.error is not None else None,
+                },
+            )
+        elif state.waiting_child_kind == "source_index":
+            result = children[0].result
+            if not isinstance(result, SourceIndexBuildResult):
+                self._finish_native_preparation(state, input_model, "blocked", "SourceIndex child result is invalid.", "SourceIndex child result is invalid.")
+            elif result.outcome in {"committed", "no_op"}:
+                state.source_index_child_result = result
+                state.source_index_committed = True
+                state.position = FlowPosition(phase="prepare_root_interface_child")
+            else:
+                outcome = "invalid_input" if result.outcome == "invalid_input" else "blocked"
+                self._finish_native_preparation(state, input_model, outcome, result.reason or result.summary, result.summary)
+        elif state.waiting_child_kind == "root_interface":
+            result = children[0].result
+            if not isinstance(result, RootInterfacePreparationResult):
+                self._finish_native_preparation(state, input_model, "blocked", "Root-interface child result is invalid.", "Root-interface child result is invalid.")
+            elif result.outcome == "ready":
+                state.root_interface_child_result = result
+                state.root_interface_ready = True
+                state.position = FlowPosition(phase="handoff_gate")
+            else:
+                self._finish_native_preparation(state, input_model, result.outcome, result.blocked_reason or result.summary, result.summary)
+        else:
+            self._finish_native_preparation(state, input_model, "blocked", "Native preparation child kind is missing.", "Native preparation child kind is missing.")
+        state.waiting_child_kind = None
+        if self.error is not None:
+            self.status = FlowStatus.FAILED
+            self.finished_at = self.finished_at or utc_now_iso()
+            self.updated_at = utc_now_iso()
+            return
+        if self.result is not None:
+            self.status = FlowStatus.COMPLETED
+            self.finished_at = self.finished_at or utc_now_iso()
+            self.updated_at = utc_now_iso()
+            return
+        super().on_exit_waiting(ctx)
 
     def create_next_step(self, ctx: FlowContext) -> str | None:
         state = _require_native_preparation_state(self.state)
@@ -423,6 +508,38 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                         prompt_override=_source_corpus_prepare_prompt(input_model),
                         env_overrides=_agent_env("SourceCorpusPrepareAgent", "source_corpus_prepare", "source_corpus_prepare_submit"),
                         workdir_override=str(source_root),
+                    ),
+                )
+            )
+        if state.position.phase in {"prepare_source_index_child", "prepare_root_interface_child"}:
+            return ctx.create_step(
+                PrepareNativeLifecycleChildStep(
+                    step_id=new_repo_lifecycle_step_id(state.position.phase),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                )
+            )
+        if state.position.phase == "dispatch_preparation_child":
+            source_step_id = state.pending_child_source_step_id
+            if source_step_id is None:
+                return None
+            flow_service = ctx.ark.flow_service
+            if flow_service is None:
+                return None
+            source_step = flow_service.get_step(source_step_id)
+            submission = source_step.submission
+            if not isinstance(submission, ChildFlowDispatchSubmission):
+                return None
+            return ctx.create_step(
+                DispatchStep(
+                    step_id=new_repo_lifecycle_step_id(f"dispatch_{state.waiting_child_kind or 'preparation'}"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                    state=DispatchStepState(
+                        source_step_id=source_step_id,
+                        source_submission_id=submission.submission_id,
+                        requests=list(submission.requests),
+                        continuation=submission.continuation,
                     ),
                 )
             )
@@ -582,6 +699,19 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
             self._consume_existing_source_corpus_result(state, input_model, result)
         elif ctx.step.step_type == "source_corpus_prepare_agent_step":
             self._consume_source_corpus_agent_result(ctx, state, input_model, result, ctx.step.submission)
+        elif isinstance(result, PrepareNativeLifecycleChildStepResult):
+            if result.outcome == "prepared" and result.child_kind is not None:
+                state.pending_child_source_step_id = ctx.step.step_id
+                state.waiting_child_kind = result.child_kind
+                state.position = FlowPosition(phase="dispatch_preparation_child")
+            else:
+                self._finish_native_preparation(
+                    state,
+                    input_model,
+                    "blocked",
+                    result.error.message if result.error else result.summary,
+                    result.summary,
+                )
         elif isinstance(result, CreateDraftSourceIndexStepResult):
             self._consume_create_source_index_result(state, input_model, result)
         elif ctx.step.step_type == "source_index_builder_agent_step":
@@ -599,8 +729,26 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
         elif isinstance(result, PrepareCoordinatorDispatchStepResult):
             self._consume_prepare_dispatch_result(state, input_model, result, ctx.step.submission, ctx.step.step_id)
         elif isinstance(result, DispatchStepResult):
-            self._consume_dispatch_result(state, input_model, result)
+            if result.continuation == "wait_for_callback" and state.waiting_child_kind is not None:
+                if result.outcome == "dispatched" and len(result.child_flow_ids) == 1:
+                    state.waiting_dispatch_step_id = ctx.step.step_id
+                    state.position = FlowPosition(
+                        phase=(
+                            "waiting_source_index_child"
+                            if state.waiting_child_kind == "source_index"
+                            else "waiting_root_interface_child"
+                        )
+                    )
+                else:
+                    self._finish_native_preparation(state, input_model, "blocked", result.summary or "Preparation child dispatch failed.", result.summary)
+            else:
+                self._consume_dispatch_result(state, input_model, result)
         super().on_step_terminal(ctx)
+        if self.result is None and self.error is None and state.position.phase in {
+            "waiting_source_index_child",
+            "waiting_root_interface_child",
+        }:
+            self.status = FlowStatus.WAITING
 
     def after_step_terminal_stable(self, ctx: StableStepTerminalContext) -> None:
         if ctx.step.step_type == "validate_initialize_native_preparation_step":
@@ -614,6 +762,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 checkpoint_kind="before_native_source_processing",
                 label=f"before native source processing for {input_model.repo_key}",
                 failure_type="native_source_processing_stable_snapshot_failed",
+                flow_state_field="pre_run_mutation_checkpoint_id",
             )
             return
         if ctx.step.step_type != "prepare_coordinator_dispatch_step":
@@ -652,7 +801,9 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
     ) -> None:
         if result.outcome == "ready":
             state.source_corpus_ready = True
-            state.position = FlowPosition(phase="source_index_create")
+            state.position = FlowPosition(
+                phase="prepare_source_index_child" if state.use_reusable_preparation_children else "source_index_create"
+            )
             return
         self._finish_native_preparation(state, input_model, "blocked", result.error.message if result.error else result.summary, result.summary)
 
@@ -696,7 +847,9 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 self._finish_native_preparation(state, input_model, "blocked", reason, "Source corpus manifest finalize failed.")
                 return
             state.source_corpus_ready = True
-            state.position = FlowPosition(phase="source_index_create")
+            state.position = FlowPosition(
+                phase="prepare_source_index_child" if state.use_reusable_preparation_children else "source_index_create"
+            )
             return
         if isinstance(submission, SourceCorpusBlockedSubmission):
             self._finish_native_preparation(state, input_model, "blocked", submission.reason, submission.summary)
@@ -1218,6 +1371,7 @@ def _record_stable_repo_snapshot(
     label: str,
     failure_type: str,
     node_paths: list[str] | None = None,
+    flow_state_field: str | None = None,
 ) -> None:
     snapshot = ctx.app.validation_snapshot.create_repo_stable_point_snapshot(
         repo_root,
@@ -1240,6 +1394,11 @@ def _record_stable_repo_snapshot(
             )
 
     ctx.ark.flow_service.store.update_step_record(ctx.step.step_id, patch_step)
+    if flow_state_field is not None:
+        def patch_flow(flow) -> None:  # noqa: ANN001
+            setattr(flow.state, flow_state_field, snapshot.value.snapshot_id)
+
+        ctx.ark.flow_service.store.update_flow_record(ctx.flow.flow_id, patch_flow)
 
 
 def _mark_flow_failed_from_stable_snapshot(ctx: StableStepTerminalContext, error_type: str, issues: list[object]) -> None:
@@ -1265,6 +1424,65 @@ def _native_repo_root(input_model: NativeRepoPreparationInput) -> Path:
     from pathlib import Path
 
     return Path(input_model.repo_root or input_model.repo_key)
+
+
+def _default_initial_run_spec(
+    ctx: FlowBuildContext,
+    params: NativeRepoPreparationParams,
+) -> RepoRunSpec:
+    repo_root = Path(params.repo_root or params.repo_key)
+    objective = f"Prepare and formalize native repo {params.repo_key}."
+    repo_workspace = getattr(ctx.app, "repo_workspace", None)
+    preparation = (
+        repo_workspace.preparation.get_preparation_input(repo_root)
+        if repo_workspace is not None
+        else None
+    )
+    if preparation is not None and preparation.ok and preparation.value is not None:
+        objective = preparation.value.input.goal
+    config = repo_workspace.metadata.get_repo_config(repo_root) if repo_workspace is not None else None
+    if config is not None and config.ok and config.value is not None:
+        target = config.value.config.target_proof_availability
+        work_mode = config.value.config.work_mode
+    else:
+        from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+
+        target = ProofAvailability.PROVED
+        work_mode = RepoWorkMode.PROVED_FULL_GRAPH
+    return RepoRunSpec(
+        run_objective=objective,
+        target_proof_availability=target,
+        work_mode=work_mode,
+        source_scope=SourceScope(mode="all"),
+        index_policy="auto",
+        root_interface_policy="auto",
+    )
+
+
+def _native_children_for_dispatch(
+    ctx: FlowReadContext | FlowContext,
+    parent_flow_id: str,
+    dispatch_step_id: str | None,
+):
+    if dispatch_step_id is None:
+        return []
+    flow_service = ctx.ark.flow_service
+    store = getattr(flow_service, "store", None) if flow_service is not None else None
+    if store is not None and hasattr(store, "list_child_flows"):
+        return list(
+            store.list_child_flows(
+                parent_flow_id=parent_flow_id,
+                parent_dispatch_step_id=dispatch_step_id,
+            )
+        )
+    if flow_service is None:
+        return []
+    return [
+        flow
+        for flow in flow_service.list_flows()
+        if flow.parent_flow_id == parent_flow_id
+        and flow.parent_dispatch_step_id == dispatch_step_id
+    ]
 
 
 def _agent_env(agent_type: str, app_view: str, submit_view: str) -> dict[str, str]:

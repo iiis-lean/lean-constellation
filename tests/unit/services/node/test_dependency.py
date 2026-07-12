@@ -56,7 +56,7 @@ def _write_provider_export(tmp_path: Path) -> DeclRef:
 
 def _commit_provider_scope(tmp_path: Path) -> DeclRef:
     ref = _write_provider_export(tmp_path)
-    committed = make_runtime().node.contract.commit_scope_contract(
+    committed = make_runtime().node.commit_scope_contract(
         tmp_path,
         scope_path="Main.Topic.Provider",
         summary="Provider exposes helper.",
@@ -292,7 +292,9 @@ def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator
 def test_worker_can_only_remove_worker_added_node_dep(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     _commit_provider_scope(tmp_path)
-    assert make_runtime().node.contract.commit_content_contract(tmp_path, node_path="Main.Topic.B", summary="B ready.").ok
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.B", summary="B ready."
+    ).ok
     component = make_runtime().node.dependency
 
     coordinator_added = component.add_node_dep(
@@ -364,7 +366,9 @@ def test_remove_node_dep_reports_missing_dep_and_allows_coordinator_remove(tmp_p
 def test_validate_node_deps_reports_cycle_and_batch_dependency(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     contract = make_runtime().node.contract
-    assert contract.commit_content_contract(tmp_path, node_path="Main.Topic.B", summary="B ready.").ok
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.B", summary="B ready."
+    ).ok
     component = make_runtime().node.dependency
     assert component.add_node_dep(
         tmp_path,
@@ -496,8 +500,12 @@ def test_check_content_batch_independent_reports_pass_duplicates_missing_noncont
         success_criteria="C ready.",
     ).ok
     contract = make_runtime().node.contract
-    assert contract.commit_content_contract(tmp_path, node_path="Main.Topic.B", summary="B ready.").ok
-    assert contract.commit_content_contract(tmp_path, node_path="Main.Topic.C", summary="C ready.").ok
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.B", summary="B ready."
+    ).ok
+    assert make_runtime().node.commit_content_contract(
+        tmp_path, node_path="Main.Topic.C", summary="C ready."
+    ).ok
     component = make_runtime().node.dependency
 
     independent = component.check_content_batch_independent(tmp_path, node_paths=["Main.Topic.A", "Main.Topic.B"])

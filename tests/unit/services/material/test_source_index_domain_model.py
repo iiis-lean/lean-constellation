@@ -5,6 +5,8 @@ from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.repo_run import SourceScope
+
 
 def _prepare_source(repo_root: Path) -> None:
     source_root = repo_root / ".lean_constellation" / "source"
@@ -31,7 +33,14 @@ def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> 
         preparation_summary="Prepared source files.",
     )
     assert prepared.ok
-    assert service.create_draft_source_index(tmp_path).ok
+    scope = service.resolve_source_scope(tmp_path, source_scope=SourceScope(mode="all"))
+    assert scope.ok and scope.value is not None
+    assert service.open_source_index_update(
+        tmp_path,
+        update_id="domain-model-test",
+        resolved_scope=scope.value,
+        index_policy="auto",
+    ).ok
 
     block = service.create_source_block(
         tmp_path,
@@ -40,6 +49,7 @@ def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> 
         subtype=None,
         title="Chapter theorem",
         summary="The part of the source containing Definition A, Lemma B, and Theorem C.",
+        expected_update_id="domain-model-test",
     )
     assert block.ok and block.value is not None
     ref = service.add_source_block_ref(
@@ -49,6 +59,7 @@ def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> 
         start_line=1,
         end_line=3,
         role="primary",
+        expected_update_id="domain-model-test",
     )
     assert ref.ok and ref.value is not None
     link = service.create_source_link(
@@ -58,14 +69,15 @@ def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> 
         target_hint="The theorem statement.",
         link_kind="supports",
         evidence_ref_ids=[ref.value.refs[0].ref_id],
+        expected_update_id="domain-model-test",
     )
     assert link.ok and link.value is not None
 
     index_json = tmp_path / ".lean_constellation" / "source_index" / "index.json"
     persisted = json.loads(index_json.read_text(encoding="utf-8"))
     assert persisted["schema_version"] == 3
-    assert persisted["active_update_id"] is None
-    assert persisted["active_file_scope"] == []
+    assert persisted["active_update_id"] == "domain-model-test"
+    assert persisted["active_file_scope"] == ["README.md", "chapter.md"]
     assert persisted["files"]["chapter.md"]["source_sha256"] is not None
     assert persisted["files"]["chapter.md"]["committed"] is False
     assert "repo_root" not in persisted

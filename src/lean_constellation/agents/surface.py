@@ -79,8 +79,8 @@ def build_agent_surface_reports(
     for spec in resolved_specs:
         app_view = app_view_by_key[spec.application_tool_view_key]
         submit_view = sub_view_by_key[spec.submit_tool_view_key]
-        app_tool_names = _expand_tool_names(app_view.group_keys, app_group_by_key)
-        submit_tool_names = _expand_tool_names(submit_view.group_keys, sub_group_by_key)
+        app_tool_names = _expand_tool_names(app_view, app_group_by_key)
+        submit_tool_names = _expand_tool_names(submit_view, sub_group_by_key)
         visible_groups = set(app_view.group_keys) | set(submit_view.group_keys)
         skills = [
             AgentSurfaceSkill(
@@ -111,10 +111,11 @@ def build_agent_surface_reports(
     return reports
 
 
-def _expand_tool_names(group_keys: Sequence[str], group_by_key: dict[str, ToolGroupSpec]) -> list[str]:
+def _expand_tool_names(view: ToolViewSpec, group_by_key: dict[str, ToolGroupSpec]) -> list[str]:
     names: list[str] = []
-    for group_key in group_keys:
+    for group_key in view.group_keys:
         names.extend(group_by_key[group_key].tool_names)
+    names.extend(view.extra_tool_names)
     return names
 
 

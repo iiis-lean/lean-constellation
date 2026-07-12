@@ -89,7 +89,7 @@ def _write_child_scope_export(tmp_path: Path) -> DeclRef:
     ref = DeclRef(repo=None, node="Main.Topic.Sub.Inner", name="sub_result", revision=1)
     loaded.value.exports = [ref]
     assert foundation.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
-    committed = make_runtime().node.contract.commit_scope_contract(tmp_path, scope_path="Main.Topic.Sub", summary="Sub exports ready.")
+    committed = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main.Topic.Sub", summary="Sub exports ready.")
     assert committed.ok
     return ref
 

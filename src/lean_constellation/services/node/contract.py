@@ -191,6 +191,59 @@ class ContractComponent:
                 return self.runtime.foundation.fail(saved.issues)
         return opened
 
+    def _persist_open_candidate(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        candidate: NodeContract,
+    ) -> ServiceResult[NodeContractView]:
+        """Persist a preflighted in-memory candidate, opening a version atomically if needed."""
+        node = self._load_active_node(repo_root, node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        current = self._select_edit_contract(repo_root, node.value)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        if candidate.version != current.value.version or candidate.contract_kind != node.value.kind:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "contract_candidate_stale",
+                    "Contract mutation candidate no longer matches current truth.",
+                    object_ref=node_path,
+                )
+            )
+        persisted = deepcopy(candidate)
+        created_open = current.value.status == NodeContractStatus.COMMITTED
+        if created_open:
+            persisted.version = current.value.version + 1
+            persisted.status = NodeContractStatus.OPEN
+            persisted.summary = None
+            persisted.committed_at = None
+            persisted.created_at = utc_now_iso()
+        elif current.value.status != NodeContractStatus.OPEN:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("contract_not_open", "Contract candidate is not based on an editable contract.", object_ref=node_path)
+            )
+        with self.runtime.foundation.store.mutation("persist_open_contract_candidate") as mutation:
+            mutation.stage_json(
+                self._contract_file_for_node(repo_root, node.value, persisted.version),
+                persisted,
+                mode=WriteMode.CREATE_ONLY if created_open else WriteMode.UPDATE_EXISTING,
+            )
+            if created_open:
+                node.value.current_contract_version = persisted.version
+                node.value.open_contract_version = persisted.version
+                mutation.stage_json(
+                    self.node_tree.node_store.node_file(repo_root, node_id=node.value.node_id),
+                    node.value,
+                    mode=WriteMode.UPDATE_EXISTING,
+                )
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
+        return self.runtime.foundation.ok(self._contract_view(node.value, persisted))
+
     def initialize_main_contract_from_preparation_input(
         self,
         repo_root: Path,
@@ -304,7 +357,15 @@ class ContractComponent:
             return self.runtime.foundation.fail(node.issues)
         return self.runtime.foundation.ok(self._contract_view(node.value, contract))
 
-    def commit_content_contract(self, repo_root: Path, *, node_path: str, summary: str) -> ServiceResult[NodeContractView]:
+    def _commit_content_contract_with_head(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        summary: str,
+        decl_graph_head: dict[str, int],
+    ) -> ServiceResult[NodeContractView]:
+        """System-only primitive; callers must capture and validate the exact head."""
         summary_issue = self._validate_summary(summary)
         if not summary_issue.ok:
             return self.runtime.foundation.fail(summary_issue.issues)
@@ -320,6 +381,7 @@ class ContractComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("contract_not_open", "Only an open contract can be committed.", object_ref=node_path)
             )
+        contract.value.decl_graph_head = dict(sorted(decl_graph_head.items()))
         return self._commit_contract(repo_root, node.value, contract.value, summary=summary)
 
     def record_content_contract_summary(self, repo_root: Path, *, node_path: str, summary: str) -> ServiceResult[NodeContractView]:
@@ -352,7 +414,8 @@ class ContractComponent:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._contract_view(node.value, contract.value))
 
-    def commit_scope_contract(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[NodeContractView]:
+    def _commit_scope_contract_after_guard(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[NodeContractView]:
+        """System-only primitive after NodeService release guard validation."""
         gate = self._check_scope_commit(repo_root, scope_path=scope_path, summary=summary)
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
@@ -484,20 +547,24 @@ class ContractComponent:
         contract.summary = summary.strip()
         contract.status = ContractVersionStatus.COMMITTED
         contract.committed_at = utc_now_iso()
-        saved = self.runtime.foundation.store.write_json_atomic(
-            self._contract_file_for_node(repo_root, node, contract.version),
-            contract,
-            mode=WriteMode.UPDATE_EXISTING,
-        )
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
         node.current_contract_version = contract.version
         node.active_contract_version = contract.version
         if node.open_contract_version == contract.version:
             node.open_contract_version = None
-        saved_node = self.node_tree.node_store.save_node(repo_root, node, mode=WriteMode.UPDATE_EXISTING)
-        if not saved_node.ok:
-            return self.runtime.foundation.fail(saved_node.issues)
+        with self.runtime.foundation.store.mutation("commit_node_contract") as mutation:
+            mutation.stage_json(
+                self._contract_file_for_node(repo_root, node, contract.version),
+                contract,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            mutation.stage_json(
+                self.node_tree.node_store.node_file(repo_root, node_id=node.node_id),
+                node,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
         return self.runtime.foundation.ok(self._contract_view(node, contract))
 
     def _validate_summary(self, summary: str) -> ServiceResult[None]:
