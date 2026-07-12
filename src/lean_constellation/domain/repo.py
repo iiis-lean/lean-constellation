@@ -99,6 +99,7 @@ class RepoConfig(StrictModel):
 
 class RepoPublicationState(StrictModel):
     status: RepoPublicationStatus = RepoPublicationStatus.DEVELOPING
+    latest_release_id: str | None = None
     stable_at: str | None = None
 
     @model_validator(mode="after")
@@ -182,6 +183,7 @@ class RepoStateView(StrictModel):
     repo_summary: str | None = None
     repo_format: RepoFormat = RepoFormat.UNKNOWN
     publication_status: RepoPublicationStatus = RepoPublicationStatus.DEVELOPING
+    latest_release_id: str | None = None
     target_proof_availability: ProofAvailability = ProofAvailability.PROVED
     work_mode: RepoWorkMode = RepoWorkMode.PROVED_FULL_GRAPH
     default_requirement_proof_availability: ProofAvailability = ProofAvailability.DECLARED
@@ -199,6 +201,7 @@ class WorkspaceRepoSummary(StrictModel):
     repo_summary: str | None = None
     repo_format: RepoFormat = RepoFormat.UNKNOWN
     publication_status: RepoPublicationStatus = RepoPublicationStatus.DEVELOPING
+    latest_release_id: str | None = None
     target_proof_availability: ProofAvailability = ProofAvailability.PROVED
     work_mode: RepoWorkMode = RepoWorkMode.PROVED_FULL_GRAPH
     provider_ready: bool = False

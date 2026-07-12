@@ -6,6 +6,7 @@ from lean_constellation.domain.preparation import RepoDependencyRequirement, Rep
 from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoFormat,
+    RepoPublicationState,
     RepoPublicationStatus,
     RepoWorkMode,
 )
@@ -156,6 +157,33 @@ def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> Non
     assert reopened.ok and reopened.value is not None
     assert reopened.value.publication.status == RepoPublicationStatus.DEVELOPING
     assert reopened.value.publication.stable_at is None
+
+
+def test_old_publication_json_loads_without_read_time_write_and_latest_is_visible(tmp_path: Path) -> None:
+    component = make_runtime().repo_workspace.metadata
+    publication_path = component._repo_publication_path(tmp_path)
+    publication_path.parent.mkdir(parents=True, exist_ok=True)
+    old_payload = '{\n  "status": "stable",\n  "stable_at": "2026-01-01T00:00:00Z"\n}\n'
+    publication_path.write_text(old_payload, encoding="utf-8")
+
+    old = component.get_repo_publication(tmp_path)
+
+    assert old.ok and old.value is not None
+    assert old.value.publication.latest_release_id is None
+    assert publication_path.read_text(encoding="utf-8") == old_payload
+
+    written = component.runtime.foundation.store.write_json_atomic(
+        publication_path,
+        RepoPublicationState(
+            status=RepoPublicationStatus.STABLE,
+            stable_at="2026-01-01T00:00:00Z",
+            latest_release_id="release_2",
+        ),
+    )
+    assert written.ok
+    state = component.get_repo_state_view(tmp_path)
+    assert state.ok and state.value is not None
+    assert state.value.latest_release_id == "release_2"
 
 
 def test_get_repo_model_missing_returns_structured_failure(tmp_path: Path) -> None:

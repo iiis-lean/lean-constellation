@@ -77,6 +77,7 @@ class WorkspaceCatalogComponent:
                     repo_summary=state.value.repo_summary,
                     repo_format=state.value.repo_format,
                     publication_status=state.value.publication_status,
+                    latest_release_id=state.value.latest_release_id,
                     target_proof_availability=state.value.target_proof_availability,
                     work_mode=state.value.work_mode,
                     provider_ready=state.value.provider_ready,

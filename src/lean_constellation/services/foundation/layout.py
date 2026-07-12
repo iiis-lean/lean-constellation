@@ -109,6 +109,18 @@ class LayoutComponent:
     def requirement_path(self, ctx: FoundationContext, requirement_name: str) -> Path:
         return self.requirements_root(ctx) / f"{self.ensure_safe_key(requirement_name)}.json"
 
+    def releases_root(self, ctx: FoundationContext) -> Path:
+        return self.constellation_root(ctx) / "releases"
+
+    def release_path(self, ctx: FoundationContext, release_id: str) -> Path:
+        return self.releases_root(ctx) / f"{self.ensure_safe_key(release_id)}.json"
+
+    def repo_locks_root(self, ctx: FoundationContext) -> Path:
+        return self.constellation_root(ctx) / ".locks"
+
+    def repo_lifecycle_lock_path(self, ctx: FoundationContext) -> Path:
+        return self.repo_locks_root(ctx) / "repo_lifecycle.lock"
+
     def nodes_root(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / "nodes"
 

@@ -72,6 +72,7 @@ class NodeContract(StrictModel):
     mathlib_modules: list[NodeMathlibModuleUse] = Field(default_factory=list)
     mathlib_decls: list[NodeMathlibDeclUse] = Field(default_factory=list)
     exports: list[DeclRef] = Field(default_factory=list)
+    decl_graph_head: dict[str, int] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now_iso)
     committed_at: str | None = None
 

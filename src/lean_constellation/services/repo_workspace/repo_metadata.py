@@ -357,6 +357,7 @@ class RepoMetadataComponent:
                 repo_summary=repo_summary,
                 repo_format=repo_format.value.repo_format,
                 publication_status=publication.value.publication.status,
+                latest_release_id=publication.value.publication.latest_release_id,
                 target_proof_availability=config.value.config.target_proof_availability,
                 work_mode=config.value.config.work_mode,
                 default_requirement_proof_availability=config.value.config.default_requirement_proof_availability,

@@ -200,6 +200,20 @@ def test_ensure_scope_contract_repairs_missing_exports_list(tmp_path: Path) -> N
     assert result.value.contract.exports == []
 
 
+def test_old_contract_json_without_decl_graph_head_loads_without_rewrite(tmp_path: Path) -> None:
+    _create_topic_content(tmp_path)
+    contract_path = _contract_path(tmp_path, "Main.Topic.Core", 1)
+    original = json.loads(contract_path.read_text(encoding="utf-8"))
+    original.pop("decl_graph_head", None)
+    serialized = json.dumps(original, indent=2) + "\n"
+    contract_path.write_text(serialized, encoding="utf-8")
+
+    loaded = _load_contract(tmp_path, "Main.Topic.Core", 1)
+
+    assert loaded.decl_graph_head == {}
+    assert contract_path.read_text(encoding="utf-8") == serialized
+
+
 def test_update_contract_text_fields_creates_open_version_and_protects_main_goal(tmp_path: Path) -> None:
     _create_topic_content(tmp_path)
     component = make_runtime().node.contract

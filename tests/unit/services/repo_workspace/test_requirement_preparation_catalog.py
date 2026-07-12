@@ -9,7 +9,14 @@ from lean_constellation.domain.preparation import (
     RepoRequirementRef,
     SourceCorpusMode,
 )
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus, RepoWorkMode, WorkspaceConfig
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoFormat,
+    RepoPublicationState,
+    RepoPublicationStatus,
+    RepoWorkMode,
+    WorkspaceConfig,
+)
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.repo_workspace import (
     LakeDependencyComponent,
@@ -254,6 +261,17 @@ def test_workspace_catalog_lists_repos_and_current_repo_first(tmp_path: Path) ->
     metadata.set_repo_format(current, repo_format=RepoFormat.NATIVE, reason="current")
     metadata.set_repo_format(provider, repo_format=RepoFormat.ADAPTER, reason="provider")
     metadata.set_provider_ready(provider, summary="Provider exposes the required public interface.")
+    adapter_state = metadata.get_repo_state_view(provider)
+    assert adapter_state.ok and adapter_state.value is not None
+    assert adapter_state.value.repo_format is RepoFormat.ADAPTER
+    assert adapter_state.value.publication_status is RepoPublicationStatus.STABLE
+    assert adapter_state.value.latest_release_id is None
+    assert adapter_state.value.provider_ready is True
+    publication_path = metadata._repo_publication_path(provider)
+    assert metadata.runtime.foundation.store.write_json_atomic(
+        publication_path,
+        RepoPublicationState(status=RepoPublicationStatus.STABLE, latest_release_id="release_1"),
+    ).ok
     requirement.create_requirement(current, name="need_provider", target_repo="provider", reason="use provider")
 
     missing = catalog.list_workspace_repos(workspace / "missing")
@@ -267,6 +285,7 @@ def test_workspace_catalog_lists_repos_and_current_repo_first(tmp_path: Path) ->
     assert repos.value[0].open_requirement_count == 1
     assert repos.value[1].provider_ready is True
     assert repos.value[1].repo_summary == "Provider exposes the required public interface."
+    assert repos.value[1].latest_release_id == "release_1"
 
     view = catalog.get_workspace_catalog(workspace, current_repo="provider")
     assert view.ok

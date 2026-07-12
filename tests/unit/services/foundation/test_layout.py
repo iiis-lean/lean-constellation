@@ -16,6 +16,10 @@ def test_layout_uses_constellation_material_roots(tmp_path) -> None:
     assert layout.resources_root(ctx) == tmp_path / ".lean_constellation" / "resources"
     assert layout.resource_dir(ctx, "arxiv_1234") == tmp_path / ".lean_constellation" / "resources" / "items" / "arxiv_1234"
     assert layout.snapshot_root(ctx) == tmp_path / ".lean_constellation" / "snapshots"
+    assert layout.releases_root(ctx) == tmp_path / ".lean_constellation" / "releases"
+    assert layout.release_path(ctx, "release_1") == tmp_path / ".lean_constellation" / "releases" / "release_1.json"
+    assert layout.repo_locks_root(ctx) == tmp_path / ".lean_constellation" / ".locks"
+    assert layout.repo_lifecycle_lock_path(ctx) == tmp_path / ".lean_constellation" / ".locks" / "repo_lifecycle.lock"
 
 
 def test_layout_rejects_repo_escape_and_unsafe_keys(tmp_path) -> None:
@@ -28,6 +32,8 @@ def test_layout_rejects_repo_escape_and_unsafe_keys(tmp_path) -> None:
         layout.source_corpus_entry_path(ctx, ".lean_constellation/source", "../outside.md")
     with pytest.raises(ValueError):
         layout.resource_dir(ctx, "bad/key")
+    with pytest.raises(ValueError):
+        layout.release_path(ctx, "../outside")
 
 
 def test_node_and_projection_paths_are_stable(tmp_path) -> None:

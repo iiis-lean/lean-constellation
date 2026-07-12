@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoPreparationInput
+from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.decl_graph import (
     Decl,
     DeclGraphIndex,
@@ -56,6 +57,7 @@ BUSINESS_TRUTH_MODELS = [
     RepoPreparationInput,
     SnapshotNodeRef,
     RepoCheckpointSnapshotManifest,
+    RepoRelease,
 ]
 
 
