@@ -29,6 +29,15 @@ from lean_constellation.services.validation_snapshot.readiness_gate import (
     ScopeReadyGateView,
 )
 from lean_constellation.services.validation_snapshot.service import ValidationSnapshotService
+from lean_constellation.services.validation_snapshot.release_finalizer import (
+    CandidateReleaseGateView,
+    CandidateReleasePreparationView,
+    PreparedRepoReleaseView,
+    ProviderRequirementReconciliationView,
+    RepoReleaseFinalizeView,
+    RepoReleaseFinalizerComponent,
+    RepoReleaseStorageAuditView,
+)
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
     ArkRuntimeSnapshotRef,
     ArkRuntimeSnapshotProvider,
@@ -57,14 +66,21 @@ __all__ = [
     "ContentNodeCompletionGateView",
     "ContentReadinessProvider",
     "ContentReadyGateView",
+    "CandidateReleaseGateView",
+    "CandidateReleasePreparationView",
     "DeclGraphAuditProvider",
     "FormalStageConsistencyProvider",
     "GateGapRecord",
     "IndexRebuildSummaryView",
     "PreparationInputRepairView",
+    "PreparedRepoReleaseView",
+    "ProviderRequirementReconciliationView",
     "ProjectionSyncSummaryView",
     "ReadinessGateComponent",
     "RepoReadyGateView",
+    "RepoReleaseFinalizeView",
+    "RepoReleaseFinalizerComponent",
+    "RepoReleaseStorageAuditView",
     "RepoCheckpointKind",
     "RepoCheckpointPolicy",
     "RepoCheckpointSnapshotManifest",

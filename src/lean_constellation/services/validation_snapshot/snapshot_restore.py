@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 from enum import StrEnum
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
+from lean_constellation.domain.repo import RepoModel, RepoPublicationState
+from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.foundation import (
     FoundationContext,
     GateReport,
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
 
 
 class RepoCheckpointKind(StrEnum):
+    REPO_RELEASE = "repo_release"
     REQUIREMENT_BOOTSTRAP_TERMINAL = "requirement_bootstrap_terminal"
     ADAPTER_PREPARATION_TERMINAL = "adapter_preparation_terminal"
     BEFORE_NATIVE_SOURCE_PROCESSING = "before_native_source_processing"
@@ -213,7 +217,7 @@ class SnapshotRestoreComponent:
     """Create, list, and restore repo stable-point checkpoint snapshots."""
 
     _EXCLUDED_TOP_LEVEL = {".git", ".lake", ".agent_runtime", "__pycache__", ".pytest_cache"}
-    _EXCLUDED_CONSTELLATION_CHILDREN = {"snapshots"}
+    _EXCLUDED_CONSTELLATION_CHILDREN = {"snapshots", ".locks"}
 
     def __init__(
         self,
@@ -231,6 +235,11 @@ class SnapshotRestoreComponent:
     @classmethod
     def checkpoint_policies(cls) -> dict[RepoCheckpointKind, RepoCheckpointPolicy]:
         return {
+            RepoCheckpointKind.REPO_RELEASE: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
+                gate_name="repo_release_stable_point",
+                summary="The native repository release transaction is at its stable publication hook.",
+            ),
             RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL: RepoCheckpointPolicy(
                 checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
                 gate_name="requirement_bootstrap_terminal_stable_point",
@@ -464,6 +473,173 @@ class SnapshotRestoreComponent:
             )
         )
 
+    def create_repo_release_checkpoint(
+        self,
+        repo_root: Path,
+        *,
+        snapshot_id: str,
+        release: RepoRelease,
+        publication: RepoPublicationState,
+        repo_model: RepoModel,
+        expected_candidate_digest: str,
+        label: str | None = None,
+        scope_ids: list[str] | None = None,
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
+        """Stage and atomically publish a release checkpoint containing final stable truth."""
+        repo_root = Path(repo_root)
+        try:
+            snapshot_id = self.runtime.foundation.layout.ensure_safe_key(snapshot_id.strip())
+        except ValueError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_checkpoint_snapshot_id_invalid", str(exc), object_ref=snapshot_id
+            ))
+        final_root = self._snapshot_dir(repo_root, snapshot_id)
+        if final_root.exists():
+            return self._load_existing_release_checkpoint_view(
+                repo_root,
+                snapshot_id,
+                release=release,
+                publication=publication,
+                repo_model=repo_model,
+            )
+        normalized_scopes = self._normalize_checkpoint_scope_ids(scope_ids)
+        if not normalized_scopes.ok:
+            return self.runtime.foundation.fail(normalized_scopes.issues)
+        effective_scopes = normalized_scopes.value or [f"repo:{repo_root.name}"]
+        current_digest = self.runtime.validation_snapshot.release_finalizer.compute_candidate_digest(repo_root)
+        if current_digest != expected_candidate_digest:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "release_candidate_drift",
+                "Candidate truth changed before release checkpoint staging.",
+                current=current_digest,
+                expected=expected_candidate_digest,
+            ))
+        staging_root = self._snapshot_root(repo_root) / ".staging" / snapshot_id
+        if staging_root.exists():
+            try:
+                shutil.rmtree(staging_root)
+            except OSError as exc:
+                return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                    "repo_release_checkpoint_staging_cleanup_failed",
+                    f"Failed to remove stale release checkpoint staging: {exc}",
+                    object_ref=snapshot_id,
+                ))
+        files_root = staging_root / "files"
+        lc_archive = files_root / "lean_constellation"
+        project_archive = files_root / "project"
+        try:
+            staging_root.mkdir(parents=True, exist_ok=False)
+            self._copy_constellation_truth(repo_root, lc_archive)
+            self._copy_project_files(repo_root, project_archive)
+
+            ctx = FoundationContext(repo_root=repo_root, caller="release_checkpoint.overlay")
+            overlays = (
+                (self.runtime.foundation.layout.repo_metadata_path(ctx), repo_model),
+                (self.runtime.repo_workspace.metadata._repo_publication_path(repo_root), publication),
+                (self.runtime.foundation.layout.release_path(ctx, release.release_id), release),
+            )
+            for live_path, value in overlays:
+                relative = live_path.relative_to(repo_root / ".lean_constellation")
+                written = self.runtime.foundation.store.write_json_atomic(lc_archive / relative, value)
+                if not written.ok:
+                    raise OSError("; ".join(issue.kind for issue in written.issues))
+
+            if self.runtime.validation_snapshot.release_finalizer.compute_candidate_digest(repo_root) != expected_candidate_digest:
+                raise RuntimeError("release_candidate_drift")
+            entries = self._entries_for_staged_archive(repo_root, files_root)
+            files_manifest = SnapshotFilesManifest(
+                entries=entries,
+                excluded_top_level=sorted(self._EXCLUDED_TOP_LEVEL),
+                summary=f"Captured {len(entries)} files for the final release checkpoint.",
+            )
+            preflight = self._preflight_archive_root(repo_root, files_root, files_manifest)
+            if not preflight.ok:
+                raise OSError("; ".join(issue.kind for issue in preflight.issues))
+
+            ark = self.ark_snapshot_provider.create_runtime_snapshot(
+                repo_root, scope_ids=effective_scopes, label=label
+            )
+            if not ark.ok or ark.value is None:
+                try:
+                    shutil.rmtree(staging_root)
+                except OSError as exc:
+                    return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                        "repo_release_checkpoint_staging_cleanup_failed",
+                        f"ARK snapshot failed and staging cleanup also failed: {exc}",
+                        object_ref=snapshot_id,
+                    ))
+                return self.runtime.foundation.fail(ark.issues)
+            if isinstance(ark.value, ArkRuntimeSnapshotRef):
+                ark_snapshot_id = ark.value.snapshot_id
+                ark_scope_ids = list(ark.value.scope_ids)
+            else:
+                ark_snapshot_id = str(ark.value)
+                ark_scope_ids = list(effective_scopes)
+            manifest = RepoCheckpointSnapshotManifest(
+                snapshot_id=snapshot_id,
+                checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
+                label=label.strip() if label else None,
+                created_at=utc_now_iso(),
+                repo_root=str(repo_root),
+                ark_runtime_snapshot_id=ark_snapshot_id,
+                refreshed_scope_ids=effective_scopes,
+                ark_runtime_scope_ids=ark_scope_ids,
+                files_manifest_relpath="files_manifest.json",
+                summary=f"Created final stable truth checkpoint for release {release.release_id}.",
+            )
+            for path, value in (
+                (staging_root / "files_manifest.json", files_manifest),
+                (staging_root / "snapshot.json", manifest),
+            ):
+                written = self.runtime.foundation.store.write_json_atomic(path, value)
+                if not written.ok:
+                    raise OSError("; ".join(issue.kind for issue in written.issues))
+            files_readback = self.runtime.foundation.store.read_json(
+                staging_root / "files_manifest.json", SnapshotFilesManifest
+            )
+            manifest_readback = self.runtime.foundation.store.read_json(
+                staging_root / "snapshot.json", RepoCheckpointSnapshotManifest
+            )
+            if (
+                not files_readback.ok
+                or files_readback.value != files_manifest
+                or not manifest_readback.ok
+                or manifest_readback.value != manifest
+            ):
+                raise OSError("release checkpoint manifest readback mismatch")
+            self._fsync_tree(staging_root)
+            final_root.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staging_root, final_root)
+            self.runtime.foundation.store._fsync_parent(final_root)
+        except (OSError, RuntimeError) as exc:
+            cleanup_errors: list[str] = []
+            for cleanup_root in (staging_root, final_root):
+                if not cleanup_root.exists():
+                    continue
+                try:
+                    shutil.rmtree(cleanup_root)
+                except OSError as cleanup_exc:
+                    cleanup_errors.append(f"{cleanup_root}: {cleanup_exc}")
+                if cleanup_root.exists():
+                    cleanup_errors.append(f"{cleanup_root}: still exists")
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_release_checkpoint_publish_failed",
+                f"Failed to publish the final release checkpoint: {exc}",
+                object_ref=snapshot_id,
+                details={"cleanup_errors": "; ".join(cleanup_errors)},
+            ))
+        return self.runtime.foundation.ok(RepoCheckpointSnapshotView(
+            snapshot_id=snapshot_id,
+            checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
+            label=manifest.label,
+            root=str(final_root),
+            ark_runtime_snapshot_id=manifest.ark_runtime_snapshot_id,
+            refreshed_scope_ids=effective_scopes,
+            ark_runtime_scope_ids=manifest.ark_runtime_scope_ids,
+            file_count=len(entries),
+            summary=manifest.summary,
+        ))
+
     def _load_existing_snapshot_view(
         self,
         repo_root: Path,
@@ -509,6 +685,44 @@ class SnapshotRestoreComponent:
             )
         )
 
+    def _load_existing_release_checkpoint_view(
+        self,
+        repo_root: Path,
+        snapshot_id: str,
+        *,
+        release: RepoRelease,
+        publication: RepoPublicationState,
+        repo_model: RepoModel,
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
+        loaded = self._load_existing_snapshot_view(
+            repo_root, snapshot_id, expected_kind=RepoCheckpointKind.REPO_RELEASE
+        )
+        if not loaded.ok or loaded.value is None:
+            return loaded
+        archive = self._snapshot_dir(repo_root, snapshot_id) / "files" / "lean_constellation"
+        archived_release = self.runtime.foundation.store.read_json(
+            archive / "releases" / f"{release.release_id}.json", RepoRelease
+        )
+        archived_publication = self.runtime.foundation.store.read_json(
+            archive / "repo_publication.json", RepoPublicationState
+        )
+        archived_model = self.runtime.foundation.store.read_json(archive / "repo.json", RepoModel)
+        conflicts: list[str] = []
+        if not archived_release.ok or archived_release.value != release:
+            conflicts.append("release")
+        if not archived_publication.ok or archived_publication.value != publication:
+            conflicts.append("publication")
+        if not archived_model.ok or archived_model.value != repo_model:
+            conflicts.append("repo_model")
+        if conflicts:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_release_checkpoint_id_conflict",
+                "Existing release checkpoint does not contain the exact prepared final truth overlay.",
+                object_ref=snapshot_id,
+                details={"conflicts": ", ".join(conflicts)},
+            ))
+        return loaded
+
     def restore_repo_checkpoint_snapshot(
         self,
         repo_root: Path,
@@ -517,11 +731,18 @@ class SnapshotRestoreComponent:
         dry_run: bool = False,
         leave_runtime_paused: bool = True,
         prune_extra_files: bool = False,
+        allow_release_internal: bool = False,
     ) -> ServiceResult[SnapshotRestoreView]:
         repo_root = Path(repo_root)
         manifest = self._load_manifest(repo_root, snapshot_id)
         if not manifest.ok or manifest.value is None:
             return self.runtime.foundation.fail(manifest.issues)
+        if manifest.value.checkpoint_kind == RepoCheckpointKind.REPO_RELEASE and not allow_release_internal:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_release_restore_requires_typed_route",
+                "Repo release checkpoints must be restored through restore_repo_release current-latest validation.",
+                object_ref=snapshot_id,
+            ))
         files = self._load_files_manifest(repo_root, snapshot_id)
         if not files.ok or files.value is None:
             return self.runtime.foundation.fail(files.issues)
@@ -912,6 +1133,70 @@ class SnapshotRestoreComponent:
                 continue
             entries.extend(self._copy_path(child, archive_root / child.name, source_prefix=repo_root, archive_prefix=archive_root.parent))
         return entries
+
+    def _entries_for_staged_archive(self, repo_root: Path, files_root: Path) -> list[SnapshotFileEntry]:
+        entries: list[SnapshotFileEntry] = []
+        for archive_file in sorted(path for path in files_root.rglob("*") if path.is_file()):
+            archive_relpath = archive_file.relative_to(files_root).as_posix()
+            parts = Path(archive_relpath).parts
+            if parts[0] == "lean_constellation":
+                source_relpath = (Path(".lean_constellation") / Path(*parts[1:])).as_posix()
+            elif parts[0] == "project":
+                source_relpath = Path(*parts[1:]).as_posix()
+            else:
+                raise OSError(f"Unexpected release checkpoint archive root: {parts[0]}")
+            self._resolve_managed_relative_path(repo_root, source_relpath)
+            entries.append(SnapshotFileEntry(
+                source_relpath=source_relpath,
+                archive_relpath=archive_relpath,
+                file_size=archive_file.stat().st_size,
+                sha256=self._sha256_file(archive_file),
+            ))
+        return entries
+
+    def _preflight_archive_root(
+        self,
+        repo_root: Path,
+        files_root: Path,
+        files_manifest: SnapshotFilesManifest,
+    ) -> ServiceResult[MutationSummaryView]:
+        missing: list[str] = []
+        mismatched: list[str] = []
+        for entry in files_manifest.entries:
+            try:
+                archive = self._resolve_managed_relative_path(files_root, entry.archive_relpath)
+                self._resolve_managed_relative_path(repo_root, entry.source_relpath)
+            except ValueError:
+                mismatched.append(entry.archive_relpath)
+                continue
+            if not archive.is_file():
+                missing.append(entry.archive_relpath)
+            elif archive.stat().st_size != entry.file_size or (
+                entry.sha256 is not None and self._sha256_file(archive) != entry.sha256
+            ):
+                mismatched.append(entry.archive_relpath)
+        if missing or mismatched:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_checkpoint_archive_invalid",
+                "Staged release checkpoint archive failed integrity preflight.",
+                details={"missing": ", ".join(missing), "mismatched": ", ".join(mismatched)},
+            ))
+        return self.runtime.foundation.ok(self.runtime.foundation.mutation_view(
+            object_ref=str(files_root), changed=False, summary="Staged archive integrity passed."
+        ))
+
+    @staticmethod
+    def _fsync_tree(root: Path) -> None:
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                with path.open("rb") as handle:
+                    os.fsync(handle.fileno())
+        for path in sorted((item for item in root.rglob("*") if item.is_dir()), reverse=True):
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
 
     def _prune_extra_files_for_restore(self, repo_root: Path, files_manifest: SnapshotFilesManifest) -> list[str]:
         expected = {entry.source_relpath for entry in files_manifest.entries}

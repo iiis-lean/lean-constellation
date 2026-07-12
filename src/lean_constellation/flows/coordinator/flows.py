@@ -29,6 +29,7 @@ from lean_constellation.flows.coordinator.steps import (
     MarkCoordinatorRepoReadyStepResult,
     new_coordinator_step_id,
 )
+from lean_constellation.services.validation_snapshot.release_finalizer import PreparedRepoReleaseView
 
 
 CoordinatorStartMode = Literal["native_preparation_handoff", "continuation_handoff", "requirement_resume", "admin_start", "admin_resume"]
@@ -89,10 +90,11 @@ class NativeRepoCoordinatorState(BaseFlowState):
 
 class NativeRepoCoordinatorResult(LeanRenderableFlowResult):
     result_type: Literal["native_repo_coordinator"] = "native_repo_coordinator"
-    outcome: Literal["repo_ready"]
+    outcome: Literal["repo_ready", "candidate_prepared"]
     repo_key: str | None = None
     provider_ready_marked: bool = False
     satisfied_requirement_count: int = 0
+    prepared_release: PreparedRepoReleaseView | None = None
 
     def agent_fields(self) -> dict[str, object]:
         return {
@@ -100,6 +102,8 @@ class NativeRepoCoordinatorResult(LeanRenderableFlowResult):
             "repo_key": self.repo_key,
             "provider_ready_marked": self.provider_ready_marked,
             "satisfied_requirement_count": self.satisfied_requirement_count,
+            "release_id": self.prepared_release.release.release_id if self.prepared_release else None,
+            "checkpoint_id": self.prepared_release.release.repo_checkpoint_id if self.prepared_release else None,
         }
 
 
@@ -283,6 +287,39 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
 
     def after_step_terminal_stable(self, ctx: StableStepTerminalContext) -> None:
         result = ctx.step.result
+        if ctx.step.step_type == "mark_coordinator_repo_ready_step":
+            if not isinstance(result, MarkCoordinatorRepoReadyStepResult):
+                return
+            if result.outcome != "candidate_prepared" or result.prepared_release is None:
+                return
+            input_model = _require_native_coordinator_input(self.input)
+            repo_root = _coordinator_repo_root(input_model)
+            validation_snapshot = getattr(ctx.app, "validation_snapshot", None)
+            if repo_root is None or validation_snapshot is None:
+                _mark_flow_failed_from_stable_snapshot(
+                    ctx, "repo_release_finalize_failed", [ValueError("Release finalizer service or repo_root missing.")]
+                )
+                return
+            committed = validation_snapshot.commit_prepared_release(
+                repo_root,
+                prepared=result.prepared_release,
+                owner_flow_id=self.flow_id,
+                scope_ids=[self.scope_id],
+            )
+            if not committed.ok:
+                publication = ctx.app.repo_workspace.metadata.get_repo_publication(repo_root)
+                if (
+                    publication.ok
+                    and publication.value is not None
+                    and publication.value.publication.status.value == "stable"
+                    and publication.value.publication.latest_release_id
+                    == result.prepared_release.release.release_id
+                ):
+                    return
+                _mark_flow_failed_from_stable_snapshot(
+                    ctx, "repo_release_finalize_failed", list(committed.issues)
+                )
+            return
         if ctx.step.step_type == "coordinator_content_batch_snapshot_step":
             if not isinstance(result, CoordinatorContentBatchSnapshotStepResult) or result.outcome != "snapshot_created":
                 return
@@ -493,15 +530,20 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         input_model: NativeRepoCoordinatorInput,
         result: MarkCoordinatorRepoReadyStepResult,
     ) -> None:
-        if result.outcome != "ready_marked":
+        if result.outcome in {"blocked", "candidate_blocked"}:
+            state.position = FlowPosition(phase="coordinator_callback")
+            state.repo_ready_summary = None
+            return
+        if result.outcome not in {"ready_marked", "candidate_prepared"}:
             self._fail_coordinator(result.error_code or "repo_ready_mark_failed", result.error_message or result.summary or "Repo ready marker failed.")
             return
         state.position = FlowPosition(phase="completed")
         self.result = NativeRepoCoordinatorResult(
-            outcome="repo_ready",
+            outcome="candidate_prepared" if result.outcome == "candidate_prepared" else "repo_ready",
             repo_key=input_model.repo_key,
             provider_ready_marked=result.provider_ready_marked,
             satisfied_requirement_count=result.satisfied_requirement_count,
+            prepared_release=result.prepared_release,
             summary=result.repo_summary or result.summary or state.repo_ready_summary or "Repo ready.",
         )
 

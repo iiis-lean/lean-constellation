@@ -359,8 +359,8 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     assert shell.ok, shell.issues
     _seed_declared_public_theorem(runtime, provider)
     _export_main_result_from_provider_main(runtime, provider)
-    publish_native_provider_release(runtime, provider, summary="Provider publishes declared theorem interface.")
-    marked = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider publishes declared theorem interface.")
+    release = publish_native_provider_release(runtime, provider, summary="Provider publishes declared theorem interface.")
+    marked = runtime.validation_snapshot.reconcile_provider_requirements(provider, release_id=release.release_id)
     assert marked.ok, marked.issues
     assert runtime.repo_workspace.requirement.mark_requirement_result_observed(
         consumer,

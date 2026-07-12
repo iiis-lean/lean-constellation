@@ -24,6 +24,7 @@ from lean_constellation.domain.preparation import (
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
+    RepoFormat,
     RepoWorkMode,
     WorkspaceConfig,
     WorkspaceCoordinatorView,
@@ -458,6 +459,14 @@ class RepoWorkspaceService:
 
     def mark_provider_repo_ready(self, repo_root: Path, *, summary: str) -> ServiceResult[ProviderReadyView]:
         repo_root = Path(repo_root)
+        repo_format = self.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format == RepoFormat.NATIVE:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "native_release_finalizer_required",
+                "Native provider readiness is published by the RepoRelease finalizer transaction.",
+            ))
         summary = summary.strip()
         if not summary:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_summary", "Repo summary is required."))

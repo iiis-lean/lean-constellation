@@ -14,6 +14,7 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
+from lean_constellation.services.validation_snapshot.release_finalizer import PreparedRepoReleaseView
 
 
 class CoordinatorContentTasksResultView(StrictModel):
@@ -96,11 +97,13 @@ class CoordinatorContentBatchSnapshotStepResult(LeanRenderableStepResult):
 
 class MarkCoordinatorRepoReadyStepResult(LeanRenderableStepResult):
     result_type: Literal["mark_coordinator_repo_ready"] = "mark_coordinator_repo_ready"
-    outcome: Literal["ready_marked", "blocked"]
+    outcome: Literal["ready_marked", "blocked", "candidate_prepared", "candidate_blocked"]
     repo_key: str | None = None
     provider_ready_marked: bool = False
     satisfied_requirement_count: int = 0
     repo_summary: str | None = None
+    prepared_release: PreparedRepoReleaseView | None = None
+    blocking_issue_kinds: list[str] = Field(default_factory=list)
     error_code: str | None = None
     error_message: str | None = None
 
@@ -111,6 +114,9 @@ class MarkCoordinatorRepoReadyStepResult(LeanRenderableStepResult):
             "provider_ready_marked": self.provider_ready_marked,
             "satisfied_requirement_count": self.satisfied_requirement_count,
             "repo_summary": self.repo_summary,
+            "release_id": self.prepared_release.release.release_id if self.prepared_release else None,
+            "checkpoint_id": self.prepared_release.release.repo_checkpoint_id if self.prepared_release else None,
+            "blocking_issue_kinds": list(self.blocking_issue_kinds),
             "error_code": self.error_code,
             "error_message": self.error_message,
         }
@@ -393,12 +399,18 @@ class MarkCoordinatorRepoReadyStep(BaseStep):
                     summary="Coordinator repo ready marker cannot run without repo_root.",
                 )
             )
-        gate = _validation_snapshot(ctx).check_repo_ready(repo_root, summary=self.repo_summary)
-        if not gate.ok or gate.value is None:
-            code, message = _first_issue(gate.issues, fallback_code="repo_ready_gate_failed")
+        base_release_id = input_model.run_context.base_release_id if input_model.run_context is not None else None
+        prepared = _validation_snapshot(ctx).prepare_candidate_release(
+            repo_root,
+            base_release_id=base_release_id,
+            summary=self.repo_summary,
+            owner_flow_id=flow.flow_id,
+        )
+        if not prepared.ok or prepared.value is None:
+            code, message = _first_issue(prepared.issues, fallback_code="repo_release_prepare_failed")
             return ctx.complete_step(
                 MarkCoordinatorRepoReadyStepResult(
-                    outcome="blocked",
+                    outcome="candidate_blocked",
                     repo_key=input_model.repo_key,
                     repo_summary=self.repo_summary,
                     error_code=code,
@@ -406,40 +418,26 @@ class MarkCoordinatorRepoReadyStep(BaseStep):
                     summary=message,
                 )
             )
-        if not gate.value.passed:
-            code, message = _first_issue(gate.value.issues, fallback_code="repo_ready_gate_blocked")
+        if prepared.value.outcome != "prepared" or prepared.value.prepared_release is None:
+            code, message = _first_issue(prepared.value.gate.issues, fallback_code="repo_release_candidate_blocked")
             return ctx.complete_step(
                 MarkCoordinatorRepoReadyStepResult(
-                    outcome="blocked",
+                    outcome="candidate_blocked",
                     repo_key=input_model.repo_key,
                     repo_summary=self.repo_summary,
                     error_code=code,
                     error_message=message,
-                    summary=gate.value.summary or message,
-                )
-            )
-
-        marked = _repo_workspace(ctx).mark_provider_repo_ready(repo_root, summary=self.repo_summary)
-        if not marked.ok or marked.value is None:
-            code, message = _first_issue(marked.issues, fallback_code="provider_ready_mark_failed")
-            return ctx.complete_step(
-                MarkCoordinatorRepoReadyStepResult(
-                    outcome="blocked",
-                    repo_key=input_model.repo_key,
-                    repo_summary=self.repo_summary,
-                    error_code=code,
-                    error_message=message,
-                    summary=message,
+                    blocking_issue_kinds=list(prepared.value.blocking_issue_kinds),
+                    summary=prepared.value.summary or message,
                 )
             )
         return ctx.complete_step(
             MarkCoordinatorRepoReadyStepResult(
-                outcome="ready_marked",
+                outcome="candidate_prepared",
                 repo_key=input_model.repo_key,
-                provider_ready_marked=marked.value.provider_ready_marked,
-                satisfied_requirement_count=marked.value.satisfied_requirement_count,
-                repo_summary=marked.value.repo_summary or self.repo_summary,
-                summary=marked.value.summary,
+                repo_summary=self.repo_summary,
+                prepared_release=prepared.value.prepared_release,
+                summary=prepared.value.summary,
             )
         )
 

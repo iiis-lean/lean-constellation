@@ -416,6 +416,14 @@ class RepoMetadataComponent:
         return self.runtime.foundation.ok(RepoPublicationView(repo_root=str(Path(repo_root)), publication=state))
 
     def mark_repo_stable(self, repo_root: Path, *, summary: str) -> ServiceResult[RepoPublicationView]:
+        repo_format = self.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format == RepoFormat.NATIVE:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "native_release_finalizer_required",
+                "Native repositories become stable only through the RepoRelease finalizer transaction.",
+            ))
         summary = summary.strip()
         if not summary:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_summary", "Repo summary is required."))

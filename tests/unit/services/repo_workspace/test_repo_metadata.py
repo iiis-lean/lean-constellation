@@ -74,9 +74,8 @@ def test_repo_format_policy_and_state_view(tmp_path: Path) -> None:
     assert config.value.config.max_parallel_content_node_tasks == 3
 
     ready = component.set_provider_ready(tmp_path, summary="Ready provider summary.")
-    assert ready.ok
-    assert ready.value is not None
-    assert ready.value.ready is False
+    assert not ready.ok
+    assert ready.issues[0].kind == "native_release_finalizer_required"
     publish_native_provider_release(component.runtime, tmp_path, summary="Ready provider summary.")
 
     model = component.get_repo_model(tmp_path)

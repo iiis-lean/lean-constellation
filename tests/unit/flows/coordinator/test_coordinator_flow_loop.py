@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent_runtime_kit.flow.contexts import StableStepTerminalContext
 from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -508,7 +509,9 @@ def test_requirement_resume_gate_returns_to_waiting_when_observed_truth_races(tm
     assert dependencies.ok and dependencies.value == []
 
 
-def test_repo_ready_submission_marks_stable_but_requires_native_release_evidence(tmp_path: Path) -> None:
+def test_repo_ready_submission_prepares_and_publishes_native_release(
+    tmp_path: Path, monkeypatch
+) -> None:  # noqa: ANN001
     runtime, lean_runtime, _, _ = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
     repo_root.mkdir(parents=True)
@@ -529,10 +532,12 @@ def test_repo_ready_submission_marks_stable_but_requires_native_release_evidence
     )
     assert written.ok
     (repo_root / ".lean_constellation" / "source").mkdir(parents=True, exist_ok=True)
+    assert lean_runtime.repo_workspace.initialize_repo_as_native(repo_root, project_name="Repo").ok
     initialized = lean_runtime.node.ensure_native_root_main_contract(repo_root)
     assert initialized.ok
     committed = lean_runtime.node.commit_scope_contract(repo_root, scope_path="Main", summary="Main scope complete.")
     assert committed.ok
+    assert lean_runtime.lean_projection.refresh_node_projection(repo_root, node_path="Main").ok
     flow_id = _start_coordinator(runtime, repo_root)
 
     runtime.agent_service.queue_submission(
@@ -547,18 +552,38 @@ def test_repo_ready_submission_marks_stable_but_requires_native_release_evidence
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "mark_repo_ready"
 
-    _advance_and_run(runtime, flow_id)
+    monkeypatch.setattr(
+        lean_runtime.repo_workspace.metadata,
+        "set_repo_summary",
+        lambda *args, **kwargs: lean_runtime.foundation.fail(
+            lean_runtime.foundation.issue("injected_postcommit_summary", "summary save failed")
+        ),
+    )
+    ready_step_id = _advance_and_run(runtime, flow_id)
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
-    assert flow.result.outcome == "repo_ready"
-    assert flow.result.provider_ready_marked is True
+    assert flow.result.outcome == "candidate_prepared"
+    assert flow.result.prepared_release is not None
     ready = lean_runtime.repo_workspace.metadata.get_provider_ready(repo_root)
-    assert ready.ok and ready.value.ready is False
+    assert ready.ok and ready.value.ready is True
     availability = lean_runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
-    assert availability.ok and availability.value is not None and availability.value.passed is False
-    assert availability.value.issues[0].kind == "provider_native_release_adoption_required"
+    assert availability.ok and availability.value is not None and availability.value.passed is True
     publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.STABLE
+    assert publication.value.publication.latest_release_id == flow.result.prepared_release.release.release_id
     model = lean_runtime.repo_workspace.metadata.get_repo_model(repo_root)
-    assert model.ok and model.value.summary == "Repo exposes a completed small formalization."
+    assert model.ok and model.value.summary is None
+
+    def _raise_release_read(*args, **kwargs):  # noqa: ANN001, ANN202
+        del args, kwargs
+        raise OSError("injected committed-release read failure")
+
+    monkeypatch.setattr(lean_runtime.repo_workspace.release, "get_release", _raise_release_read)
+    ready_step = runtime.flow_service.get_step(ready_step_id)
+    flow.after_step_terminal_stable(
+        StableStepTerminalContext(ark=runtime.ark, app=runtime.app, flow=flow, step=ready_step)
+    )
+    retried = runtime.flow_service.get_flow(flow_id)
+    assert retried.status is FlowStatus.COMPLETED
+    assert retried.error is None

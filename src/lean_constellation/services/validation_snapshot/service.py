@@ -16,6 +16,15 @@ from lean_constellation.services.validation_snapshot.readiness_gate import (
     RepoReadyGateView,
     ScopeReadyGateView,
 )
+from lean_constellation.services.validation_snapshot.release_finalizer import (
+    CandidateReleaseGateView,
+    CandidateReleasePreparationView,
+    PreparedRepoReleaseView,
+    ProviderRequirementReconciliationView,
+    RepoReleaseFinalizeView,
+    RepoReleaseFinalizerComponent,
+    RepoReleaseStorageAuditView,
+)
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
     ArkRuntimeSnapshotProvider,
     RepoCheckpointKind,
@@ -24,7 +33,7 @@ from lean_constellation.services.validation_snapshot.snapshot_restore import (
     SnapshotRestoreComponent,
     SnapshotRestoreView,
 )
-from lean_constellation.services.foundation import GateReport, ServiceResult
+from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
 
 if TYPE_CHECKING:
     from lean_constellation.services.adapter import AdapterService
@@ -89,6 +98,7 @@ class ValidationSnapshotService:
             runtime_stability_provider=runtime_stability_provider,
             ark_snapshot_provider=ark_snapshot_provider,
         )
+        self.release_finalizer = RepoReleaseFinalizerComponent(runtime)
         self.admin_repair = admin_repair or AdminRepairComponent(
             runtime,
             repo_workspace=repo_workspace,
@@ -219,6 +229,29 @@ class ValidationSnapshotService:
         leave_runtime_paused: bool = True,
         prune_extra_files: bool = False,
     ) -> ServiceResult[SnapshotRestoreView]:
+        manifest = self.snapshot_restore._load_manifest(Path(repo_root), snapshot_id)
+        if manifest.ok and manifest.value is not None and manifest.value.checkpoint_kind == RepoCheckpointKind.REPO_RELEASE:
+            releases = self.runtime.repo_workspace.release.list_releases(Path(repo_root))
+            if not releases.ok or releases.value is None:
+                return self.runtime.foundation.fail(releases.issues)
+            matches = [
+                item.release.release_id
+                for item in releases.value
+                if item.release.repo_checkpoint_id == snapshot_id
+            ]
+            if len(matches) != 1:
+                return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                    "repo_release_checkpoint_identity_invalid",
+                    "Release checkpoint must be referenced by exactly one immutable RepoRelease.",
+                    object_ref=snapshot_id,
+                    details={"matches": ", ".join(matches)},
+                ))
+            return self.release_finalizer.restore_repo_release(
+                Path(repo_root),
+                release_id=matches[0],
+                dry_run=dry_run,
+                leave_runtime_paused=leave_runtime_paused,
+            )
         return self.snapshot_restore.restore_repo_checkpoint_snapshot(
             repo_root,
             snapshot_id=snapshot_id,
@@ -240,3 +273,62 @@ class ValidationSnapshotService:
 
     def run_full_audit(self, repo_root: Path) -> ServiceResult[AuditReport]:
         return self.admin_repair.run_full_audit(repo_root)
+
+    def prepare_candidate_release(
+        self, repo_root: Path, *, base_release_id: str | None, summary: str, owner_flow_id: str
+    ) -> ServiceResult[CandidateReleasePreparationView]:
+        return self.release_finalizer.prepare_candidate_release(
+            repo_root, base_release_id=base_release_id, summary=summary, owner_flow_id=owner_flow_id
+        )
+
+    def preview_candidate_release(
+        self,
+        repo_root: Path,
+        *,
+        base_release_id: str | None,
+        summary: str,
+        owner_flow_id: str | None = None,
+    ) -> ServiceResult[CandidateReleaseGateView]:
+        return self.release_finalizer.preview_candidate_release(
+            repo_root,
+            base_release_id=base_release_id,
+            summary=summary,
+            owner_flow_id=owner_flow_id,
+        )
+
+    def commit_prepared_release(
+        self, repo_root: Path, *, prepared: PreparedRepoReleaseView, owner_flow_id: str, scope_ids: list[str]
+    ) -> ServiceResult[RepoReleaseFinalizeView]:
+        return self.release_finalizer.commit_prepared_release(
+            repo_root, prepared=prepared, owner_flow_id=owner_flow_id, scope_ids=scope_ids
+        )
+
+    def reconcile_provider_requirements(
+        self, repo_root: Path, *, release_id: str
+    ) -> ServiceResult[ProviderRequirementReconciliationView]:
+        return self.release_finalizer.reconcile_provider_requirements(repo_root, release_id=release_id)
+
+    def audit_repo_release_storage(self, repo_root: Path) -> ServiceResult[RepoReleaseStorageAuditView]:
+        return self.release_finalizer.audit_repo_release_storage(repo_root)
+
+    def cleanup_unpublished_release_artifacts(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str | None = None,
+        checkpoint_id: str | None = None,
+        staging_id: str | None = None,
+    ) -> ServiceResult[MutationSummaryView]:
+        return self.release_finalizer.cleanup_unpublished_release_artifacts(
+            repo_root,
+            release_id=release_id,
+            checkpoint_id=checkpoint_id,
+            staging_id=staging_id,
+        )
+
+    def restore_repo_release(
+        self, repo_root: Path, *, release_id: str, dry_run: bool = False, leave_runtime_paused: bool = True
+    ) -> ServiceResult[SnapshotRestoreView]:
+        return self.release_finalizer.restore_repo_release(
+            repo_root, release_id=release_id, dry_run=dry_run, leave_runtime_paused=leave_runtime_paused
+        )

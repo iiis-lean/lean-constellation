@@ -398,12 +398,12 @@ def test_repo_workspace_service_marks_provider_ready_and_attach(tmp_path: Path) 
         ),
     )
 
-    ready = service.mark_provider_repo_ready(provider, summary="provider ready")
-    assert ready.ok
-    assert ready.value is not None
-    assert ready.value.satisfied_requirement_count == 1
-    assert ready.value.repo_summary == "provider ready"
-    publish_native_provider_release(service.runtime, provider, summary="provider ready")
+    release = publish_native_provider_release(service.runtime, provider, summary="provider ready")
+    reconciled = service.runtime.validation_snapshot.reconcile_provider_requirements(
+        provider, release_id=release.release_id
+    )
+    assert reconciled.ok and reconciled.value is not None
+    assert reconciled.value.satisfied == ["consumer/need_provider"]
 
     attach = service.attach_provider_for_requirement(consumer, requirement_name="need_provider")
     assert attach.ok
