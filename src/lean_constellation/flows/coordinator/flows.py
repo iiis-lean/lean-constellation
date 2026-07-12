@@ -10,6 +10,7 @@ from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, Age
 from pydantic import Field
 
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
+from lean_constellation.domain.repo_run import RepoRunContext
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
@@ -30,7 +31,7 @@ from lean_constellation.flows.coordinator.steps import (
 )
 
 
-CoordinatorStartMode = Literal["native_preparation_handoff", "requirement_resume", "admin_start", "admin_resume"]
+CoordinatorStartMode = Literal["native_preparation_handoff", "continuation_handoff", "requirement_resume", "admin_start", "admin_resume"]
 
 
 class NativeRepoCoordinatorParams(LeanFlowParams):
@@ -40,6 +41,7 @@ class NativeRepoCoordinatorParams(LeanFlowParams):
     start_reason: str | None = None
     resumed_requirement_name: str | None = None
     admin_note: str | None = None
+    run_context: RepoRunContext | None = None
 
 
 class NativeRepoCoordinatorInput(LeanRenderableFlowInput):
@@ -50,6 +52,7 @@ class NativeRepoCoordinatorInput(LeanRenderableFlowInput):
     start_reason: str | None = None
     resumed_requirement_name: str | None = None
     admin_note: str | None = None
+    run_context: RepoRunContext | None = None
 
     def agent_title(self) -> str:
         repo = self.repo_key or "current repo"
@@ -61,6 +64,7 @@ class NativeRepoCoordinatorInput(LeanRenderableFlowInput):
             "start_reason": self.start_reason,
             "resumed_requirement_name": self.resumed_requirement_name,
             "admin_note": self.admin_note,
+            "run_context": self.run_context.model_dump(mode="json") if self.run_context is not None else None,
         }
 
 

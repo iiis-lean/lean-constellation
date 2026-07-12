@@ -21,6 +21,7 @@ from lean_constellation.app.admin_api import (
     LeanAdminApi,
     MainNativeRepoBootstrapView,
     RepoConfigUpdateInput,
+    RepoRunRequestInput,
     RequirementResumeInput,
     SnapshotCreateInput,
     SnapshotListInput,
@@ -28,6 +29,8 @@ from lean_constellation.app.admin_api import (
     StartFlowInput,
     StartPreparationInput,
     StartRequirementGroupBootstrapInput,
+    StandaloneRootInterfaceRunInput,
+    StandaloneSourceIndexRunInput,
     ValidateMainSourceCorpusInput,
     WriteMainRepoPreparationInput,
 )
@@ -767,7 +770,31 @@ def create_workspace_admin_http_routes(
         return await _repo_model_route(request, registry, AdminStepStartInput, LeanAdminApi.wait_step)
 
     async def repo_start_native_preparation(request: Request) -> JSONResponse:
-        return await _repo_model_route(request, registry, StartPreparationInput, LeanAdminApi.start_native_preparation)
+        return await _repo_lifecycle_model_route(request, registry, StartPreparationInput, LeanAdminApi.start_native_preparation)
+
+    async def repo_continue_native(request: Request) -> JSONResponse:
+        return await _repo_lifecycle_model_route(request, registry, RepoRunRequestInput, LeanAdminApi.continue_native_repo)
+
+    async def repo_run_status(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        return _service_result_response(
+            admin_result.value.get_repo_run_status(record.value.repo_root, repo_key=record.value.repo_key)
+        )
+
+    async def repo_start_source_index(request: Request) -> JSONResponse:
+        return await _repo_lifecycle_model_route(
+            request, registry, StandaloneSourceIndexRunInput, LeanAdminApi.start_standalone_source_index
+        )
+
+    async def repo_start_root_interfaces(request: Request) -> JSONResponse:
+        return await _repo_lifecycle_model_route(
+            request, registry, StandaloneRootInterfaceRunInput, LeanAdminApi.start_standalone_root_interfaces
+        )
 
     async def repo_start_adapter_preparation(request: Request) -> JSONResponse:
         return await _repo_model_route(request, registry, StartPreparationInput, LeanAdminApi.start_adapter_preparation)
@@ -947,6 +974,10 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/test-control/steps/start", repo_start_step, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/test-control/steps/wait", repo_wait_step, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/preparation/native/start", repo_start_native_preparation, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/continue", repo_continue_native, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/run/status", repo_run_status, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/source-index/update", repo_start_source_index, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/root-interfaces/prepare", repo_start_root_interfaces, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/preparation/adapter/start", repo_start_adapter_preparation, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/snapshots/create", repo_create_snapshot, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/snapshots/list", repo_list_snapshots, methods=["POST"]),
@@ -1026,6 +1057,32 @@ async def _repo_model_route(request: Request, registry: RepoRuntimeRegistry, mod
     if not record.ok or record.value is None:
         return _service_result_response(record)
     with record.value.lock:
+        return _service_result_response(handler(admin, input_model))
+
+
+async def _repo_lifecycle_model_route(request: Request, registry: RepoRuntimeRegistry, model_type, handler: Callable[[Any, Any], ServiceResult[Any]]) -> JSONResponse:  # noqa: ANN001
+    discovered = registry.discover_repo(request.path_params["repo_key"])
+    if not discovered.ok or discovered.value is None:
+        return _service_result_response(discovered)
+    record = discovered.value
+    loaded = registry.get_or_load(record.repo_key, refresh_homes=False)
+    if not loaded.ok or loaded.value is None:
+        return _service_result_response(loaded)
+    data = await _json_or_empty(request)
+    supplied_key = data.get("repo_key")
+    supplied_root = data.get("repo_root")
+    if supplied_key is not None and supplied_key != record.repo_key:
+        return _request_validation_response("Body repo_key must match the repo key in the route path.")
+    if supplied_root is not None and Path(supplied_root).expanduser().resolve() != record.repo_root.resolve():
+        return _request_validation_response("Body repo_root must match the repo root selected by the route path.")
+    data["repo_key"] = record.repo_key
+    data["repo_root"] = str(record.repo_root)
+    try:
+        input_model = model_type.model_validate(data)
+    except ValidationError as exc:
+        return _request_validation_response(str(exc))
+    admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+    with record.lock:
         return _service_result_response(handler(admin, input_model))
 
 

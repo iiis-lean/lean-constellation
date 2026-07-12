@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 from starlette.testclient import TestClient
@@ -60,6 +62,56 @@ def test_production_app_server_exposes_workspace_registry_admin_and_repo_mcp(tmp
     assert mcp_index.status_code == 200
     assert mcp_index.json()["views"] == ["resource_curator"]
     assert app.state.lean_constellation_registry is registry
+
+
+def test_repo_lifecycle_route_rejects_cross_repo_body_identity(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_a = _make_repo(workspace, "RepoA")
+    repo_b = _make_repo(workspace, "RepoB")
+    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    app_result = create_production_app_server(config)
+    assert app_result.ok and app_result.value is not None
+    with TestClient(app_result.value) as client:
+        client.post("/admin/workspace/repos/RepoA/load")
+        response = client.post("/admin/repos/RepoA/continue", json={
+            "repo_key": "RepoB", "repo_root": str(repo_b), "run_objective": "Cross repo mutation",
+        })
+    assert response.status_code == 422
+    assert "must match" in response.json()["issues"][0]["message"]
+    assert repo_a != repo_b
+
+
+def test_repo_lifecycle_route_serializes_concurrent_continuations(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "Provider")
+    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    app_result = create_production_app_server(config)
+    assert app_result.ok and app_result.value is not None
+    app = app_result.value
+    with TestClient(app) as client:
+        assert client.post("/admin/workspace/repos/Provider/load").status_code == 200
+        loaded = app.state.lean_constellation_registry.get_or_load("Provider", refresh_homes=False)
+        assert loaded.ok and loaded.value is not None
+        assert initialize_repo_runtime(loaded.value, repo_root).ok
+        assert loaded.value.foundation.store.write_json_atomic(
+            loaded.value.repo_workspace.metadata._repo_publication_path(repo_root),
+            {"status": "stable", "latest_release_id": "release-r1"},
+        ).ok
+        barrier = Barrier(2)
+
+        def start():
+            barrier.wait()
+            return client.post(
+                "/admin/repos/Provider/continue",
+                json={"run_objective": "Continue the Provider repository.", "enqueue": False},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = [future.result() for future in [pool.submit(start), pool.submit(start)]]
+
+    assert sorted(response.status_code for response in responses) == [200, 400]
+    failed = next(response for response in responses if response.status_code == 400)
+    assert failed.json()["issues"][0]["kind"] == "repo_lifecycle_flow_conflict"
 
 
 def test_production_app_server_exposes_workspace_external_health(tmp_path) -> None:

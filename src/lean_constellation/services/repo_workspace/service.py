@@ -44,6 +44,8 @@ from lean_constellation.services.repo_workspace.repo_preparation import (
 )
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
 from lean_constellation.services.repo_workspace.repo_release import RepoReleaseComponent
+from lean_constellation.services.repo_workspace.repo_run import RepoRunComponent
+from lean_constellation.services.repo_workspace.repo_lifecycle_lock import RepoLifecycleLockComponent
 from lean_constellation.services.repo_workspace.provider_availability import ProviderAvailabilityComponent
 from lean_constellation.services.repo_workspace.workspace_catalog import WorkspaceCatalogComponent
 
@@ -94,6 +96,8 @@ class RepoWorkspaceService:
             self.requirement,
             workspace_config=self.workspace_config,
         )
+        self.run = RepoRunComponent(runtime, self.metadata, self.preparation, self.release)
+        self.lifecycle_lock = RepoLifecycleLockComponent(runtime)
         self.workspace_catalog = workspace_catalog or WorkspaceCatalogComponent(
             runtime,
             self.metadata,

@@ -95,10 +95,11 @@ def test_strict_native_preparation_prepare_source_review_retry_and_handoff_evide
     assert "native_repo_preparation" in evidence_recorder.evidence.flow_types
     assert "native_repo_coordinator" in evidence_recorder.evidence.flow_types
     assert {
-        "validate_initialize_native_preparation_step",
-        "create_draft_source_index_step",
-        "commit_source_index_step",
-        "native_handoff_gate_step",
+            "validate_initialize_native_preparation_step",
+            "validate_source_index_run_step",
+            "open_source_index_update_step",
+            "validate_commit_source_index_update_step",
+            "native_handoff_gate_step",
         "prepare_coordinator_dispatch_step",
     }.issubset(evidence_recorder.evidence.logic_step_types)
     assert {
@@ -187,7 +188,7 @@ def test_strict_native_preparation_blocked_and_direct_ready_evidence(
     assert {
         "validate_initialize_native_preparation_step",
         "existing_source_corpus_scan_step",
-        "root_interface_direct_ready_step",
+        "prepare_native_lifecycle_child_step",
     }.issubset(evidence_recorder.evidence.logic_step_types)
     assert {
         "source_corpus_prepare_agent_step",

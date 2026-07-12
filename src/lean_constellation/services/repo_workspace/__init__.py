@@ -28,6 +28,8 @@ from lean_constellation.services.repo_workspace.workspace_catalog import (
     WorkspaceCatalogComponent,
 )
 from lean_constellation.services.repo_workspace.repo_release import RepoReleaseComponent
+from lean_constellation.services.repo_workspace.repo_run import RepoRunComponent
+from lean_constellation.services.repo_workspace.repo_lifecycle_lock import RepoLifecycleLockBusyError, RepoLifecycleLockComponent
 from lean_constellation.services.repo_workspace.provider_availability import ProviderAvailabilityComponent
 
 __all__ = [
@@ -51,5 +53,8 @@ __all__ = [
     "PreparationStartPreflightView",
     "WorkspaceCatalogComponent",
     "RepoReleaseComponent",
+    "RepoRunComponent",
+    "RepoLifecycleLockBusyError",
+    "RepoLifecycleLockComponent",
     "ProviderAvailabilityComponent",
 ]

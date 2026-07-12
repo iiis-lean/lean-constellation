@@ -16,7 +16,6 @@ from lean_constellation.services.foundation import (
     GateReport,
     MutationSummaryView,
     ServiceResult,
-    WriteMode,
 )
 from lean_constellation.services.validation_snapshot.readiness_gate import ReadinessGateComponent
 
@@ -595,6 +594,37 @@ class SnapshotRestoreComponent:
                 ),
             )
         )
+
+    def validate_repo_checkpoint_snapshot(
+        self, repo_root: Path, *, snapshot_id: str
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
+        repo_root = Path(repo_root)
+        manifest = self._load_manifest(repo_root, snapshot_id)
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        if manifest.value.snapshot_id != snapshot_id or Path(manifest.value.repo_root).resolve() != repo_root.resolve():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_checkpoint_snapshot_identity_mismatch",
+                "Checkpoint manifest identity or repository root does not match the requested snapshot.",
+                object_ref=snapshot_id,
+            ))
+        files = self.runtime.foundation.store.read_json(
+            self._snapshot_dir(repo_root, snapshot_id) / manifest.value.files_manifest_relpath,
+            SnapshotFilesManifest,
+        )
+        if not files.ok or files.value is None:
+            return self.runtime.foundation.fail(files.issues)
+        archive = self._preflight_restore_archive_files(repo_root, snapshot_id, files.value)
+        if not archive.ok:
+            return self.runtime.foundation.fail(archive.issues)
+        return self.runtime.foundation.ok(RepoCheckpointSnapshotView(
+            snapshot_id=snapshot_id, checkpoint_kind=manifest.value.checkpoint_kind,
+            label=manifest.value.label, root=str(self._snapshot_dir(repo_root, snapshot_id)),
+            ark_runtime_snapshot_id=manifest.value.ark_runtime_snapshot_id,
+            refreshed_scope_ids=manifest.value.refreshed_scope_ids,
+            ark_runtime_scope_ids=manifest.value.ark_runtime_scope_ids,
+            node_refs=manifest.value.node_refs, file_count=len(files.value.entries), summary=manifest.value.summary,
+        ))
 
     def rebuild_after_restore(self, repo_root: Path) -> ServiceResult[MutationSummaryView]:
         ctx = FoundationContext(repo_root=Path(repo_root), caller="validation_snapshot.rebuild_after_restore")

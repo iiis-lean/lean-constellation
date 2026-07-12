@@ -353,6 +353,7 @@ class ValidateAndInitializeNativePreparationStepResult(LeanRenderableStepResult)
     main_boundary_initialized: bool = False
     main_objective_initialized: bool = False
     protected_interfaces_synced: bool = False
+    pre_run_mutation_checkpoint_id: str | None = None
     error: NativePreparationStepError | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -659,6 +660,39 @@ class ValidateAndInitializeNativePreparationStep(BaseStep):
                 )
             )
 
+        if input_model.run_spec is None:
+            return ctx.complete_step(
+                _native_validate_result(
+                    input_model.repo_key,
+                    outcome="invalid_input",
+                    code="legacy_native_preparation_restart_required",
+                    message="This native preparation truth predates immutable RepoRunSpec input and must be restarted.",
+                )
+            )
+        transition = repo_workspace.run.validate_repo_run_transition(
+            repo_root, run_spec=input_model.run_spec, start_kind="initial", base_release_id=None
+        )
+        if not transition.ok or transition.value is None or not transition.value.passed:
+            issues = transition.value.issues if transition.value is not None else transition.issues
+            return ctx.complete_step(
+                _native_validate_result_from_issues(
+                    input_model.repo_key, issues, outcome="blocked",
+                    fallback_code="initial_repo_run_transition_invalid",
+                    fallback_message="Initial RepoRunSpec transition is invalid.",
+                )
+            )
+        applied = repo_workspace.run.apply_repo_run_config(
+            repo_root, run_spec=input_model.run_spec, expected_base_release_id=None
+        )
+        if not applied.ok:
+            return ctx.complete_step(
+                _native_validate_result_from_issues(
+                    input_model.repo_key, applied.issues, outcome="blocked",
+                    fallback_code="initial_repo_run_config_apply_failed",
+                    fallback_message="Initial RepoRunSpec config could not be applied.",
+                )
+            )
+
         node = _node(ctx)
         initialized = node.ensure_native_root_main_contract(repo_root)
         if not initialized.ok or initialized.value is None:
@@ -684,6 +718,7 @@ class ValidateAndInitializeNativePreparationStep(BaseStep):
                 main_boundary_initialized=bool(contract.boundary.strip()),
                 main_objective_initialized=bool(contract.objective and contract.objective.strip()),
                 protected_interfaces_synced=True,
+                pre_run_mutation_checkpoint_id=f"repo-{uuid.uuid4().hex}",
                 summary="Native preparation input and root Main contract initialized.",
             )
         )
@@ -957,6 +992,33 @@ class PrepareCoordinatorDispatchStep(BaseStep):
         flow = _load_native_preparation_flow(ctx)
         input_model = _require_native_preparation_input(flow.input)
         repo_root = _native_repo_root(input_model)
+        if input_model.run_spec is None:
+            return ctx.complete_step(
+                PrepareCoordinatorDispatchStepResult(
+                    outcome="blocked",
+                    error=NativePreparationStepError(
+                        code="native_coordinator_run_context_missing",
+                        message="New native coordinator handoff requires a complete RepoRunSpec.",
+                    ),
+                    summary="Native coordinator run context is missing.",
+                )
+            )
+        from lean_constellation.domain.repo_run import RepoRunContext
+
+        state = flow.state
+        source_result = getattr(state, "source_index_child_result", None)
+        root_result = getattr(state, "root_interface_child_result", None)
+        run_context = RepoRunContext(
+            start_kind="initial",
+            run_spec=input_model.run_spec,
+            resolved_source_files=list(source_result.resolved_file_paths) if source_result is not None else [],
+            source_index_delta_summary=source_result.summary if source_result is not None else None,
+            root_interface_delta_summary=root_result.summary if root_result is not None else None,
+            config_change_summary=(
+                f"target={input_model.run_spec.target_proof_availability.value}; "
+                f"work_mode={input_model.run_spec.work_mode.value}"
+            ),
+        )
         request = FlowRequest(
             flow_type="native_repo_coordinator",
             scope_id=ctx.scope_id,
@@ -965,6 +1027,7 @@ class PrepareCoordinatorDispatchStep(BaseStep):
                 "repo_root": str(repo_root),
                 "start_mode": "native_preparation_handoff",
                 "start_reason": "Native preparation handoff.",
+                "run_context": run_context.model_dump(mode="json"),
             },
         )
         summary = f"Native preparation for {input_model.repo_key} is ready for coordinator handoff."

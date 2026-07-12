@@ -10,6 +10,12 @@ from lean_constellation.flows.repo_lifecycle.root_interface import (
     ROOT_INTERFACE_FLOW_TYPES,
     RootInterfacePreparationFlow,
 )
+from lean_constellation.flows.repo_lifecycle.continuation import (
+    CONTINUATION_FLOW_TYPES,
+    CONTINUATION_STEP_TYPES,
+    NativeRepoContinuationFlow,
+)
+from lean_constellation.flows.repo_lifecycle.run_steps import RUN_STEP_TYPES
 from lean_constellation.flows.repo_lifecycle.root_interface_steps import ROOT_INTERFACE_STEP_TYPES
 from lean_constellation.flows.repo_lifecycle.source_index import SOURCE_INDEX_BUILD_FLOW_TYPES, SourceIndexBuildFlow
 from lean_constellation.flows.repo_lifecycle.source_index_steps import SOURCE_INDEX_BUILD_STEP_TYPES
@@ -43,6 +49,10 @@ __all__ = [
     "HandoffGateStep",
     "MarkAdapterProviderReadyStep",
     "NativeRepoPreparationFlow",
+    "NativeRepoContinuationFlow",
+    "CONTINUATION_FLOW_TYPES",
+    "CONTINUATION_STEP_TYPES",
+    "RUN_STEP_TYPES",
     "PrepareCoordinatorDispatchStep",
     "REPO_LIFECYCLE_FLOW_TYPES",
     "REPO_LIFECYCLE_STEP_TYPES",

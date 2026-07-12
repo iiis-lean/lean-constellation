@@ -157,9 +157,14 @@ def test_native_preparation_existing_source_root_interface_direct_ready(
 
     flow = ws.runtime.ark.flow_service.get_flow(flow_id)
     assert flow.result.outcome == "handoff_dispatched"
-    direct_steps = ws.runtime.ark.flow_service.list_steps(flow_id=flow_id, step_type="root_interface_direct_ready_step")
-    assert len(direct_steps) == 1
-    assert direct_steps[0].result.outcome == "ready"
+    child_prepare_steps = ws.runtime.ark.flow_service.list_steps(
+        flow_id=flow_id, step_type="prepare_native_lifecycle_child_step"
+    )
+    assert len(child_prepare_steps) == 2
+    root_children = ws.runtime.ark.flow_service.list_flows(flow_type="root_interface_preparation")
+    assert len(root_children) == 1
+    assert root_children[0].status is FlowStatus.COMPLETED
+    assert root_children[0].result.outcome == "ready"
 
 
 def test_adapter_preparation_ready_and_blocked_branches(
@@ -358,6 +363,14 @@ def _start_native_preparation(ws: RuntimeMatrixWorkspace) -> str:
                 "repo_key": "Provider",
                 "repo_root": str(ws.provider_repo),
                 "start_reason": "bootstrap",
+                "run_spec": {
+                    "run_objective": "Prepare the Provider repository for the runtime matrix scenario.",
+                    "target_proof_availability": "declared",
+                    "work_mode": "declared_interface",
+                    "source_scope": {"mode": "all"},
+                    "index_policy": "auto",
+                    "root_interface_policy": "auto",
+                },
             },
         )
     )
@@ -378,4 +391,10 @@ def _start_adapter_preparation(ws: RuntimeMatrixWorkspace) -> str:
 
 
 def _wait_completed(ws: RuntimeMatrixWorkspace, flow_id: str) -> None:
-    schedule_until(ws.runtime, lambda: ws.runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED, limit=160)
+    schedule_until(
+        ws.runtime,
+        lambda: ws.runtime.ark.flow_service.get_flow(flow_id).status in {FlowStatus.COMPLETED, FlowStatus.FAILED},
+        limit=160,
+    )
+    flow = ws.runtime.ark.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.COMPLETED, flow.model_dump_json(indent=2)

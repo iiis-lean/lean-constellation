@@ -143,6 +143,9 @@ class LeanRuntimeServices:
             return step_service.get_step(step_id)
         if hasattr(step_service, "load_step"):
             return step_service.load_step(step_id)
+        store = getattr(step_service, "store", None)
+        if store is not None and hasattr(store, "get_step"):
+            return store.get_step(step_id)
         raise RuntimeError("ARK step_service does not expose get_step/load_step.")
 
     def list_flows(self, **filters: Any) -> list[Any]:
@@ -155,6 +158,9 @@ class LeanRuntimeServices:
         step_service = self.require_ark_service("step_service")
         if hasattr(step_service, "list_steps"):
             return list(step_service.list_steps(**filters))
+        store = getattr(step_service, "store", None)
+        if store is not None and hasattr(store, "list_steps"):
+            return list(store.list_steps(**filters))
         raise RuntimeError("ARK step_service does not expose list_steps.")
 
     def list_child_flows(

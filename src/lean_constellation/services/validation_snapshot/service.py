@@ -227,6 +227,9 @@ class ValidationSnapshotService:
             prune_extra_files=prune_extra_files,
         )
 
+    def validate_repo_checkpoint_snapshot(self, repo_root: Path, *, snapshot_id: str):  # noqa: ANN201
+        return self.snapshot_restore.validate_repo_checkpoint_snapshot(repo_root, snapshot_id=snapshot_id)
+
     def list_repo_checkpoint_snapshots(
         self,
         repo_root: Path,

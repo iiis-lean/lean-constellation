@@ -175,6 +175,7 @@ def _start_native(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
             "repo_key": repo_root.name,
             "repo_root": str(repo_root),
             "start_reason": "bootstrap",
+            "run_spec": _initial_run_spec(repo_root),
         },
         scope_id=f"repo:{repo_root.name}",
     )
@@ -194,9 +195,22 @@ def _start_native_with_children(runtime: FakeLeanFlowRuntime, repo_root: Path) -
             "repo_key": repo_root.name,
             "repo_root": str(repo_root),
             "start_reason": "bootstrap",
+            "run_spec": _initial_run_spec(repo_root),
         },
         scope_id=f"repo:{repo_root.name}",
     )
+
+
+def _initial_run_spec(repo_root: Path) -> dict[str, object]:
+    return {
+        "run_objective": f"Prepare {repo_root.name}.",
+        "target_proof_availability": "proved",
+        "work_mode": "proved_full_graph",
+        "source_scope": {"mode": "all", "selectors": []},
+        "index_policy": "auto",
+        "root_interface_policy": "auto",
+        "additional_required_interfaces": [],
+    }
 
 
 def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:

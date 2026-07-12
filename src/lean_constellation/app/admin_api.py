@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -21,6 +22,7 @@ from lean_constellation.app.external_takeover import (
     list_external_takeover_tools,
 )
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.preparation import (
     RepoDependencyRequirementStatus,
     RepoPreparationInput,
@@ -35,6 +37,9 @@ from lean_constellation.domain.repo import (
     RepoPublicationView,
     RepoWorkMode,
 )
+from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
+from lean_constellation.flows.repo_lifecycle.source_index import SourceIndexBuildResult
+from lean_constellation.services.validation_snapshot import RepoCheckpointKind
 from lean_constellation.flows.testing import (
     CONTROLLED_AGENT_OVERRIDE_KEY,
     CONTROLLED_AGENT_RECORD_KEY,
@@ -42,6 +47,7 @@ from lean_constellation.flows.testing import (
 )
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
 from lean_constellation.services.repo_workspace import RepoSkeletonView
+from lean_constellation.services.repo_workspace.repo_lifecycle_lock import RepoLifecycleLockBusyError
 from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -51,6 +57,16 @@ class AdminFlowStartView(StrictModel):
     scope_id: str
     enqueued: bool
     repo_root: str | None = None
+    summary: str
+
+
+class RepoRunStatusView(StrictModel):
+    repo_root: str
+    publication_status: str
+    latest_release_id: str | None = None
+    active_flow_id: str | None = None
+    active_flow_type: str | None = None
+    run_spec: RepoRunSpec | None = None
     summary: str
 
 
@@ -331,11 +347,52 @@ class StartPreparationInput(StrictModel):
     start_reason: Literal["admin", "bootstrap", "repair_resume"] = "admin"
     admin_notes: str | None = None
     enqueue: bool = True
+    run_request: "RepoRunOptions | None" = None
 
     @field_validator("repo_root", mode="before")
     @classmethod
     def _coerce_repo(cls, value: Any) -> Path:
         return Path(value).expanduser()
+
+
+class RepoRunOptions(StrictModel):
+    run_objective: str | None = None
+    target_proof_availability: ProofAvailability | None = None
+    work_mode: RepoWorkMode | None = None
+    source_scope: SourceScope | None = None
+    index_policy: Literal["auto", "update", "reuse"] | None = None
+    root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None
+    additional_required_interfaces: list[DeclInterface] = Field(default_factory=list)
+
+
+class RepoRunRequestInput(RepoRunOptions):
+    repo_root: Path
+    repo_key: str | None = None
+    run_objective: str
+    enqueue: bool = True
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class StandaloneSourceIndexRunInput(StrictModel):
+    repo_root: Path
+    repo_key: str | None = None
+    run_objective: str
+    source_scope: SourceScope
+    index_policy: Literal["auto", "update", "reuse"] = "auto"
+    enqueue: bool = True
+
+
+class StandaloneRootInterfaceRunInput(StrictModel):
+    repo_root: Path
+    repo_key: str | None = None
+    run_objective: str
+    root_interface_policy: Literal["auto", "prepare", "reuse"] = "auto"
+    additional_required_interfaces: list[DeclInterface] = Field(default_factory=list)
+    enqueue: bool = True
 
 
 class CreateMainRepoShellInput(StrictModel):
@@ -401,6 +458,7 @@ class BootstrapMainNativeRepoInput(StrictModel):
     preparation_input: RepoPreparationInput
     validate_source_corpus: bool = True
     enqueue: bool = True
+    run_request: RepoRunOptions | None = None
 
     @field_validator("workspace_root", mode="before")
     @classmethod
@@ -541,22 +599,214 @@ class LeanAdminApi:
         )
 
     def start_native_preparation(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:
+        try:
+            with self.runtime.repo_workspace.lifecycle_lock.locked(input_model.repo_root):
+                return self._start_native_preparation_locked(input_model)
+        except RepoLifecycleLockBusyError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_lifecycle_lock_busy", str(exc), object_ref=str(input_model.repo_root)
+            ))
+
+    def _start_native_preparation_locked(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:
         repo_key = input_model.repo_key or input_model.repo_root.name
+        active = [flow for flow in self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{repo_key}")
+                  if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}]
+        if active:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_lifecycle_flow_conflict", "A repo lifecycle Flow is already active.", object_ref=active[0].flow_id
+            ))
+        preparation = self.runtime.repo_workspace.preparation.get_preparation_input(input_model.repo_root)
+        origin = (
+            "requirement_provider"
+            if preparation.ok and preparation.value is not None and preparation.value.input.requirement_refs
+            else "main"
+        )
+        request = input_model.run_request or RepoRunOptions()
+        resolved = self.runtime.repo_workspace.run.resolve_initial_repo_run_spec(
+            input_model.repo_root, origin=origin,
+            run_objective=request.run_objective,
+            target_proof_availability=request.target_proof_availability,
+            work_mode=request.work_mode, source_scope=request.source_scope,
+            index_policy=request.index_policy, root_interface_policy=request.root_interface_policy,
+            additional_required_interfaces=request.additional_required_interfaces,
+        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
         return self.start_arbitrary_flow(
             StartFlowInput(
-                flow_type="native_repo_preparation",
-                scope_id=f"repo:{repo_key}",
-                enqueue=input_model.enqueue,
-                params={
-                    "repo_key": repo_key,
-                    "repo_root": str(input_model.repo_root),
-                    "start_reason": input_model.start_reason,
-                    "admin_notes": input_model.admin_notes,
-                },
-            ),
-            repo_root=str(input_model.repo_root),
+                flow_type="native_repo_preparation", scope_id=f"repo:{repo_key}", enqueue=input_model.enqueue,
+                params={"repo_key": repo_key, "repo_root": str(input_model.repo_root),
+                        "start_reason": input_model.start_reason, "admin_notes": input_model.admin_notes,
+                        "run_spec": resolved.value.model_dump(mode="json")},
+            ), repo_root=str(input_model.repo_root),
         )
 
+    def continue_native_repo(self, input_model: RepoRunRequestInput) -> ServiceResult[AdminFlowStartView]:
+        try:
+            with self.runtime.repo_workspace.lifecycle_lock.locked(input_model.repo_root):
+                return self._continue_native_repo_locked(input_model)
+        except RepoLifecycleLockBusyError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_lifecycle_lock_busy", str(exc), object_ref=str(input_model.repo_root)
+            ))
+
+    def _continue_native_repo_locked(self, input_model: RepoRunRequestInput) -> ServiceResult[AdminFlowStartView]:
+        repo_key = input_model.repo_key or input_model.repo_root.name
+        active = [flow for flow in self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{repo_key}")
+                  if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}]
+        if active:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_lifecycle_flow_conflict", "A repo lifecycle Flow is already active.", object_ref=active[0].flow_id
+            ))
+        resolved = self.runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
+            input_model.repo_root, run_objective=input_model.run_objective,
+            target_proof_availability=input_model.target_proof_availability,
+            work_mode=input_model.work_mode, source_scope=input_model.source_scope,
+            index_policy=input_model.index_policy, root_interface_policy=input_model.root_interface_policy,
+            additional_required_interfaces=input_model.additional_required_interfaces,
+        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        publication = self.runtime.repo_workspace.metadata.get_repo_publication(input_model.repo_root)
+        if not publication.ok or publication.value is None:
+            return self.runtime.foundation.fail(publication.issues)
+        base = publication.value.publication.latest_release_id
+        if base is None:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "continuation_release_baseline_missing", "Native continuation requires a latest release."
+            ))
+        return self.start_arbitrary_flow(StartFlowInput(
+            flow_type="native_repo_continuation", scope_id=f"repo:{repo_key}", enqueue=input_model.enqueue,
+            params={"repo_key": repo_key, "repo_root": str(input_model.repo_root),
+                    "run_spec": resolved.value.model_dump(mode="json"), "base_release_id": base,
+                    "start_reason": "admin_continue"}), repo_root=str(input_model.repo_root))
+
+    def get_repo_run_status(self, repo_root: Path, *, repo_key: str | None = None) -> ServiceResult[RepoRunStatusView]:
+        key = repo_key or Path(repo_root).name
+        publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+        if not publication.ok or publication.value is None:
+            return self.runtime.foundation.fail(publication.issues)
+        active = [flow for flow in self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{key}")
+                  if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}]
+        flow = sorted(active, key=lambda item: item.created_at or "")[-1] if active else None
+        run_spec = getattr(getattr(flow, "input", None), "run_spec", None)
+        return self.runtime.foundation.ok(RepoRunStatusView(
+            repo_root=str(repo_root), publication_status=publication.value.publication.status.value,
+            latest_release_id=publication.value.publication.latest_release_id,
+            active_flow_id=flow.flow_id if flow else None, active_flow_type=flow.flow_type if flow else None,
+            run_spec=run_spec, summary="Derived current repo run status.",
+        ))
+
+    def start_standalone_source_index(self, input_model: StandaloneSourceIndexRunInput) -> ServiceResult[AdminFlowStartView]:
+        repo_key = input_model.repo_key or input_model.repo_root.name
+        spec = self.runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
+            input_model.repo_root, run_objective=input_model.run_objective,
+            source_scope=input_model.source_scope, index_policy=input_model.index_policy,
+            root_interface_policy="reuse",
+        )
+        if not spec.ok or spec.value is None:
+            return self.runtime.foundation.fail(spec.issues)
+        return self._start_standalone_native_run(
+            input_model.repo_root,
+            repo_key=repo_key,
+            run_spec=spec.value,
+            flow_type="source_index_build",
+            enqueue=input_model.enqueue,
+            params_factory=lambda _base, checkpoint_id: {
+                "repo_key": repo_key, "repo_root": str(input_model.repo_root),
+                "run_objective": spec.value.run_objective,
+                "target_proof_availability": spec.value.target_proof_availability,
+                "work_mode": spec.value.work_mode, "source_scope": spec.value.source_scope.model_dump(mode="json"),
+                "index_policy": spec.value.index_policy, "start_reason": "admin_preprocess",
+                "pre_update_checkpoint_id": checkpoint_id,
+            },
+        )
+
+    def start_standalone_root_interfaces(self, input_model: StandaloneRootInterfaceRunInput) -> ServiceResult[AdminFlowStartView]:
+        repo_key = input_model.repo_key or input_model.repo_root.name
+        spec = self.runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
+            input_model.repo_root, run_objective=input_model.run_objective,
+            source_scope=SourceScope(mode="none"), index_policy="reuse",
+            root_interface_policy=input_model.root_interface_policy,
+            additional_required_interfaces=input_model.additional_required_interfaces,
+        )
+        if not spec.ok or spec.value is None:
+            return self.runtime.foundation.fail(spec.issues)
+        source_delta = SourceIndexBuildResult(outcome="no_op", repo_key=repo_key, summary="Standalone root preparation reuses SourceIndex.")
+        return self._start_standalone_native_run(
+            input_model.repo_root,
+            repo_key=repo_key,
+            run_spec=spec.value,
+            flow_type="root_interface_preparation",
+            enqueue=input_model.enqueue,
+            params_factory=lambda base, checkpoint_id: {
+                "repo_key": repo_key, "repo_root": str(input_model.repo_root),
+                "run_context": RepoRunContext(
+                    start_kind="continuation", run_spec=spec.value, base_release_id=base
+                ).model_dump(mode="json"),
+                "source_index_delta": source_delta.model_dump(mode="json"),
+                "start_reason": "admin_preprocess",
+                "pre_run_mutation_checkpoint_id": checkpoint_id,
+            },
+        )
+
+    def _start_standalone_native_run(
+        self,
+        repo_root: Path,
+        *,
+        repo_key: str,
+        run_spec: RepoRunSpec,
+        flow_type: str,
+        enqueue: bool,
+        params_factory: Callable[[str, str], dict[str, Any]],
+    ) -> ServiceResult[AdminFlowStartView]:
+        try:
+            with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
+                active = [flow for flow in self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{repo_key}")
+                          if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}]
+                if active:
+                    return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                        "repo_lifecycle_flow_conflict", "A repo lifecycle Flow is already active.", object_ref=active[0].flow_id
+                    ))
+                publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+                if not publication.ok or publication.value is None or publication.value.publication.latest_release_id is None:
+                    return self.runtime.foundation.fail(publication.issues or [self.runtime.foundation.issue(
+                        "continuation_release_baseline_missing", "Standalone preprocessing requires a latest release."
+                    )])
+                base = publication.value.publication.latest_release_id
+                gate = self.runtime.repo_workspace.run.validate_repo_run_transition(
+                    repo_root, run_spec=run_spec, start_kind="standalone_preprocess", base_release_id=base
+                )
+                if not gate.ok or gate.value is None:
+                    return self.runtime.foundation.fail(gate.issues)
+                if not gate.value.passed:
+                    return self.runtime.foundation.fail(gate.value.issues)
+                snapshot = self.runtime.validation_snapshot.create_repo_stable_point_snapshot(
+                    repo_root, checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION,
+                    label=f"before standalone native preprocessing for {repo_key}", scope_ids=[f"repo:{repo_key}"],
+                )
+                if not snapshot.ok or snapshot.value is None:
+                    return self.runtime.foundation.fail(snapshot.issues)
+                if publication.value.publication.status.value == "stable":
+                    transitioned = self.runtime.repo_workspace.metadata.mark_repo_developing(repo_root)
+                    if not transitioned.ok:
+                        return self.runtime.foundation.fail(transitioned.issues)
+                # Flow truth is created before releasing the lifecycle lock. If creation
+                # fails, no active owner exists; the developing repo remains safely
+                # retryable from the same release baseline and checkpoint evidence.
+                return self.start_arbitrary_flow(
+                    StartFlowInput(
+                        flow_type=flow_type,
+                        scope_id=f"repo:{repo_key}",
+                        enqueue=enqueue,
+                        params=params_factory(base, snapshot.value.snapshot_id),
+                    ),
+                    repo_root=str(repo_root),
+                )
+        except RepoLifecycleLockBusyError as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
+            ))
     def start_adapter_preparation(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:
         repo_key = input_model.repo_key or input_model.repo_root.name
         return self.start_arbitrary_flow(
@@ -736,6 +986,7 @@ class LeanAdminApi:
                 start_reason="admin",
                 admin_notes="Started by main native repo bootstrap.",
                 enqueue=input_model.enqueue,
+                run_request=input_model.run_request,
             )
         )
         if not preparation.ok or preparation.value is None:

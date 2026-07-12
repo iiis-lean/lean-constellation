@@ -16,7 +16,7 @@ from agent_runtime_kit.flow.standard_steps import (
 )
 from pydantic import Field
 
-from lean_constellation.domain.repo_run import RepoRunSpec, SourceScope
+from lean_constellation.domain.repo_run import RepoRunSpec
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.repo_lifecycle.steps import (
@@ -324,7 +324,7 @@ class NativeRepoPreparationParams(LeanFlowParams):
     preparation_input_ref: str = ".lean_constellation/preparation_input.json"
     start_reason: Literal["admin", "bootstrap", "repair_resume"] = "admin"
     admin_notes: str | None = None
-    run_spec: RepoRunSpec | None = None
+    run_spec: RepoRunSpec
 
 
 class NativeRepoPreparationInput(LeanRenderableFlowInput):
@@ -392,13 +392,12 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
     @classmethod
     def build_from_request(cls, ctx: FlowBuildContext) -> "NativeRepoPreparationFlow":
         params = NativeRepoPreparationParams.model_validate(ctx.params)
-        run_spec = params.run_spec or _default_initial_run_spec(ctx, params)
         return cls._build(
             ctx,
             input_model=NativeRepoPreparationInput(
                 summary=f"Prepare native repo {params.repo_key}.",
                 **params.model_dump(exclude={"run_spec"}),
-                run_spec=run_spec,
+                run_spec=params.run_spec,
             ),
             state=NativeRepoPreparationState(use_reusable_preparation_children=True),
         )
@@ -756,14 +755,20 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
             if not isinstance(result, ValidateAndInitializeNativePreparationStepResult) or result.outcome != "initialized":
                 return
             input_model = _require_native_preparation_input(self.input)
-            _record_stable_repo_snapshot(
-                ctx,
+            if not result.pre_run_mutation_checkpoint_id:
+                _mark_flow_failed_from_stable_snapshot(ctx, "native_source_processing_checkpoint_id_missing", [])
+                return
+            snapshot = ctx.app.validation_snapshot.create_repo_stable_point_snapshot_with_id(
                 _native_repo_root(input_model),
+                snapshot_id=result.pre_run_mutation_checkpoint_id,
                 checkpoint_kind="before_native_source_processing",
                 label=f"before native source processing for {input_model.repo_key}",
-                failure_type="native_source_processing_stable_snapshot_failed",
-                flow_state_field="pre_run_mutation_checkpoint_id",
+                scope_ids=[ctx.flow.scope_id],
             )
+            if not snapshot.ok:
+                _mark_flow_failed_from_stable_snapshot(
+                    ctx, "native_source_processing_stable_snapshot_failed", snapshot.issues
+                )
             return
         if ctx.step.step_type != "prepare_coordinator_dispatch_step":
             return
@@ -787,6 +792,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
         result: ValidateAndInitializeNativePreparationStepResult,
     ) -> None:
         if result.outcome == "initialized":
+            state.pre_run_mutation_checkpoint_id = result.pre_run_mutation_checkpoint_id
             state.source_corpus_mode = result.source_corpus_mode
             state.allow_interface_supplement = result.allow_interface_supplement
             state.position = FlowPosition(phase="source_corpus")
@@ -1424,39 +1430,6 @@ def _native_repo_root(input_model: NativeRepoPreparationInput) -> Path:
     from pathlib import Path
 
     return Path(input_model.repo_root or input_model.repo_key)
-
-
-def _default_initial_run_spec(
-    ctx: FlowBuildContext,
-    params: NativeRepoPreparationParams,
-) -> RepoRunSpec:
-    repo_root = Path(params.repo_root or params.repo_key)
-    objective = f"Prepare and formalize native repo {params.repo_key}."
-    repo_workspace = getattr(ctx.app, "repo_workspace", None)
-    preparation = (
-        repo_workspace.preparation.get_preparation_input(repo_root)
-        if repo_workspace is not None
-        else None
-    )
-    if preparation is not None and preparation.ok and preparation.value is not None:
-        objective = preparation.value.input.goal
-    config = repo_workspace.metadata.get_repo_config(repo_root) if repo_workspace is not None else None
-    if config is not None and config.ok and config.value is not None:
-        target = config.value.config.target_proof_availability
-        work_mode = config.value.config.work_mode
-    else:
-        from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
-
-        target = ProofAvailability.PROVED
-        work_mode = RepoWorkMode.PROVED_FULL_GRAPH
-    return RepoRunSpec(
-        run_objective=objective,
-        target_proof_availability=target,
-        work_mode=work_mode,
-        source_scope=SourceScope(mode="all"),
-        index_policy="auto",
-        root_interface_policy="auto",
-    )
 
 
 def _native_children_for_dispatch(

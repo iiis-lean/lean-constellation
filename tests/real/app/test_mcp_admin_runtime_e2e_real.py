@@ -1508,7 +1508,19 @@ def test_semireal_native_preparation_handoff_to_content_task_terminal_path(tmp_p
         FlowRequest(
             flow_type="native_repo_preparation",
             scope_id="repo:Provider",
-            params={"repo_key": "Provider", "repo_root": str(repo_root), "start_reason": "bootstrap"},
+            params={
+                "repo_key": "Provider",
+                "repo_root": str(repo_root),
+                "start_reason": "bootstrap",
+                "run_spec": {
+                    "run_objective": "Prepare the Provider repository for the MCP runtime e2e scenario.",
+                    "target_proof_availability": "declared",
+                    "work_mode": "declared_interface",
+                    "source_scope": {"mode": "all"},
+                    "index_policy": "auto",
+                    "root_interface_policy": "auto",
+                },
+            },
         )
     )
 
