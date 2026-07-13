@@ -116,7 +116,7 @@ class RepoRunComponent:
             if current.status != RepoPublicationStatus.DEVELOPING or current.latest_release_id is not None:
                 findings.append(self.runtime.foundation.issue("initial_repo_state_invalid", "Initial run requires developing publication without a release."))
         elif current.latest_release_id is None:
-            code = "legacy_release_baseline_required" if current.status == RepoPublicationStatus.STABLE else "initial_release_not_created"
+            code = "stable_release_missing" if current.status == RepoPublicationStatus.STABLE else "initial_release_not_created"
             findings.append(self.runtime.foundation.issue(code, "Continuation requires a latest release baseline."))
         elif base_release_id != current.latest_release_id:
             findings.append(self.runtime.foundation.issue("base_release_changed", "Latest release differs from the bound continuation baseline."))

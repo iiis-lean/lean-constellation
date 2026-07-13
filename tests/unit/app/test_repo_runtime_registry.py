@@ -9,12 +9,6 @@ import pytest
 
 from lean_constellation.app.scheduler_loop import run_registry_scheduler_loop
 from lean_constellation.app import LeanAppConfig, RepoRuntimeRegistry
-from lean_constellation.domain.repo import (
-    RepoFormat,
-    RepoFormatState,
-    RepoPublicationState,
-    RepoPublicationStatus,
-)
 from lean_constellation.services.validation_snapshot import RepoReleaseStorageAuditView
 
 
@@ -72,36 +66,6 @@ def test_repo_runtime_registry_loads_repo_local_runtime_root(tmp_path) -> None:
     assert loaded.value.ark.flow_service.runtime_root == repo_root / ".agent_runtime"
 
 
-def test_repo_runtime_registry_startup_release_audit_is_read_only_and_reports_legacy_native(
-    tmp_path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    repo_root = _make_repo(workspace, "LegacyNative")
-    format_path = repo_root / ".lean_constellation" / "repo_format.json"
-    publication_path = repo_root / ".lean_constellation" / "repo_publication.json"
-    format_path.write_text(
-        RepoFormatState(repo_format=RepoFormat.NATIVE, reason="legacy").model_dump_json(),
-        encoding="utf-8",
-    )
-    publication_path.write_text(
-        RepoPublicationState(status=RepoPublicationStatus.STABLE).model_dump_json(),
-        encoding="utf-8",
-    )
-    before = publication_path.read_bytes()
-    registry = RepoRuntimeRegistry(LeanAppConfig(
-        workspace_root=workspace,
-        materialize_agent_homes=False,
-        server_start_paused=True,
-    ))
-
-    loaded = registry.get_or_load("LegacyNative")
-    status = registry.get_status("LegacyNative")
-
-    assert loaded.ok and status.ok and status.value is not None
-    assert "legacy_native_release_adoption_required" in status.value.startup_warnings
-    assert publication_path.read_bytes() == before
-
-
 @pytest.mark.parametrize(
     ("issue", "staging_paths"),
     [
@@ -109,7 +73,6 @@ def test_repo_runtime_registry_startup_release_audit_is_read_only_and_reports_le
         ("release_checkpoint_manifest_invalid", []),
         ("release_prepared_without_publication_commit", ["prepared-interrupted"]),
         ("release_requirement_notification_pending", []),
-        ("legacy_native_release_adoption_required", []),
     ],
 )
 def test_startup_release_audit_classifies_findings_without_writing_or_cleanup(

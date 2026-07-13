@@ -204,8 +204,8 @@ def test_coordinator_repo_ready_branch_marks_provider_ready(
     assert flow.result.outcome == "candidate_prepared"
     assert flow.result.prepared_release is not None
     assert flow.result.provider_ready_marked is False
-    ready = unwrap(ws.runtime.repo_workspace.metadata.get_provider_ready(ws.provider_repo))
-    assert ready.ready is True
+    ready = unwrap(ws.runtime.repo_workspace.metadata.get_repo_publication(ws.provider_repo))
+    assert ready.publication.status.value == "stable"
     model = unwrap(ws.runtime.repo_workspace.metadata.get_repo_model(ws.provider_repo))
     assert model.summary == "Runtime Matrix provider repo is ready."
     mark_steps = ws.runtime.ark.flow_service.list_steps(flow_id=flow_id, step_type="mark_coordinator_repo_ready_step")

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -29,7 +28,6 @@ from lean_constellation.services.external_clients import ToolchainCommandView
 from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult, WriteMode
 from lean_constellation.services.foundation import FoundationContext
 from lean_constellation.services.node import ContractVersionStatus, NodeKind, NodeLifecycle
-from lean_constellation.services.material.source_index import SourceIndexSchemaCompatibilityView
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
     RepoCheckpointSnapshotView,
     SnapshotRestoreView,
@@ -96,36 +94,6 @@ class RepoReleaseStorageAuditView(StrictModel):
     summary: str
 
 
-class LegacyContractHeadAdoptionView(StrictModel):
-    node_path: str
-    node_id: str
-    current_contract_version: int
-    adopted_contract_version: int
-    decl_graph_head: dict[str, int] = Field(default_factory=dict)
-    migration_required: bool
-    summary: str
-
-
-class LegacyStableAdoptionPreviewView(StrictModel):
-    outcome: Literal["eligible", "blocked"]
-    publication_source: Literal["repo_publication", "provider_ready", "default"]
-    source_index: SourceIndexSchemaCompatibilityView | None = None
-    contract_heads: list[LegacyContractHeadAdoptionView] = Field(default_factory=list)
-    gate: GateReport
-    build: ToolchainCommandView | None = None
-    blocking_issue_kinds: list[str] = Field(default_factory=list)
-    current_digest: str
-    summary: str
-
-
-class LegacyStableAdoptionView(StrictModel):
-    outcome: Literal["eligible", "adopted", "blocked"]
-    preview: LegacyStableAdoptionPreviewView
-    pre_adoption_checkpoint_id: str | None = None
-    finalized: RepoReleaseFinalizeView | None = None
-    summary: str
-
-
 class RepoReleaseFinalizerComponent:
     """Prepare and publish native releases without exposing partial latest truth."""
 
@@ -149,7 +117,6 @@ class RepoReleaseFinalizerComponent:
             base_release_id=base_release_id,
             summary=summary,
             owner_flow_id=owner_flow_id,
-            legacy_adoption=False,
             submission_intent_preview=submission_intent_preview,
         )
 
@@ -160,18 +127,13 @@ class RepoReleaseFinalizerComponent:
         base_release_id: str | None,
         summary: str,
         owner_flow_id: str | None = None,
-        legacy_adoption: bool,
         submission_intent_preview: bool = False,
     ) -> ServiceResult[CandidateReleaseGateView]:
         repo_root = Path(repo_root)
         reports: list[GateReport] = []
         node_versions: dict[str, int] = {}
 
-        base = (
-            self._check_legacy_adoption_base(repo_root, summary=summary)
-            if legacy_adoption
-            else self._check_base(repo_root, base_release_id=base_release_id, summary=summary)
-        )
+        base = self._check_base(repo_root, base_release_id=base_release_id, summary=summary)
         if not base.ok or base.value is None:
             return self.runtime.foundation.fail(base.issues)
         reports.append(base.value)
@@ -369,8 +331,6 @@ class RepoReleaseFinalizerComponent:
                     object_ref=node.path,
                     details={"issues": "; ".join(issue.kind for issue in captured.issues)},
                 ))
-            elif legacy_adoption and not contract.decl_graph_head:
-                node_versions[node.node_id] = contract.version + 1
             elif captured.value != contract.decl_graph_head:
                 node_issues.append(self.runtime.foundation.issue(
                     "release_decl_graph_head_stale",
@@ -527,159 +487,6 @@ class RepoReleaseFinalizerComponent:
             prepared_release=prepared, summary=prepared.summary,
         ))
 
-    def preview_legacy_stable_adoption(
-        self, repo_root: Path, *, summary: str
-    ) -> ServiceResult[LegacyStableAdoptionPreviewView]:
-        """Inspect a legacy native stable repo without mutating any truth."""
-        repo_root = Path(repo_root)
-        preflight = self._check_legacy_adoption_base(repo_root, summary=summary)
-        if not preflight.ok or preflight.value is None:
-            return self.runtime.foundation.fail(preflight.issues)
-        reports = [preflight.value]
-        workflow = self._check_workflow_closeout(repo_root, owner_flow_id=None, stable_hook=True)
-        if not workflow.ok or workflow.value is None:
-            return self.runtime.foundation.fail(workflow.issues)
-        reports.append(workflow.value)
-
-        source_index = self.runtime.material.source_index.inspect_source_index_schema(repo_root)
-        source_view = source_index.value if source_index.ok else None
-        source_issues = list(source_index.issues)
-        if source_view is not None:
-            source_issues.extend(source_view.file_findings)
-        reports.append(
-            self.runtime.foundation.gate_failed(
-                "legacy_adoption_source_index", source_issues,
-                summary="SourceIndex migration is blocked.",
-            )
-            if source_issues
-            else self.runtime.foundation.gate_passed(
-                "legacy_adoption_source_index",
-                summary=(
-                    f"SourceIndex schema v{source_view.stored_schema_version} is inspectable."
-                    if source_view is not None else "SourceIndex is inspectable."
-                ),
-            )
-        )
-
-        contracts = self._inspect_legacy_contract_heads(repo_root)
-        if not contracts.ok or contracts.value is None:
-            return self.runtime.foundation.fail(contracts.issues)
-        contract_views, contract_gate = contracts.value
-        reports.append(contract_gate)
-
-        candidate = self._preview_release(
-            repo_root,
-            base_release_id=None,
-            summary=summary,
-            owner_flow_id=None,
-            legacy_adoption=True,
-        )
-        if not candidate.ok or candidate.value is None:
-            return self.runtime.foundation.fail(candidate.issues)
-        reports.append(candidate.value.gate)
-        gate = self.runtime.foundation.merge_gate_reports("legacy_stable_adoption", reports)
-        build = None
-        if gate.passed:
-            build = self.runtime.external.lean_toolchain.run_lake_build(repo_root)
-            if not build.ok:
-                build_issue = self.runtime.foundation.issue(
-                    "legacy_adoption_build_failed",
-                    "Legacy stable adoption preview failed the required Lake build.",
-                    object_ref=str(repo_root),
-                    details={"stderr": build.stderr_excerpt or build.raw_excerpt or ""},
-                )
-                gate = self.runtime.foundation.merge_gate_reports(
-                    "legacy_stable_adoption",
-                    [gate, self.runtime.foundation.gate_failed("legacy_adoption_build", build_issue)],
-                )
-        blockers = sorted({
-            issue.kind for issue in gate.issues
-            if self.runtime.foundation.result_error.is_error_issue(issue)
-        })
-        publication_path = self.runtime.repo_workspace.metadata._repo_publication_path(repo_root)
-        legacy_path = self.runtime.repo_workspace.metadata._provider_ready_path(repo_root)
-        publication_source = (
-            "repo_publication" if publication_path.exists()
-            else "provider_ready" if legacy_path.exists()
-            else "default"
-        )
-        return self.runtime.foundation.ok(LegacyStableAdoptionPreviewView(
-            outcome="eligible" if gate.passed else "blocked",
-            publication_source=publication_source,
-            source_index=source_view,
-            contract_heads=contract_views,
-            gate=gate,
-            build=build,
-            blocking_issue_kinds=blockers,
-            current_digest=self.compute_candidate_digest(repo_root),
-            summary=(
-                "Legacy native stable repo is eligible for adoption."
-                if gate.passed else "Legacy native stable repo adoption is blocked."
-            ),
-        ))
-
-    def prepare_legacy_stable_adoption(
-        self, repo_root: Path, *, summary: str
-    ) -> ServiceResult[CandidateReleasePreparationView]:
-        """Prepare R1 after legacy schema and contract migrations are complete."""
-        preview = self._preview_release(
-            Path(repo_root), base_release_id=None, summary=summary,
-            owner_flow_id=None, legacy_adoption=True,
-        )
-        if not preview.ok or preview.value is None:
-            return self.runtime.foundation.fail(preview.issues)
-        if not preview.value.gate.passed:
-            return self.runtime.foundation.ok(CandidateReleasePreparationView(
-                outcome="blocked", gate=preview.value.gate,
-                blocking_issue_kinds=preview.value.blocking_issue_kinds,
-                summary="Legacy stable adoption gate is blocked.",
-            ))
-        build = self.runtime.external.lean_toolchain.run_lake_build(Path(repo_root))
-        if not build.ok:
-            issue = self.runtime.foundation.issue(
-                "legacy_adoption_build_failed", "Legacy stable adoption failed Lake build.",
-                object_ref=str(repo_root),
-                details={"stderr": build.stderr_excerpt or build.raw_excerpt or ""},
-            )
-            gate = self.runtime.foundation.gate_failed("legacy_stable_adoption", issue)
-            return self.runtime.foundation.ok(CandidateReleasePreparationView(
-                outcome="blocked", gate=gate, build=build,
-                blocking_issue_kinds=[issue.kind], summary="Legacy stable adoption build failed.",
-            ))
-        release_id = self.runtime.repo_workspace.release.allocate_release_id(Path(repo_root))
-        checkpoint_id = self.runtime.foundation.store.allocate_uuid(
-            lambda candidate: self.runtime.validation_snapshot.snapshot_restore._snapshot_dir(
-                Path(repo_root), candidate
-            ).exists(),
-            prefix="repo_release_cp",
-        )
-        if not release_id.ok or release_id.value is None:
-            return self.runtime.foundation.fail(release_id.issues)
-        if not checkpoint_id.ok or checkpoint_id.value is None:
-            return self.runtime.foundation.fail(checkpoint_id.issues)
-        release = RepoRelease(
-            release_id=release_id.value,
-            parent_release_id=None,
-            node_contract_versions=preview.value.candidate_node_contract_versions,
-            target_proof_availability=preview.value.target_proof_availability,
-            repo_checkpoint_id=checkpoint_id.value,
-            summary=summary,
-        )
-        prepared = PreparedRepoReleaseView(
-            release=release,
-            publication=RepoPublicationState(
-                status=RepoPublicationStatus.STABLE, latest_release_id=release.release_id
-            ),
-            candidate_digest=self.compute_candidate_digest(Path(repo_root)),
-            build=build,
-            gate=preview.value.gate,
-            summary=f"Prepared legacy stable adoption release {release.release_id}.",
-        )
-        return self.runtime.foundation.ok(CandidateReleasePreparationView(
-            outcome="prepared", gate=preview.value.gate, build=build,
-            prepared_release=prepared, summary=prepared.summary,
-        ))
-
     def commit_prepared_release(
         self,
         repo_root: Path,
@@ -693,153 +500,15 @@ class RepoReleaseFinalizerComponent:
             prepared=prepared,
             owner_flow_id=owner_flow_id,
             scope_ids=scope_ids,
-            legacy_adoption=False,
-            lock_held=False,
         )
-
-    def commit_legacy_stable_adoption(
-        self,
-        repo_root: Path,
-        *,
-        prepared: PreparedRepoReleaseView,
-        scope_ids: list[str],
-        lock_held: bool = False,
-    ) -> ServiceResult[RepoReleaseFinalizeView]:
-        """Commit an already prepared legacy R1 through the shared writer."""
-        return self._commit_prepared_release_transaction(
-            repo_root,
-            prepared=prepared,
-            owner_flow_id=None,
-            scope_ids=scope_ids,
-            legacy_adoption=True,
-            lock_held=lock_held,
-        )
-
-    def adopt_legacy_stable_repo(
-        self,
-        repo_root: Path,
-        *,
-        summary: str,
-        dry_run: bool,
-        scope_ids: list[str] | None = None,
-    ) -> ServiceResult[LegacyStableAdoptionView]:
-        """Inspect or atomically adopt a legacy stable native repository."""
-        repo_root = Path(repo_root)
-        checkpoint_for_restore: str | None = None
-        try:
-            with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
-                preview = self.preview_legacy_stable_adoption(repo_root, summary=summary)
-                if not preview.ok or preview.value is None:
-                    return self.runtime.foundation.fail(preview.issues)
-                if dry_run or preview.value.outcome == "blocked":
-                    return self.runtime.foundation.ok(LegacyStableAdoptionView(
-                        outcome="blocked" if preview.value.outcome == "blocked" else "eligible",
-                        preview=preview.value,
-                        summary=(
-                            "Legacy adoption dry-run is eligible; no files were written."
-                            if preview.value.outcome == "eligible"
-                            else "Legacy adoption dry-run is blocked; no files were written."
-                        ),
-                    ))
-                checkpoint_id = self.runtime.foundation.store.allocate_uuid(
-                    lambda candidate: self.runtime.validation_snapshot.snapshot_restore._snapshot_dir(
-                        repo_root, candidate
-                    ).exists(),
-                    prefix="legacy_adoption_cp",
-                )
-                if not checkpoint_id.ok or checkpoint_id.value is None:
-                    return self.runtime.foundation.fail(checkpoint_id.issues)
-                checkpoint = self.runtime.validation_snapshot.snapshot_restore.create_repo_stable_point_snapshot(
-                    repo_root,
-                    snapshot_id=checkpoint_id.value,
-                    checkpoint_kind="before_native_run_mutation",
-                    label="before legacy stable release adoption",
-                    scope_ids=scope_ids or [f"repo:{repo_root.name}"],
-                )
-                if not checkpoint.ok or checkpoint.value is None:
-                    return self.runtime.foundation.fail(checkpoint.issues)
-                checkpoint_for_restore = checkpoint.value.snapshot_id
-
-                source = preview.value.source_index
-                if source is not None and source.migration_required:
-                    migrated = self.runtime.material.source_index.migrate_source_index_schema(
-                        repo_root, expected_source_index_digest=source.current_digest
-                    )
-                    if not migrated.ok:
-                        return self._legacy_adoption_failure_with_restore(
-                            repo_root, checkpoint_id=checkpoint.value.snapshot_id,
-                            issues=migrated.issues,
-                        )
-                for contract in preview.value.contract_heads:
-                    if not contract.migration_required:
-                        continue
-                    adopted = self.runtime.node.adopt_committed_content_contract_head(
-                        repo_root,
-                        node_path=contract.node_path,
-                        summary="Captured legacy DeclGraph head for initial repository release.",
-                    )
-                    if not adopted.ok:
-                        return self._legacy_adoption_failure_with_restore(
-                            repo_root, checkpoint_id=checkpoint.value.snapshot_id,
-                            issues=adopted.issues,
-                        )
-
-                prepared = self.prepare_legacy_stable_adoption(repo_root, summary=summary)
-                if (
-                    not prepared.ok or prepared.value is None
-                    or prepared.value.outcome != "prepared"
-                    or prepared.value.prepared_release is None
-                ):
-                    issues = prepared.issues if not prepared.ok else prepared.value.gate.issues
-                    return self._legacy_adoption_failure_with_restore(
-                        repo_root, checkpoint_id=checkpoint.value.snapshot_id, issues=issues,
-                    )
-                finalized = self.commit_legacy_stable_adoption(
-                    repo_root,
-                    prepared=prepared.value.prepared_release,
-                    scope_ids=scope_ids or [f"repo:{repo_root.name}"],
-                    lock_held=True,
-                )
-                if not finalized.ok or finalized.value is None:
-                    return self._legacy_adoption_failure_with_restore(
-                        repo_root, checkpoint_id=checkpoint.value.snapshot_id,
-                        issues=finalized.issues,
-                    )
-                final_preview = preview.value.model_copy(update={
-                    "current_digest": prepared.value.prepared_release.candidate_digest,
-                    "summary": "Legacy native stable repo was adopted as release R1.",
-                })
-                return self.runtime.foundation.ok(LegacyStableAdoptionView(
-                    outcome="adopted",
-                    preview=final_preview,
-                    pre_adoption_checkpoint_id=checkpoint.value.snapshot_id,
-                    finalized=finalized.value,
-                    summary=f"Adopted legacy native repo as {finalized.value.release.release.release_id}.",
-                ), warnings=finalized.issues)
-        except Exception as exc:
-            if checkpoint_for_restore is not None:
-                return self._legacy_adoption_failure_with_restore(
-                    repo_root,
-                    checkpoint_id=checkpoint_for_restore,
-                    issues=[self.runtime.foundation.issue(
-                        "legacy_adoption_failed", f"Legacy stable adoption failed: {exc}",
-                        object_ref=str(repo_root),
-                    )],
-                )
-            return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                "legacy_adoption_failed", f"Legacy stable adoption failed: {exc}",
-                object_ref=str(repo_root),
-            ))
 
     def _commit_prepared_release_transaction(
         self,
         repo_root: Path,
         *,
         prepared: PreparedRepoReleaseView,
-        owner_flow_id: str | None,
+        owner_flow_id: str,
         scope_ids: list[str],
-        legacy_adoption: bool,
-        lock_held: bool,
     ) -> ServiceResult[RepoReleaseFinalizeView]:
         repo_root = Path(repo_root)
         current_publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
@@ -856,32 +525,14 @@ class RepoReleaseFinalizerComponent:
         publication_durability_warning = False
         committed_release_view: RepoReleaseView | None = None
         try:
-            lock_context = (
-                nullcontext()
-                if lock_held
-                else self.runtime.repo_workspace.lifecycle_lock.locked(repo_root)
-            )
-            with lock_context:
-                if legacy_adoption:
-                    legacy_base = self._check_legacy_adoption_base(
-                        repo_root, summary=prepared.release.summary
-                    )
-                    if not legacy_base.ok or legacy_base.value is None:
-                        return self.runtime.foundation.fail(legacy_base.issues)
-                    if not legacy_base.value.passed:
-                        return self.runtime.foundation.fail(legacy_base.value.issues)
+            with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
                 publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
                 if not publication.ok or publication.value is None:
                     return self.runtime.foundation.fail(publication.issues)
                 current = publication.value.publication
-                expected_status = (
-                    RepoPublicationStatus.STABLE if legacy_adoption
-                    else RepoPublicationStatus.DEVELOPING
-                )
                 if (
-                    current.status != expected_status
+                    current.status != RepoPublicationStatus.DEVELOPING
                     or current.latest_release_id != prepared.release.parent_release_id
-                    or (legacy_adoption and prepared.release.parent_release_id is not None)
                 ):
                     return self.runtime.foundation.fail(self.runtime.foundation.issue(
                         "release_base_mismatch",
@@ -891,7 +542,7 @@ class RepoReleaseFinalizerComponent:
                     ))
                 workflow = self._check_workflow_closeout(
                     repo_root,
-                    owner_flow_id=None if legacy_adoption else owner_flow_id,
+                    owner_flow_id=owner_flow_id,
                     stable_hook=True,
                 )
                 if not workflow.ok or workflow.value is None:
@@ -1316,16 +967,6 @@ class RepoReleaseFinalizerComponent:
         latest_id = publication.value.publication.latest_release_id
         reachable: set[str] = set()
         issues: list[str] = []
-        if (
-            publication.value.publication.status == RepoPublicationStatus.STABLE
-            and latest_id is None
-        ):
-            repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
-            if (
-                repo_format.ok and repo_format.value is not None
-                and repo_format.value.repo_format == RepoFormat.NATIVE
-            ):
-                issues.append("legacy_native_release_adoption_required")
         if latest_id is not None:
             lineage = self.runtime.repo_workspace.release.resolve_release_lineage(repo_root, release_id=latest_id)
             if not lineage.ok or lineage.value is None:
@@ -1679,170 +1320,6 @@ class RepoReleaseFinalizerComponent:
             if issues else self.runtime.foundation.gate_passed("release_base", summary="Release baseline is valid.")
         )
 
-    def _check_legacy_adoption_base(
-        self, repo_root: Path, *, summary: str
-    ) -> ServiceResult[GateReport]:
-        issues = []
-        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
-        publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
-        if not repo_format.ok or repo_format.value is None:
-            return self.runtime.foundation.fail(repo_format.issues)
-        if not publication.ok or publication.value is None:
-            return self.runtime.foundation.fail(publication.issues)
-        if repo_format.value.repo_format != RepoFormat.NATIVE:
-            issues.append(self.runtime.foundation.issue(
-                "legacy_adoption_repo_not_native",
-                "Only a native repository can enter legacy stable adoption.",
-                object_ref=str(repo_root),
-            ))
-        state = publication.value.publication
-        if state.status != RepoPublicationStatus.STABLE or state.latest_release_id is not None:
-            issues.append(self.runtime.foundation.issue(
-                "legacy_adoption_not_required",
-                "Legacy adoption requires stable publication without a latest release.",
-                object_ref=str(repo_root),
-                current=f"{state.status.value}:{state.latest_release_id or '-'}",
-                expected="stable:-",
-            ))
-        controller = self.runtime.ark.pause_controller
-        paused = bool(
-            controller is not None
-            and hasattr(controller, "is_paused")
-            and controller.is_paused()
-        )
-        if not paused:
-            issues.append(self.runtime.foundation.issue(
-                "legacy_adoption_runtime_not_paused",
-                "Legacy adoption requires the repository runtime to be globally paused.",
-                object_ref=str(repo_root),
-            ))
-        if not summary.strip():
-            issues.append(self.runtime.foundation.issue(
-                "repo_ready_summary_required", "Legacy adoption release summary is required."
-            ))
-        return self.runtime.foundation.ok(
-            self.runtime.foundation.gate_failed("legacy_adoption_base", issues)
-            if issues else self.runtime.foundation.gate_passed(
-                "legacy_adoption_base", summary="Legacy adoption base is valid."
-            )
-        )
-
-    def _inspect_legacy_contract_heads(
-        self, repo_root: Path
-    ) -> ServiceResult[tuple[list[LegacyContractHeadAdoptionView], GateReport]]:
-        nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
-        if not nodes.ok or nodes.value is None:
-            return self.runtime.foundation.fail(nodes.issues)
-        views: list[LegacyContractHeadAdoptionView] = []
-        issues = []
-        for node in nodes.value:
-            if node.lifecycle != NodeLifecycle.ACTIVE:
-                continue
-            if node.open_contract_version is not None:
-                issues.append(self.runtime.foundation.issue(
-                    "legacy_adoption_open_truth",
-                    "Legacy adoption cannot run with an open Node contract.",
-                    object_ref=node.path,
-                ))
-                continue
-            contract = self.runtime.node.contract.get_visible_contract(repo_root, node_path=node.path)
-            if not contract.ok or contract.value is None:
-                issues.extend(contract.issues)
-                continue
-            value = contract.value.contract
-            if value.status != ContractVersionStatus.COMMITTED:
-                issues.append(self.runtime.foundation.issue(
-                    "legacy_adoption_open_truth",
-                    "Legacy adoption requires every active Node contract to be committed.",
-                    object_ref=node.path,
-                ))
-                continue
-            if node.kind == NodeKind.SCOPE:
-                if value.decl_graph_head:
-                    issues.append(self.runtime.foundation.issue(
-                        "legacy_adoption_contract_head_capture_failed",
-                        "Scope contracts must not contain a DeclGraph head.",
-                        object_ref=node.path,
-                    ))
-                continue
-            head = self.runtime.node.release_guard.capture_content_contract_head(
-                repo_root, node_path=node.path
-            )
-            if not head.ok or head.value is None:
-                issues.append(self.runtime.foundation.issue(
-                    "legacy_adoption_contract_head_capture_failed",
-                    "Current committed DeclGraph head could not be captured.",
-                    object_ref=node.path,
-                    details={"issues": "; ".join(issue.kind for issue in head.issues)},
-                ))
-                continue
-            if not head.value:
-                issues.append(self.runtime.foundation.issue(
-                    "legacy_adoption_contract_head_capture_failed",
-                    "An active legacy Content node has an empty committed DeclGraph.",
-                    object_ref=node.path,
-                ))
-                continue
-            migration_required = not value.decl_graph_head
-            if value.decl_graph_head and value.decl_graph_head != head.value:
-                issues.append(self.runtime.foundation.issue(
-                    "legacy_adoption_contract_head_capture_failed",
-                    "Existing Content contract head differs from current committed DeclGraph truth.",
-                    object_ref=node.path,
-                ))
-                continue
-            views.append(LegacyContractHeadAdoptionView(
-                node_path=node.path,
-                node_id=node.node_id,
-                current_contract_version=value.version,
-                adopted_contract_version=value.version + 1 if migration_required else value.version,
-                decl_graph_head=dict(sorted(head.value.items())),
-                migration_required=migration_required,
-                summary=(
-                    "A new committed head-bound contract version will be created."
-                    if migration_required else "The committed contract head is already current."
-                ),
-            ))
-        gate = (
-            self.runtime.foundation.gate_failed(
-                "legacy_adoption_contract_heads", issues,
-                summary="Legacy Content contract heads cannot be adopted.",
-            )
-            if issues else self.runtime.foundation.gate_passed(
-                "legacy_adoption_contract_heads",
-                summary=f"Inspected {len(views)} legacy Content contract heads.",
-            )
-        )
-        return self.runtime.foundation.ok((views, gate))
-
-    def _legacy_adoption_failure_with_restore(
-        self, repo_root: Path, *, checkpoint_id: str, issues: list
-    ) -> ServiceResult[LegacyStableAdoptionView]:
-        restored = self.runtime.validation_snapshot.snapshot_restore.restore_repo_checkpoint_snapshot(
-            repo_root,
-            snapshot_id=checkpoint_id,
-            dry_run=False,
-            leave_runtime_paused=True,
-            prune_extra_files=True,
-        )
-        controller = self.runtime.ark.pause_controller
-        if controller is not None:
-            controller.pause(None)
-        if not restored.ok:
-            return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                "legacy_adoption_restore_failed",
-                "Legacy adoption failed and its pre-adoption checkpoint could not be restored.",
-                object_ref=checkpoint_id,
-                details={
-                    "adoption_issues": "; ".join(issue.kind for issue in issues),
-                    "restore_issues": "; ".join(issue.kind for issue in restored.issues),
-                },
-            ))
-        return self.runtime.foundation.fail(issues or [self.runtime.foundation.issue(
-            "legacy_adoption_failed", "Legacy adoption failed and was restored.",
-            object_ref=checkpoint_id,
-        )])
-
     def _check_workflow_closeout(
         self,
         repo_root: Path,
@@ -2010,7 +1487,6 @@ class RepoReleaseFinalizerComponent:
 
 __all__ = [
     "CandidateReleaseGateView", "CandidateReleasePreparationView", "PreparedRepoReleaseView",
-    "LegacyContractHeadAdoptionView", "LegacyStableAdoptionPreviewView", "LegacyStableAdoptionView",
     "ProviderRequirementReconciliationView", "RepoReleaseFinalizeView", "RepoReleaseFinalizerComponent",
     "RepoReleaseStorageAuditView",
 ]

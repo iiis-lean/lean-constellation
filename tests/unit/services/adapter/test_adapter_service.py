@@ -8,7 +8,7 @@ import pytest
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.repo import RepoFormat, RepoPublicationStatus
 from lean_constellation.services.adapter import AdapterService, UpstreamMetadataComponent
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.foundation import FoundationContext, FoundationService
@@ -796,19 +796,19 @@ def test_adapter_interface_binding_projection_and_ready_gate(tmp_path: Path) -> 
     assert ready.ok
     assert ready.value is not None
     assert ready.value.passed is True
-    provider_ready_before = service.runtime.repo_workspace.metadata.get_provider_ready(tmp_path)
+    provider_ready_before = service.runtime.repo_workspace.metadata.get_repo_publication(tmp_path)
     assert provider_ready_before.ok
     assert provider_ready_before.value is not None
-    assert provider_ready_before.value.ready is False
+    assert provider_ready_before.value.publication.status == RepoPublicationStatus.DEVELOPING
 
     submitted = service.submit_adapter_catalog_ready(tmp_path, summary="Adapter catalog is ready.")
     assert submitted.ok
     assert submitted.value is not None
     assert submitted.value.accepted is True
-    provider_ready_after = service.runtime.repo_workspace.metadata.get_provider_ready(tmp_path)
+    provider_ready_after = service.runtime.repo_workspace.metadata.get_repo_publication(tmp_path)
     assert provider_ready_after.ok
     assert provider_ready_after.value is not None
-    assert provider_ready_after.value.ready is False
+    assert provider_ready_after.value.publication.status == RepoPublicationStatus.DEVELOPING
 
 
 def test_adapter_exact_interface_statement_contract_rejects_binding_and_later_drift(tmp_path: Path) -> None:

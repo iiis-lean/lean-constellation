@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import (
-    ProviderReadyState,
     ProofAvailability,
     RepoConfig,
     RepoConfigView,
@@ -16,8 +15,6 @@ from lean_constellation.domain.repo import (
     RepoFormatView,
     RepoModel,
     RepoModelView,
-    RepoPolicy,
-    RepoPolicyView,
     RepoPublicationState,
     RepoPublicationStatus,
     RepoPublicationView,
@@ -214,13 +211,6 @@ class RepoMetadataComponent:
     def get_repo_config(self, repo_root: Path) -> ServiceResult[RepoConfigView]:
         path = self._repo_config_path(repo_root)
         if not path.exists():
-            legacy = self.get_repo_policy(repo_root)
-            if legacy.ok and legacy.value is not None:
-                policy = legacy.value.policy
-                config = RepoConfig(
-                    max_parallel_content_node_tasks=policy.max_parallel_content_node_tasks,
-                )
-                return self.runtime.foundation.ok(RepoConfigView(repo_root=str(Path(repo_root)), config=config))
             return self.runtime.foundation.ok(RepoConfigView(repo_root=str(Path(repo_root)), config=RepoConfig()))
         loaded = self.runtime.foundation.store.read_json(path, RepoConfig)
         if not loaded.ok or loaded.value is None:
@@ -286,49 +276,6 @@ class RepoMetadataComponent:
             )
         )
 
-    def get_repo_policy(self, repo_root: Path) -> ServiceResult[RepoPolicyView]:
-        path = self._repo_policy_path(repo_root)
-        if not path.exists():
-            return self.runtime.foundation.ok(RepoPolicyView(repo_root=str(Path(repo_root)), policy=RepoPolicy()))
-        loaded = self.runtime.foundation.store.read_json(path, RepoPolicy)
-        if not loaded.ok or loaded.value is None:
-            return self.runtime.foundation.fail(loaded.issues)
-        return self.runtime.foundation.ok(RepoPolicyView(repo_root=str(Path(repo_root)), policy=loaded.value))
-
-    def update_repo_policy(
-        self,
-        repo_root: Path,
-        *,
-        max_parallel_content_node_tasks: int | None = None,
-        readiness_policy: str | None = None,
-    ) -> ServiceResult[RepoPolicyView]:
-        current = self.get_repo_policy(repo_root)
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
-        policy = current.value.policy.model_copy(deep=True)
-        if max_parallel_content_node_tasks is not None:
-            policy.max_parallel_content_node_tasks = max_parallel_content_node_tasks
-        if readiness_policy is not None:
-            if not readiness_policy.strip():
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue("policy_invalid", "readiness_policy must be non-empty.")
-                )
-            policy.readiness_policy = readiness_policy.strip()
-        try:
-            policy = RepoPolicy.model_validate(policy.model_dump())
-        except Exception as exc:  # noqa: BLE001 - normalized as ServiceResult.
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("policy_invalid", f"Invalid repo policy: {exc}"))
-        written = self.runtime.foundation.store.write_json_atomic(self._repo_policy_path(repo_root), policy)
-        if not written.ok:
-            return self.runtime.foundation.fail(written.issues)
-        config = self.update_repo_config(
-            repo_root,
-            max_parallel_content_node_tasks=policy.max_parallel_content_node_tasks,
-        )
-        if not config.ok:
-            return self.runtime.foundation.fail(config.issues)
-        return self.runtime.foundation.ok(RepoPolicyView(repo_root=str(Path(repo_root)), policy=policy))
-
     def get_repo_state_view(self, repo_root: Path) -> ServiceResult[RepoStateView]:
         model = self.get_repo_model(repo_root)
         repo_format = self.get_repo_format(repo_root)
@@ -392,15 +339,6 @@ class RepoMetadataComponent:
             if not loaded.ok or loaded.value is None:
                 return self.runtime.foundation.fail(loaded.issues)
             return self.runtime.foundation.ok(RepoPublicationView(repo_root=str(Path(repo_root)), publication=loaded.value))
-        legacy = self._provider_ready_path(repo_root)
-        if legacy.exists():
-            loaded = self.runtime.foundation.store.read_json(legacy, ProviderReadyState)
-            if not loaded.ok or loaded.value is None:
-                return self.runtime.foundation.fail(loaded.issues)
-            status = RepoPublicationStatus.STABLE if loaded.value.ready else RepoPublicationStatus.DEVELOPING
-            return self.runtime.foundation.ok(
-                RepoPublicationView(repo_root=str(Path(repo_root)), publication=RepoPublicationState(status=status))
-            )
         return self.runtime.foundation.ok(
             RepoPublicationView(repo_root=str(Path(repo_root)), publication=RepoPublicationState())
         )
@@ -445,35 +383,17 @@ class RepoMetadataComponent:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(RepoPublicationView(repo_root=str(Path(repo_root)), publication=state))
 
-    def get_provider_ready(self, repo_root: Path) -> ServiceResult[ProviderReadyState]:
-        availability = self.runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
-        if not availability.ok or availability.value is None:
-            return self.runtime.foundation.fail(availability.issues)
-        return self.runtime.foundation.ok(ProviderReadyState(ready=availability.value.passed))
-
-    def set_provider_ready(self, repo_root: Path, *, summary: str) -> ServiceResult[ProviderReadyState]:
-        stable = self.mark_repo_stable(repo_root, summary=summary)
-        if not stable.ok:
-            return self.runtime.foundation.fail(stable.issues)
-        return self.get_provider_ready(repo_root)
-
     def _ctx(self, repo_root: Path) -> FoundationContext:
         return FoundationContext(repo_root=Path(repo_root))
 
     def _repo_format_path(self, repo_root: Path) -> Path:
         return self.runtime.foundation.layout.constellation_root(self._ctx(repo_root)) / "repo_format.json"
 
-    def _repo_policy_path(self, repo_root: Path) -> Path:
-        return self.runtime.foundation.layout.constellation_root(self._ctx(repo_root)) / "repo_policy.json"
-
     def _repo_config_path(self, repo_root: Path) -> Path:
         return self.runtime.foundation.layout.constellation_root(self._ctx(repo_root)) / "repo_config.json"
 
     def _repo_publication_path(self, repo_root: Path) -> Path:
         return self.runtime.foundation.layout.constellation_root(self._ctx(repo_root)) / "repo_publication.json"
-
-    def _provider_ready_path(self, repo_root: Path) -> Path:
-        return self.runtime.foundation.layout.constellation_root(self._ctx(repo_root)) / "provider_ready.json"
 
     def _count_open_requirements(self, ctx: FoundationContext) -> tuple[int, list]:
         req_root = self.runtime.foundation.layout.requirements_root(ctx)

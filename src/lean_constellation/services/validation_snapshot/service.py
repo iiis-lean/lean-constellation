@@ -19,8 +19,6 @@ from lean_constellation.services.validation_snapshot.readiness_gate import (
 from lean_constellation.services.validation_snapshot.release_finalizer import (
     CandidateReleaseGateView,
     CandidateReleasePreparationView,
-    LegacyStableAdoptionPreviewView,
-    LegacyStableAdoptionView,
     PreparedRepoReleaseView,
     ProviderRequirementReconciliationView,
     RepoReleaseFinalizeView,
@@ -305,23 +303,6 @@ class ValidationSnapshotService:
     ) -> ServiceResult[RepoReleaseFinalizeView]:
         return self.release_finalizer.commit_prepared_release(
             repo_root, prepared=prepared, owner_flow_id=owner_flow_id, scope_ids=scope_ids
-        )
-
-    def preview_legacy_stable_adoption(
-        self, repo_root: Path, *, summary: str
-    ) -> ServiceResult[LegacyStableAdoptionPreviewView]:
-        return self.release_finalizer.preview_legacy_stable_adoption(repo_root, summary=summary)
-
-    def adopt_legacy_stable_repo(
-        self,
-        repo_root: Path,
-        *,
-        summary: str,
-        dry_run: bool,
-        scope_ids: list[str] | None = None,
-    ) -> ServiceResult[LegacyStableAdoptionView]:
-        return self.release_finalizer.adopt_legacy_stable_repo(
-            repo_root, summary=summary, dry_run=dry_run, scope_ids=scope_ids
         )
 
     def reconcile_provider_requirements(

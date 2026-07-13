@@ -219,7 +219,9 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     )
     _advance_and_run(runtime, flow_id)
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "finalize_ready"
-    assert lean_runtime.repo_workspace.metadata.get_provider_ready(repo_root).value.ready is False
+    assert lean_runtime.repo_workspace.metadata.get_repo_publication(
+        repo_root
+    ).value.publication.status == RepoPublicationStatus.DEVELOPING
     _advance_and_run(runtime, flow_id)
     assert "public import Upstream.Basic" in (repo_root / "Main" / "Interfaces.lean").read_text(encoding="utf-8")
     _advance_and_run(runtime, flow_id)
@@ -231,7 +233,9 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     assert flow.result.catalog_decl_count == 1
     assert flow.result.bound_interface_count == 1
     assert flow.result.imported_modules_count == 1
-    assert lean_runtime.repo_workspace.metadata.get_provider_ready(repo_root).value.ready is True
+    assert lean_runtime.repo_workspace.metadata.get_repo_publication(
+        repo_root
+    ).value.publication.status == RepoPublicationStatus.STABLE
     config = lean_runtime.repo_workspace.metadata.get_repo_config(repo_root)
     publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
     assert config.ok and config.value is not None

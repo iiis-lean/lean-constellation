@@ -17,7 +17,7 @@ from lean_constellation.services.decl_graph.models import (
 )
 from lean_constellation.services.foundation import FoundationContext, WriteMode
 from lean_constellation.services.node import NodeContractStatus
-from tests.unit_services_helpers import make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import lean_check_payload, make_runtime, publish_native_provider_release
 
 
 def _write_decl(
@@ -50,14 +50,14 @@ def _write_decl(
         statement=DeclStatement(
             formal=DeclFormalSection(
                 code=f"import Mathlib\n\ntheorem {name} : True := by\n  sorry\n",
-                check={"status": "passed", "contains_sorry": True, "allow_sorry": True},
+                    check=lean_check_payload(contains_sorry=True),
             ),
             deps=[RepoDeclDep(ref=ref) for ref in statement_deps],
         ),
         proof=DeclProof(
             formal=DeclFormalSection(
                 code=f"theorem {name} : True := by\n  trivial\n",
-                check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+                    check=lean_check_payload(),
             ),
             deps=[RepoDeclDep(ref=ref) for ref in proof_deps],
         ),
@@ -507,7 +507,7 @@ def test_release_external_statement_dep_accepts_adapter_public_interface(tmp_pat
         binding_summary="Expose the public theorem.",
     ).ok
     assert service.refresh_adapter_projection(provider_root).ok
-    assert service.runtime.repo_workspace.metadata.set_provider_ready(
+    assert service.runtime.repo_workspace.metadata.mark_repo_stable(
         provider_root, summary="Stable adapter provider."
     ).ok
 

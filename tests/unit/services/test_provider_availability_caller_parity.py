@@ -49,10 +49,10 @@ CASES = (
         decl_ref=DeclRef(repo="Provider", node="Main.Core", name="provider_result", revision=1),
     ),
     ProviderCase(
-        name="legacy_native_latest_none",
+        name="native_stable_release_missing",
         available=False,
         decl_ref=DeclRef(repo="Provider", node="Main.Core", name="provider_result", revision=1),
-        availability_issue="provider_native_release_adoption_required",
+        availability_issue="provider_native_stable_release_missing",
     ),
     ProviderCase(
         name="dangling_native_checkpoint",
@@ -90,7 +90,7 @@ def _prepare_provider(runtime, provider_root: Path, case: ProviderCase) -> None:
         return
 
     _create_provider_repo(provider_root)
-    if case.name == "legacy_native_latest_none":
+    if case.name == "native_stable_release_missing":
         publication = RepoPublicationState(status=RepoPublicationStatus.STABLE)
         assert runtime.foundation.store.write_json_atomic(
             runtime.repo_workspace.metadata._repo_publication_path(provider_root),

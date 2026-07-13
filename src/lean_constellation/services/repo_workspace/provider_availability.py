@@ -78,8 +78,8 @@ class ProviderAvailabilityComponent:
             return self._blocked("provider_format_unknown", "Unsupported-format repos cannot be providers.", repo_root)
         if state.latest_release_id is None:
             return self._blocked(
-                "provider_native_release_adoption_required",
-                "Stable native provider has no release baseline and requires explicit adoption.",
+                "provider_native_stable_release_missing",
+                "Stable native provider has no current release baseline.",
                 repo_root,
             )
         release = self.release.get_release(repo_root, release_id=state.latest_release_id)

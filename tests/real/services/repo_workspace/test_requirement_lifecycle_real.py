@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit_services_helpers import make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import lean_check_payload, make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.interface import DeclKind
@@ -214,7 +214,7 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
             round_id=round_record.value.round_id,
             decl_name=name,
             lean_code=f"theorem {name} : True := by\n  trivial",
-            lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+            lean_check=lean_check_payload(),
             deps=[],
         ).ok
         if kind in {DeclKind.THEOREM.value, DeclKind.LEMMA.value}:
@@ -232,7 +232,7 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
                 round_id=round_record.value.round_id,
                 decl_name=name,
                 lean_code=f"theorem {name} : True := by\n  trivial",
-                lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+                lean_check=lean_check_payload(),
                 deps=[],
             ).ok
             target_state = DeclState.PROVED

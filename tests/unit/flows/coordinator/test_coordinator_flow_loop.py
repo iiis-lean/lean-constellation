@@ -564,8 +564,8 @@ def test_repo_ready_submission_prepares_and_publishes_native_release(
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "candidate_prepared"
     assert flow.result.prepared_release is not None
-    ready = lean_runtime.repo_workspace.metadata.get_provider_ready(repo_root)
-    assert ready.ok and ready.value.ready is True
+    ready = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+    assert ready.ok and ready.value.publication.status == RepoPublicationStatus.STABLE
     availability = lean_runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
     assert availability.ok and availability.value is not None and availability.value.passed is True
     publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)

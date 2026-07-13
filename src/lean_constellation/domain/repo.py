@@ -51,22 +51,6 @@ class RepoFormatState(StrictModel):
     reason: str | None = None
 
 
-class RepoPolicy(StrictModel):
-    readiness_policy: str = "proved_closure"
-    max_parallel_content_node_tasks: int = 1
-
-    @field_validator("max_parallel_content_node_tasks")
-    @classmethod
-    def _positive(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("max_parallel_content_node_tasks must be >= 1")
-        return value
-
-
-class ProviderReadyState(StrictModel):
-    ready: bool = False
-
-
 class RepoConfig(StrictModel):
     target_proof_availability: ProofAvailability = ProofAvailability.PROVED
     work_mode: RepoWorkMode = RepoWorkMode.PROVED_FULL_GRAPH
@@ -152,11 +136,6 @@ class RepoFormatView(StrictModel):
     repo_root: str
     repo_format: RepoFormat
     reason: str | None = None
-
-
-class RepoPolicyView(StrictModel):
-    repo_root: str
-    policy: RepoPolicy
 
 
 class RepoConfigView(StrictModel):

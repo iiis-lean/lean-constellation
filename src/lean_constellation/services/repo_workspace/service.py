@@ -553,7 +553,7 @@ class RepoWorkspaceService:
                 return self.runtime.foundation.fail(provider_truth.issues)
             requirement_refs.append((consumer, requirement_name))
 
-        ready = self.metadata.set_provider_ready(repo_root, summary=summary)
+        ready = self.metadata.mark_repo_stable(repo_root, summary=summary)
         if not ready.ok:
             return self.runtime.foundation.fail(ready.issues)
         for consumer, requirement_name in requirement_refs:

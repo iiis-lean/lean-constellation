@@ -49,15 +49,15 @@ def test_native_provider_requires_release_and_checkpoint(tmp_path: Path) -> None
     assert available.ok and available.value.passed is True
 
 
-def test_legacy_native_requires_adoption_and_unknown_is_rejected(tmp_path: Path) -> None:
+def test_native_without_stable_release_and_unknown_are_rejected(tmp_path: Path) -> None:
     runtime = make_runtime()
     assert runtime.repo_workspace.metadata.ensure_repo_model(tmp_path).ok
     assert runtime.repo_workspace.metadata.set_repo_format(tmp_path, repo_format=RepoFormat.NATIVE, reason="native").ok
     _write_publication(runtime, tmp_path, latest_release_id=None)
 
-    legacy = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
-    assert legacy.ok and legacy.value.passed is False
-    assert legacy.value.issues[0].kind == "provider_native_release_adoption_required"
+    unavailable = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
+    assert unavailable.ok and unavailable.value.passed is False
+    assert unavailable.value.issues[0].kind == "provider_native_stable_release_missing"
 
     other = tmp_path / "unknown"
     assert runtime.repo_workspace.metadata.ensure_repo_model(other).ok

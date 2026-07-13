@@ -6,7 +6,6 @@ from lean_constellation.domain.preparation import RepoDependencyRequirement, Rep
 from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoFormat,
-    RepoPublicationState,
     RepoPublicationStatus,
     RepoWorkMode,
 )
@@ -31,7 +30,7 @@ def test_ensure_repo_model_is_idempotent_and_rejects_conflict(tmp_path: Path) ->
     assert conflict.issues[0].kind == "repo_model_conflict"
 
 
-def test_repo_format_policy_and_state_view(tmp_path: Path) -> None:
+def test_repo_format_config_and_state_view(tmp_path: Path) -> None:
     component = make_runtime().repo_workspace.metadata
     component.ensure_repo_model(tmp_path)
 
@@ -54,26 +53,18 @@ def test_repo_format_policy_and_state_view(tmp_path: Path) -> None:
     assert not conflict.ok
     assert conflict.issues[0].kind == "repo_format_conflict"
 
-    policy = component.get_repo_policy(tmp_path)
-    assert policy.ok
-    assert policy.value is not None
-    assert policy.value.policy.readiness_policy == "proved_closure"
-    assert policy.value.policy.max_parallel_content_node_tasks == 1
-
-    updated = component.update_repo_policy(
+    updated = component.update_repo_config(
         tmp_path,
         max_parallel_content_node_tasks=3,
-        readiness_policy="declared_closure",
     )
     assert updated.ok
     assert updated.value is not None
-    assert updated.value.policy.max_parallel_content_node_tasks == 3
-    assert updated.value.policy.readiness_policy == "declared_closure"
+    assert updated.value.config.max_parallel_content_node_tasks == 3
     config = component.get_repo_config(tmp_path)
     assert config.ok and config.value is not None
     assert config.value.config.max_parallel_content_node_tasks == 3
 
-    ready = component.set_provider_ready(tmp_path, summary="Ready provider summary.")
+    ready = component.mark_repo_stable(tmp_path, summary="Ready provider summary.")
     assert not ready.ok
     assert ready.issues[0].kind == "native_release_finalizer_required"
     publish_native_provider_release(component.runtime, tmp_path, summary="Ready provider summary.")
@@ -157,33 +148,6 @@ def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> Non
     assert reopened.value.publication.stable_at is None
 
 
-def test_old_publication_json_loads_without_read_time_write_and_latest_is_visible(tmp_path: Path) -> None:
-    component = make_runtime().repo_workspace.metadata
-    publication_path = component._repo_publication_path(tmp_path)
-    publication_path.parent.mkdir(parents=True, exist_ok=True)
-    old_payload = '{\n  "status": "stable",\n  "stable_at": "2026-01-01T00:00:00Z"\n}\n'
-    publication_path.write_text(old_payload, encoding="utf-8")
-
-    old = component.get_repo_publication(tmp_path)
-
-    assert old.ok and old.value is not None
-    assert old.value.publication.latest_release_id is None
-    assert publication_path.read_text(encoding="utf-8") == old_payload
-
-    written = component.runtime.foundation.store.write_json_atomic(
-        publication_path,
-        RepoPublicationState(
-            status=RepoPublicationStatus.STABLE,
-            stable_at="2026-01-01T00:00:00Z",
-            latest_release_id="release_2",
-        ),
-    )
-    assert written.ok
-    state = component.get_repo_state_view(tmp_path)
-    assert state.ok and state.value is not None
-    assert state.value.latest_release_id == "release_2"
-
-
 def test_get_repo_model_missing_returns_structured_failure(tmp_path: Path) -> None:
     component = make_runtime().repo_workspace.metadata
 
@@ -238,7 +202,7 @@ def test_set_repo_format_allows_admin_overwrite_before_ready_but_locks_after_rea
     assert overwritten.value is not None
     assert overwritten.value.changed is True
 
-    ready = component.set_provider_ready(tmp_path, summary="provider committed")
+    ready = component.mark_repo_stable(tmp_path, summary="provider committed")
     assert ready.ok
 
     locked = component.set_repo_format(
@@ -249,23 +213,6 @@ def test_set_repo_format_allows_admin_overwrite_before_ready_but_locks_after_rea
     )
     assert not locked.ok
     assert locked.issues[0].kind == "repo_format_locked"
-
-
-def test_update_repo_policy_rejects_invalid_parallelism(tmp_path: Path) -> None:
-    component = make_runtime().repo_workspace.metadata
-
-    result = component.update_repo_policy(tmp_path, max_parallel_content_node_tasks=0)
-    assert not result.ok
-    assert result.issues[0].kind == "policy_invalid"
-
-
-def test_update_repo_policy_rejects_empty_readiness_policy(tmp_path: Path) -> None:
-    component = make_runtime().repo_workspace.metadata
-
-    result = component.update_repo_policy(tmp_path, readiness_policy="  ")
-
-    assert not result.ok
-    assert result.issues[0].kind == "policy_invalid"
 
 
 def test_repo_state_view_counts_requirements_structurally_and_warns_on_missing_model(tmp_path: Path) -> None:

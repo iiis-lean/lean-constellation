@@ -218,14 +218,14 @@ def test_mark_provider_ready_rejects_stale_requirement_ref_without_ready_marker(
     )
 
     result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider ready.")
-    ready = runtime.repo_workspace.metadata.get_provider_ready(provider)
+    ready = runtime.repo_workspace.metadata.get_repo_publication(provider)
 
     assert written.ok
     assert not result.ok
     assert result.issues[0].kind == "requirement_not_found"
     assert ready.ok
     assert ready.value is not None
-    assert ready.value.ready is False
+    assert ready.value.publication.status.value == "developing"
 
 
 def test_mark_provider_ready_rejects_provider_mismatch_without_ready_marker(tmp_path: Path) -> None:
@@ -245,7 +245,7 @@ def test_mark_provider_ready_rejects_provider_mismatch_without_ready_marker(tmp_
     )
 
     result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider ready.")
-    ready = runtime.repo_workspace.metadata.get_provider_ready(provider)
+    ready = runtime.repo_workspace.metadata.get_repo_publication(provider)
 
     assert waiting.ok
     assert written.ok
@@ -253,7 +253,7 @@ def test_mark_provider_ready_rejects_provider_mismatch_without_ready_marker(tmp_
     assert result.issues[0].kind == "requirement_provider_mismatch"
     assert ready.ok
     assert ready.value is not None
-    assert ready.value.ready is False
+    assert ready.value.publication.status.value == "developing"
 
 
 def test_mark_provider_ready_rejects_insufficient_provider_proof_availability(tmp_path: Path) -> None:
