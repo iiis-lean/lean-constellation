@@ -34,6 +34,7 @@ class RepoRuntimeStatusView(StrictModel):
     agent_count: int | None = None
     agent_homes: ProductionAgentHomesView | None = None
     last_error: str | None = None
+    startup_warnings: list[str] = Field(default_factory=list)
     summary: str
 
 
@@ -55,6 +56,7 @@ class RepoRuntimeRecord:
     state: RepoRuntimeState = "unloaded"
     agent_homes: ProductionAgentHomesView | None = None
     last_error: str | None = None
+    startup_warnings: list[str] = field(default_factory=list)
     lock: RLock = field(default_factory=RLock, repr=False)
 
     @property
@@ -234,6 +236,7 @@ class RepoRuntimeRegistry:
                 )
                 record.runtime = runtime
                 self._rebuild_queues(record)
+                self._audit_release_state(record)
                 if self.config.materialize_agent_homes:
                     homes = self._materialize_homes(record)
                     if not homes.ok:
@@ -366,6 +369,27 @@ class RepoRuntimeRegistry:
         if schedule_service is not None and hasattr(schedule_service, "rebuild_candidate_queues"):
             schedule_service.rebuild_candidate_queues()
 
+    def _audit_release_state(self, record: RepoRuntimeRecord) -> None:
+        """Run the startup release audit without repairing or deleting truth."""
+        runtime = record.runtime
+        if runtime is None:
+            return
+        try:
+            audit = runtime.validation_snapshot.audit_repo_release_storage(record.repo_root)
+        except Exception as exc:  # noqa: BLE001 - startup audit is advisory.
+            record.startup_warnings = [f"release_startup_audit_failed: {exc}"]
+            return
+        if not audit.ok or audit.value is None:
+            record.startup_warnings = [
+                f"{issue.kind}: {issue.message}" for issue in audit.issues
+            ]
+            return
+        record.startup_warnings = list(audit.value.issues)
+        if audit.value.staging_paths:
+            record.startup_warnings.append(
+                f"release_orphan_staging: {len(audit.value.staging_paths)} staging path(s) require explicit cleanup"
+            )
+
     def _check_stable(self, record: RepoRuntimeRecord) -> ServiceResult[None]:
         runtime = record.runtime
         if runtime is None:
@@ -420,6 +444,7 @@ class RepoRuntimeRegistry:
             agent_count=agent_count,
             agent_homes=record.agent_homes,
             last_error=record.last_error,
+            startup_warnings=list(record.startup_warnings),
             summary=f"Repo runtime {record.repo_key} is {record.state}.",
         )
 

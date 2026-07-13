@@ -123,6 +123,7 @@ def test_repo_ready_submit_only_records_candidate_intent_after_preview(tmp_path:
             "base_release_id": "release-base",
             "summary": "Publish the current candidate.",
             "owner_flow_id": "flow_1",
+            "submission_intent_preview": True,
         }
     ]
 

@@ -19,6 +19,8 @@ from lean_constellation.services.validation_snapshot.readiness_gate import (
 from lean_constellation.services.validation_snapshot.release_finalizer import (
     CandidateReleaseGateView,
     CandidateReleasePreparationView,
+    LegacyStableAdoptionPreviewView,
+    LegacyStableAdoptionView,
     PreparedRepoReleaseView,
     ProviderRequirementReconciliationView,
     RepoReleaseFinalizeView,
@@ -288,12 +290,14 @@ class ValidationSnapshotService:
         base_release_id: str | None,
         summary: str,
         owner_flow_id: str | None = None,
+        submission_intent_preview: bool = False,
     ) -> ServiceResult[CandidateReleaseGateView]:
         return self.release_finalizer.preview_candidate_release(
             repo_root,
             base_release_id=base_release_id,
             summary=summary,
             owner_flow_id=owner_flow_id,
+            submission_intent_preview=submission_intent_preview,
         )
 
     def commit_prepared_release(
@@ -303,6 +307,23 @@ class ValidationSnapshotService:
             repo_root, prepared=prepared, owner_flow_id=owner_flow_id, scope_ids=scope_ids
         )
 
+    def preview_legacy_stable_adoption(
+        self, repo_root: Path, *, summary: str
+    ) -> ServiceResult[LegacyStableAdoptionPreviewView]:
+        return self.release_finalizer.preview_legacy_stable_adoption(repo_root, summary=summary)
+
+    def adopt_legacy_stable_repo(
+        self,
+        repo_root: Path,
+        *,
+        summary: str,
+        dry_run: bool,
+        scope_ids: list[str] | None = None,
+    ) -> ServiceResult[LegacyStableAdoptionView]:
+        return self.release_finalizer.adopt_legacy_stable_repo(
+            repo_root, summary=summary, dry_run=dry_run, scope_ids=scope_ids
+        )
+
     def reconcile_provider_requirements(
         self, repo_root: Path, *, release_id: str
     ) -> ServiceResult[ProviderRequirementReconciliationView]:
@@ -310,6 +331,13 @@ class ValidationSnapshotService:
 
     def audit_repo_release_storage(self, repo_root: Path) -> ServiceResult[RepoReleaseStorageAuditView]:
         return self.release_finalizer.audit_repo_release_storage(repo_root)
+
+    def cleanup_repo_release_orphans(
+        self, repo_root: Path, *, expected_audit_digest: str
+    ) -> ServiceResult[MutationSummaryView]:
+        return self.release_finalizer.cleanup_repo_release_orphans(
+            repo_root, expected_audit_digest=expected_audit_digest
+        )
 
     def cleanup_unpublished_release_artifacts(
         self,

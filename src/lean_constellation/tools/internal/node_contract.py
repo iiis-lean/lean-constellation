@@ -430,6 +430,7 @@ def _get_repo_ready_node_view(runtime, ctx, args: NoArgs):
         base_release_id=base_release_id,
         summary="Repository release candidate preview.",
         owner_flow_id=flow_id,
+        submission_intent_preview=True,
     )
     if not preview.ok or preview.value is None:
         return runtime.foundation.fail(preview.issues)

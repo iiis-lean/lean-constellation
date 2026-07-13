@@ -10,9 +10,10 @@ from lean_constellation.mcp import create_mcp_server
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.tool_facade import RuntimeToolContext
 from lean_constellation.tools import build_application_tool_specs
-from tests.real.runtime_matrix.admin_helpers import run_next_created_step, unwrap
+from tests.unit_services_helpers import publish_native_provider_release
+from tests.real.runtime_matrix.admin_helpers import run_next_created_step, run_until_step_created, unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
-from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
+from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace, _write_minimal_lake_repo
 from tests.real.runtime_matrix.strict.tool_cases import build_tool_cases, implemented_tool_cases, pending_tool_cases
 from tests.real.runtime_matrix.strict.tool_sweep_partitions import core_tool_sweep_names
 from tests.real.runtime_matrix.strict_helpers import call_tool_with_evidence, checkpoint_with_evidence, restore_with_evidence
@@ -26,9 +27,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 253
+    assert len(cases) == 256
     assert len(implemented_tool_cases()) == 195
-    assert len(pending_tool_cases()) == 58
+    assert len(pending_tool_cases()) == 61
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -43,6 +44,11 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     ws.prepare_adapter_truth()
     _ensure_content_node(ws)
     _ensure_workspace_requirements(ws)
+    provider_preparation = unwrap(ws.runtime.repo_workspace.preparation.get_preparation_input(ws.provider_repo))
+    assert ws.runtime.repo_workspace.preparation.write_preparation_input(
+        ws.provider_repo,
+        input=provider_preparation.input.model_copy(update={"requirement_refs": []}),
+    ).ok
     active_resource_key = ws.create_active_resource(target_kind="local_file", target=str(ws.resources.local_file))
     existing_draft_id = ws.allocate_resource_branch_draft(target_kind="web", target=ws.resources.web_url)
     _ensure_node_tool_fixture(ws)
@@ -98,6 +104,22 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
             assertion_summary="Scoped preparation requirement detail returned one current ref.",
         )
         assert requirement_detail.value["requirement"]["name"] == ref["requirement_name"]
+    else:
+        call_tool_with_evidence(
+            server,
+            "repo_format_discovery",
+            "get_preparation_requirement",
+            {"consumer_repo": "Consumer", "requirement_name": "need_provider"},
+            runtime_context=_ctx(
+                ws.provider_repo,
+                view="repo_format_discovery",
+                agent_type="RepoFormatDiscoveryAgent",
+                role="coordinator",
+            ),
+            recorder=evidence_recorder,
+            expected_failure=True,
+            assertion_summary="Preparation requirement lookup rejected a ref outside the current preparation input.",
+        )
 
     preflight = call_tool_with_evidence(
         server,
@@ -150,27 +172,27 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert any(item["name"] == "strict_supplement" for item in added_root_interface.value["contract"]["interfaces"])
 
-    updated_root_interface = call_tool_with_evidence(
+    call_tool_with_evidence(
         server,
         "root_interface_prepare",
         "update_root_interface",
         {"name": "strict_supplement", "summary": "Updated strict supplement interface."},
         runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
         recorder=evidence_recorder,
-        assertion_summary="Root supplement interface was updated.",
+        expected_failure=True,
+        assertion_summary="Root preparation rejected non-append interface mutation.",
     )
-    assert any(item["summary"] == "Updated strict supplement interface." for item in updated_root_interface.value["contract"]["interfaces"])
 
-    removed_root_interface = call_tool_with_evidence(
+    call_tool_with_evidence(
         server,
         "root_interface_prepare",
         "remove_root_interface",
         {"name": "strict_supplement"},
         runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
         recorder=evidence_recorder,
-        assertion_summary="Root supplement interface was removed.",
+        expected_failure=True,
+        assertion_summary="Root preparation rejected supplement interface removal.",
     )
-    assert all(item["name"] != "strict_supplement" for item in removed_root_interface.value["contract"]["interfaces"])
     restore_with_evidence(
         ws.admin,
         ws.provider_repo,
@@ -179,12 +201,22 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         label="strict_tool_sweep_root_interfaces",
         recorder=evidence_recorder,
     )
-    assert ws.runtime.repo_workspace.mark_provider_repo_ready(
-        ws.provider_repo,
+    ready_analysis_repo = ws.workspace_root / "ReadyAnalysis"
+    _write_minimal_lake_repo(ready_analysis_repo, module_name="Main")
+    release = publish_native_provider_release(
+        ws.runtime,
+        ready_analysis_repo,
         summary="Strict ToolSweep provider ready before coordinator checks.",
-    ).ok
+        release_id="strict_tool_sweep_r1",
+    )
+    assert release.parent_release_id is None
 
-    coordinator_ctx = _ctx(ws.consumer_repo, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
+    coordinator_ctx = _ctx(
+        ws.consumer_repo,
+        view="native_repo_coordinator",
+        agent_type="CoordinatorAgent",
+        role="coordinator",
+    )
     workspace = call_tool_with_evidence(
         server,
         "native_repo_coordinator",
@@ -194,7 +226,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Coordinator workspace inspection saw ready provider.",
     )
-    assert any(item["repo_key"] == "Provider" for item in workspace.value["ready_provider_repos"])
+    assert any(item["repo_key"] == "ReadyAnalysis" for item in workspace.value["ready_provider_repos"])
 
     ready_providers = call_tool_with_evidence(
         server,
@@ -203,9 +235,9 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         {},
         runtime_context=coordinator_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Ready provider list returned Provider.",
+        assertion_summary="Ready provider list returned ReadyAnalysis.",
     )
-    assert any(item.repo_key == "Provider" for item in ready_providers.value["items"])
+    assert any(item.repo_key == "ReadyAnalysis" for item in ready_providers.value["items"])
 
     open_groups = call_tool_with_evidence(
         server,
@@ -214,20 +246,20 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         {},
         runtime_context=coordinator_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Open requirement groups returned OpenProvider.",
+        assertion_summary="Open requirement groups returned OpenAnalysis.",
     )
-    assert any(item.target_repo == "OpenProvider" for item in open_groups.value["items"])
+    assert any(item.target_repo == "OpenAnalysis" for item in open_groups.value["items"])
 
     group = call_tool_with_evidence(
         server,
         "native_repo_coordinator",
         "get_requirement_group",
-        {"target_repo": "OpenProvider"},
+        {"target_repo": "OpenAnalysis"},
         runtime_context=coordinator_ctx,
         recorder=evidence_recorder,
-        assertion_summary="OpenProvider requirement group was loaded.",
+        assertion_summary="OpenAnalysis requirement group was loaded.",
     )
-    assert group.value["target_repo"] == "OpenProvider"
+    assert group.value["target_repo"] == "OpenAnalysis"
 
     deps_before = call_tool_with_evidence(
         server,
@@ -240,26 +272,27 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert deps_before.value["items"] == []
 
-    assert ws.runtime.repo_workspace.mark_provider_repo_ready(
-        ws.provider_repo,
-        summary="Strict ToolSweep provider ready before resume candidate check.",
-    ).ok
+    available_before_resume = ws.runtime.repo_workspace.provider_availability.check_provider_available(
+        ready_analysis_repo
+    )
+    assert available_before_resume.ok and available_before_resume.value is not None
+    assert available_before_resume.value.passed
     assert ws.runtime.repo_workspace.mark_requirement_waiting_for_provider(
         ws.consumer_repo,
         requirement_name="need_provider",
-        provider_repo="Provider",
+        provider_repo="ReadyAnalysis",
         reason="Strict ToolSweep waits for provider callback.",
     ).ok
     assert ws.runtime.repo_workspace.requirement.mark_requirement_satisfied(
         ws.consumer_repo,
         requirement_name="need_provider",
-        provider_repo="Provider",
+        provider_repo="ReadyAnalysis",
         note="Strict ToolSweep provider ready.",
     ).ok
     resume_candidates = unwrap(
         ws.runtime.repo_workspace.list_resume_candidates_for_requirement(
             ws.consumer_repo.parent,
-            provider_repo="Provider",
+            provider_repo="ReadyAnalysis",
         )
     )
     assert any(item.requirement_name == "need_provider" for item in resume_candidates)
@@ -298,7 +331,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Lake dependency list included attached provider.",
     )
-    assert any(item.name == "Provider" for item in deps_after.value["items"])
+    assert any(item.name == "ReadyAnalysis" for item in deps_after.value["items"])
 
     restore_with_evidence(
         ws.admin,
@@ -313,7 +346,12 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert restored_requirement.requirement.provider_result_observed_at is None
 
-    node_ctx = _ctx(ws.provider_repo, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
+    node_ctx = _ctx(
+        ws.provider_repo,
+        view="native_repo_coordinator",
+        agent_type="CoordinatorAgent",
+        role="coordinator",
+    )
     plan_ctx = _ctx(ws.provider_repo, view="content_plan", agent_type="ContentPlanAgent", role="plan", node_path="Main.Topic.Core")
     node_tree = call_tool_with_evidence(
         server,
@@ -419,6 +457,12 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         assertion_summary="Temporary content node contract text changed.",
     )
     assert updated_contract.value["contract"]["goal"] == "Strict ToolSweep updated content goal."
+    committed_temporary = ws.runtime.node.commit_content_contract(
+        ws.provider_repo,
+        node_path="Main.ToolSweep.Item",
+        summary="Close temporary ToolSweep work before delete preview.",
+    )
+    assert committed_temporary.ok, committed_temporary.issues
 
     delete_preview = call_tool_with_evidence(
         server,
@@ -630,16 +674,35 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert scope_close.value["scope_path"] == "Main.Topic"
 
+    coordinator_flow_id = ws.runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="native_repo_coordinator",
+            scope_id="repo:Provider",
+            params={
+                "repo_key": "Provider",
+                "repo_root": str(ws.provider_repo),
+                "start_mode": "admin_start",
+                "start_reason": "Strict ToolSweep release-preview context.",
+            },
+        )
+    )
+    repo_ready_ctx = _ctx(
+        ws.provider_repo,
+        view="native_repo_coordinator",
+        agent_type="CoordinatorAgent",
+        role="coordinator",
+        flow_id=coordinator_flow_id,
+    )
     repo_ready = call_tool_with_evidence(
         server,
         "native_repo_coordinator",
         "get_repo_ready_node_view",
         {},
-        runtime_context=node_ctx,
+        runtime_context=repo_ready_ctx,
         recorder=evidence_recorder,
         assertion_summary="Repo ready node view returned readiness gates.",
     )
-    assert "repo_ready_gate" in repo_ready.value
+    assert "candidate_gate" in repo_ready.value
 
     admission = call_tool_with_evidence(
         server,
@@ -803,8 +866,38 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         label="strict_tool_sweep_source_index",
         recorder=evidence_recorder,
     )
-    created = ws.runtime.material.create_draft_source_index(ws.provider_repo)
-    assert created.ok and created.value is not None
+    source_index_flow_id = ws.runtime.ark.flow_service.start_flow(
+        FlowRequest(
+            flow_type="source_index_build",
+            scope_id="repo:Provider",
+            params={
+                "repo_key": "Provider",
+                "repo_root": str(ws.provider_repo),
+                "run_objective": "Exercise strict SourceIndex builder tools.",
+                "target_proof_availability": "declared",
+                "work_mode": "declared_interface",
+                "source_scope": {"mode": "all"},
+                "index_policy": "auto",
+                "start_reason": "admin_preprocess",
+                "max_review_rounds": 2,
+            },
+        )
+    )
+    for _ in range(4):
+        run_next_created_step(ws.admin, source_index_flow_id)
+    source_builder_step_id = run_until_step_created(
+        ws.admin,
+        source_index_flow_id,
+        "source_index_builder_agent_step",
+        max_advances=1,
+    )
+    source_ctx = _ctx(
+        ws.provider_repo,
+        view="source_index_builder",
+        agent_type="SourceIndexBuilderAgent",
+        flow_id=source_index_flow_id,
+        step_id=source_builder_step_id,
+    )
 
     loaded_source_index = call_tool_with_evidence(
         server,
@@ -1301,10 +1394,11 @@ def _ctx(
     role: str = "worker",
     node_path: str | None = None,
     flow_id: str | None = None,
+    step_id: str | None = None,
 ) -> RuntimeToolContext:
     return RuntimeToolContext(
         flow_id=flow_id or f"strict_runtime_matrix_{view}",
-        step_id=f"strict_runtime_matrix_{view}_step",
+        step_id=step_id or f"strict_runtime_matrix_{view}_step",
         agent_id=f"strict_runtime_matrix_{view}_agent",
         agent_type=agent_type,
         agent_role=role,  # type: ignore[arg-type]
@@ -2094,7 +2188,7 @@ def _ensure_workspace_requirements(ws: RuntimeMatrixWorkspace) -> None:
     created = ws.runtime.repo_workspace.create_requirement_with_interfaces(
         ws.consumer_repo,
         name="need_provider",
-        target_repo="Provider",
+        target_repo="ReadyAnalysis",
         source_description="Strict ToolSweep provider requirement.",
         reason="Exercise requirement tools.",
         interfaces=[],
@@ -2103,7 +2197,7 @@ def _ensure_workspace_requirements(ws: RuntimeMatrixWorkspace) -> None:
     open_created = ws.runtime.repo_workspace.create_requirement_with_interfaces(
         ws.consumer_repo,
         name="need_open_provider",
-        target_repo="OpenProvider",
+        target_repo="OpenAnalysis",
         source_description="Strict ToolSweep open provider requirement.",
         reason="Exercise open requirement group tools.",
         interfaces=[],

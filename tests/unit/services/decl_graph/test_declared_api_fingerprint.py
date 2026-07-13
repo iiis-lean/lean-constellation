@@ -66,3 +66,34 @@ def test_proof_only_progression_keeps_declared_api_fingerprint(tmp_path: Path) -
 
     assert first.ok and second.ok
     assert first.value.sha256 == second.value.sha256
+
+
+def test_declared_api_fingerprint_directly_binds_node_path_and_decl_kind(tmp_path: Path) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    _write_decl(tmp_path, node_path="Main.Results", name="PathSensitive", kind="theorem")
+    _write_decl(tmp_path, node_path="Main.Foundation.Defs", name="PathSensitive", kind="theorem")
+    result_path = runtime.decl_graph.declared_api.fingerprint(
+        tmp_path, node_path="Main.Results", decl_name="PathSensitive", revision=1
+    )
+    foundation_path = runtime.decl_graph.declared_api.fingerprint(
+        tmp_path, node_path="Main.Foundation.Defs", decl_name="PathSensitive", revision=1
+    )
+    assert result_path.ok and foundation_path.ok
+    assert result_path.value.node_path == "Main.Results"
+    assert foundation_path.value.node_path == "Main.Foundation.Defs"
+    assert result_path.value.sha256 != foundation_path.value.sha256
+
+    decl_path = runtime.decl_graph.graph_store.decl_record_path(
+        tmp_path, node_path="Main.Results", decl_name="PathSensitive"
+    )
+    decl = runtime.decl_graph.get_decl(tmp_path, node_path="Main.Results", name="PathSensitive").value
+    decl.kind = "def"
+    assert runtime.foundation.store.write_json_atomic(
+        decl_path, decl, mode=WriteMode.UPDATE_EXISTING
+    ).ok
+    changed_kind = runtime.decl_graph.declared_api.fingerprint(
+        tmp_path, node_path="Main.Results", decl_name="PathSensitive", revision=1
+    )
+    assert changed_kind.ok and changed_kind.value is not None
+    assert changed_kind.value.decl_kind == "def"
+    assert changed_kind.value.sha256 != result_path.value.sha256

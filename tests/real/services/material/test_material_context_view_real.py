@@ -6,6 +6,7 @@ import pytest
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.material import ResourceMetadataInput
 from lean_constellation.services.node import MaterialRefActor
 
@@ -34,13 +35,23 @@ def test_material_context_view_real_small_source_resource_node_fixture(tmp_path:
         overview="Real context view source corpus.",
         preparation_summary="Prepared source files.",
     ).ok
-    assert material.create_draft_source_index(repo_root).ok
+    update_id = "real-material-context-source-index"
+    resolved = material.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
+    assert resolved.ok and resolved.value is not None, resolved.issues
+    opened = material.open_source_index_update(
+        repo_root,
+        update_id=update_id,
+        resolved_scope=resolved.value,
+        index_policy="auto",
+    )
+    assert opened.ok and opened.value is not None, opened.issues
     block = material.create_source_block(
         repo_root,
         parent_id="root",
         kind="theorem",
         title="Real theorem",
         summary="The source-indexed theorem.",
+        expected_update_id=update_id,
     )
     assert block.ok and block.value is not None
     assert material.add_source_block_ref(
@@ -50,6 +61,7 @@ def test_material_context_view_real_small_source_resource_node_fixture(tmp_path:
         start_line=2,
         end_line=2,
         role="statement",
+        expected_update_id=update_id,
     ).ok
 
     target = material.normalize_resource_target("https://example.com/real-context-resource")

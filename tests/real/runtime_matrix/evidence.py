@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
+from agent_runtime_kit.flow.standard_steps import AgentStep
+
 
 ToolViewKind = Literal["application", "submit"]
 SnapshotEventKind = Literal["checkpoint", "restore"]
@@ -138,7 +140,7 @@ class EvidenceRecorder:
                         step_type=step_type,
                         status=self._status_value(getattr(step, "status", "")),
                         result_outcome=self._outcome(getattr(step, "result", None)),
-                        is_agent_step=bool(getattr(step, "agent_id", None) or step_type.endswith("_agent_step")),
+                        is_agent_step=isinstance(step, AgentStep),
                     )
                 )
 

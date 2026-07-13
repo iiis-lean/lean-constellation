@@ -903,6 +903,7 @@ def submit_repo_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoR
         base_release_id=getattr(run_context, "base_release_id", None),
         summary=args.summary,
         owner_flow_id=ctx.runtime.flow_id,
+        submission_intent_preview=True,
     )
     if not preview.ok or preview.value is None:
         return runtime.foundation.fail(preview.issues)

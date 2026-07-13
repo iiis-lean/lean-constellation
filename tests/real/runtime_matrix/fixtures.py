@@ -15,6 +15,7 @@ from agent_runtime_kit.agent.homes import HomeCreateSpec
 from lean_constellation.app import LeanAdminApi, create_test_control_runtime_services
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
+from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 
@@ -389,8 +390,21 @@ class RuntimeMatrixWorkspace:
 
     def _prepare_minimal_source_index(self, *, path: str) -> None:
         material = self.runtime.material
-        assert material.create_draft_source_index(self.provider_repo).ok
-        assert material.set_source_index_overview(self.provider_repo, overview="Runtime Matrix source index.").ok
+        update_id = "runtime-matrix-minimal-source-index"
+        resolved = material.resolve_source_scope(self.provider_repo, source_scope=SourceScope(mode="all"))
+        assert resolved.ok and resolved.value is not None, resolved.issues
+        opened = material.open_source_index_update(
+            self.provider_repo,
+            update_id=update_id,
+            resolved_scope=resolved.value,
+            index_policy="auto",
+        )
+        assert opened.ok and opened.value is not None, opened.issues
+        assert material.set_source_index_overview(
+            self.provider_repo,
+            overview="Runtime Matrix source index.",
+            expected_update_id=update_id,
+        ).ok
         assert material.create_source_block(
             self.provider_repo,
             parent_id="root",
@@ -398,6 +412,7 @@ class RuntimeMatrixWorkspace:
             title="Runtime Matrix theorem source",
             summary="A small source block supporting the runtime matrix theorem.",
             subtype=None,
+            expected_update_id=update_id,
         ).ok
         assert material.add_source_block_ref(
             self.provider_repo,
@@ -406,13 +421,28 @@ class RuntimeMatrixWorkspace:
             start_line=1,
             end_line=3,
             role="main",
+            expected_update_id=update_id,
         ).ok
         for block_id in ("b_0001", "root"):
-            assert material.mark_block_refs_done(self.provider_repo, block_id=block_id).ok
-            assert material.mark_block_links_done(self.provider_repo, block_id=block_id).ok
-            assert material.mark_block_completed(self.provider_repo, block_id=block_id).ok
-        assert material.set_file_survey_status(self.provider_repo, path=path, status="surveyed", summary="Read in full.").ok
-        assert material.set_file_indexing_status(self.provider_repo, path=path, status="indexed").ok
+            assert material.mark_block_refs_done(
+                self.provider_repo, block_id=block_id, expected_update_id=update_id
+            ).ok
+            assert material.mark_block_links_done(
+                self.provider_repo, block_id=block_id, expected_update_id=update_id
+            ).ok
+            assert material.mark_block_completed(
+                self.provider_repo, block_id=block_id, expected_update_id=update_id
+            ).ok
+        assert material.set_file_survey_status(
+            self.provider_repo,
+            path=path,
+            status="surveyed",
+            summary="Read in full.",
+            expected_update_id=update_id,
+        ).ok
+        assert material.set_file_indexing_status(
+            self.provider_repo, path=path, status="indexed", expected_update_id=update_id
+        ).ok
         readme_path = self.provider_repo / ".lean_constellation" / "source" / "README.md"
         if path != "README.md" and readme_path.exists():
             assert material.set_file_survey_status(
@@ -420,10 +450,31 @@ class RuntimeMatrixWorkspace:
                 path="README.md",
                 status="skipped",
                 summary="Entry file only; source.md contains the indexed material.",
+                expected_update_id=update_id,
             ).ok
-            assert material.set_file_indexing_status(self.provider_repo, path="README.md", status="skipped").ok
+            assert material.set_file_indexing_status(
+                self.provider_repo,
+                path="README.md",
+                status="skipped",
+                expected_update_id=update_id,
+            ).ok
         assert material.validate_source_index(self.provider_repo).ok
-        assert material.commit_source_index(self.provider_repo).ok
+        validated = material.validate_source_index_update(
+            self.provider_repo,
+            update_id=update_id,
+            baseline_index=None,
+            expected_baseline_digest=opened.value.baseline_digest,
+            resolved_scope=resolved.value.resolved_file_paths,
+            require_completed=True,
+        )
+        assert validated.ok and validated.value is not None, validated.issues
+        assert validated.value.gate.passed, validated.value.gate.issues
+        committed = material.commit_source_index_update(
+            self.provider_repo,
+            update_id=update_id,
+            validated=validated.value,
+        )
+        assert committed.ok, committed.issues
 
 
 @pytest.fixture

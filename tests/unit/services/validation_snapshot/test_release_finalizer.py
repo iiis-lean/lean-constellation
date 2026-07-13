@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -51,6 +53,8 @@ class _ArkSnapshots:
 
 def _prepared_repo(repo_root: Path):
     runtime, versions = _prepare_release_repo(repo_root)
+    runtime.ark.flow_service = SimpleNamespace(list_flows=lambda **_filters: [])
+    runtime.ark.step_service = SimpleNamespace(list_steps=lambda **_filters: [])
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
     snapshots = _ArkSnapshots(runtime.foundation)
     runtime.app.validation_snapshot = ValidationSnapshotService(
@@ -517,6 +521,66 @@ def test_candidate_gate_aggregates_non_main_contract_tree_and_material_findings(
     }, kinds
 
 
+def test_submission_intent_preview_allows_only_current_coordinator_agent_step(
+    tmp_path: Path, monkeypatch
+) -> None:  # noqa: ANN001
+    runtime, _ = _prepare_release_repo(tmp_path)
+    finalizer = runtime.validation_snapshot.release_finalizer
+    repo_scope = f"repo:{tmp_path.name}"
+    owner = SimpleNamespace(
+        flow_id="coordinator_flow",
+        flow_type="native_repo_coordinator",
+        scope_id=repo_scope,
+        status=FlowStatus.RUNNING,
+        state=SimpleNamespace(position=SimpleNamespace(phase="coordinator_agent", round=0)),
+    )
+    current_step = SimpleNamespace(
+        step_id="coordinator_agent_step_1",
+        flow_id=owner.flow_id,
+        step_type="coordinator_agent_step",
+        scope_id=repo_scope,
+        status=SimpleNamespace(value="running"),
+    )
+    monkeypatch.setattr(runtime, "list_flows", lambda: [owner])
+    monkeypatch.setattr(runtime, "list_steps", lambda: [current_step])
+
+    allowed = finalizer._check_workflow_closeout(
+        tmp_path,
+        owner_flow_id=owner.flow_id,
+        stable_hook=False,
+        submission_intent_preview=True,
+    )
+
+    assert allowed.ok and allowed.value is not None and allowed.value.passed
+    strict = finalizer._check_workflow_closeout(
+        tmp_path,
+        owner_flow_id=owner.flow_id,
+        stable_hook=False,
+    )
+    assert strict.ok and strict.value is not None and not strict.value.passed
+    assert {issue.kind for issue in strict.value.issues} == {
+        "release_workflow_owner_invalid",
+        "release_workflow_not_closed",
+    }
+    extra_step = SimpleNamespace(
+        step_id="unrelated_running_step",
+        flow_id=owner.flow_id,
+        step_type="content_worker_step",
+        scope_id=repo_scope,
+        status=SimpleNamespace(value="running"),
+    )
+    monkeypatch.setattr(runtime, "list_steps", lambda: [current_step, extra_step])
+    blocked = finalizer._check_workflow_closeout(
+        tmp_path,
+        owner_flow_id=owner.flow_id,
+        stable_hook=False,
+        submission_intent_preview=True,
+    )
+
+    assert blocked.ok and blocked.value is not None and not blocked.value.passed
+    assert [issue.object_ref for issue in blocked.value.issues] == ["unrelated_running_step"]
+
+
 @pytest.mark.parametrize(
     "failure_stage",
     ["copy", "hash", "write", "files_manifest", "snapshot_manifest", "manifest_readback", "ark", "fsync", "parent_fsync", "rename"],
@@ -625,6 +689,50 @@ def test_audit_finds_and_cleanup_removes_unreachable_release(tmp_path: Path) -> 
     assert cleaned.ok and cleaned.value is not None and cleaned.value.changed
     assert not runtime.repo_workspace.release.get_release(tmp_path, release_id="release_orphan").ok
     assert runtime.validation_snapshot.audit_repo_release_storage(tmp_path).value.passed
+
+
+def test_digest_guarded_bulk_cleanup_only_removes_unreferenced_checkpoint_and_staging(
+    tmp_path: Path,
+) -> None:
+    runtime, prepared, _ = _prepared_repo(tmp_path)
+    assert runtime.validation_snapshot.commit_prepared_release(
+        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    ).ok
+    orphan_release = RepoRelease(
+        release_id="release_orphan",
+        node_contract_versions=prepared.release.node_contract_versions,
+        target_proof_availability=ProofAvailability.DECLARED,
+        repo_checkpoint_id="checkpoint_referenced_by_orphan",
+        summary="Orphan committed release retained by bulk cleanup.",
+    )
+    assert runtime.repo_workspace.release.create_release(tmp_path, release=orphan_release).ok
+    checkpoint_root = runtime.validation_snapshot.snapshot_restore._snapshot_root(tmp_path)
+    orphan_checkpoint = checkpoint_root / "checkpoint_unreferenced"
+    orphan_checkpoint.mkdir(parents=True)
+    staging = checkpoint_root / ".staging" / "interrupted"
+    staging.mkdir(parents=True)
+
+    audit = runtime.validation_snapshot.audit_repo_release_storage(tmp_path)
+    assert audit.ok and audit.value is not None
+    assert audit.value.orphan_release_ids == ["release_orphan"]
+    assert audit.value.orphan_checkpoint_ids == ["checkpoint_unreferenced"]
+
+    (checkpoint_root / ".staging" / "concurrent").mkdir()
+    stale = runtime.validation_snapshot.cleanup_repo_release_orphans(
+        tmp_path, expected_audit_digest=audit.value.audit_digest
+    )
+    assert not stale.ok and stale.issues[0].kind == "release_audit_digest_mismatch"
+    assert orphan_checkpoint.exists() and staging.exists()
+
+    current = runtime.validation_snapshot.audit_repo_release_storage(tmp_path).value
+    cleaned = runtime.validation_snapshot.cleanup_repo_release_orphans(
+        tmp_path, expected_audit_digest=current.audit_digest
+    )
+    assert cleaned.ok and cleaned.value is not None and cleaned.value.changed
+    assert not orphan_checkpoint.exists() and not staging.exists()
+    assert runtime.repo_workspace.release.get_release(
+        tmp_path, release_id="release_orphan"
+    ).ok
 
 
 def test_cleanup_failure_and_concurrent_lock_are_reported(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001

@@ -6,6 +6,7 @@ import pytest
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import RequirementResumeInput
+from tests.unit_services_helpers import publish_adapter_provider_ready
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import CONTENT_NODE_PATH, RuntimeMatrixWorkspace, create_runtime_matrix_workspace
@@ -56,7 +57,7 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
                     {
                         "summary": "Wait after resource callback.",
                         "name": "strict_provider_req",
-                        "target_repo": "StrictProvider",
+                        "target_repo": "StrictAnalysis",
                         "reason": "Resource callback was observed.",
                     },
                 ),
@@ -97,22 +98,21 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
         callback_ws.runtime.repo_workspace.mark_requirement_waiting_for_provider(
             callback_ws.provider_repo,
             requirement_name="strict_provider_req",
-            provider_repo="StrictProvider",
+            provider_repo="StrictAnalysis",
             reason="Strict provider handoff is waiting.",
         )
     )
-    strict_provider_repo = callback_ws.workspace_root / "StrictProvider"
-    strict_provider_repo.mkdir(parents=True, exist_ok=True)
-    assert callback_ws.runtime.repo_workspace.metadata.ensure_repo_model(strict_provider_repo).ok
-    assert callback_ws.runtime.repo_workspace.metadata.mark_repo_stable(
+    strict_provider_repo = callback_ws.workspace_root / "StrictAnalysis"
+    publish_adapter_provider_ready(
+        callback_ws.runtime,
         strict_provider_repo,
         summary="Strict provider result is ready.",
-    ).ok
+    )
     unwrap(
         callback_ws.runtime.repo_workspace.requirement.mark_requirement_satisfied(
             callback_ws.provider_repo,
             requirement_name="strict_provider_req",
-            provider_repo="StrictProvider",
+            provider_repo="StrictAnalysis",
             note="Strict provider result is ready.",
         )
     )
@@ -121,13 +121,24 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
             RequirementResumeInput(
                 consumer_repo_root=callback_ws.provider_repo,
                 requirement_name="strict_provider_req",
-                provider_repo="StrictProvider",
+                provider_repo="StrictAnalysis",
                 admin_note="Strict matrix marks requirement observed.",
                 enqueue=False,
             )
         )
     )
     assert resumed.observed is True
+    schedule_until(
+        callback_ws.runtime,
+        lambda: any(
+            step.status.value == "completed"
+            for step in callback_ws.runtime.ark.flow_service.list_steps(
+                flow_id=callback_flow_id,
+                step_type="coordinator_requirement_resume_gate_step",
+            )
+        ),
+        limit=20,
+    )
     evidence_recorder.record_runtime_state(callback_ws.runtime)
 
     ready_ws = create_runtime_matrix_workspace(tmp_path / "ready")
@@ -153,8 +164,9 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
     ready_flow_id = _start_coordinator(ready_ws)
     schedule_until(ready_ws.runtime, lambda: ready_ws.runtime.ark.flow_service.get_flow(ready_flow_id).status is FlowStatus.COMPLETED, limit=80)
     ready_flow = ready_ws.runtime.ark.flow_service.get_flow(ready_flow_id)
-    assert ready_flow.result.outcome == "repo_ready"
-    assert ready_flow.result.provider_ready_marked is True
+    assert ready_flow.result.outcome == "candidate_prepared"
+    assert ready_flow.result.prepared_release is not None
+    assert ready_flow.result.provider_ready_marked is False
     evidence_recorder.record_runtime_state(ready_ws.runtime)
 
     assert {

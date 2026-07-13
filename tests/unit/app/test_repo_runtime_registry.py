@@ -5,9 +5,17 @@ from functools import partial
 from types import SimpleNamespace
 
 import anyio
+import pytest
 
 from lean_constellation.app.scheduler_loop import run_registry_scheduler_loop
 from lean_constellation.app import LeanAppConfig, RepoRuntimeRegistry
+from lean_constellation.domain.repo import (
+    RepoFormat,
+    RepoFormatState,
+    RepoPublicationState,
+    RepoPublicationStatus,
+)
+from lean_constellation.services.validation_snapshot import RepoReleaseStorageAuditView
 
 
 def _make_repo(workspace: Path, name: str) -> Path:
@@ -62,6 +70,89 @@ def test_repo_runtime_registry_loads_repo_local_runtime_root(tmp_path) -> None:
     assert status.value.repos[0].state == "paused"
     assert status.value.repos[0].loaded is True
     assert loaded.value.ark.flow_service.runtime_root == repo_root / ".agent_runtime"
+
+
+def test_repo_runtime_registry_startup_release_audit_is_read_only_and_reports_legacy_native(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "LegacyNative")
+    format_path = repo_root / ".lean_constellation" / "repo_format.json"
+    publication_path = repo_root / ".lean_constellation" / "repo_publication.json"
+    format_path.write_text(
+        RepoFormatState(repo_format=RepoFormat.NATIVE, reason="legacy").model_dump_json(),
+        encoding="utf-8",
+    )
+    publication_path.write_text(
+        RepoPublicationState(status=RepoPublicationStatus.STABLE).model_dump_json(),
+        encoding="utf-8",
+    )
+    before = publication_path.read_bytes()
+    registry = RepoRuntimeRegistry(LeanAppConfig(
+        workspace_root=workspace,
+        materialize_agent_homes=False,
+        server_start_paused=True,
+    ))
+
+    loaded = registry.get_or_load("LegacyNative")
+    status = registry.get_status("LegacyNative")
+
+    assert loaded.ok and status.ok and status.value is not None
+    assert "legacy_native_release_adoption_required" in status.value.startup_warnings
+    assert publication_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("issue", "staging_paths"),
+    [
+        ("release_parent_missing", []),
+        ("release_checkpoint_manifest_invalid", []),
+        ("release_prepared_without_publication_commit", ["prepared-interrupted"]),
+        ("release_requirement_notification_pending", []),
+        ("legacy_native_release_adoption_required", []),
+    ],
+)
+def test_startup_release_audit_classifies_findings_without_writing_or_cleanup(
+    tmp_path, monkeypatch, issue: str, staging_paths: list[str]
+) -> None:  # noqa: ANN001
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "AuditRepo")
+    sentinel = repo_root / ".lean_constellation" / "sentinel.json"
+    sentinel.write_text('{"truth":"unchanged"}\n', encoding="utf-8")
+    registry = RepoRuntimeRegistry(LeanAppConfig(
+        workspace_root=workspace,
+        materialize_agent_homes=False,
+        server_start_paused=True,
+    ))
+    loaded = registry.get_or_load("AuditRepo")
+    assert loaded.ok and loaded.value is not None
+    record = registry._records["AuditRepo"]
+    before = {path.relative_to(repo_root): path.read_bytes() for path in repo_root.rglob("*") if path.is_file()}
+    audit = RepoReleaseStorageAuditView(
+        passed=False,
+        staging_paths=staging_paths,
+        issues=[issue],
+        audit_digest="a" * 64,
+        summary="Injected startup classification.",
+    )
+    monkeypatch.setattr(
+        loaded.value.validation_snapshot,
+        "audit_repo_release_storage",
+        lambda _root: loaded.value.foundation.ok(audit),
+    )
+    monkeypatch.setattr(
+        loaded.value.validation_snapshot,
+        "cleanup_repo_release_orphans",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("startup must not clean")),
+    )
+
+    registry._audit_release_state(record)
+
+    assert issue in record.startup_warnings
+    if staging_paths:
+        assert "release_orphan_staging: 1 staging path(s) require explicit cleanup" in record.startup_warnings
+    after = {path.relative_to(repo_root): path.read_bytes() for path in repo_root.rglob("*") if path.is_file()}
+    assert after == before
 
 
 def test_repo_runtime_registry_resume_rebuilds_and_marks_active(tmp_path) -> None:

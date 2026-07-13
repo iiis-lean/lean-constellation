@@ -434,6 +434,34 @@ class RepoReleaseRestoreInput(RepoReleaseIdInput):
     leave_runtime_paused: bool = True
 
 
+class LegacyStableAdoptionInput(StrictModel):
+    repo_root: Path
+    summary: str
+    dry_run: bool = True
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+    @field_validator("summary")
+    @classmethod
+    def _summary_required(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("summary must be non-empty")
+        return value.strip()
+
+
+class RepoReleaseOrphanCleanupInput(StrictModel):
+    repo_root: Path
+    expected_audit_digest: str = Field(min_length=64, max_length=64)
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
 class CreateMainRepoShellInput(StrictModel):
     workspace_root: Path
     repo_name: str
@@ -670,6 +698,19 @@ class LeanAdminApi:
         active = [flow for flow in self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{repo_key}")
                   if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}]
         if active:
+            legacy = next((
+                flow for flow in active
+                if flow.flow_type == "native_repo_preparation"
+                and getattr(getattr(flow, "input", None), "run_spec", None) is None
+            ), None)
+            if legacy is not None:
+                return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                    "legacy_native_preparation_restart_required",
+                    "A nonterminal legacy native preparation Flow has no complete RepoRunSpec; "
+                    "restore a safe checkpoint, retain or terminally close the old Flow as history, "
+                    "then start a new initial run.",
+                    object_ref=legacy.flow_id,
+                ))
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
                 "repo_lifecycle_flow_conflict", "A repo lifecycle Flow is already active.", object_ref=active[0].flow_id
             ))
@@ -713,6 +754,18 @@ class LeanAdminApi:
         active = [flow for flow in self.runtime.ark.flow_service.list_flows(scope_id=f"repo:{repo_key}")
                   if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}]
         if active:
+            legacy = next((
+                flow for flow in active
+                if flow.flow_type == "native_repo_preparation"
+                and getattr(getattr(flow, "input", None), "run_spec", None) is None
+            ), None)
+            if legacy is not None:
+                return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                    "legacy_native_preparation_restart_required",
+                    "A nonterminal legacy native preparation Flow cannot become a continuation; "
+                    "restore a safe checkpoint and restart through the new initial lifecycle.",
+                    object_ref=legacy.flow_id,
+                ))
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
                 "repo_lifecycle_flow_conflict", "A repo lifecycle Flow is already active.", object_ref=active[0].flow_id
             ))
@@ -913,6 +966,20 @@ class LeanAdminApi:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
                 "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
             ))
+
+    def adopt_legacy_stable_repo(self, input_model: LegacyStableAdoptionInput):  # noqa: ANN201
+        return self.runtime.validation_snapshot.adopt_legacy_stable_repo(
+            input_model.repo_root,
+            summary=input_model.summary,
+            dry_run=input_model.dry_run,
+            scope_ids=[f"repo:{input_model.repo_root.name}"],
+        )
+
+    def cleanup_repo_release_orphans(self, input_model: RepoReleaseOrphanCleanupInput):  # noqa: ANN201
+        return self.runtime.validation_snapshot.cleanup_repo_release_orphans(
+            input_model.repo_root,
+            expected_audit_digest=input_model.expected_audit_digest,
+        )
 
     def reconcile_repo_requirements(self, repo_root: Path, *, release_id: str):  # noqa: ANN201
         try:

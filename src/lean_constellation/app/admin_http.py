@@ -18,10 +18,12 @@ from lean_constellation.app.admin_api import (
     BootstrapMainNativeRepoInput,
     CreateMainRepoShellInput,
     InitializeMainNativeSkeletonInput,
+    LegacyStableAdoptionInput,
     LeanAdminApi,
     MainNativeRepoBootstrapView,
     RepoConfigUpdateInput,
     RepoReleaseIdInput,
+    RepoReleaseOrphanCleanupInput,
     RepoReleasePreviewInput,
     RepoReleaseRestoreInput,
     RepoRunRequestInput,
@@ -861,6 +863,19 @@ def create_workspace_admin_http_routes(
         with record.value.lock:
             return _service_result_response(admin_result.value.audit_repo_releases(record.value.repo_root))
 
+    async def repo_release_adopt_legacy(request: Request) -> JSONResponse:
+        return await _repo_root_semantic_model_route(
+            request, registry, LegacyStableAdoptionInput, LeanAdminApi.adopt_legacy_stable_repo
+        )
+
+    async def repo_release_cleanup_orphans(request: Request) -> JSONResponse:
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            RepoReleaseOrphanCleanupInput,
+            LeanAdminApi.cleanup_repo_release_orphans,
+        )
+
     async def repo_release_reconcile_requirements(request: Request) -> JSONResponse:
         return await _repo_path_model_route(
             request,
@@ -1060,6 +1075,16 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/releases", repo_releases, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/releases/preview", repo_release_preview, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/releases/audit", repo_release_audit, methods=["GET"]),
+        Route(
+            "/admin/repos/{repo_key:str}/releases/adopt-legacy",
+            repo_release_adopt_legacy,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/releases/cleanup-orphans",
+            repo_release_cleanup_orphans,
+            methods=["POST"],
+        ),
         Route("/admin/repos/{repo_key:str}/releases/{release_id:str}", repo_release, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/releases/{release_id:str}/restore", repo_release_restore, methods=["POST"]),
         Route(
@@ -1195,6 +1220,36 @@ async def _repo_semantic_model_route(
             f"Body must not provide route-owned fields: {', '.join(forbidden)}."
         )
     data["repo_key"] = record.repo_key
+    data["repo_root"] = str(record.repo_root)
+    try:
+        input_model = model_type.model_validate(data)
+    except ValidationError as exc:
+        return _request_validation_response(str(exc))
+    admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+    with record.lock:
+        return _service_result_response(handler(admin, input_model))
+
+
+async def _repo_root_semantic_model_route(
+    request: Request,
+    registry: RepoRuntimeRegistry,
+    model_type,
+    handler: Callable[[Any, Any], ServiceResult[Any]],
+) -> JSONResponse:  # noqa: ANN001
+    """Bind only route-owned repo_root for strict DTOs without a repo_key field."""
+    discovered = registry.discover_repo(request.path_params["repo_key"])
+    if not discovered.ok or discovered.value is None:
+        return _service_result_response(discovered)
+    record = discovered.value
+    loaded = registry.get_or_load(record.repo_key, refresh_homes=False)
+    if not loaded.ok or loaded.value is None:
+        return _service_result_response(loaded)
+    data = await _json_or_empty(request)
+    forbidden = sorted({"repo_root", "repo_key"}.intersection(data))
+    if forbidden:
+        return _request_validation_response(
+            f"Body must not provide route-owned fields: {', '.join(forbidden)}."
+        )
     data["repo_root"] = str(record.repo_root)
     try:
         input_model = model_type.model_validate(data)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,6 +34,8 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
         pytest.skip("real release restore requires lake and lean")
     repo_root = tmp_path / "ReleaseRestoreReal"
     runtime, versions = _prepare_release_repo(repo_root)
+    runtime.ark.flow_service = SimpleNamespace(list_flows=lambda **_filters: [])
+    runtime.ark.step_service = SimpleNamespace(list_steps=lambda **_filters: [])
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
     runtime.app.validation_snapshot = ValidationSnapshotService(
         runtime,

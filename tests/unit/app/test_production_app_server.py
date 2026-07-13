@@ -10,6 +10,7 @@ from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 from starlette.testclient import TestClient
 
 from lean_constellation.app import (
+    LeanAdminApi,
     LeanAppConfig,
     create_app_runtime_services,
     create_production_app_server,
@@ -198,6 +199,64 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
     assert unsafe.status_code == 422
     assert rejected.status_code == 422
     assert "route-owned fields" in rejected.json()["issues"][0]["message"]
+
+
+def test_legacy_adoption_and_cleanup_routes_bind_root_and_reject_owned_or_internal_fields(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "Provider")
+    _make_repo(workspace, "Other")
+    app_result = create_production_app_server(LeanAppConfig(
+        workspace_root=workspace,
+        scheduler_enabled=False,
+        materialize_agent_homes=False,
+    ))
+    assert app_result.ok and app_result.value is not None
+    calls = []
+
+    def adopt(self, model):  # noqa: ANN001
+        calls.append(("adopt", model.repo_root, model.summary, model.dry_run))
+        return self.runtime.foundation.ok({"outcome": "eligible"})
+
+    def cleanup(self, model):  # noqa: ANN001
+        calls.append(("cleanup", model.repo_root, model.expected_audit_digest))
+        return self.runtime.foundation.ok({"changed": False})
+
+    monkeypatch.setattr(LeanAdminApi, "adopt_legacy_stable_repo", adopt)
+    monkeypatch.setattr(LeanAdminApi, "cleanup_repo_release_orphans", cleanup)
+    digest = "d" * 64
+    with TestClient(app_result.value) as client:
+        adopted = client.post(
+            "/admin/repos/Provider/releases/adopt-legacy",
+            json={"summary": "Inspect legacy provider.", "dry_run": True},
+        )
+        cleaned = client.post(
+            "/admin/repos/Provider/releases/cleanup-orphans",
+            json={"expected_audit_digest": digest},
+        )
+        cross_repo = client.post(
+            "/admin/repos/Provider/releases/adopt-legacy",
+            json={"repo_root": str(workspace / "Other"), "summary": "Wrong root."},
+        )
+        route_key = client.post(
+            "/admin/repos/Provider/releases/cleanup-orphans",
+            json={"repo_key": "Other", "expected_audit_digest": digest},
+        )
+        internal = client.post(
+            "/admin/repos/Provider/releases/adopt-legacy",
+            json={"summary": "No internal fields.", "scope_ids": ["repo:Other"]},
+        )
+
+    assert adopted.status_code == 200 and adopted.json()["value"]["outcome"] == "eligible"
+    assert cleaned.status_code == 200 and cleaned.json()["value"]["changed"] is False
+    assert calls == [
+        ("adopt", repo_root.resolve(), "Inspect legacy provider.", True),
+        ("cleanup", repo_root.resolve(), digest),
+    ]
+    assert cross_repo.status_code == 422 and "route-owned fields" in cross_repo.json()["issues"][0]["message"]
+    assert route_key.status_code == 422 and "route-owned fields" in route_key.json()["issues"][0]["message"]
+    assert internal.status_code == 422 and "scope_ids" in internal.json()["issues"][0]["message"]
 
 
 def test_production_app_server_exposes_workspace_external_health(tmp_path) -> None:

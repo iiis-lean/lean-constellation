@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import pytest
+from agent_runtime_kit.flow.models import FlowPosition
 
 from lean_constellation.domain.preparation import SourceCorpusMode
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
-from tests.real.runtime_matrix.scripted_provider import ScriptedMcpProvider, install_scripted_provider
+from tests.real.runtime_matrix.scripted_provider import ScriptedMcpProvider, install_scripted_provider, schedule_until
 from tests.real.runtime_matrix.baseline.test_repo_preparation_matrix import (
     _complete_adapter_catalog_actions,
     _complete_source_index_builder_actions,
@@ -200,6 +201,80 @@ def test_strict_native_preparation_blocked_and_direct_ready_evidence(
         "submit_source_index_builder_round",
         "submit_source_index_review_round",
     }.issubset(evidence_recorder.evidence.submit_tool_names)
+
+
+def test_strict_serialized_inline_native_preparation_compatibility_steps(
+    tmp_path,
+    evidence_recorder: EvidenceRecorder,
+) -> None:
+    """Exercise the retained inline path used when restoring pre-child-Flow state."""
+
+    from tests.real.runtime_matrix.fixtures import create_runtime_matrix_workspace
+
+    create_ws = create_runtime_matrix_workspace(tmp_path / "inline_create")
+    create_ws.prepare_provider_native_repo(allow_interface_supplement=False)
+    unwrap(create_ws.admin.resume_runtime())
+    create_flow_id = _start_native_preparation(create_ws)
+    create_ws.runtime.ark.flow_service.store.update_flow_record(
+        create_flow_id,
+        lambda flow: setattr(flow.state, "use_reusable_preparation_children", False),
+    )
+
+    schedule_until(
+        create_ws.runtime,
+        lambda: _step_completed(create_ws, create_flow_id, "create_draft_source_index_step"),
+        limit=40,
+    )
+    evidence_recorder.record_runtime_state(create_ws.runtime)
+
+    commit_ws = create_runtime_matrix_workspace(tmp_path / "inline_commit")
+    commit_ws.prepare_provider_native_repo(allow_interface_supplement=False)
+    unwrap(commit_ws.admin.resume_runtime())
+    commit_flow_id = _start_native_preparation(commit_ws)
+
+    def restore_commit_phase(flow) -> None:  # noqa: ANN001
+        flow.state.use_reusable_preparation_children = False
+        flow.state.last_source_index_review_approved = True
+        flow.state.position = FlowPosition(phase="source_index_commit")
+
+    commit_ws.runtime.ark.flow_service.store.update_flow_record(commit_flow_id, restore_commit_phase)
+    schedule_until(
+        commit_ws.runtime,
+        lambda: _step_completed(commit_ws, commit_flow_id, "commit_source_index_step"),
+        limit=20,
+    )
+    evidence_recorder.record_runtime_state(commit_ws.runtime)
+
+    root_ws = create_runtime_matrix_workspace(tmp_path / "inline_root")
+    root_ws.prepare_provider_native_repo(allow_interface_supplement=False)
+    unwrap(root_ws.admin.resume_runtime())
+    root_flow_id = _start_native_preparation(root_ws)
+
+    def restore_root_phase(flow) -> None:  # noqa: ANN001
+        flow.state.use_reusable_preparation_children = False
+        flow.state.allow_interface_supplement = False
+        flow.state.position = FlowPosition(phase="root_interface_prepare")
+
+    root_ws.runtime.ark.flow_service.store.update_flow_record(root_flow_id, restore_root_phase)
+    schedule_until(
+        root_ws.runtime,
+        lambda: _step_completed(root_ws, root_flow_id, "root_interface_direct_ready_step"),
+        limit=20,
+    )
+    evidence_recorder.record_runtime_state(root_ws.runtime)
+
+    assert {
+        "create_draft_source_index_step",
+        "commit_source_index_step",
+        "root_interface_direct_ready_step",
+    }.issubset(evidence_recorder.evidence.logic_step_types)
+
+
+def _step_completed(ws: RuntimeMatrixWorkspace, flow_id: str, step_type: str) -> bool:
+    return any(
+        step.status.value == "completed"
+        for step in ws.runtime.ark.flow_service.list_steps(flow_id=flow_id, step_type=step_type)
+    )
 
 
 def test_strict_adapter_preparation_ready_and_blocked_evidence(

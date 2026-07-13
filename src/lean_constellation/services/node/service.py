@@ -302,6 +302,20 @@ class NodeService:
             decl_graph_head=head.value,
         )
 
+    def adopt_committed_content_contract_head(
+        self, repo_root: Path, *, node_path: str, summary: str
+    ) -> ServiceResult[NodeContractView]:
+        """System-only bridge used by legacy stable release adoption."""
+        head = self.release_guard.capture_content_contract_head(repo_root, node_path=node_path)
+        if not head.ok or head.value is None:
+            return self.runtime.foundation.fail(head.issues)
+        return self.contract.adopt_committed_content_contract_head(
+            repo_root,
+            node_path=node_path,
+            decl_graph_head=head.value,
+            summary=summary,
+        )
+
     def preview_delete_node(self, repo_root: Path, *, path: str) -> ServiceResult[DeleteImpactView]:
         return self.release_guard.preview_delete_node(repo_root, path=path)
 

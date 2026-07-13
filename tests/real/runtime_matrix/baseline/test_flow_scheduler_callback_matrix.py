@@ -4,6 +4,7 @@ import pytest
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import RequirementResumeInput
+from tests.unit_services_helpers import publish_adapter_provider_ready
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
 from tests.real.runtime_matrix.scripted_provider import ScriptedMcpProvider, install_scripted_provider, schedule_until
@@ -50,7 +51,7 @@ def test_coordinator_content_resource_requirement_callback_matrix(
                     {
                         "summary": "Wait after resource callback.",
                         "name": "runtime_matrix_provider_req",
-                        "target_repo": "RuntimeMatrixProvider",
+                        "target_repo": "RuntimeMatrixAnalysis",
                         "reason": "Resource callback was observed.",
                     },
                 ),
@@ -116,27 +117,26 @@ def test_coordinator_content_resource_requirement_callback_matrix(
             name="runtime_matrix_provider_req",
         )
     )
-    assert requirement.requirement.target_repo == "RuntimeMatrixProvider"
+    assert requirement.requirement.target_repo == "RuntimeMatrixAnalysis"
     unwrap(
         ws.runtime.repo_workspace.mark_requirement_waiting_for_provider(
             ws.provider_repo,
             requirement_name="runtime_matrix_provider_req",
-            provider_repo="RuntimeMatrixProvider",
+            provider_repo="RuntimeMatrixAnalysis",
             reason="Runtime Matrix provider handoff is waiting.",
         )
     )
-    provider_repo = ws.workspace_root / "RuntimeMatrixProvider"
-    provider_repo.mkdir(parents=True, exist_ok=True)
-    assert ws.runtime.repo_workspace.metadata.ensure_repo_model(provider_repo).ok
-    assert ws.runtime.repo_workspace.metadata.mark_repo_stable(
+    provider_repo = ws.workspace_root / "RuntimeMatrixAnalysis"
+    publish_adapter_provider_ready(
+        ws.runtime,
         provider_repo,
         summary="Runtime Matrix provider result is ready.",
-    ).ok
+    )
     unwrap(
         ws.runtime.repo_workspace.requirement.mark_requirement_satisfied(
             ws.provider_repo,
             requirement_name="runtime_matrix_provider_req",
-            provider_repo="RuntimeMatrixProvider",
+            provider_repo="RuntimeMatrixAnalysis",
             note="Runtime Matrix provider result is ready.",
         )
     )
@@ -145,7 +145,7 @@ def test_coordinator_content_resource_requirement_callback_matrix(
             RequirementResumeInput(
                 consumer_repo_root=ws.provider_repo,
                 requirement_name="runtime_matrix_provider_req",
-                provider_repo="RuntimeMatrixProvider",
+                provider_repo="RuntimeMatrixAnalysis",
                 admin_note="Runtime Matrix marks requirement observed.",
                 enqueue=False,
             )
@@ -201,15 +201,16 @@ def test_coordinator_repo_ready_branch_marks_provider_ready(
     )
 
     flow = ws.runtime.ark.flow_service.get_flow(flow_id)
-    assert flow.result.outcome == "repo_ready"
-    assert flow.result.provider_ready_marked is True
+    assert flow.result.outcome == "candidate_prepared"
+    assert flow.result.prepared_release is not None
+    assert flow.result.provider_ready_marked is False
     ready = unwrap(ws.runtime.repo_workspace.metadata.get_provider_ready(ws.provider_repo))
     assert ready.ready is True
     model = unwrap(ws.runtime.repo_workspace.metadata.get_repo_model(ws.provider_repo))
     assert model.summary == "Runtime Matrix provider repo is ready."
     mark_steps = ws.runtime.ark.flow_service.list_steps(flow_id=flow_id, step_type="mark_coordinator_repo_ready_step")
     assert len(mark_steps) == 1
-    assert mark_steps[0].result.outcome == "ready_marked"
+    assert mark_steps[0].result.outcome == "candidate_prepared"
     assert [(call["agent_type"], call["tool_name"]) for call in provider.calls] == [
         ("CoordinatorAgent", "submit_repo_ready")
     ]

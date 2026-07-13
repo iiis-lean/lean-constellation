@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.interface import DeclKind
@@ -249,10 +249,25 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
         exported = service.runtime.node.export.add_scope_export(provider, scope_path="Main", decl_node="Main.Core", decl_name=name)
         assert exported.ok, exported.issues
 
-    ready = service.mark_provider_repo_ready(provider, summary="Provider repo completed for real lifecycle test.")
-    assert ready.ok
-    assert ready.value is not None
-    assert ready.value.satisfied_requirement_count == 2
+    release = publish_native_provider_release(
+        service.runtime,
+        provider,
+        summary="Provider repo completed for real lifecycle test.",
+        release_id="requirement_lifecycle_r1",
+    )
+    publication = service.metadata.get_repo_publication(provider)
+    assert publication.ok and publication.value is not None
+    assert publication.value.publication.latest_release_id == release.release_id
+    available = service.provider_availability.check_provider_available(provider)
+    assert available.ok and available.value is not None and available.value.passed
+    reconciliation = service.runtime.validation_snapshot.release_finalizer.reconcile_provider_requirements(
+        provider,
+        release_id=release.release_id,
+    )
+    assert reconciliation.ok and reconciliation.value is not None, reconciliation.issues
+    assert reconciliation.value.satisfied == ["consumer_a/need_shared_a", "consumer_b/need_shared_b"]
+    assert reconciliation.value.pending == []
+    assert reconciliation.value.conflicts == []
 
     requirement_a = service.requirement.get_requirement(consumer_a, name="need_shared_a")
     requirement_b = service.requirement.get_requirement(consumer_b, name="need_shared_b")
