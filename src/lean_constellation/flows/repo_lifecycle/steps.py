@@ -391,40 +391,6 @@ class ExistingSourceCorpusScanStepResult(LeanRenderableStepResult):
         }
 
 
-class CreateDraftSourceIndexStepResult(LeanRenderableStepResult):
-    result_type: Literal["create_draft_source_index"] = "create_draft_source_index"
-    outcome: Literal["created", "blocked"]
-    source_file_count: int = 0
-    root_block_created: bool = False
-    draft_status: str | None = None
-    error: NativePreparationStepError | None = None
-
-    def agent_fields(self) -> dict[str, object]:
-        return {
-            "outcome": self.outcome,
-            "source_file_count": self.source_file_count,
-            "root_block_created": self.root_block_created,
-            "draft_status": self.draft_status,
-            "error_code": self.error.code if self.error else None,
-        }
-
-
-class CommitSourceIndexStepResult(LeanRenderableStepResult):
-    result_type: Literal["commit_source_index"] = "commit_source_index"
-    outcome: Literal["committed", "blocked", "invalid_input"]
-    validation_error_count: int = 0
-    committed_status: str | None = None
-    error: NativePreparationStepError | None = None
-
-    def agent_fields(self) -> dict[str, object]:
-        return {
-            "outcome": self.outcome,
-            "validation_error_count": self.validation_error_count,
-            "committed_status": self.committed_status,
-            "error_code": self.error.code if self.error else None,
-        }
-
-
 class RootInterfaceDirectReadyStepResult(LeanRenderableStepResult):
     result_type: Literal["root_interface_direct_ready"] = "root_interface_direct_ready"
     outcome: Literal["ready", "blocked"]
@@ -502,9 +468,9 @@ class PrepareNativeLifecycleChildStep(BaseStep):
         flow = _load_native_preparation_flow(ctx)
         input_model = _require_native_preparation_input(flow.input)
         state = flow.state
-        run_spec = getattr(input_model, "run_spec", None)
+        run_spec = input_model.run_spec
         checkpoint_id = getattr(state, "pre_run_mutation_checkpoint_id", None)
-        if run_spec is None or not checkpoint_id:
+        if not checkpoint_id:
             return ctx.complete_step(
                 PrepareNativeLifecycleChildStepResult(
                     outcome="blocked",
@@ -530,7 +496,6 @@ class PrepareNativeLifecycleChildStep(BaseStep):
                     "source_scope": run_spec.source_scope.model_dump(mode="json"),
                     "index_policy": run_spec.index_policy,
                     "start_reason": "initial",
-                    "max_review_rounds": state.max_source_index_rounds,
                     "pre_update_checkpoint_id": checkpoint_id,
                 },
             )
@@ -660,15 +625,6 @@ class ValidateAndInitializeNativePreparationStep(BaseStep):
                 )
             )
 
-        if input_model.run_spec is None:
-            return ctx.complete_step(
-                _native_validate_result(
-                    input_model.repo_key,
-                    outcome="invalid_input",
-                    code="legacy_native_preparation_restart_required",
-                    message="This native preparation truth predates immutable RepoRunSpec input and must be restarted.",
-                )
-            )
         transition = repo_workspace.run.validate_repo_run_transition(
             repo_root, run_spec=input_model.run_spec, start_kind="initial", base_release_id=None
         )
@@ -767,102 +723,6 @@ class ExistingSourceCorpusScanStep(BaseStep):
                 binary_file_count=len(manifest.files) - text_count,
                 overview=manifest.overview,
                 summary=manifest.summary,
-            )
-        )
-
-
-class CreateDraftSourceIndexStep(BaseStep):
-    step_type: ClassVar[str] = "create_draft_source_index_step"
-    State: ClassVar[type[BaseStepState]] = BaseStepState
-    Result: ClassVar[type[BaseStepResult]] = CreateDraftSourceIndexStepResult
-    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
-        "create_draft_source_index": CreateDraftSourceIndexStepResult,
-    }
-
-    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
-        flow = _load_native_preparation_flow(ctx)
-        input_model = _require_native_preparation_input(flow.input)
-        created = _material(ctx).create_draft_source_index(_native_repo_root(input_model))
-        if not created.ok or created.value is None:
-            return ctx.complete_step(
-                CreateDraftSourceIndexStepResult(
-                    outcome="blocked",
-                    summary=_issue_summary(created.issues) or "Draft SourceIndex creation failed.",
-                    error=_native_error_from_issues(
-                        created.issues,
-                        fallback_code="source_index_draft_create_failed",
-                        fallback_message="Draft SourceIndex creation failed.",
-                    ),
-                )
-            )
-        value = created.value
-        return ctx.complete_step(
-            CreateDraftSourceIndexStepResult(
-                outcome="created",
-                source_file_count=len(value.files),
-                root_block_created=value.root_block_id in value.blocks,
-                draft_status=value.status,
-                summary=value.summary,
-            )
-        )
-
-
-class CommitSourceIndexStep(BaseStep):
-    step_type: ClassVar[str] = "commit_source_index_step"
-    State: ClassVar[type[BaseStepState]] = BaseStepState
-    Result: ClassVar[type[BaseStepResult]] = CommitSourceIndexStepResult
-    Results: ClassVar[dict[str, type[BaseStepResult]]] = {"commit_source_index": CommitSourceIndexStepResult}
-
-    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
-        flow = _load_native_preparation_flow(ctx)
-        state = flow.state
-        if getattr(state, "last_source_index_review_approved", False) is not True:
-            return ctx.complete_step(
-                CommitSourceIndexStepResult(
-                    outcome="blocked",
-                    summary="SourceIndex cannot be committed before reviewer approval.",
-                    error=NativePreparationStepError(
-                        code="source_index_review_approval_required",
-                        message="SourceIndex commit requires an approved SourceIndex reviewer round.",
-                        suggested_fix="Run SourceIndexReviewerAgent and obtain an approved review before committing.",
-                    ),
-                )
-            )
-        input_model = _require_native_preparation_input(flow.input)
-        repo_root = _native_repo_root(input_model)
-        committed = _material(ctx).commit_source_index(repo_root)
-        if not committed.ok or committed.value is None:
-            return ctx.complete_step(
-                CommitSourceIndexStepResult(
-                    outcome="invalid_input",
-                    summary=_issue_summary(committed.issues) or "SourceIndex commit failed.",
-                    error=_native_error_from_issues(
-                        committed.issues,
-                        fallback_code="source_index_commit_gate_failed",
-                        fallback_message="SourceIndex commit failed.",
-                    ),
-                )
-            )
-        gate = committed.value
-        if not gate.passed:
-            return ctx.complete_step(
-                CommitSourceIndexStepResult(
-                    outcome="blocked",
-                    validation_error_count=len(gate.issues),
-                    summary=gate.summary or "SourceIndex commit gate failed.",
-                    error=_native_error_from_issues(
-                        gate.issues,
-                        fallback_code="source_index_commit_gate_failed",
-                        fallback_message=gate.summary or "SourceIndex commit gate failed.",
-                    ),
-                )
-            )
-        return ctx.complete_step(
-            CommitSourceIndexStepResult(
-                outcome="committed",
-                validation_error_count=0,
-                committed_status="committed",
-                summary=gate.summary or "SourceIndex committed.",
             )
         )
 
@@ -992,17 +852,6 @@ class PrepareCoordinatorDispatchStep(BaseStep):
         flow = _load_native_preparation_flow(ctx)
         input_model = _require_native_preparation_input(flow.input)
         repo_root = _native_repo_root(input_model)
-        if input_model.run_spec is None:
-            return ctx.complete_step(
-                PrepareCoordinatorDispatchStepResult(
-                    outcome="blocked",
-                    error=NativePreparationStepError(
-                        code="native_coordinator_run_context_missing",
-                        message="New native coordinator handoff requires a complete RepoRunSpec.",
-                    ),
-                    summary="Native coordinator run context is missing.",
-                )
-            )
         from lean_constellation.domain.repo_run import RepoRunContext
 
         state = flow.state
@@ -1590,8 +1439,6 @@ REPO_LIFECYCLE_STEP_TYPES: tuple[type[BaseStep], ...] = (
     ApplyRepoFormatChoiceStep,
     ValidateAndInitializeNativePreparationStep,
     ExistingSourceCorpusScanStep,
-    CreateDraftSourceIndexStep,
-    CommitSourceIndexStep,
     RootInterfaceDirectReadyStep,
     HandoffGateStep,
     PrepareCoordinatorDispatchStep,
@@ -1610,10 +1457,6 @@ __all__ = [
     "AdapterInputValidationStepResult",
     "AdapterPreparationStepError",
     "BootstrapInputValidationStepResult",
-    "CommitSourceIndexStep",
-    "CommitSourceIndexStepResult",
-    "CreateDraftSourceIndexStep",
-    "CreateDraftSourceIndexStepResult",
     "EnsureAdapterMainCatalogStep",
     "EnsureAdapterMainCatalogStepResult",
     "ExistingSourceCorpusScanStep",

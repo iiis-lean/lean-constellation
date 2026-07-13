@@ -169,7 +169,7 @@ def _prepare_native_repo_for_source_prepare(lean_runtime, repo_root: Path, *, so
 
 
 def _start_native(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
-    flow_id = runtime.start_flow(
+    return runtime.start_flow(
         "native_repo_preparation",
         {
             "repo_key": repo_root.name,
@@ -179,13 +179,6 @@ def _start_native(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
         },
         scope_id=f"repo:{repo_root.name}",
     )
-    # Preserve explicit coverage for historical serialized inline flows. New
-    # production builds keep the default reusable-child mode.
-    runtime.flow_service.store.update_flow_record(
-        flow_id,
-        lambda flow: setattr(flow.state, "use_reusable_preparation_children", False),
-    )
-    return flow_id
 
 
 def _start_native_with_children(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
@@ -247,24 +240,6 @@ def _run_to_source_child_waiting(
     assert len(children) == 1
     assert runtime.flow_service.get_flow(flow_id).status is FlowStatus.WAITING
     return flow_id, children[0].flow_id
-
-
-def test_historical_inline_source_index_state_is_read_only_without_owned_flow(tmp_path: Path) -> None:
-    runtime, lean_runtime, _ = _runtime(tmp_path)
-    repo_root = tmp_path / "workspace" / "Provider"
-    _prepare_native_repo(lean_runtime, repo_root, allow_interface_supplement=False)
-    flow_id = _start_native(runtime, repo_root)
-    _advance_and_run(runtime, flow_id)
-    _advance_and_run(runtime, flow_id)
-    _advance_and_run(runtime, flow_id)
-    flow = runtime.flow_service.get_flow(flow_id)
-    assert flow.state.position.phase == "source_index_builder"
-    mutation = lean_runtime.material.set_source_index_overview(
-        repo_root, overview="Historical inline mutation must not resume."
-    )
-    commit = lean_runtime.material.commit_source_index(repo_root)
-    assert not mutation.ok and mutation.issues[0].kind == "source_index_update_context_required"
-    assert not commit.ok and commit.issues[0].kind == "source_index_update_context_required"
 
 
 def test_fresh_native_preparation_dispatches_reusable_children_and_resumes_after_restart(tmp_path: Path) -> None:
@@ -564,7 +539,7 @@ def test_native_preparation_source_prepare_accepted_submission_finalizes_manifes
     _advance_and_run(runtime, flow_id)
 
     flow = runtime.flow_service.get_flow(flow_id)
-    assert flow.state.position.phase == "source_index_create"
+    assert flow.state.position.phase == "prepare_source_index_child"
     assert flow.state.source_corpus_ready is True
     manifest = lean_runtime.material.source_corpus.get_source_corpus_manifest(repo_root)
     assert manifest.ok and manifest.value is not None

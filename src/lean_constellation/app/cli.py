@@ -120,13 +120,6 @@ def build_parser() -> argparse.ArgumentParser:
     release_restore.add_argument("--resume-runtime", action="store_true")
     release_audit = sub.add_parser("repo-release-audit", help="Audit repository release storage.")
     release_audit.add_argument("--repo-key", required=True)
-    release_adopt = sub.add_parser(
-        "repo-release-adopt-legacy",
-        help="Dry-run or commit explicit adoption of a paused legacy stable native repository.",
-    )
-    release_adopt.add_argument("--repo-key", required=True)
-    release_adopt.add_argument("--summary", required=True)
-    release_adopt.add_argument("--commit", action="store_true")
     release_cleanup = sub.add_parser(
         "repo-release-cleanup-orphans",
         help="Clean unreachable release checkpoint/staging artifacts from an exact audit.",
@@ -429,12 +422,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "repo-release-audit":
         return _print_http_result(_request_json(
             "GET", f"{admin_base_url}/admin/repos/{args.repo_key}/releases/audit"
-        ))
-    if args.command == "repo-release-adopt-legacy":
-        return _print_http_result(_request_json(
-            "POST",
-            f"{admin_base_url}/admin/repos/{args.repo_key}/releases/adopt-legacy",
-            {"summary": args.summary, "dry_run": not args.commit},
         ))
     if args.command == "repo-release-cleanup-orphans":
         return _print_http_result(_request_json(

@@ -265,55 +265,6 @@ def test_cli_repo_run_initial_builds_semantic_http_payload(tmp_path, capsys, mon
     )]
 
 
-def test_cli_legacy_adoption_dry_run_commit_and_cleanup_use_exact_payloads(
-    tmp_path, capsys, monkeypatch
-) -> None:  # noqa: ANN001
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        f'workspace_root = "{tmp_path / "workspace"}"\nadmin_http_base_url = "http://admin.test/root"\n',
-        encoding="utf-8",
-    )
-    calls = []
-
-    def fake_request_json(method, url, payload=None):  # noqa: ANN001
-        calls.append((method, url, payload))
-        return {"ok": True, "value": {"summary": "ok"}}
-
-    monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
-    common = ["--config", str(config_path)]
-    assert main(common + [
-        "repo-release-adopt-legacy", "--repo-key", "Provider", "--summary", "Inspect R1.",
-    ]) == 0
-    capsys.readouterr()
-    assert main(common + [
-        "repo-release-adopt-legacy", "--repo-key", "Provider", "--summary", "Commit R1.", "--commit",
-    ]) == 0
-    capsys.readouterr()
-    digest = "e" * 64
-    assert main(common + [
-        "repo-release-cleanup-orphans", "--repo-key", "Provider", digest,
-    ]) == 0
-    capsys.readouterr()
-
-    assert calls == [
-        (
-            "POST",
-            "http://admin.test/root/admin/repos/Provider/releases/adopt-legacy",
-            {"summary": "Inspect R1.", "dry_run": True},
-        ),
-        (
-            "POST",
-            "http://admin.test/root/admin/repos/Provider/releases/adopt-legacy",
-            {"summary": "Commit R1.", "dry_run": False},
-        ),
-        (
-            "POST",
-            "http://admin.test/root/admin/repos/Provider/releases/cleanup-orphans",
-            {"expected_audit_digest": digest},
-        ),
-    ]
-
-
 def test_cli_release_restore_uses_only_semantic_restore_options(tmp_path, capsys, monkeypatch) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(

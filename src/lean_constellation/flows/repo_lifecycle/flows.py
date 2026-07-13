@@ -24,10 +24,6 @@ from lean_constellation.flows.repo_lifecycle.steps import (
     ApplyRepoFormatChoiceStepResult,
     BootstrapInputValidationStepResult,
     AdapterInputValidationStepResult,
-    CommitSourceIndexStep,
-    CommitSourceIndexStepResult,
-    CreateDraftSourceIndexStep,
-    CreateDraftSourceIndexStepResult,
     EnsureAdapterMainCatalogStep,
     EnsureAdapterMainCatalogStepResult,
     ExistingSourceCorpusScanStep,
@@ -61,8 +57,6 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     RootInterfacePrepareReadySubmission,
     SourceCorpusBlockedSubmission,
     SourceCorpusPreparedSubmission,
-    SourceIndexBuilderRoundSubmission,
-    SourceIndexReviewerRoundSubmission,
 )
 
 
@@ -334,7 +328,7 @@ class NativeRepoPreparationInput(LeanRenderableFlowInput):
     preparation_input_ref: str = ".lean_constellation/preparation_input.json"
     start_reason: Literal["admin", "bootstrap", "repair_resume"] = "admin"
     admin_notes: str | None = None
-    run_spec: RepoRunSpec | None = None
+    run_spec: RepoRunSpec
 
     def agent_title(self) -> str:
         return f"Prepare native repo {self.repo_key}"
@@ -343,7 +337,7 @@ class NativeRepoPreparationInput(LeanRenderableFlowInput):
         return {
             "start_reason": self.start_reason,
             "admin_notes": self.admin_notes,
-            "run_spec": self.run_spec.model_dump(mode="json") if self.run_spec is not None else None,
+            "run_spec": self.run_spec.model_dump(mode="json"),
         }
 
 
@@ -353,17 +347,9 @@ class NativeRepoPreparationState(BaseFlowState):
     source_corpus_mode: Literal["existing", "prepare"] | None = None
     allow_interface_supplement: bool | None = None
     source_corpus_ready: bool = False
-    source_index_created: bool = False
-    source_index_round: int = 0
-    max_source_index_rounds: int = 3
-    last_source_index_review_approved: bool = False
-    latest_source_index_builder_summary: str | None = None
-    latest_source_index_reviewer_feedback: str | None = None
-    source_index_committed: bool = False
     root_interface_ready: bool = False
     handoff_gate_passed: bool = False
     waiting_dispatch_step_id: str | None = None
-    use_reusable_preparation_children: bool = False
     pre_run_mutation_checkpoint_id: str | None = None
     pending_child_source_step_id: str | None = None
     waiting_child_kind: Literal["source_index", "root_interface"] | None = None
@@ -399,7 +385,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 **params.model_dump(exclude={"run_spec"}),
                 run_spec=params.run_spec,
             ),
-            state=NativeRepoPreparationState(use_reusable_preparation_children=True),
+            state=NativeRepoPreparationState(),
         )
 
     def can_exit_waiting(self, ctx: FlowReadContext) -> bool:
@@ -438,7 +424,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 self._finish_native_preparation(state, input_model, "blocked", "SourceIndex child result is invalid.", "SourceIndex child result is invalid.")
             elif result.outcome in {"committed", "no_op"}:
                 state.source_index_child_result = result
-                state.source_index_committed = True
                 state.position = FlowPosition(phase="prepare_root_interface_child")
             else:
                 outcome = "invalid_input" if result.outcome == "invalid_input" else "blocked"
@@ -540,72 +525,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                         requests=list(submission.requests),
                         continuation=submission.continuation,
                     ),
-                )
-            )
-        if state.position.phase == "source_index_create":
-            return ctx.create_step(
-                CreateDraftSourceIndexStep(
-                    step_id=new_repo_lifecycle_step_id("create_draft_source_index"),
-                    flow_id=self.flow_id,
-                    scope_id=self.scope_id,
-                )
-            )
-        if state.position.phase == "source_index_builder":
-            from lean_constellation.flows.common.agent_steps import SourceIndexBuilderAgentStep
-
-            return ctx.create_step(
-                SourceIndexBuilderAgentStep(
-                    step_id=new_repo_lifecycle_step_id("source_index_builder"),
-                    flow_id=self.flow_id,
-                    scope_id=self.scope_id,
-                    state=AgentStepState(
-                        agent_role="source_index_builder",
-                        agent_type="SourceIndexBuilderAgent",
-                        home_id="SourceIndexBuilderAgent",
-                        create_agent_if_missing=True,
-                        bind_created_agent_to="flow",
-                        variables={"repo_key": input_model.repo_key, "round_index": state.source_index_round},
-                        prompt_override=_source_index_builder_prompt(
-                            input_model,
-                            state.source_index_round,
-                            reviewer_feedback=state.latest_source_index_reviewer_feedback,
-                        ),
-                        env_overrides=_agent_env("SourceIndexBuilderAgent", "source_index_builder", "source_index_builder_submit"),
-                        workdir_override=str(repo_root),
-                    ),
-                )
-            )
-        if state.position.phase == "source_index_reviewer":
-            from lean_constellation.flows.common.agent_steps import SourceIndexReviewerAgentStep
-
-            return ctx.create_step(
-                SourceIndexReviewerAgentStep(
-                    step_id=new_repo_lifecycle_step_id("source_index_reviewer"),
-                    flow_id=self.flow_id,
-                    scope_id=self.scope_id,
-                    state=AgentStepState(
-                        agent_role="source_index_reviewer",
-                        agent_type="SourceIndexReviewerAgent",
-                        home_id="SourceIndexReviewerAgent",
-                        create_agent_if_missing=True,
-                        bind_created_agent_to="flow",
-                        variables={"repo_key": input_model.repo_key, "round_index": state.source_index_round},
-                        prompt_override=_source_index_reviewer_prompt(
-                            input_model,
-                            state.source_index_round,
-                            builder_summary=state.latest_source_index_builder_summary,
-                        ),
-                        env_overrides=_agent_env("SourceIndexReviewerAgent", "source_index_reviewer", "source_index_reviewer_submit"),
-                        workdir_override=str(repo_root),
-                    ),
-                )
-            )
-        if state.position.phase == "source_index_commit":
-            return ctx.create_step(
-                CommitSourceIndexStep(
-                    step_id=new_repo_lifecycle_step_id("commit_source_index"),
-                    flow_id=self.flow_id,
-                    scope_id=self.scope_id,
                 )
             )
         if state.position.phase == "root_interface_prepare":
@@ -711,14 +630,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                     result.error.message if result.error else result.summary,
                     result.summary,
                 )
-        elif isinstance(result, CreateDraftSourceIndexStepResult):
-            self._consume_create_source_index_result(state, input_model, result)
-        elif ctx.step.step_type == "source_index_builder_agent_step":
-            self._consume_source_index_builder_result(state, input_model, result, ctx.step.submission)
-        elif ctx.step.step_type == "source_index_reviewer_agent_step":
-            self._consume_source_index_reviewer_result(state, input_model, result, ctx.step.submission)
-        elif isinstance(result, CommitSourceIndexStepResult):
-            self._consume_commit_source_index_result(state, input_model, result)
         elif isinstance(result, RootInterfaceDirectReadyStepResult):
             self._consume_root_interface_direct_result(state, input_model, result)
         elif ctx.step.step_type == "root_interface_prepare_agent_step":
@@ -807,9 +718,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
     ) -> None:
         if result.outcome == "ready":
             state.source_corpus_ready = True
-            state.position = FlowPosition(
-                phase="prepare_source_index_child" if state.use_reusable_preparation_children else "source_index_create"
-            )
+            state.position = FlowPosition(phase="prepare_source_index_child")
             return
         self._finish_native_preparation(state, input_model, "blocked", result.error.message if result.error else result.summary, result.summary)
 
@@ -853,94 +762,12 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 self._finish_native_preparation(state, input_model, "blocked", reason, "Source corpus manifest finalize failed.")
                 return
             state.source_corpus_ready = True
-            state.position = FlowPosition(
-                phase="prepare_source_index_child" if state.use_reusable_preparation_children else "source_index_create"
-            )
+            state.position = FlowPosition(phase="prepare_source_index_child")
             return
         if isinstance(submission, SourceCorpusBlockedSubmission):
             self._finish_native_preparation(state, input_model, "blocked", submission.reason, submission.summary)
             return
         self._finish_native_preparation(state, input_model, "blocked", "Unsupported source corpus submission.", "Unsupported source corpus submission.")
-
-    def _consume_create_source_index_result(
-        self,
-        state: NativeRepoPreparationState,
-        input_model: NativeRepoPreparationInput,
-        result: CreateDraftSourceIndexStepResult,
-    ) -> None:
-        if result.outcome == "created":
-            state.source_index_created = True
-            state.source_index_round = max(state.source_index_round, 1)
-            state.position = FlowPosition(phase="source_index_builder", round_index=state.source_index_round)
-            return
-        self._finish_native_preparation(state, input_model, "blocked", result.error.message if result.error else result.summary, result.summary)
-
-    def _consume_source_index_builder_result(
-        self,
-        state: NativeRepoPreparationState,
-        input_model: NativeRepoPreparationInput,
-        result: object | None,
-        submission: object | None,
-    ) -> None:
-        if isinstance(result, AgentStepIncompleteResult) or not isinstance(submission, SourceIndexBuilderRoundSubmission):
-            self._finish_native_preparation(
-                state,
-                input_model,
-                "blocked",
-                "SourceIndexBuilderAgent did not submit a builder round.",
-                "Source index builder did not submit.",
-            )
-            return
-        state.latest_source_index_builder_summary = submission.summary
-        state.position = FlowPosition(phase="source_index_reviewer", round_index=state.source_index_round)
-
-    def _consume_source_index_reviewer_result(
-        self,
-        state: NativeRepoPreparationState,
-        input_model: NativeRepoPreparationInput,
-        result: object | None,
-        submission: object | None,
-    ) -> None:
-        if isinstance(result, AgentStepIncompleteResult) or not isinstance(submission, SourceIndexReviewerRoundSubmission):
-            self._finish_native_preparation(
-                state,
-                input_model,
-                "blocked",
-                "SourceIndexReviewerAgent did not submit a review round.",
-                "Source index reviewer did not submit.",
-            )
-            return
-        if submission.approved:
-            state.last_source_index_review_approved = True
-            state.latest_source_index_reviewer_feedback = None
-            state.position = FlowPosition(phase="source_index_commit", round_index=state.source_index_round)
-            return
-        state.last_source_index_review_approved = False
-        state.latest_source_index_reviewer_feedback = submission.feedback
-        if state.source_index_round < state.max_source_index_rounds:
-            state.source_index_round += 1
-            state.position = FlowPosition(phase="source_index_builder", round_index=state.source_index_round)
-            return
-        self._finish_native_preparation(
-            state,
-            input_model,
-            "blocked",
-            submission.feedback or "SourceIndex review rejected and max rounds were exhausted.",
-            submission.summary,
-        )
-
-    def _consume_commit_source_index_result(
-        self,
-        state: NativeRepoPreparationState,
-        input_model: NativeRepoPreparationInput,
-        result: CommitSourceIndexStepResult,
-    ) -> None:
-        if result.outcome == "committed":
-            state.source_index_committed = True
-            state.position = FlowPosition(phase="root_interface_prepare")
-            return
-        outcome: Literal["blocked", "invalid_input"] = "invalid_input" if result.outcome == "invalid_input" else "blocked"
-        self._finish_native_preparation(state, input_model, outcome, result.error.message if result.error else result.summary, result.summary)
 
     def _consume_root_interface_direct_result(
         self,
@@ -1482,36 +1309,6 @@ def _source_corpus_prepare_prompt(input_model: NativeRepoPreparationInput) -> st
             "Read the repository preparation input through tools, work only inside the source corpus directory, and submit prepared or blocked.",
         ]
     )
-
-
-def _source_index_builder_prompt(
-    input_model: NativeRepoPreparationInput,
-    round_index: int,
-    *,
-    reviewer_feedback: str | None = None,
-) -> str:
-    lines = [
-        f"Build SourceIndex round {round_index} for native repo {input_model.repo_key}.",
-        "Use the source corpus and existing draft SourceIndex tools. Submit the builder round when the draft is ready for review.",
-    ]
-    if reviewer_feedback:
-        lines.extend(["", "Previous reviewer feedback:", reviewer_feedback])
-    return "\n".join(lines)
-
-
-def _source_index_reviewer_prompt(
-    input_model: NativeRepoPreparationInput,
-    round_index: int,
-    *,
-    builder_summary: str | None = None,
-) -> str:
-    lines = [
-        f"Review SourceIndex round {round_index} for native repo {input_model.repo_key}.",
-        "Inspect the draft SourceIndex and source evidence. Submit approved or rejected with actionable feedback.",
-    ]
-    if builder_summary:
-        lines.extend(["", "Latest builder summary:", builder_summary])
-    return "\n".join(lines)
 
 
 def _root_interface_prepare_prompt(input_model: NativeRepoPreparationInput) -> str:

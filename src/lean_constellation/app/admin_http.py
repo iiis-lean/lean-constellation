@@ -18,7 +18,6 @@ from lean_constellation.app.admin_api import (
     BootstrapMainNativeRepoInput,
     CreateMainRepoShellInput,
     InitializeMainNativeSkeletonInput,
-    LegacyStableAdoptionInput,
     LeanAdminApi,
     MainNativeRepoBootstrapView,
     RepoConfigUpdateInput,
@@ -42,320 +41,6 @@ from lean_constellation.app.admin_api import (
 )
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.services.foundation import ServiceResult
-from lean_constellation.services.runtime import LeanRuntimeServices
-
-
-def create_admin_http_routes(
-    runtime: LeanRuntimeServices,
-    *,
-    workspace_root: Path | str | None = None,
-    toolkit_state: object | None = None,
-) -> list[Route]:
-    admin = LeanAdminApi(
-        runtime,
-        workspace_root=Path(workspace_root).expanduser() if workspace_root is not None else None,
-        toolkit_state=toolkit_state,
-    )
-
-    async def health(request: Request) -> JSONResponse:
-        del request
-        return JSONResponse({"ok": True, "service": "lean_constellation_production_app"})
-
-    async def status(request: Request) -> JSONResponse:
-        del request
-        return _service_result_response(admin.get_runtime_status())
-
-    async def flow_tree(request: Request) -> JSONResponse:
-        query = request.query_params
-        return _service_result_response(
-            admin.list_flow_tree(
-                scope_id=query.get("scope_id"),
-                include_terminal=not _query_bool(query.get("nonterminal_only")),
-            )
-        )
-
-    async def flow_monitor(request: Request) -> JSONResponse:
-        return _service_result_response(admin.get_flow_monitor(request.path_params["flow_id"]))
-
-    async def step_monitor(request: Request) -> JSONResponse:
-        return _service_result_response(admin.get_step_monitor(request.path_params["step_id"]))
-
-    async def waiting_requirements(request: Request) -> JSONResponse:
-        query = request.query_params
-        return _service_result_response(
-            admin.list_waiting_requirements(
-                workspace_root=_query_path(query.get("workspace_root")),
-                repo_root=_query_path(query.get("repo_root")),
-                provider_repo=query.get("provider_repo"),
-            )
-        )
-
-    async def requirement_resume_candidates(request: Request) -> JSONResponse:
-        query = request.query_params
-        provider_repo = query.get("provider_repo")
-        if not provider_repo:
-            return _request_validation_response("Query parameter 'provider_repo' is required.")
-        return _service_result_response(
-            admin.list_requirement_resume_candidates(
-                provider_repo=provider_repo,
-                workspace_root=_query_path(query.get("workspace_root")),
-            )
-        )
-
-    async def agents_monitor(request: Request) -> JSONResponse:
-        query = request.query_params
-        return _service_result_response(
-            admin.list_agent_monitor(
-                scope_id=query.get("scope_id"),
-                agent_type=query.get("agent_type"),
-                status=query.get("status"),
-            )
-        )
-
-    async def agent_report_index(request: Request) -> JSONResponse:
-        return _service_result_response(admin.get_agent_report_index(request.path_params["agent_id"]))
-
-    async def external_health(request: Request) -> JSONResponse:
-        query = request.query_params
-        return _service_result_response(
-            admin.get_external_health(
-                required_toolkit_groups=_query_csv(query.get("required_toolkit_groups")),
-                required_toolkit_tools=_query_csv(query.get("required_toolkit_tools")),
-            )
-        )
-
-    async def main_repo_status(request: Request) -> JSONResponse:
-        query = request.query_params
-        repo_root = _query_path(query.get("repo_root"))
-        if repo_root is None:
-            return _request_validation_response("Query parameter 'repo_root' is required.")
-        return _service_result_response(admin.get_main_repo_status(repo_root))
-
-    async def repo_config(request: Request) -> JSONResponse:
-        query = request.query_params
-        repo_root = _query_path(query.get("repo_root"))
-        if repo_root is None:
-            return _request_validation_response("Query parameter 'repo_root' is required.")
-        return _service_result_response(admin.get_repo_config(repo_root))
-
-    async def update_repo_config(request: Request) -> JSONResponse:
-        return await _model_route(request, RepoConfigUpdateInput, admin.update_repo_config)
-
-    async def repo_publication(request: Request) -> JSONResponse:
-        query = request.query_params
-        repo_root = _query_path(query.get("repo_root"))
-        if repo_root is None:
-            return _request_validation_response("Query parameter 'repo_root' is required.")
-        return _service_result_response(admin.get_repo_publication(repo_root))
-
-    async def pause(request: Request) -> JSONResponse:
-        data = await _json_or_empty(request)
-        return _service_result_response(admin.pause_runtime(scope_id=data.get("scope_id")))
-
-    async def resume(request: Request) -> JSONResponse:
-        data = await _json_or_empty(request)
-        return _service_result_response(admin.resume_runtime(scope_id=data.get("scope_id")))
-
-    async def start_flow(request: Request) -> JSONResponse:
-        return await _model_route(request, StartFlowInput, admin.start_arbitrary_flow)
-
-    async def advance_flow(request: Request) -> JSONResponse:
-        return await _model_route(request, AdminFlowAdvanceInput, admin.advance_flow_once)
-
-    async def run_until_step(request: Request) -> JSONResponse:
-        return await _model_route(request, AdminRunUntilStepCreatedInput, admin.run_until_step_created)
-
-    async def start_step(request: Request) -> JSONResponse:
-        return await _model_route(request, AdminStepStartInput, admin.start_step_once)
-
-    async def wait_step(request: Request) -> JSONResponse:
-        return await _model_route(request, AdminStepStartInput, admin.wait_step)
-
-    async def start_native_preparation(request: Request) -> JSONResponse:
-        return await _model_route(request, StartPreparationInput, admin.start_native_preparation)
-
-    async def start_adapter_preparation(request: Request) -> JSONResponse:
-        return await _model_route(request, StartPreparationInput, admin.start_adapter_preparation)
-
-    async def start_requirement_bootstrap(request: Request) -> JSONResponse:
-        return await _model_route(request, StartRequirementGroupBootstrapInput, admin.start_requirement_group_bootstrap)
-
-    async def resume_requirement(request: Request) -> JSONResponse:
-        return await _model_route(request, RequirementResumeInput, admin.resume_requirement)
-
-    async def create_snapshot(request: Request) -> JSONResponse:
-        return await _model_route(request, SnapshotCreateInput, admin.create_snapshot)
-
-    async def list_snapshots(request: Request) -> JSONResponse:
-        return await _model_route(request, SnapshotListInput, admin.list_snapshots)
-
-    async def restore_snapshot(request: Request) -> JSONResponse:
-        return await _model_route(request, SnapshotRestoreInput, admin.restore_snapshot)
-
-    async def create_main_repo_shell(request: Request) -> JSONResponse:
-        return await _model_route(request, CreateMainRepoShellInput, admin.create_main_repo_shell)
-
-    async def write_main_repo_input(request: Request) -> JSONResponse:
-        return await _model_route(request, WriteMainRepoPreparationInput, admin.write_main_repo_preparation_input)
-
-    async def validate_main_source(request: Request) -> JSONResponse:
-        return await _model_route(request, ValidateMainSourceCorpusInput, admin.validate_main_source_corpus)
-
-    async def init_main_native_skeleton(request: Request) -> JSONResponse:
-        return await _model_route(request, InitializeMainNativeSkeletonInput, admin.initialize_main_native_skeleton)
-
-    async def bootstrap_main_native(request: Request) -> JSONResponse:
-        return await _model_route(request, BootstrapMainNativeRepoInput, admin.bootstrap_main_native_repo)
-
-    async def agent_rollout(request: Request) -> JSONResponse:
-        return _service_result_response(admin.get_agent_rollout_info(request.path_params["agent_id"]))
-
-    async def agent_turns(request: Request) -> JSONResponse:
-        return _service_result_response(admin.list_agent_turns(request.path_params["agent_id"]))
-
-    async def agent_turn(request: Request) -> JSONResponse:
-        query = request.query_params
-        try:
-            index = _query_int(query.get("index"), field="index")
-        except ValueError as exc:
-            return _request_validation_response(str(exc))
-        return _service_result_response(
-            admin.get_agent_turn(
-                request.path_params["agent_id"],
-                turn_id=query.get("turn_id"),
-                index=index,
-                latest=_query_bool(query.get("latest")),
-            )
-        )
-
-    async def agent_event(request: Request) -> JSONResponse:
-        query = request.query_params
-        try:
-            index = _query_int(query.get("index"), field="index")
-        except ValueError as exc:
-            return _request_validation_response(str(exc))
-        return _service_result_response(
-            admin.get_agent_event(
-                request.path_params["agent_id"],
-                index=index,
-                last=_query_bool(query.get("last")),
-            )
-        )
-
-    async def agent_events_tail(request: Request) -> JSONResponse:
-        query = request.query_params
-        try:
-            limit = _query_int(query.get("limit"), field="limit") or 20
-        except ValueError as exc:
-            return _request_validation_response(str(exc))
-        return _service_result_response(
-            admin.tail_agent_events(
-                request.path_params["agent_id"],
-                limit=limit,
-                event_type=query.get("event_type"),
-                payload_type=query.get("payload_type"),
-            )
-        )
-
-    async def agent_responses(request: Request) -> JSONResponse:
-        query = request.query_params
-        return _service_result_response(
-            admin.list_agent_response_texts(
-                request.path_params["agent_id"],
-                turn_id=query.get("turn_id"),
-                latest=_query_bool(query.get("latest")),
-            )
-        )
-
-    async def agent_latest_response(request: Request) -> JSONResponse:
-        return _service_result_response(admin.get_latest_agent_response_text(request.path_params["agent_id"]))
-
-    async def agent_tool_calls(request: Request) -> JSONResponse:
-        query = request.query_params
-        return _service_result_response(
-            admin.list_agent_tool_calls(
-                request.path_params["agent_id"],
-                turn_id=query.get("turn_id"),
-                latest=_query_bool(query.get("latest")),
-            )
-        )
-
-    async def agent_latest_tool_calls(request: Request) -> JSONResponse:
-        return _service_result_response(admin.list_agent_tool_calls(request.path_params["agent_id"], latest=True))
-
-    async def agent_tool_call(request: Request) -> JSONResponse:
-        query = request.query_params
-        try:
-            index = _query_int(query.get("index"), field="index")
-        except ValueError as exc:
-            return _request_validation_response(str(exc))
-        return _service_result_response(
-            admin.get_agent_tool_call(
-                request.path_params["agent_id"],
-                call_id=query.get("call_id"),
-                index=index,
-                last=_query_bool(query.get("last")),
-            )
-        )
-
-    async def agent_trace_report(request: Request) -> JSONResponse:
-        query = request.query_params
-        return _service_result_response(
-            admin.export_agent_trace_report(
-                request.path_params["agent_id"],
-                artifact_path=query.get("artifact_path"),
-                output_path=query.get("output_path"),
-                format=query.get("format") or "json",
-                rebuild=_query_bool(query.get("rebuild")),
-            )
-        )
-
-    return [
-        Route("/health", health, methods=["GET"]),
-        Route("/admin/runtime/status", status, methods=["GET"]),
-        Route("/admin/flows/tree", flow_tree, methods=["GET"]),
-        Route("/admin/flows/{flow_id:str}", flow_monitor, methods=["GET"]),
-        Route("/admin/steps/{step_id:str}", step_monitor, methods=["GET"]),
-        Route("/admin/requirements/waiting", waiting_requirements, methods=["GET"]),
-        Route("/admin/requirements/resume-candidates", requirement_resume_candidates, methods=["GET"]),
-        Route("/admin/agents", agents_monitor, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/report-index", agent_report_index, methods=["GET"]),
-        Route("/admin/external/health", external_health, methods=["GET"]),
-        Route("/admin/main-repo/status", main_repo_status, methods=["GET"]),
-        Route("/admin/repo/config", repo_config, methods=["GET"]),
-        Route("/admin/repo/config", update_repo_config, methods=["PATCH"]),
-        Route("/admin/repo/publication", repo_publication, methods=["GET"]),
-        Route("/admin/runtime/pause", pause, methods=["POST"]),
-        Route("/admin/runtime/resume", resume, methods=["POST"]),
-        Route("/admin/flows/start", start_flow, methods=["POST"]),
-        Route("/admin/test-control/flows/advance", advance_flow, methods=["POST"]),
-        Route("/admin/test-control/flows/run-until-step", run_until_step, methods=["POST"]),
-        Route("/admin/test-control/steps/start", start_step, methods=["POST"]),
-        Route("/admin/test-control/steps/wait", wait_step, methods=["POST"]),
-        Route("/admin/preparation/native/start", start_native_preparation, methods=["POST"]),
-        Route("/admin/preparation/adapter/start", start_adapter_preparation, methods=["POST"]),
-        Route("/admin/requirements/bootstrap", start_requirement_bootstrap, methods=["POST"]),
-        Route("/admin/requirements/resume", resume_requirement, methods=["POST"]),
-        Route("/admin/snapshots/create", create_snapshot, methods=["POST"]),
-        Route("/admin/snapshots/list", list_snapshots, methods=["POST"]),
-        Route("/admin/snapshots/restore", restore_snapshot, methods=["POST"]),
-        Route("/admin/main-repo/shell", create_main_repo_shell, methods=["POST"]),
-        Route("/admin/main-repo/preparation-input", write_main_repo_input, methods=["POST"]),
-        Route("/admin/main-repo/source-corpus/validate", validate_main_source, methods=["POST"]),
-        Route("/admin/main-repo/native-skeleton/init", init_main_native_skeleton, methods=["POST"]),
-        Route("/admin/main-repo/bootstrap-native", bootstrap_main_native, methods=["POST"]),
-        Route("/admin/agents/{agent_id:str}/rollout", agent_rollout, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/turns", agent_turns, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/turn", agent_turn, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/event", agent_event, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/events/tail", agent_events_tail, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/responses", agent_responses, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/latest-response", agent_latest_response, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/tool-calls", agent_tool_calls, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/tool-calls/latest", agent_latest_tool_calls, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/tool-call", agent_tool_call, methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/trace-report", agent_trace_report, methods=["GET"]),
-    ]
 
 
 def create_workspace_admin_http_routes(
@@ -594,48 +279,6 @@ def create_workspace_admin_http_routes(
             )
         )
 
-    def default_repo_key_result() -> ServiceResult[str]:
-        listed = registry.list_status()
-        if not listed.ok or listed.value is None:
-            return registry.result.fail(listed.issues)
-        repo_keys = [repo.repo_key for repo in listed.value.repos]
-        if len(repo_keys) == 1:
-            return registry.result.ok(repo_keys[0])
-        if not repo_keys:
-            return registry.result.fail(
-                registry.result.issue(
-                    "repo_key_required",
-                    "No initialized repo is available; use /admin/workspace/repos or pass a repo-prefixed route.",
-                )
-            )
-        return registry.result.fail(
-            registry.result.issue(
-                "repo_key_required",
-                "Multiple repos are available; use /admin/repos/{repo_key}/... for repo-level requests.",
-                details={"repo_keys": ",".join(repo_keys)},
-            )
-        )
-
-    async def legacy_single_repo_route(request: Request, handler: Callable[[Request], Any]) -> JSONResponse:
-        repo_key = default_repo_key_result()
-        if not repo_key.ok or repo_key.value is None:
-            return _service_result_response(repo_key)
-        scope = dict(request.scope)
-        path_params = dict(scope.get("path_params") or {})
-        path_params["repo_key"] = repo_key.value
-        scope["path_params"] = path_params
-        response = handler(Request(scope, request.receive))
-        if inspect.isawaitable(response):
-            response = await response
-        return response
-
-    def legacy_repo_route(handler: Callable[[Request], Any]) -> Callable[[Request], Any]:
-        async def route(request: Request) -> JSONResponse:
-            return await legacy_single_repo_route(request, handler)
-
-        return route
-
-
     async def repo_runtime_status(request: Request) -> JSONResponse:
         loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
         if not loaded.ok or loaded.value is None:
@@ -863,10 +506,6 @@ def create_workspace_admin_http_routes(
         with record.value.lock:
             return _service_result_response(admin_result.value.audit_repo_releases(record.value.repo_root))
 
-    async def repo_release_adopt_legacy(request: Request) -> JSONResponse:
-        return await _repo_root_semantic_model_route(
-            request, registry, LegacyStableAdoptionInput, LeanAdminApi.adopt_legacy_stable_repo
-        )
 
     async def repo_release_cleanup_orphans(request: Request) -> JSONResponse:
         return await _repo_root_semantic_model_route(
@@ -1073,13 +712,6 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/source-index/update", repo_start_source_index, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/root-interfaces/prepare", repo_start_root_interfaces, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/releases", repo_releases, methods=["GET"]),
-        Route("/admin/repos/{repo_key:str}/releases/preview", repo_release_preview, methods=["POST"]),
-        Route("/admin/repos/{repo_key:str}/releases/audit", repo_release_audit, methods=["GET"]),
-        Route(
-            "/admin/repos/{repo_key:str}/releases/adopt-legacy",
-            repo_release_adopt_legacy,
-            methods=["POST"],
-        ),
         Route(
             "/admin/repos/{repo_key:str}/releases/cleanup-orphans",
             repo_release_cleanup_orphans,
@@ -1106,39 +738,6 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/tool-calls", repo_agent_tool_calls, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/tool-call", repo_agent_tool_call, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/trace-report", repo_agent_trace_report, methods=["GET"]),
-        Route("/admin/runtime/status", legacy_repo_route(repo_runtime_status), methods=["GET"]),
-        Route("/admin/runtime/pause", legacy_repo_route(repo_runtime_pause), methods=["POST"]),
-        Route("/admin/runtime/resume", legacy_repo_route(repo_runtime_resume), methods=["POST"]),
-        Route("/admin/flows/tree", legacy_repo_route(repo_flow_tree), methods=["GET"]),
-        Route("/admin/flows/start", legacy_repo_route(repo_start_flow), methods=["POST"]),
-        Route("/admin/flows/{flow_id:str}", legacy_repo_route(repo_flow_monitor), methods=["GET"]),
-        Route("/admin/steps/{step_id:str}", legacy_repo_route(repo_step_monitor), methods=["GET"]),
-        Route("/admin/agents", legacy_repo_route(repo_agents_monitor), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/report-index", legacy_repo_route(repo_agent_report_index), methods=["GET"]),
-        Route("/admin/test-control/flows/advance", legacy_repo_route(repo_advance_flow), methods=["POST"]),
-        Route("/admin/test-control/flows/run-until-step", legacy_repo_route(repo_run_until_step), methods=["POST"]),
-        Route("/admin/test-control/steps/start", legacy_repo_route(repo_start_step), methods=["POST"]),
-        Route("/admin/test-control/steps/wait", legacy_repo_route(repo_wait_step), methods=["POST"]),
-        Route("/admin/preparation/native/start", legacy_repo_route(repo_start_native_preparation), methods=["POST"]),
-        Route("/admin/preparation/adapter/start", legacy_repo_route(repo_start_adapter_preparation), methods=["POST"]),
-        Route("/admin/requirements/waiting", workspace_waiting_requirements, methods=["GET"]),
-        Route("/admin/requirements/resume-candidates", workspace_requirement_resume_candidates, methods=["GET"]),
-        Route("/admin/requirements/bootstrap", workspace_start_requirement_bootstrap, methods=["POST"]),
-        Route("/admin/requirements/resume", workspace_resume_requirement, methods=["POST"]),
-        Route("/admin/external/health", workspace_external_health, methods=["GET"]),
-        Route("/admin/snapshots/create", legacy_repo_route(repo_create_snapshot), methods=["POST"]),
-        Route("/admin/snapshots/list", legacy_repo_route(repo_list_snapshots), methods=["POST"]),
-        Route("/admin/snapshots/restore", legacy_repo_route(repo_restore_snapshot), methods=["POST"]),
-        Route("/admin/agents/{agent_id:str}/rollout", legacy_repo_route(repo_agent_rollout), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/turns", legacy_repo_route(repo_agent_turns), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/turn", legacy_repo_route(repo_agent_turn), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/event", legacy_repo_route(repo_agent_event), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/events/tail", legacy_repo_route(repo_agent_events_tail), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/responses", legacy_repo_route(repo_agent_responses), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/latest-response", legacy_repo_route(repo_agent_latest_response), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/tool-calls", legacy_repo_route(repo_agent_tool_calls), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/tool-call", legacy_repo_route(repo_agent_tool_call), methods=["GET"]),
-        Route("/admin/agents/{agent_id:str}/trace-report", legacy_repo_route(repo_agent_trace_report), methods=["GET"]),
         Route("/admin/main-repo/status", workspace_main_repo_status, methods=["GET"]),
         Route("/admin/main-repo/shell", workspace_create_main_repo_shell, methods=["POST"]),
         Route("/admin/main-repo/preparation-input", workspace_write_main_repo_input, methods=["POST"]),
@@ -1358,4 +957,4 @@ def _query_csv(value: str | None) -> list[str] | None:
     return items or None
 
 
-__all__ = ["create_admin_http_routes", "create_workspace_admin_http_routes"]
+__all__ = ["create_workspace_admin_http_routes"]

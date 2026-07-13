@@ -10,9 +10,7 @@ from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 from starlette.testclient import TestClient
 
 from lean_constellation.app import (
-    LeanAdminApi,
     LeanAppConfig,
-    create_app_runtime_services,
     create_production_app_server,
     initialize_repo_runtime,
 )
@@ -137,38 +135,6 @@ def test_canonical_repo_run_route_rejects_route_owned_and_internal_fields(tmp_pa
     assert "base_release_id" in internal.json()["issues"][0]["message"]
 
 
-def test_canonical_and_compatibility_continue_routes_share_lifecycle_truth(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    repo_root = _make_repo(workspace, "Provider")
-    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
-    app_result = create_production_app_server(config)
-    assert app_result.ok and app_result.value is not None
-    app = app_result.value
-
-    with TestClient(app) as client:
-        assert client.post("/admin/workspace/repos/Provider/load").status_code == 200
-        loaded = app.state.lean_constellation_registry.get_or_load("Provider", refresh_homes=False)
-        assert loaded.ok and loaded.value is not None
-        assert initialize_repo_runtime(loaded.value, repo_root).ok
-        assert loaded.value.foundation.store.write_json_atomic(
-            loaded.value.repo_workspace.metadata._repo_publication_path(repo_root),
-            {"status": "stable", "latest_release_id": "release-r1"},
-        ).ok
-        canonical = client.post(
-            "/admin/repos/Provider/runs/continue",
-            json={"run_objective": "Continue through the canonical route.", "enqueue": False},
-        )
-        compatibility = client.post(
-            "/admin/repos/Provider/continue",
-            json={"run_objective": "Try the compatibility route.", "enqueue": False},
-        )
-
-    assert canonical.status_code == 200
-    assert canonical.json()["value"]["flow_type"] == "native_repo_continuation"
-    assert compatibility.status_code == 400
-    assert compatibility.json()["issues"][0]["kind"] == "repo_lifecycle_flow_conflict"
-
-
 def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     repo_root = _make_repo(workspace, "Provider")
@@ -201,64 +167,6 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
     assert "route-owned fields" in rejected.json()["issues"][0]["message"]
 
 
-def test_legacy_adoption_and_cleanup_routes_bind_root_and_reject_owned_or_internal_fields(
-    tmp_path, monkeypatch
-) -> None:  # noqa: ANN001
-    workspace = tmp_path / "workspace"
-    repo_root = _make_repo(workspace, "Provider")
-    _make_repo(workspace, "Other")
-    app_result = create_production_app_server(LeanAppConfig(
-        workspace_root=workspace,
-        scheduler_enabled=False,
-        materialize_agent_homes=False,
-    ))
-    assert app_result.ok and app_result.value is not None
-    calls = []
-
-    def adopt(self, model):  # noqa: ANN001
-        calls.append(("adopt", model.repo_root, model.summary, model.dry_run))
-        return self.runtime.foundation.ok({"outcome": "eligible"})
-
-    def cleanup(self, model):  # noqa: ANN001
-        calls.append(("cleanup", model.repo_root, model.expected_audit_digest))
-        return self.runtime.foundation.ok({"changed": False})
-
-    monkeypatch.setattr(LeanAdminApi, "adopt_legacy_stable_repo", adopt)
-    monkeypatch.setattr(LeanAdminApi, "cleanup_repo_release_orphans", cleanup)
-    digest = "d" * 64
-    with TestClient(app_result.value) as client:
-        adopted = client.post(
-            "/admin/repos/Provider/releases/adopt-legacy",
-            json={"summary": "Inspect legacy provider.", "dry_run": True},
-        )
-        cleaned = client.post(
-            "/admin/repos/Provider/releases/cleanup-orphans",
-            json={"expected_audit_digest": digest},
-        )
-        cross_repo = client.post(
-            "/admin/repos/Provider/releases/adopt-legacy",
-            json={"repo_root": str(workspace / "Other"), "summary": "Wrong root."},
-        )
-        route_key = client.post(
-            "/admin/repos/Provider/releases/cleanup-orphans",
-            json={"repo_key": "Other", "expected_audit_digest": digest},
-        )
-        internal = client.post(
-            "/admin/repos/Provider/releases/adopt-legacy",
-            json={"summary": "No internal fields.", "scope_ids": ["repo:Other"]},
-        )
-
-    assert adopted.status_code == 200 and adopted.json()["value"]["outcome"] == "eligible"
-    assert cleaned.status_code == 200 and cleaned.json()["value"]["changed"] is False
-    assert calls == [
-        ("adopt", repo_root.resolve(), "Inspect legacy provider.", True),
-        ("cleanup", repo_root.resolve(), digest),
-    ]
-    assert cross_repo.status_code == 422 and "route-owned fields" in cross_repo.json()["issues"][0]["message"]
-    assert route_key.status_code == 422 and "route-owned fields" in route_key.json()["issues"][0]["message"]
-    assert internal.status_code == 422 and "scope_ids" in internal.json()["issues"][0]["message"]
-
-
 def test_production_app_server_exposes_workspace_external_health(tmp_path) -> None:
     toolkit = LeanMcpToolkitClient(dispatcher=lambda tool, payload: {"ok": True})
     config = LeanAppConfig(
@@ -274,12 +182,9 @@ def test_production_app_server_exposes_workspace_external_health(tmp_path) -> No
     assert app_result.ok and app_result.value is not None
     with TestClient(app_result.value) as client:
         canonical = client.get("/admin/workspace/external/health")
-        compatibility = client.get("/admin/external/health")
 
     assert canonical.status_code == 200
     assert canonical.json()["value"]["health"]["lean_toolkit_available"] is True
-    assert compatibility.status_code == 200
-    assert compatibility.json()["value"]["health"]["lean_toolkit_available"] is True
 
 
 def test_production_app_server_repo_routes_isolate_flow_state(tmp_path) -> None:
@@ -520,37 +425,6 @@ def test_production_app_server_workspace_main_repo_admin_routes_create_shell_and
     assert status.json()["value"]["preparation_input_exists"] is True
 
 
-def test_production_app_server_legacy_repo_routes_require_repo_key_when_ambiguous(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    _make_repo(workspace, "RepoA")
-    _make_repo(workspace, "RepoB")
-    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
-    app_result = create_production_app_server(config)
-
-    assert app_result.ok and app_result.value is not None
-    with TestClient(app_result.value) as client:
-        ambiguous = client.get("/admin/runtime/status")
-
-    assert ambiguous.status_code == 400
-    assert ambiguous.json()["issues"][0]["kind"] == "repo_key_required"
-
-
-def test_production_app_server_legacy_repo_routes_proxy_when_single_repo(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    _make_repo(workspace, "MainRepo")
-    config = LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
-    app_result = create_production_app_server(config)
-
-    assert app_result.ok and app_result.value is not None
-    with TestClient(app_result.value) as client:
-        status = client.get("/admin/runtime/status")
-        tree = client.get("/admin/flows/tree")
-
-    assert status.status_code == 200
-    assert tree.status_code == 200
-    assert tree.json()["value"]["total_flows"] == 0
-
-
 def test_production_app_server_repo_snapshot_restore_does_not_touch_other_repo(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     repo_a = _make_repo(workspace, "RepoA")
@@ -679,87 +553,3 @@ def test_production_app_server_scheduler_lifespan_runs_loop(tmp_path) -> None:
 
     assert scheduler["running"] is True
     assert scheduler["tick_count"] >= 1
-
-
-def test_production_app_server_exposes_test_control_routes_with_guard(tmp_path) -> None:
-    config = LeanAppConfig(workspace_root=tmp_path / "workspace", scheduler_enabled=False, materialize_agent_homes=False)
-    runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime")
-    app_result = create_production_app_server(config, runtime=runtime)
-
-    assert app_result.ok and app_result.value is not None
-    with TestClient(app_result.value) as client:
-        response = client.post("/admin/test-control/flows/run-until-step", json={"flow_id": "flow-1"})
-        wait_response = client.post("/admin/test-control/steps/wait", json={"step_id": "step-1"})
-
-    assert response.status_code == 400
-    assert response.json()["issues"][0]["kind"] == "test_control_disabled"
-    assert wait_response.status_code == 400
-    assert wait_response.json()["issues"][0]["kind"] == "test_control_disabled"
-
-
-def test_production_app_server_exports_agent_trace_report(tmp_path) -> None:
-    runtime_root = tmp_path / ".agent_runtime"
-    runtime = create_app_runtime_services(runtime_root=runtime_root)
-    rollout = runtime_root / "homes" / "codex" / "CoordinatorAgent" / ".codex" / "sessions" / "trace.jsonl"
-    rollout.parent.mkdir(parents=True)
-    rollout.write_text(
-        "\n".join(
-            json.dumps(event)
-            for event in [
-                {"type": "turn_context", "payload": {"turn_id": "turn-1"}},
-                {
-                    "type": "response_item",
-                    "payload": {
-                        "type": "function_call",
-                        "name": "inspect_workspace_for_coordinator",
-                        "call_id": "call-1",
-                        "arguments": "{}",
-                    },
-                },
-                {
-                    "type": "event_msg",
-                    "payload": {"type": "task_complete", "turn_id": "turn-1", "last_agent_message": "complete"},
-                },
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    agent = runtime.ark.agent_service.store.create_agent_record(
-        scope_id="repo:MainRepo",
-        agent_type="CoordinatorAgent",
-        cli_type="codex",
-        home_id="CoordinatorAgent",
-        thread_id="thread-1",
-        rollout_relpath="sessions/trace.jsonl",
-    )
-    report_path = tmp_path / "trace_report.json"
-    config = LeanAppConfig(workspace_root=tmp_path / "workspace", scheduler_enabled=False, materialize_agent_homes=False)
-    app_result = create_production_app_server(config, runtime=runtime)
-
-    assert app_result.ok and app_result.value is not None
-    with TestClient(app_result.value) as client:
-        response = client.get(
-            f"/admin/agents/{agent.agent_id}/trace-report",
-            params={"output_path": str(report_path), "format": "json"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["value"]["report_path"] == str(report_path)
-    saved = json.loads(report_path.read_text(encoding="utf-8"))
-    assert saved["latest_turn"]["final_response"] == "complete"
-    assert saved["tool_calls"][0]["tool_name"] == "inspect_workspace_for_coordinator"
-
-
-def test_production_app_server_rejects_invalid_agent_trace_query(tmp_path) -> None:
-    config = LeanAppConfig(workspace_root=tmp_path / "workspace", scheduler_enabled=False, materialize_agent_homes=False)
-    runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime")
-    app_result = create_production_app_server(config, runtime=runtime)
-
-    assert app_result.ok and app_result.value is not None
-    with TestClient(app_result.value) as client:
-        response = client.get("/admin/agents/agent-1/turn", params={"index": "not-an-int"})
-
-    assert response.status_code == 422
-    assert response.json()["issues"][0]["kind"] == "request_validation_failed"
-    assert "index" in response.json()["issues"][0]["message"]
