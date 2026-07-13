@@ -74,14 +74,3 @@ def test_home_bootstrap_spec_supports_derived_agent_type_identity() -> None:
     assert spec.fixed_env["LEAN_CONSTELLATION_AGENT_TYPE"] == "CoordinatorControlledTestAgent"
     assert spec.fixed_env["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] == "native_repo_coordinator"
     assert spec.ark_home_create_spec.fixed_env["LEAN_CONSTELLATION_AGENT_TYPE"] == "CoordinatorControlledTestAgent"
-
-
-def test_home_bootstrap_spec_keeps_legacy_single_http_server_url() -> None:
-    spec = build_agent_home_bootstrap_spec(
-        "ContentPlanAgent",
-        mcp_server_url="http://127.0.0.1:8765/mcp",
-    )
-
-    assert len(spec.mcp_servers) == 1
-    assert spec.mcp_servers[0].name == "lean-constellation-tools"
-    assert spec.mcp_servers[0].url == "http://127.0.0.1:8765/mcp"

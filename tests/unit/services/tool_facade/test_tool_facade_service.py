@@ -123,11 +123,11 @@ def _tool_service(
     gateway = FakeSubmissionGateway(foundation)
     calls: list[str] = []
 
-    def echo_handler(ctx, args: EchoArgs):
+    def echo_handler(_runtime, ctx, args: EchoArgs):  # noqa: ANN001
         calls.append(f"{ctx.actor.role}:{args.message}")
         return foundation.ok({"summary": "Echo completed.", "message": args.message})
 
-    def submit_handler(ctx, args: SubmitArgs):
+    def submit_handler(_runtime, ctx, args: SubmitArgs):  # noqa: ANN001
         calls.append(f"submit:{args.summary}")
         return foundation.ok(
             ChildFlowDispatchSubmission(

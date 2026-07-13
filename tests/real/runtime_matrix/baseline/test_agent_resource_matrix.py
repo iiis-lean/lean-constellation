@@ -61,7 +61,7 @@ def test_all_production_and_controlled_agent_home_specs_validate() -> None:
         controlled = controlled_by_base[base.agent_type]
         home = build_agent_home_bootstrap_spec(
             controlled.agent_type,
-            mcp_server_url="http://127.0.0.1:8765/mcp",
+            mcp_http_base_url="http://127.0.0.1:8765",
             specs=all_specs,
         )
         assert home.fixed_env["LEAN_CONSTELLATION_AGENT_TYPE"] == controlled.agent_type

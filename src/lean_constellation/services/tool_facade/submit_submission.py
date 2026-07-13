@@ -3,40 +3,20 @@
 from __future__ import annotations
 
 import json
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from agent_runtime_kit.flow.models import BaseSubmission, ChildFlowDispatchSubmission
 from agent_runtime_kit.runtime.mcp_tool_gateway import RuntimeToolContextError, RuntimeToolIdentity
 from pydantic import Field, SerializeAsAny
 
-from lean_constellation.domain.common import StrictModel, utc_now_iso
+from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.common.submissions import dump_submission_for_view
 from lean_constellation.services.foundation import ServiceIssue, ServiceResult, ToolResultView
 from lean_constellation.services.tool_facade.context_resolver import ToolExecutionContext
-from lean_constellation.services.tool_facade.tool_view import SubmitBehavior, ToolViewComponent
+from lean_constellation.services.tool_facade.tool_view import ToolViewComponent
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
-
-
-class SubmissionKind(StrEnum):
-    TERMINAL = "terminal"
-    DISPATCH_CHILD_FLOWS = "dispatch_child_flows"
-
-
-class DispatchSubmissionPayload(StrictModel):
-    flow_requests: list[dict[str, Any]]
-
-
-class SubmissionView(StrictModel):
-    """Legacy generic submission view retained for import compatibility."""
-
-    tool_name: str
-    submission_kind: SubmissionKind
-    payload: dict[str, Any] = Field(default_factory=dict)
-    result_view: dict[str, Any] = Field(default_factory=dict)
-    created_at: str = Field(default_factory=utc_now_iso)
 
 
 class PreparedSubmissionView(StrictModel):
@@ -108,31 +88,6 @@ class SubmitSubmissionComponent:
         self.runtime = runtime
         self.tool_view = tool_view
         self.submission_gateway = submission_gateway
-
-    def build_submission(
-        self,
-        tool_name: str,
-        *,
-        payload: dict[str, Any],
-        result_view: dict[str, Any],
-    ) -> ServiceResult[SubmissionView]:
-        """Legacy generic builder retained only for backward compatibility."""
-
-        if not tool_name.startswith("submit_"):
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("invalid_submit_tool_name", "Successful submissions must come from submit_* tools.", object_ref=tool_name)
-            )
-        serializable = self._assert_json_serializable({"payload": payload, "result_view": result_view})
-        if not serializable.ok:
-            return self.runtime.foundation.fail(serializable.issues)
-        return self.runtime.foundation.ok(
-            SubmissionView(
-                tool_name=tool_name,
-                submission_kind=self._infer_submission_kind(tool_name, payload),
-                payload=payload,
-                result_view=result_view,
-            )
-        )
 
     def prepare_submission(
         self,
@@ -261,17 +216,6 @@ class SubmitSubmissionComponent:
                 )
             )
         return self.runtime.foundation.ok(prepared)
-
-    def _infer_submission_kind(self, tool_name: str, payload: dict[str, Any]) -> SubmissionKind:
-        if self.tool_view is not None:
-            spec = self.tool_view.get_tool(tool_name)
-            if spec.ok and spec.value is not None:
-                if spec.value.submit_behavior == SubmitBehavior.DISPATCH_CHILD_FLOWS:
-                    return SubmissionKind.DISPATCH_CHILD_FLOWS
-                return SubmissionKind.TERMINAL
-        if "flow_requests" in payload or "flow_request" in payload:
-            return SubmissionKind.DISPATCH_CHILD_FLOWS
-        return SubmissionKind.TERMINAL
 
     def _assert_json_serializable(self, value: Any) -> ServiceResult[None]:
         try:

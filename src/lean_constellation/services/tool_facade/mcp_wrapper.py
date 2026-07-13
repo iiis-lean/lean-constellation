@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -355,31 +354,8 @@ class MCPWrapperComponent:
         return self.runtime.foundation.ok(value)
 
     def _call_handler(self, spec: ToolSpec, ctx: ToolExecutionContext, args: BaseModel) -> Any:
-        """Call a ToolSpec handler with backward-compatible arity.
-
-        Application tools often need the Lean runtime service graph to inject
-        context-owned values such as current node path or actor. Earlier tests
-        and local helper tools used two-argument handlers `(ctx, args)`, so the
-        facade accepts both forms.
-        """
-
         assert spec.backing_handler is not None
-        try:
-            signature = inspect.signature(spec.backing_handler)
-        except (TypeError, ValueError):
-            return spec.backing_handler(ctx, args)
-        positional = [
-            parameter
-            for parameter in signature.parameters.values()
-            if parameter.kind
-            in {
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            }
-        ]
-        if len(positional) >= 3:
-            return spec.backing_handler(self.runtime, ctx, args)
-        return spec.backing_handler(ctx, args)
+        return spec.backing_handler(self.runtime, ctx, args)
 
     def _check_toolkit_proxy_args(self, ctx: ToolExecutionContext, flat_args: dict[str, Any]) -> ServiceResult[None]:
         for key, value in flat_args.items():

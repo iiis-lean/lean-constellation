@@ -50,7 +50,6 @@ def build_agent_home_bootstrap_spec(
     agent_type: str,
     *,
     home_id: str | None = None,
-    mcp_server_url: str | None = None,
     mcp_http_base_url: str | None = None,
     mcp_server_command: str | None = None,
     mcp_server_args: Iterable[str] | None = None,
@@ -87,9 +86,7 @@ def build_agent_home_bootstrap_spec(
         env["LEAN_CONSTELLATION_STAGE"] = spec.stage
     env.update(fixed_env or {})
 
-    if mcp_server_url is not None and mcp_http_base_url is not None:
-        raise ValueError("mcp_server_url and mcp_http_base_url are mutually exclusive")
-    if (mcp_server_url is not None or mcp_http_base_url is not None) and mcp_server_command is not None:
+    if mcp_http_base_url is not None and mcp_server_command is not None:
         raise ValueError("HTTP MCP settings and mcp_server_command are mutually exclusive")
 
     mcp_servers: list[McpServerSpec] = []
@@ -108,19 +105,6 @@ def build_agent_home_bootstrap_spec(
                     env_http_headers=_RUNTIME_HTTP_HEADER_ENV,
                 )
             )
-    elif mcp_server_url is not None:
-        mcp_servers.append(
-            McpServerSpec(
-                name=mcp_server_name,
-                transport="http",
-                url=mcp_server_url,
-                required=True,
-                env={
-                    "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": spec.application_tool_view_key,
-                    "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": spec.submit_tool_view_key,
-                },
-            )
-        )
     elif mcp_server_command is not None:
         for purpose, view_key in (
             ("application", spec.application_tool_view_key),
@@ -181,7 +165,6 @@ def build_agent_home_bootstrap_spec(
 
 def build_all_agent_home_bootstrap_specs(
     *,
-    mcp_server_url: str | None = None,
     mcp_http_base_url: str | None = None,
     specs: Sequence[AgentTypeSpec] | None = None,
     validate_resources: bool = True,
@@ -190,7 +173,6 @@ def build_all_agent_home_bootstrap_specs(
     return {
         spec.agent_type: build_agent_home_bootstrap_spec(
             spec.agent_type,
-            mcp_server_url=mcp_server_url,
             mcp_http_base_url=mcp_http_base_url,
             specs=resolved_specs,
             validate_resources=validate_resources,

@@ -12,7 +12,6 @@ from pydantic import Field
 
 from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec, build_agent_type_specs
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.preparation import RepoRuntimeBootstrapView
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
 from lean_constellation.services.repo_workspace.repo_preparation import DefaultProviderRepoRuntimeBootstrap
 from lean_constellation.services.runtime import LeanRuntimeServices
@@ -96,7 +95,6 @@ def materialize_agent_home(
     runtime: LeanRuntimeServices,
     agent_type: str,
     *,
-    mcp_server_url: str | None = None,
     mcp_http_base_url: str | None = None,
     mcp_server_command: str | None = None,
     mcp_server_args: list[str] | None = None,
@@ -114,7 +112,6 @@ def materialize_agent_home(
         spec = build_agent_home_bootstrap_spec(
             agent_type,
             home_id=home_id,
-            mcp_server_url=mcp_server_url,
             mcp_http_base_url=mcp_http_base_url,
             mcp_server_command=mcp_server_command,
             mcp_server_args=mcp_server_args,

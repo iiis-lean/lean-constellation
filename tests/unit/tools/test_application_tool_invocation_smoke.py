@@ -25,7 +25,7 @@ from lean_constellation.services.foundation import FoundationContext, ServiceRes
 from lean_constellation.services.material import ResourceMetadataInput
 from lean_constellation.services.node import DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
-from tests.unit_services_helpers import publish_native_provider_release
+from tests.unit_services_helpers import lean_check_payload, publish_native_provider_release
 
 
 def _raw(
@@ -1121,13 +1121,13 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     revision.value.statement = DeclStatement(
         formal=DeclFormalSection(
             code="import Mathlib\n\ntheorem provider_result : True := by\n  sorry\n",
-            check={"status": "passed", "contains_sorry": True, "allow_sorry": True},
+            check=lean_check_payload(contains_sorry=True),
         )
     )
     revision.value.proof = DeclProof(
         formal=DeclFormalSection(
             code="theorem provider_result : True := by\n  trivial\n",
-            check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+            check=lean_check_payload(),
         )
     )
     assert runtime.foundation.store.write_json_atomic(
@@ -1365,9 +1365,13 @@ def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) 
         overview="Source overview.",
         preparation_summary="Prepared source.",
     ).ok
-    draft = runtime.material.create_draft_source_index(tmp_path)
+    scope = runtime.material.resolve_source_scope(
+        tmp_path, source_scope=SourceScope(mode="all")
+    ).value
+    draft = runtime.material.open_source_index_update(
+        tmp_path, update_id="draft-read", resolved_scope=scope, index_policy="auto"
+    )
     assert draft.ok and draft.value is not None
-    assert draft.value.status == "draft"
 
     raw = _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
     draft_read = _unwrap_tool_failure(
@@ -1416,7 +1420,12 @@ def test_decl_stage_source_index_reads_require_committed_index(
         overview="Source overview.",
         preparation_summary="Prepared source.",
     ).ok
-    assert runtime.material.create_draft_source_index(tmp_path).ok
+    scope = runtime.material.resolve_source_scope(
+        tmp_path, source_scope=SourceScope(mode="all")
+    ).value
+    assert runtime.material.open_source_index_update(
+        tmp_path, update_id="draft-read", resolved_scope=scope, index_policy="auto"
+    ).ok
 
     raw = _raw(
         tmp_path,

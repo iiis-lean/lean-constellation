@@ -109,18 +109,3 @@ def test_agent_home_materialization_supports_derived_agent_type_specs(tmp_path: 
     assert manifest["agent_type"] == "RepoFormatDiscoveryControlledTestAgent"
     assert manifest["fixed_env"]["LEAN_CONSTELLATION_AGENT_TYPE"] == "RepoFormatDiscoveryControlledTestAgent"
     assert manifest["tool_view_config"]["submit_view_key"] == "repo_format_discovery_submit"
-
-
-def test_agent_home_materialization_keeps_legacy_single_http_url(tmp_path: Path) -> None:
-    runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime")
-
-    view = materialize_agent_home(
-        runtime,
-        "RepoFormatDiscoveryAgent",
-        mcp_server_url="http://127.0.0.1:8765/mcp",
-    )
-
-    assert view.ok and view.value is not None
-    assert view.value.mcp_server_names == ["lean-constellation-tools"]
-    config_text = Path(view.value.codex_config_path or "").read_text(encoding="utf-8")
-    assert "http://127.0.0.1:8765/mcp" in config_text

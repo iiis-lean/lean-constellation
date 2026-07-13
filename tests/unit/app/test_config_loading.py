@@ -18,7 +18,6 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
                 f'codex_config_home = "{config_home}"',
                 "max_concurrent_flow_advances = 2",
                 "max_concurrent_steps = 3",
-                'mcp_server_url = "http://127.0.0.1:8765/mcp"',
                 'mcp_http_host = "0.0.0.0"',
                 "mcp_http_port = 9876",
                 "[toolkit]",

@@ -36,7 +36,7 @@ def _tool_refs(text: str) -> set[str]:
 def test_skill_registry_builds_all_fixed_skills() -> None:
     specs = build_skill_specs()
 
-    assert "material-acquisition" in specs
+    assert "material-acquisition" not in specs
     assert "source-material-acquisition" in specs
     assert "resource-material-acquisition" in specs
     assert "resource-request-submission" in specs

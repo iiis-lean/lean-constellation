@@ -10,7 +10,6 @@ class SkillKey(StrEnum):
     CONTENT_CONTRACT_READING = "content-contract-reading"
     VISIBLE_NODE_DEPENDENCY_RECON = "visible-node-dependency-recon"
     SCOPE_EXPORT_INTERFACE_CURATION = "scope-export-interface-curation"
-    MATERIAL_ACQUISITION = "material-acquisition"
     SOURCE_MATERIAL_ACQUISITION = "source-material-acquisition"
     RESOURCE_MATERIAL_ACQUISITION = "resource-material-acquisition"
     EXTERNAL_RESOURCE_DISCOVERY = "external-resource-discovery"

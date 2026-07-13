@@ -368,29 +368,6 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             ),
         ),
     ),
-    SkillKey.MATERIAL_ACQUISITION.value: LeanSkillDefinition(
-        name="material-acquisition",
-        description="Legacy generic material acquisition guidance. Production SourceCorpusPrepare and ResourceCurator agents use source/resource-specific acquisition skills.",
-        group="material",
-        required_tool_groups=(),
-        source_design_doc="dev_docs/design/agents/skill_bundles",
-        body=_body(
-            "material-acquisition",
-            "Use source-material-acquisition or resource-material-acquisition for production workflows. This legacy skill keeps only generic acquisition principles and does not name workflow-specific tools.",
-            (
-                "Normalize the target kind before acquiring material.",
-                "Fetch or import only material that belongs to the current workflow authority.",
-                "Extract readable text or project files when needed.",
-                "Normalize text before downstream use when raw PDF, HTML, archive, or image material is not sufficient.",
-                "Preserve useful originals and normalized outputs separately.",
-                "Treat tool failures as concrete repair or blocked information.",
-            ),
-            (
-                "Do not replace the repository source target with unrelated material.",
-                "Do not rely on a raw PDF or archive when normalized text is required by downstream work.",
-            ),
-        ),
-    ),
     SkillKey.SOURCE_MATERIAL_ACQUISITION.value: LeanSkillDefinition(
         name="source-material-acquisition",
         description="Guides SourceCorpusPrepare agents using source acquisition and extraction tools.",

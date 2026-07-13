@@ -378,16 +378,6 @@ def submit_native_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 def submit_source_corpus_prepared(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceCorpusPreparedArgs) -> ServiceResult[PreparedSubmissionView]:
     expected_relpath = _expected_source_corpus_relpath(runtime, ctx)
-    if args.relpath != expected_relpath:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "source_corpus_relpath_mismatch",
-                "Source corpus submit relpath must match the current preparation input.",
-                field="relpath",
-                current=args.relpath,
-                expected=expected_relpath,
-            )
-        )
     gate = runtime.material.check_source_corpus_prepared(
         ctx.repo_root,
         entry_path=args.entry_path,
@@ -560,8 +550,6 @@ def _current_resource_flow_input(
     runtime: Any,
     ctx: ToolExecutionContext,
     *,
-    target_kind: str | None,
-    target: str | None,
     arxiv_version: str | None,
 ) -> ServiceResult[Any]:
     if not ctx.runtime.flow_id:
@@ -580,26 +568,6 @@ def _current_resource_flow_input(
     request_target = getattr(input_model, "target", None)
     if request_target is None:
         return runtime.foundation.fail(runtime.foundation.issue("resource_curation_input_missing", "ResourceCurationFlow has no target input."))
-    if target_kind is not None and target_kind != request_target.kind:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "resource_request_target_mismatch",
-                "Submitted target_kind does not match the current resource curation request.",
-                field="target_kind",
-                current=target_kind,
-                expected=request_target.kind,
-            )
-        )
-    if target is not None and target != request_target.target:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                "resource_request_target_mismatch",
-                "Submitted target does not match the current resource curation request.",
-                field="target",
-                current=target,
-                expected=request_target.target,
-            )
-        )
     if arxiv_version is not None and arxiv_version != request_target.arxiv_version:
         return runtime.foundation.fail(
             runtime.foundation.issue(
@@ -626,7 +594,7 @@ def _active_resource_draft_id_for_submit(runtime: Any, ctx: ToolExecutionContext
 
 
 def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: SubmitResourceDuplicateArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _current_resource_flow_input(runtime, ctx, target_kind=args.target_kind, target=args.target, arxiv_version=args.arxiv_version)
+    flow_input = _current_resource_flow_input(runtime, ctx, arxiv_version=args.arxiv_version)
     if not flow_input.ok or flow_input.value is None:
         return runtime.foundation.fail(flow_input.issues)
     gate = runtime.material.submit_resource_duplicate(
@@ -658,7 +626,7 @@ def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args: SubmitLocalResourceCreatedArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _current_resource_flow_input(runtime, ctx, target_kind=args.target_kind, target=args.target, arxiv_version=args.arxiv_version)
+    flow_input = _current_resource_flow_input(runtime, ctx, arxiv_version=args.arxiv_version)
     if not flow_input.ok or flow_input.value is None:
         return runtime.foundation.fail(flow_input.issues)
     active_draft = _active_resource_draft_id_for_submit(runtime, ctx)
@@ -696,7 +664,7 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
 
 
 def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args: SubmitExternalRepoRequiredArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _current_resource_flow_input(runtime, ctx, target_kind=args.target_kind, target=args.target, arxiv_version=args.arxiv_version)
+    flow_input = _current_resource_flow_input(runtime, ctx, arxiv_version=args.arxiv_version)
     if not flow_input.ok or flow_input.value is None:
         return runtime.foundation.fail(flow_input.issues)
     gate = runtime.material.submit_external_repo_required(
@@ -726,7 +694,7 @@ def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args:
 
 
 def submit_resource_rejected(runtime: Any, ctx: ToolExecutionContext, args: SubmitResourceRejectedArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _current_resource_flow_input(runtime, ctx, target_kind=args.target_kind, target=args.target, arxiv_version=args.arxiv_version)
+    flow_input = _current_resource_flow_input(runtime, ctx, arxiv_version=args.arxiv_version)
     if not flow_input.ok or flow_input.value is None:
         return runtime.foundation.fail(flow_input.issues)
     gate = runtime.material.submit_resource_rejected(ctx.repo_root, flow_input=flow_input.value, reason=args.reason)

@@ -110,7 +110,7 @@ def _resource_curator_raw(repo_root: Path) -> RawToolCallContext:
     )
 
 
-def test_resource_curator_submit_rejects_mismatched_target_before_gateway(tmp_path: Path) -> None:
+def test_resource_curator_submit_rejects_removed_target_fields(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = create_test_runtime_services(providers=LeanProviderOverrides(submission_gateway=gateway))
     runtime.ark.flow_service = FakeResourceFlowService()
@@ -128,11 +128,11 @@ def test_resource_curator_submit_rejects_mismatched_target_before_gateway(tmp_pa
 
     assert result.ok and result.value is not None
     assert result.value.ok is False
-    assert result.value.issues[0].kind == "resource_request_target_mismatch"
+    assert result.value.issues[0].kind == "tool_arguments_invalid"
     assert gateway.accepted == []
 
 
-def test_resource_curator_duplicate_submit_rejects_mismatched_target_before_gateway(tmp_path: Path) -> None:
+def test_resource_curator_duplicate_submit_rejects_removed_target_fields(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = create_test_runtime_services(providers=LeanProviderOverrides(submission_gateway=gateway))
     runtime.ark.flow_service = FakeResourceFlowService()
@@ -152,11 +152,11 @@ def test_resource_curator_duplicate_submit_rejects_mismatched_target_before_gate
 
     assert result.ok and result.value is not None
     assert result.value.ok is False
-    assert result.value.issues[0].kind == "resource_request_target_mismatch"
+    assert result.value.issues[0].kind == "tool_arguments_invalid"
     assert gateway.accepted == []
 
 
-def test_resource_curator_external_submit_rejects_mismatched_target_before_gateway(tmp_path: Path) -> None:
+def test_resource_curator_external_submit_rejects_removed_target_fields(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = create_test_runtime_services(providers=LeanProviderOverrides(submission_gateway=gateway))
     runtime.ark.flow_service = FakeResourceFlowService()
@@ -175,7 +175,7 @@ def test_resource_curator_external_submit_rejects_mismatched_target_before_gatew
 
     assert result.ok and result.value is not None
     assert result.value.ok is False
-    assert result.value.issues[0].kind == "resource_request_target_mismatch"
+    assert result.value.issues[0].kind == "tool_arguments_invalid"
     assert gateway.accepted == []
 
 

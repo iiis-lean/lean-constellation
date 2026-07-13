@@ -29,7 +29,6 @@ class LeanAppConfigView(StrictModel):
     codex_auth_configured: bool = False
     max_concurrent_flow_advances: int
     max_concurrent_steps: int
-    mcp_server_url: str | None = None
     mcp_http_host: str
     mcp_http_port: int
     mcp_http_base_url: str
@@ -135,7 +134,6 @@ class LeanAppConfig(StrictModel):
     codex_auth_json_path: Path | None = None
     max_concurrent_flow_advances: int = 1
     max_concurrent_steps: int = 1
-    mcp_server_url: str | None = None
     mcp_http_host: str = DEFAULT_MCP_HTTP_HOST
     mcp_http_port: int = DEFAULT_MCP_HTTP_PORT
     mcp_http_base_url: str | None = None
@@ -230,7 +228,6 @@ class LeanAppConfig(StrictModel):
             codex_auth_configured=self.codex_auth_json_path is not None,
             max_concurrent_flow_advances=self.max_concurrent_flow_advances,
             max_concurrent_steps=self.max_concurrent_steps,
-            mcp_server_url=self.mcp_server_url,
             mcp_http_host=self.mcp_http_host,
             mcp_http_port=self.mcp_http_port,
             mcp_http_base_url=self.mcp_http_effective_base_url(),
@@ -278,7 +275,6 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         "codex_config_home": "LEAN_CONSTELLATION_CODEX_CONFIG_HOME",
         "codex_base_config_path": "LEAN_CONSTELLATION_CODEX_BASE_CONFIG_PATH",
         "codex_auth_json_path": "LEAN_CONSTELLATION_CODEX_AUTH_JSON_PATH",
-        "mcp_server_url": "LEAN_CONSTELLATION_MCP_SERVER_URL",
         "mcp_http_host": "LEAN_CONSTELLATION_MCP_HTTP_HOST",
         "mcp_http_port": "LEAN_CONSTELLATION_MCP_HTTP_PORT",
         "mcp_http_base_url": "LEAN_CONSTELLATION_MCP_HTTP_BASE_URL",
@@ -327,18 +323,6 @@ def _apply_toolkit_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         "strict_startup": "LEAN_CONSTELLATION_TOOLKIT_STRICT_STARTUP",
     }
     toolkit: dict[str, Any] = dict(data.get("toolkit") or {})
-    legacy_base_url = env.get("LEAN_CONSTELLATION_REAL_TOOLKIT_BASE_URL")
-    if legacy_base_url is not None and legacy_base_url.strip() and not toolkit.get("base_url"):
-        toolkit["base_url"] = legacy_base_url
-    legacy_api_prefix = env.get("LEAN_CONSTELLATION_REAL_TOOLKIT_API_PREFIX")
-    if legacy_api_prefix is not None and legacy_api_prefix.strip() and not toolkit.get("api_prefix"):
-        toolkit["api_prefix"] = legacy_api_prefix
-    legacy_auth = env.get("LEAN_CONSTELLATION_REAL_TOOLKIT_AUTH_TOKEN")
-    if legacy_auth is not None and legacy_auth.strip() and not toolkit.get("auth_token"):
-        toolkit["auth_token"] = legacy_auth
-    legacy_timeout = env.get("LEAN_CONSTELLATION_REAL_TOOLKIT_TIMEOUT")
-    if legacy_timeout is not None and legacy_timeout.strip() and not toolkit.get("timeout_seconds"):
-        toolkit["timeout_seconds"] = legacy_timeout
     for field, env_key in aliases.items():
         value = env.get(env_key)
         if value is not None and str(value).strip():
