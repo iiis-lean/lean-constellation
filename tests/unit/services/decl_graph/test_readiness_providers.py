@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import lean_check_payload, make_runtime
 
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclReadinessReason, DeclState
@@ -92,7 +92,7 @@ def _prove_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str] 
         round_id=round_id,
         decl_name=name,
         lean_code=f"theorem {name} : True := by\n  sorry",
-        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        lean_check=lean_check_payload(contains_sorry=True),
         deps=[],
     ).ok
     assert runtime.decl_graph.write_proof_nl(
@@ -109,7 +109,7 @@ def _prove_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str] 
         round_id=round_id,
         decl_name=name,
         lean_code=f"theorem {name} : True := by\n  trivial",
-        lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+        lean_check=lean_check_payload(),
         deps=deps or [],
     ).ok
     assert runtime.decl_graph.commit_decl_revision(tmp_path, node_path=NODE_PATH, name=name, state=DeclState.PROVED).ok
@@ -131,7 +131,7 @@ def _declare_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str
         round_id=round_id,
         decl_name=name,
         lean_code=f"theorem {name} : True := by\n  sorry",
-        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        lean_check=lean_check_payload(contains_sorry=True),
         deps=deps or [],
     ).ok
     assert runtime.decl_graph.commit_decl_revision(tmp_path, node_path=NODE_PATH, name=name, state=DeclState.DECLARED).ok
@@ -152,7 +152,7 @@ def _declare_definition(tmp_path: Path, *, round_id: str, name: str) -> None:
         round_id=round_id,
         decl_name=name,
         lean_code=f"def {name} : Unit := ()",
-        lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+        lean_check=lean_check_payload(),
     ).ok
     assert runtime.decl_graph.commit_decl_revision(tmp_path, node_path=NODE_PATH, name=name, state=DeclState.DECLARED).ok
 

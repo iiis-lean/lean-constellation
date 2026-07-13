@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import lean_check_payload, make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
@@ -83,13 +83,13 @@ def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider
         statement=DeclStatement(
             formal=DeclFormalSection(
                 code="import Mathlib\n\ntheorem provider_result : True := by\n  sorry\n",
-                check={"status": "passed", "contains_sorry": True, "allow_sorry": True},
+                check=lean_check_payload(contains_sorry=True),
             )
         ),
         proof=DeclProof(
             formal=DeclFormalSection(
                 code="theorem provider_result : True := by\n  trivial\n",
-                check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+                check=lean_check_payload(),
             )
         ),
         module="Main.Core.Theorems.provider_result",
@@ -265,7 +265,7 @@ def test_coordinator_reads_ready_adapter_bound_main_interface(tmp_path: Path) ->
         binding_summary="Expose the public theorem.",
     ).ok
     assert service.refresh_adapter_projection(provider).ok
-    assert service.runtime.repo_workspace.metadata.set_provider_ready(
+    assert service.runtime.repo_workspace.metadata.mark_repo_stable(
         provider, summary="Stable adapter provider."
     ).ok
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,7 +11,7 @@ from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
 
 if TYPE_CHECKING:
-    from lean_constellation.services.node.node_tree import NodeKind, NodeLifecycle, NodeMetadata
+    from lean_constellation.services.node.node_tree import NodeMetadata
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -31,12 +30,6 @@ class NodeIndex(StrictModel):
     entries: list[NodeIndexEntry] = Field(default_factory=list)
     active_path_to_node_id: dict[str, str] = Field(default_factory=dict)
     rebuilt_at: str = Field(default_factory=utc_now_iso)
-    summary: str
-
-
-class NodeStorageMigrationView(StrictModel):
-    migrated_nodes: list[str] = Field(default_factory=list)
-    unchanged_nodes: list[str] = Field(default_factory=list)
     summary: str
 
 
@@ -164,64 +157,6 @@ class NodeStore:
 
     def decl_graph_dir(self, repo_root: Path, *, node_id: str) -> Path:
         return self.runtime.foundation.layout.node_decl_graph_dir_by_id(FoundationContext(repo_root=Path(repo_root)), node_id)
-
-    def migrate_path_layout_to_node_id_layout(self, repo_root: Path) -> ServiceResult[NodeStorageMigrationView]:
-        """Move legacy nodes/<encoded_path> directories to nodes/<node_id> directories."""
-
-        from lean_constellation.services.node.node_tree import NodeMetadata
-
-        ctx = FoundationContext(repo_root=Path(repo_root))
-        nodes_root = self.runtime.foundation.layout.nodes_root(ctx)
-        if not nodes_root.exists():
-            rebuilt = self.rebuild_index(repo_root)
-            if not rebuilt.ok:
-                return self.runtime.foundation.fail(rebuilt.issues)
-            return self.runtime.foundation.ok(
-                NodeStorageMigrationView(
-                    summary="Node storage migration found no node directory.",
-                )
-            )
-
-        migrated: list[str] = []
-        unchanged: list[str] = []
-        for node_json in sorted(nodes_root.glob("*/node.json")):
-            loaded = self.runtime.foundation.store.read_json(node_json, NodeMetadata)
-            if not loaded.ok or loaded.value is None:
-                return self.runtime.foundation.fail(loaded.issues)
-            node = loaded.value
-            source_dir = node_json.parent
-            target_dir = self.node_dir(repo_root, node_id=node.node_id)
-            if source_dir == target_dir:
-                unchanged.append(node.node_id)
-                continue
-            if target_dir.exists():
-                existing = self.runtime.foundation.store.read_json(target_dir / "node.json", NodeMetadata)
-                if existing.ok and existing.value is not None and existing.value.node_id == node.node_id:
-                    shutil.rmtree(source_dir)
-                    unchanged.append(node.node_id)
-                    continue
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "node_storage_migration_target_conflict",
-                        "Cannot migrate legacy node path layout because the node_id target directory already exists.",
-                        object_ref=node.node_id,
-                        details={"source_dir": str(source_dir), "target_dir": str(target_dir)},
-                    )
-                )
-            target_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(source_dir), str(target_dir))
-            migrated.append(node.node_id)
-
-        rebuilt = self.rebuild_index(repo_root)
-        if not rebuilt.ok:
-            return self.runtime.foundation.fail(rebuilt.issues)
-        return self.runtime.foundation.ok(
-            NodeStorageMigrationView(
-                migrated_nodes=migrated,
-                unchanged_nodes=unchanged,
-                summary=f"Migrated {len(migrated)} legacy node directories; {len(unchanged)} already used node_id layout.",
-            )
-        )
 
     def _scan_nodes(self, repo_root: Path) -> ServiceResult[list[NodeMetadata]]:
         from lean_constellation.services.node.node_tree import NodeMetadata

@@ -94,7 +94,7 @@ def test_node_service_content_admission_batch_and_commit_wrappers(tmp_path: Path
     committed = service.commit_content_contract(tmp_path, node_path="Main.Topic.Core", summary="Content contract completed.")
     assert committed.ok
     assert committed.value is not None
-    assert committed.value.version_status.value == "committed"
+    assert committed.value.status.value == "committed"
 
 
 def test_node_service_get_public_boundary_for_content_and_scope(tmp_path: Path) -> None:

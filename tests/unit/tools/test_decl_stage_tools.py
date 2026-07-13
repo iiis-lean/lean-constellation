@@ -7,6 +7,7 @@ from lean_constellation.services import create_test_runtime_services
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.tool_facade import ActorContext, DeclStageContextView, NodeContextView, RepoContextView, RuntimeToolContext, ToolExecutionContext
 from lean_constellation.tools import build_application_tool_specs
+from tests.unit_services_helpers import lean_check_payload
 from lean_constellation.tools.args import (
     DeclStageFileCheckArgs,
     NoArgs,
@@ -509,7 +510,7 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
             round_id=round_record.value.round_id,
             decl_name=decl_name,
             lean_code=f"theorem {decl_name} : True := by trivial",
-            lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+            lean_check=lean_check_payload(),
         ).ok
     advanced = runtime.decl_graph.advance_stage_state(
         tmp_path,
@@ -642,7 +643,7 @@ def test_proof_formal_dep_tool_rejects_unproved_same_round_dep(tmp_path: Path) -
             round_id=round_record.value.round_id,
             decl_name=decl_name,
             lean_code=f"theorem {decl_name} : True := by trivial",
-            lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+            lean_check=lean_check_payload(),
         ).ok
         assert runtime.decl_graph.set_proof_nl(
             tmp_path,

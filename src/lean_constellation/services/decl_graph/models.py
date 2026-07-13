@@ -433,14 +433,6 @@ class DeclRevision(StrictModel):
         return value
 
     @property
-    def version_status(self) -> Literal["open", "committed"]:
-        return self.status.value  # type: ignore[return-value]
-
-    @version_status.setter
-    def version_status(self, value: str | DeclRevisionStatus) -> None:
-        self.status = DeclRevisionStatus(value)
-
-    @property
     def change_kind(self) -> DeclChangeKind | None:
         return self.change.kind if self.change is not None else None
 
@@ -589,21 +581,6 @@ class DeclRevision(StrictModel):
             return
         check = None if value is None else value if isinstance(value, LeanCheck) else LeanCheck.model_validate(value)
         proof.formal = DeclFormalSection(code=code, check=check, upstream_decl_name=upstream)
-
-    @property
-    def decl_deps(self) -> list[str]:
-        return sorted(set(self.statement_deps) | set(self.proof_deps))
-
-    @decl_deps.setter
-    def decl_deps(self, value: list[str]) -> None:
-        # Legacy write alias: decl_deps is derived truth. Route explicit legacy
-        # assignment to proof deps when proof content exists, otherwise statement deps.
-        deps = _sorted_unique_text(value, "decl deps")
-        if self.proof is not None:
-            self.proof.deps = _repo_decl_deps_from_names(deps, "decl deps")
-        else:
-            self.statement.deps = _repo_decl_deps_from_names(deps, "decl deps")
-
 
 DeclRevisionRecord = DeclRevision
 DeclStrategyRecord = DeclGraphStrategy

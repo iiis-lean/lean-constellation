@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lean_constellation.domain.common import utc_now_iso
+from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
 from lean_constellation.services.decl_graph.models import DeclChangeKind, DeclDep, DeclOriginRef, DeclRevision, DeclRoundStatus, DeclState
@@ -537,13 +538,13 @@ class StageMutationComponent:
         )
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        if revision.value.version_status != "open":
+        if revision.value.status != "open":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_not_open",
                     "Stage mutation requires the target revision to be open.",
                     object_ref=decl_name,
-                    current=revision.value.version_status,
+                    current=revision.value.status.value,
                 )
             )
         return self.runtime.foundation.ok(revision.value)
@@ -597,8 +598,8 @@ class StageMutationComponent:
         stripped = [dep.strip() for dep in deps]
         return sorted({dep for dep in stripped if dep})
 
-    def _normalize_check(self, lean_check: dict[str, Any]) -> dict[str, str]:
-        return {str(key): str(value) for key, value in lean_check.items()}
+    def _normalize_check(self, lean_check: dict[str, Any]) -> LeanCheck:
+        return LeanCheck.model_validate(lean_check)
 
     @staticmethod
     def _target_state_for_stage(stage: str) -> DeclState | None:

@@ -2,7 +2,7 @@
 
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
-from lean_constellation.services.decl_graph.graph_store import DeclGraphStorageMigrationView, GraphStoreComponent
+from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
     DeclChangeView,
@@ -72,7 +72,6 @@ __all__ = [
     "DeclGraphRoundView",
     "DeclGraphService",
     "DeclGraphStoreView",
-    "DeclGraphStorageMigrationView",
     "DeclGraphStrategyView",
     "DeclLifecycle",
     "DeclReadinessComponent",

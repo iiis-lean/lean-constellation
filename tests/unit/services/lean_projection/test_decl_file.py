@@ -74,7 +74,7 @@ class FakeRevisionProvider:
         revision = self.revisions[(node_path, decl_name)]
         revision.setdefault("statement", {})["formal"] = {
             "code": code,
-            "check": _compact_check(check),
+            "check": _current_check(check),
         }
         revision["state"] = "declared"
         return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
@@ -92,7 +92,7 @@ class FakeRevisionProvider:
         revision = self.revisions[(node_path, decl_name)]
         revision.setdefault("proof", {})["formal"] = {
             "code": code,
-            "check": _compact_check(check),
+            "check": _current_check(check),
         }
         revision["state"] = "proved"
         return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
@@ -177,15 +177,8 @@ def _revision(kind: str = "theorem") -> dict[str, Any]:
     }
 
 
-def _compact_check(check: LeanCheckView) -> dict[str, str]:
-    return {
-        "status": check.status,
-        "policy": check.policy,
-        "allow_sorry": str(check.allow_sorry),
-        "contains_sorry": str(check.contains_sorry),
-        "contains_axiom": str(check.contains_axiom),
-        "message": check.message,
-    }
+def _current_check(check: LeanCheckView) -> dict[str, object]:
+    return check.model_dump(mode="json")
 
 
 def _component(tmp_path: Path, revisions: dict[tuple[str, str], dict[str, Any]], diagnostics: list[dict[str, Any]] | None = None) -> DeclFileComponent:

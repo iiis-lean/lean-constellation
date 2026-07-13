@@ -69,7 +69,6 @@ def _seed_committed_decl(tmp_path: Path, *, round_id: str, name: str, deps: list
     assert revision.ok and revision.value is not None
     revision.value.state = DeclState.PROVED
     revision.value.proof_deps = deps or []
-    revision.value.decl_deps = deps or []
     _write_revision(tmp_path, revision.value)
     assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=DeclState.PROVED).ok
 

@@ -98,7 +98,7 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     assert current.ok
     assert current.value is not None
     assert current.value.version == 1
-    assert current.value.version_status == ContractVersionStatus.OPEN
+    assert current.value.status == ContractVersionStatus.OPEN
 
     committed = make_runtime().node.commit_content_contract(
         tmp_path, node_path="Main.Topic.Core", summary="Initial core contract complete."
@@ -106,7 +106,7 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     assert committed.ok
     assert committed.value is not None
     assert committed.value.status == ContractVersionStatus.COMMITTED
-    assert committed.value.version_status == ContractVersionStatus.COMMITTED
+    assert committed.value.status == ContractVersionStatus.COMMITTED
     assert committed.value.active_contract_version == 1
     assert committed.value.open_contract_version is None
 
@@ -126,7 +126,7 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     assert opened.value.version == 2
     assert opened.value.node_id == committed.value.node_id
     assert opened.value.contract.status == ContractVersionStatus.OPEN
-    assert opened.value.contract.version_status == ContractVersionStatus.OPEN
+    assert opened.value.contract.status == ContractVersionStatus.OPEN
     assert opened.value.contract.summary is None
 
     latest = component.get_current_contract(tmp_path, node_path="Main.Topic.Core")
@@ -428,7 +428,7 @@ def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path
     committed = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main", summary="Main scope exposes the required interface.")
     assert committed.ok
     assert committed.value is not None
-    assert committed.value.version_status == ContractVersionStatus.COMMITTED
+    assert committed.value.status == ContractVersionStatus.COMMITTED
 
 
 def test_commit_content_contract_rejects_summary_scope_node_and_committed_contract(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import lean_check_payload, make_runtime
 
 from lean_constellation.services.decl_graph import DeclChangeKind, DeclState
 from lean_constellation.services.decl_graph.models import DeclRevision
@@ -76,7 +76,6 @@ def _seed_committed_decl(
     revision.value.state = DeclState.PROVED
     revision.value.statement_deps = []
     revision.value.proof_deps = deps or []
-    revision.value.decl_deps = deps or []
     _write_revision(tmp_path, revision.value)
     assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=DeclState.PROVED).ok
 
@@ -112,7 +111,7 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert revision.ok and revision.value is not None
     assert revision.value.state == DeclState.PLANNED
-    assert revision.value.version_status == "open"
+    assert revision.value.status == "open"
     assert revision.value.change is not None
     assert revision.value.change.require_target_state_satisfied is True
 
@@ -204,12 +203,11 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     revision.value.statement_nl = "A formal statement."
     revision.value.statement_deps = ["supporting_lemma"]
     revision.value.statement_lean_code = "theorem main_result : True := by trivial"
-    revision.value.statement_lean_check = {"passed": "true"}
+    revision.value.statement_lean_check = lean_check_payload()
     revision.value.proof_nl = "By triviality."
     revision.value.proof_deps = ["supporting_lemma"]
     revision.value.proof_lean_code = "by trivial"
-    revision.value.proof_lean_check = {"passed": "true"}
-    revision.value.decl_deps = ["supporting_lemma"]
+    revision.value.proof_lean_check = lean_check_payload()
     _write_revision(tmp_path, revision.value)
 
     _, update_round_id = _create_round(tmp_path, objective="Update only the proof.")
@@ -235,7 +233,8 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     assert opened.value.statement_lean_code == "theorem main_result : True := by trivial"
     assert opened.value.proof_nl is None
     assert opened.value.proof_lean_code is None
-    assert opened.value.decl_deps == ["supporting_lemma"]
+    assert opened.value.statement_deps == ["supporting_lemma"]
+    assert opened.value.proof_deps == []
 
 
 def test_open_decl_update_rejects_open_current_revision(tmp_path: Path) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from tests.unit_services_helpers import make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import lean_check_payload, make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
@@ -177,7 +177,7 @@ def _seed_declared_public_theorem(
         round_id=round_id,
         decl_name="main_result",
         lean_code=statement_lean_code,
-        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        lean_check=lean_check_payload(contains_sorry=True),
         deps=[],
     ).ok
     committed = runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name="main_result", state=DeclState.DECLARED)
@@ -228,7 +228,7 @@ def _seed_proved_public_theorem_with_provider_dep(runtime: LeanRuntimeServices, 
         round_id=round_id,
         decl_name="consumer_result",
         lean_code="theorem consumer_result : True := by\n  sorry",
-        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        lean_check=lean_check_payload(contains_sorry=True),
         deps=[],
     ).ok
     assert runtime.decl_graph.write_proof_nl(
@@ -245,7 +245,7 @@ def _seed_proved_public_theorem_with_provider_dep(runtime: LeanRuntimeServices, 
         round_id=round_id,
         decl_name="consumer_result",
         lean_code="theorem consumer_result : True := by\n  trivial",
-        lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+        lean_check=lean_check_payload(),
         deps=[],
     ).ok
     revision = runtime.decl_graph.get_decl_revision(repo_root, node_path=NODE_PATH, name="consumer_result", revision=1)

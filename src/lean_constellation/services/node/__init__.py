@@ -60,7 +60,7 @@ from lean_constellation.services.node.node_tree import (
     NodeView,
     RunnableContentNodeView,
 )
-from lean_constellation.services.node.node_store import NodeIndex, NodeIndexEntry, NodeStorageMigrationView, NodeStore
+from lean_constellation.services.node.node_store import NodeIndex, NodeIndexEntry, NodeStore
 from lean_constellation.services.node.public_decl_access import (
     ImportedRepoAccessItem,
     ImportedRepoAccessView,
@@ -128,7 +128,6 @@ __all__ = [
     "NodeMetadata",
     "NodeIndex",
     "NodeIndexEntry",
-    "NodeStorageMigrationView",
     "NodeStore",
     "NodeTreeComponent",
     "NodeTreeView",

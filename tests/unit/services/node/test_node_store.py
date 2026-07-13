@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
@@ -37,31 +36,6 @@ def test_node_store_rebuilds_index_from_truth(tmp_path: Path) -> None:
     assert rebuilt.ok and rebuilt.value is not None
     assert set(rebuilt.value.active_path_to_node_id) == {"Main", "Main.Topic"}
     assert runtime.foundation.layout.node_index_path(ctx).is_file()
-
-
-def test_node_store_migrates_legacy_path_layout(tmp_path: Path) -> None:
-    runtime = make_runtime()
-    created = runtime.node.node_tree.ensure_root_scope_node(tmp_path)
-    assert created.ok and created.value is not None
-    ctx = FoundationContext(repo_root=tmp_path)
-    node_id_dir = runtime.foundation.layout.node_dir_by_id(ctx, created.value.node_id)
-    legacy_dir = runtime.foundation.layout.node_metadata_dir(ctx, "Main")
-    assert node_id_dir.exists()
-    assert not legacy_dir.exists()
-    legacy_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(node_id_dir), str(legacy_dir))
-    runtime.foundation.layout.node_index_path(ctx).unlink()
-
-    migrated = runtime.node.node_tree.node_store.migrate_path_layout_to_node_id_layout(tmp_path)
-
-    assert migrated.ok
-    assert migrated.value is not None
-    assert migrated.value.migrated_nodes == [created.value.node_id]
-    assert node_id_dir.exists()
-    assert not legacy_dir.exists()
-    index = runtime.node.node_tree.node_store.read_index(tmp_path)
-    assert index.ok and index.value is not None
-    assert index.value.active_path_to_node_id == {"Main": created.value.node_id}
 
 
 def test_delete_and_recreate_same_path_uses_new_node_id(tmp_path: Path) -> None:

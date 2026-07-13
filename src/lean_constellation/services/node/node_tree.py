@@ -76,12 +76,6 @@ class NodeContract(StrictModel):
     created_at: str = Field(default_factory=utc_now_iso)
     committed_at: str | None = None
 
-    @property
-    def version_status(self) -> NodeContractStatus:
-        """Legacy read alias while callers migrate to `status`."""
-
-        return self.status
-
     @field_validator("goal", "boundary")
     @classmethod
     def _required_text(cls, value: str) -> str:
@@ -453,7 +447,7 @@ class NodeTreeComponent:
 
     def _node_view(self, repo_root: Path, node: NodeMetadata, nodes: list[NodeMetadata]) -> NodeView:
         contract = self._load_current_contract(repo_root, node)
-        status = contract.value.version_status if contract.ok and contract.value is not None else None
+        status = contract.value.status if contract.ok and contract.value is not None else None
         child_count = sum(1 for item in nodes if item.lifecycle == NodeLifecycle.ACTIVE and self._parent_path(item.path) == node.path)
         return NodeView(
             path=node.path,

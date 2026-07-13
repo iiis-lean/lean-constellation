@@ -14,7 +14,7 @@ from lean_constellation.flows.content_node_task.decl_round.submissions import (
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclStage, DeclState
 from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.runtime import LeanRuntimeServices
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import lean_check_payload, make_runtime
 
 
 NODE_PATH = "Main.Topic.Core"
@@ -104,7 +104,7 @@ def seed_committed_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, dec
         round_id=round_id,
         decl_name=decl_name,
         lean_code=f"theorem {decl_name} : True := by trivial",
-        lean_check={"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+        lean_check=lean_check_payload(),
     ).ok
     assert runtime.decl_graph.write_proof_nl(
         repo_root,
@@ -119,7 +119,7 @@ def seed_committed_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, dec
         round_id=round_id,
         decl_name=decl_name,
         lean_code=f"theorem {decl_name} : True := by trivial",
-        lean_check={"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+        lean_check=lean_check_payload(),
     ).ok
     assert runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name=decl_name, state=DeclState.PROVED).ok
     seeded_round = runtime.decl_graph.get_round(repo_root, node_path=NODE_PATH, round_id=round_id)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
@@ -75,7 +74,7 @@ class SourceFileIndex(StrictModel):
 
 
 class SourceIndex(StrictModel):
-    schema_version: int = 3
+    schema_version: Literal[3] = 3
     status: SourceIndexStatus = "draft"
     active_update_id: str | None = None
     active_file_scope: list[str] = Field(default_factory=list)
@@ -91,8 +90,6 @@ class SourceIndex(StrictModel):
 
     @model_validator(mode="after")
     def _validate_update_state(self) -> "SourceIndex":
-        if self.schema_version not in {2, 3}:
-            raise ValueError("SourceIndex schema_version must be 2 or 3")
         if self.status == "committed" and (self.active_update_id is not None or self.active_file_scope):
             raise ValueError("committed SourceIndex cannot retain active update ownership")
         if self.status == "updating" and (self.active_update_id is None or not self.active_file_scope):
@@ -159,9 +156,7 @@ class SourceFileIndexView(StrictModel):
 
 class SourceIndexView(StrictModel):
     repo_root: str
-    schema_version: int = 3
-    stored_schema_version: int = 3
-    migration_required: bool = False
+    schema_version: Literal[3] = 3
     status: SourceIndexStatus = "draft"
     active_file_scope: list[str] = Field(default_factory=list)
     overview: str | None = None
@@ -243,17 +238,6 @@ class SourceIndexCommitView(StrictModel):
     appended_link_ids: list[str] = Field(default_factory=list)
     appended_ref_ids: list[str] = Field(default_factory=list)
     coverage: SourceIndexCoverageView
-    summary: str
-
-
-class SourceIndexSchemaCompatibilityView(StrictModel):
-    stored_schema_version: int
-    effective_schema_version: int = 3
-    migration_required: bool
-    source_index_status: str
-    file_findings: list[ServiceIssue] = Field(default_factory=list)
-    blocking_issue_kinds: list[str] = Field(default_factory=list)
-    current_digest: str
     summary: str
 
 
@@ -370,16 +354,6 @@ class SourceIndexComponent:
 
         index_path = self._index_path(repo_root)
         if index_path.exists():
-            inspected = self.inspect_source_index_schema(repo_root)
-            if not inspected.ok or inspected.value is None:
-                return self.runtime.foundation.fail(inspected.issues)
-            if inspected.value.migration_required:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "source_index_schema_migration_required",
-                        "Persisted SourceIndex must be explicitly migrated before opening an update.",
-                    )
-                )
             loaded = self.get_source_index_model(repo_root)
             if not loaded.ok or loaded.value is None:
                 return self.runtime.foundation.fail(loaded.issues)
@@ -550,146 +524,17 @@ class SourceIndexComponent:
             )
         )
 
-    def inspect_source_index_schema(self, repo_root: Path) -> ServiceResult[SourceIndexSchemaCompatibilityView]:
-        payload = self._read_stored_payload(repo_root)
-        if not payload.ok or payload.value is None:
-            return self.runtime.foundation.fail(payload.issues)
-        return self._inspect_source_index_payload(repo_root, payload.value)
-
-    def _inspect_source_index_payload(
-        self, repo_root: Path, payload: dict[str, object]
-    ) -> ServiceResult[SourceIndexSchemaCompatibilityView]:
-        try:
-            stored_version = int(payload.get("schema_version", 2))
-        except (TypeError, ValueError):
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "source_index_schema_unsupported",
-                    "SourceIndex schema_version must be an integer.",
-                )
-            )
-        status = str(payload.get("status", "draft"))
-        findings: list[ServiceIssue] = []
-        if stored_version not in {2, 3}:
-            findings.append(
-                self.runtime.foundation.issue(
-                    "source_index_schema_unsupported",
-                    f"Unsupported SourceIndex schema version: {stored_version}",
-                )
-            )
-        elif stored_version == 2:
-            if status == "draft":
-                findings.append(
-                    self.runtime.foundation.issue(
-                        "source_index_draft_migration_ambiguous",
-                        "A v2 draft has no trustworthy update owner or active scope and requires lifecycle-level review.",
-                    )
-                )
-            mapped = self._map_v2_payload(repo_root, payload)
-            if not mapped.ok:
-                findings.extend(mapped.issues)
-            elif mapped.value is not None:
-                findings.extend(
-                    self._validate_index(
-                        repo_root,
-                        mapped.value,
-                        require_completed=status == "committed",
-                    )
-                )
-        blockers = [issue.kind for issue in findings]
-        return self.runtime.foundation.ok(
-            SourceIndexSchemaCompatibilityView(
-                stored_schema_version=stored_version,
-                migration_required=stored_version != 3,
-                source_index_status=status,
-                file_findings=findings,
-                blocking_issue_kinds=blockers,
-                current_digest=self._payload_digest(payload),
-                summary=(
-                    "SourceIndex schema is current."
-                    if stored_version == 3
-                    else f"SourceIndex schema v{stored_version} requires explicit migration."
-                ),
-            )
-        )
-
-    def migrate_source_index_schema(
-        self,
-        repo_root: Path,
-        *,
-        expected_source_index_digest: str,
-    ) -> ServiceResult[SourceIndexView]:
-        path = self._index_path(repo_root)
-        try:
-            backup_bytes = path.read_bytes()
-            payload = json.loads(backup_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("source_index_migration_backup_failed", str(exc))
-            )
-        if not isinstance(payload, dict):
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("source_index_invalid", "SourceIndex JSON must be an object.")
-            )
-        authoritative_digest = self._payload_digest(payload)
-        if authoritative_digest != expected_source_index_digest:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "source_index_migration_digest_mismatch",
-                    "SourceIndex changed after schema inspection.",
-                    current=authoritative_digest,
-                    expected=expected_source_index_digest,
-                )
-            )
-        inspected = self._inspect_source_index_payload(repo_root, payload)
-        if not inspected.ok or inspected.value is None:
-            return self.runtime.foundation.fail(inspected.issues)
-        if inspected.value.stored_schema_version == 3:
-            return self.get_source_index(repo_root)
-        if inspected.value.blocking_issue_kinds:
-            return self.runtime.foundation.fail(inspected.value.file_findings)
-        mapped = self._map_v2_payload(repo_root, payload)
-        if not mapped.ok or mapped.value is None:
-            return self.runtime.foundation.fail(mapped.issues)
-        written = self._save_model(repo_root, mapped.value)
-        if not written.ok:
-            restored = self._restore_bytes_atomic(path, backup_bytes)
-            if restored is not None:
-                return self.runtime.foundation.fail([*written.issues, restored])
-            return self.runtime.foundation.fail(written.issues)
-        verified = self._verify_migrated_source_index(repo_root)
-        if not verified.ok:
-            restored = self._restore_bytes_atomic(path, backup_bytes)
-            if restored is not None:
-                return self.runtime.foundation.fail([*verified.issues, restored])
-            return self.runtime.foundation.fail(verified.issues)
-        return self.get_source_index(repo_root)
-
-    def create_draft_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
-        path = self._index_path(repo_root)
-        if path.exists():
-            return self.get_source_index(repo_root)
-        manifest = self.source_corpus.get_source_corpus_manifest(repo_root)
-        if not manifest.ok or manifest.value is None:
-            return self.runtime.foundation.fail(manifest.issues)
-        index = self._new_index_from_manifest(manifest.value)
-        write = self.runtime.foundation.store.write_json_atomic(path, index)
-        if not write.ok:
-            return self.runtime.foundation.fail(write.issues)
-        return self.runtime.foundation.ok(self._to_index_view(repo_root, index, stored_schema_version=3))
-
     def get_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         loaded = self._load_effective_index(repo_root)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
-        index, stored_version = loaded.value
-        return self.runtime.foundation.ok(self._to_index_view(repo_root, index, stored_schema_version=stored_version))
+        return self.runtime.foundation.ok(self._to_index_view(repo_root, loaded.value))
 
     def get_committed_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         loaded = self._load_effective_index(repo_root)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
-        index, stored_version = loaded.value
+        index = loaded.value
         if index.status != "committed" or index.active_update_id is not None or index.active_file_scope:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -697,13 +542,13 @@ class SourceIndexComponent:
                     "Committed SourceIndex read requires a committed SourceIndex.",
                 )
             )
-        return self.runtime.foundation.ok(self._to_index_view(repo_root, index, stored_schema_version=stored_version))
+        return self.runtime.foundation.ok(self._to_index_view(repo_root, index))
 
     def get_source_index_model(self, repo_root: Path) -> ServiceResult[SourceIndex]:
         loaded = self._load_effective_index(repo_root)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
-        return self.runtime.foundation.ok(loaded.value[0])
+        return loaded
 
     def set_source_index_overview(
         self, repo_root: Path, *, overview: str, expected_update_id: str | None = None
@@ -1611,27 +1456,6 @@ class SourceIndexComponent:
             )
         )
 
-    def commit_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
-        index = self._load_mutable(repo_root)
-        if not index.ok or index.value is None:
-            return self.runtime.foundation.fail(index.issues)
-        validation = self.validate_source_index(repo_root)
-        if not validation.ok or validation.value is None:
-            return self.runtime.foundation.fail(validation.issues)
-        if not validation.value.passed:
-            return self.runtime.foundation.ok(validation.value)
-        for file in index.value.files.values():
-            file.committed = True
-        index.value.status = "committed"
-        index.value.active_update_id = None
-        index.value.active_file_scope = []
-        index.value.committed_at = utc_now_iso()
-        self._touch(index.value, "Committed source index.")
-        saved = self._save_model(repo_root, index.value)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("source_index_commit", summary="Source index committed."))
-
     def _index_path(self, repo_root: Path) -> Path:
         ctx = FoundationContext(repo_root=Path(repo_root))
         return self.runtime.foundation.layout.constellation_root(ctx) / "source_index" / "index.json"
@@ -1662,29 +1486,16 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(write.issues)
         return self.runtime.foundation.ok(index)
 
-    def _load_effective_index(self, repo_root: Path) -> ServiceResult[tuple[SourceIndex, int]]:
+    def _load_effective_index(self, repo_root: Path) -> ServiceResult[SourceIndex]:
         payload = self._read_stored_payload(repo_root)
         if not payload.ok or payload.value is None:
             return self.runtime.foundation.fail(payload.issues)
-        stored_version = int(payload.value.get("schema_version", 2))
-        if stored_version == 3:
-            try:
-                return self.runtime.foundation.ok((SourceIndex.model_validate(payload.value), 3))
-            except Exception as exc:  # noqa: BLE001 - normalize persisted model failures.
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue("source_index_invalid", str(exc))
-                )
-        if stored_version == 2:
-            mapped = self._map_v2_payload(repo_root, payload.value)
-            if not mapped.ok or mapped.value is None:
-                return self.runtime.foundation.fail(mapped.issues)
-            return self.runtime.foundation.ok((mapped.value, 2))
-        return self.runtime.foundation.fail(
-            self.runtime.foundation.issue(
-                "source_index_schema_unsupported",
-                f"Unsupported SourceIndex schema version: {stored_version}",
+        try:
+            return self.runtime.foundation.ok(SourceIndex.model_validate(payload.value))
+        except Exception as exc:  # noqa: BLE001 - normalize persisted model failures.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("source_index_invalid", str(exc))
             )
-        )
 
     def _read_stored_payload(self, repo_root: Path) -> ServiceResult[dict[str, object]]:
         path = self._index_path(repo_root)
@@ -1703,128 +1514,6 @@ class SourceIndexComponent:
                 self.runtime.foundation.issue("source_index_invalid", "SourceIndex JSON must be an object.")
             )
         return self.runtime.foundation.ok(payload)
-
-    def _map_v2_payload(
-        self, repo_root: Path, payload: dict[str, object]
-    ) -> ServiceResult[SourceIndex]:
-        try:
-            legacy = SourceIndex.model_validate(payload)
-        except Exception as exc:  # noqa: BLE001
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("source_index_v2_invalid", str(exc))
-            )
-        manifest = self.source_corpus.scan_source_corpus(repo_root)
-        if not manifest.ok or manifest.value is None:
-            return self.runtime.foundation.fail(manifest.issues)
-        by_path = {item.path: item for item in manifest.value.files}
-        issues: list[ServiceIssue] = []
-        if set(legacy.files) != set(by_path):
-            issues.append(
-                self.runtime.foundation.issue(
-                    "source_index_v2_manifest_mismatch",
-                    "v2 SourceIndex file paths differ from the fresh source corpus manifest.",
-                    current=", ".join(sorted(legacy.files)),
-                    expected=", ".join(sorted(by_path)),
-                )
-            )
-        mapped_files: dict[str, SourceFileIndex] = {}
-        for path, old in legacy.files.items():
-            fresh = by_path.get(path)
-            if fresh is None:
-                continue
-            if old.line_count != fresh.line_count or old.readable_text != fresh.readable_text:
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_index_v2_file_metadata_mismatch",
-                        "v2 SourceIndex file metadata differs from the fresh corpus manifest.",
-                        object_ref=path,
-                    )
-                )
-            if (
-                legacy.status == "committed"
-                and fresh.readable_text
-                and (old.survey_status == "pending" or old.indexing_status == "pending")
-            ):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_index_v2_committed_file_pending",
-                        "A readable v2 committed SourceIndex file is still pending.",
-                        object_ref=path,
-                    )
-                )
-            mapped_files[path] = SourceFileIndex(
-                path=path,
-                source_sha256=fresh.sha256,
-                line_count=fresh.line_count,
-                readable_text=fresh.readable_text,
-                survey_status=old.survey_status,
-                indexing_status=old.indexing_status,
-                committed=(
-                    legacy.status == "committed"
-                    and fresh.readable_text
-                    and old.survey_status != "pending"
-                    and old.indexing_status != "pending"
-                ),
-                summary=old.summary,
-            )
-        if issues:
-            return self.runtime.foundation.fail(issues)
-        return self.runtime.foundation.ok(
-            legacy.model_copy(
-                update={
-                    "schema_version": 3,
-                    "active_update_id": None,
-                    "active_file_scope": [],
-                    "files": mapped_files,
-                },
-                deep=True,
-            )
-        )
-
-    def _verify_migrated_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
-        inspected = self.inspect_source_index_schema(repo_root)
-        if not inspected.ok or inspected.value is None:
-            return self.runtime.foundation.fail(inspected.issues)
-        if inspected.value.stored_schema_version != 3:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("source_index_migration_verify_failed", "Migrated SourceIndex is not schema v3.")
-            )
-        loaded = self.get_source_index_model(repo_root)
-        if not loaded.ok or loaded.value is None:
-            return self.runtime.foundation.fail(loaded.issues)
-        source_hash_issues = self._current_source_hash_issues(
-            repo_root,
-            loaded.value,
-            paths=set(loaded.value.files),
-        )
-        if not source_hash_issues.ok or source_hash_issues.value is None:
-            return self.runtime.foundation.fail(source_hash_issues.issues)
-        if source_hash_issues.value:
-            return self.runtime.foundation.fail(source_hash_issues.value)
-        gate = self.validate_source_index(repo_root)
-        if not gate.ok or gate.value is None:
-            return self.runtime.foundation.fail(gate.issues)
-        if not gate.value.passed:
-            return self.runtime.foundation.fail(gate.value.issues)
-        return gate
-
-    def _restore_bytes_atomic(self, path: Path, payload: bytes) -> ServiceIssue | None:
-        temp = path.with_name(f".{path.name}.migration-restore-{os.getpid()}")
-        try:
-            with temp.open("wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp, path)
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError as exc:
-            temp.unlink(missing_ok=True)
-            return self.runtime.foundation.issue("source_index_migration_restore_failed", str(exc))
-        return None
 
     def _new_index_from_manifest(self, manifest: SourceCorpusManifestView) -> SourceIndex:
         root_block = SourceBlock(
@@ -2173,14 +1862,10 @@ class SourceIndexComponent:
         index.updated_at = utc_now_iso()
         index.summary = summary
 
-    def _to_index_view(
-        self, repo_root: Path, index: SourceIndex, *, stored_schema_version: int = 3
-    ) -> SourceIndexView:
+    def _to_index_view(self, repo_root: Path, index: SourceIndex) -> SourceIndexView:
         return SourceIndexView(
             repo_root=str(Path(repo_root)),
             schema_version=3,
-            stored_schema_version=stored_schema_version,
-            migration_required=stored_schema_version != 3,
             status=index.status,
             active_file_scope=list(index.active_file_scope),
             overview=index.overview,

@@ -163,7 +163,7 @@ def _complete_theorem_round(
     committed = runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name=decl_name, state=DeclState.PROVED)
     assert committed.ok, committed.issues
     assert committed.value is not None
-    assert committed.value.version_status == "committed"
+    assert committed.value.status == "committed"
 
     assert runtime.decl_graph.write_decl_change_summary(
         repo_root,
@@ -247,8 +247,8 @@ def test_decl_graph_file_backed_content_node_lifecycle_real(tmp_path: Path) -> N
     assert main_decl.ok and main_decl.value is not None
     assert main_decl.value.public is True
     assert main_revision.ok and main_revision.value is not None
-    assert main_revision.value.version_status == "committed"
+    assert main_revision.value.status == "committed"
     assert main_revision.value.proof_deps == ["supporting_lemma"]
-    assert main_revision.value.decl_deps == ["supporting_lemma"]
+    assert main_revision.value.statement_deps == ["supporting_lemma"]
     assert reloaded_ready.ok and reloaded_ready.value is not None
     assert reloaded_ready.value.ready is True

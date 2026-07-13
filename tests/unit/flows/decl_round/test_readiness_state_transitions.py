@@ -16,6 +16,7 @@ from tests.unit.flows.decl_round._helpers import (
     record_passed_review,
     start_decl_round_flow,
 )
+from tests.unit_services_helpers import lean_check_payload
 
 
 @pytest.mark.parametrize(
@@ -24,12 +25,12 @@ from tests.unit.flows.decl_round._helpers import (
         (
             "definition",
             "def main_result : True := by\n  trivial",
-            {"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+            lean_check_payload(),
         ),
         (
             "theorem",
             "theorem main_result : True := by\n  sorry",
-            {"status": "passed", "allow_sorry": "true", "contains_sorry": "true"},
+            lean_check_payload(contains_sorry=True),
         ),
     ],
 )
@@ -37,7 +38,7 @@ def test_declared_round_skips_proof_stages(
     tmp_path: Path,
     kind: str,
     lean_code: str,
-    lean_check: dict[str, str],
+    lean_check: dict[str, object],
 ) -> None:
     runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
     strategy_id, round_id, round_index = create_round_with_decl(

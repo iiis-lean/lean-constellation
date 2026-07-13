@@ -156,7 +156,7 @@ class DeclCatalogComponent:
         )
         if not latest.ok or latest.value is None:
             return self.runtime.foundation.fail(latest.issues)
-        if latest.value.version_status == "open":
+        if latest.value.status == "open":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_already_open",
@@ -246,7 +246,7 @@ class DeclCatalogComponent:
         )
         if not latest.ok or latest.value is None:
             return self.runtime.foundation.fail(latest.issues)
-        if latest.value.version_status == "open":
+        if latest.value.status == "open":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_already_open",
@@ -320,13 +320,13 @@ class DeclCatalogComponent:
         record = self.get_decl_revision(repo_root, node_path=node_path, name=name, revision=target_revision)
         if not record.ok or record.value is None:
             return self.runtime.foundation.fail(record.issues)
-        if record.value.version_status != "open":
+        if record.value.status != "open":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_not_open",
                     "Only an open revision can be committed.",
                     object_ref=name,
-                    current=record.value.version_status,
+                    current=record.value.status.value,
                 )
             )
         if target_revision != decl.value.current_revision:
@@ -350,7 +350,7 @@ class DeclCatalogComponent:
             )
             if not guarded.ok:
                 return self.runtime.foundation.fail(guarded.issues)
-        record.value.version_status = "committed"
+        record.value.status = DeclRevisionStatus.COMMITTED
         record.value.updated_at = utc_now_iso()
         if record.value.state == DeclState.OBSOLETE:
             decl.value.lifecycle = DeclLifecycle.DELETED
@@ -611,7 +611,8 @@ class DeclCatalogComponent:
             if not revision.ok or revision.value is None:
                 continue
             internal_deps = []
-            for dep_name in sorted(set(revision.value.decl_deps) & changed_names):
+            revision_deps = set(revision.value.statement_deps) | set(revision.value.proof_deps)
+            for dep_name in sorted(revision_deps & changed_names):
                 if (
                     change_kind_by_decl.get(decl_name) == DeclChangeKind.DELETE
                     and change_kind_by_decl.get(dep_name) == DeclChangeKind.DELETE
@@ -809,7 +810,7 @@ class DeclCatalogComponent:
             )
             if not revision.ok or revision.value is None:
                 continue
-            for dep_name in revision.value.decl_deps:
+            for dep_name in sorted(set(revision.value.statement_deps) | set(revision.value.proof_deps)):
                 reverse.setdefault(dep_name, set()).add(decl_name)
         return reverse
 

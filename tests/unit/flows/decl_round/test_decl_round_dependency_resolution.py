@@ -18,6 +18,7 @@ from tests.unit.flows.decl_round._helpers import (
     make_decl_round_runtime,
     seed_committed_theorem,
 )
+from tests.unit_services_helpers import lean_check_payload
 
 
 def test_same_round_new_decl_dependency_uses_exact_round_revision(tmp_path: Path) -> None:
@@ -206,7 +207,7 @@ def _write_declared_round_theorem(lean_runtime, repo_root: Path, *, round_id: st
         round_id=round_id,
         decl_name=decl_name,
         lean_code=f"theorem {decl_name} : True := by sorry",
-        lean_check={"status": "passed", "allow_sorry": "true", "contains_sorry": "true"},
+        lean_check=lean_check_payload(contains_sorry=True),
     ).ok
     advanced = lean_runtime.decl_graph.advance_stage_state(
         repo_root,
@@ -309,11 +310,11 @@ def _prepare_ready_adapter_provider(lean_runtime, provider_root: Path, *, bind_i
     assert projection.ok, projection.issues
     ready = lean_runtime.adapter.check_adapter_ready(provider_root)
     assert ready.ok and ready.value is not None and ready.value.passed, ready.issues
-    published = lean_runtime.repo_workspace.metadata.set_provider_ready(
+    published = lean_runtime.repo_workspace.metadata.mark_repo_stable(
         provider_root,
         summary="Adapter provider is ready for Decl Round dependency tests.",
     )
-    assert published.ok and published.value is not None and published.value.ready
+    assert published.ok and published.value is not None
 
 
 def _write_proved_round_theorem(
@@ -338,7 +339,7 @@ def _write_proved_round_theorem(
         round_id=round_id,
         decl_name=decl_name,
         lean_code=f"theorem {decl_name} : True := by trivial",
-        lean_check={"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+        lean_check=lean_check_payload(),
     ).ok
     if proof_ref is not None:
         added = lean_runtime.decl_graph.add_proof_dep(

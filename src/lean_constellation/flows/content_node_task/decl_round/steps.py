@@ -732,7 +732,7 @@ class BuildRoundResultStep(BaseStep):
                 for revision in revisions.value:
                     if revision.change is not None and revision.change.kind == DeclChangeKind.DELETE:
                         continue
-                    if revision.version_status != "open":
+                    if revision.status != "open":
                         continue
                     committed = _decl_graph(ctx).commit_decl_revision(
                         repo_root,

@@ -117,7 +117,7 @@ def test_finalize_ready_content_task_commits_contract(tmp_path: Path) -> None:
     current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert current.ok
     assert current.value is not None
-    assert current.value.version_status == "committed"
+    assert current.value.status == "committed"
     assert current.value.contract.summary == "Coordinator verified the ready content task."
     assert current.value.contract.committed_at is not None
 
@@ -147,7 +147,7 @@ def test_finalize_blocked_content_task_commits_contract(tmp_path: Path) -> None:
     current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert current.ok
     assert current.value is not None
-    assert current.value.version_status == "committed"
+    assert current.value.status == "committed"
     assert current.value.contract.summary == "Coordinator recorded a blocked content task."
     assert current.value.contract.committed_at is not None
 
@@ -175,7 +175,7 @@ def test_finalize_failed_content_task_commits_contract(tmp_path: Path) -> None:
     current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert current.ok
     assert current.value is not None
-    assert current.value.version_status == "committed"
+    assert current.value.status == "committed"
     assert current.value.contract.summary == "Coordinator recorded a failed content task."
     assert current.value.contract.committed_at is not None
 
@@ -202,7 +202,7 @@ def test_finalize_ready_gate_failure_returns_failure_view_without_summary_write(
     current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert current.ok
     assert current.value is not None
-    assert current.value.version_status == "open"
+    assert current.value.status == "open"
     assert current.value.contract.summary is None
 
 
@@ -259,7 +259,7 @@ def test_finalize_rejects_contract_version_mismatch(tmp_path: Path) -> None:
     current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert current.ok
     assert current.value is not None
-    assert current.value.version_status == "open"
+    assert current.value.status == "open"
     assert current.value.contract.summary is None
 
 

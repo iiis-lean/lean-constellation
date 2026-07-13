@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import lean_check_payload, make_runtime
 
 from lean_constellation.services.decl_graph import DeclState
 
@@ -67,7 +67,7 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
     assert statement_nl.ok and statement_nl.value is not None
     assert statement_nl.value.state == DeclState.PLANNED
     assert statement_nl.value.statement_origin == [{"kind": "source", "ref": "source:main"}]
-    assert statement_nl.value.decl_deps == ["supporting_lemma"]
+    assert statement_nl.value.statement_deps == ["supporting_lemma"]
 
     statement_formal = service.write_statement_formal(
         tmp_path,
@@ -75,7 +75,7 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         round_id=round_id,
         decl_name="main_result",
         lean_code="theorem main_result : True := by sorry",
-        lean_check={"passed": True, "contains_sorry": True},
+        lean_check=lean_check_payload(contains_sorry=True),
         deps=["supporting_lemma"],
     )
     assert statement_formal.ok and statement_formal.value is not None
@@ -97,7 +97,8 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
     )
     assert proof_nl.ok and proof_nl.value is not None
     assert proof_nl.value.state == DeclState.PLANNED
-    assert proof_nl.value.decl_deps == ["proof_helper", "supporting_lemma"]
+    assert proof_nl.value.statement_deps == ["supporting_lemma"]
+    assert proof_nl.value.proof_deps == ["proof_helper", "supporting_lemma"]
 
     proof_formal = service.write_proof_formal(
         tmp_path,
@@ -105,13 +106,14 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         round_id=round_id,
         decl_name="main_result",
         lean_code="by trivial",
-        lean_check={"passed": True, "contains_sorry": False},
+        lean_check=lean_check_payload(),
         deps=["proof_helper"],
     )
     assert proof_formal.ok and proof_formal.value is not None
     assert proof_formal.value.state == DeclState.PLANNED
     assert proof_formal.value.proof_lean_code == "by trivial"
-    assert proof_formal.value.decl_deps == ["proof_helper", "supporting_lemma"]
+    assert proof_formal.value.statement_deps == ["supporting_lemma"]
+    assert proof_formal.value.proof_deps == ["proof_helper"]
 
     revision_path = service.graph_store.revision_path(
         tmp_path,
@@ -169,7 +171,7 @@ def test_statement_formal_requires_statement_nl(tmp_path: Path) -> None:
         round_id=round_id,
         decl_name="main_result",
         lean_code="theorem main_result : True := by sorry",
-        lean_check={"passed": True},
+        lean_check=lean_check_payload(),
     )
 
     assert not result.ok
@@ -260,7 +262,7 @@ def test_proof_stages_reject_non_theorem_like_decl(tmp_path: Path) -> None:
         round_id=round_id,
         decl_name="main_def",
         lean_code="def main_def : Nat := 0",
-        lean_check={"passed": True},
+        lean_check=lean_check_payload(),
     ).ok
 
     result = service.write_proof_nl(

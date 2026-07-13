@@ -66,7 +66,7 @@ def test_content_task_ready_finalize_persists_and_reloads_real(tmp_path: Path) -
     reloaded = make_runtime().node.contract.get_current_contract(repo_root, node_path="Main.Topic.Core")
     assert reloaded.ok, reloaded.issues
     assert reloaded.value is not None
-    assert reloaded.value.version_status.value == "committed"
+    assert reloaded.value.status.value == "committed"
     assert reloaded.value.contract.summary == "Coordinator accepted the ready content task."
     assert reloaded.value.contract.committed_at is not None
 
@@ -97,7 +97,7 @@ def test_content_task_blocked_finalize_persists_committed_contract_real(tmp_path
     reloaded = make_runtime().node.contract.get_current_contract(repo_root, node_path="Main.Topic.Core")
     assert reloaded.ok, reloaded.issues
     assert reloaded.value is not None
-    assert reloaded.value.version_status.value == "committed"
+    assert reloaded.value.status.value == "committed"
     assert reloaded.value.contract.summary == "Coordinator recorded the blocked content task."
     assert reloaded.value.contract.committed_at is not None
 
@@ -128,6 +128,6 @@ def test_content_task_failed_finalize_persists_committed_contract_real(tmp_path:
     reloaded = make_runtime().node.contract.get_current_contract(repo_root, node_path="Main.Topic.Core")
     assert reloaded.ok, reloaded.issues
     assert reloaded.value is not None
-    assert reloaded.value.version_status.value == "committed"
+    assert reloaded.value.status.value == "committed"
     assert reloaded.value.contract.summary == "Coordinator recorded the failed content task."
     assert reloaded.value.contract.committed_at is not None

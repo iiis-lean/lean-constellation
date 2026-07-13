@@ -20,6 +20,7 @@ from lean_constellation.services.tool_facade import (
 )
 from lean_constellation.tools.submit_args import SubmitStageReviewArgs, SubmitStageWorkerBlockedArgs, SubmitStageWorkerCompletedArgs
 from lean_constellation.tools.submit_handlers import submit_stage_review, submit_stage_worker_blocked, submit_stage_worker_completed
+from tests.unit_services_helpers import lean_check_payload
 from tests.unit.tools._submit_family_helpers import assert_submit_tools
 
 
@@ -220,7 +221,7 @@ def _setup_statement_formal_candidate(
             round_id=round_record.value.round_id,
             decl_name="main_result",
             lean_code="theorem main_result : True := by sorry",
-            lean_check=lean_check or {"status": "passed", "allow_sorry": "true", "contains_sorry": "true"},
+            lean_check=lean_check or lean_check_payload(contains_sorry=True),
             deps=deps,
         ).ok
     return round_record.value.round_id
@@ -319,7 +320,7 @@ def _setup_proof_nl_candidate(runtime, repo_root: Path, *, decl_names: list[str]
             round_id=round_record.value.round_id,
             decl_name=decl_name,
             lean_code=f"theorem {decl_name} : True := by trivial",
-            lean_check={"status": "passed", "contains_sorry": False, "contains_axiom": False},
+            lean_check=lean_check_payload(),
         ).ok
         assert runtime.decl_graph.set_proof_nl(
             repo_root,
@@ -349,7 +350,7 @@ def _setup_proof_formal_candidate(
                 round_id=round_id,
                 decl_name=decl_name,
                 lean_code=f"theorem {decl_name} : True := by trivial",
-                lean_check=lean_check or {"status": "passed", "contains_sorry": False, "contains_axiom": False},
+                lean_check=lean_check or lean_check_payload(),
             ).ok
     return round_id
 
@@ -577,7 +578,7 @@ def test_statement_formal_worker_completed_rejects_failed_captured_check(tmp_pat
     round_id = _setup_statement_formal_candidate(
         runtime,
         tmp_path,
-        lean_check={"status": "failed", "contains_sorry": "false", "allow_sorry": "true"},
+        lean_check=lean_check_payload(passed=False, allow_sorry=True),
     )
     ctx = _worker_ctx(tmp_path, round_id=round_id)
     runtime.app.lean_projection = _FakeLeanProjectionSync(runtime, passed=True)  # type: ignore[assignment]
@@ -624,7 +625,7 @@ def test_proof_formal_worker_completed_rejects_failed_captured_check(tmp_path: P
     round_id = _setup_proof_formal_candidate(
         runtime,
         tmp_path,
-        lean_check={"status": "failed", "contains_sorry": False, "contains_axiom": False},
+        lean_check=lean_check_payload(passed=False),
     )
     ctx = _worker_ctx(tmp_path, round_id=round_id, stage="proof_formal")
     runtime.app.lean_projection = _FakeLeanProjectionSync(runtime, passed=True)  # type: ignore[assignment]

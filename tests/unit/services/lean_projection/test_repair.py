@@ -108,7 +108,7 @@ class FakeRevisionProvider:
     ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
-        revision.setdefault("statement", {})["formal"] = {"code": code, "check": _compact_check(check)}
+        revision.setdefault("statement", {})["formal"] = {"code": code, "check": _current_check(check)}
         revision["state"] = "declared"
         return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
@@ -123,7 +123,7 @@ class FakeRevisionProvider:
     ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
-        revision.setdefault("proof", {})["formal"] = {"code": code, "check": _compact_check(check)}
+        revision.setdefault("proof", {})["formal"] = {"code": code, "check": _current_check(check)}
         revision["state"] = "proved"
         return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
@@ -181,15 +181,8 @@ def _revision() -> dict[str, Any]:
     }
 
 
-def _compact_check(check: LeanCheckView) -> dict[str, str]:
-    return {
-        "status": check.status,
-        "policy": check.policy,
-        "allow_sorry": str(check.allow_sorry),
-        "contains_sorry": str(check.contains_sorry),
-        "contains_axiom": str(check.contains_axiom),
-        "message": check.message,
-    }
+def _current_check(check: LeanCheckView) -> dict[str, object]:
+    return check.model_dump(mode="json")
 
 
 def _repair_component(

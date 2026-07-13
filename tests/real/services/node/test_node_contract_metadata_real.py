@@ -148,7 +148,7 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
     )
     assert core_committed.ok, core_committed.issues
     assert core_committed.value is not None
-    assert core_committed.value.version_status.value == "committed"
+    assert core_committed.value.status.value == "committed"
 
     add_worker_dep = service.dependency.add_node_dep(
         repo_root,
@@ -269,7 +269,7 @@ def test_node_contract_scope_content_metadata_real(tmp_path: Path) -> None:
     )
     assert scope_committed.ok, scope_committed.issues
     assert scope_committed.value is not None
-    assert scope_committed.value.version_status.value == "committed"
+    assert scope_committed.value.status.value == "committed"
 
     boundary = service.get_node_public_boundary(repo_root, node_path="Main.Topic")
     assert boundary.ok

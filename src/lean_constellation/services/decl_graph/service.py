@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
-from lean_constellation.services.decl_graph.graph_store import DeclGraphStorageMigrationView, GraphStoreComponent
+from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
 from lean_constellation.services.decl_graph.models import (
@@ -104,9 +104,6 @@ class DeclGraphService:
 
     def rebuild_decl_graph_index(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphIndex]:
         return self.graph_store.rebuild_index(repo_root, node_path=node_path)
-
-    def migrate_legacy_decl_graph_storage(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphStorageMigrationView]:
-        return self.graph_store.migrate_legacy_decl_graph_storage(repo_root, node_path=node_path)
 
     def ensure_open_strategy(
         self,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import lean_check_payload, make_runtime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -145,7 +145,7 @@ def _create_declared_main_public_theorem(runtime: LeanRuntimeServices, repo_root
         round_id=round_record.value.round_id,
         decl_name=decl_name,
         lean_code=f"theorem {decl_name} : True := by\n  sorry",
-        lean_check={"status": "passed", "contains_sorry": True, "allow_sorry": True, "contains_axiom": False},
+        lean_check=lean_check_payload(contains_sorry=True),
         deps=[],
     ).ok
     assert runtime.decl_graph.commit_decl_revision(

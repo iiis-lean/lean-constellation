@@ -17,6 +17,7 @@ from tests.unit.flows.decl_round._helpers import (
     record_passed_review,
     start_decl_round_flow,
 )
+from tests.unit_services_helpers import lean_check_payload
 
 
 def test_decl_round_runs_full_theorem_stage_sequence(tmp_path: Path) -> None:
@@ -483,7 +484,7 @@ def _seed_open_proof_planned_theorem(lean_runtime, repo_root: Path, *, decl_name
         round_id=round_id,
         decl_name=decl_name,
         lean_code=f"theorem {decl_name} : True := by trivial",
-        lean_check={"status": "passed", "allow_sorry": "true", "contains_sorry": "false"},
+        lean_check=lean_check_payload(allow_sorry=True),
     ).ok
     assert lean_runtime.decl_graph.write_proof_nl(
         repo_root,
@@ -532,7 +533,7 @@ def _prove_committed_helper_theorem(lean_runtime, repo_root: Path, *, decl_name:
         round_id=round_record.value.round_id,
         decl_name=decl_name,
         lean_code=f"theorem {decl_name} : True := by trivial",
-        lean_check={"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+        lean_check=lean_check_payload(),
     ).ok
     assert lean_runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name=decl_name, state=DeclState.PROVED).ok
     _mark_seed_round_success(lean_runtime, repo_root, strategy_id=strategy.value.strategy_id, round_id=round_record.value.round_id, decl_name=decl_name)
@@ -627,7 +628,7 @@ def _write_statement_formal(lean_runtime, repo_root: Path, round_id: str):
         round_id=round_id,
         decl_name="main_result",
         lean_code=lean_code,
-        lean_check={"status": "passed", "allow_sorry": "true", "contains_sorry": "true"},
+        lean_check=lean_check_payload(contains_sorry=True),
     )
 
 
@@ -646,6 +647,6 @@ def _write_proof_formal(lean_runtime, repo_root: Path, round_id: str, *, deps: l
         round_id=round_id,
         decl_name="main_result",
         lean_code=lean_code,
-        lean_check={"status": "passed", "allow_sorry": "false", "contains_sorry": "false"},
+        lean_check=lean_check_payload(),
         deps=deps,
     )

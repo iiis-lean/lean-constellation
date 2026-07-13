@@ -160,13 +160,13 @@ class DeclReadinessComponent:
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
         decl, revision = current.value
-        if revision.version_status != "open":
+        if revision.status != "open":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_not_open",
                     "Saving a statement formal capture requires the current revision to be open.",
                     object_ref=f"{node_path}:{decl_name}",
-                    current=revision.version_status,
+                    current=revision.status.value,
                     expected="open",
                 )
             )
@@ -200,13 +200,13 @@ class DeclReadinessComponent:
                     expected="theorem-like kind",
                 )
             )
-        if revision.version_status != "open":
+        if revision.status != "open":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_not_open",
                     "Saving a proof formal capture requires the current revision to be open.",
                     object_ref=f"{node_path}:{decl_name}",
-                    current=revision.version_status,
+                    current=revision.status.value,
                     expected="open",
                 )
             )
@@ -471,7 +471,7 @@ class DeclReadinessComponent:
                     details={"lifecycle": decl.lifecycle.value},
                 )
             )
-        if revision.version_status != "committed":
+        if revision.status != "committed":
             return self.runtime.foundation.ok(
                 self._not_ready(
                     node_path=node_path,
@@ -479,7 +479,7 @@ class DeclReadinessComponent:
                     revision=revision.revision,
                     reason=DeclReadinessReason.NO_ACTIVE_REVISION,
                     target_proof_availability=target_proof_availability,
-                    details={"version_status": revision.version_status},
+                    details={"version_status": revision.status.value},
                 )
             )
         required_state = self._required_state_for_target(decl.kind, target_proof_availability)
@@ -782,7 +782,7 @@ class DeclReadinessComponent:
             revision=revision.revision,
             kind=decl.kind,
             state=revision.state,
-            version_status=revision.version_status,
+            version_status=revision.status.value,
             module=revision.module or decl.module,
             statement=statement,
             proof=proof,

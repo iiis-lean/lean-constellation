@@ -49,7 +49,6 @@ from lean_constellation.services.material.source_index import (
     SourceIndexComponent,
     SourceIndexCoverageView,
     SourceIndexOpenUpdateView,
-    SourceIndexSchemaCompatibilityView,
     SourceIndexUpdateContextView,
     SourceIndexUpdateGateView,
     SourceIndexView,
@@ -629,9 +628,6 @@ class MaterialService:
     ) -> ServiceResult[MaterialSearchView]:
         return self.material_read.search_material_text(repo_root, query=query, scope=scope, regex=regex, limit=limit)
 
-    def create_draft_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
-        return self.source_index.create_draft_source_index(repo_root)
-
     def resolve_source_scope(
         self, repo_root: Path, *, source_scope: SourceScope
     ) -> ServiceResult[ResolvedSourceScopeView]:
@@ -689,18 +685,6 @@ class MaterialService:
     ) -> ServiceResult[SourceIndexCommitView]:
         return self.source_index.commit_source_index_update(
             repo_root, update_id=update_id, validated=validated
-        )
-
-    def inspect_source_index_schema(
-        self, repo_root: Path
-    ) -> ServiceResult[SourceIndexSchemaCompatibilityView]:
-        return self.source_index.inspect_source_index_schema(repo_root)
-
-    def migrate_source_index_schema(
-        self, repo_root: Path, *, expected_source_index_digest: str
-    ) -> ServiceResult[SourceIndexView]:
-        return self.source_index.migrate_source_index_schema(
-            repo_root, expected_source_index_digest=expected_source_index_digest
         )
 
     def get_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
@@ -953,6 +937,3 @@ class MaterialService:
             expected_update_id=expected_update_id,
             ctx=ctx,
         )
-
-    def commit_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
-        return self.source_index.commit_source_index(repo_root)

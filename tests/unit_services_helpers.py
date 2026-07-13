@@ -20,6 +20,49 @@ if TYPE_CHECKING:
     from lean_constellation.domain.repo_release import RepoRelease
 
 
+def lean_check_payload(
+    *,
+    passed: bool = True,
+    contains_sorry: bool = False,
+    contains_axiom: bool = False,
+    allow_sorry: bool | None = None,
+) -> dict[str, object]:
+    """Build the complete current LeanCheck truth shape for tests."""
+    allow = contains_sorry if allow_sorry is None else allow_sorry
+    status = "passed" if passed else "failed"
+    return {
+        "status": status,
+        "policy": "test",
+        "allow_sorry": allow,
+        "contains_sorry": contains_sorry,
+        "contains_axiom": contains_axiom,
+        "message": f"Lean check {status}.",
+        "diagnostics": {
+            "repo_root": ".",
+            "file_path": None,
+            "passed": passed,
+            "diagnostics": [],
+            "summary": f"Diagnostics {status}.",
+            "raw_excerpt": None,
+        },
+        "scan": {
+            "contains_sorry": contains_sorry,
+            "contains_admit": False,
+            "contains_axiom": contains_axiom,
+            "contains_opaque": False,
+            "contains_unsafe": False,
+            "sorry_count": int(contains_sorry),
+            "admit_count": 0,
+            "axiom_count": int(contains_axiom),
+            "opaque_count": 0,
+            "unsafe_count": 0,
+            "occurrences": [],
+            "summary": "Test source scan.",
+            "limitation": "Test fixture.",
+        },
+    }
+
+
 def publish_native_provider_release(
     runtime: LeanRuntimeServices,
     repo_root: Path,
@@ -206,8 +249,9 @@ def publish_adapter_provider_ready(
     assert projection.ok, projection.issues
     gate = runtime.adapter.check_adapter_ready(repo_root)
     assert gate.ok and gate.value is not None and gate.value.passed, gate.issues
-    ready = runtime.repo_workspace.metadata.set_provider_ready(repo_root, summary=summary)
-    assert ready.ok and ready.value is not None and ready.value.ready
+    ready = runtime.repo_workspace.metadata.mark_repo_stable(repo_root, summary=summary)
+    assert ready.ok and ready.value is not None
+    assert ready.value.publication.status.value == "stable"
 
 
 def make_runtime(

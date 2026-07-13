@@ -57,7 +57,7 @@ class DeclDependencyComponent:
             )
             if not revision.ok or revision.value is None:
                 continue
-            for dep_name in revision.value.decl_deps:
+            for dep_name in sorted(set(revision.value.statement_deps) | set(revision.value.proof_deps)):
                 if dep_name not in upstream:
                     upstream.add(dep_name)
                     queue.append(dep_name)
