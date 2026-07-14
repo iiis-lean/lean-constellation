@@ -669,7 +669,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
             if not result.pre_run_mutation_checkpoint_id:
                 _mark_flow_failed_from_stable_snapshot(ctx, "native_source_processing_checkpoint_id_missing", [])
                 return
-            snapshot = ctx.app.validation_snapshot.create_repo_stable_point_snapshot_with_id(
+            snapshot = ctx.app.snapshot_runtime.create_repo_stable_point_snapshot_with_id(
                 _native_repo_root(input_model),
                 snapshot_id=result.pre_run_mutation_checkpoint_id,
                 checkpoint_kind="before_native_source_processing",
@@ -1206,7 +1206,7 @@ def _record_stable_repo_snapshot(
     node_paths: list[str] | None = None,
     flow_state_field: str | None = None,
 ) -> None:
-    snapshot = ctx.app.validation_snapshot.create_repo_stable_point_snapshot(
+    snapshot = ctx.app.snapshot_runtime.create_repo_stable_point_snapshot(
         repo_root,
         checkpoint_kind=checkpoint_kind,
         label=label,

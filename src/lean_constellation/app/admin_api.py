@@ -21,6 +21,7 @@ from lean_constellation.app.external_takeover import (
     list_external_takeover_handoffs,
     list_external_takeover_tools,
 )
+from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.preparation import (
@@ -363,6 +364,7 @@ class RepoRunOptions(StrictModel):
     source_scope: SourceScope | None = None
     index_policy: Literal["auto", "update", "reuse"] | None = None
     root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None
+    max_parallel_content_node_tasks: int = Field(default=1, ge=1)
     additional_required_interfaces: list[DeclInterface] = Field(default_factory=list)
 
 
@@ -431,7 +433,6 @@ class RepoReleaseIdInput(StrictModel):
 
 class RepoReleaseRestoreInput(RepoReleaseIdInput):
     dry_run: bool = False
-    leave_runtime_paused: bool = True
 
 
 class RepoReleaseOrphanCleanupInput(StrictModel):
@@ -529,7 +530,6 @@ class RepoConfigUpdateInput(StrictModel):
     target_proof_availability: ProofAvailability | None = None
     work_mode: RepoWorkMode | None = None
     default_requirement_proof_availability: ProofAvailability | None = None
-    max_parallel_content_node_tasks: int | None = None
 
     @field_validator("repo_root", mode="before")
     @classmethod
@@ -603,15 +603,35 @@ class LeanAdminApi:
         *,
         workspace_root: Path | None = None,
         toolkit_state: object | None = None,
+        repo_runtime_registry: RepoRuntimeRegistry | None = None,
     ) -> None:
         self.runtime = runtime
         self.workspace_root = Path(workspace_root).expanduser() if workspace_root is not None else None
         self.toolkit_state = toolkit_state
+        self.repo_runtime_registry = repo_runtime_registry
 
     def start_requirement_group_bootstrap(
         self,
         input_model: StartRequirementGroupBootstrapInput,
     ) -> ServiceResult[AdminFlowStartView]:
+        registry = self.repo_runtime_registry
+        if registry is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_runtime_registry_required",
+                    "Requirement-group bootstrap requires the workspace repo runtime registry.",
+                )
+            )
+        if input_model.workspace_root.resolve() != registry.workspace_root.resolve():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "workspace_root_mismatch",
+                    "Requirement-group bootstrap workspace_root must match the runtime registry workspace.",
+                    field="workspace_root",
+                    current=str(input_model.workspace_root),
+                    expected=str(registry.workspace_root),
+                )
+            )
         draft = self.runtime.repo_workspace.preparation.build_preparation_input_from_group(
             input_model.workspace_root,
             target_repo=input_model.target_repo,
@@ -619,7 +639,7 @@ class LeanAdminApi:
         )
         if not draft.ok or draft.value is None:
             return self.runtime.foundation.fail(draft.issues)
-        prepared = self.runtime.repo_workspace.prepare_provider_repo_runtime_shell(
+        prepared = self.runtime.repo_workspace.prepare_provider_repo_shell(
             input_model.workspace_root,
             target_repo=input_model.target_repo,
             preparation_input=draft.value.input,
@@ -627,11 +647,19 @@ class LeanAdminApi:
         )
         if not prepared.ok or prepared.value is None:
             return self.runtime.foundation.fail(prepared.issues)
+        loaded = registry.initialize_and_load(input_model.target_repo)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
         refs = [
             f"{ref.consumer_repo}:{ref.requirement_name}"
             for ref in prepared.value.preparation_input.input.requirement_refs
         ]
-        return self.start_arbitrary_flow(
+        provider_admin = LeanAdminApi(
+            loaded.value,
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return provider_admin.start_arbitrary_flow(
             StartFlowInput(
                 flow_type="requirement_group_repo_bootstrap",
                 scope_id=f"repo:{input_model.target_repo}",
@@ -696,6 +724,7 @@ class LeanAdminApi:
             target_proof_availability=request.target_proof_availability,
             work_mode=request.work_mode, source_scope=request.source_scope,
             index_policy=request.index_policy, root_interface_policy=request.root_interface_policy,
+            max_parallel_content_node_tasks=request.max_parallel_content_node_tasks,
             additional_required_interfaces=request.additional_required_interfaces,
         )
         if not resolved.ok or resolved.value is None:
@@ -731,6 +760,7 @@ class LeanAdminApi:
             target_proof_availability=input_model.target_proof_availability,
             work_mode=input_model.work_mode, source_scope=input_model.source_scope,
             index_policy=input_model.index_policy, root_interface_policy=input_model.root_interface_policy,
+            max_parallel_content_node_tasks=input_model.max_parallel_content_node_tasks,
             additional_required_interfaces=input_model.additional_required_interfaces,
         )
         if not resolved.ok or resolved.value is None:
@@ -849,7 +879,7 @@ class LeanAdminApi:
                     return self.runtime.foundation.fail(gate.issues)
                 if not gate.value.passed:
                     return self.runtime.foundation.fail(gate.value.issues)
-                snapshot = self.runtime.validation_snapshot.create_repo_stable_point_snapshot(
+                snapshot = self.runtime.app.snapshot_runtime.create_repo_stable_point_snapshot(
                     repo_root, checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION,
                     label=f"before standalone native preprocessing for {repo_key}", scope_ids=[f"repo:{repo_key}"],
                 )
@@ -912,7 +942,6 @@ class LeanAdminApi:
             input_model.repo_root,
             release_id=input_model.release_id,
             dry_run=input_model.dry_run,
-            leave_runtime_paused=input_model.leave_runtime_paused,
         )
 
     def audit_repo_releases(self, repo_root: Path):  # noqa: ANN201
@@ -1079,7 +1108,6 @@ class LeanAdminApi:
             target_proof_availability=input_model.target_proof_availability,
             work_mode=input_model.work_mode,
             default_requirement_proof_availability=input_model.default_requirement_proof_availability,
-            max_parallel_content_node_tasks=input_model.max_parallel_content_node_tasks,
         )
 
     def get_repo_publication(self, repo_root: Path) -> ServiceResult[RepoPublicationView]:
@@ -1715,7 +1743,7 @@ class LeanAdminApi:
                     field="scope_ids",
                 )
             )
-        return self.runtime.validation_snapshot.create_repo_stable_point_snapshot(
+        return self.runtime.app.snapshot_runtime.create_repo_stable_point_snapshot(
             input_model.repo_root,
             checkpoint_kind="manual_test_stable_point",
             label=input_model.label,
@@ -1731,7 +1759,7 @@ class LeanAdminApi:
         )
 
     def create_snapshot(self, input_model: SnapshotCreateInput):
-        return self.runtime.validation_snapshot.create_repo_stable_point_snapshot(
+        return self.runtime.app.snapshot_runtime.create_repo_stable_point_snapshot(
             input_model.repo_root,
             checkpoint_kind=input_model.checkpoint_kind,
             label=input_model.label,
@@ -1741,7 +1769,7 @@ class LeanAdminApi:
         )
 
     def restore_snapshot(self, input_model: SnapshotRestoreInput):
-        return self.runtime.validation_snapshot.restore_repo_checkpoint_snapshot(
+        return self.runtime.app.snapshot_runtime.restore_repo_checkpoint_snapshot(
             input_model.repo_root,
             snapshot_id=input_model.snapshot_id,
             dry_run=input_model.dry_run,

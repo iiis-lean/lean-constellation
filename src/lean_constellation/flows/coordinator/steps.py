@@ -400,11 +400,30 @@ class MarkCoordinatorRepoReadyStep(BaseStep):
                 )
             )
         base_release_id = input_model.run_context.base_release_id if input_model.run_context is not None else None
-        prepared = _validation_snapshot(ctx).prepare_candidate_release(
+        from lean_constellation.flows.coordinator.release_runtime import check_repo_release_runtime_closeout
+
+        validation_snapshot = _validation_snapshot(ctx)
+        runtime_closeout = check_repo_release_runtime_closeout(
+            validation_snapshot.runtime,
+            repo_root,
+            owner_flow_id=flow.flow_id,
+            phase="prepare",
+        )
+        if not runtime_closeout.ok or runtime_closeout.value is None or not runtime_closeout.value.passed:
+            issues = runtime_closeout.issues if not runtime_closeout.ok else runtime_closeout.value.issues
+            code, message = _first_issue(issues, fallback_code="repo_release_runtime_not_closed")
+            return ctx.complete_step(MarkCoordinatorRepoReadyStepResult(
+                outcome="candidate_blocked",
+                repo_key=input_model.repo_key,
+                repo_summary=self.repo_summary,
+                error_code=code,
+                error_message=message,
+                summary=message,
+            ))
+        prepared = validation_snapshot.prepare_candidate_release(
             repo_root,
             base_release_id=base_release_id,
             summary=self.repo_summary,
-            owner_flow_id=flow.flow_id,
         )
         if not prepared.ok or prepared.value is None:
             code, message = _first_issue(prepared.issues, fallback_code="repo_release_prepare_failed")

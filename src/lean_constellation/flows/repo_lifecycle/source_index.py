@@ -110,7 +110,6 @@ class SourceIndexBuildInput(LeanRenderableFlowInput):
 class SourceIndexBuildState(BaseFlowState):
     state_type: Literal["source_index_build"] = "source_index_build"
     position: FlowPosition = Field(default_factory=lambda: FlowPosition(phase="validate_input"))
-    active_update_id: str
     pre_update_checkpoint_id: str
     resolved_file_paths: list[str] = Field(default_factory=list)
     readable_file_paths: list[str] = Field(default_factory=list)
@@ -170,7 +169,6 @@ class SourceIndexBuildFlow(LeanBusinessFlow):
                 **params.model_dump(),
             ),
             state=SourceIndexBuildState(
-                active_update_id=f"source_index_update_{suffix}",
                 pre_update_checkpoint_id=checkpoint_id,
             ),
         )
@@ -447,7 +445,7 @@ def _agent_context(input_model: SourceIndexBuildInput, state: SourceIndexBuildSt
         "forbidden_boundaries": [
             "Do not modify committed SourceIndex blocks, refs, links, or file payloads.",
             "New source evidence must stay inside active_file_scope.",
-            "Do not choose or expose a SourceIndex update id; the Flow owns it.",
+            "Use only the SourceIndex tools authorized by the current Flow and Step context.",
         ],
     }
 
@@ -458,7 +456,7 @@ def _builder_prompt(input_model: SourceIndexBuildInput, state: SourceIndexBuildS
         f"Run objective: {input_model.run_objective}",
         f"Active files: {', '.join(state.resolved_file_paths) or '(none)'}",
         "Append index material only for the active files. Existing committed semantic content is immutable.",
-        "Use the Flow-provided SourceIndex tools; the system injects update ownership.",
+        "Use the Flow-provided SourceIndex tools; the current Flow and Step context authorizes scoped writes.",
         "Submit the builder round only after the scoped draft is ready for review.",
     ]
     if state.latest_reviewer_feedback:

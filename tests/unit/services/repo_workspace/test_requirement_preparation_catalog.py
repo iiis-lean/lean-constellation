@@ -552,7 +552,7 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
     assert summaries.value[0].requirement_count == 2
 
 
-def test_provider_runtime_shell_derives_strictest_required_proof_availability(tmp_path: Path) -> None:
+def test_provider_shell_derives_strictest_required_proof_availability(tmp_path: Path) -> None:
     workspace = tmp_path
     _, metadata, requirement, preparation = _components()
     consumer_declared = workspace / "consumer_declared"
@@ -576,7 +576,7 @@ def test_provider_runtime_shell_derives_strictest_required_proof_availability(tm
     draft = preparation.build_preparation_input_from_group(workspace, target_repo="mixed_provider")
     assert draft.ok and draft.value is not None
 
-    prepared = preparation.prepare_provider_repo_runtime_shell(
+    prepared = preparation.prepare_provider_repo_shell(
         workspace,
         target_repo="mixed_provider",
         preparation_input=draft.value.input,
@@ -587,7 +587,7 @@ def test_provider_runtime_shell_derives_strictest_required_proof_availability(tm
     assert config.ok and config.value is not None
     assert config.value.config.target_proof_availability == ProofAvailability.PROVED
     assert config.value.config.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
-    assert (workspace / "mixed_provider" / ".agent_runtime").is_dir()
+    assert not (workspace / "mixed_provider" / ".agent_runtime").exists()
 
 
 def test_main_input_and_native_handoff_base_gate(tmp_path: Path) -> None:

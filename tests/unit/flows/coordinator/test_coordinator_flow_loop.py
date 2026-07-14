@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_runtime_kit.flow.contexts import StableStepTerminalContext
 from agent_runtime_kit.flow.models import FlowStatus
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus
@@ -122,8 +123,9 @@ def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object, FakeRuntimeSt
     lean_runtime.app.validation_snapshot = ValidationSnapshotService(
         lean_runtime,
         consistency=FakeConsistencyForReadiness(lean_runtime.foundation),
-        runtime_stability_provider=runtime_stability,
-        ark_snapshot_provider=ark_snapshot,
+    )
+    lean_runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
+        lean_runtime, ark_snapshot, runtime_stability=runtime_stability
     )
     flow_runtime = create_fake_lean_flow_runtime(
         tmp_path / "ark",

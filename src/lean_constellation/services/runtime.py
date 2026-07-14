@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from agent_runtime_kit.runtime import ARKServices, AppServices
 
 if TYPE_CHECKING:
+    from lean_constellation.app.runtime import ApplicationSnapshotRuntime
     from lean_constellation.services.adapter import AdapterService
     from lean_constellation.services.decl_graph import DeclGraphService
     from lean_constellation.services.external_clients import ExternalClientService
@@ -37,6 +38,7 @@ class LeanConstellationServices(AppServices):
     decl_graph: "DeclGraphService | None" = None
     validation_snapshot: "ValidationSnapshotService | None" = None
     source_index_checkpoint: "SourceIndexCheckpointAdapter | None" = None
+    snapshot_runtime: "ApplicationSnapshotRuntime | None" = None
     tool_facade: "ToolFacadeService | None" = None
 
     def validate(self) -> None:

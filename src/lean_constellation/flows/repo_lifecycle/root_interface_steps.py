@@ -487,7 +487,7 @@ def _validate_source_index_result_against_truth(
     current: SourceIndex,
     result: object,
 ) -> str | None:
-    if current.status != "committed" or current.active_update_id is not None or current.active_file_scope:
+    if current.status != "committed" or current.active_file_scope:
         return "Root-interface preparation requires current committed SourceIndex truth."
 
     baseline_blocks = baseline.blocks if baseline is not None else {}

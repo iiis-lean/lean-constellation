@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from lean_constellation.services.runtime import ARKServices, LeanConstellationServices, LeanRuntimeServices
 
@@ -24,8 +24,6 @@ class LeanProviderOverrides:
     content_readiness_provider: object | None = None
     formal_stage_provider: object | None = None
     decl_graph_audit_provider: object | None = None
-    runtime_stability_provider: object | None = None
-    ark_snapshot_provider: object | None = None
     runtime_gateway: object | None = None
     submission_gateway: object | None = None
 
@@ -102,8 +100,6 @@ def create_lean_runtime_services(
         content_readiness_provider=providers.content_readiness_provider or app.decl_graph,
         formal_stage_provider=providers.formal_stage_provider or app.decl_graph,
         decl_graph_audit_provider=providers.decl_graph_audit_provider or app.decl_graph,
-        runtime_stability_provider=providers.runtime_stability_provider,
-        ark_snapshot_provider=providers.ark_snapshot_provider,
     )
     app.tool_facade = ToolFacadeService(
         runtime,

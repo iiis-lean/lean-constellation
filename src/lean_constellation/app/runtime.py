@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import current_thread
 
@@ -31,7 +31,11 @@ from lean_constellation.services.foundation import GateReport, MutationSummaryVi
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_lean_runtime_services
 from lean_constellation.services.external_clients import ExternalClientConfig, LeanMcpToolkitClientConfig
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
-from lean_constellation.services.validation_snapshot.snapshot_restore import ArkRuntimeSnapshotRef, RepoCheckpointKind
+from lean_constellation.services.validation_snapshot.snapshot_restore import (
+    RepoCheckpointKind,
+    RepoCheckpointSnapshotView,
+    SnapshotRestoreView,
+)
 from lean_constellation.services.validation_snapshot.source_index_checkpoint import SourceIndexCheckpointAdapter
 from lean_constellation.tools import register_submit_tooling
 
@@ -144,8 +148,7 @@ def create_app_runtime_services(
         app_services=runtime.app,
     )
     ark_snapshot_provider = ArkRuntimeSnapshotProviderAdapter(runtime, ark.snapshot_service)
-    runtime.validation_snapshot.snapshot_restore.runtime_stability_provider = ark_snapshot_provider
-    runtime.validation_snapshot.snapshot_restore.ark_snapshot_provider = ark_snapshot_provider
+    runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(runtime, ark_snapshot_provider)
     runtime.app.source_index_checkpoint = SourceIndexCheckpointAdapter(runtime)
 
     if register_submit_tools:
@@ -291,8 +294,271 @@ def _with_runtime_gateway(
     return replace(providers, runtime_gateway=runtime_gateway)
 
 
+@dataclass(frozen=True)
+class ArkRuntimeSnapshotRef:
+    snapshot_id: str
+    scope_ids: list[str]
+
+
+class ApplicationSnapshotRuntime:
+    """Compose ARK runtime snapshots with pure Lean Constellation checkpoint archives."""
+
+    _NODE_SCOPE_KINDS = {
+        RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
+        RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL,
+    }
+
+    def __init__(
+        self,
+        runtime: LeanRuntimeServices,
+        ark_snapshot: "ArkRuntimeSnapshotProviderAdapter",
+        runtime_stability: object | None = None,
+    ) -> None:
+        self.runtime = runtime
+        self.ark_snapshot = ark_snapshot
+        self.runtime_stability = runtime_stability or ark_snapshot
+
+    def check_repo_stable_point(
+        self,
+        repo_root: Path,
+        *,
+        checkpoint_kind: RepoCheckpointKind | str,
+        node_paths: list[str] | None = None,
+        node_ids: list[str] | None = None,
+    ) -> ServiceResult[GateReport]:
+        kind = RepoCheckpointKind(checkpoint_kind)
+        resolved = self._resolve_node_scopes(Path(repo_root), kind, node_paths or [], node_ids or [])
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        runtime_gate = self.runtime_stability.check_repo_stable_point(
+            Path(repo_root), checkpoint_kind=kind, node_paths=resolved.value[0]
+        )
+        if not runtime_gate.ok or runtime_gate.value is None:
+            return self.runtime.foundation.fail(runtime_gate.issues)
+        business_gate = self.runtime.validation_snapshot.check_repo_checkpoint_business_gate(
+            Path(repo_root), checkpoint_kind=kind
+        )
+        if not business_gate.ok or business_gate.value is None:
+            return self.runtime.foundation.fail(business_gate.issues)
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.merge_gate_reports(
+                f"{kind.value}_stable_point",
+                [runtime_gate.value, business_gate.value],
+            )
+        )
+
+    def create_repo_stable_point_snapshot(
+        self,
+        repo_root: Path,
+        *,
+        checkpoint_kind: RepoCheckpointKind | str,
+        label: str | None = None,
+        node_paths: list[str] | None = None,
+        node_ids: list[str] | None = None,
+        scope_ids: list[str] | None = None,
+        snapshot_id: str | None = None,
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
+        repo_root = Path(repo_root)
+        kind = RepoCheckpointKind(checkpoint_kind)
+        if snapshot_id is not None:
+            existing = self.runtime.validation_snapshot.validate_repo_checkpoint_snapshot(
+                repo_root, snapshot_id=snapshot_id
+            )
+            if existing.ok and existing.value is not None:
+                if existing.value.checkpoint_kind != kind:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "repo_checkpoint_snapshot_id_conflict",
+                            "The requested checkpoint id belongs to a different checkpoint kind.",
+                            object_ref=snapshot_id,
+                            current=existing.value.checkpoint_kind.value,
+                            expected=kind.value,
+                        )
+                    )
+                return existing
+        resolved = self._resolve_node_scopes(repo_root, kind, node_paths or [], node_ids or [])
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        gate = self.check_repo_stable_point(
+            repo_root,
+            checkpoint_kind=kind,
+            node_paths=resolved.value[0],
+        )
+        if not gate.ok or gate.value is None:
+            return self.runtime.foundation.fail(gate.issues)
+        if not gate.value.passed:
+            return self.runtime.foundation.fail(gate.value.issues)
+        normalized_scopes = self._normalize_scope_ids(scope_ids)
+        if not normalized_scopes.ok:
+            return self.runtime.foundation.fail(normalized_scopes.issues)
+        effective_scopes = normalized_scopes.value or [f"repo:{repo_root.name}", *resolved.value[1]]
+        ark = self.ark_snapshot.create_runtime_snapshot(repo_root, scope_ids=effective_scopes, label=label)
+        if not ark.ok or ark.value is None:
+            return self.runtime.foundation.fail(ark.issues)
+        ark_snapshot_id = (
+            ark.value.snapshot_id
+            if isinstance(ark.value, ArkRuntimeSnapshotRef)
+            else str(ark.value)
+        )
+        return self.runtime.validation_snapshot.create_repo_checkpoint_archive(
+            repo_root,
+            checkpoint_kind=kind,
+            label=label,
+            snapshot_id=snapshot_id,
+            ark_runtime_snapshot_id=ark_snapshot_id,
+        )
+
+    def create_repo_stable_point_snapshot_with_id(
+        self,
+        repo_root: Path,
+        *,
+        snapshot_id: str,
+        checkpoint_kind: RepoCheckpointKind | str,
+        label: str | None = None,
+        scope_ids: list[str] | None = None,
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
+        return self.create_repo_stable_point_snapshot(
+            repo_root,
+            checkpoint_kind=checkpoint_kind,
+            label=label,
+            scope_ids=scope_ids,
+            snapshot_id=snapshot_id,
+        )
+
+    def restore_repo_checkpoint_snapshot(
+        self,
+        repo_root: Path,
+        *,
+        snapshot_id: str,
+        dry_run: bool = False,
+        leave_runtime_paused: bool = True,
+        prune_extra_files: bool = False,
+    ) -> ServiceResult[SnapshotRestoreView]:
+        repo_root = Path(repo_root)
+        validated = self.runtime.validation_snapshot.validate_repo_checkpoint_snapshot(
+            repo_root, snapshot_id=snapshot_id
+        )
+        if not validated.ok or validated.value is None:
+            return self.runtime.foundation.fail(validated.issues)
+        if dry_run:
+            return self.runtime.validation_snapshot.restore_repo_checkpoint_snapshot(
+                repo_root,
+                snapshot_id=snapshot_id,
+                dry_run=True,
+                prune_extra_files=prune_extra_files,
+            )
+        if validated.value.ark_runtime_snapshot_id is not None:
+            ark = self.ark_snapshot.restore_runtime_snapshot(
+                repo_root,
+                snapshot_id=validated.value.ark_runtime_snapshot_id,
+                leave_runtime_paused=leave_runtime_paused,
+            )
+            if not ark.ok:
+                return self.runtime.foundation.fail(ark.issues)
+        return self.runtime.validation_snapshot.restore_repo_checkpoint_snapshot(
+            repo_root,
+            snapshot_id=snapshot_id,
+            prune_extra_files=prune_extra_files,
+        )
+
+    def _normalize_scope_ids(self, scope_ids: list[str] | None) -> ServiceResult[list[str] | None]:
+        if scope_ids is None:
+            return self.runtime.foundation.ok(None)
+        normalized: list[str] = []
+        for index, raw_scope_id in enumerate(scope_ids):
+            scope_id = str(raw_scope_id).strip()
+            if not scope_id:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "checkpoint_scope_id_required",
+                        "Checkpoint scope_ids cannot contain an empty scope id.",
+                        field=f"scope_ids[{index}]",
+                    )
+                )
+            if scope_id not in normalized:
+                normalized.append(scope_id)
+        if not normalized:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "checkpoint_scope_ids_required",
+                    "Checkpoint scope_ids must contain at least one scope id when provided.",
+                )
+            )
+        return self.runtime.foundation.ok(normalized)
+
+    def _resolve_node_scopes(
+        self,
+        repo_root: Path,
+        checkpoint_kind: RepoCheckpointKind,
+        node_paths: list[str],
+        node_ids: list[str],
+    ) -> ServiceResult[tuple[list[str], list[str]]]:
+        if checkpoint_kind not in self._NODE_SCOPE_KINDS:
+            return self.runtime.foundation.ok(([], []))
+        paths: list[str] = []
+        scopes: list[str] = []
+        seen_node_ids: set[str] = set()
+        node_id_by_path: dict[str, str] = {}
+
+        def add_node(node, *, field: str) -> ServiceResult[None]:  # noqa: ANN001
+            existing_node_id = node_id_by_path.get(node.path)
+            if existing_node_id is not None and existing_node_id != node.node_id:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "checkpoint_node_ref_conflict",
+                        "Checkpoint node references contain conflicting node ids for the same path.",
+                        object_ref=node.path,
+                        field=field,
+                        details={
+                            "existing_node_id": existing_node_id,
+                            "incoming_node_id": node.node_id,
+                        },
+                    )
+                )
+            if node.node_id not in seen_node_ids:
+                paths.append(node.path)
+                scopes.append(f"repo:{repo_root.name}:node:{node.node_id}")
+                seen_node_ids.add(node.node_id)
+                node_id_by_path[node.path] = node.node_id
+            return self.runtime.foundation.ok(None)
+
+        for index, raw_path in enumerate(node_paths):
+            path = str(raw_path).strip()
+            if not path:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "checkpoint_node_path_required",
+                        "Content task checkpoint node_paths cannot contain an empty node path.",
+                        field=f"node_paths[{index}]",
+                    )
+                )
+            node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=path)
+            if not node.ok or node.value is None:
+                return self.runtime.foundation.fail(node.issues)
+            added = add_node(node.value, field="node_paths")
+            if not added.ok:
+                return self.runtime.foundation.fail(added.issues)
+        for index, raw_node_id in enumerate(node_ids):
+            node_id = str(raw_node_id).strip()
+            if not node_id:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "checkpoint_node_id_required",
+                        "Content task checkpoint node_ids cannot contain an empty node id.",
+                        field=f"node_ids[{index}]",
+                    )
+                )
+            node = self.runtime.node.node_tree.node_store.load_node_by_id(repo_root, node_id=node_id)
+            if not node.ok or node.value is None:
+                return self.runtime.foundation.fail(node.issues)
+            added = add_node(node.value, field="node_ids")
+            if not added.ok:
+                return self.runtime.foundation.fail(added.issues)
+        return self.runtime.foundation.ok((paths, scopes))
+
+
 class ArkRuntimeSnapshotProviderAdapter:
-    """Bridge ValidationSnapshotService to ARK AgentSnapshotService."""
+    """Application bridge from Lean checkpoint orchestration to ARK snapshots."""
 
     def __init__(self, runtime: LeanRuntimeServices, snapshot_service: AgentSnapshotService) -> None:
         self.runtime = runtime

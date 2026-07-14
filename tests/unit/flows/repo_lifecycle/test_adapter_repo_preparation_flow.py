@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_runtime_kit.flow.models import FlowStatus
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
@@ -81,10 +82,11 @@ class FakeLakeClient:
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
     lake = FakeLakeClient()
     lean_runtime = make_runtime(external_overrides={"lake": lake})
-    lean_runtime.app.validation_snapshot = ValidationSnapshotService(
+    lean_runtime.app.validation_snapshot = ValidationSnapshotService(lean_runtime)
+    lean_runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
         lean_runtime,
-        runtime_stability_provider=AlwaysStableRuntimeProvider(lean_runtime.foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(lean_runtime.foundation),
+        FakeArkSnapshotProvider(lean_runtime.foundation),
+        runtime_stability=AlwaysStableRuntimeProvider(lean_runtime.foundation),
     )
     flow_runtime = create_fake_lean_flow_runtime(
         tmp_path / "ark",

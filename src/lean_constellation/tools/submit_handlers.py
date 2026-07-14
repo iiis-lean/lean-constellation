@@ -67,7 +67,7 @@ from lean_constellation.flows.resource_request.submissions import (
 )
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.tool_facade import PreparedSubmissionView, ToolExecutionContext
-from lean_constellation.tools.source_index_ownership import resolve_source_index_update_owner
+from lean_constellation.tools.source_index_ownership import authorize_source_index_flow_context
 from lean_constellation.tools.submit_args import (
     SubmitAdapterCatalogBlockedArgs,
     SubmitAdapterCatalogReadyArgs,
@@ -304,14 +304,13 @@ def _resource_request(
     submission_cls: type[ChildFlowDispatchSubmission],
     tool_name: str = "submit_resource_request",
 ) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = runtime.material.submit_resource_request(
-        ctx,
+    normalized_target = runtime.material.prepare_resource_target(
         target_kind=args.target_kind,
         target=args.target,
         arxiv_version=args.arxiv_version,
     )
-    if not flow_input.ok or flow_input.value is None:
-        return runtime.foundation.fail(flow_input.issues)
+    if not normalized_target.ok or normalized_target.value is None:
+        return runtime.foundation.fail(normalized_target.issues)
     request = build_resource_curation_request(
         scope_id=repo_scope_id(ctx.repo.repo_key, ctx.runtime.scope_id),
         target_kind=args.target_kind,
@@ -330,7 +329,11 @@ def _resource_request(
         arxiv_version=args.arxiv_version,
         context_summary=args.context_summary,
     )
-    return _prepared(runtime, submission, agent_view={"child_flow": flow_input.value.model_dump(mode="json")})
+    return _prepared(
+        runtime,
+        submission,
+        agent_view={"normalized_target": normalized_target.value.model_dump(mode="json")},
+    )
 
 
 def submit_adapter_repo_choice(runtime: Any, ctx: ToolExecutionContext, args: SubmitAdapterRepoChoiceArgs) -> ServiceResult[PreparedSubmissionView]:
@@ -436,15 +439,17 @@ def submit_source_corpus_blocked(runtime: Any, ctx: ToolExecutionContext, args: 
 
 
 def submit_source_index_builder_round(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceIndexBuilderRoundArgs) -> ServiceResult[PreparedSubmissionView]:
-    owner = resolve_source_index_update_owner(
-        runtime, ctx, allowed_step_types={"source_index_builder_agent_step"}
+    authorized = authorize_source_index_flow_context(
+        runtime,
+        ctx,
+        allowed_step_types={"source_index_builder_agent_step"},
+        allowed_actor_roles={"worker", "admin"},
     )
-    if not owner.ok or owner.value is None:
-        return runtime.foundation.fail(owner.issues)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
     gate = runtime.material.submit_source_index_builder_round(
         ctx.repo_root,
         summary=args.summary,
-        expected_update_id=owner.value,
         ctx=ctx,
     )
     if not gate.ok or gate.value is None:
@@ -460,17 +465,19 @@ def submit_source_index_builder_round(runtime: Any, ctx: ToolExecutionContext, a
 
 
 def submit_source_index_review_round(runtime: Any, ctx: ToolExecutionContext, args: SubmitSourceIndexReviewRoundArgs) -> ServiceResult[PreparedSubmissionView]:
-    owner = resolve_source_index_update_owner(
-        runtime, ctx, allowed_step_types={"source_index_reviewer_agent_step"}
+    authorized = authorize_source_index_flow_context(
+        runtime,
+        ctx,
+        allowed_step_types={"source_index_reviewer_agent_step"},
+        allowed_actor_roles={"reviewer", "admin"},
     )
-    if not owner.ok or owner.value is None:
-        return runtime.foundation.fail(owner.issues)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
     gate = runtime.material.submit_source_index_review_round(
         ctx.repo_root,
         approved=args.approved,
         summary=args.summary,
         feedback=args.feedback,
-        expected_update_id=owner.value,
         ctx=ctx,
     )
     if not gate.ok or gate.value is None:
@@ -487,7 +494,7 @@ def submit_source_index_review_round(runtime: Any, ctx: ToolExecutionContext, ar
 
 
 def submit_root_interface_prepare_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitRootInterfacePrepareReadyArgs) -> ServiceResult[PreparedSubmissionView]:
-    gate = runtime.node.interface.submit_root_interface_prepare_ready(ctx.repo_root, summary=args.summary, ctx=ctx)
+    gate = runtime.node.interface.submit_root_interface_prepare_ready(ctx.repo_root, summary=args.summary)
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
     return _prepared(
@@ -498,7 +505,7 @@ def submit_root_interface_prepare_ready(runtime: Any, ctx: ToolExecutionContext,
 
 
 def submit_adapter_catalog_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitAdapterCatalogReadyArgs) -> ServiceResult[PreparedSubmissionView]:
-    gate = runtime.adapter.submit_adapter_catalog_ready(ctx.repo_root, summary=args.summary, ctx=ctx)
+    gate = runtime.adapter.submit_adapter_catalog_ready(ctx.repo_root, summary=args.summary)
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
     return _prepared(
@@ -515,7 +522,6 @@ def submit_adapter_catalog_blocked(runtime: Any, ctx: ToolExecutionContext, args
         missing_interfaces=args.missing_interfaces,
         evidence_summary=args.evidence_summary,
         suggested_next_action=args.suggested_next_action,
-        ctx=ctx,
     )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
@@ -542,11 +548,15 @@ def submit_resource_request(runtime: Any, ctx: ToolExecutionContext, args: Submi
     return _resource_request(runtime, ctx, args, submission_cls=cls)
 
 
-def _resource_flow_input(runtime: Any, ctx: ToolExecutionContext, target_kind: str, target: str, arxiv_version: str | None) -> ServiceResult[Any]:
-    return runtime.material.submit_resource_request(ctx, target_kind=target_kind, target=target, arxiv_version=arxiv_version)
+def _resource_target(runtime: Any, target_kind: str, target: str, arxiv_version: str | None) -> ServiceResult[Any]:
+    return runtime.material.prepare_resource_target(
+        target_kind=target_kind,
+        target=target,
+        arxiv_version=arxiv_version,
+    )
 
 
-def _current_resource_flow_input(
+def _current_resource_target_context(
     runtime: Any,
     ctx: ToolExecutionContext,
     *,
@@ -578,7 +588,10 @@ def _current_resource_flow_input(
                 expected=request_target.arxiv_version,
             )
         )
-    return _resource_flow_input(runtime, ctx, request_target.kind, request_target.target, request_target.arxiv_version)
+    normalized = _resource_target(runtime, request_target.kind, request_target.target, request_target.arxiv_version)
+    if not normalized.ok or normalized.value is None:
+        return runtime.foundation.fail(normalized.issues)
+    return runtime.foundation.ok((request_target, normalized.value))
 
 
 def _active_resource_draft_id_for_submit(runtime: Any, ctx: ToolExecutionContext) -> ServiceResult[str]:
@@ -594,12 +607,13 @@ def _active_resource_draft_id_for_submit(runtime: Any, ctx: ToolExecutionContext
 
 
 def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: SubmitResourceDuplicateArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _current_resource_flow_input(runtime, ctx, arxiv_version=args.arxiv_version)
-    if not flow_input.ok or flow_input.value is None:
-        return runtime.foundation.fail(flow_input.issues)
+    target_context = _current_resource_target_context(runtime, ctx, arxiv_version=args.arxiv_version)
+    if not target_context.ok or target_context.value is None:
+        return runtime.foundation.fail(target_context.issues)
+    request_target, normalized_target = target_context.value
     gate = runtime.material.submit_resource_duplicate(
         ctx.repo_root,
-        flow_input=flow_input.value,
+        target=normalized_target,
         existing_kind=args.existing_kind,
         duplicate_reason=args.duplicate_reason,
         existing_resource_key=args.existing_resource_key,
@@ -612,9 +626,9 @@ def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: Sub
         runtime,
         ResourceDuplicateSubmission(
             **_base_kwargs(ctx, tool_name="submit_resource_duplicate", summary=args.summary or gate.value.summary),
-            target_kind=flow_input.value.target_kind,
-            target=flow_input.value.target,
-            arxiv_version=flow_input.value.arxiv_version,
+            target_kind=request_target.kind,
+            target=request_target.target,
+            arxiv_version=request_target.arxiv_version,
             existing_kind=args.existing_kind,
             duplicate_reason=args.duplicate_reason,
             existing_resource_key=args.existing_resource_key,
@@ -626,9 +640,10 @@ def submit_resource_duplicate(runtime: Any, ctx: ToolExecutionContext, args: Sub
 
 
 def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args: SubmitLocalResourceCreatedArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _current_resource_flow_input(runtime, ctx, arxiv_version=args.arxiv_version)
-    if not flow_input.ok or flow_input.value is None:
-        return runtime.foundation.fail(flow_input.issues)
+    target_context = _current_resource_target_context(runtime, ctx, arxiv_version=args.arxiv_version)
+    if not target_context.ok or target_context.value is None:
+        return runtime.foundation.fail(target_context.issues)
+    request_target, normalized_target = target_context.value
     active_draft = _active_resource_draft_id_for_submit(runtime, ctx)
     if not active_draft.ok or active_draft.value is None:
         return runtime.foundation.fail(active_draft.issues)
@@ -642,7 +657,12 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
                 expected=active_draft.value,
             )
         )
-    gate = runtime.material.check_local_resource_created(ctx.repo_root, flow_input=flow_input.value, draft_id=args.draft_id, summary=args.summary)
+    gate = runtime.material.check_local_resource_created(
+        ctx.repo_root,
+        target=normalized_target,
+        draft_id=args.draft_id,
+        summary=args.summary,
+    )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
     if not gate.value.resource_key:
@@ -653,9 +673,9 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
         runtime,
         LocalResourceCreatedSubmission(
             **_base_kwargs(ctx, tool_name="submit_local_resource_created", summary=args.summary),
-            target_kind=flow_input.value.target_kind,
-            target=flow_input.value.target,
-            arxiv_version=flow_input.value.arxiv_version,
+            target_kind=request_target.kind,
+            target=request_target.target,
+            arxiv_version=request_target.arxiv_version,
             draft_id=args.draft_id,
             resource_key=gate.value.resource_key,
         ),
@@ -664,12 +684,13 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
 
 
 def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args: SubmitExternalRepoRequiredArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _current_resource_flow_input(runtime, ctx, arxiv_version=args.arxiv_version)
-    if not flow_input.ok or flow_input.value is None:
-        return runtime.foundation.fail(flow_input.issues)
+    target_context = _current_resource_target_context(runtime, ctx, arxiv_version=args.arxiv_version)
+    if not target_context.ok or target_context.value is None:
+        return runtime.foundation.fail(target_context.issues)
+    request_target, normalized_target = target_context.value
     gate = runtime.material.submit_external_repo_required(
         ctx.repo_root,
-        flow_input=flow_input.value,
+        target=normalized_target,
         reason=args.reason,
         source_description=args.source_description,
         suggested_repo_name=args.suggested_repo_name,
@@ -681,9 +702,9 @@ def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args:
         runtime,
         ExternalRepoRequiredSubmission(
             **_base_kwargs(ctx, tool_name="submit_external_repo_required", summary=gate.value.summary),
-            target_kind=flow_input.value.target_kind,
-            target=flow_input.value.target,
-            arxiv_version=flow_input.value.arxiv_version,
+            target_kind=request_target.kind,
+            target=request_target.target,
+            arxiv_version=request_target.arxiv_version,
             reason=args.reason,
             source_description=args.source_description,
             suggested_repo_name=args.suggested_repo_name,
@@ -694,19 +715,22 @@ def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args:
 
 
 def submit_resource_rejected(runtime: Any, ctx: ToolExecutionContext, args: SubmitResourceRejectedArgs) -> ServiceResult[PreparedSubmissionView]:
-    flow_input = _current_resource_flow_input(runtime, ctx, arxiv_version=args.arxiv_version)
-    if not flow_input.ok or flow_input.value is None:
-        return runtime.foundation.fail(flow_input.issues)
-    gate = runtime.material.submit_resource_rejected(ctx.repo_root, flow_input=flow_input.value, reason=args.reason)
+    target_context = _current_resource_target_context(runtime, ctx, arxiv_version=args.arxiv_version)
+    if not target_context.ok or target_context.value is None:
+        return runtime.foundation.fail(target_context.issues)
+    request_target, normalized_target = target_context.value
+    gate = runtime.material.submit_resource_rejected(
+        ctx.repo_root, target=normalized_target, reason=args.reason
+    )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
     return _prepared(
         runtime,
         ResourceRejectedSubmission(
             **_base_kwargs(ctx, tool_name="submit_resource_rejected", summary=gate.value.summary),
-            target_kind=flow_input.value.target_kind,
-            target=flow_input.value.target,
-            arxiv_version=flow_input.value.arxiv_version,
+            target_kind=request_target.kind,
+            target=request_target.target,
+            arxiv_version=request_target.arxiv_version,
             reason=args.reason,
             details=args.details,
         ),
@@ -866,12 +890,24 @@ def submit_repo_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoR
     ) != str(ctx.repo_root):
         return _fail(runtime, "coordinator_flow_context_invalid", "Current Flow does not own this repository-ready submission.")
     run_context = getattr(flow_input, "run_context", None)
+    from lean_constellation.flows.coordinator.release_runtime import check_repo_release_runtime_closeout
+
+    runtime_closeout = check_repo_release_runtime_closeout(
+        runtime,
+        ctx.repo_root,
+        owner_flow_id=ctx.runtime.flow_id,
+        phase="submission_preview",
+        allowed_agent_id=ctx.runtime.agent_id,
+    )
+    if not runtime_closeout.ok or runtime_closeout.value is None:
+        return runtime.foundation.fail(runtime_closeout.issues)
+    passed = _gate_or_fail(runtime, runtime_closeout.value)
+    if not passed.ok:
+        return runtime.foundation.fail(passed.issues)
     preview = runtime.validation_snapshot.preview_candidate_release(
         ctx.repo_root,
         base_release_id=getattr(run_context, "base_release_id", None),
         summary=args.summary,
-        owner_flow_id=ctx.runtime.flow_id,
-        submission_intent_preview=True,
     )
     if not preview.ok or preview.value is None:
         return runtime.foundation.fail(preview.issues)

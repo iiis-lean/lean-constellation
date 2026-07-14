@@ -2,7 +2,7 @@ from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
 
-from lean_constellation.services.material import MaterialService, ResourceMetadataInput, ResourceTargetView
+from lean_constellation.services.material import ResourceMetadataInput, ResourceTargetView
 from lean_constellation.services.material.resource_curation import ResourceArtifactView
 
 
@@ -193,23 +193,21 @@ def test_resource_curation_local_file_and_external_decisions(tmp_path: Path) -> 
     service = make_runtime().material
     local_file = tmp_path / "note.txt"
     local_file.write_text("important resource\n", encoding="utf-8")
-    flow_input = service.submit_resource_request(
-        {"repo_root": tmp_path, "current_node": "Main"},
+    target = service.resource_curation.prepare_resource_target(
         target_kind="local_file",
         target=str(local_file),
     )
-    assert flow_input.ok
-    assert flow_input.value is not None
-    assert flow_input.value.normalized_target.kind == "local_file"
-    assert flow_input.value.caller_node == "Main"
+    assert target.ok
+    assert target.value is not None
+    assert target.value.kind == "local_file"
 
-    duplicate = service.find_duplicate_resource(tmp_path, target=flow_input.value.normalized_target)
+    duplicate = service.find_duplicate_resource(tmp_path, target=target.value)
     assert duplicate.ok
     assert duplicate.value is not None
     decision = service.resource_curation.decide_local_or_external(
-        {"repo_root": tmp_path},
-        target=flow_input.value.normalized_target,
+        target=target.value,
         duplicate=duplicate.value,
+        repo_root=tmp_path,
     )
     assert decision.ok
     assert decision.value is not None
@@ -217,7 +215,7 @@ def test_resource_curation_local_file_and_external_decisions(tmp_path: Path) -> 
 
     curated = service.resource_curation.curate_local_resource(
         tmp_path,
-        target=flow_input.value.normalized_target,
+        target=target.value,
         temp_root=tmp_path / "curated",
     )
     assert curated.ok
@@ -232,31 +230,30 @@ def test_resource_curation_local_file_and_external_decisions(tmp_path: Path) -> 
     assert dir_target.ok
     assert dir_target.value is not None
     dir_decision = service.resource_curation.decide_local_or_external(
-        {"repo_root": tmp_path},
         target=dir_target.value,
         duplicate=None,
+        repo_root=tmp_path,
     )
     assert dir_decision.ok
     assert dir_decision.value is not None
     assert dir_decision.value.decision == "external_repo_required"
 
 
-def test_resource_curation_input_validation_and_context(tmp_path: Path) -> None:
+def test_resource_curation_target_validation_is_context_free(tmp_path: Path) -> None:
     service = make_runtime().material
     local_file = tmp_path / "note.txt"
     local_file.write_text("note\n", encoding="utf-8")
 
-    flow_input = service.submit_resource_request(
-        {"repo_root": tmp_path, "node_path": "Main.Source"},
+    target = service.resource_curation.prepare_resource_target(
         target_kind="local_file",
         target=str(local_file),
     )
-    missing_target = service.submit_resource_request({}, target_kind="local_file", target=" ")
-    invalid_kind = service.submit_resource_request({}, target_kind="ftp", target="x")  # type: ignore[arg-type]
+    missing_target = service.resource_curation.prepare_resource_target(target_kind="local_file", target=" ")
+    invalid_kind = service.resource_curation.prepare_resource_target(target_kind="ftp", target="x")  # type: ignore[arg-type]
 
-    assert flow_input.ok and flow_input.value is not None
-    assert flow_input.value.caller_repo_root == str(tmp_path)
-    assert flow_input.value.caller_node == "Main.Source"
+    assert target.ok and target.value is not None
+    assert target.value.kind == "local_file"
+    assert target.value.target == str(local_file)
     assert not missing_target.ok
     assert missing_target.issues[0].kind == "missing_resource_target"
     assert not invalid_kind.ok
@@ -316,9 +313,9 @@ def test_resource_curation_decision_duplicate_source_duplicate_and_rejected(tmp_
     assert registered.ok and registered.value is not None
     duplicate = service.find_duplicate_resource(tmp_path, target=target.value)
     resource_duplicate_decision = service.resource_curation.decide_local_or_external(
-        {"repo_root": tmp_path},
         target=target.value,
         duplicate=duplicate.value,
+        repo_root=tmp_path,
     )
     resource_duplicate_result = service.resource_curation.build_curator_result(resource_duplicate_decision.value)
 
@@ -328,20 +325,19 @@ def test_resource_curation_decision_duplicate_source_duplicate_and_rejected(tmp_
     arxiv_target = service.normalize_resource_target("2401.00001")
     assert arxiv_target.ok and arxiv_target.value is not None
     source_duplicate_decision = service.resource_curation.decide_local_or_external(
-        {"repo_root": tmp_path},
         target=arxiv_target.value,
         duplicate=None,
+        repo_root=tmp_path,
     )
 
     rejected = service.resource_curation.decide_local_or_external(
-        {},
         target=ResourceTargetView(kind="unknown", target="x", canonical_locator="unknown:x", summary="bad"),
         duplicate=None,
     )
     external = service.resource_curation.decide_local_or_external(
-        {"prefer_external_repo": "true"},
         target=arxiv_target.value,
         duplicate=None,
+        prefer_external_repo=True,
     )
 
     assert resource_duplicate_decision.ok and resource_duplicate_decision.value is not None
@@ -364,7 +360,6 @@ def test_resource_curation_result_branches_and_curate_failure(tmp_path: Path) ->
     assert target.ok and target.value is not None
 
     duplicate_decision = service.resource_curation.decide_local_or_external(
-        {},
         target=target.value,
         duplicate=service.resource_library.find_duplicate_resource(tmp_path, target=target.value).value,
     )
@@ -372,7 +367,6 @@ def test_resource_curation_result_branches_and_curate_failure(tmp_path: Path) ->
     local_missing_resource = service.resource_curation.build_curator_result(duplicate_decision.value)
 
     rejected_decision = service.resource_curation.decide_local_or_external(
-        {},
         target=ResourceTargetView(kind="unknown", target="x", canonical_locator="unknown:x", summary="bad"),
         duplicate=None,
     )
@@ -381,14 +375,13 @@ def test_resource_curation_result_branches_and_curate_failure(tmp_path: Path) ->
 
     dir_target = service.normalize_resource_target(str(tmp_path))
     assert dir_target.ok and dir_target.value is not None
-    external_decision = service.resource_curation.decide_local_or_external({}, target=dir_target.value, duplicate=None)
+    external_decision = service.resource_curation.decide_local_or_external(target=dir_target.value, duplicate=None)
     assert external_decision.ok and external_decision.value is not None
     external_result = service.resource_curation.build_curator_result(external_decision.value)
 
     duplicate_view = service.resource_library.find_duplicate_resource(tmp_path, target=target.value)
     assert duplicate_view.ok and duplicate_view.value is not None
     duplicate_decision_direct = service.resource_curation.decide_local_or_external(
-        {},
         target=target.value,
         duplicate=duplicate_view.value,
     )

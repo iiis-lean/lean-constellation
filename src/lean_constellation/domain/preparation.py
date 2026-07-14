@@ -144,18 +144,9 @@ class ProviderRepoShellView(StrictModel):
     summary: str
 
 
-class RepoRuntimeBootstrapView(StrictModel):
-    repo_root: str
-    runtime_root: str
-    created: bool
-    initialized_paths: list[str] = Field(default_factory=list)
-    summary: str
-
-
-class ProviderRepoRuntimeShellView(StrictModel):
+class ProviderRepoPreparationView(StrictModel):
     shell: RepoShellView
     preparation_input: RepoPreparationInputView
-    runtime_bootstrap: RepoRuntimeBootstrapView
     summary: str
 
 

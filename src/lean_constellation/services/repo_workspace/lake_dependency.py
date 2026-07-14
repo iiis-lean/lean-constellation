@@ -55,7 +55,6 @@ class RepoSkeletonView(StrictModel):
     lake_manifest_path: str | None = None
     linked_packages: list[str] = Field(default_factory=list)
     lake_check_summary: str | None = None
-    next_entry_flow: str = "native_repo_preparation"
     summary: str
     written_files: list[str] = Field(default_factory=list)
 
@@ -65,7 +64,6 @@ class AdapterSetupView(StrictModel):
     upstream_summary: str
     lake_check_summary: str | None = None
     trusted_build: bool = False
-    next_entry_flow: str = "adapter_repo_preparation"
     summary: str
     written_files: list[str] = Field(default_factory=list)
 

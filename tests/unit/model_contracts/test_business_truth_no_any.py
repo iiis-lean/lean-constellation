@@ -22,7 +22,7 @@ from lean_constellation.services.material.resource_library import ResourceDraft,
 from lean_constellation.services.material.source_index import SourceBlock, SourceBlockRef, SourceFileIndex, SourceIndex, SourceLink
 from lean_constellation.services.node.contract_fields import ContractMaterialRef, NodeDep, NodeMathlibDeclUse, NodeMathlibModuleUse
 from lean_constellation.services.node.node_tree import NodeContract, NodeMetadata
-from lean_constellation.services.validation_snapshot.snapshot_restore import RepoCheckpointSnapshotManifest, SnapshotNodeRef
+from lean_constellation.services.validation_snapshot.snapshot_restore import RepoCheckpointSnapshotManifest
 
 
 BUSINESS_TRUTH_MODELS = [
@@ -55,7 +55,6 @@ BUSINESS_TRUTH_MODELS = [
     ResourceMetadata,
     RepoDependencyRequirement,
     RepoPreparationInput,
-    SnapshotNodeRef,
     RepoCheckpointSnapshotManifest,
     RepoRelease,
 ]

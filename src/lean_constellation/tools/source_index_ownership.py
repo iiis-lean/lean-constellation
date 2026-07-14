@@ -1,15 +1,16 @@
-"""Flow-owned SourceIndex update context for Agent-facing tools."""
+"""Runtime context authorization for Agent-facing SourceIndex tools."""
 
 from __future__ import annotations
 
 from lean_constellation.services.tool_facade import ToolExecutionContext
 
 
-def resolve_source_index_update_owner(
+def authorize_source_index_flow_context(
     runtime,
     ctx: ToolExecutionContext,
     *,
     allowed_step_types: set[str],
+    allowed_actor_roles: set[str],
 ):
     flow_id = ctx.runtime.flow_id
     step_id = ctx.runtime.step_id
@@ -27,12 +28,11 @@ def resolve_source_index_update_owner(
         return runtime.foundation.fail(
             runtime.foundation.issue("source_index_flow_context_invalid", str(exc), object_ref=flow_id)
         )
-    update_id = getattr(getattr(flow, "state", None), "active_update_id", None)
-    if getattr(flow, "flow_type", None) != "source_index_build" or not update_id:
+    if getattr(flow, "flow_type", None) != "source_index_build":
         return runtime.foundation.fail(
             runtime.foundation.issue(
-                "source_index_update_owner_mismatch",
-                "Current Flow does not own an active SourceIndex update.",
+                "source_index_flow_context_mismatch",
+                "Current Flow is not a SourceIndex build Flow.",
                 object_ref=flow_id,
             )
         )
@@ -47,12 +47,21 @@ def resolve_source_index_update_owner(
     if getattr(step, "flow_id", None) != flow_id or getattr(step, "step_type", None) not in allowed_step_types:
         return runtime.foundation.fail(
             runtime.foundation.issue(
-                "source_index_update_owner_mismatch",
-                "Current step does not own this SourceIndex operation.",
+                "source_index_step_context_mismatch",
+                "Current Step does not authorize this SourceIndex operation.",
                 object_ref=step_id,
             )
         )
-    return runtime.foundation.ok(str(update_id))
+    if ctx.actor.role not in allowed_actor_roles:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "source_index_actor_context_mismatch",
+                "Current actor role does not authorize this SourceIndex operation.",
+                current=ctx.actor.role,
+                expected=", ".join(sorted(allowed_actor_roles)),
+            )
+        )
+    return runtime.foundation.ok(None)
 
 
-__all__ = ["resolve_source_index_update_owner"]
+__all__ = ["authorize_source_index_flow_context"]

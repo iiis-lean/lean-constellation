@@ -64,12 +64,14 @@ class AdapterInputView(StrictModel):
     summary: str
 
 
-class AdapterCatalogSubmissionView(StrictModel):
-    submission_type: Literal["adapter_catalog_ready", "adapter_catalog_blocked"]
-    accepted: bool
+class AdapterCatalogReadyGateView(StrictModel):
     summary: str
-    gate: GateReport | None = None
-    reason: str | None = None
+    gate: GateReport
+
+
+class AdapterCatalogBlockedResultView(StrictModel):
+    summary: str
+    reason: str
     missing_interfaces: list[str] = Field(default_factory=list)
     evidence_summary: str | None = None
     suggested_next_action: str | None = None
@@ -526,9 +528,7 @@ class AdapterService:
         repo_root: Path,
         *,
         summary: str,
-        ctx: object | None = None,
-    ) -> ServiceResult[AdapterCatalogSubmissionView]:
-        del ctx
+    ) -> ServiceResult[AdapterCatalogReadyGateView]:
         if not summary or not summary.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_ready_summary_required", "Adapter ready submit summary is required.", field="summary"))
         gate = self.check_adapter_catalog_ready_preflight(repo_root)
@@ -537,9 +537,7 @@ class AdapterService:
         if not gate.value.passed:
             return self.runtime.foundation.fail(gate.value.issues)
         return self.runtime.foundation.ok(
-            AdapterCatalogSubmissionView(
-                submission_type="adapter_catalog_ready",
-                accepted=True,
+            AdapterCatalogReadyGateView(
                 summary=summary.strip(),
                 gate=gate.value,
             )
@@ -553,9 +551,8 @@ class AdapterService:
         missing_interfaces: list[str] | None = None,
         evidence_summary: str | None = None,
         suggested_next_action: str | None = None,
-        ctx: object | None = None,
-    ) -> ServiceResult[AdapterCatalogSubmissionView]:
-        del repo_root, ctx
+    ) -> ServiceResult[AdapterCatalogBlockedResultView]:
+        del repo_root
         if not reason or not reason.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_blocked_reason_required", "Blocked submit reason is required.", field="reason"))
         if missing_interfaces and not (evidence_summary and evidence_summary.strip()):
@@ -567,9 +564,7 @@ class AdapterService:
                 )
             )
         return self.runtime.foundation.ok(
-            AdapterCatalogSubmissionView(
-                submission_type="adapter_catalog_blocked",
-                accepted=True,
+            AdapterCatalogBlockedResultView(
                 reason=reason.strip(),
                 missing_interfaces=missing_interfaces or [],
                 evidence_summary=evidence_summary,

@@ -10,10 +10,8 @@ from lean_constellation.services.repo_workspace.lake_dependency import (
 )
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
 from lean_constellation.services.repo_workspace.repo_preparation import (
-    DefaultProviderRepoRuntimeBootstrap,
     PreparationInterfaceAppendView,
     PreparationStartPreflightView,
-    ProviderRepoRuntimeBootstrapProvider,
     RepoPreparationComponent,
 )
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
@@ -47,8 +45,6 @@ __all__ = [
     "RepoRequirementComponent",
     "RepoSkeletonView",
     "RepoWorkspaceService",
-    "DefaultProviderRepoRuntimeBootstrap",
-    "ProviderRepoRuntimeBootstrapProvider",
     "PreparationInterfaceAppendView",
     "PreparationStartPreflightView",
     "WorkspaceCatalogComponent",

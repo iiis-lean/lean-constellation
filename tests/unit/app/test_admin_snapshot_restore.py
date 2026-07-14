@@ -10,7 +10,7 @@ from lean_constellation.app import (
     SnapshotCreateInput,
     SnapshotRestoreInput,
     create_app_runtime_services,
-    initialize_repo_runtime,
+    initialize_repo_business_truth,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.flows.common.agent_steps import DeclStageReviewerAgentStep
@@ -22,7 +22,7 @@ from tests.unit_services_helpers import publish_native_provider_release
 def test_admin_snapshot_create_and_restore_leaves_runtime_paused(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     repo_root = tmp_path / "Repo"
-    assert initialize_repo_runtime(runtime, repo_root).ok
+    assert initialize_repo_business_truth(runtime, repo_root).ok
     prep = RepoPreparationInput(
         goal="Prepare provider.",
         source_corpus_mode=SourceCorpusMode.PREPARE,
@@ -45,14 +45,15 @@ def test_admin_snapshot_create_and_restore_leaves_runtime_paused(tmp_path) -> No
 
     assert restored.ok and restored.value is not None
     assert marker.read_text(encoding="utf-8") == "before\n"
-    assert restored.value.leave_runtime_paused is True
+    assert runtime.ark.pause_controller is not None
+    assert runtime.ark.pause_controller.is_paused()
     assert runtime.ark.pause_controller.is_paused() is True
 
 
 def test_admin_snapshot_restore_restores_decl_review_step_state(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     repo_root = tmp_path / "Repo"
-    assert initialize_repo_runtime(runtime, repo_root).ok
+    assert initialize_repo_business_truth(runtime, repo_root).ok
     scope_id = "repo:Repo"
     flow_id = runtime.ark.flow_service.start_flow(
         FlowRequest(
@@ -124,8 +125,8 @@ def test_requirement_resume_after_snapshot_restore_uses_original_flow_and_agent(
     consumer = tmp_path / "Consumer"
     provider = tmp_path / "Provider"
     runtime = create_app_runtime_services(runtime_root=consumer / ".agent_runtime")
-    assert initialize_repo_runtime(runtime, consumer).ok
-    assert initialize_repo_runtime(runtime, provider).ok
+    assert initialize_repo_business_truth(runtime, consumer).ok
+    assert initialize_repo_business_truth(runtime, provider).ok
     assert runtime.repo_workspace.create_requirement_with_interfaces(
         consumer,
         name="need_provider",
@@ -222,7 +223,7 @@ def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp
     repo_root = tmp_path / "Repo"
     runtime_root = repo_root / ".agent_runtime"
     runtime = create_app_runtime_services(runtime_root=runtime_root)
-    assert initialize_repo_runtime(runtime, repo_root).ok
+    assert initialize_repo_business_truth(runtime, repo_root).ok
     store = runtime.ark.agent_service.store
     repo_scope = "repo:Repo"
     node_scope = "repo:Repo:node:n_core"
@@ -244,7 +245,7 @@ def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp
     )
 
     assert created.ok and created.value is not None, created.issues
-    assert set(created.value.ark_runtime_scope_ids) == {repo_scope, node_scope}
+    assert created.value.ark_runtime_snapshot_id is not None
     ark_manifest_path = (
         runtime_root
         / "snapshots"
@@ -264,6 +265,7 @@ def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp
         )
     )
     assert second.ok and second.value is not None, second.issues
+    assert second.value.ark_runtime_snapshot_id is not None
     second_ark_manifest_path = (
         runtime_root
         / "snapshots"

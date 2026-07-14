@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from lean_constellation.app import create_app_runtime_services, initialize_repo_runtime
+from lean_constellation.app import create_app_runtime_services
+from lean_constellation.app.bootstrap import initialize_repo_business_truth
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
@@ -18,7 +19,7 @@ from lean_constellation.domain.repo_run import SourceScope
 def _repo(tmp_path):
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     root = tmp_path / "Provider"
-    assert initialize_repo_runtime(runtime, root).ok
+    assert initialize_repo_business_truth(runtime, root).ok
     assert runtime.repo_workspace.preparation.write_preparation_input(
         root,
         input=RepoPreparationInput(
@@ -33,12 +34,18 @@ def _repo(tmp_path):
 
 def test_initial_and_continuation_resolvers_have_distinct_scope_defaults(tmp_path) -> None:
     runtime, root = _repo(tmp_path)
-    initial = runtime.repo_workspace.run.resolve_initial_repo_run_spec(root)
+    initial = runtime.repo_workspace.run.resolve_initial_repo_run_spec(
+        root, max_parallel_content_node_tasks=3
+    )
     continuation = runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
-        root, run_objective="Prove the released declarations."
+        root,
+        run_objective="Prove the released declarations.",
+        max_parallel_content_node_tasks=5,
     )
     assert initial.ok and initial.value.source_scope == SourceScope(mode="all")
     assert continuation.ok and continuation.value.source_scope == SourceScope(mode="none")
+    assert initial.value.max_parallel_content_node_tasks == 3
+    assert continuation.value.max_parallel_content_node_tasks == 5
     assert not runtime.repo_workspace.run.resolve_continuation_repo_run_spec(root).ok
 
 
@@ -46,17 +53,18 @@ def test_apply_run_config_preserves_unrelated_fields_and_checks_base(tmp_path) -
     runtime, root = _repo(tmp_path)
     assert runtime.repo_workspace.metadata.update_repo_config(
         root, default_requirement_proof_availability=ProofAvailability.PROVED,
-        max_parallel_content_node_tasks=7,
     ).ok
     spec = runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
         root,
         run_objective="Declare the selected interface.",
         target_proof_availability=ProofAvailability.DECLARED,
         work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        max_parallel_content_node_tasks=7,
     ).value
     applied = runtime.repo_workspace.run.apply_repo_run_config(root, run_spec=spec, expected_base_release_id=None)
     assert applied.ok and applied.value is not None
-    assert applied.value.config.max_parallel_content_node_tasks == 7
+    assert spec.max_parallel_content_node_tasks == 7
+    assert "max_parallel_content_node_tasks" not in applied.value.config.model_dump()
     assert applied.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
     assert not runtime.repo_workspace.run.apply_repo_run_config(
         root, run_spec=spec, expected_base_release_id="release-drift"

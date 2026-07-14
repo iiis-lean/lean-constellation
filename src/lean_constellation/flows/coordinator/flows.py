@@ -300,11 +300,21 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
                     ctx, "repo_release_finalize_failed", [ValueError("Release finalizer service or repo_root missing.")]
                 )
                 return
+            from lean_constellation.flows.coordinator.release_runtime import check_repo_release_runtime_closeout
+
+            runtime_closeout = check_repo_release_runtime_closeout(
+                validation_snapshot.runtime,
+                repo_root,
+                owner_flow_id=self.flow_id,
+                phase="commit",
+            )
+            if not runtime_closeout.ok or runtime_closeout.value is None or not runtime_closeout.value.passed:
+                issues = runtime_closeout.issues if not runtime_closeout.ok else runtime_closeout.value.issues
+                _mark_flow_failed_from_stable_snapshot(ctx, "repo_release_runtime_not_closed", list(issues))
+                return
             committed = validation_snapshot.commit_prepared_release(
                 repo_root,
                 prepared=result.prepared_release,
-                owner_flow_id=self.flow_id,
-                scope_ids=[self.scope_id],
             )
             if not committed.ok:
                 publication = ctx.app.repo_workspace.metadata.get_repo_publication(repo_root)
@@ -572,7 +582,7 @@ def _record_stable_repo_snapshot(
             _mark_flow_failed_from_stable_snapshot(ctx, failure_type, node.issues)
             return
         scope_ids.append(node_scope_id(repo_key, node.value.node_id))
-    snapshot = ctx.app.validation_snapshot.create_repo_stable_point_snapshot(
+    snapshot = ctx.app.snapshot_runtime.create_repo_stable_point_snapshot(
         repo_root,
         checkpoint_kind=checkpoint_kind,
         label=label,

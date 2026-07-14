@@ -60,7 +60,7 @@ def _released_runtime(tmp_path):
     runtime, lean_runtime, _ = _runtime(tmp_path)
     root = tmp_path / "workspace" / "Provider"
     _prepare_native_repo(lean_runtime, root, allow_interface_supplement=False)
-    checkpoint = lean_runtime.validation_snapshot.create_repo_stable_point_snapshot(
+    checkpoint = lean_runtime.app.snapshot_runtime.create_repo_stable_point_snapshot(
         root, checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION,
         label="release baseline", scope_ids=["repo:Provider"],
     )
@@ -114,7 +114,7 @@ def test_continuation_checkpoint_materialization_failure_fails_parent(tmp_path) 
     def fail_snapshot(*_args, **_kwargs):  # noqa: ANN002, ANN003
         raise OSError("forced checkpoint failure")
 
-    lean_runtime.validation_snapshot.create_repo_stable_point_snapshot_with_id = fail_snapshot
+    lean_runtime.app.snapshot_runtime.create_repo_stable_point_snapshot_with_id = fail_snapshot
     step_id = runtime.flow_service.advance_flow(flow_id)
     assert step_id is not None
     runtime.run_step(step_id)

@@ -7,6 +7,7 @@ import pytest
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
+from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
 from lean_constellation.domain.repo_run import SourceScope
@@ -102,6 +103,71 @@ def _create_scope_with_public_decl(runtime, repo_root: Path) -> DeclRef:
     assert runtime.foundation.store.write_json_atomic(contract_path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
     assert runtime.node.commit_scope_contract(repo_root, scope_path="Main.Provider", summary="Expose helper.").ok
     return ref
+
+
+def test_node_delete_application_guard_reports_running_content_task(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal.",
+        boundary="Topic boundary.",
+        objective="Develop the topic.",
+        success_criteria="Topic complete.",
+    ).ok
+    node = runtime.node.node_tree.get_node(tmp_path, path="Main.Topic")
+    assert node.ok and node.value is not None
+    scope_id = node_scope_id(tmp_path.name, node.value.node_id)
+    running_flow = SimpleNamespace(
+        flow_id="content_running",
+        flow_type="content_node_task",
+        scope_id=scope_id,
+        status="running",
+    )
+    runtime.ark.flow_service = SimpleNamespace(list_flows=lambda **_kwargs: [running_flow])
+    runtime.ark.step_service = SimpleNamespace(list_steps=lambda **_kwargs: [])
+    runtime.ark.agent_service = SimpleNamespace(list_agents=lambda **_kwargs: [])
+
+    preview = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+        tool_name="preview_delete_node",
+        flat_args={"node_path": "Main.Topic"},
+    ))
+
+    assert preview["deletable"] is False
+    assert "running_content_task:content_running" in preview["blocking_reasons"]
+
+
+def test_node_delete_application_guard_fails_closed_when_runtime_scan_fails(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal.",
+        boundary="Topic boundary.",
+        objective="Develop the topic.",
+        success_criteria="Topic complete.",
+    ).ok
+    runtime.ark.flow_service = SimpleNamespace()
+    runtime.ark.step_service = SimpleNamespace()
+    runtime.ark.agent_service = SimpleNamespace()
+
+    preview = _unwrap_tool_result(runtime.tool_facade.invoke_agent_tool(
+        _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+        tool_name="preview_delete_node",
+        flat_args={"node_path": "Main.Topic"},
+    ))
+    assert preview["deletable"] is False
+    assert any(reason.startswith("runtime_inspection_failed:") for reason in preview["blocking_reasons"])
+
+    issues = _unwrap_tool_failure(runtime.tool_facade.invoke_agent_tool(
+        _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
+        tool_name="delete_node",
+        flat_args={"node_path": "Main.Topic", "reason": "Retire obsolete topic."},
+    ))
+    assert issues[0].kind == "node_delete_blocked"
 
 
 class _FakePublicDeclProvider:
@@ -679,7 +745,7 @@ def test_source_range_validation_and_preview_tools_invoke_material_service(tmp_p
     assert invalid["issue_code"] == "source_ref_range_invalid"
 
 
-def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tmp_path: Path) -> None:
+def test_source_index_write_tools_authorize_flow_context_and_reject_nonowner_steps(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
@@ -704,7 +770,6 @@ def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tm
     assert resolved.ok and resolved.value is not None
     opened = runtime.material.open_source_index_update(
         tmp_path,
-        update_id="owned-update",
         resolved_scope=resolved.value,
         index_policy="auto",
     )
@@ -721,7 +786,6 @@ def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tm
                 source_scope=SourceScope(mode="all"),
                 start_reason="initial",
             ),
-            state=SimpleNamespace(active_update_id="owned-update"),
         ),
         "flow_source_index_reviewer": SimpleNamespace(
             flow_type="source_index_build",
@@ -734,7 +798,6 @@ def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tm
                 start_reason="initial",
             ),
             state=SimpleNamespace(
-                active_update_id="owned-update",
                 review_round=1,
                 latest_reviewer_feedback="Tighten the theorem range.",
             ),
@@ -795,23 +858,6 @@ def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tm
     )
     assert "passed" in validated
 
-    flows["flow_source_index_reviewer"].state.active_update_id = "stale-update"
-    stale_validate_result = runtime.tool_facade.invoke_agent_tool(
-        _raw(
-            tmp_path,
-            view="source_index_reviewer",
-            agent_type="SourceIndexReviewerAgent",
-            role="reviewer",
-        ),
-        tool_name="validate_source_index",
-        flat_args={},
-    )
-    stale_validate = _unwrap_tool_failure(stale_validate_result)
-    assert stale_validate[0].kind == "source_index_update_owner_mismatch"
-    assert stale_validate[0].current is None and stale_validate[0].expected is None
-    serialized_validate = stale_validate_result.value.model_dump_json()
-    assert "stale-update" not in serialized_validate and "owned-update" not in serialized_validate
-    flows["flow_source_index_reviewer"].state.active_update_id = "owned-update"
     steps["step_source_index_reviewer"] = SimpleNamespace(
         flow_id="flow_source_index_reviewer",
         step_type="native_repo_coordinator_agent_step",
@@ -828,20 +874,7 @@ def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tm
             flat_args={},
         )
     )
-    assert wrong_step_validate[0].kind == "source_index_update_owner_mismatch"
-
-    flows["flow_source_index_builder"].state.active_update_id = "stale-write-update"
-    stale_write_result = runtime.tool_facade.invoke_agent_tool(
-        _raw(tmp_path, view="source_index_builder", agent_type="SourceIndexBuilderAgent"),
-        tool_name="set_source_index_overview",
-        flat_args={"overview": "Must remain rejected."},
-    )
-    stale_write = _unwrap_tool_failure(stale_write_result)
-    assert stale_write[0].kind == "source_index_update_owner_mismatch"
-    assert stale_write[0].current is None and stale_write[0].expected is None
-    serialized_write = stale_write_result.value.model_dump_json()
-    assert "stale-write-update" not in serialized_write and "owned-update" not in serialized_write
-    flows["flow_source_index_builder"].state.active_update_id = "owned-update"
+    assert wrong_step_validate[0].kind == "source_index_step_context_mismatch"
 
     steps["step_source_index_builder"] = SimpleNamespace(
         flow_id="another-flow",
@@ -854,7 +887,7 @@ def test_source_index_write_tools_inject_flow_owner_and_reject_nonowner_steps(tm
             flat_args={"overview": "Must be rejected."},
         )
     )
-    assert issues[0].kind == "source_index_update_owner_mismatch"
+    assert issues[0].kind == "source_index_step_context_mismatch"
 
 
 def test_source_and_resource_text_search_tools_enforce_material_boundary(tmp_path: Path) -> None:
@@ -1369,7 +1402,7 @@ def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) 
         tmp_path, source_scope=SourceScope(mode="all")
     ).value
     draft = runtime.material.open_source_index_update(
-        tmp_path, update_id="draft-read", resolved_scope=scope, index_policy="auto"
+        tmp_path, resolved_scope=scope, index_policy="auto"
     )
     assert draft.ok and draft.value is not None
 
@@ -1424,7 +1457,7 @@ def test_decl_stage_source_index_reads_require_committed_index(
         tmp_path, source_scope=SourceScope(mode="all")
     ).value
     assert runtime.material.open_source_index_update(
-        tmp_path, update_id="draft-read", resolved_scope=scope, index_policy="auto"
+        tmp_path, resolved_scope=scope, index_policy="auto"
     ).ok
 
     raw = _raw(

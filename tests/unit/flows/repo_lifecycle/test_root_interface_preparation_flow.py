@@ -6,6 +6,7 @@ import pytest
 from agent_runtime_kit.flow.contexts import FlowBuildContext
 from agent_runtime_kit.flow.models import FlowRequest
 from agent_runtime_kit.flow.registry import FlowTypeRegistry
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -101,8 +102,11 @@ def _prepare_repo(
     )
     assert runtime.repo_workspace.write_preparation_input(repo_root, input=preparation).ok
     assert runtime.node.ensure_native_root_main_contract(repo_root).ok
-    runtime.validation_snapshot.snapshot_restore.runtime_stability_provider = _StableRuntimeProvider(runtime)
-    runtime.validation_snapshot.snapshot_restore.ark_snapshot_provider = _ArkSnapshotProvider(runtime)
+    runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
+        runtime,
+        _ArkSnapshotProvider(runtime),
+        runtime_stability=_StableRuntimeProvider(runtime),
+    )
     runtime.app.source_index_checkpoint = SourceIndexCheckpointAdapter(runtime)
     source_root = repo_root / ".lean_constellation" / "source"
     source_root.mkdir(parents=True, exist_ok=True)
@@ -130,7 +134,6 @@ def _prepare_repo(
     assert scope.ok and scope.value is not None
     opened = runtime.material.open_source_index_update(
         repo_root,
-        update_id="initial-index",
         resolved_scope=scope.value,
         index_policy="auto",
     )
@@ -141,7 +144,6 @@ def _prepare_repo(
         kind="statement",
         title="Theorem B",
         summary="The main source theorem.",
-        expected_update_id="initial-index",
     )
     assert block.ok and block.value is not None
     assert runtime.material.add_source_block_ref(
@@ -151,33 +153,29 @@ def _prepare_repo(
         start_line=5,
         end_line=6,
         role="primary",
-        expected_update_id="initial-index",
     ).ok
     assert runtime.material.mark_block_refs_done(
-        repo_root, block_id=block.value.block_id, expected_update_id="initial-index"
+        repo_root, block_id=block.value.block_id
     ).value.passed
     assert runtime.material.mark_block_links_done(
-        repo_root, block_id=block.value.block_id, expected_update_id="initial-index"
+        repo_root, block_id=block.value.block_id
     ).value.passed
     assert runtime.material.mark_block_completed(
-        repo_root, block_id=block.value.block_id, expected_update_id="initial-index"
+        repo_root, block_id=block.value.block_id
     ).value.passed
     assert runtime.material.set_file_survey_status(
         repo_root,
         path="source.md",
         status="surveyed",
         summary="Surveyed.",
-        expected_update_id="initial-index",
     ).ok
     assert runtime.material.set_file_indexing_status(
         repo_root,
         path="source.md",
         status="indexed",
-        expected_update_id="initial-index",
     ).ok
     gate = runtime.material.validate_source_index_update(
         repo_root,
-        update_id="initial-index",
         baseline_index=None,
         expected_baseline_digest=opened.value.baseline_digest,
         resolved_scope=["source.md"],
@@ -186,7 +184,6 @@ def _prepare_repo(
     assert gate.ok and gate.value is not None and gate.value.gate.passed
     assert runtime.material.commit_source_index_update(
         repo_root,
-        update_id="initial-index",
         validated=gate.value,
     ).ok
     if not checkpoint_before_index:
@@ -201,7 +198,7 @@ def _create_checkpoint(
     checkpoint_id: str = "checkpoint-prepared-by-parent",
     kind: RepoCheckpointKind = RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION,
 ) -> None:
-    created = runtime.validation_snapshot.create_repo_stable_point_snapshot_with_id(
+    created = runtime.app.snapshot_runtime.create_repo_stable_point_snapshot_with_id(
         repo_root,
         snapshot_id=checkpoint_id,
         checkpoint_kind=kind,
@@ -611,7 +608,6 @@ def test_auto_accepts_truthful_empty_committed_update_without_agent(tmp_path: Pa
     assert scope.ok and scope.value is not None
     opened = lean_runtime.material.open_source_index_update(
         repo_root,
-        update_id="empty-update",
         resolved_scope=scope.value,
         index_policy="update",
     )
@@ -623,7 +619,6 @@ def test_auto_accepts_truthful_empty_committed_update_without_agent(tmp_path: Pa
     assert baseline.ok and baseline.value is not None
     validated = lean_runtime.material.validate_source_index_update(
         repo_root,
-        update_id="empty-update",
         baseline_index=baseline.value,
         expected_baseline_digest=opened.value.baseline_digest,
         resolved_scope=["source.md"],
@@ -632,7 +627,6 @@ def test_auto_accepts_truthful_empty_committed_update_without_agent(tmp_path: Pa
     assert validated.ok and validated.value is not None and validated.value.gate.passed
     committed = lean_runtime.material.commit_source_index_update(
         repo_root,
-        update_id="empty-update",
         validated=validated.value,
     )
     assert committed.ok and committed.value is not None

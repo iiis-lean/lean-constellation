@@ -40,6 +40,7 @@ class RepoRunSpec(StrictModel):
     source_scope: SourceScope
     index_policy: Literal["auto", "update", "reuse"]
     root_interface_policy: Literal["auto", "prepare", "reuse"]
+    max_parallel_content_node_tasks: int = 1
     additional_required_interfaces: list[DeclInterface] = Field(default_factory=list)
 
     @field_validator("run_objective")
@@ -49,6 +50,13 @@ class RepoRunSpec(StrictModel):
         if not normalized:
             raise ValueError("run_objective must be non-empty")
         return normalized
+
+    @field_validator("max_parallel_content_node_tasks")
+    @classmethod
+    def _positive_parallelism(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_parallel_content_node_tasks must be >= 1")
+        return value
 
     @model_validator(mode="after")
     def _validate_config_and_interfaces(self) -> "RepoRunSpec":

@@ -6,6 +6,7 @@ from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
@@ -168,9 +169,9 @@ def test_coordinator_requirement_waiting_checkpoint_policy() -> None:
     policy = make_runtime().validation_snapshot.snapshot_restore.checkpoint_policies()[RepoCheckpointKind.COORDINATOR_REQUIREMENT_WAITING]
 
     assert policy.checkpoint_kind is RepoCheckpointKind.COORDINATOR_REQUIREMENT_WAITING
-    assert policy.requires_runtime_stable is True
-    assert policy.requires_ark_snapshot is True
-    assert policy.include_node_scopes is False
+    assert "requires_runtime_stable" not in policy.model_dump()
+    assert "requires_ark_snapshot" not in policy.model_dump()
+    assert "include_node_scopes" not in policy.model_dump()
 
 
 def test_before_dispatch_snapshot(tmp_path: Path) -> None:
@@ -238,10 +239,9 @@ def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, Path, FakeRuntimeStab
     lean_runtime = make_runtime(external_overrides={"lake": FakeLakeClient()})
     stability = FakeRuntimeStabilityProvider(lean_runtime.foundation)
     ark_snapshot = FakeArkSnapshotProvider(lean_runtime.foundation)
-    lean_runtime.app.validation_snapshot = ValidationSnapshotService(
-        lean_runtime,
-        runtime_stability_provider=stability,
-        ark_snapshot_provider=ark_snapshot,
+    lean_runtime.app.validation_snapshot = ValidationSnapshotService(lean_runtime)
+    lean_runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
+        lean_runtime, ark_snapshot, runtime_stability=stability
     )
     runtime = create_fake_lean_flow_runtime(
         tmp_path / "ark",

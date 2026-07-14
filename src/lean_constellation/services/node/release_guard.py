@@ -323,10 +323,6 @@ class NodeReleaseGuard:
             open_decl_truth.extend(
                 f"round:{item.round_id}" for item in rounds.value if item.status in {DeclRoundStatus.DRAFT, DeclRoundStatus.RUNNING}
             )
-        running = self._running_content_task_count(path)
-        if not running.ok or running.value is None:
-            return self.runtime.foundation.fail(running.issues)
-        running_tasks = running.value
         latest = self.runtime.repo_workspace.release.get_latest_release(repo_root)
         if not latest.ok:
             return self.runtime.foundation.fail(latest.issues)
@@ -369,8 +365,6 @@ class NodeReleaseGuard:
         if open_decl_truth:
             blockers.append("open_decl_graph_work")
             inbound.extend(f"current:{item}" for item in open_decl_truth)
-        if running_tasks:
-            blockers.append("running_content_task")
         return self.runtime.foundation.ok(
             DeleteImpactView(
                 path=path,
@@ -378,7 +372,6 @@ class NodeReleaseGuard:
                 affected_children=children,
                 inbound_refs=sorted(set(inbound)),
                 blocking_reasons=blockers,
-                running_task_count=running_tasks,
                 public_decl_count=public_count,
                 summary=("Node can be soft-deleted." if not blockers else f"Node delete is blocked by: {', '.join(blockers)}."),
             )
@@ -451,31 +444,5 @@ class NodeReleaseGuard:
             and new.value.compatible
             and old.value.resolved_revision == new.value.resolved_revision
         )
-
-    def _running_content_task_count(self, node_path: str) -> ServiceResult[int]:
-        flow_service = self.runtime.ark.flow_service
-        if flow_service is None or not hasattr(flow_service, "list_flows"):
-            return self.runtime.foundation.ok(0)
-        try:
-            flows = flow_service.list_flows(flow_type="content_node_task")
-        except Exception as exc:  # noqa: BLE001 - preserve runtime store failure as a guard issue
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "node_delete_runtime_scan_failed",
-                    "Could not inspect running Content tasks before node deletion.",
-                    object_ref=node_path,
-                    details={"error": str(exc)},
-                )
-            )
-        count = 0
-        for flow in flows:
-            status = getattr(getattr(flow, "status", None), "value", getattr(flow, "status", None))
-            if status in {"completed", "failed"}:
-                continue
-            input_model = getattr(flow, "input", None)
-            if getattr(input_model, "node_path", None) == node_path:
-                count += 1
-        return self.runtime.foundation.ok(count)
-
 
 __all__ = ["NodeReleaseGuard"]

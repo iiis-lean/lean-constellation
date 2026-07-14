@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 from lean_constellation.app import (
     LeanAppConfig,
     create_production_app_server,
-    initialize_repo_runtime,
+    initialize_repo_business_truth,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
@@ -91,7 +91,7 @@ def test_repo_lifecycle_route_serializes_concurrent_continuations(tmp_path) -> N
         assert client.post("/admin/workspace/repos/Provider/load").status_code == 200
         loaded = app.state.lean_constellation_registry.get_or_load("Provider", refresh_homes=False)
         assert loaded.ok and loaded.value is not None
-        assert initialize_repo_runtime(loaded.value, repo_root).ok
+        assert initialize_repo_business_truth(loaded.value, repo_root).ok
         assert loaded.value.foundation.store.write_json_atomic(
             loaded.value.repo_workspace.metadata._repo_publication_path(repo_root),
             {"status": "stable", "latest_release_id": "release-r1"},
@@ -148,7 +148,7 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
         assert client.post("/admin/workspace/repos/Provider/load").status_code == 200
         loaded = app.state.lean_constellation_registry.get_or_load("Provider", refresh_homes=False)
         assert loaded.ok and loaded.value is not None
-        assert initialize_repo_runtime(loaded.value, repo_root).ok
+        assert initialize_repo_business_truth(loaded.value, repo_root).ok
         release = publish_native_provider_release(loaded.value, repo_root, release_id="release-r1")
 
         listed = client.get("/admin/repos/Provider/releases")
@@ -440,8 +440,8 @@ def test_production_app_server_repo_snapshot_restore_does_not_touch_other_repo(t
     runtime_b = registry.get_or_load("RepoB")
     assert runtime_a.ok and runtime_a.value is not None
     assert runtime_b.ok and runtime_b.value is not None
-    assert initialize_repo_runtime(runtime_a.value, repo_a).ok
-    assert initialize_repo_runtime(runtime_b.value, repo_b).ok
+    assert initialize_repo_business_truth(runtime_a.value, repo_a).ok
+    assert initialize_repo_business_truth(runtime_b.value, repo_b).ok
 
     with TestClient(app_result.value) as client:
         created = client.post(

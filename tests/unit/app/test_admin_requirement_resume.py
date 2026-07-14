@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
-from lean_constellation.app import LeanAdminApi, RequirementResumeInput, create_app_runtime_services, initialize_repo_runtime
+from lean_constellation.app import (
+    LeanAdminApi,
+    RequirementResumeInput,
+    create_app_runtime_services,
+    initialize_repo_business_truth,
+)
 from tests.unit_services_helpers import publish_native_provider_release
 
 
 def _prepare_satisfied_requirement(runtime, consumer, provider, *, name: str = "need_provider") -> None:
-    assert initialize_repo_runtime(runtime, consumer).ok
-    assert initialize_repo_runtime(runtime, provider).ok
+    assert initialize_repo_business_truth(runtime, consumer).ok
+    assert initialize_repo_business_truth(runtime, provider).ok
     assert runtime.repo_workspace.create_requirement_with_interfaces(
         consumer,
         name=name,

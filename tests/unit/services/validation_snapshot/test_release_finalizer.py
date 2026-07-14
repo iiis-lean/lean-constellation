@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from agent_runtime_kit.flow.models import FlowStatus
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -17,7 +16,6 @@ from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.node import NodeKind
 from lean_constellation.services.node.contract_fields import ContractMaterialRef, NodeDep
 from lean_constellation.services.validation_snapshot import (
-    ArkRuntimeSnapshotRef,
     CandidateReleaseGateView,
     PreparedRepoReleaseView,
     ValidationSnapshotService,
@@ -25,43 +23,12 @@ from lean_constellation.services.validation_snapshot import (
 from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo
 
 
-class _StableRuntime:
-    def __init__(self, foundation) -> None:  # noqa: ANN001
-        self.foundation = foundation
-
-    def check_repo_stable_point(self, repo_root, *, checkpoint_kind, node_paths=None):  # noqa: ANN001
-        del repo_root, checkpoint_kind, node_paths
-        return self.foundation.ok(self.foundation.gate_passed("runtime_stability", summary="stable"))
-
-
-class _ArkSnapshots:
-    def __init__(self, foundation) -> None:  # noqa: ANN001
-        self.foundation = foundation
-        self.created = 0
-
-    def create_runtime_snapshot(self, repo_root, *, scope_ids, label=None):  # noqa: ANN001
-        del repo_root, label
-        self.created += 1
-        return self.foundation.ok(ArkRuntimeSnapshotRef(snapshot_id=f"ark_{self.created}", scope_ids=scope_ids))
-
-    def restore_runtime_snapshot(self, repo_root, *, snapshot_id, leave_runtime_paused=True):  # noqa: ANN001
-        del repo_root, leave_runtime_paused
-        return self.foundation.ok(self.foundation.mutation_view(
-            object_ref=snapshot_id, changed=True, summary="restored"
-        ))
-
-
 def _prepared_repo(repo_root: Path):
     runtime, versions = _prepare_release_repo(repo_root)
     runtime.ark.flow_service = SimpleNamespace(list_flows=lambda **_filters: [])
     runtime.ark.step_service = SimpleNamespace(list_steps=lambda **_filters: [])
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
-    snapshots = _ArkSnapshots(runtime.foundation)
-    runtime.app.validation_snapshot = ValidationSnapshotService(
-        runtime,
-        runtime_stability_provider=_StableRuntime(runtime.foundation),
-        ark_snapshot_provider=snapshots,
-    )
+    runtime.app.validation_snapshot = ValidationSnapshotService(runtime)
     release = RepoRelease(
         release_id="release_r1",
         node_contract_versions=versions,
@@ -80,18 +47,18 @@ def _prepared_repo(repo_root: Path):
         gate=runtime.foundation.gate_passed("candidate_repo_release", summary="passed"),
         summary="prepared",
     )
-    return runtime, prepared, snapshots
+    return runtime, prepared, None
 
 
 def test_release_commit_publishes_final_truth_checkpoint_and_unique_latest(tmp_path: Path) -> None:
     runtime, prepared, snapshots = _prepared_repo(tmp_path)
 
-    finalized = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    finalized = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
 
     assert finalized.ok and finalized.value is not None
-    assert snapshots.created == 1
+    assert finalized.value.checkpoint.ark_runtime_snapshot_id is None
     publication = runtime.repo_workspace.metadata.get_repo_publication(tmp_path).value.publication
     assert publication.status == RepoPublicationStatus.STABLE
     assert publication.latest_release_id == prepared.release.release_id
@@ -126,8 +93,8 @@ def test_publication_commit_failure_leaves_no_release_or_checkpoint(tmp_path: Pa
         return original(path, value, **kwargs)
 
     monkeypatch.setattr(runtime.foundation.store, "write_json_atomic", fail_publication)
-    finalized = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    finalized = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
 
     assert not finalized.ok
@@ -169,8 +136,8 @@ def test_repo_commit_boundary_failures_never_leave_dangling_latest(
 
         monkeypatch.setattr(store_module.os, "replace", fail_publication_replace)
 
-    result = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    result = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
     assert not result.ok
     publication = runtime.repo_workspace.metadata.get_repo_publication(tmp_path).value.publication
@@ -206,8 +173,8 @@ def test_release_create_durability_failures_cleanup_exact_artifacts(
             return original_fsync(path)
 
         monkeypatch.setattr(runtime.foundation.store, "_fsync_parent", fail_release_fsync)
-    result = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    result = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
     assert not result.ok
     assert not release_path.exists()
@@ -231,8 +198,8 @@ def test_release_create_conflicting_existing_payload_is_never_deleted(
     prepared = prepared.model_copy(update={
         "candidate_digest": runtime.validation_snapshot.release_finalizer.compute_candidate_digest(tmp_path)
     })
-    result = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    result = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
     assert not result.ok
     assert result.issues[0].kind == "release_identity_conflict"
@@ -256,18 +223,17 @@ def test_notification_failure_does_not_rollback_and_retry_is_idempotent(tmp_path
     )
 
     first = finalizer.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+        tmp_path, prepared=prepared
     )
     assert first.ok and first.value is not None and first.value.notification_pending
     assert runtime.repo_workspace.metadata.get_repo_publication(tmp_path).value.publication.latest_release_id == "release_r1"
 
     monkeypatch.setattr(finalizer, "reconcile_provider_requirements", original)
     retried = finalizer.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+        tmp_path, prepared=prepared
     )
     assert retried.ok and retried.value is not None
     assert len(runtime.repo_workspace.release.list_releases(tmp_path).value) == 1
-    assert snapshots.created == 1
 
 
 @pytest.mark.parametrize("retry_failure", ["release", "model", "publication", "reconciliation"])
@@ -275,8 +241,8 @@ def test_committed_retry_read_failures_return_pending_success(
     tmp_path: Path, monkeypatch, retry_failure: str
 ) -> None:  # noqa: ANN001
     runtime, prepared, _ = _prepared_repo(tmp_path)
-    first = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    first = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
     assert first.ok
     if retry_failure == "release":
@@ -309,8 +275,8 @@ def test_committed_retry_read_failures_return_pending_success(
             "reconcile_provider_requirements",
             lambda *args, **kwargs: (_ for _ in ()).throw(OSError("reconcile")),
         )
-    retried = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    retried = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
     assert retried.ok and retried.value is not None
     assert runtime.foundation.store.read_json(
@@ -320,8 +286,8 @@ def test_committed_retry_read_failures_return_pending_success(
 
 def test_committed_retry_rejects_readable_release_payload_conflict(tmp_path: Path) -> None:
     runtime, prepared, _ = _prepared_repo(tmp_path)
-    assert runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    assert runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     ).ok
     release_path = runtime.foundation.layout.release_path(
         FoundationContext(repo_root=tmp_path), prepared.release.release_id
@@ -330,8 +296,8 @@ def test_committed_retry_rejects_readable_release_payload_conflict(tmp_path: Pat
     assert runtime.foundation.store.write_json_atomic(
         release_path, conflicting, mode=WriteMode.OVERWRITE
     ).ok
-    retried = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    retried = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
     assert not retried.ok
     assert retried.issues[0].kind == "release_identity_conflict"
@@ -346,7 +312,6 @@ def test_existing_release_checkpoint_requires_exact_prepared_overlay(tmp_path: P
         publication=prepared.publication,
         repo_model=RepoModel(main_node="Main", summary=prepared.release.summary),
         expected_candidate_digest=prepared.candidate_digest,
-        scope_ids=["repo:test"],
     )
     assert checkpoint.ok
     conflicting_release = prepared.release.model_copy(update={"summary": "Different release summary."})
@@ -357,7 +322,6 @@ def test_existing_release_checkpoint_requires_exact_prepared_overlay(tmp_path: P
         publication=prepared.publication,
         repo_model=RepoModel(main_node="Main", summary=conflicting_release.summary),
         expected_candidate_digest=prepared.candidate_digest,
-        scope_ids=["repo:test"],
     )
     assert not conflict.ok
     assert conflict.issues[0].kind == "repo_release_checkpoint_id_conflict"
@@ -409,8 +373,8 @@ def test_postcommit_failures_retain_stable_release(
 
         monkeypatch.setattr(runtime.foundation.store, "_fsync_parent", fail_publication_fsync)
 
-    result = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    result = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
     assert result.ok and result.value is not None
     publication = runtime.foundation.store.read_json(
@@ -446,7 +410,7 @@ def test_lake_build_failure_does_not_allocate_release_truth(tmp_path: Path, monk
     )
 
     result = finalizer.prepare_candidate_release(
-        tmp_path, base_release_id=None, summary="candidate", owner_flow_id="flow"
+        tmp_path, base_release_id=None, summary="candidate"
     )
 
     assert result.ok and result.value is not None and result.value.outcome == "blocked"
@@ -505,7 +469,7 @@ def test_candidate_gate_aggregates_non_main_contract_tree_and_material_findings(
         tmp_path, foundation, mode=WriteMode.UPDATE_EXISTING
     ).ok
 
-    preview = runtime.validation_snapshot.preview_candidate_release(
+    preview = runtime.validation_snapshot.release_finalizer.preview_candidate_release(
         tmp_path, base_release_id=None, summary="candidate"
     )
 
@@ -521,69 +485,22 @@ def test_candidate_gate_aggregates_non_main_contract_tree_and_material_findings(
     }, kinds
 
 
-def test_submission_intent_preview_allows_only_current_coordinator_agent_step(
+def test_release_business_closeout_does_not_inspect_runtime(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     runtime, _ = _prepare_release_repo(tmp_path)
     finalizer = runtime.validation_snapshot.release_finalizer
-    repo_scope = f"repo:{tmp_path.name}"
-    owner = SimpleNamespace(
-        flow_id="coordinator_flow",
-        flow_type="native_repo_coordinator",
-        scope_id=repo_scope,
-        status=FlowStatus.RUNNING,
-        state=SimpleNamespace(position=SimpleNamespace(phase="coordinator_agent", round=0)),
-    )
-    current_step = SimpleNamespace(
-        step_id="coordinator_agent_step_1",
-        flow_id=owner.flow_id,
-        step_type="coordinator_agent_step",
-        scope_id=repo_scope,
-        status=SimpleNamespace(value="running"),
-    )
-    monkeypatch.setattr(runtime, "list_flows", lambda: [owner])
-    monkeypatch.setattr(runtime, "list_steps", lambda: [current_step])
+    monkeypatch.setattr(runtime, "list_flows", lambda: (_ for _ in ()).throw(AssertionError("ARK accessed")))
+    monkeypatch.setattr(runtime, "list_steps", lambda: (_ for _ in ()).throw(AssertionError("ARK accessed")))
 
-    allowed = finalizer._check_workflow_closeout(
-        tmp_path,
-        owner_flow_id=owner.flow_id,
-        stable_hook=False,
-        submission_intent_preview=True,
-    )
+    closeout = finalizer._check_requirement_closeout(tmp_path)
 
-    assert allowed.ok and allowed.value is not None and allowed.value.passed
-    strict = finalizer._check_workflow_closeout(
-        tmp_path,
-        owner_flow_id=owner.flow_id,
-        stable_hook=False,
-    )
-    assert strict.ok and strict.value is not None and not strict.value.passed
-    assert {issue.kind for issue in strict.value.issues} == {
-        "release_workflow_owner_invalid",
-        "release_workflow_not_closed",
-    }
-    extra_step = SimpleNamespace(
-        step_id="unrelated_running_step",
-        flow_id=owner.flow_id,
-        step_type="content_worker_step",
-        scope_id=repo_scope,
-        status=SimpleNamespace(value="running"),
-    )
-    monkeypatch.setattr(runtime, "list_steps", lambda: [current_step, extra_step])
-    blocked = finalizer._check_workflow_closeout(
-        tmp_path,
-        owner_flow_id=owner.flow_id,
-        stable_hook=False,
-        submission_intent_preview=True,
-    )
-
-    assert blocked.ok and blocked.value is not None and not blocked.value.passed
-    assert [issue.object_ref for issue in blocked.value.issues] == ["unrelated_running_step"]
+    assert closeout.ok and closeout.value is not None and closeout.value.passed
 
 
 @pytest.mark.parametrize(
     "failure_stage",
-    ["copy", "hash", "write", "files_manifest", "snapshot_manifest", "manifest_readback", "ark", "fsync", "parent_fsync", "rename"],
+    ["copy", "hash", "write", "files_manifest", "snapshot_manifest", "manifest_readback", "fsync", "parent_fsync", "rename"],
 )
 def test_checkpoint_staging_failures_publish_no_release(
     tmp_path: Path, monkeypatch, failure_stage: str
@@ -625,14 +542,6 @@ def test_checkpoint_staging_failures_publish_no_release(
             return original_read(path, model)
 
         monkeypatch.setattr(runtime.foundation.store, "read_json", fail_readback)
-    elif failure_stage == "ark":
-        monkeypatch.setattr(
-            snapshots.ark_snapshot_provider,
-            "create_runtime_snapshot",
-            lambda *args, **kwargs: runtime.foundation.fail(
-                runtime.foundation.issue("injected_ark_snapshot", "ark")
-            ),
-        )
     elif failure_stage == "fsync":
         monkeypatch.setattr(snapshots, "_fsync_tree", lambda *args: (_ for _ in ()).throw(OSError("fsync")))
     elif failure_stage == "parent_fsync":
@@ -654,7 +563,7 @@ def test_checkpoint_staging_failures_publish_no_release(
         monkeypatch.setattr(snapshot_module.os, "replace", fail_final_rename)
 
     result = finalizer.commit_prepared_release(
-        repo_root, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+        repo_root, prepared=prepared
     )
 
     assert not result.ok
@@ -667,8 +576,8 @@ def test_checkpoint_staging_failures_publish_no_release(
 
 def test_audit_finds_and_cleanup_removes_unreachable_release(tmp_path: Path) -> None:
     runtime, prepared, _ = _prepared_repo(tmp_path)
-    committed = runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    committed = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     )
     assert committed.ok
     orphan = RepoRelease(
@@ -695,8 +604,8 @@ def test_digest_guarded_bulk_cleanup_only_removes_unreferenced_checkpoint_and_st
     tmp_path: Path,
 ) -> None:
     runtime, prepared, _ = _prepared_repo(tmp_path)
-    assert runtime.validation_snapshot.commit_prepared_release(
-        tmp_path, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:test"]
+    assert runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        tmp_path, prepared=prepared
     ).ok
     orphan_release = RepoRelease(
         release_id="release_orphan",
@@ -808,8 +717,8 @@ def test_actual_consumer_requirement_save_failure_is_postcommit_pending(tmp_path
         return original_write(path, value, **kwargs)
 
     monkeypatch.setattr(runtime.foundation.store, "write_json_atomic", fail_satisfied_save)
-    result = runtime.validation_snapshot.commit_prepared_release(
-        provider, prepared=prepared, owner_flow_id="flow", scope_ids=["repo:Provider"]
+    result = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
+        provider, prepared=prepared
     )
     assert result.ok and result.value is not None and result.value.notification_pending
     publication = runtime.repo_workspace.metadata.get_repo_publication(provider).value.publication

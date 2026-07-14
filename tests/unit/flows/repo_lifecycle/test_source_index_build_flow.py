@@ -164,18 +164,15 @@ def _advance_to_builder(runtime: FakeLeanFlowRuntime, flow_id: str) -> None:
     assert flow.state.position.phase == "builder"
 
 
-def _complete_active_draft(lean_runtime, repo_root: Path, update_id: str) -> None:  # noqa: ANN001
+def _complete_active_draft(lean_runtime, repo_root: Path) -> None:  # noqa: ANN001
     material = lean_runtime.material
-    assert material.set_source_index_overview(
-        repo_root, overview="Scoped SourceIndex.", expected_update_id=update_id
-    ).ok
+    assert material.set_source_index_overview(repo_root, overview="Scoped SourceIndex.").ok
     created = material.create_source_block(
         repo_root,
         parent_id="root",
         kind="statement",
         title="Theorem B",
         summary="The selected theorem.",
-        expected_update_id=update_id,
     )
     assert created.ok and created.value is not None
     block_id = created.value.block_id
@@ -186,23 +183,20 @@ def _complete_active_draft(lean_runtime, repo_root: Path, update_id: str) -> Non
         start_line=1,
         end_line=2,
         role="primary",
-        expected_update_id=update_id,
     ).ok
-    assert material.mark_block_refs_done(repo_root, block_id=block_id, expected_update_id=update_id).value.passed
-    assert material.mark_block_links_done(repo_root, block_id=block_id, expected_update_id=update_id).value.passed
-    assert material.mark_block_completed(repo_root, block_id=block_id, expected_update_id=update_id).value.passed
+    assert material.mark_block_refs_done(repo_root, block_id=block_id).value.passed
+    assert material.mark_block_links_done(repo_root, block_id=block_id).value.passed
+    assert material.mark_block_completed(repo_root, block_id=block_id).value.passed
     assert material.set_file_survey_status(
         repo_root,
         path="chapter.md",
         status="surveyed",
         summary="Surveyed.",
-        expected_update_id=update_id,
     ).ok
     assert material.set_file_indexing_status(
         repo_root,
         path="chapter.md",
         status="indexed",
-        expected_update_id=update_id,
     ).ok
 
 
@@ -240,9 +234,8 @@ def test_standalone_flow_commits_scoped_delta_and_exposes_agent_boundaries(tmp_p
     _advance_to_builder(runtime, flow_id)
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.parent_flow_id is None
-    assert flow.state.active_update_id.startswith("source_index_update_")
     assert checkpoint.records == [(flow.state.pre_update_checkpoint_id, ["repo:WeightedSieve"])]
-    _complete_active_draft(lean_runtime, repo_root, flow.state.active_update_id)
+    _complete_active_draft(lean_runtime, repo_root)
     _submit_builder_and_run(runtime, flow_id)
     _submit_review_and_run(runtime, flow_id, approved=True)
     _advance_and_run(runtime, flow_id)
@@ -259,7 +252,7 @@ def test_standalone_flow_commits_scoped_delta_and_exposes_agent_boundaries(tmp_p
     assert "baseline_digest" not in builder_record.variables
     assert "Baseline digest" not in (builder_record.prompt or "")
     assert "forbidden_boundaries" in builder_record.variables
-    assert "system injects update ownership" in (builder_record.prompt or "")
+    assert "Flow and Step context authorizes scoped writes" in (builder_record.prompt or "")
     reviewer_record = runtime.agent_service.start_records[1]
     assert "active_update_id" not in reviewer_record.variables
     assert "baseline_digest" not in reviewer_record.variables
@@ -272,8 +265,7 @@ def test_review_rejection_loops_then_commits(tmp_path: Path) -> None:
     _prepare_source(lean_runtime, repo_root)
     flow_id = runtime.start_flow("source_index_build", _params(repo_root))
     _advance_to_builder(runtime, flow_id)
-    flow = runtime.flow_service.get_flow(flow_id)
-    _complete_active_draft(lean_runtime, repo_root, flow.state.active_update_id)
+    _complete_active_draft(lean_runtime, repo_root)
     _submit_builder_and_run(runtime, flow_id)
     _submit_review_and_run(runtime, flow_id, approved=False, feedback="Clarify the summary.")
     looped = runtime.flow_service.get_flow(flow_id)
@@ -291,8 +283,7 @@ def test_review_round_exhaustion_returns_blocked(tmp_path: Path) -> None:
     _prepare_source(lean_runtime, repo_root)
     flow_id = runtime.start_flow("source_index_build", _params(repo_root))
     _advance_to_builder(runtime, flow_id)
-    flow = runtime.flow_service.get_flow(flow_id)
-    _complete_active_draft(lean_runtime, repo_root, flow.state.active_update_id)
+    _complete_active_draft(lean_runtime, repo_root)
     for round_index in (1, 2):
         _submit_builder_and_run(runtime, flow_id, f"Builder round {round_index}.")
         _submit_review_and_run(runtime, flow_id, approved=False, feedback=f"Reject round {round_index}.")
@@ -385,8 +376,7 @@ def test_reusable_scope_is_no_op_and_child_result_is_authoritative(tmp_path: Pat
     _prepare_source(lean_runtime, repo_root)
     first = runtime.start_flow("source_index_build", _params(repo_root))
     _advance_to_builder(runtime, first)
-    active = runtime.flow_service.get_flow(first).state.active_update_id
-    _complete_active_draft(lean_runtime, repo_root, active)
+    _complete_active_draft(lean_runtime, repo_root)
     _submit_builder_and_run(runtime, first)
     _submit_review_and_run(runtime, first, approved=True)
     _advance_and_run(runtime, first)

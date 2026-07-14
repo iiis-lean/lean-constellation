@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.external_clients import AcquiredArtifactResult, ExtractedMaterialResult
-from lean_constellation.services.foundation import FoundationContext, ServiceResult
+from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.material.resource_library import (
     ResourceDuplicateView,
     ResourceLibraryComponent,
@@ -43,16 +43,6 @@ class ResourceExtractedMaterialView(StrictModel):
     metadata: dict[str, str] = Field(default_factory=dict)
     summary: str
     issue_code: str | None = None
-
-
-class ResourceCurationFlowInputView(StrictModel):
-    target_kind: Literal["web", "arxiv", "local_file", "local_dir"]
-    target: str
-    arxiv_version: str | None = None
-    normalized_target: ResourceTargetView
-    caller_repo_root: str | None = None
-    caller_node: str | None = None
-    summary: str
 
 
 class ResourceCurationDecisionView(StrictModel):
@@ -91,14 +81,13 @@ class ResourceCurationComponent:
         self.resource_library = resource_library
         self.source_corpus = source_corpus
 
-    def build_resource_curation_flow_input(
+    def prepare_resource_target(
         self,
-        ctx: Any,
         *,
         target_kind: Literal["web", "arxiv", "local_file", "local_dir"],
         target: str,
         arxiv_version: str | None = None,
-    ) -> ServiceResult[ResourceCurationFlowInputView]:
+    ) -> ServiceResult[ResourceTargetView]:
         if target_kind not in {"web", "arxiv", "local_file", "local_dir"}:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_resource_target_kind", f"Unsupported resource target_kind: {target_kind}"))
         if not isinstance(target, str) or not target.strip():
@@ -110,17 +99,7 @@ class ResourceCurationComponent:
         normalized = self.resource_library.normalize_resource_target(normalized_input)
         if not normalized.ok or normalized.value is None:
             return self.runtime.foundation.fail(normalized.issues)
-        return self.runtime.foundation.ok(
-            ResourceCurationFlowInputView(
-                target_kind=target_kind,
-                target=target.strip(),
-                arxiv_version=arxiv_version,
-                normalized_target=normalized.value,
-                caller_repo_root=self._ctx_value(ctx, "repo_root"),
-                caller_node=self._ctx_value(ctx, "current_node") or self._ctx_value(ctx, "node_path"),
-                summary=f"Prepared resource curation input for {target_kind} target.",
-            )
-        )
+        return self.runtime.foundation.ok(normalized.value)
 
     def acquire_material_artifact(self, target: ResourceTargetView, *, temp_root: Path) -> ServiceResult[ResourceArtifactView]:
         temp_root = Path(temp_root)
@@ -165,10 +144,11 @@ class ResourceCurationComponent:
 
     def decide_local_or_external(
         self,
-        ctx: Any,
         *,
         target: ResourceTargetView,
         duplicate: ResourceDuplicateView | None,
+        repo_root: Path | None = None,
+        prefer_external_repo: bool = False,
     ) -> ServiceResult[ResourceCurationDecisionView]:
         if target.kind not in {"arxiv", "web_url", "local_file", "local_dir"}:
             return self.runtime.foundation.ok(
@@ -190,7 +170,11 @@ class ResourceCurationComponent:
                     summary=duplicate.summary,
                 )
             )
-        source_duplicate = self._source_duplicate(ctx, target)
+        source_duplicate = (
+            self.source_corpus.check_target_in_source_corpus(repo_root, canonical_locator=target.canonical_locator)
+            if repo_root is not None
+            else self.runtime.foundation.ok(None)
+        )
         if source_duplicate.ok and source_duplicate.value and source_duplicate.value.duplicate:
             return self.runtime.foundation.ok(
                 ResourceCurationDecisionView(
@@ -211,7 +195,7 @@ class ResourceCurationComponent:
                     summary="Resource target should be handled as an external repo.",
                 )
             )
-        if target.kind == "arxiv" and self._ctx_value(ctx, "prefer_external_repo") == "true":
+        if target.kind == "arxiv" and prefer_external_repo:
             return self.runtime.foundation.ok(
                 ResourceCurationDecisionView(
                     decision="external_repo_required",
@@ -283,7 +267,7 @@ class ResourceCurationComponent:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         existing_kind: Literal["resource", "source"],
         duplicate_reason: str,
         existing_resource_key: str | None = None,
@@ -304,7 +288,7 @@ class ResourceCurationComponent:
             return self.runtime.foundation.ok(
                 ResourceCurationResultView(
                     kind="duplicate",
-                    target=flow_input.normalized_target,
+                    target=target,
                     duplicate_resource_key=existing.value.resource.resource_key,
                     reason=reason.value,
                     summary=preview.strip() if preview and preview.strip() else f"Target duplicates existing resource {existing.value.resource.resource_key}.",
@@ -330,7 +314,7 @@ class ResourceCurationComponent:
             return self.runtime.foundation.ok(
                 ResourceCurationResultView(
                     kind="duplicate",
-                    target=flow_input.normalized_target,
+                    target=target,
                     duplicate_source_paths=[existing_source_path],
                     reason=reason.value,
                     summary=preview.strip() if preview and preview.strip() else f"Target duplicates source corpus material {existing_source_path}.",
@@ -344,13 +328,13 @@ class ResourceCurationComponent:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         draft_id: str,
         summary: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         checked = self.check_local_resource_created(
             repo_root,
-            flow_input=flow_input,
+            target=target,
             draft_id=draft_id,
             summary=summary,
         )
@@ -362,7 +346,7 @@ class ResourceCurationComponent:
         return self.runtime.foundation.ok(
             ResourceCurationResultView(
                 kind="local_resource_created",
-                target=flow_input.normalized_target,
+                target=target,
                 resource_key=finalized.value.resource.resource_key,
                 reason="Target was curated into the local resource library.",
                 summary=summary.strip(),
@@ -373,7 +357,7 @@ class ResourceCurationComponent:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         draft_id: str,
         summary: str,
     ) -> ServiceResult[ResourceCurationResultView]:
@@ -383,7 +367,7 @@ class ResourceCurationComponent:
         draft = self.resource_library.get_resource_draft(repo_root, draft_id=draft_id)
         if not draft.ok or draft.value is None:
             return self.runtime.foundation.fail(draft.issues)
-        if draft.value.draft.target.canonical_locator != flow_input.normalized_target.canonical_locator:
+        if draft.value.draft.target.canonical_locator != target.canonical_locator:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "resource_request_target_mismatch",
@@ -391,7 +375,7 @@ class ResourceCurationComponent:
                     object_ref=draft_id,
                     details={
                         "draft_target": draft.value.draft.target.canonical_locator,
-                        "request_target": flow_input.normalized_target.canonical_locator,
+                        "request_target": target.canonical_locator,
                     },
                 )
             )
@@ -413,7 +397,7 @@ class ResourceCurationComponent:
         return self.runtime.foundation.ok(
             ResourceCurationResultView(
                 kind="local_resource_created",
-                target=flow_input.normalized_target,
+                target=target,
                 resource_key=resource_key.value,
                 reason="Target was curated into the local resource library.",
                 summary=text.value,
@@ -424,7 +408,7 @@ class ResourceCurationComponent:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         reason: str,
         source_description: str,
         suggested_repo_name: str | None = None,
@@ -452,7 +436,7 @@ class ResourceCurationComponent:
         return self.runtime.foundation.ok(
             ResourceCurationResultView(
                 kind="external_repo_required",
-                target=flow_input.normalized_target,
+                target=target,
                 suggested_repo_name=repo_hint,
                 source_description=source_text.value,
                 required_interfaces_hint=required_interfaces_hint.strip() if required_interfaces_hint and required_interfaces_hint.strip() else None,
@@ -465,7 +449,7 @@ class ResourceCurationComponent:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         reason: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         del repo_root
@@ -475,7 +459,7 @@ class ResourceCurationComponent:
         return self.runtime.foundation.ok(
             ResourceCurationResultView(
                 kind="rejected",
-                target=flow_input.normalized_target,
+                target=target,
                 reason=reason_text.value,
                 summary=f"Resource target rejected: {reason_text.value}",
             )
@@ -645,12 +629,6 @@ class ResourceCurationComponent:
             metadata=metadata or ResourceMetadataInput(title=target.target),
         )
 
-    def _source_duplicate(self, ctx: Any, target: ResourceTargetView):
-        repo_root = self._ctx_value(ctx, "repo_root")
-        if not repo_root:
-            return self.runtime.foundation.ok(None)
-        return self.source_corpus.check_target_in_source_corpus(Path(repo_root), canonical_locator=target.canonical_locator)
-
     def _active_draft_root(self, repo_root: Path, draft_id: str) -> ServiceResult[Path]:
         draft = self.resource_library.get_resource_draft(repo_root, draft_id=draft_id)
         if not draft.ok or draft.value is None:
@@ -787,20 +765,6 @@ class ResourceCurationComponent:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
-
-    @staticmethod
-    def _ctx_value(ctx: Any, name: str) -> str | None:
-        if ctx is None:
-            return None
-        if isinstance(ctx, dict):
-            value = ctx.get(name)
-        else:
-            value = getattr(ctx, name, None)
-        if value is None:
-            return None
-        if isinstance(value, Path):
-            return str(value)
-        return str(value)
 
     def _required_text(self, value: str, *, field: str, issue_kind: str) -> ServiceResult[str]:
         if not isinstance(value, str) or not value.strip():

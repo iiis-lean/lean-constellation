@@ -182,7 +182,7 @@ def test_manual_test_checkpoint_requires_explicit_scopes_and_can_be_listed(tmp_p
     )
     assert created.ok and created.value is not None
     assert created.value.checkpoint_kind == "manual_test_stable_point"
-    assert created.value.refreshed_scope_ids == ["repo:Repo"]
+    assert created.value.ark_runtime_snapshot_id is not None
 
     listed = admin.list_snapshots(SnapshotListInput(repo_root=repo_root, checkpoint_kind="manual_test_stable_point"))
     assert listed.ok and listed.value is not None

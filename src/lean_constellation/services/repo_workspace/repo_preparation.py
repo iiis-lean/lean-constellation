@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -20,9 +20,8 @@ from lean_constellation.domain.preparation import (
     RequirementGroupItem,
     RequirementGroupView,
     SourceCorpusMode,
+    ProviderRepoPreparationView,
     ProviderRepoShellView,
-    ProviderRepoRuntimeShellView,
-    RepoRuntimeBootstrapView,
     RepoShellView,
 )
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode, WorkspaceConfig
@@ -39,64 +38,6 @@ from lean_constellation.services.repo_workspace.repo_requirement import RepoRequ
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
-
-
-class ProviderRepoRuntimeBootstrapProvider(Protocol):
-    """Provider that initializes the repo-local ARK runtime shell."""
-
-    def bootstrap_provider_repo_runtime(
-        self,
-        repo_root: Path,
-        *,
-        repo_name: str,
-        project_name: str | None = None,
-    ) -> ServiceResult[RepoRuntimeBootstrapView]:
-        ...
-
-
-class DefaultProviderRepoRuntimeBootstrap:
-    """Create the minimal .agent_runtime directory tree without starting flows."""
-
-    _SUBDIRS = ("homes", "scopes", "index", "snapshots")
-
-    def __init__(self, runtime: LeanRuntimeServices) -> None:
-        self.runtime = runtime
-
-    def bootstrap_provider_repo_runtime(
-        self,
-        repo_root: Path,
-        *,
-        repo_name: str,
-        project_name: str | None = None,
-    ) -> ServiceResult[RepoRuntimeBootstrapView]:
-        del repo_name, project_name
-        repo_root = Path(repo_root)
-        runtime_root = self.runtime.foundation.layout.agent_runtime_root(
-            FoundationContext(repo_root=repo_root)
-        )
-        created = not runtime_root.exists()
-        initialized: list[str] = []
-        ensure_root = self.runtime.foundation.store.ensure_dir(runtime_root)
-        if not ensure_root.ok:
-            return self.runtime.foundation.fail(ensure_root.issues)
-        initialized.append(str(runtime_root))
-        for name in self._SUBDIRS:
-            path = runtime_root / name
-            existed = path.exists()
-            ensure = self.runtime.foundation.store.ensure_dir(path)
-            if not ensure.ok:
-                return self.runtime.foundation.fail(ensure.issues)
-            if not existed:
-                initialized.append(str(path))
-        return self.runtime.foundation.ok(
-            RepoRuntimeBootstrapView(
-                repo_root=str(repo_root),
-                runtime_root=str(runtime_root),
-                created=created,
-                initialized_paths=initialized,
-                summary="Initialized provider repo runtime shell.",
-            )
-        )
 
 
 class PreparationStartPreflightView(StrictModel):
@@ -435,15 +376,14 @@ class RepoPreparationComponent:
             )
         )
 
-    def prepare_provider_repo_runtime_shell(
+    def prepare_provider_repo_shell(
         self,
         workspace_root: Path,
         *,
         target_repo: str,
         preparation_input: RepoPreparationInput,
         project_name: str | None = None,
-        runtime_bootstrap: ProviderRepoRuntimeBootstrapProvider | None = None,
-    ) -> ServiceResult[ProviderRepoRuntimeShellView]:
+    ) -> ServiceResult[ProviderRepoPreparationView]:
         try:
             target_repo = self.runtime.foundation.layout.ensure_safe_key(target_repo)
         except ValueError as exc:
@@ -501,22 +441,11 @@ class RepoPreparationComponent:
             self._rollback_created_repo(created_repo_root)
             return self.runtime.foundation.fail(input_view.issues)
 
-        bootstrapper = runtime_bootstrap or DefaultProviderRepoRuntimeBootstrap(self.runtime)
-        bootstrapped = bootstrapper.bootstrap_provider_repo_runtime(
-            created_repo_root,
-            repo_name=target_repo,
-            project_name=project_name,
-        )
-        if not bootstrapped.ok or bootstrapped.value is None:
-            self._rollback_created_repo(created_repo_root)
-            return self.runtime.foundation.fail(bootstrapped.issues)
-
         return self.runtime.foundation.ok(
-            ProviderRepoRuntimeShellView(
+            ProviderRepoPreparationView(
                 shell=shell.value,
                 preparation_input=input_view.value,
-                runtime_bootstrap=bootstrapped.value,
-                summary=f"Prepared provider repo shell, preparation input, and runtime metadata for {target_repo}.",
+                summary=f"Prepared provider repo shell and preparation input for {target_repo}.",
             )
         )
 

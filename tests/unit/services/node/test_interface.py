@@ -7,7 +7,7 @@ from lean_constellation.domain.preparation import RepoPreparationInput, SourceCo
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
-from lean_constellation.services.node import ContractComponent, DeclPublicView, ExportComponent, InterfaceComponent, NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.services.node import DeclPublicView, ExportComponent, InterfaceComponent, NodeContractSnapshot
 
 
 class FakePublicDeclProvider:
@@ -735,6 +735,7 @@ def test_submit_root_interface_prepare_ready_returns_counts_after_gate(tmp_path:
     assert submitted.value.total_interface_count == 2
     assert submitted.value.supplement_interface_count == 1
     assert submitted.value.gate.passed is True
+    assert "submission_type" not in type(submitted.value).model_fields
 
 
 def test_submit_root_interface_prepare_ready_reports_summary_gate_and_supplement_failures(tmp_path: Path) -> None:

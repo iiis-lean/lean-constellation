@@ -38,6 +38,7 @@ from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import actor_for_write, current_node_path, direct_tool, handler_tool
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
+from lean_constellation.flows.common.flow_requests import node_scope_id
 
 
 class ContentTaskResultItemView(StrictModel):
@@ -86,12 +87,85 @@ def _get_node(runtime, ctx, args: NodePathArgs):
     return runtime.node.node_tree.get_node(ctx.repo_root, path=args.node_path)
 
 
+def _node_delete_runtime_blockers(runtime, ctx, *, node_path: str):
+    node = runtime.node.node_tree.get_node(ctx.repo_root, path=node_path)
+    if not node.ok or node.value is None:
+        return runtime.foundation.fail(node.issues)
+    scope_id = node_scope_id(ctx.repo.repo_key, node.value.node_id)
+    try:
+        flows = runtime.list_flows(scope_id=scope_id)
+        steps = runtime.list_steps(scope_id=scope_id)
+        agent_service = runtime.ark.agent_service
+        if agent_service is None or not hasattr(agent_service, "list_agents"):
+            raise RuntimeError("ARK agent service does not expose list_agents.")
+        agents = list(agent_service.list_agents(scope_id=scope_id))
+    except Exception as exc:  # noqa: BLE001 - fail closed at the runtime boundary
+        return runtime.foundation.ok([f"runtime_inspection_failed:{exc}"])
+
+    blockers = [
+        f"running_content_task:{getattr(flow, 'flow_id', '')}"
+        for flow in flows
+        if getattr(flow, "flow_type", None) == "content_node_task"
+        and str(getattr(getattr(flow, "status", None), "value", getattr(flow, "status", "")))
+        not in {"completed", "failed"}
+    ]
+    blockers.extend(
+        f"running_step:{getattr(step, 'step_id', '')}"
+        for step in steps
+        if str(getattr(getattr(step, "status", None), "value", getattr(step, "status", ""))) == "running"
+        and getattr(step, "step_id", None) != ctx.runtime.step_id
+    )
+    blockers.extend(
+        f"running_agent:{getattr(agent, 'agent_id', '')}"
+        for agent in agents
+        if getattr(agent, "status", None) == "running"
+        and getattr(agent, "agent_id", None) != ctx.runtime.agent_id
+    )
+    return runtime.foundation.ok(sorted(set(blockers)))
+
+
 def _preview_delete_node(runtime, ctx, args: NodePathArgs):
-    return runtime.node.preview_delete_node(ctx.repo_root, path=args.node_path)
+    runtime_blockers = _node_delete_runtime_blockers(runtime, ctx, node_path=args.node_path)
+    if not runtime_blockers.ok or runtime_blockers.value is None:
+        return runtime.foundation.fail(runtime_blockers.issues)
+    data = runtime.node.preview_delete_node(ctx.repo_root, path=args.node_path)
+    if not data.ok or data.value is None:
+        return runtime.foundation.fail(data.issues)
+    blockers = sorted(set([*data.value.blocking_reasons, *runtime_blockers.value]))
+    return runtime.foundation.ok(data.value.model_copy(update={
+        "deletable": not blockers,
+        "blocking_reasons": blockers,
+        "summary": "Node deletion is blocked." if blockers else "Node can be deleted.",
+    }))
 
 
 def _delete_node(runtime, ctx, args: NodeDeleteArgs):
-    return runtime.node.mark_node_deleted(ctx.repo_root, path=args.node_path, reason=args.reason)
+    try:
+        with runtime.repo_workspace.lifecycle_lock.locked(ctx.repo_root):
+            first = _node_delete_runtime_blockers(runtime, ctx, node_path=args.node_path)
+            if not first.ok or first.value is None:
+                return runtime.foundation.fail(first.issues)
+            data = runtime.node.preview_delete_node(ctx.repo_root, path=args.node_path)
+            if not data.ok or data.value is None:
+                return runtime.foundation.fail(data.issues)
+            second = _node_delete_runtime_blockers(runtime, ctx, node_path=args.node_path)
+            if not second.ok or second.value is None:
+                return runtime.foundation.fail(second.issues)
+            blockers = sorted(set([*data.value.blocking_reasons, *first.value, *second.value]))
+            if blockers:
+                return runtime.foundation.fail(runtime.foundation.issue(
+                    "node_delete_blocked",
+                    "Node deletion is blocked by current data or runtime impacts.",
+                    object_ref=args.node_path,
+                    details={"blocking_reasons": ",".join(blockers)},
+                ))
+            return runtime.node.mark_node_deleted(ctx.repo_root, path=args.node_path, reason=args.reason)
+    except Exception as exc:  # lifecycle lock busy and runtime boundary failures are fail-closed
+        return runtime.foundation.fail(runtime.foundation.issue(
+            "node_delete_runtime_guard_failed",
+            f"Node deletion runtime guard failed: {exc}",
+            object_ref=args.node_path,
+        ))
 
 
 def _add_current_node_dep(runtime, ctx, args: CurrentNodeDependencyAddArgs):
@@ -425,12 +499,23 @@ def _get_repo_ready_node_view(runtime, ctx, args: NoArgs):
     if not node_view.ok or node_view.value is None:
         return runtime.foundation.fail(node_view.issues)
     flow_id, base_release_id = owner.value
+    from lean_constellation.flows.coordinator.release_runtime import check_repo_release_runtime_closeout
+
+    runtime_closeout = check_repo_release_runtime_closeout(
+        runtime,
+        ctx.repo_root,
+        owner_flow_id=flow_id,
+        phase="submission_preview",
+        allowed_agent_id=ctx.runtime.agent_id,
+    )
+    if not runtime_closeout.ok or runtime_closeout.value is None:
+        return runtime.foundation.fail(runtime_closeout.issues)
+    if not runtime_closeout.value.passed:
+        return runtime.foundation.fail(runtime_closeout.value.issues)
     preview = runtime.validation_snapshot.preview_candidate_release(
         ctx.repo_root,
         base_release_id=base_release_id,
         summary="Repository release candidate preview.",
-        owner_flow_id=flow_id,
-        submission_intent_preview=True,
     )
     if not preview.ok or preview.value is None:
         return runtime.foundation.fail(preview.issues)

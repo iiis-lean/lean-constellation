@@ -277,22 +277,20 @@ class ResourceCurationFlow(LeanBusinessFlow):
                 rejected = ResourceRejectedResultView(reason="Material service is not registered; cannot finalize local resource.")
                 self.result = _result_from_rejected(input_model, rejected, summary=rejected.reason)
                 return
-            flow_input = material.submit_resource_request(
-                {
-                    "repo_root": _resource_repo_root(input_model),
-                    "node_path": input_model.caller_context.node_path,
-                },
+            normalized_target = material.resource_curation.prepare_resource_target(
                 target_kind=submission.target_kind,
                 target=submission.target,
                 arxiv_version=submission.arxiv_version,
             )
-            if not flow_input.ok or flow_input.value is None:
-                rejected = ResourceRejectedResultView(reason=flow_input.issues[0].message if flow_input.issues else "Resource request context failed.")
+            if not normalized_target.ok or normalized_target.value is None:
+                rejected = ResourceRejectedResultView(
+                    reason=normalized_target.issues[0].message if normalized_target.issues else "Resource target normalization failed."
+                )
                 self.result = _result_from_rejected(input_model, rejected, summary=rejected.reason)
                 return
-            finalized = material.submit_local_resource_created(
+            finalized = material.resource_curation.submit_local_resource_created(
                 _resource_repo_root(input_model),
-                flow_input=flow_input.value,
+                target=normalized_target.value,
                 draft_id=submission.draft_id,
                 summary=submission.summary or result.summary or "Curated local resource.",
             )

@@ -35,10 +35,12 @@ def test_repo_run_spec_reuses_repo_config_validation_and_rejects_duplicate_inter
         source_scope=SourceScope(mode="selected", selectors=["chapter_10.tex"]),
         index_policy="auto",
         root_interface_policy="prepare",
+        max_parallel_content_node_tasks=3,
         additional_required_interfaces=[_interface("WeightedSieve.bound")],
     )
 
     assert value.run_objective == "Build the declared provider interface."
+    assert value.max_parallel_content_node_tasks == 3
     assert value.model_validate(value.model_dump(mode="json")) == value
 
     with pytest.raises(ValidationError):
@@ -60,6 +62,16 @@ def test_repo_run_spec_reuses_repo_config_validation_and_rejects_duplicate_inter
             root_interface_policy="reuse",
             additional_required_interfaces=[_interface("T"), _interface("T")],
         )
+    with pytest.raises(ValidationError):
+        RepoRunSpec(
+            run_objective="Invalid parallelism.",
+            target_proof_availability=ProofAvailability.DECLARED,
+            work_mode=RepoWorkMode.DECLARED_INTERFACE,
+            source_scope=SourceScope(mode="none"),
+            index_policy="reuse",
+            root_interface_policy="reuse",
+            max_parallel_content_node_tasks=0,
+        )
 
 
 def test_repo_run_context_roundtrips_without_becoming_repo_truth() -> None:
@@ -70,6 +82,7 @@ def test_repo_run_context_roundtrips_without_becoming_repo_truth() -> None:
         source_scope=SourceScope(mode="none"),
         index_policy="reuse",
         root_interface_policy="auto",
+        max_parallel_content_node_tasks=4,
     )
     context = RepoRunContext(
         start_kind="continuation",
@@ -80,6 +93,7 @@ def test_repo_run_context_roundtrips_without_becoming_repo_truth() -> None:
     )
 
     assert RepoRunContext.model_validate(context.model_dump(mode="json")) == context
+    assert context.run_spec.max_parallel_content_node_tasks == 4
 
 
 def test_source_none_with_explicit_update_is_a_valid_flow_level_no_op_request() -> None:

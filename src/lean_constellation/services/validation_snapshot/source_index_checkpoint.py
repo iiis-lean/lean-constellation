@@ -74,9 +74,12 @@ class SourceIndexCheckpointAdapter:
         # ``open_source_index_update``. Before the update is open, however,
         # the archive must still match current truth exactly.
         current_digest = self._digest(current_index)
-        if (
-            current_index is None or current_index.active_update_id is None
-        ) and archived_digest != current_digest:
+        update_open = bool(
+            current_index is not None
+            and current_index.status in {"draft", "updating"}
+            and current_index.active_file_scope
+        )
+        if not update_open and archived_digest != current_digest:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "source_index_baseline_checkpoint_mismatch",
@@ -103,7 +106,15 @@ class SourceIndexCheckpointAdapter:
         scope_ids: list[str],
         label: str,
     ) -> ServiceResult[SourceIndexBaselineCheckpointView]:
-        created = self.runtime.validation_snapshot.create_repo_stable_point_snapshot_with_id(
+        snapshot_runtime = getattr(self.runtime.app, "snapshot_runtime", None)
+        if snapshot_runtime is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "snapshot_runtime_missing",
+                    "Application snapshot runtime is required to materialize a SourceIndex baseline.",
+                )
+            )
+        created = snapshot_runtime.create_repo_stable_point_snapshot_with_id(
             Path(repo_root),
             snapshot_id=checkpoint_id,
             checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION,
@@ -182,7 +193,15 @@ class SourceIndexCheckpointAdapter:
                 )
             )
 
-        archive = self.runtime.validation_snapshot.restore_repo_checkpoint_snapshot(
+        snapshot_runtime = getattr(self.runtime.app, "snapshot_runtime", None)
+        if snapshot_runtime is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "snapshot_runtime_missing",
+                    "Application snapshot runtime is required to validate a root-interface baseline.",
+                )
+            )
+        archive = snapshot_runtime.restore_repo_checkpoint_snapshot(
             repo_root,
             snapshot_id=checkpoint_id,
             dry_run=True,

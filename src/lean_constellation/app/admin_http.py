@@ -138,45 +138,12 @@ def create_workspace_admin_http_routes(
             input_model = StartRequirementGroupBootstrapInput.model_validate(data)
         except ValidationError as exc:
             return _request_validation_response(str(exc))
-        control_admin = LeanAdminApi(registry.workspace_runtime(), workspace_root=registry.workspace_root)
-        draft = control_admin.runtime.repo_workspace.preparation.build_preparation_input_from_group(
-            input_model.workspace_root,
-            target_repo=input_model.target_repo,
-            source_corpus_mode=input_model.source_corpus_mode,
+        control_admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
         )
-        if not draft.ok or draft.value is None:
-            return _service_result_response(draft)
-        prepared = control_admin.runtime.repo_workspace.prepare_provider_repo_runtime_shell(
-            input_model.workspace_root,
-            target_repo=input_model.target_repo,
-            preparation_input=draft.value.input,
-            project_name=input_model.project_name,
-        )
-        if not prepared.ok or prepared.value is None:
-            return _service_result_response(prepared)
-        loaded = registry.get_or_load(input_model.target_repo)
-        if not loaded.ok or loaded.value is None:
-            return _service_result_response(loaded)
-        refs = [
-            f"{ref.consumer_repo}:{ref.requirement_name}"
-            for ref in prepared.value.preparation_input.input.requirement_refs
-        ]
-        provider_admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
-        result = provider_admin.start_arbitrary_flow(
-            StartFlowInput(
-                flow_type="requirement_group_repo_bootstrap",
-                scope_id=f"repo:{input_model.target_repo}",
-                enqueue=input_model.enqueue,
-                params={
-                    "target_repo": input_model.target_repo,
-                    "repo_root": prepared.value.shell.repo_root,
-                    "workspace_root": str(input_model.workspace_root),
-                    "requirement_refs": refs,
-                    "admin_notes": input_model.admin_notes,
-                },
-            ),
-            repo_root=prepared.value.shell.repo_root,
-        )
+        result = control_admin.start_requirement_group_bootstrap(input_model)
         return _service_result_response(result)
 
     async def workspace_resume_requirement(request: Request) -> JSONResponse:

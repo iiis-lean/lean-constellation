@@ -48,19 +48,18 @@ def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:
 
 
 def _create_local_resource(lean_runtime, repo_root: Path, *, target_kind: str, target: str) -> str:
-    flow_input = lean_runtime.material.submit_resource_request(
-        {"repo_root": repo_root, "node_path": "Main.Core"},
+    normalized_target = lean_runtime.material.resource_curation.prepare_resource_target(
         target_kind=target_kind,
         target=target,
     )
-    assert flow_input.ok and flow_input.value is not None
-    draft = lean_runtime.material.allocate_resource_draft(repo_root, target=flow_input.value.normalized_target)
+    assert normalized_target.ok and normalized_target.value is not None
+    draft = lean_runtime.material.allocate_resource_draft(repo_root, target=normalized_target.value)
     assert draft.ok and draft.value is not None
     Path(draft.value.readme_path).write_text("Resource notes.\n", encoding="utf-8")
     Path(draft.value.normalized_dir, "main.md").write_text("Normalized theorem background.\n", encoding="utf-8")
-    promoted = lean_runtime.material.submit_local_resource_created(
+    promoted = lean_runtime.material.resource_curation.submit_local_resource_created(
         repo_root,
-        flow_input=flow_input.value,
+        target=normalized_target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Curated local resource.",
     )

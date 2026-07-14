@@ -66,6 +66,24 @@ def test_repo_runtime_registry_loads_repo_local_runtime_root(tmp_path) -> None:
     assert loaded.value.ark.flow_service.runtime_root == repo_root / ".agent_runtime"
 
 
+def test_registry_initializes_business_truth_before_loading_runtime(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    config = LeanAppConfig(
+        workspace_root=workspace,
+        materialize_agent_homes=False,
+        server_start_paused=True,
+    )
+    registry = RepoRuntimeRegistry(config)
+
+    loaded = registry.initialize_and_load("MainRepo", refresh_homes=False)
+
+    assert loaded.ok and loaded.value is not None
+    repo_root = workspace / "MainRepo"
+    assert (repo_root / ".lean_constellation" / "repo.json").is_file()
+    assert (repo_root / ".agent_runtime").is_dir()
+    assert registry.get_status("MainRepo").value.loaded is True
+
+
 @pytest.mark.parametrize(
     ("issue", "staging_paths"),
     [

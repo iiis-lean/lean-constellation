@@ -187,7 +187,6 @@ def test_admin_can_read_update_repo_config_and_publication(tmp_path: Path) -> No
             target_proof_availability=ProofAvailability.DECLARED,
             work_mode=RepoWorkMode.DECLARED_INTERFACE,
             default_requirement_proof_availability=ProofAvailability.PROVED,
-            max_parallel_content_node_tasks=2,
         )
     )
     publication = admin.get_repo_publication(repo_root)
@@ -198,6 +197,5 @@ def test_admin_can_read_update_repo_config_and_publication(tmp_path: Path) -> No
     assert updated_config.value.config.target_proof_availability == ProofAvailability.DECLARED
     assert updated_config.value.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
     assert updated_config.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
-    assert updated_config.value.config.max_parallel_content_node_tasks == 2
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.DEVELOPING

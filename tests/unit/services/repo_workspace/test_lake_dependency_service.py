@@ -84,6 +84,7 @@ def test_initialize_native_skeleton_and_parse_dependencies(tmp_path: Path) -> No
     assert result.ok
     assert result.value is not None
     assert result.value.repo_format == RepoFormat.NATIVE
+    assert "next_entry_flow" not in result.value.model_dump()
     assert (tmp_path / "lakefile.toml").exists()
     assert (tmp_path / "lean-toolchain").read_text(encoding="utf-8") == "lean/test\n"
     assert (tmp_path / "MyProject.lean").exists()
@@ -315,6 +316,7 @@ def test_initialize_adapter_skeleton_records_upstream_and_checks_import(tmp_path
     assert result.value is not None
     assert result.value.repo_format == RepoFormat.ADAPTER
     assert result.value.trusted_build is True
+    assert "next_entry_flow" not in result.value.model_dump()
     assert external.lake.updated[-1] == tmp_path
     assert external.lake.checked[-1] == (tmp_path, "Upstream")
     text = (tmp_path / "lakefile.toml").read_text(encoding="utf-8")

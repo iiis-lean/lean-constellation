@@ -27,7 +27,7 @@ from lean_constellation.tools.args import (
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.keys import ApplicationToolViewKey as AppView
 from lean_constellation.tools.specs import direct_tool, handler_tool
-from lean_constellation.tools.source_index_ownership import resolve_source_index_update_owner
+from lean_constellation.tools.source_index_ownership import authorize_source_index_flow_context
 
 
 _COMMITTED_SOURCE_INDEX_VIEWS = {
@@ -62,13 +62,14 @@ def _get_source_index_coverage(runtime, ctx: ToolExecutionContext, _args: NoArgs
 
 
 def _get_source_index_update_context(runtime, ctx: ToolExecutionContext, _args: NoArgs):
-    owner = resolve_source_index_update_owner(
+    authorized = authorize_source_index_flow_context(
         runtime,
         ctx,
         allowed_step_types={"source_index_builder_agent_step", "source_index_reviewer_agent_step"},
+        allowed_actor_roles={"worker", "reviewer", "admin"},
     )
-    if not owner.ok or owner.value is None:
-        return runtime.foundation.fail(owner.issues)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
     flow = runtime.get_flow(ctx.runtime.flow_id)
     flow_input = getattr(flow, "input", None)
     if getattr(flow_input, "repo_root", None) is not None and str(flow_input.repo_root) != str(ctx.repo_root):
@@ -102,29 +103,30 @@ def _get_source_index_update_context(runtime, ctx: ToolExecutionContext, _args: 
 
 def _source_index_write_handler(method_name: str):
     def handler(runtime, ctx: ToolExecutionContext, args):  # noqa: ANN001
-        owner = resolve_source_index_update_owner(
+        authorized = authorize_source_index_flow_context(
             runtime,
             ctx,
             allowed_step_types={"source_index_builder_agent_step"},
+            allowed_actor_roles={"worker", "admin"},
         )
-        if not owner.ok or owner.value is None:
-            return runtime.foundation.fail(owner.issues)
+        if not authorized.ok:
+            return runtime.foundation.fail(authorized.issues)
         kwargs = args.model_dump(exclude_unset=True)
-        kwargs["expected_update_id"] = owner.value
         return getattr(runtime.material, method_name)(ctx.repo_root, **kwargs)
 
     return handler
 
 
 def _validate_source_index(runtime, ctx: ToolExecutionContext, _args: NoArgs):
-    owner = resolve_source_index_update_owner(
+    authorized = authorize_source_index_flow_context(
         runtime,
         ctx,
         allowed_step_types={"source_index_builder_agent_step", "source_index_reviewer_agent_step"},
+        allowed_actor_roles={"worker", "reviewer", "admin"},
     )
-    if not owner.ok or owner.value is None:
-        return runtime.foundation.fail(owner.issues)
-    return runtime.material.validate_source_index(ctx.repo_root, expected_update_id=owner.value)
+    if not authorized.ok:
+        return runtime.foundation.fail(authorized.issues)
+    return runtime.material.validate_source_index(ctx.repo_root)
 
 
 def build_source_index_tool_specs() -> list[ToolSpec]:

@@ -117,7 +117,6 @@ def build_parser() -> argparse.ArgumentParser:
     release_restore.add_argument("--repo-key", required=True)
     release_restore.add_argument("release_id")
     release_restore.add_argument("--dry-run", action="store_true")
-    release_restore.add_argument("--resume-runtime", action="store_true")
     release_audit = sub.add_parser("repo-release-audit", help="Audit repository release storage.")
     release_audit.add_argument("--repo-key", required=True)
     release_cleanup = sub.add_parser(
@@ -417,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "repo-release-restore":
         return _print_http_result(_request_json(
             "POST", f"{admin_base_url}/admin/repos/{args.repo_key}/releases/{args.release_id}/restore",
-            {"dry_run": args.dry_run, "leave_runtime_paused": not args.resume_runtime},
+            {"dry_run": args.dry_run},
         ))
     if args.command == "repo-release-audit":
         return _print_http_result(_request_json(

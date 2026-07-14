@@ -9,7 +9,11 @@ from typing import Literal
 
 from pydantic import Field
 
-from lean_constellation.app.bootstrap import ProductionAgentHomesView, materialize_production_agent_homes
+from lean_constellation.app.bootstrap import (
+    ProductionAgentHomesView,
+    initialize_repo_business_truth,
+    materialize_production_agent_homes,
+)
 from lean_constellation.app.config import LeanAppConfig
 from lean_constellation.app.runtime import create_app_runtime_services, external_client_config_from_app_config
 from lean_constellation.domain.common import StrictModel
@@ -201,6 +205,28 @@ class RepoRuntimeRegistry:
                     register_application_tools=False,
                 )
             return self._workspace_runtime
+
+    def initialize_and_load(
+        self,
+        repo_key: str,
+        *,
+        main_node: str = "Main",
+        refresh_homes: bool = True,
+    ) -> ServiceResult[LeanRuntimeServices]:
+        """Initialize business truth, register the repo, then create its ARK runtime."""
+        normalized = self.normalize_repo_key(repo_key)
+        if not normalized.ok or normalized.value is None:
+            return self.result.fail(normalized.issues)
+        root = self.workspace_root / normalized.value
+        initialized = initialize_repo_business_truth(
+            self.workspace_runtime(), root, main_node=main_node
+        )
+        if not initialized.ok:
+            return self.result.fail(initialized.issues)
+        discovered = self.discover_repo(normalized.value)
+        if not discovered.ok:
+            return self.result.fail(discovered.issues)
+        return self.get_or_load(normalized.value, refresh_homes=refresh_homes)
 
     def get_or_load(self, repo_key: str, *, refresh_homes: bool = True) -> ServiceResult[LeanRuntimeServices]:
         discovered = self.discover_repo(repo_key)

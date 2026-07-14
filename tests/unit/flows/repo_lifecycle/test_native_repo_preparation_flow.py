@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -16,7 +17,6 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
 )
 from lean_constellation.flows.repo_lifecycle.root_interface import RootInterfacePreparationResult
 from lean_constellation.flows.repo_lifecycle.source_index import SourceIndexBuildResult
-from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.validation_snapshot.source_index_checkpoint import SourceIndexCheckpointAdapter
@@ -96,12 +96,11 @@ class FakeArkSnapshotProvider:
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object, FakeArkSnapshotProvider]:
     lake = FakeLakeClient()
     ark_snapshot = FakeArkSnapshotProvider()
-    lean_runtime = make_runtime(
-        external_overrides={"lake": lake},
-        providers=LeanProviderOverrides(
-            runtime_stability_provider=FakeRuntimeStabilityProvider(),
-            ark_snapshot_provider=ark_snapshot,
-        ),
+    lean_runtime = make_runtime(external_overrides={"lake": lake})
+    lean_runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
+        lean_runtime,
+        ark_snapshot,
+        runtime_stability=FakeRuntimeStabilityProvider(),
     )
     flow_runtime = create_fake_lean_flow_runtime(
         tmp_path / "ark",
@@ -341,11 +340,9 @@ def test_fresh_native_parent_runs_real_source_child_into_real_root_validation(tm
         _advance_and_run(runtime, source_child_id)
     source_flow = runtime.flow_service.get_flow(source_child_id)
     assert source_flow.state.position.phase == "builder"
-    update_id = source_flow.state.active_update_id
     assert lean_runtime.material.set_source_index_overview(
         repo_root,
         overview="Topology source index.",
-        expected_update_id=update_id,
     ).ok
     block = lean_runtime.material.create_source_block(
         repo_root,
@@ -353,7 +350,6 @@ def test_fresh_native_parent_runs_real_source_child_into_real_root_validation(tm
         kind="statement",
         title="Topology fact",
         summary="The selected topology fact.",
-        expected_update_id=update_id,
     )
     assert block.ok and block.value is not None
     assert lean_runtime.material.add_source_block_ref(
@@ -363,35 +359,29 @@ def test_fresh_native_parent_runs_real_source_child_into_real_root_validation(tm
         start_line=1,
         end_line=5,
         role="primary",
-        expected_update_id=update_id,
     ).ok
     assert lean_runtime.material.mark_block_refs_done(
         repo_root,
         block_id=block.value.block_id,
-        expected_update_id=update_id,
     ).value.passed
     assert lean_runtime.material.mark_block_links_done(
         repo_root,
         block_id=block.value.block_id,
-        expected_update_id=update_id,
     ).value.passed
     assert lean_runtime.material.mark_block_completed(
         repo_root,
         block_id=block.value.block_id,
-        expected_update_id=update_id,
     ).value.passed
     assert lean_runtime.material.set_file_survey_status(
         repo_root,
         path="README.md",
         status="surveyed",
         summary="Surveyed.",
-        expected_update_id=update_id,
     ).ok
     assert lean_runtime.material.set_file_indexing_status(
         repo_root,
         path="README.md",
         status="indexed",
-        expected_update_id=update_id,
     ).ok
     runtime.agent_service.queue_submission(
         SourceIndexBuilderRoundSubmission(

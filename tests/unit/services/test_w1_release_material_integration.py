@@ -34,7 +34,6 @@ def test_release_availability_and_scoped_source_index_share_one_runtime_without_
     assert scope.ok and scope.value is not None
     opened = runtime.material.open_source_index_update(
         tmp_path,
-        update_id="w1-update",
         resolved_scope=scope.value,
         index_policy="auto",
     )
@@ -45,7 +44,6 @@ def test_release_availability_and_scoped_source_index_share_one_runtime_without_
         kind="statement",
         title="Theorem B",
         summary="The chapter theorem.",
-        expected_update_id="w1-update",
     )
     assert block.ok and block.value is not None
     assert runtime.material.add_source_block_ref(
@@ -55,39 +53,32 @@ def test_release_availability_and_scoped_source_index_share_one_runtime_without_
         start_line=1,
         end_line=2,
         role="primary",
-        expected_update_id="w1-update",
     ).ok
     assert runtime.material.mark_block_refs_done(
         tmp_path,
         block_id=block.value.block_id,
-        expected_update_id="w1-update",
     ).value.passed
     assert runtime.material.mark_block_links_done(
         tmp_path,
         block_id=block.value.block_id,
-        expected_update_id="w1-update",
     ).value.passed
     assert runtime.material.mark_block_completed(
         tmp_path,
         block_id=block.value.block_id,
-        expected_update_id="w1-update",
     ).value.passed
     assert runtime.material.set_file_survey_status(
         tmp_path,
         path="chapter.md",
         status="surveyed",
         summary="Surveyed chapter.",
-        expected_update_id="w1-update",
     ).ok
     assert runtime.material.set_file_indexing_status(
         tmp_path,
         path="chapter.md",
         status="indexed",
-        expected_update_id="w1-update",
     ).ok
     gate = runtime.material.validate_source_index_update(
         tmp_path,
-        update_id="w1-update",
         baseline_index=None,
         expected_baseline_digest=opened.value.baseline_digest,
         resolved_scope=["chapter.md"],
@@ -96,7 +87,6 @@ def test_release_availability_and_scoped_source_index_share_one_runtime_without_
     assert gate.ok and gate.value is not None and gate.value.gate.passed
     assert runtime.material.commit_source_index_update(
         tmp_path,
-        update_id="w1-update",
         validated=gate.value,
     ).ok
 

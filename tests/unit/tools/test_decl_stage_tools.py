@@ -337,19 +337,18 @@ def _formal_review_ctx(repo_root: Path, *, round_id: str, batch_decls: list[str]
 def _create_local_resource(runtime, repo_root: Path) -> str:
     target_file = repo_root / "proof-resource.md"
     target_file.write_text("Proof resource.\n", encoding="utf-8")
-    flow_input = runtime.material.submit_resource_request(
-        {"repo_root": repo_root, "node_path": "Main.Topic.Core"},
+    target = runtime.material.prepare_resource_target(
         target_kind="local_file",
         target=str(target_file),
     )
-    assert flow_input.ok and flow_input.value is not None
-    draft = runtime.material.allocate_resource_draft(repo_root, target=flow_input.value.normalized_target)
+    assert target.ok and target.value is not None
+    draft = runtime.material.allocate_resource_draft(repo_root, target=target.value)
     assert draft.ok and draft.value is not None
     Path(draft.value.readme_path).write_text("Resource notes.\n", encoding="utf-8")
     Path(draft.value.normalized_dir, "main.md").write_text("Proof route support.\n", encoding="utf-8")
     promoted = runtime.material.submit_local_resource_created(
         repo_root,
-        flow_input=flow_input.value,
+        target=target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Curated proof resource.",
     )

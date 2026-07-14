@@ -12,7 +12,6 @@ from lean_constellation.services.material.material_read import (
 from lean_constellation.services.material.resource_curation import (
     ResourceCurationComponent,
     ResourceCurationDecisionView,
-    ResourceCurationFlowInputView,
     ResourceCurationResultView,
 )
 from lean_constellation.services.material.resource_library import (
@@ -79,7 +78,6 @@ __all__ = [
     "MaterialService",
     "ResourceCurationComponent",
     "ResourceCurationDecisionView",
-    "ResourceCurationFlowInputView",
     "ResourceCurationResultView",
     "ResourceDraft",
     "ResourceDraftStatus",

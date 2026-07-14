@@ -804,7 +804,9 @@ def test_adapter_interface_binding_projection_and_ready_gate(tmp_path: Path) -> 
     submitted = service.submit_adapter_catalog_ready(tmp_path, summary="Adapter catalog is ready.")
     assert submitted.ok
     assert submitted.value is not None
-    assert submitted.value.accepted is True
+    assert submitted.value.gate.passed is True
+    assert "submission_type" not in type(submitted.value).model_fields
+    assert "accepted" not in type(submitted.value).model_fields
     provider_ready_after = service.runtime.repo_workspace.metadata.get_repo_publication(tmp_path)
     assert provider_ready_after.ok
     assert provider_ready_after.value is not None
@@ -1039,8 +1041,10 @@ def test_adapter_ready_gate_aggregates_service_issues_and_submit_failures(tmp_pa
     )
     assert blocked.ok
     assert blocked.value is not None
-    assert blocked.value.accepted is True
+    assert blocked.value.reason == "Need upstream theorem not present in catalog."
     assert blocked.value.missing_interfaces == ["main_result"]
+    assert "submission_type" not in type(blocked.value).model_fields
+    assert "accepted" not in type(blocked.value).model_fields
 
 
 def test_adapter_preparation_validation_checks_repo_format_source_mode_dependency_and_trust(tmp_path: Path) -> None:

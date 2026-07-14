@@ -24,6 +24,7 @@ class FakeAgent:
     cli_type: str
     home_id: str | None = None
     thread_id: str | None = None
+    status: str = "idle"
 
 
 @dataclass
@@ -77,6 +78,14 @@ class FakeAgentService:
     def get_agent(self, agent_id: str) -> FakeAgent:
         return self.agents[agent_id]
 
+    def list_agents(self, scope_id: str | None = None, status: str | None = None) -> list[FakeAgent]:
+        return [
+            agent
+            for agent in self.agents.values()
+            if (scope_id is None or agent.scope_id == scope_id)
+            and (status is None or agent.status == status)
+        ]
+
     def fork_agent(self, source_agent_id: str, *, target_scope_id: str | None = None) -> FakeAgent:
         source = self.get_agent(source_agent_id)
         self._agent_seq += 1
@@ -103,6 +112,7 @@ class FakeAgentService:
     ) -> None:
         if agent_id not in self.agents:
             raise ValueError(f"unknown fake agent: {agent_id}")
+        self.agents[agent_id].status = "running"
         self.start_records.append(
             FakeAgentStartRecord(
                 agent_id=agent_id,
@@ -120,10 +130,13 @@ class FakeAgentService:
         record = self.start_records[-1]
         action = self.turn_actions.pop(0) if self.turn_actions else None
         submitted = False
-        if action is not None:
-            self._accept_submission(record, action)
-            submitted = True
-        return FakeAgentTurnResult(agent_id=agent_id, prompt=record.prompt, env=record.env, submitted=submitted)
+        try:
+            if action is not None:
+                self._accept_submission(record, action)
+                submitted = True
+            return FakeAgentTurnResult(agent_id=agent_id, prompt=record.prompt, env=record.env, submitted=submitted)
+        finally:
+            self.agents[agent_id].status = "idle"
 
     def queue_submission(self, submission: BaseSubmission) -> None:
         self.turn_actions.append(submission)

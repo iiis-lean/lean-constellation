@@ -14,7 +14,7 @@ from lean_constellation.domain.preparation import (
     BootstrapInputValidationView,
     ProviderReadyView,
     RepoDependencyRequirementStatus,
-    ProviderRepoRuntimeShellView,
+    ProviderRepoPreparationView,
     RepoRequirementRef,
     RepoPreparationInput,
     RequirementResumeCandidateView,
@@ -38,11 +38,7 @@ from lean_constellation.services.repo_workspace.lake_dependency import (
     RepoSkeletonView,
 )
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
-from lean_constellation.services.repo_workspace.repo_preparation import (
-    PreparationStartPreflightView,
-    ProviderRepoRuntimeBootstrapProvider,
-    RepoPreparationComponent,
-)
+from lean_constellation.services.repo_workspace.repo_preparation import PreparationStartPreflightView, RepoPreparationComponent
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
 from lean_constellation.services.repo_workspace.repo_release import RepoReleaseComponent
 from lean_constellation.services.repo_workspace.repo_run import RepoRunComponent
@@ -172,21 +168,19 @@ class RepoWorkspaceService:
             source_corpus_mode=source_corpus_mode,
         )
 
-    def prepare_provider_repo_runtime_shell(
+    def prepare_provider_repo_shell(
         self,
         workspace_root: Path,
         *,
         target_repo: str,
         preparation_input: RepoPreparationInput,
         project_name: str | None = None,
-        runtime_bootstrap: ProviderRepoRuntimeBootstrapProvider | None = None,
-    ) -> ServiceResult[ProviderRepoRuntimeShellView]:
-        return self.preparation.prepare_provider_repo_runtime_shell(
+    ) -> ServiceResult[ProviderRepoPreparationView]:
+        return self.preparation.prepare_provider_repo_shell(
             workspace_root,
             target_repo=target_repo,
             preparation_input=preparation_input,
             project_name=project_name,
-            runtime_bootstrap=runtime_bootstrap,
         )
 
     def build_main_repo_preparation_input(

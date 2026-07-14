@@ -8,7 +8,6 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from agent_runtime_kit.flow.models import FlowStatus
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
@@ -109,15 +108,11 @@ class RepoReleaseFinalizerComponent:
         *,
         base_release_id: str | None,
         summary: str,
-        owner_flow_id: str | None = None,
-        submission_intent_preview: bool = False,
     ) -> ServiceResult[CandidateReleaseGateView]:
         return self._preview_release(
             repo_root,
             base_release_id=base_release_id,
             summary=summary,
-            owner_flow_id=owner_flow_id,
-            submission_intent_preview=submission_intent_preview,
         )
 
     def _preview_release(
@@ -126,8 +121,6 @@ class RepoReleaseFinalizerComponent:
         *,
         base_release_id: str | None,
         summary: str,
-        owner_flow_id: str | None = None,
-        submission_intent_preview: bool = False,
     ) -> ServiceResult[CandidateReleaseGateView]:
         repo_root = Path(repo_root)
         reports: list[GateReport] = []
@@ -138,15 +131,10 @@ class RepoReleaseFinalizerComponent:
             return self.runtime.foundation.fail(base.issues)
         reports.append(base.value)
 
-        workflow = self._check_workflow_closeout(
-            repo_root,
-            owner_flow_id=owner_flow_id,
-            stable_hook=False,
-            submission_intent_preview=submission_intent_preview,
-        )
-        if not workflow.ok or workflow.value is None:
-            return self.runtime.foundation.fail(workflow.issues)
-        reports.append(workflow.value)
+        requirement_closeout = self._check_requirement_closeout(repo_root)
+        if not requirement_closeout.ok or requirement_closeout.value is None:
+            return self.runtime.foundation.fail(requirement_closeout.issues)
+        reports.append(requirement_closeout.value)
 
         nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
@@ -420,10 +408,9 @@ class RepoReleaseFinalizerComponent:
         *,
         base_release_id: str | None,
         summary: str,
-        owner_flow_id: str,
     ) -> ServiceResult[CandidateReleasePreparationView]:
         preview = self.preview_candidate_release(
-            repo_root, base_release_id=base_release_id, summary=summary, owner_flow_id=owner_flow_id
+            repo_root, base_release_id=base_release_id, summary=summary
         )
         if not preview.ok or preview.value is None:
             return self.runtime.foundation.fail(preview.issues)
@@ -492,14 +479,10 @@ class RepoReleaseFinalizerComponent:
         repo_root: Path,
         *,
         prepared: PreparedRepoReleaseView,
-        owner_flow_id: str,
-        scope_ids: list[str],
     ) -> ServiceResult[RepoReleaseFinalizeView]:
         return self._commit_prepared_release_transaction(
             repo_root,
             prepared=prepared,
-            owner_flow_id=owner_flow_id,
-            scope_ids=scope_ids,
         )
 
     def _commit_prepared_release_transaction(
@@ -507,8 +490,6 @@ class RepoReleaseFinalizerComponent:
         repo_root: Path,
         *,
         prepared: PreparedRepoReleaseView,
-        owner_flow_id: str,
-        scope_ids: list[str],
     ) -> ServiceResult[RepoReleaseFinalizeView]:
         repo_root = Path(repo_root)
         current_publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
@@ -540,15 +521,11 @@ class RepoReleaseFinalizerComponent:
                         current=current.latest_release_id,
                         expected=prepared.release.parent_release_id,
                     ))
-                workflow = self._check_workflow_closeout(
-                    repo_root,
-                    owner_flow_id=owner_flow_id,
-                    stable_hook=True,
-                )
-                if not workflow.ok or workflow.value is None:
-                    return self.runtime.foundation.fail(workflow.issues)
-                if not workflow.value.passed:
-                    return self.runtime.foundation.fail(workflow.value.issues)
+                requirement_closeout = self._check_requirement_closeout(repo_root)
+                if not requirement_closeout.ok or requirement_closeout.value is None:
+                    return self.runtime.foundation.fail(requirement_closeout.issues)
+                if not requirement_closeout.value.passed:
+                    return self.runtime.foundation.fail(requirement_closeout.value.issues)
                 digest = self.compute_candidate_digest(repo_root)
                 if digest != prepared.candidate_digest:
                     return self.runtime.foundation.fail(self.runtime.foundation.issue(
@@ -566,7 +543,6 @@ class RepoReleaseFinalizerComponent:
                     repo_model=RepoModel(main_node=model.value.main_node, summary=prepared.release.summary),
                     expected_candidate_digest=prepared.candidate_digest,
                     label=f"release {prepared.release.release_id}",
-                    scope_ids=scope_ids,
                 )
                 if not checkpoint_result.ok or checkpoint_result.value is None:
                     return self.runtime.foundation.fail(checkpoint_result.issues)
@@ -1194,7 +1170,6 @@ class RepoReleaseFinalizerComponent:
         *,
         release_id: str,
         dry_run: bool = False,
-        leave_runtime_paused: bool = True,
     ) -> ServiceResult[SnapshotRestoreView]:
         repo_root = Path(repo_root)
         try:
@@ -1213,7 +1188,7 @@ class RepoReleaseFinalizerComponent:
                     return self.runtime.foundation.fail(release.issues)
                 restored = self.runtime.validation_snapshot.snapshot_restore.restore_repo_checkpoint_snapshot(
                     repo_root, snapshot_id=release.value.release.repo_checkpoint_id,
-                    dry_run=dry_run, leave_runtime_paused=leave_runtime_paused, prune_extra_files=True,
+                    dry_run=dry_run, prune_extra_files=True,
                     allow_release_internal=True,
                 )
                 if not restored.ok or restored.value is None or dry_run:
@@ -1320,105 +1295,9 @@ class RepoReleaseFinalizerComponent:
             if issues else self.runtime.foundation.gate_passed("release_base", summary="Release baseline is valid.")
         )
 
-    def _check_workflow_closeout(
-        self,
-        repo_root: Path,
-        *,
-        owner_flow_id: str | None,
-        stable_hook: bool,
-        submission_intent_preview: bool = False,
-    ) -> ServiceResult[GateReport]:
+    def _check_requirement_closeout(self, repo_root: Path) -> ServiceResult[GateReport]:
+        """Check release business truth without inspecting ARK Flow or Step state."""
         issues = []
-        try:
-            flows = self.runtime.list_flows()
-        except RuntimeError as exc:
-            issue = self.runtime.foundation.issue(
-                "release_workflow_inspection_failed",
-                "Repository workflow closeout could not inspect Flow truth.",
-                field="flows",
-                details={"error": str(exc)},
-            )
-            return self.runtime.foundation.ok(
-                self.runtime.foundation.gate_failed(
-                    "release_workflow_closeout",
-                    issue,
-                    summary="Repository workflow closeout inspection failed.",
-                )
-            )
-        try:
-            steps = self.runtime.list_steps()
-        except RuntimeError as exc:
-            steps = []
-            issues.append(self.runtime.foundation.issue(
-                "release_workflow_inspection_failed",
-                "Repository workflow closeout could not inspect Step truth.",
-                field="steps",
-                details={"error": str(exc)},
-            ))
-        repo_scope = f"repo:{repo_root.name}"
-        owner = None
-        for flow in flows:
-            if getattr(flow, "flow_id", None) == owner_flow_id:
-                owner = flow
-            scope_id = str(getattr(flow, "scope_id", ""))
-            if scope_id != repo_scope and not scope_id.startswith(f"{repo_scope}:node:"):
-                continue
-            status = getattr(flow, "status", None)
-            if status in {FlowStatus.COMPLETED, FlowStatus.FAILED}:
-                continue
-            if getattr(flow, "flow_id", None) != owner_flow_id:
-                issues.append(self.runtime.foundation.issue(
-                    "release_workflow_not_closed", "Another repo workflow is still nonterminal.",
-                    object_ref=getattr(flow, "flow_id", None),
-                ))
-        if owner_flow_id is not None and owner is None and flows:
-            issues.append(self.runtime.foundation.issue(
-                "release_workflow_owner_invalid", "Candidate release owner Flow is missing.", object_ref=owner_flow_id
-            ))
-        elif owner is not None and getattr(owner, "flow_type", None) != "native_repo_coordinator":
-            issues.append(self.runtime.foundation.issue(
-                "release_workflow_owner_invalid", "Candidate release owner must be a native Coordinator Flow.",
-                object_ref=owner_flow_id,
-            ))
-        elif owner is not None and getattr(owner, "scope_id", None) != repo_scope:
-            issues.append(self.runtime.foundation.issue(
-                "release_workflow_owner_invalid",
-                "Candidate release owner must belong to the repository scope.",
-                object_ref=owner_flow_id,
-            ))
-        elif owner is not None:
-            phase = str(getattr(getattr(owner, "state", None), "position", ""))
-            allowed = (
-                "coordinator_agent" in phase
-                if submission_intent_preview
-                else ("mark_repo_ready" in phase if not stable_hook else "completed" in phase)
-            )
-            if not allowed:
-                issues.append(self.runtime.foundation.issue(
-                    "release_workflow_owner_invalid",
-                    "Coordinator owner is not at the release preparation/finalization phase.",
-                    object_ref=owner_flow_id,
-                    current=phase,
-                ))
-        for step in steps:
-            status = str(getattr(getattr(step, "status", None), "value", getattr(step, "status", "")))
-            step_scope = str(getattr(step, "scope_id", ""))
-            if status != "running" or (
-                step_scope != repo_scope and not step_scope.startswith(f"{repo_scope}:node:")
-            ):
-                continue
-            allowed_ready_step = (
-                not stable_hook
-                and getattr(step, "flow_id", None) == owner_flow_id
-                and getattr(step, "step_type", None) == (
-                    "coordinator_agent_step" if submission_intent_preview else "mark_coordinator_repo_ready_step"
-                )
-            )
-            if not allowed_ready_step:
-                issues.append(self.runtime.foundation.issue(
-                    "release_workflow_not_closed", "A repo Step is still running.",
-                    object_ref=getattr(step, "step_id", None),
-                ))
         requirements = self.runtime.repo_workspace.requirement.list_requirements(repo_root)
         if not requirements.ok or requirements.value is None:
             return self.runtime.foundation.fail(requirements.issues)
@@ -1426,11 +1305,16 @@ class RepoReleaseFinalizerComponent:
             requirement = view.requirement
             if requirement.status == RepoDependencyRequirementStatus.OPEN or self.runtime.repo_workspace.requirement.is_requirement_waiting(requirement):
                 issues.append(self.runtime.foundation.issue(
-                    "release_workflow_not_closed", "A repo requirement is open or waiting.", object_ref=requirement.name
+                    "release_requirement_not_closed",
+                    "A repo requirement is open or waiting.",
+                    object_ref=requirement.name,
                 ))
         return self.runtime.foundation.ok(
-            self.runtime.foundation.gate_failed("release_workflow_closeout", issues)
-            if issues else self.runtime.foundation.gate_passed("release_workflow_closeout", summary="Repo workflow is closed for release.")
+            self.runtime.foundation.gate_failed("release_requirement_closeout", issues)
+            if issues
+            else self.runtime.foundation.gate_passed(
+                "release_requirement_closeout", summary="Repo requirements are closed for release."
+            )
         )
 
     def _remove_unpublished_release(self, repo_root: Path, release_id: str) -> None:

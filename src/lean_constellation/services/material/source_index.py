@@ -76,7 +76,6 @@ class SourceFileIndex(StrictModel):
 class SourceIndex(StrictModel):
     schema_version: Literal[3] = 3
     status: SourceIndexStatus = "draft"
-    active_update_id: str | None = None
     active_file_scope: list[str] = Field(default_factory=list)
     overview: str | None = None
     root_block_id: str = "root"
@@ -90,12 +89,10 @@ class SourceIndex(StrictModel):
 
     @model_validator(mode="after")
     def _validate_update_state(self) -> "SourceIndex":
-        if self.status == "committed" and (self.active_update_id is not None or self.active_file_scope):
-            raise ValueError("committed SourceIndex cannot retain active update ownership")
-        if self.status == "updating" and (self.active_update_id is None or not self.active_file_scope):
-            raise ValueError("updating SourceIndex requires an active update id and file scope")
-        if (self.active_update_id is None) != (not self.active_file_scope):
-            raise ValueError("SourceIndex active update id and file scope must be set or cleared together")
+        if self.status == "committed" and self.active_file_scope:
+            raise ValueError("committed SourceIndex cannot retain an active file scope")
+        if self.status == "updating" and not self.active_file_scope:
+            raise ValueError("updating SourceIndex requires an active file scope")
         if any(file.committed and not file.source_sha256 for file in self.files.values()):
             raise ValueError("committed SourceIndex files require source_sha256")
         return self
@@ -196,7 +193,6 @@ class ResolvedSourceScopeView(StrictModel):
 class SourceIndexOpenUpdateView(StrictModel):
     outcome: Literal["opened", "already_open", "no_op"]
     previous_status: Literal["missing", "draft", "updating", "committed"]
-    active_update_id: str | None = None
     active_file_scope: list[str] = Field(default_factory=list)
     new_file_paths: list[str] = Field(default_factory=list)
     already_committed_file_paths: list[str] = Field(default_factory=list)
@@ -257,7 +253,7 @@ class SourceIndexComponent:
     def __init__(self, runtime: LeanRuntimeServices, source_corpus: SourceCorpusComponent) -> None:
         self.runtime = runtime
         self.source_corpus = source_corpus
-        self._validated_updates: dict[tuple[Path, str], tuple[str, SourceIndexUpdateGateView]] = {}
+        self._validated_updates: dict[tuple[Path, str], SourceIndexUpdateGateView] = {}
 
     def resolve_source_scope(
         self,
@@ -321,17 +317,11 @@ class SourceIndexComponent:
         self,
         repo_root: Path,
         *,
-        update_id: str,
         resolved_scope: ResolvedSourceScopeView,
         index_policy: Literal["auto", "update", "reuse"],
         expected_baseline_digest: str | None = None,
         retry_baseline_index: SourceIndex | None = None,
     ) -> ServiceResult[SourceIndexOpenUpdateView]:
-        update_id = update_id.strip()
-        if not update_id:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("source_index_update_id_required", "SourceIndex update id must be non-empty.")
-            )
         if index_policy not in {"auto", "update", "reuse"}:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("source_index_policy_invalid", f"Unsupported SourceIndex policy: {index_policy}")
@@ -367,16 +357,7 @@ class SourceIndexComponent:
             baseline_digest = self.missing_source_index_digest()
             pre_open_file_paths = set()
 
-        if index.status in {"draft", "updating"} and index.active_update_id is not None:
-            if index.active_update_id != update_id:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "source_index_update_owner_mismatch",
-                        "Another SourceIndex update owns the current mutable truth.",
-                        current=index.active_update_id,
-                        expected=update_id,
-                    )
-                )
+        if index.status in {"draft", "updating"} and index.active_file_scope:
             if index.active_file_scope != resolved_scope.resolved_file_paths:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
@@ -485,7 +466,6 @@ class SourceIndexComponent:
             elif not existing.committed:
                 index.files[path] = self._file_from_manifest(item)
         index.status = "draft" if previous_status in {"missing", "draft"} else "updating"
-        index.active_update_id = update_id
         index.active_file_scope = selected
         self._touch(index, "Opened scoped SourceIndex update.")
         saved = self._save_model(repo_root, index)
@@ -535,7 +515,7 @@ class SourceIndexComponent:
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
         index = loaded.value
-        if index.status != "committed" or index.active_update_id is not None or index.active_file_scope:
+        if index.status != "committed" or index.active_file_scope:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "source_index_not_committed",
@@ -550,10 +530,8 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(loaded.issues)
         return loaded
 
-    def set_source_index_overview(
-        self, repo_root: Path, *, overview: str, expected_update_id: str | None = None
-    ) -> ServiceResult[SourceIndexView]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+    def set_source_index_overview(self, repo_root: Path, *, overview: str) -> ServiceResult[SourceIndexView]:
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         overview = overview.strip()
@@ -585,9 +563,8 @@ class SourceIndexComponent:
         subtype: str | None,
         title: str,
         summary: str,
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceBlockView]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         if parent_id not in index.value.blocks:
@@ -633,9 +610,8 @@ class SourceIndexComponent:
         summary: str | None = None,
         kind: str | None = None,
         subtype: str | None = None,
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceBlockView]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
@@ -676,9 +652,8 @@ class SourceIndexComponent:
         start_line: int,
         end_line: int,
         role: str,
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceBlockView]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
@@ -700,7 +675,7 @@ class SourceIndexComponent:
                     object_ref=path,
                 )
             )
-        if index.value.active_update_id is not None and validation.value.path not in index.value.active_file_scope:
+        if index.value.active_file_scope and validation.value.path not in index.value.active_file_scope:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "source_ref_outside_active_scope",
@@ -729,9 +704,9 @@ class SourceIndexComponent:
         return self.runtime.foundation.ok(self._to_block_view(saved.value, block.value))
 
     def remove_source_block_ref(
-        self, repo_root: Path, *, block_id: str, ref_id: str, expected_update_id: str | None = None
+        self, repo_root: Path, *, block_id: str, ref_id: str
     ) -> ServiceResult[SourceBlockView]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
@@ -752,10 +727,8 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._to_block_view(saved.value, block.value))
 
-    def mark_block_refs_done(
-        self, repo_root: Path, *, block_id: str, expected_update_id: str | None = None
-    ) -> ServiceResult[GateReport]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+    def mark_block_refs_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
@@ -810,9 +783,8 @@ class SourceIndexComponent:
         target_hint: str | None,
         link_kind: str,
         evidence_ref_ids: list[str],
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceLinkView]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         source = self._block_or_issue(index.value, source_block_id)
@@ -857,10 +829,8 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._to_link_view(saved.value, link))
 
-    def mark_block_links_done(
-        self, repo_root: Path, *, block_id: str, expected_update_id: str | None = None
-    ) -> ServiceResult[GateReport]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+    def mark_block_links_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
@@ -905,10 +875,8 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("source_block_links_done", summary="Source block links are ready."))
 
-    def mark_block_completed(
-        self, repo_root: Path, *, block_id: str, expected_update_id: str | None = None
-    ) -> ServiceResult[GateReport]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+    def mark_block_completed(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         block = self._block_or_issue(index.value, block_id)
@@ -950,15 +918,14 @@ class SourceIndexComponent:
         path: str,
         status: Literal["pending", "surveyed", "skipped"],
         summary: str | None = None,
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceFileIndexView]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         file = self._file_or_issue(index.value, path)
         if not file.ok or file.value is None:
             return self.runtime.foundation.fail(file.issues)
-        if index.value.active_update_id is not None and path not in index.value.active_file_scope:
+        if index.value.active_file_scope and path not in index.value.active_file_scope:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "source_file_outside_active_scope",
@@ -982,15 +949,14 @@ class SourceIndexComponent:
         *,
         path: str,
         status: Literal["pending", "indexed", "skipped"],
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceFileIndexView]:
-        index = self._load_mutable(repo_root, expected_update_id=expected_update_id)
+        index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         file = self._file_or_issue(index.value, path)
         if not file.ok or file.value is None:
             return self.runtime.foundation.fail(file.issues)
-        if index.value.active_update_id is not None and path not in index.value.active_file_scope:
+        if index.value.active_file_scope and path not in index.value.active_file_scope:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "source_file_outside_active_scope",
@@ -1007,16 +973,10 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._to_file_view(file.value))
 
-    def validate_source_index(
-        self, repo_root: Path, *, expected_update_id: str | None = None
-    ) -> ServiceResult[GateReport]:
+    def validate_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
         index = self.get_source_index_model(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
-        if expected_update_id is not None:
-            owner = self._assert_update_owner(index.value, expected_update_id)
-            if owner is not None:
-                return self.runtime.foundation.fail(owner)
         if index.value.active_file_scope:
             file_scope: set[str] | None = set(index.value.active_file_scope)
         elif index.value.status == "committed":
@@ -1038,7 +998,7 @@ class SourceIndexComponent:
         index = self.get_source_index_model(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
-        if index.value.status != "committed" or index.value.active_update_id is not None or index.value.active_file_scope:
+        if index.value.status != "committed" or index.value.active_file_scope:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "source_index_not_committed",
@@ -1077,7 +1037,6 @@ class SourceIndexComponent:
         repo_root: Path,
         *,
         summary: str,
-        expected_update_id: str | None = None,
         ctx: object | None = None,
     ) -> ServiceResult[SubmissionView]:
         del ctx
@@ -1088,11 +1047,7 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(index.issues)
         if index.value.status not in {"draft", "updating"}:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_not_draft", "Builder can only submit a mutable SourceIndex."))
-        if expected_update_id is not None:
-            owner = self._assert_update_owner(index.value, expected_update_id)
-            if owner is not None:
-                return self.runtime.foundation.fail(owner)
-        validation = self.validate_source_index(repo_root, expected_update_id=expected_update_id)
+        validation = self.validate_source_index(repo_root)
         if not validation.ok or validation.value is None:
             return self.runtime.foundation.fail(validation.issues)
         coverage = self.get_source_index_coverage(repo_root)
@@ -1117,7 +1072,6 @@ class SourceIndexComponent:
         approved: bool,
         summary: str,
         feedback: str | None = None,
-        expected_update_id: str | None = None,
         ctx: object | None = None,
     ) -> ServiceResult[SubmissionView]:
         del ctx
@@ -1130,10 +1084,6 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(index.issues)
         if index.value.status not in {"draft", "updating"}:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_not_draft", "Reviewer can only submit a mutable SourceIndex."))
-        if expected_update_id is not None:
-            owner = self._assert_update_owner(index.value, expected_update_id)
-            if owner is not None:
-                return self.runtime.foundation.fail(owner)
         return self.runtime.foundation.ok(
             SubmissionView(
                 submission_kind="source_index_review_round",
@@ -1148,7 +1098,6 @@ class SourceIndexComponent:
         self,
         repo_root: Path,
         *,
-        update_id: str,
         baseline_index: SourceIndex | None,
         expected_baseline_digest: str,
         resolved_scope: list[str],
@@ -1158,9 +1107,6 @@ class SourceIndexComponent:
         if not current_result.ok or current_result.value is None:
             return self.runtime.foundation.fail(current_result.issues)
         current = current_result.value
-        owner = self._assert_update_owner(current, update_id)
-        if owner is not None:
-            return self.runtime.foundation.fail(owner)
         issues: list[ServiceIssue] = []
         if current.active_file_scope != resolved_scope:
             issues.append(
@@ -1376,18 +1322,18 @@ class SourceIndexComponent:
             new_ref_ids=new_ref_ids,
             newly_committed_file_candidates=candidates,
         )
-        key = (self._repo_key(repo_root), update_id)
+        repo_key = self._repo_key(repo_root)
+        for stale_key in [key for key in self._validated_updates if key[0] == repo_key]:
+            self._validated_updates.pop(stale_key, None)
+        key = (repo_key, current_digest)
         if gate.passed:
-            self._validated_updates[key] = (current_digest, view)
-        else:
-            self._validated_updates.pop(key, None)
+            self._validated_updates[key] = view
         return self.runtime.foundation.ok(view)
 
     def commit_source_index_update(
         self,
         repo_root: Path,
         *,
-        update_id: str,
         validated: SourceIndexUpdateGateView,
     ) -> ServiceResult[SourceIndexCommitView]:
         if not validated.gate.passed:
@@ -1401,9 +1347,6 @@ class SourceIndexComponent:
         if not current_result.ok or current_result.value is None:
             return self.runtime.foundation.fail(current_result.issues)
         current = current_result.value
-        owner = self._assert_update_owner(current, update_id)
-        if owner is not None:
-            return self.runtime.foundation.fail(owner)
         source_hash_issues = self._current_source_hash_issues(
             repo_root,
             current,
@@ -1417,13 +1360,12 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(source_hash_issues.issues)
         if source_hash_issues.value:
             return self.runtime.foundation.fail(source_hash_issues.value)
-        key = (self._repo_key(repo_root), update_id)
-        recorded = self._validated_updates.get(key)
         current_digest = self.canonical_source_index_digest(current)
+        key = (self._repo_key(repo_root), current_digest)
+        recorded = self._validated_updates.get(key)
         if (
             recorded is None
-            or recorded[0] != current_digest
-            or recorded[1].model_dump(mode="json") != validated.model_dump(mode="json")
+            or recorded.model_dump(mode="json") != validated.model_dump(mode="json")
         ):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -1434,7 +1376,6 @@ class SourceIndexComponent:
         for path in validated.newly_committed_file_candidates:
             current.files[path].committed = True
         current.status = "committed"
-        current.active_update_id = None
         current.active_file_scope = []
         current.committed_at = utc_now_iso()
         self._touch(current, "Committed scoped SourceIndex update.")
@@ -1460,23 +1401,18 @@ class SourceIndexComponent:
         ctx = FoundationContext(repo_root=Path(repo_root))
         return self.runtime.foundation.layout.constellation_root(ctx) / "source_index" / "index.json"
 
-    def _load_mutable(
-        self, repo_root: Path, *, expected_update_id: str | None = None
-    ) -> ServiceResult[SourceIndex]:
+    def _load_mutable(self, repo_root: Path) -> ServiceResult[SourceIndex]:
         index = self.get_source_index_model(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
         if index.value.status == "committed":
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_committed", "Committed SourceIndex is read-only."))
-        if index.value.active_update_id is not None:
-            owner = self._assert_update_owner(index.value, expected_update_id)
-            if owner is not None:
-                return self.runtime.foundation.fail(owner)
+        if index.value.active_file_scope:
             return index
         return self.runtime.foundation.fail(
             self.runtime.foundation.issue(
                 "source_index_update_context_required",
-                "Mutable SourceIndex operations require the active system update id.",
+                "Mutable SourceIndex operations require an active scoped update.",
             )
         )
 
@@ -1552,7 +1488,6 @@ class SourceIndexComponent:
         return SourceIndexOpenUpdateView(
             outcome=outcome,
             previous_status=previous_status,
-            active_update_id=index.active_update_id,
             active_file_scope=active,
             new_file_paths=sorted(new_file_paths or []),
             already_committed_file_paths=sorted(path for path in active if path in index.files and index.files[path].committed),
@@ -1599,24 +1534,6 @@ class SourceIndexComponent:
                     )
                 )
         return self.runtime.foundation.ok(issues)
-
-    def _assert_update_owner(self, index: SourceIndex, update_id: str | None) -> ServiceIssue | None:
-        if index.active_update_id is None:
-            return self.runtime.foundation.issue(
-                "source_index_update_context_required",
-                "SourceIndex has no active update owner.",
-            )
-        if update_id is None:
-            return self.runtime.foundation.issue(
-                "source_index_update_context_required",
-                "Mutable SourceIndex operations require the active system update id.",
-            )
-        if index.active_update_id != update_id:
-            return self.runtime.foundation.issue(
-                "source_index_update_owner_mismatch",
-                "SourceIndex update id does not match the active owner.",
-            )
-        return None
 
     @staticmethod
     def _repo_key(repo_root: Path) -> Path:

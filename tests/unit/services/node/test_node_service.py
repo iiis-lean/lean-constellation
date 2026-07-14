@@ -5,6 +5,7 @@ from pathlib import Path
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services.decl_graph.models import DeclState
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
 from lean_constellation.services.node import DeclPublicView, NodeContractSnapshot, NodeService
 
@@ -140,3 +141,87 @@ def test_node_service_get_public_boundary_for_content_and_scope(tmp_path: Path) 
     assert scope.ok
     assert scope.value is not None
     assert [item.ref.name for item in scope.value.exports] == ["main_result"]
+
+
+def test_node_delete_core_service_does_not_require_ark_runtime(tmp_path: Path) -> None:
+    _write_preparation_input(tmp_path)
+    runtime = make_runtime()
+    service = runtime.node
+    assert service.ensure_native_root_main_contract(tmp_path).ok
+    assert service.create_content_node(
+        tmp_path,
+        path="Main.Private",
+        goal="Disposable private node.",
+        boundary="Private implementation detail.",
+        objective="Exercise the data-only delete guard.",
+        success_criteria="The node can be deleted without an ARK runtime.",
+    ).ok
+    assert service.commit_content_contract(
+        tmp_path,
+        node_path="Main.Private",
+        summary="Private node is complete.",
+    ).ok
+
+    runtime.ark = None  # type: ignore[assignment]
+
+    preview = service.preview_delete_node(tmp_path, path="Main.Private")
+    assert preview.ok and preview.value is not None
+    assert preview.value.deletable
+    assert "running_task_count" not in preview.value.model_dump()
+    deleted = service.mark_node_deleted(tmp_path, path="Main.Private", reason="Remove private node.")
+    assert deleted.ok
+
+
+def test_node_delete_core_service_preserves_open_work_blockers(tmp_path: Path) -> None:
+    _write_preparation_input(tmp_path)
+    runtime = make_runtime()
+    service = runtime.node
+    assert service.ensure_native_root_main_contract(tmp_path).ok
+    assert service.create_content_node(
+        tmp_path,
+        path="Main.Working",
+        goal="Work in progress.",
+        boundary="Private work in progress.",
+        objective="Exercise open-work deletion blockers.",
+        success_criteria="Open contract and DeclGraph work remain protected.",
+    ).ok
+
+    open_contract = service.preview_delete_node(tmp_path, path="Main.Working")
+    assert open_contract.ok and open_contract.value is not None
+    assert "open_contract" in open_contract.value.blocking_reasons
+
+    assert service.commit_content_contract(
+        tmp_path,
+        node_path="Main.Working",
+        summary="Commit the empty contract before opening declaration work.",
+    ).ok
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Working",
+        objective="Create a private helper.",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        tmp_path,
+        node_path="Main.Working",
+        strategy_id=strategy.value.strategy_id,
+        objective="Draft the private helper.",
+    )
+    assert round_record.ok and round_record.value is not None
+    assert runtime.decl_graph.create_decl(
+        tmp_path,
+        node_path="Main.Working",
+        round_id=round_record.value.round_id,
+        name="privateHelper",
+        kind="definition",
+        objective="Create a private helper definition.",
+        summary="A private helper.",
+        end_after_state=DeclState.DECLARED,
+    ).ok
+
+    open_graph = service.preview_delete_node(tmp_path, path="Main.Working")
+    assert open_graph.ok and open_graph.value is not None
+    assert "open_decl_graph_work" in open_graph.value.blocking_reasons
+    assert f"current:strategy:{strategy.value.strategy_id}" in open_graph.value.inbound_refs
+    assert f"current:round:{round_record.value.round_id}" in open_graph.value.inbound_refs
+    assert "current:revision:privateHelper@1" in open_graph.value.inbound_refs

@@ -224,7 +224,6 @@ class RepoMetadataComponent:
         target_proof_availability: ProofAvailability | str | None = None,
         work_mode: RepoWorkMode | str | None = None,
         default_requirement_proof_availability: ProofAvailability | str | None = None,
-        max_parallel_content_node_tasks: int | None = None,
     ) -> ServiceResult[RepoConfigView]:
         publication = self.get_repo_publication(repo_root)
         if not publication.ok or publication.value is None:
@@ -249,8 +248,6 @@ class RepoMetadataComponent:
                 config.work_mode = RepoWorkMode(work_mode)
             if default_requirement_proof_availability is not None:
                 config.default_requirement_proof_availability = ProofAvailability(default_requirement_proof_availability)
-            if max_parallel_content_node_tasks is not None:
-                config.max_parallel_content_node_tasks = max_parallel_content_node_tasks
             config = RepoConfig.model_validate(config.model_dump())
         except Exception as exc:  # noqa: BLE001 - normalized as ServiceResult.
             return self.runtime.foundation.fail(self.runtime.foundation.issue("repo_config_invalid", f"Invalid repo config: {exc}"))
@@ -321,7 +318,6 @@ class RepoMetadataComponent:
                     if config.value.config.target_proof_availability == ProofAvailability.DECLARED
                     else "proved_closure"
                 ),
-                max_parallel_content_node_tasks=config.value.config.max_parallel_content_node_tasks,
                 preparation_input_exists=self.runtime.foundation.layout.preparation_input_path(ctx).exists(),
                 open_requirement_count=open_requirement_count,
                 summary=summary,

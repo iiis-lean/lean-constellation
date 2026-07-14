@@ -13,16 +13,14 @@ from pydantic import Field
 from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec, build_agent_type_specs
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
-from lean_constellation.services.repo_workspace.repo_preparation import DefaultProviderRepoRuntimeBootstrap
 from lean_constellation.services.runtime import LeanRuntimeServices
 
 if TYPE_CHECKING:
     from lean_constellation.agents import AgentTypeSpec
 
 
-class RepoRuntimeInitView(StrictModel):
+class RepoBusinessInitView(StrictModel):
     repo_root: str
-    runtime_root: str
     constellation_root: str
     initialized_paths: list[str] = Field(default_factory=list)
     created: bool
@@ -50,14 +48,13 @@ class ProductionAgentHomesView(StrictModel):
     summary: str
 
 
-def initialize_repo_runtime(
+def initialize_repo_business_truth(
     runtime: LeanRuntimeServices,
     repo_root: Path | str,
     *,
-    repo_name: str | None = None,
     main_node: str = "Main",
-) -> ServiceResult[RepoRuntimeInitView]:
-    """Initialize repo-local Lean and ARK runtime shell idempotently."""
+) -> ServiceResult[RepoBusinessInitView]:
+    """Initialize repo business truth without creating repo-local ARK runtime state."""
 
     root = Path(repo_root).expanduser()
     ensure_repo = runtime.foundation.store.ensure_dir(root)
@@ -70,23 +67,14 @@ def initialize_repo_runtime(
     ensure_constellation = runtime.foundation.store.ensure_dir(constellation_root)
     if not ensure_constellation.ok:
         return runtime.foundation.fail(ensure_constellation.issues)
-    bootstrap = DefaultProviderRepoRuntimeBootstrap(runtime).bootstrap_provider_repo_runtime(
-        root,
-        repo_name=repo_name or root.name,
-        project_name=None,
-    )
-    if not bootstrap.ok or bootstrap.value is None:
-        return runtime.foundation.fail(bootstrap.issues)
-    created = bool(model.value and model.value.created) or bootstrap.value.created
-    paths = sorted({str(constellation_root), *bootstrap.value.initialized_paths})
+    created = bool(model.value and model.value.created)
     return runtime.foundation.ok(
-        RepoRuntimeInitView(
+        RepoBusinessInitView(
             repo_root=str(root),
-            runtime_root=bootstrap.value.runtime_root,
             constellation_root=str(constellation_root),
-            initialized_paths=paths,
+            initialized_paths=[str(constellation_root)] if created else [],
             created=created,
-            summary="Initialized repo runtime shell.",
+            summary="Initialized repo business truth.",
         )
     )
 

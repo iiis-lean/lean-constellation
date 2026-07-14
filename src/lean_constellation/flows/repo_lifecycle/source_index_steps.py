@@ -265,7 +265,6 @@ class OpenSourceIndexUpdateStep(BaseStep):
         )
         opened = ctx.app.material.open_source_index_update(
             Path(flow.input.repo_root),
-            update_id=state.active_update_id,
             resolved_scope=resolved,
             index_policy=flow.input.index_policy,
             expected_baseline_digest=baseline_digest,
@@ -313,7 +312,6 @@ class ValidateAndCommitSourceIndexUpdateStep(BaseStep):
             return ctx.complete_step(_blocked_commit("source_index_baseline_load_failed", baseline))
         validated = ctx.app.material.validate_source_index_update(
             Path(flow.input.repo_root),
-            update_id=state.active_update_id,
             baseline_index=baseline.value,
             expected_baseline_digest=state.baseline_digest,
             resolved_scope=list(state.resolved_file_paths),
@@ -334,7 +332,7 @@ class ValidateAndCommitSourceIndexUpdateStep(BaseStep):
                 )
             )
         committed = ctx.app.material.commit_source_index_update(
-            Path(flow.input.repo_root), update_id=state.active_update_id, validated=validated.value
+            Path(flow.input.repo_root), validated=validated.value
         )
         if not committed.ok or committed.value is None:
             return ctx.complete_step(_blocked_commit("source_index_update_commit_failed", committed))

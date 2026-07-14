@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus, RepoPreparationInput, SourceCorpusMode
@@ -21,7 +22,6 @@ from lean_constellation.services.foundation import (
 )
 from lean_constellation.services.material import MaterialService
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
-from lean_constellation.services.repo_workspace import RepoWorkspaceService
 from lean_constellation.services.validation_snapshot import (
     AuditComponent,
     AuditFinding,
@@ -125,6 +125,34 @@ class FailingArkSnapshotProvider:
         return self.foundation.fail(
             self.foundation.issue("ark_snapshot_restore_failed", "Fake ARK snapshot restore failed.", object_ref=snapshot_id)
         )
+
+
+class SnapshotTestHarness:
+    def __init__(
+        self,
+        runtime,
+        *,
+        runtime_stability=None,
+        ark_snapshot=None,
+        **service_kwargs,
+    ) -> None:
+        self.service = ValidationSnapshotService(runtime, **service_kwargs)
+        runtime.app.validation_snapshot = self.service
+        self.application = ApplicationSnapshotRuntime(
+            runtime,
+            ark_snapshot or FakeArkSnapshotProvider(runtime.foundation),
+            runtime_stability=runtime_stability or FakeRuntimeStabilityProvider(runtime.foundation),
+        )
+        runtime.app.snapshot_runtime = self.application
+
+    def __getattr__(self, name):
+        if hasattr(self.application, name):
+            return getattr(self.application, name)
+        return getattr(self.service, name)
+
+
+def _snapshot_harness(runtime, **kwargs) -> SnapshotTestHarness:
+    return SnapshotTestHarness(runtime, **kwargs)
 
 
 class FakeFormalStageConsistencyProvider:
@@ -552,7 +580,6 @@ def _prepare_source_and_index(service: MaterialService, repo_root: Path) -> None
     assert scope.ok and scope.value is not None
     opened = service.open_source_index_update(
         repo_root,
-        update_id="native-handoff-fixture",
         resolved_scope=scope.value,
         index_policy="auto",
     )
@@ -563,7 +590,6 @@ def _prepare_source_and_index(service: MaterialService, repo_root: Path) -> None
         kind="section",
         title="Chapter",
         summary="Main source chapter.",
-        expected_update_id="native-handoff-fixture",
     )
     assert block.ok and block.value is not None
     assert service.add_source_block_ref(
@@ -573,16 +599,15 @@ def _prepare_source_and_index(service: MaterialService, repo_root: Path) -> None
         start_line=1,
         end_line=3,
         role="primary",
-        expected_update_id="native-handoff-fixture",
     ).ok
     assert service.mark_block_refs_done(
-        repo_root, block_id=block.value.block_id, expected_update_id="native-handoff-fixture"
+        repo_root, block_id=block.value.block_id
     ).ok
     assert service.mark_block_links_done(
-        repo_root, block_id=block.value.block_id, expected_update_id="native-handoff-fixture"
+        repo_root, block_id=block.value.block_id
     ).ok
     assert service.mark_block_completed(
-        repo_root, block_id=block.value.block_id, expected_update_id="native-handoff-fixture"
+        repo_root, block_id=block.value.block_id
     ).ok
     for path in ["README.md", "chapter.md"]:
         assert service.set_file_survey_status(
@@ -590,14 +615,12 @@ def _prepare_source_and_index(service: MaterialService, repo_root: Path) -> None
             path=path,
             status="surveyed",
             summary=f"Surveyed {path}.",
-            expected_update_id="native-handoff-fixture",
         ).ok
         assert service.set_file_indexing_status(
-            repo_root, path=path, status="indexed", expected_update_id="native-handoff-fixture"
+            repo_root, path=path, status="indexed"
         ).ok
     gate = service.validate_source_index_update(
         repo_root,
-        update_id="native-handoff-fixture",
         baseline_index=None,
         expected_baseline_digest=opened.value.baseline_digest,
         resolved_scope=scope.value.resolved_file_paths,
@@ -605,7 +628,7 @@ def _prepare_source_and_index(service: MaterialService, repo_root: Path) -> None
     )
     assert gate.ok and gate.value is not None and gate.value.gate.passed
     assert service.commit_source_index_update(
-        repo_root, update_id="native-handoff-fixture", validated=gate.value
+        repo_root, validated=gate.value
     ).ok
 
 
@@ -616,28 +639,30 @@ def _read_gate_gap_records(repo_root: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_missing_runtime_provider_blocks_stable_point(tmp_path: Path) -> None:
+def test_pure_service_business_gate_does_not_require_runtime_provider(tmp_path: Path) -> None:
     _write_preparation_input(tmp_path)
     service = make_runtime().validation_snapshot
 
-    gate = service.check_repo_stable_point(tmp_path, checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL)
+    gate = service.check_repo_checkpoint_business_gate(
+        tmp_path, checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL
+    )
 
     assert gate.ok
     assert gate.value is not None
-    assert gate.value.passed is False
-    assert gate.value.issues[0].kind == "runtime_stability_provider_missing"
+    assert gate.value.passed is True
 
 
 def test_runtime_gate_failure_blocks_snapshot_before_ark_provider(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=BlockingRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=BlockingRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
     )
 
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
@@ -645,24 +670,22 @@ def test_runtime_gate_failure_blocks_snapshot_before_ark_provider(tmp_path: Path
     assert not created.ok
     assert created.issues[0].kind == "runtime_not_stable"
     assert ark.created == []
-    assert service.list_repo_checkpoint_snapshots(tmp_path).value == []
+    assert snapshot.list_repo_checkpoint_snapshots(tmp_path).value == []
 
 
-def test_missing_ark_provider_blocks_snapshot_creation(tmp_path: Path) -> None:
+def test_pure_service_archive_can_be_lc_only(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    service = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-    )
+    service = ValidationSnapshotService(foundation.runtime)
 
-    created = service.create_repo_stable_point_snapshot(
+    created = service.create_repo_checkpoint_archive(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
 
-    assert not created.ok
-    assert created.issues[0].kind == "ark_snapshot_provider_missing"
-    assert service.list_repo_checkpoint_snapshots(tmp_path).value == []
+    assert created.ok and created.value is not None
+    assert created.value.ark_runtime_snapshot_id is None
+    assert len(service.list_repo_checkpoint_snapshots(tmp_path).value or []) == 1
 
 
 def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> None:
@@ -677,12 +700,13 @@ def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> N
     (tmp_path / ".agent_runtime").mkdir()
     (tmp_path / ".agent_runtime" / "state.json").write_text("do not snapshot", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
     )
 
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
         label="bootstrap done",
@@ -704,31 +728,59 @@ def test_repo_stable_point_snapshot_create_list_and_restore(tmp_path: Path) -> N
     assert not any(path.startswith(".git/") for path in captured)
     assert not any(path.startswith(".agent_runtime/") for path in captured)
 
-    listed = service.list_repo_checkpoint_snapshots(tmp_path)
+    listed = snapshot.list_repo_checkpoint_snapshots(tmp_path)
     assert listed.ok
     assert [item.snapshot_id for item in listed.value or []] == [created.value.snapshot_id]
 
     (tmp_path / "Main.lean").write_text("-- modified\n", encoding="utf-8")
-    dry_run = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id, dry_run=True)
+    dry_run = snapshot.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id, dry_run=True)
     assert dry_run.ok
     assert dry_run.value is not None
     assert "Main.lean" in dry_run.value.would_restore_files
-    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
+    restored = snapshot.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
     assert restored.ok
     assert (tmp_path / "Main.lean").read_text(encoding="utf-8") == "import Main\n"
     assert ark.restored == [("ark_1", True)]
+
+
+def test_lc_only_checkpoint_restore_skips_ark_runtime(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    ark = FakeArkSnapshotProvider(runtime.foundation)
+    service = ValidationSnapshotService(runtime)
+    (tmp_path / "Main.lean").write_text("theorem original : True := by trivial\n", encoding="utf-8")
+
+    created = service.snapshot_restore.create_repo_checkpoint_archive(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
+        snapshot_id="lc_only",
+        ark_runtime_snapshot_id=None,
+    )
+    assert created.ok and created.value is not None
+    assert created.value.ark_runtime_snapshot_id is None
+    assert ark.created == []
+    (tmp_path / "Main.lean").write_text("-- changed\n", encoding="utf-8")
+
+    restored = service.snapshot_restore.restore_repo_checkpoint_snapshot(
+        tmp_path, snapshot_id="lc_only"
+    )
+
+    assert restored.ok and restored.value is not None
+    assert restored.value.ark_runtime_snapshot_id is None
+    assert ark.restored == []
+    assert (tmp_path / "Main.lean").read_text(encoding="utf-8") == "theorem original : True := by trivial\n"
 
 
 def test_source_index_checkpoint_materialization_is_idempotent_and_loads_retry_baseline(tmp_path: Path) -> None:
     runtime = make_runtime()
     _write_preparation_input(tmp_path)
     ark = FakeArkSnapshotProvider(runtime.foundation)
-    service = ValidationSnapshotService(
-        runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(runtime.foundation),
-        ark_snapshot_provider=ark,
-    )
+    service = ValidationSnapshotService(runtime)
     runtime.app.validation_snapshot = service
+    runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
+        runtime,
+        ark,
+        runtime_stability=FakeRuntimeStabilityProvider(runtime.foundation),
+    )
     adapter = SourceIndexCheckpointAdapter(runtime)
 
     first = adapter.materialize_source_index_baseline_checkpoint(
@@ -771,7 +823,6 @@ def test_source_index_checkpoint_materialization_is_idempotent_and_loads_retry_b
     assert scope.ok and scope.value is not None
     opened = runtime.material.open_source_index_update(
         tmp_path,
-        update_id="source-index-update",
         resolved_scope=scope.value,
         index_policy="auto",
         expected_baseline_digest=first.value.baseline_digest,
@@ -790,13 +841,13 @@ def test_repo_stable_point_snapshot_accepts_explicit_scope_ids(tmp_path: Path) -
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
+    snapshot = _snapshot_harness(
         foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
     )
 
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
         label="explicit repo scope",
@@ -805,27 +856,31 @@ def test_repo_stable_point_snapshot_accepts_explicit_scope_ids(tmp_path: Path) -
 
     assert created.ok
     assert created.value is not None
-    assert created.value.refreshed_scope_ids == ["repo:Repo", "node:Main"]
     assert ark.created == [(["repo:Repo", "node:Main"], "explicit repo scope")]
+    assert "refreshed_scope_ids" not in created.value.model_dump()
+    assert "ark_runtime_scope_ids" not in created.value.model_dump()
+    assert "node_refs" not in created.value.model_dump()
     manifest = foundation.store.read_json(
         Path(created.value.root) / "snapshot.json",
         RepoCheckpointSnapshotManifest,
     )
     assert manifest.ok
     assert manifest.value is not None
-    assert manifest.value.refreshed_scope_ids == ["repo:Repo", "node:Main"]
+    assert "refreshed_scope_ids" not in manifest.value.model_dump()
+    assert "ark_runtime_scope_ids" not in manifest.value.model_dump()
+    assert "node_refs" not in manifest.value.model_dump()
 
 
 def test_repo_stable_point_snapshot_rejects_empty_explicit_scope_id(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
-    service = ValidationSnapshotService(
+    snapshot = _snapshot_harness(
         foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=FakeArkSnapshotProvider(foundation),
     )
 
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
         scope_ids=["repo:Repo", " "],
@@ -858,12 +913,13 @@ def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) 
         success_criteria="Consumer ready.",
     ).ok
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
     )
 
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL,
         label="content batch finished",
@@ -881,20 +937,17 @@ def test_content_task_checkpoint_refreshes_repo_and_node_scopes(tmp_path: Path) 
         f"repo:{tmp_path.name}:node:{core.value.node_id}",
         f"repo:{tmp_path.name}:node:{consumer.value.node_id}",
     ]
-    assert created.value.refreshed_scope_ids == expected_scopes
-    assert [ref.path for ref in created.value.node_refs] == ["Main.Topic.Core", "Main.Topic.Consumer"]
-    assert [ref.node_id for ref in created.value.node_refs] == [core.value.node_id, consumer.value.node_id]
-    assert [ref.scope_id for ref in created.value.node_refs] == expected_scopes[1:]
     assert ark.created == [(expected_scopes, "content batch finished")]
+    assert "refreshed_scope_ids" not in created.value.model_dump()
+    assert "node_refs" not in created.value.model_dump()
     manifest = foundation.store.read_json(
         Path(created.value.root) / "snapshot.json",
         RepoCheckpointSnapshotManifest,
     )
     assert manifest.ok
     assert manifest.value is not None
-    assert manifest.value.refreshed_scope_ids == expected_scopes
-    assert [ref.path for ref in manifest.value.node_refs] == ["Main.Topic.Core", "Main.Topic.Consumer"]
-    assert [ref.node_id for ref in manifest.value.node_refs] == [core.value.node_id, consumer.value.node_id]
+    assert "refreshed_scope_ids" not in manifest.value.model_dump()
+    assert "node_refs" not in manifest.value.model_dump()
 
 
 def test_content_task_checkpoint_normalizes_node_paths_and_accepts_node_ids(tmp_path: Path) -> None:
@@ -924,13 +977,13 @@ def test_content_task_checkpoint_normalizes_node_paths_and_accepts_node_ids(tmp_
     assert core is not None and consumer is not None
     ark = FakeArkSnapshotProvider(foundation)
     runtime = FakeRuntimeStabilityProvider(foundation)
-    service = ValidationSnapshotService(
+    snapshot = _snapshot_harness(
         foundation.runtime,
-        runtime_stability_provider=runtime,
-        ark_snapshot_provider=ark,
+        runtime_stability=runtime,
+        ark_snapshot=ark,
     )
 
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
         label="before dispatch",
@@ -940,13 +993,13 @@ def test_content_task_checkpoint_normalizes_node_paths_and_accepts_node_ids(tmp_
 
     assert created.ok
     assert created.value is not None
-    assert [ref.path for ref in created.value.node_refs] == ["Main.Topic.Core", "Main.Topic.Consumer"]
     expected_scopes = [
         f"repo:{tmp_path.name}",
         f"repo:{tmp_path.name}:node:{core.node_id}",
         f"repo:{tmp_path.name}:node:{consumer.node_id}",
     ]
-    assert created.value.refreshed_scope_ids == expected_scopes
+    assert "refreshed_scope_ids" not in created.value.model_dump()
+    assert "node_refs" not in created.value.model_dump()
     assert runtime.calls == [
         (
             RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
@@ -955,7 +1008,7 @@ def test_content_task_checkpoint_normalizes_node_paths_and_accepts_node_ids(tmp_
     ]
     assert ark.created == [(expected_scopes, "before dispatch")]
 
-    invalid = service.create_repo_stable_point_snapshot(
+    invalid = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
         node_paths=["Main.Topic.Core", " "],
@@ -964,7 +1017,7 @@ def test_content_task_checkpoint_normalizes_node_paths_and_accepts_node_ids(tmp_
     assert not invalid.ok
     assert invalid.issues[0].kind == "checkpoint_node_path_required"
 
-    missing = service.create_repo_stable_point_snapshot(
+    missing = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
         node_paths=["Main.Topic.Missing"],
@@ -1001,13 +1054,13 @@ def test_content_task_checkpoint_rejects_conflicting_node_path_and_node_id(tmp_p
         objective="Build replacement core.",
         success_criteria="Replacement core ready.",
     ).ok
-    service = ValidationSnapshotService(
+    snapshot = _snapshot_harness(
         foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=FakeArkSnapshotProvider(foundation),
     )
 
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
         node_paths=["Main.Core"],
@@ -1018,13 +1071,14 @@ def test_content_task_checkpoint_rejects_conflicting_node_path_and_node_id(tmp_p
     assert created.issues[0].kind == "checkpoint_node_ref_conflict"
 
 
-def test_restore_missing_ark_provider_fails_without_touching_files(tmp_path: Path) -> None:
+def test_pure_service_restore_does_not_require_ark_provider(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
-    creator = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+    creator = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=FakeArkSnapshotProvider(foundation),
     )
     created = creator.create_repo_stable_point_snapshot(
         tmp_path,
@@ -1037,9 +1091,8 @@ def test_restore_missing_ark_provider_fails_without_touching_files(tmp_path: Pat
 
     restored = restorer.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
 
-    assert not restored.ok
-    assert restored.issues[0].kind == "ark_snapshot_provider_missing"
-    assert (tmp_path / "Main.lean").read_text(encoding="utf-8") == "-- modified after snapshot\n"
+    assert restored.ok
+    assert (tmp_path / "Main.lean").read_text(encoding="utf-8") == "import Main\n"
 
 
 def test_snapshot_stable_point_kind_branches(tmp_path: Path) -> None:
@@ -1056,62 +1109,51 @@ def test_snapshot_stable_point_kind_branches(tmp_path: Path) -> None:
         objective="Build core.",
         success_criteria="Core ready.",
     ).ok
-    runtime = FakeRuntimeStabilityProvider(foundation)
-
-    requirement_component = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=runtime,
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
-    ).snapshot_restore
+    requirement_component = ValidationSnapshotService(foundation.runtime)
     adapter_pass_component = ValidationSnapshotService(foundation.runtime,
         readiness_gate=ReadinessGateComponent(foundation.runtime,
             adapter=FakeAdapterReadyForReadiness(foundation, passed=True),
         ),
-        runtime_stability_provider=runtime,
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
-    ).snapshot_restore
+    )
     adapter_fail_component = ValidationSnapshotService(foundation.runtime,
         readiness_gate=ReadinessGateComponent(foundation.runtime,
             adapter=FakeAdapterReadyForReadiness(foundation, passed=False),
         ),
-        runtime_stability_provider=runtime,
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
-    ).snapshot_restore
+    )
 
-    requirement = requirement_component.check_repo_stable_point(
+    requirement = requirement_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
-    adapter_pass = adapter_pass_component.check_repo_stable_point(
+    adapter_pass = adapter_pass_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.ADAPTER_PREPARATION_TERMINAL,
     )
-    adapter_fail = adapter_fail_component.check_repo_stable_point(
+    adapter_fail = adapter_fail_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.ADAPTER_PREPARATION_TERMINAL,
     )
-    before_source = requirement_component.check_repo_stable_point(
+    before_source = requirement_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_SOURCE_PROCESSING,
     )
-    native_missing_index = requirement_component.check_repo_stable_point(
+    native_missing_index = requirement_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_COORDINATOR_DISPATCH,
     )
-    before_tasks = requirement_component.check_repo_stable_point(
+    before_tasks = requirement_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
-        node_paths=["Main.Topic.Core"],
     )
-    after_tasks = requirement_component.check_repo_stable_point(
+    after_tasks = requirement_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL,
-        node_paths=["Main.Topic.Core"],
     )
-    before_resource = requirement_component.check_repo_stable_point(
+    before_resource = requirement_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.BEFORE_RESOURCE_REQUEST_DISPATCH,
     )
-    after_resource = requirement_component.check_repo_stable_point(
+    after_resource = requirement_component.check_repo_checkpoint_business_gate(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.AFTER_RESOURCE_REQUEST_TERMINAL,
     )
@@ -1134,18 +1176,19 @@ def test_snapshot_create_copy_failure_cleans_manifest_without_ark_rollback(tmp_p
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
     )
 
     def fail_project_copy(*args, **kwargs):
         del args, kwargs
         raise OSError("copy blocked")
 
-    monkeypatch.setattr(service.snapshot_restore, "_copy_project_files", fail_project_copy)
+    monkeypatch.setattr(snapshot.service.snapshot_restore, "_copy_project_files", fail_project_copy)
 
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
@@ -1153,7 +1196,7 @@ def test_snapshot_create_copy_failure_cleans_manifest_without_ark_rollback(tmp_p
     assert not created.ok
     assert created.issues[0].kind == "repo_checkpoint_snapshot_write_failed"
     assert ark.created == [([f"repo:{tmp_path.name}"], None)]
-    assert service.list_repo_checkpoint_snapshots(tmp_path).value == []
+    assert snapshot.list_repo_checkpoint_snapshots(tmp_path).value == []
 
 
 def test_restore_preflights_missing_archive_before_ark_restore(tmp_path: Path) -> None:
@@ -1161,11 +1204,12 @@ def test_restore_preflights_missing_archive_before_ark_restore(tmp_path: Path) -
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
     )
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
@@ -1176,7 +1220,7 @@ def test_restore_preflights_missing_archive_before_ark_restore(tmp_path: Path) -
     (Path(created.value.root) / "files" / main_entry.archive_relpath).unlink()
     (tmp_path / "Main.lean").write_text("-- modified after snapshot\n", encoding="utf-8")
 
-    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
+    restored = snapshot.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
 
     assert not restored.ok
     assert restored.issues[0].kind == "repo_checkpoint_archive_file_missing"
@@ -1189,12 +1233,12 @@ def test_restore_preflights_archive_checksum_before_ark_restore(tmp_path: Path) 
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
+    snapshot = _snapshot_harness(
         foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
     )
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
@@ -1206,7 +1250,7 @@ def test_restore_preflights_archive_checksum_before_ark_restore(tmp_path: Path) 
     archive = Path(created.value.root) / "files" / main_entry.archive_relpath
     archive.write_text("import Math\n", encoding="utf-8")
 
-    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
+    restored = snapshot.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
 
     assert not restored.ok
     assert restored.issues[0].kind == "repo_checkpoint_archive_file_mismatch"
@@ -1222,12 +1266,12 @@ def test_restore_rejects_manifest_path_escape_before_ark_restore(tmp_path: Path)
     outside_target = tmp_path.parent / "escaped.lean"
     outside_target.write_text("keep me\n", encoding="utf-8")
     ark = FakeArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
+    snapshot = _snapshot_harness(
         foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=ark,
     )
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
@@ -1240,7 +1284,7 @@ def test_restore_rejects_manifest_path_escape_before_ark_restore(tmp_path: Path)
     main_entry.archive_relpath = str(outside_archive)
     assert foundation.store.write_json_atomic(files_manifest_path, files_manifest.value).ok
 
-    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
+    restored = snapshot.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
 
     assert not restored.ok
     assert restored.issues[0].kind == "repo_checkpoint_archive_path_unsafe"
@@ -1257,11 +1301,12 @@ def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
     ctx = FoundationContext(repo_root=tmp_path, caller="unit-test")
     first_index = foundation.ensure_index(ctx, builder.index_name)
     assert first_index.ok and first_index.value is not None
-    service = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=FakeArkSnapshotProvider(foundation),
     )
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
@@ -1272,7 +1317,7 @@ def test_restore_keeps_extra_files_and_rebuilds_indexes(tmp_path: Path) -> None:
     lake_build.mkdir(parents=True)
     (lake_build / "stale.olean").write_text("stale\n", encoding="utf-8")
 
-    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
+    restored = snapshot.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=created.value.snapshot_id)
 
     assert restored.ok
     assert restored.value is not None
@@ -1308,12 +1353,12 @@ def test_restore_rebuilds_node_and_decl_graph_indexes_from_truth(tmp_path: Path)
     node_id = created_node.value.node_id
     graph = foundation.runtime.decl_graph.ensure_decl_graph(tmp_path, node_path="Main.Core")
     assert graph.ok and graph.value is not None
-    service = ValidationSnapshotService(
+    snapshot_runtime = _snapshot_harness(
         foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=FakeArkSnapshotProvider(foundation),
     )
-    snapshot = service.create_repo_stable_point_snapshot(
+    snapshot = snapshot_runtime.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
@@ -1322,7 +1367,7 @@ def test_restore_rebuilds_node_and_decl_graph_indexes_from_truth(tmp_path: Path)
     graph_index_path = node_service.node_tree.node_store.decl_graph_dir(tmp_path, node_id=node_id) / "index.json"
     graph_index_path.write_text("{bad-decl-graph-index", encoding="utf-8")
 
-    restored = service.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=snapshot.value.snapshot_id)
+    restored = snapshot_runtime.restore_repo_checkpoint_snapshot(tmp_path, snapshot_id=snapshot.value.snapshot_id)
 
     assert restored.ok
     assert restored.value is not None
@@ -1339,12 +1384,12 @@ def test_restore_can_prune_extra_snapshot_managed_files(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     _write_preparation_input(tmp_path)
     (tmp_path / "Main.lean").write_text("import Main\n", encoding="utf-8")
-    service = ValidationSnapshotService(
+    snapshot = _snapshot_harness(
         foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=FakeArkSnapshotProvider(foundation),
     )
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )
@@ -1355,7 +1400,7 @@ def test_restore_can_prune_extra_snapshot_managed_files(tmp_path: Path) -> None:
     (tmp_path / ".lake").mkdir()
     (tmp_path / ".lake" / "kept.txt").write_text("build artifact\n", encoding="utf-8")
 
-    restored = service.restore_repo_checkpoint_snapshot(
+    restored = snapshot.restore_repo_checkpoint_snapshot(
         tmp_path,
         snapshot_id=created.value.snapshot_id,
         prune_extra_files=True,
@@ -1385,16 +1430,17 @@ def test_snapshot_list_filters_sorts_and_skips_malformed_manifests(tmp_path: Pat
         objective="Build core.",
         success_criteria="Core ready.",
     ).ok
-    service = ValidationSnapshotService(foundation.runtime,
-        runtime_stability_provider=FakeRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(foundation),
+    snapshot = _snapshot_harness(
+        foundation.runtime,
+        runtime_stability=FakeRuntimeStabilityProvider(foundation),
+        ark_snapshot=FakeArkSnapshotProvider(foundation),
     )
-    older = service.create_repo_stable_point_snapshot(
+    older = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
         label="older",
     )
-    newer = service.create_repo_stable_point_snapshot(
+    newer = snapshot.create_repo_stable_point_snapshot(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL,
         label="newer",
@@ -1413,8 +1459,8 @@ def test_snapshot_list_filters_sorts_and_skips_malformed_manifests(tmp_path: Pat
     bad_snapshot.mkdir(parents=True)
     (bad_snapshot / "snapshot.json").write_text("{not-json", encoding="utf-8")
 
-    listed = service.list_repo_checkpoint_snapshots(tmp_path)
-    filtered = service.list_repo_checkpoint_snapshots(
+    listed = snapshot.list_repo_checkpoint_snapshots(tmp_path)
+    filtered = snapshot.list_repo_checkpoint_snapshots(
         tmp_path,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
     )

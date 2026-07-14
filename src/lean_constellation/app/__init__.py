@@ -3,8 +3,8 @@
 from lean_constellation.app.bootstrap import (
     AgentHomeMaterializationView,
     ProductionAgentHomesView,
-    RepoRuntimeInitView,
-    initialize_repo_runtime,
+    RepoBusinessInitView,
+    initialize_repo_business_truth,
     materialize_agent_home,
     materialize_production_agent_homes,
 )
@@ -130,7 +130,7 @@ __all__ = [
     "RequirementResumeCandidatesMonitorView",
     "RequirementResumeInput",
     "RequirementResumeView",
-    "RepoRuntimeInitView",
+    "RepoBusinessInitView",
     "RuntimePauseView",
     "RuntimeStatusView",
     "SetAgentStepOverrideInput",
@@ -160,7 +160,7 @@ __all__ = [
     "create_app_runtime_services",
     "create_production_app_server",
     "create_test_control_runtime_services",
-    "initialize_repo_runtime",
+    "initialize_repo_business_truth",
     "list_external_takeover_handoffs",
     "list_external_takeover_tools",
     "load_app_config",

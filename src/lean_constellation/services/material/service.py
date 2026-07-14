@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
@@ -19,7 +19,6 @@ from lean_constellation.services.material.material_read import (
 )
 from lean_constellation.services.material.resource_curation import (
     ResourceCurationComponent,
-    ResourceCurationFlowInputView,
     ResourceCurationResultView,
 )
 from lean_constellation.services.material.resource_library import (
@@ -293,18 +292,14 @@ class MaterialService:
             suggested_next_action=suggested_next_action,
         )
 
-    def submit_resource_request(
+    def prepare_resource_target(
         self,
-        ctx: Any,
         *,
         target_kind: Literal["web", "arxiv", "local_file", "local_dir"],
         target: str,
         arxiv_version: str | None = None,
-    ) -> ServiceResult[ResourceCurationFlowInputView]:
-        # First-round implementation returns the exact child-flow input that a
-        # ToolFacade submit wrapper will later persist as a dispatch submission.
-        return self.resource_curation.build_resource_curation_flow_input(
-            ctx,
+    ) -> ServiceResult[ResourceTargetView]:
+        return self.resource_curation.prepare_resource_target(
             target_kind=target_kind,
             target=target,
             arxiv_version=arxiv_version,
@@ -461,7 +456,7 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         existing_kind: Literal["resource", "source"],
         duplicate_reason: str,
         existing_resource_key: str | None = None,
@@ -470,7 +465,7 @@ class MaterialService:
     ) -> ServiceResult[ResourceCurationResultView]:
         return self.resource_curation.submit_resource_duplicate(
             repo_root,
-            flow_input=flow_input,
+            target=target,
             existing_kind=existing_kind,
             duplicate_reason=duplicate_reason,
             existing_resource_key=existing_resource_key,
@@ -482,13 +477,13 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         draft_id: str,
         summary: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         return self.resource_curation.submit_local_resource_created(
             repo_root,
-            flow_input=flow_input,
+            target=target,
             draft_id=draft_id,
             summary=summary,
         )
@@ -497,13 +492,13 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         draft_id: str,
         summary: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         return self.resource_curation.check_local_resource_created(
             repo_root,
-            flow_input=flow_input,
+            target=target,
             draft_id=draft_id,
             summary=summary,
         )
@@ -512,7 +507,7 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         reason: str,
         source_description: str,
         suggested_repo_name: str | None = None,
@@ -520,7 +515,7 @@ class MaterialService:
     ) -> ServiceResult[ResourceCurationResultView]:
         return self.resource_curation.submit_external_repo_required(
             repo_root,
-            flow_input=flow_input,
+            target=target,
             reason=reason,
             source_description=source_description,
             suggested_repo_name=suggested_repo_name,
@@ -531,10 +526,10 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        flow_input: ResourceCurationFlowInputView,
+        target: ResourceTargetView,
         reason: str,
     ) -> ServiceResult[ResourceCurationResultView]:
-        return self.resource_curation.submit_resource_rejected(repo_root, flow_input=flow_input, reason=reason)
+        return self.resource_curation.submit_resource_rejected(repo_root, target=target, reason=reason)
 
     def register_local_resource(
         self,
@@ -637,7 +632,6 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        update_id: str,
         resolved_scope: ResolvedSourceScopeView,
         index_policy: Literal["auto", "update", "reuse"],
         expected_baseline_digest: str | None = None,
@@ -645,7 +639,6 @@ class MaterialService:
     ) -> ServiceResult[SourceIndexOpenUpdateView]:
         return self.source_index.open_source_index_update(
             repo_root,
-            update_id=update_id,
             resolved_scope=resolved_scope,
             index_policy=index_policy,
             expected_baseline_digest=expected_baseline_digest,
@@ -661,7 +654,6 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        update_id: str,
         baseline_index: SourceIndex | None,
         expected_baseline_digest: str,
         resolved_scope: list[str],
@@ -669,7 +661,6 @@ class MaterialService:
     ) -> ServiceResult[SourceIndexUpdateGateView]:
         return self.source_index.validate_source_index_update(
             repo_root,
-            update_id=update_id,
             baseline_index=baseline_index,
             expected_baseline_digest=expected_baseline_digest,
             resolved_scope=resolved_scope,
@@ -680,12 +671,9 @@ class MaterialService:
         self,
         repo_root: Path,
         *,
-        update_id: str,
         validated: SourceIndexUpdateGateView,
     ) -> ServiceResult[SourceIndexCommitView]:
-        return self.source_index.commit_source_index_update(
-            repo_root, update_id=update_id, validated=validated
-        )
+        return self.source_index.commit_source_index_update(repo_root, validated=validated)
 
     def get_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         return self.source_index.get_source_index(repo_root)
@@ -693,12 +681,8 @@ class MaterialService:
     def get_committed_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         return self.source_index.get_committed_source_index(repo_root)
 
-    def set_source_index_overview(
-        self, repo_root: Path, *, overview: str, expected_update_id: str | None = None
-    ) -> ServiceResult[SourceIndexView]:
-        return self.source_index.set_source_index_overview(
-            repo_root, overview=overview, expected_update_id=expected_update_id
-        )
+    def set_source_index_overview(self, repo_root: Path, *, overview: str) -> ServiceResult[SourceIndexView]:
+        return self.source_index.set_source_index_overview(repo_root, overview=overview)
 
     def create_source_block(
         self,
@@ -709,7 +693,6 @@ class MaterialService:
         subtype: str | None = None,
         title: str,
         summary: str,
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceBlockView]:
         return self.source_index.create_source_block(
             repo_root,
@@ -718,7 +701,6 @@ class MaterialService:
             subtype=subtype,
             title=title,
             summary=summary,
-            expected_update_id=expected_update_id,
         )
 
     def update_source_block(
@@ -730,7 +712,6 @@ class MaterialService:
         summary: str | None = None,
         kind: str | None = None,
         subtype: str | None = None,
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceBlockView]:
         return self.source_index.update_source_block(
             repo_root,
@@ -739,7 +720,6 @@ class MaterialService:
             summary=summary,
             kind=kind,
             subtype=subtype,
-            expected_update_id=expected_update_id,
         )
 
     def _source_block_context(self, block: SourceBlockView) -> MaterialContextSourceBlockView:
@@ -803,7 +783,6 @@ class MaterialService:
         start_line: int,
         end_line: int,
         role: str,
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceBlockView]:
         return self.source_index.add_source_block_ref(
             repo_root,
@@ -812,22 +791,13 @@ class MaterialService:
             start_line=start_line,
             end_line=end_line,
             role=role,
-            expected_update_id=expected_update_id,
         )
 
-    def remove_source_block_ref(
-        self, repo_root: Path, *, block_id: str, ref_id: str, expected_update_id: str | None = None
-    ) -> ServiceResult[SourceBlockView]:
-        return self.source_index.remove_source_block_ref(
-            repo_root, block_id=block_id, ref_id=ref_id, expected_update_id=expected_update_id
-        )
+    def remove_source_block_ref(self, repo_root: Path, *, block_id: str, ref_id: str) -> ServiceResult[SourceBlockView]:
+        return self.source_index.remove_source_block_ref(repo_root, block_id=block_id, ref_id=ref_id)
 
-    def mark_block_refs_done(
-        self, repo_root: Path, *, block_id: str, expected_update_id: str | None = None
-    ) -> ServiceResult[GateReport]:
-        return self.source_index.mark_block_refs_done(
-            repo_root, block_id=block_id, expected_update_id=expected_update_id
-        )
+    def mark_block_refs_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
+        return self.source_index.mark_block_refs_done(repo_root, block_id=block_id)
 
     def create_source_link(
         self,
@@ -838,7 +808,6 @@ class MaterialService:
         target_hint: str | None,
         link_kind: str,
         evidence_ref_ids: list[str],
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceLinkView]:
         return self.source_index.create_source_link(
             repo_root,
@@ -847,22 +816,13 @@ class MaterialService:
             target_hint=target_hint,
             link_kind=link_kind,
             evidence_ref_ids=evidence_ref_ids,
-            expected_update_id=expected_update_id,
         )
 
-    def mark_block_links_done(
-        self, repo_root: Path, *, block_id: str, expected_update_id: str | None = None
-    ) -> ServiceResult[GateReport]:
-        return self.source_index.mark_block_links_done(
-            repo_root, block_id=block_id, expected_update_id=expected_update_id
-        )
+    def mark_block_links_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
+        return self.source_index.mark_block_links_done(repo_root, block_id=block_id)
 
-    def mark_block_completed(
-        self, repo_root: Path, *, block_id: str, expected_update_id: str | None = None
-    ) -> ServiceResult[GateReport]:
-        return self.source_index.mark_block_completed(
-            repo_root, block_id=block_id, expected_update_id=expected_update_id
-        )
+    def mark_block_completed(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
+        return self.source_index.mark_block_completed(repo_root, block_id=block_id)
 
     def set_file_survey_status(
         self,
@@ -871,14 +831,12 @@ class MaterialService:
         path: str,
         status: Literal["pending", "surveyed", "skipped"],
         summary: str | None = None,
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceFileIndexView]:
         return self.source_index.set_file_survey_status(
             repo_root,
             path=path,
             status=status,
             summary=summary,
-            expected_update_id=expected_update_id,
         )
 
     def set_file_indexing_status(
@@ -887,16 +845,11 @@ class MaterialService:
         *,
         path: str,
         status: Literal["pending", "indexed", "skipped"],
-        expected_update_id: str | None = None,
     ) -> ServiceResult[SourceFileIndexView]:
-        return self.source_index.set_file_indexing_status(
-            repo_root, path=path, status=status, expected_update_id=expected_update_id
-        )
+        return self.source_index.set_file_indexing_status(repo_root, path=path, status=status)
 
-    def validate_source_index(
-        self, repo_root: Path, *, expected_update_id: str | None = None
-    ) -> ServiceResult[GateReport]:
-        return self.source_index.validate_source_index(repo_root, expected_update_id=expected_update_id)
+    def validate_source_index(self, repo_root: Path) -> ServiceResult[GateReport]:
+        return self.source_index.validate_source_index(repo_root)
 
     def get_source_index_coverage(self, repo_root: Path) -> ServiceResult[SourceIndexCoverageView]:
         return self.source_index.get_source_index_coverage(repo_root)
@@ -909,13 +862,11 @@ class MaterialService:
         repo_root: Path,
         *,
         summary: str,
-        expected_update_id: str | None = None,
         ctx: object | None = None,
     ) -> ServiceResult[SubmissionView]:
         return self.source_index.submit_source_index_builder_round(
             repo_root,
             summary=summary,
-            expected_update_id=expected_update_id,
             ctx=ctx,
         )
 
@@ -926,7 +877,6 @@ class MaterialService:
         approved: bool,
         summary: str,
         feedback: str | None = None,
-        expected_update_id: str | None = None,
         ctx: object | None = None,
     ) -> ServiceResult[SubmissionView]:
         return self.source_index.submit_source_index_review_round(
@@ -934,6 +884,5 @@ class MaterialService:
             approved=approved,
             summary=summary,
             feedback=feedback,
-            expected_update_id=expected_update_id,
             ctx=ctx,
         )

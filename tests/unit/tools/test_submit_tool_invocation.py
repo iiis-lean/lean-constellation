@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_runtime_kit.flow.models import BaseSubmission
+from agent_runtime_kit.flow.models import BaseSubmission, FlowStatus
 
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.domain.repo_run import SourceScope
@@ -78,11 +78,21 @@ def test_repo_ready_submit_only_records_candidate_intent_after_preview(tmp_path:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
+    owner_flow = SimpleNamespace(
+        flow_id="flow_1",
+        flow_type="native_repo_coordinator",
+        scope_id=f"repo:{tmp_path.name}",
+        status="running",
+        state=SimpleNamespace(position="coordinator_agent"),
+        input=SimpleNamespace(repo_root=str(tmp_path), run_context=SimpleNamespace(base_release_id="release-base")),
+    )
     runtime.ark.flow_service = SimpleNamespace(
-        get_flow=lambda _flow_id: SimpleNamespace(
-            flow_type="native_repo_coordinator",
-            input=SimpleNamespace(repo_root=str(tmp_path), run_context=SimpleNamespace(base_release_id="release-base")),
-        )
+        get_flow=lambda _flow_id: owner_flow,
+        list_flows=lambda **_kwargs: [owner_flow],
+    )
+    runtime.ark.step_service = SimpleNamespace(list_steps=lambda **_kwargs: [])
+    runtime.ark.agent_service = SimpleNamespace(
+        list_agents=lambda **_kwargs: [SimpleNamespace(agent_id="agent_1", scope_id=f"repo:{tmp_path.name}", status="running")]
     )
     calls: list[dict[str, object]] = []
 
@@ -122,10 +132,55 @@ def test_repo_ready_submit_only_records_candidate_intent_after_preview(tmp_path:
             "repo_root": tmp_path,
             "base_release_id": "release-base",
             "summary": "Publish the current candidate.",
-            "owner_flow_id": "flow_1",
-            "submission_intent_preview": True,
         }
     ]
+
+
+def test_repo_ready_submit_rejects_nonterminal_repo_runtime(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    owner_flow = SimpleNamespace(
+        flow_id="flow_1",
+        flow_type="native_repo_coordinator",
+        scope_id=f"repo:{tmp_path.name}",
+        status=FlowStatus.RUNNING,
+        state=SimpleNamespace(position="coordinator_agent"),
+        input=SimpleNamespace(repo_root=str(tmp_path), run_context=None),
+    )
+    running_child = SimpleNamespace(
+        flow_id="content_running",
+        flow_type="content_node_task",
+        scope_id=f"repo:{tmp_path.name}:node:n_topic",
+        status=FlowStatus.RUNNING,
+    )
+    runtime.ark.flow_service = SimpleNamespace(
+        get_flow=lambda _flow_id: owner_flow,
+        list_flows=lambda **_kwargs: [owner_flow, running_child],
+    )
+    runtime.ark.step_service = SimpleNamespace(list_steps=lambda **_kwargs: [])
+    runtime.ark.agent_service = SimpleNamespace(
+        list_agents=lambda **_kwargs: [SimpleNamespace(
+            agent_id="agent_1", scope_id=f"repo:{tmp_path.name}", status="running"
+        )]
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="native_repo_coordinator_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="native_repo_coordinator_submit",
+                agent_type="CoordinatorAgent",
+            ),
+        ),
+        tool_name="submit_repo_ready",
+        flat_args={"summary": "Publish the current candidate."},
+    )
+
+    assert result.ok and result.value is not None and not result.value.ok
+    assert result.value.issues[0].kind == "release_workflow_not_closed"
+    assert gateway.accepted == []
 
 
 def test_terminal_submit_summary_is_stripped_and_cannot_be_blank(tmp_path: Path) -> None:
@@ -410,12 +465,10 @@ def _prepare_valid_source_index(runtime, repo_root: Path) -> None:
         "Source overview\nThe main statement.\nThe proof outline.\n",
         encoding="utf-8",
     )
-    update_id = "submit-tool-source-index"
     resolved = runtime.material.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
     assert resolved.ok and resolved.value is not None
     opened = runtime.material.open_source_index_update(
         repo_root,
-        update_id=update_id,
         resolved_scope=resolved.value,
         index_policy="auto",
     )
@@ -426,7 +479,6 @@ def _prepare_valid_source_index(runtime, repo_root: Path) -> None:
         kind="section",
         title="Main source block",
         summary="Covers the main statement and proof outline.",
-        expected_update_id=update_id,
     )
     assert block.ok and block.value is not None
     assert runtime.material.add_source_block_ref(
@@ -436,26 +488,24 @@ def _prepare_valid_source_index(runtime, repo_root: Path) -> None:
         start_line=1,
         end_line=3,
         role="main",
-        expected_update_id=update_id,
     ).ok
     assert runtime.material.mark_block_refs_done(
-        repo_root, block_id=block.value.block_id, expected_update_id=update_id
+        repo_root, block_id=block.value.block_id
     ).value.passed
     assert runtime.material.mark_block_links_done(
-        repo_root, block_id=block.value.block_id, expected_update_id=update_id
+        repo_root, block_id=block.value.block_id
     ).value.passed
     assert runtime.material.mark_block_completed(
-        repo_root, block_id=block.value.block_id, expected_update_id=update_id
+        repo_root, block_id=block.value.block_id
     ).value.passed
     assert runtime.material.set_file_survey_status(
         repo_root,
         path="README.md",
         status="surveyed",
         summary="Read.",
-        expected_update_id=update_id,
     ).ok
     assert runtime.material.set_file_indexing_status(
-        repo_root, path="README.md", status="indexed", expected_update_id=update_id
+        repo_root, path="README.md", status="indexed"
     ).ok
 
 
@@ -464,7 +514,6 @@ def _install_source_index_submit_owner(runtime, repo_root: Path, *, step_type: s
         get_flow=lambda _flow_id: SimpleNamespace(
             flow_type="source_index_build",
             input=SimpleNamespace(repo_root=str(repo_root)),
-            state=SimpleNamespace(active_update_id="submit-tool-source-index"),
         )
     )
     runtime.ark.step_service = SimpleNamespace(
@@ -560,7 +609,7 @@ def test_second_source_index_reviewer_submit_is_rejected_before_gateway(tmp_path
     assert len(gateway.accepted) == 1
 
 
-def test_source_index_submit_rejects_wrong_flow_step_and_stale_update(tmp_path: Path) -> None:
+def test_source_index_submit_rejects_wrong_flow_and_step(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
@@ -575,12 +624,11 @@ def test_source_index_submit_rejects_wrong_flow_step_and_stale_update(tmp_path: 
         ),
     )
 
-    def invoke(*, flow_type: str, step_type: str, update_id: str):
+    def invoke(*, flow_type: str, step_type: str):
         runtime.ark.flow_service = SimpleNamespace(
             get_flow=lambda _flow_id: SimpleNamespace(
                 flow_type=flow_type,
                 input=SimpleNamespace(repo_root=str(tmp_path)),
-                state=SimpleNamespace(active_update_id=update_id),
             )
         )
         runtime.ark.step_service = SimpleNamespace(
@@ -595,27 +643,16 @@ def test_source_index_submit_rejects_wrong_flow_step_and_stale_update(tmp_path: 
     wrong_flow = invoke(
         flow_type="native_repo_coordinator",
         step_type="source_index_builder_agent_step",
-        update_id="submit-tool-source-index",
     )
     wrong_step = invoke(
         flow_type="source_index_build",
         step_type="source_index_reviewer_agent_step",
-        update_id="submit-tool-source-index",
-    )
-    stale = invoke(
-        flow_type="source_index_build",
-        step_type="source_index_builder_agent_step",
-        update_id="stale-update",
     )
 
-    for result in (wrong_flow, wrong_step, stale):
-        assert result.ok and result.value is not None and not result.value.ok
-        assert result.value.issues[0].kind == "source_index_update_owner_mismatch"
-    stale_issue = stale.value.issues[0]
-    assert stale_issue.current is None and stale_issue.expected is None
-    serialized_stale = stale.value.model_dump_json()
-    assert "stale-update" not in serialized_stale
-    assert "submit-tool-source-index" not in serialized_stale
+    assert wrong_flow.ok and wrong_flow.value is not None and not wrong_flow.value.ok
+    assert wrong_flow.value.issues[0].kind == "source_index_flow_context_mismatch"
+    assert wrong_step.ok and wrong_step.value is not None and not wrong_step.value.ok
+    assert wrong_step.value.issues[0].kind == "source_index_step_context_mismatch"
 
     reviewer_raw = RawToolCallContext(
         endpoint_view_key="source_index_reviewer_submit",
@@ -630,7 +667,6 @@ def test_source_index_submit_rejects_wrong_flow_step_and_stale_update(tmp_path: 
         get_flow=lambda _flow_id: SimpleNamespace(
             flow_type="source_index_build",
             input=SimpleNamespace(repo_root=str(tmp_path)),
-            state=SimpleNamespace(active_update_id="submit-tool-source-index"),
         )
     )
     runtime.ark.step_service = SimpleNamespace(
@@ -645,13 +681,12 @@ def test_source_index_submit_rejects_wrong_flow_step_and_stale_update(tmp_path: 
     )
     assert wrong_reviewer_step.ok and wrong_reviewer_step.value is not None
     assert not wrong_reviewer_step.value.ok
-    assert wrong_reviewer_step.value.issues[0].kind == "source_index_update_owner_mismatch"
+    assert wrong_reviewer_step.value.issues[0].kind == "source_index_step_context_mismatch"
 
     runtime.ark.flow_service = SimpleNamespace(
         get_flow=lambda _flow_id: SimpleNamespace(
             flow_type="source_index_build",
             input=SimpleNamespace(repo_root=str(tmp_path)),
-            state=SimpleNamespace(active_update_id="stale-review-update"),
         )
     )
     runtime.ark.step_service = SimpleNamespace(
@@ -659,20 +694,13 @@ def test_source_index_submit_rejects_wrong_flow_step_and_stale_update(tmp_path: 
             flow_id="flow_1", step_type="source_index_reviewer_agent_step"
         )
     )
-    stale_reviewer = runtime.tool_facade.invoke_agent_tool(
+    valid_reviewer = runtime.tool_facade.invoke_agent_tool(
         reviewer_raw,
         tool_name="submit_source_index_review_round",
         flat_args={"approved": True, "summary": "Review candidate."},
     )
-    assert stale_reviewer.ok and stale_reviewer.value is not None
-    assert not stale_reviewer.value.ok
-    stale_reviewer_issue = stale_reviewer.value.issues[0]
-    assert stale_reviewer_issue.kind == "source_index_update_owner_mismatch"
-    assert stale_reviewer_issue.current is None and stale_reviewer_issue.expected is None
-    serialized_reviewer = stale_reviewer.value.model_dump_json()
-    assert "stale-review-update" not in serialized_reviewer
-    assert "submit-tool-source-index" not in serialized_reviewer
-    assert gateway.accepted == []
+    assert valid_reviewer.ok and valid_reviewer.value is not None and valid_reviewer.value.ok
+    assert len(gateway.accepted) == 1
 
 
 def test_submit_repo_requirement_builds_submission_without_waiting_state(tmp_path: Path) -> None:

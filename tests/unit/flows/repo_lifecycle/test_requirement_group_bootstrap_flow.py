@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_runtime_kit.flow.models import FlowStatus, StepStatus
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.flows.common.submissions import new_submission_id
@@ -102,10 +103,11 @@ class FakeLakeClient:
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object, FakeLakeClient]:
     lake = FakeLakeClient()
     lean_runtime = make_runtime(external_overrides={"lake": lake})
-    lean_runtime.app.validation_snapshot = ValidationSnapshotService(
+    lean_runtime.app.validation_snapshot = ValidationSnapshotService(lean_runtime)
+    lean_runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
         lean_runtime,
-        runtime_stability_provider=AlwaysStableRuntimeProvider(lean_runtime.foundation),
-        ark_snapshot_provider=FakeArkSnapshotProvider(lean_runtime.foundation),
+        FakeArkSnapshotProvider(lean_runtime.foundation),
+        runtime_stability=AlwaysStableRuntimeProvider(lean_runtime.foundation),
     )
     flow_runtime = create_fake_lean_flow_runtime(
         tmp_path / "ark",
@@ -290,7 +292,7 @@ def test_pre_flow_setup_rejects_existing_target_repo(tmp_path: Path) -> None:
         source_corpus_mode=SourceCorpusMode.PREPARE,
     )
 
-    result = lean_runtime.repo_workspace.prepare_provider_repo_runtime_shell(
+    result = lean_runtime.repo_workspace.prepare_provider_repo_shell(
         workspace,
         target_repo="Provider",
         preparation_input=preparation_input,

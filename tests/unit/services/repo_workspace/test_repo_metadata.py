@@ -53,16 +53,12 @@ def test_repo_format_config_and_state_view(tmp_path: Path) -> None:
     assert not conflict.ok
     assert conflict.issues[0].kind == "repo_format_conflict"
 
-    updated = component.update_repo_config(
-        tmp_path,
-        max_parallel_content_node_tasks=3,
-    )
+    updated = component.update_repo_config(tmp_path)
     assert updated.ok
     assert updated.value is not None
-    assert updated.value.config.max_parallel_content_node_tasks == 3
     config = component.get_repo_config(tmp_path)
     assert config.ok and config.value is not None
-    assert config.value.config.max_parallel_content_node_tasks == 3
+    assert "max_parallel_content_node_tasks" not in config.value.config.model_dump()
 
     ready = component.mark_repo_stable(tmp_path, summary="Ready provider summary.")
     assert not ready.ok
@@ -84,7 +80,7 @@ def test_repo_format_config_and_state_view(tmp_path: Path) -> None:
     assert state.value.publication_status == RepoPublicationStatus.STABLE
     assert state.value.target_proof_availability == ProofAvailability.PROVED
     assert state.value.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
-    assert state.value.max_parallel_content_node_tasks == 3
+    assert "max_parallel_content_node_tasks" not in state.value.model_dump()
 
 
 def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> None:
@@ -102,13 +98,11 @@ def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> Non
         target_proof_availability=ProofAvailability.DECLARED,
         work_mode=RepoWorkMode.DECLARED_INTERFACE,
         default_requirement_proof_availability=ProofAvailability.PROVED,
-        max_parallel_content_node_tasks=2,
     )
     assert declared.ok and declared.value is not None
     assert declared.value.config.target_proof_availability == ProofAvailability.DECLARED
     assert declared.value.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
     assert declared.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
-    assert declared.value.config.max_parallel_content_node_tasks == 2
 
     work = component.get_repo_work_config(tmp_path)
     assert work.ok and work.value is not None

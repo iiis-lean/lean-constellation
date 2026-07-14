@@ -55,8 +55,7 @@ class InterfaceBindingView(StrictModel):
     summary: str
 
 
-class RootInterfaceReadySubmitView(StrictModel):
-    submission_type: str = "root_interface_prepare_ready"
+class RootInterfaceReadyGateView(StrictModel):
     summary: str
     protected_interface_count: int
     total_interface_count: int
@@ -433,8 +432,7 @@ class InterfaceComponent:
         repo_root: Path,
         *,
         summary: str,
-        ctx: object | None = None,
-    ) -> ServiceResult[RootInterfaceReadySubmitView]:
+    ) -> ServiceResult[RootInterfaceReadyGateView]:
         if not summary or not summary.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("root_interface_ready_summary_required", "Root interface ready summary is required.", field="summary"))
         gate = self.check_protected_root_interfaces(repo_root, node_path="Main")
@@ -462,7 +460,7 @@ class InterfaceComponent:
         protected_count = len(listed.value.protected_names)
         total_count = len(listed.value.interfaces)
         return self.runtime.foundation.ok(
-            RootInterfaceReadySubmitView(
+            RootInterfaceReadyGateView(
                 summary=summary.strip(),
                 protected_interface_count=protected_count,
                 total_interface_count=total_count,

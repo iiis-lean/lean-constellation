@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 
@@ -55,15 +55,6 @@ class RepoConfig(StrictModel):
     target_proof_availability: ProofAvailability = ProofAvailability.PROVED
     work_mode: RepoWorkMode = RepoWorkMode.PROVED_FULL_GRAPH
     default_requirement_proof_availability: ProofAvailability = ProofAvailability.DECLARED
-    max_parallel_content_node_tasks: int = 1
-
-    @field_validator("max_parallel_content_node_tasks")
-    @classmethod
-    def _positive(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("max_parallel_content_node_tasks must be >= 1")
-        return value
-
     @model_validator(mode="after")
     def _legal_work_mode_for_target(self) -> "RepoConfig":
         legal = {
@@ -168,7 +159,6 @@ class RepoStateView(StrictModel):
     default_requirement_proof_availability: ProofAvailability = ProofAvailability.DECLARED
     provider_ready: bool = False
     readiness_policy: str = "proved_closure"
-    max_parallel_content_node_tasks: int = 1
     preparation_input_exists: bool = False
     open_requirement_count: int = 0
     summary: str | None = None

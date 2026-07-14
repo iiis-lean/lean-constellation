@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import ClassVar, Literal
 import uuid
 
@@ -122,14 +121,13 @@ class ResourceCurationPreflightStep(BaseStep):
             )
 
         material = _material(ctx)
-        flow_input = material.resource_curation.build_resource_curation_flow_input(
-            SimpleNamespace(repo_root=str(repo_root), node_path=input_model.caller_context.node_path),
+        normalized_target = material.resource_curation.prepare_resource_target(
             target_kind=input_model.target.kind,
             target=input_model.target.target,
             arxiv_version=input_model.target.arxiv_version,
         )
-        if not flow_input.ok or flow_input.value is None:
-            reason = _issue_summary(flow_input.issues) or "Resource target normalization failed."
+        if not normalized_target.ok or normalized_target.value is None:
+            reason = _issue_summary(normalized_target.issues) or "Resource target normalization failed."
             return ctx.complete_step(
                 ResourceCurationPreflightStepResult(
                     outcome="rejected",
@@ -140,7 +138,7 @@ class ResourceCurationPreflightStep(BaseStep):
                 )
             )
 
-        normalized = flow_input.value.normalized_target
+        normalized = normalized_target.value
         duplicate = material.find_duplicate_resource(repo_root, target=normalized)
         if not duplicate.ok or duplicate.value is None:
             reason = _issue_summary(duplicate.issues) or "Resource duplicate preflight failed."

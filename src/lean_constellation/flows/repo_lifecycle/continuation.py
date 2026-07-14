@@ -254,7 +254,7 @@ class NativeRepoContinuationFlow(LeanBusinessFlow):
         if not isinstance(result, PrepareNativeRunMutationResult) or result.outcome != "prepared" or not result.checkpoint_id:
             return
         try:
-            snapshot = ctx.app.validation_snapshot.create_repo_stable_point_snapshot_with_id(Path(self.input.repo_root), snapshot_id=result.checkpoint_id,
+            snapshot = ctx.app.snapshot_runtime.create_repo_stable_point_snapshot_with_id(Path(self.input.repo_root), snapshot_id=result.checkpoint_id,
                 checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION,
                 label=f"before native continuation mutation for {self.input.repo_key}", scope_ids=[self.scope_id])
             failure = None if snapshot.ok else (snapshot.issues[0].message if snapshot.issues else "Continuation checkpoint failed.")

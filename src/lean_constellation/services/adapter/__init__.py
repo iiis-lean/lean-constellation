@@ -17,7 +17,8 @@ from lean_constellation.services.adapter.interface_binding import (
 from lean_constellation.services.adapter.projection import AdapterImportPreviewView, ProjectionComponent
 from lean_constellation.services.adapter.ready_gate import ReadyGateComponent
 from lean_constellation.services.adapter.service import (
-    AdapterCatalogSubmissionView,
+    AdapterCatalogBlockedResultView,
+    AdapterCatalogReadyGateView,
     AdapterInputView,
     AdapterPreparationValidationView,
     AdapterService,
@@ -41,7 +42,8 @@ from lean_constellation.services.adapter.upstream_navigation import (
 
 __all__ = [
     "AdapterCatalogInitView",
-    "AdapterCatalogSubmissionView",
+    "AdapterCatalogBlockedResultView",
+    "AdapterCatalogReadyGateView",
     "AdapterDeclCatalogComponent",
     "AdapterDeclCompletenessView",
     "AdapterDeclMatchView",

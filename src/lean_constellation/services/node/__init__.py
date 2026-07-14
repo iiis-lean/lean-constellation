@@ -40,7 +40,7 @@ from lean_constellation.services.node.interface import (
     InterfaceComponent,
     InterfaceListView,
     InterfaceView,
-    RootInterfaceReadySubmitView,
+    RootInterfaceReadyGateView,
 )
 from lean_constellation.services.node.material_ref import (
     MaterialRefComponent,
@@ -136,7 +136,7 @@ __all__ = [
     "OpenContractView",
     "PublicDeclAccessResolver",
     "RunnableContentNodeView",
-    "RootInterfaceReadySubmitView",
+    "RootInterfaceReadyGateView",
     "ScopeExportCandidate",
     "ScopeExportCandidateView",
     "ScopeExportView",

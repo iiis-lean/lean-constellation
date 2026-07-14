@@ -287,5 +287,5 @@ def test_cli_release_restore_uses_only_semantic_restore_options(tmp_path, capsys
     assert json.loads(capsys.readouterr().out)["ok"] is True
     assert calls == [(
         "POST", "http://admin.test/admin/repos/Provider/releases/release-r2/restore",
-        {"dry_run": True, "leave_runtime_paused": True},
+        {"dry_run": True},
     )]

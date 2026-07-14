@@ -3,8 +3,8 @@ from tests.unit_services_helpers import make_runtime
 from pathlib import Path
 
 from lean_constellation.domain.refs import DeclRef, NodeRef
-from lean_constellation.services.foundation import FoundationContext, FoundationService, WriteMode
-from lean_constellation.services.node import ContractVersionStatus, NodeContractSnapshot, NodeKind, NodeLifecycle, NodeMetadata, NodeTreeComponent
+from lean_constellation.services.foundation import FoundationContext, WriteMode
+from lean_constellation.services.node import ContractVersionStatus, NodeContractSnapshot, NodeKind, NodeLifecycle, NodeMetadata
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 
 
@@ -123,7 +123,7 @@ def test_node_tree_children_delete_preview_and_soft_delete(tmp_path: Path) -> No
     assert children.value is not None
     assert [node.path for node in children.value] == ["Main.Topic.Core"]
 
-    blocked = component.preview_delete_node(tmp_path, path="Main.Topic")
+    blocked = make_runtime().node.preview_delete_node(tmp_path, path="Main.Topic")
     assert blocked.ok
     assert blocked.value is not None
     assert blocked.value.deletable is False
@@ -232,14 +232,14 @@ def test_preview_delete_detects_contract_inbound_refs(tmp_path: Path) -> None:
     topic.exports = [DeclRef(repo=None, node="Main.Topic.Core", name="core_result", revision=1)]
     _write_contract(tmp_path, "Main.Topic", topic)
 
-    preview = component.preview_delete_node(tmp_path, path="Main.Topic.Core")
+    preview = make_runtime().node.preview_delete_node(tmp_path, path="Main.Topic.Core")
 
     assert preview.ok
     assert preview.value is not None
     assert preview.value.deletable is False
-    assert "inbound_refs" in preview.value.blocking_reasons
-    assert "Main.Topic.Consumer:deps" in preview.value.inbound_refs
-    assert "Main.Topic:exports" in preview.value.inbound_refs
+    assert "current_inbound_refs" in preview.value.blocking_reasons
+    assert "current:Main.Topic.Consumer:deps" in preview.value.inbound_refs
+    assert "current:Main.Topic:public" in preview.value.inbound_refs
 
     blocked = make_runtime().node.mark_node_deleted(tmp_path, path="Main.Topic.Core", reason="Still referenced.")
     assert not blocked.ok

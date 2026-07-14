@@ -35,6 +35,7 @@ class RepoRunComponent:
         work_mode: RepoWorkMode | None = None, source_scope: SourceScope | None = None,
         index_policy: Literal["auto", "update", "reuse"] | None = None,
         root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None,
+        max_parallel_content_node_tasks: int = 1,
         additional_required_interfaces: Sequence[DeclInterface] = (),
     ) -> ServiceResult[RepoRunSpec]:
         prepared = self.preparation.get_preparation_input(repo_root)
@@ -51,6 +52,7 @@ class RepoRunComponent:
                 source_scope=source_scope or SourceScope(mode="all"),
                 index_policy=index_policy or "auto",
                 root_interface_policy=root_interface_policy or "auto",
+                max_parallel_content_node_tasks=max_parallel_content_node_tasks,
                 additional_required_interfaces=list(additional_required_interfaces),
             )
         except ValueError as exc:
@@ -70,6 +72,7 @@ class RepoRunComponent:
         work_mode: RepoWorkMode | None = None, source_scope: SourceScope | None = None,
         index_policy: Literal["auto", "update", "reuse"] | None = None,
         root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None,
+        max_parallel_content_node_tasks: int = 1,
         additional_required_interfaces: Sequence[DeclInterface] = (),
     ) -> ServiceResult[RepoRunSpec]:
         if run_objective is None or not run_objective.strip():
@@ -87,6 +90,7 @@ class RepoRunComponent:
                 source_scope=source_scope or SourceScope(mode="none"),
                 index_policy=index_policy or "auto",
                 root_interface_policy=root_interface_policy or "auto",
+                max_parallel_content_node_tasks=max_parallel_content_node_tasks,
                 additional_required_interfaces=list(additional_required_interfaces),
             )
         except ValueError as exc:
@@ -133,9 +137,14 @@ class RepoRunComponent:
                 if _availability_rank(run_spec.target_proof_availability) < _availability_rank(base.value.release.target_proof_availability):
                     findings.append(self.runtime.foundation.issue("repo_run_target_downgrade", "Continuation cannot lower the released proof target."))
         source_index = self.runtime.material.source_index.get_source_index_model(Path(repo_root))
-        if source_index.ok and source_index.value is not None and source_index.value.active_update_id is not None:
+        if (
+            source_index.ok
+            and source_index.value is not None
+            and source_index.value.status in {"draft", "updating"}
+            and source_index.value.active_file_scope
+        ):
             findings.append(self.runtime.foundation.issue(
-                "source_index_update_owned", "SourceIndex has an open update owned by another lifecycle Flow."
+                "source_index_update_open", "SourceIndex has an open scoped update."
             ))
         report = (
             self.runtime.foundation.gate_failed("repo_run_transition", findings)

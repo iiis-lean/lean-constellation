@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import Field, field_validator
 
@@ -121,7 +120,6 @@ class DeleteImpactView(StrictModel):
     affected_children: list[str] = Field(default_factory=list)
     inbound_refs: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
-    running_task_count: int = 0
     public_decl_count: int = 0
     summary: str
 
@@ -258,36 +256,6 @@ class NodeTreeComponent:
         ]
         children.sort(key=lambda item: item.path)
         return self.runtime.foundation.ok([self._node_view(repo_root, node, nodes.value) for node in children])
-
-    def preview_delete_node(self, repo_root: Path, *, path: str) -> ServiceResult[DeleteImpactView]:
-        node = self._load_active_node(repo_root, path)
-        if not node.ok or node.value is None:
-            return self.runtime.foundation.fail(node.issues)
-        nodes = self._load_all_nodes(repo_root)
-        if not nodes.ok or nodes.value is None:
-            return self.runtime.foundation.fail(nodes.issues)
-        affected_children = sorted(
-            node_item.path
-            for node_item in nodes.value
-            if node_item.lifecycle == NodeLifecycle.ACTIVE and self._is_descendant(node_item.path, path)
-        )
-        inbound_refs = self._scan_inbound_refs(repo_root, path)
-        blocking_reasons = []
-        if affected_children:
-            blocking_reasons.append("active_children")
-        if inbound_refs:
-            blocking_reasons.append("inbound_refs")
-        deletable = not blocking_reasons
-        return self.runtime.foundation.ok(
-            DeleteImpactView(
-                path=path,
-                deletable=deletable,
-                affected_children=affected_children,
-                inbound_refs=inbound_refs,
-                blocking_reasons=blocking_reasons,
-                summary=("Node can be soft-deleted." if deletable else f"Node delete is blocked by: {', '.join(blocking_reasons)}."),
-            )
-        )
 
     def _mark_node_deleted_after_guard(self, repo_root: Path, *, path: str, reason: str) -> ServiceResult[MutationSummaryView]:
         """System-only soft-delete primitive after an aggregate guard passes."""
@@ -514,46 +482,6 @@ class NodeTreeComponent:
         if not nodes.ok or nodes.value is None:
             return []
         return sorted(node.path for node in nodes.value if node.lifecycle == NodeLifecycle.ACTIVE and self._is_descendant(node.path, path))
-
-    def _scan_inbound_refs(self, repo_root: Path, path: str) -> list[str]:
-        ctx = FoundationContext(repo_root=Path(repo_root))
-        root = self.runtime.foundation.layout.nodes_root(ctx)
-        refs: list[str] = []
-        if not root.exists():
-            return refs
-        for contract_path in sorted(root.glob("*/contracts/*.json")):
-            try:
-                payload = json.loads(contract_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            owner_node = self._contract_owner_path(repo_root, contract_path)
-            if owner_node == path:
-                continue
-            if self._payload_references_node(payload.get("deps", []), path, key="node"):
-                refs.append(f"{owner_node or contract_path}:deps")
-            if self._payload_references_node(payload.get("exports", []), path, key="node"):
-                refs.append(f"{owner_node or contract_path}:exports")
-            if self._payload_references_node(payload.get("interfaces", []), path, key="node"):
-                refs.append(f"{owner_node or contract_path}:interfaces")
-        return refs
-
-    def _payload_references_node(self, value: Any, path: str, *, key: str) -> bool:
-        if isinstance(value, dict):
-            if key in value and isinstance(value[key], str) and (value[key] == path or value[key].startswith(f"{path}.")):
-                return True
-            return any(self._payload_references_node(child, path, key=key) for child in value.values())
-        if isinstance(value, list):
-            return any(self._payload_references_node(child, path, key=key) for child in value)
-        return False
-
-    def _contract_owner_path(self, repo_root: Path, contract_path: Path) -> str | None:
-        nodes = self._load_all_nodes(repo_root)
-        if not nodes.ok or nodes.value is None:
-            return None
-        for node in nodes.value:
-            if self._contract_file_for_node(repo_root, node, node.current_contract_version or 1).parent == contract_path.parent:
-                return node.path
-        return None
 
     def _validate_dot_path(self, path: str) -> ServiceResult[None]:
         if not path or not path.strip():

@@ -9,7 +9,7 @@ from lean_constellation.app import (
     LeanAdminApi,
     RepoRunRequestInput,
     create_app_runtime_services,
-    initialize_repo_runtime,
+    initialize_repo_business_truth,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
@@ -18,7 +18,7 @@ from lean_constellation.domain.repo import RepoPublicationState, RepoPublication
 def test_registry_lock_plus_semantic_start_allows_only_one_concurrent_continuation(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     root = tmp_path / "Provider"
-    assert initialize_repo_runtime(runtime, root).ok
+    assert initialize_repo_business_truth(runtime, root).ok
     assert runtime.repo_workspace.preparation.write_preparation_input(
         root, input=RepoPreparationInput(goal="Continue.", source_corpus_mode=SourceCorpusMode.EXISTING, interface_inputs=[])
     ).ok
@@ -49,7 +49,7 @@ def test_registry_lock_plus_semantic_start_allows_only_one_concurrent_continuati
 def test_continuation_rejects_any_active_repo_scoped_flow(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     root = tmp_path / "Provider"
-    assert initialize_repo_runtime(runtime, root).ok
+    assert initialize_repo_business_truth(runtime, root).ok
     active_id = runtime.ark.flow_service.start_flow(
         FlowRequest(
             flow_type="content_node_task",
@@ -69,7 +69,7 @@ def test_continuation_rejects_any_active_repo_scoped_flow(tmp_path) -> None:
 def test_release_preview_derives_latest_baseline_inside_admin_boundary(tmp_path, monkeypatch) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     root = tmp_path / "Provider"
-    assert initialize_repo_runtime(runtime, root).ok
+    assert initialize_repo_business_truth(runtime, root).ok
     assert runtime.foundation.store.write_json_atomic(
         runtime.repo_workspace.metadata._repo_publication_path(root),
         RepoPublicationState(status=RepoPublicationStatus.STABLE, latest_release_id="release-r7"),

@@ -26,10 +26,8 @@ from lean_constellation.services.validation_snapshot.release_finalizer import (
     RepoReleaseStorageAuditView,
 )
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
-    ArkRuntimeSnapshotProvider,
     RepoCheckpointKind,
     RepoCheckpointSnapshotView,
-    RuntimeStabilityProvider,
     SnapshotRestoreComponent,
     SnapshotRestoreView,
 )
@@ -59,8 +57,6 @@ class ValidationSnapshotService:
         content_readiness_provider: ContentReadinessProvider | None = None,
         formal_stage_provider: FormalStageConsistencyProvider | None = None,
         decl_graph_audit_provider: DeclGraphAuditProvider | None = None,
-        runtime_stability_provider: RuntimeStabilityProvider | None = None,
-        ark_snapshot_provider: ArkRuntimeSnapshotProvider | None = None,
     ) -> None:
         self.runtime = runtime
         repo_workspace = self.runtime.repo_workspace
@@ -95,8 +91,6 @@ class ValidationSnapshotService:
         self.snapshot_restore = snapshot_restore or SnapshotRestoreComponent(
             runtime,
             readiness_gate=self.readiness_gate,
-            runtime_stability_provider=runtime_stability_provider,
-            ark_snapshot_provider=ark_snapshot_provider,
         )
         self.release_finalizer = RepoReleaseFinalizerComponent(runtime)
         self.admin_repair = admin_repair or AdminRepairComponent(
@@ -169,55 +163,31 @@ class ValidationSnapshotService:
             stage=stage,
         )
 
-    def check_repo_stable_point(
+    def check_repo_checkpoint_business_gate(
         self,
         repo_root: Path,
         *,
         checkpoint_kind: RepoCheckpointKind | str,
-        node_paths: list[str] | None = None,
-        node_ids: list[str] | None = None,
     ) -> ServiceResult[GateReport]:
-        return self.snapshot_restore.check_repo_stable_point(
-            repo_root,
-            checkpoint_kind=checkpoint_kind,
-            node_paths=node_paths,
-            node_ids=node_ids,
+        return self.snapshot_restore.check_checkpoint_business_gate(
+            Path(repo_root), RepoCheckpointKind(checkpoint_kind)
         )
 
-    def create_repo_stable_point_snapshot(
+    def create_repo_checkpoint_archive(
         self,
         repo_root: Path,
         *,
         checkpoint_kind: RepoCheckpointKind | str,
         label: str | None = None,
-        node_paths: list[str] | None = None,
-        node_ids: list[str] | None = None,
-        scope_ids: list[str] | None = None,
+        snapshot_id: str | None = None,
+        ark_runtime_snapshot_id: str | None = None,
     ) -> ServiceResult[RepoCheckpointSnapshotView]:
-        return self.snapshot_restore.create_repo_stable_point_snapshot(
+        return self.snapshot_restore.create_repo_checkpoint_archive(
             repo_root,
             checkpoint_kind=checkpoint_kind,
             label=label,
-            node_paths=node_paths,
-            node_ids=node_ids,
-            scope_ids=scope_ids,
-        )
-
-    def create_repo_stable_point_snapshot_with_id(
-        self,
-        repo_root: Path,
-        *,
-        snapshot_id: str,
-        checkpoint_kind: RepoCheckpointKind | str,
-        label: str | None = None,
-        scope_ids: list[str] | None = None,
-    ) -> ServiceResult[RepoCheckpointSnapshotView]:
-        return self.snapshot_restore.create_repo_stable_point_snapshot(
-            repo_root,
-            checkpoint_kind=checkpoint_kind,
-            label=label,
-            scope_ids=scope_ids,
             snapshot_id=snapshot_id,
+            ark_runtime_snapshot_id=ark_runtime_snapshot_id,
         )
 
     def restore_repo_checkpoint_snapshot(
@@ -226,7 +196,6 @@ class ValidationSnapshotService:
         *,
         snapshot_id: str,
         dry_run: bool = False,
-        leave_runtime_paused: bool = True,
         prune_extra_files: bool = False,
     ) -> ServiceResult[SnapshotRestoreView]:
         manifest = self.snapshot_restore._load_manifest(Path(repo_root), snapshot_id)
@@ -250,13 +219,11 @@ class ValidationSnapshotService:
                 Path(repo_root),
                 release_id=matches[0],
                 dry_run=dry_run,
-                leave_runtime_paused=leave_runtime_paused,
             )
         return self.snapshot_restore.restore_repo_checkpoint_snapshot(
             repo_root,
             snapshot_id=snapshot_id,
             dry_run=dry_run,
-            leave_runtime_paused=leave_runtime_paused,
             prune_extra_files=prune_extra_files,
         )
 
@@ -275,10 +242,10 @@ class ValidationSnapshotService:
         return self.admin_repair.run_full_audit(repo_root)
 
     def prepare_candidate_release(
-        self, repo_root: Path, *, base_release_id: str | None, summary: str, owner_flow_id: str
+        self, repo_root: Path, *, base_release_id: str | None, summary: str
     ) -> ServiceResult[CandidateReleasePreparationView]:
         return self.release_finalizer.prepare_candidate_release(
-            repo_root, base_release_id=base_release_id, summary=summary, owner_flow_id=owner_flow_id
+            repo_root, base_release_id=base_release_id, summary=summary
         )
 
     def preview_candidate_release(
@@ -287,23 +254,17 @@ class ValidationSnapshotService:
         *,
         base_release_id: str | None,
         summary: str,
-        owner_flow_id: str | None = None,
-        submission_intent_preview: bool = False,
     ) -> ServiceResult[CandidateReleaseGateView]:
         return self.release_finalizer.preview_candidate_release(
             repo_root,
             base_release_id=base_release_id,
             summary=summary,
-            owner_flow_id=owner_flow_id,
-            submission_intent_preview=submission_intent_preview,
         )
 
     def commit_prepared_release(
-        self, repo_root: Path, *, prepared: PreparedRepoReleaseView, owner_flow_id: str, scope_ids: list[str]
+        self, repo_root: Path, *, prepared: PreparedRepoReleaseView
     ) -> ServiceResult[RepoReleaseFinalizeView]:
-        return self.release_finalizer.commit_prepared_release(
-            repo_root, prepared=prepared, owner_flow_id=owner_flow_id, scope_ids=scope_ids
-        )
+        return self.release_finalizer.commit_prepared_release(repo_root, prepared=prepared)
 
     def reconcile_provider_requirements(
         self, repo_root: Path, *, release_id: str
@@ -336,8 +297,8 @@ class ValidationSnapshotService:
         )
 
     def restore_repo_release(
-        self, repo_root: Path, *, release_id: str, dry_run: bool = False, leave_runtime_paused: bool = True
+        self, repo_root: Path, *, release_id: str, dry_run: bool = False
     ) -> ServiceResult[SnapshotRestoreView]:
         return self.release_finalizer.restore_repo_release(
-            repo_root, release_id=release_id, dry_run=dry_run, leave_runtime_paused=leave_runtime_paused
+            repo_root, release_id=release_id, dry_run=dry_run
         )

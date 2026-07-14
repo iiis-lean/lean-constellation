@@ -5,7 +5,7 @@ from lean_constellation.app import (
     RepoRunOptions,
     StartPreparationInput,
     create_app_runtime_services,
-    initialize_repo_runtime,
+    initialize_repo_business_truth,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, RepoRequirementRef, SourceCorpusMode
 
@@ -14,8 +14,8 @@ def test_admin_starts_native_and_adapter_preparation_flows(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     native_repo = tmp_path / "NativeRepo"
     adapter_repo = tmp_path / "AdapterRepo"
-    assert initialize_repo_runtime(runtime, native_repo).ok
-    assert initialize_repo_runtime(runtime, adapter_repo).ok
+    assert initialize_repo_business_truth(runtime, native_repo).ok
+    assert initialize_repo_business_truth(runtime, adapter_repo).ok
     assert runtime.repo_workspace.preparation.write_preparation_input(
         native_repo,
         input=RepoPreparationInput(
@@ -42,7 +42,7 @@ def test_admin_starts_native_and_adapter_preparation_flows(tmp_path) -> None:
 def test_requirement_provider_initial_run_cannot_bypass_aggregated_config(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     repo_root = tmp_path / "Provider"
-    assert initialize_repo_runtime(runtime, repo_root).ok
+    assert initialize_repo_business_truth(runtime, repo_root).ok
     assert runtime.repo_workspace.preparation.write_preparation_input(
         repo_root,
         input=RepoPreparationInput(
