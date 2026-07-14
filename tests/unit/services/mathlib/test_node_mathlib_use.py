@@ -6,7 +6,7 @@ from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
 from lean_constellation.services.mathlib import MathlibService, NodeMathlibUseComponent
-from lean_constellation.services.node import NodeContractSnapshot, NodeTreeComponent
+from lean_constellation.services.node import NodeContractSnapshot
 from lean_constellation.services.node.contract_fields import MathlibUseActor, NodeMathlibDeclUse, NodeMathlibModuleUse
 
 
@@ -179,6 +179,11 @@ def test_module_use_reports_prelude_refresh_failure(tmp_path: Path) -> None:
     )
     service = MathlibService(runtime, mathlib_index=runtime.mathlib.mathlib_index, node_mathlib_use=component)
     _create_content_node(tmp_path, service)
+    assert runtime.node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        summary="Commit before exercising transaction rollback.",
+    ).ok
 
     failed = service.add_mathlib_module_use(
         tmp_path,
@@ -190,6 +195,14 @@ def test_module_use_reports_prelude_refresh_failure(tmp_path: Path) -> None:
 
     assert not failed.ok
     assert failed.issues[0].kind == "prelude_refresh_failed"
+    current = runtime.node.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")
+    assert current.ok and current.value is not None
+    assert current.value.contract.mathlib_modules == []
+    assert current.value.contract.version == 1
+    assert current.value.status.value == "committed"
+    node = runtime.node.node_tree.get_node(tmp_path, path="Main.Topic.Core")
+    assert node.ok and node.value is not None
+    assert node.value.open_contract_version is None
 
 
 def test_add_mathlib_decl_use_records_hint_without_prelude_import(tmp_path: Path) -> None:

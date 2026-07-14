@@ -66,6 +66,33 @@ def test_repo_runtime_registry_loads_repo_local_runtime_root(tmp_path) -> None:
     assert loaded.value.ark.flow_service.runtime_root == repo_root / ".agent_runtime"
 
 
+def test_workspace_runtime_forwards_workspace_config_without_runtime_history(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "MainRepo")
+    config = LeanAppConfig(workspace_root=workspace, materialize_agent_homes=False)
+    registry = RepoRuntimeRegistry(config)
+
+    runtime = registry.workspace_runtime()
+
+    assert runtime.repo_workspace.workspace_config == config.workspace_config
+    assert not (repo_root / ".agent_runtime").exists()
+
+
+def test_runtime_history_requires_a_persisted_file(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    registry = RepoRuntimeRegistry(LeanAppConfig(workspace_root=workspace, materialize_agent_homes=False))
+    record = registry.discover_repo("MainRepo").value
+    assert record is not None
+    record.runtime_root.mkdir()
+
+    assert not registry.runtime_history_exists(record)
+    (record.runtime_root / "flows").mkdir()
+    assert not registry.runtime_history_exists(record)
+    (record.runtime_root / "flows" / "flow.json").write_text("{}", encoding="utf-8")
+    assert registry.runtime_history_exists(record)
+
+
 def test_registry_initializes_business_truth_before_loading_runtime(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     config = LeanAppConfig(

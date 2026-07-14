@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
-from lean_constellation.app import load_app_config
+import pytest
+from pydantic import ValidationError
+
+from lean_constellation.app import LeanAppConfig, load_app_config
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 
 
@@ -47,6 +50,7 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
     assert view.server_start_paused is True
     assert view.materialize_agent_homes is True
     assert view.scheduler_enabled is True
+    assert view.operator_data_api_enabled is False
     assert view.toolkit.mode == "managed"
     assert view.toolkit.effective_base_url() == "http://127.0.0.1:8288"
     assert view.toolkit.required_tools == ["diagnostics.file"]
@@ -67,6 +71,7 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
             "LEAN_CONSTELLATION_MCP_HTTP_BASE_URL": "http://127.0.0.1:9999/custom",
             "LEAN_CONSTELLATION_ADMIN_HTTP_PORT": "9998",
             "LEAN_CONSTELLATION_SERVER_START_PAUSED": "false",
+            "LEAN_CONSTELLATION_OPERATOR_DATA_API_ENABLED": "true",
             "LEAN_CONSTELLATION_MATERIALIZE_AGENT_HOMES": "false",
             "LEAN_CONSTELLATION_TOOLKIT_BASE_URL": "http://toolkit.test",
             "LEAN_CONSTELLATION_TOOLKIT_ENABLED_GROUPS": "lean,mathlib",
@@ -84,6 +89,7 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
     assert config.admin_http_effective_base_url() == "http://127.0.0.1:9998"
     assert config.server_start_paused is False
     assert config.materialize_agent_homes is False
+    assert config.operator_data_api_enabled is True
     assert config.toolkit.base_url == "http://toolkit.test"
     assert config.toolkit.enabled_groups == ["lean", "mathlib"]
     assert config.toolkit.required_tools == ["diagnostics.file", "lean_explore.semantic_search"]
@@ -118,3 +124,19 @@ def test_load_app_config_reads_workspace_repo_defaults_from_env(tmp_path) -> Non
     assert config.workspace_config.requirement_provider_work_mode_by_proof_availability[ProofAvailability.PROVED] == (
         RepoWorkMode.PROVED_FULL_GRAPH
     )
+
+
+def test_operator_data_api_requires_loopback_admin_bind(tmp_path) -> None:
+    with pytest.raises(ValidationError, match="loopback"):
+        LeanAppConfig(
+            workspace_root=tmp_path / "workspace",
+            admin_http_host="0.0.0.0",
+            operator_data_api_enabled=True,
+        )
+
+    config = LeanAppConfig(
+        workspace_root=tmp_path / "workspace",
+        admin_http_host="localhost",
+        operator_data_api_enabled=True,
+    )
+    assert config.operator_data_api_enabled is True

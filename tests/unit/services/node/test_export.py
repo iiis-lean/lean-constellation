@@ -2,17 +2,14 @@ from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
 
-from lean_constellation.domain.interface import DeclInterface, DeclKind
+from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
 from lean_constellation.services.node import (
-    ContractComponent,
     DeclPublicView,
     ExportComponent,
-    InterfaceComponent,
     NodeContractSnapshot,
-    NodeTreeComponent,
 )
 
 
@@ -380,6 +377,9 @@ def test_remove_scope_export_parse_missing_and_projection_failure(tmp_path: Path
     projection_failed = failing.remove_scope_export(tmp_path, scope_path="Main.Topic", index=0)
     assert not projection_failed.ok
     assert projection_failed.issues[0].kind == "projection_refresh_failed"
+    restored = failing.list_scope_exports(tmp_path, scope_path="Main.Topic")
+    assert restored.ok and restored.value is not None
+    assert [item.name for item in restored.value] == ["main_result"]
 
 
 def test_add_scope_export_reports_projection_failure(tmp_path: Path) -> None:
@@ -407,6 +407,8 @@ def test_add_scope_export_reports_projection_failure(tmp_path: Path) -> None:
 
     assert not result.ok
     assert result.issues[0].kind == "projection_refresh_failed"
+    restored = component.list_scope_exports(tmp_path, scope_path="Main.Topic")
+    assert restored.ok and restored.value == []
 
 
 def test_validate_scope_exports_reports_binding_missing_and_pass(tmp_path: Path) -> None:

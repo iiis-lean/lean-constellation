@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat
-from lean_constellation.flows.content_node_task.decl_round.steps import _round_revision_satisfies_proof_policy
 from lean_constellation.services.decl_graph import DeclState, RepoDeclDep
 from tests.unit.flows.decl_round._helpers import (
     NODE_PATH,
@@ -364,8 +361,7 @@ def _check_round_decl(lean_runtime, repo_root: Path, *, round_id: str, decl_name
     revisions = lean_runtime.decl_graph.list_round_revisions(repo_root, node_path=NODE_PATH, round_id=round_id)
     assert revisions.ok and revisions.value is not None, revisions.issues
     round_revisions = {revision.decl_name: revision for revision in revisions.value}
-    return _round_revision_satisfies_proof_policy(
-        SimpleNamespace(app=lean_runtime.app),
+    return lean_runtime.decl_graph.round_revision_satisfies_proof_policy(
         repo_root,
         node_path=NODE_PATH,
         round_revisions=round_revisions,
