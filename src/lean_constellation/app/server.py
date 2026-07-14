@@ -13,6 +13,8 @@ from starlette.routing import Route
 
 from lean_constellation.app.admin_http import create_workspace_admin_http_routes
 from lean_constellation.app.config import LeanAppConfig
+from lean_constellation.app.operator_data.api import OperatorDataApi
+from lean_constellation.app.operator_data.http import create_operator_data_http_routes
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.app.scheduler_loop import run_registry_scheduler_loop
 from lean_constellation.app.toolkit_process import ManagedToolkitProcess, ManagedToolkitView
@@ -66,6 +68,7 @@ def _create_registry_production_app_server(
     resolved_mcp_base_url = config.production_mcp_http_effective_base_url()
     scheduler_state: dict[str, object] = {"running": False}
     repo_mcp_router, repo_mcp_routes = create_repo_mcp_http_routes(registry, view_keys=view_keys)
+    operator_data_api = OperatorDataApi(registry) if config.operator_data_api_enabled else None
 
     async def health(request) -> JSONResponse:  # noqa: ANN001 - ASGI route boundary.
         del request
@@ -89,6 +92,11 @@ def _create_registry_production_app_server(
             toolkit_state=toolkit_state,
             on_repo_unload=repo_mcp_router.cleanup_repo,
         ),
+        *(
+            create_operator_data_http_routes(registry, api=operator_data_api)
+            if operator_data_api is not None
+            else []
+        ),
         *repo_mcp_routes,
     ]
 
@@ -99,6 +107,7 @@ def _create_registry_production_app_server(
         app.state.lean_constellation_scheduler = scheduler_state
         app.state.lean_constellation_mcp_base_url = resolved_mcp_base_url
         app.state.lean_constellation_toolkit = toolkit_state
+        app.state.lean_constellation_operator_data_api = operator_data_api
         async with anyio.create_task_group() as task_group:
             if config.scheduler_enabled:
                 task_group.start_soon(
@@ -125,6 +134,7 @@ def _create_registry_production_app_server(
     app.state.lean_constellation_mcp_base_url = resolved_mcp_base_url
     app.state.lean_constellation_mcp_router = repo_mcp_router
     app.state.lean_constellation_toolkit = toolkit_state
+    app.state.lean_constellation_operator_data_api = operator_data_api
     return registry.result.ok(app)
 
 

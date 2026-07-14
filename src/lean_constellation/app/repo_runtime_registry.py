@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Literal
 
+from agent_runtime_kit.flow.models import FlowStatus
 from pydantic import Field
 
 from lean_constellation.app.bootstrap import (
@@ -202,6 +203,7 @@ class RepoRuntimeRegistry:
                     external_config=self.external_config,
                     external_overrides=self.external_overrides,
                     native_lake_project_config=self.config.native_lake_project,
+                    workspace_config=self.config.workspace_config,
                     register_application_tools=False,
                 )
             return self._workspace_runtime
@@ -234,55 +236,123 @@ class RepoRuntimeRegistry:
             return self.result.fail(discovered.issues)
         record = discovered.value
         with record.lock:
-            if record.runtime is not None:
-                if refresh_homes and self.config.materialize_agent_homes:
-                    refreshed = self._materialize_homes(record)
-                    if not refreshed.ok:
-                        record.state = "failed"
-                        record.last_error = _issue_summary(refreshed.issues)
-                        return self.result.fail(refreshed.issues)
-                if record.state in {"unloaded", "loading", "failed"}:
-                    record.state = "paused" if _runtime_paused(record.runtime) else "active"
-                return self.result.ok(record.runtime)
-            record.state = "loading"
-            record.last_error = None
-            try:
-                record.runtime_root.mkdir(parents=True, exist_ok=True)
-                runtime = create_app_runtime_services(
-                    runtime_root=record.runtime_root,
-                    external_config=self.external_config,
-                    external_overrides=self.external_overrides,
-                    agent_providers=self.agent_providers,
-                    native_lake_project_config=self.config.native_lake_project,
-                    workspace_config=self.config.workspace_config,
-                    max_concurrent_flow_advances=self.config.max_concurrent_flow_advances,
-                    max_concurrent_steps=self.config.max_concurrent_steps,
-                    start_paused=self.config.server_start_paused,
-                    test_control_enabled=self.config.test_control_enabled,
-                )
-                record.runtime = runtime
-                self._rebuild_queues(record)
-                self._audit_release_state(record)
-                if self.config.materialize_agent_homes:
-                    homes = self._materialize_homes(record)
-                    if not homes.ok:
-                        record.runtime = None
-                        record.state = "failed"
-                        record.last_error = _issue_summary(homes.issues)
-                        return self.result.fail(homes.issues)
-                record.state = "paused" if _runtime_paused(runtime) else "active"
-                return self.result.ok(runtime)
-            except Exception as exc:  # noqa: BLE001 - registry load boundary.
-                record.runtime = None
-                record.state = "failed"
-                record.last_error = str(exc)
+            return self._get_or_load_record(
+                record,
+                refresh_homes=refresh_homes,
+                start_paused=self.config.server_start_paused,
+            )
+
+    def get_or_load_paused(
+        self,
+        repo_key: str,
+        *,
+        refresh_homes: bool = False,
+    ) -> ServiceResult[LeanRuntimeServices]:
+        """Atomically load a repo runtime in paused management mode.
+
+        The runtime is constructed with its pause gate already active while the
+        repo record lock is held.  This deliberately does not implement
+        get-or-load followed by pause, which would leave a scheduler window.
+        """
+
+        discovered = self.discover_repo(repo_key)
+        if not discovered.ok or discovered.value is None:
+            return self.result.fail(discovered.issues)
+        record = discovered.value
+        with record.lock:
+            if record.runtime is not None and not _runtime_paused(record.runtime):
                 return self.result.fail(
                     self.result.issue(
-                        "repo_runtime_load_failed",
-                        f"Failed to load repo runtime: {exc}",
-                        object_ref=str(record.repo_root),
+                        "operator_repo_runtime_not_paused",
+                        "Loaded repo runtime must be paused before operator management.",
+                        object_ref=record.repo_key,
                     )
                 )
+            return self._get_or_load_record(
+                record,
+                refresh_homes=refresh_homes,
+                start_paused=True,
+            )
+
+    @staticmethod
+    def runtime_history_exists(record: RepoRuntimeRecord) -> bool:
+        """Return whether the repo has persisted ARK runtime history."""
+
+        root = record.runtime_root
+        if not root.exists() or not root.is_dir():
+            return False
+        return any(path.is_file() for path in root.rglob("*"))
+
+    def check_operator_runtime_stable(self, record: RepoRuntimeRecord) -> ServiceResult[None]:
+        """Fail closed unless a loaded runtime is paused and fully quiescent.
+
+        Callers must hold ``record.lock`` across this inspection and the
+        protected mutation.
+        """
+
+        runtime = record.runtime
+        if runtime is None:
+            return self.result.fail(
+                self.result.issue(
+                    "operator_repo_runtime_history_unloaded",
+                    "Repo runtime history exists but is not loaded for operator management.",
+                    object_ref=record.repo_key,
+                    suggested_action="Call prepare_repo_management before mutating this repo.",
+                )
+            )
+        controller = runtime.ark.pause_controller
+        try:
+            if controller is None or not hasattr(controller, "is_paused") or not controller.is_paused():
+                return self.result.fail(
+                    self.result.issue(
+                        "operator_repo_runtime_not_paused",
+                        "Repo runtime must be globally paused for operator mutation.",
+                        object_ref=record.repo_key,
+                    )
+                )
+            agent_service = runtime.ark.agent_service
+            step_service = runtime.ark.step_service
+            flow_service = runtime.ark.flow_service
+            schedule_service = runtime.ark.schedule_service
+            if agent_service is None or not hasattr(agent_service, "list_running_agents"):
+                raise RuntimeError("agent runtime inspection is unavailable")
+            if step_service is None or not hasattr(step_service, "list_running_steps"):
+                raise RuntimeError("step runtime inspection is unavailable")
+            if flow_service is None or not hasattr(flow_service, "list_flows"):
+                raise RuntimeError("flow runtime inspection is unavailable")
+            if schedule_service is None or not hasattr(schedule_service, "active_flow_advances"):
+                raise RuntimeError("scheduler runtime inspection is unavailable")
+            running_agents = list(agent_service.list_running_agents())
+            running_steps = list(step_service.list_running_steps())
+            nonterminal_flows = [
+                flow
+                for flow in flow_service.list_flows()
+                if getattr(flow, "status", None) not in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+            ]
+            active_advances = list(schedule_service.active_flow_advances)
+        except Exception as exc:  # noqa: BLE001 - admission must fail closed.
+            return self.result.fail(
+                self.result.issue(
+                    "operator_runtime_inspection_failed",
+                    f"Failed to inspect repo runtime stability: {exc}",
+                    object_ref=record.repo_key,
+                )
+            )
+        if running_agents or running_steps or nonterminal_flows or active_advances:
+            return self.result.fail(
+                self.result.issue(
+                    "operator_repo_runtime_busy",
+                    "Repo runtime still has active work and cannot accept operator mutation.",
+                    object_ref=record.repo_key,
+                    details={
+                        "running_agents": len(running_agents),
+                        "running_steps": len(running_steps),
+                        "nonterminal_flows": len(nonterminal_flows),
+                        "active_flow_advances": len(active_advances),
+                    },
+                )
+            )
+        return self.result.ok(None)
 
     def try_get_loaded(self, repo_key: str) -> LeanRuntimeServices | None:
         normalized = self.normalize_repo_key(repo_key)
@@ -361,6 +431,65 @@ class RepoRuntimeRegistry:
         with record.lock:
             record.state = "failed"
             record.last_error = str(exc)
+
+    def _get_or_load_record(
+        self,
+        record: RepoRuntimeRecord,
+        *,
+        refresh_homes: bool,
+        start_paused: bool,
+    ) -> ServiceResult[LeanRuntimeServices]:
+        """Load one record while its lock is held by the caller."""
+
+        if record.runtime is not None:
+            if refresh_homes and self.config.materialize_agent_homes:
+                refreshed = self._materialize_homes(record)
+                if not refreshed.ok:
+                    record.state = "failed"
+                    record.last_error = _issue_summary(refreshed.issues)
+                    return self.result.fail(refreshed.issues)
+            if record.state in {"unloaded", "loading", "failed"}:
+                record.state = "paused" if _runtime_paused(record.runtime) else "active"
+            return self.result.ok(record.runtime)
+        record.state = "loading"
+        record.last_error = None
+        try:
+            record.runtime_root.mkdir(parents=True, exist_ok=True)
+            runtime = create_app_runtime_services(
+                runtime_root=record.runtime_root,
+                external_config=self.external_config,
+                external_overrides=self.external_overrides,
+                agent_providers=self.agent_providers,
+                native_lake_project_config=self.config.native_lake_project,
+                workspace_config=self.config.workspace_config,
+                max_concurrent_flow_advances=self.config.max_concurrent_flow_advances,
+                max_concurrent_steps=self.config.max_concurrent_steps,
+                start_paused=start_paused,
+                test_control_enabled=self.config.test_control_enabled,
+            )
+            record.runtime = runtime
+            self._rebuild_queues(record)
+            self._audit_release_state(record)
+            if self.config.materialize_agent_homes:
+                homes = self._materialize_homes(record)
+                if not homes.ok:
+                    record.runtime = None
+                    record.state = "failed"
+                    record.last_error = _issue_summary(homes.issues)
+                    return self.result.fail(homes.issues)
+            record.state = "paused" if _runtime_paused(runtime) else "active"
+            return self.result.ok(runtime)
+        except Exception as exc:  # noqa: BLE001 - registry load boundary.
+            record.runtime = None
+            record.state = "failed"
+            record.last_error = str(exc)
+            return self.result.fail(
+                self.result.issue(
+                    "repo_runtime_load_failed",
+                    f"Failed to load repo runtime: {exc}",
+                    object_ref=str(record.repo_root),
+                )
+            )
 
     def _materialize_homes(self, record: RepoRuntimeRecord) -> ServiceResult[ProductionAgentHomesView]:
         if record.runtime is None:

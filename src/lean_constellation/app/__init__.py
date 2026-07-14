@@ -85,6 +85,7 @@ from lean_constellation.app.repo_runtime_registry import (
     RepoRuntimeRegistry,
     RepoRuntimeStatusView,
 )
+from lean_constellation.app.operator_data import OperatorDataApi, create_operator_data_http_routes
 from lean_constellation.app.server import create_production_app_server, run_production_app_server
 
 __all__ = [
@@ -118,6 +119,7 @@ __all__ = [
     "MainSourceCorpusValidationView",
     "ManualCheckpointInput",
     "ProductionAgentHomesView",
+    "OperatorDataApi",
     "RepoRuntimeListView",
     "RepoRuntimeRecord",
     "RepoRuntimeRegistry",
@@ -159,6 +161,7 @@ __all__ = [
     "create_app_runtime_from_config",
     "create_app_runtime_services",
     "create_production_app_server",
+    "create_operator_data_http_routes",
     "create_test_control_runtime_services",
     "initialize_repo_business_truth",
     "list_external_takeover_handoffs",

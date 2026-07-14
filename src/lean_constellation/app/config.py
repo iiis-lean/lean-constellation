@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from ipaddress import ip_address
 import os
 from pathlib import Path
 import tomllib
@@ -40,6 +41,7 @@ class LeanAppConfigView(StrictModel):
     materialize_agent_homes: bool
     scheduler_enabled: bool
     test_control_enabled: bool
+    operator_data_api_enabled: bool
     scheduler_tick_interval_s: float
     scheduler_idle_interval_s: float
     scheduler_error_interval_s: float
@@ -144,6 +146,7 @@ class LeanAppConfig(StrictModel):
     materialize_agent_homes: bool = True
     scheduler_enabled: bool = True
     test_control_enabled: bool = False
+    operator_data_api_enabled: bool = False
     scheduler_tick_interval_s: float = 0.25
     scheduler_idle_interval_s: float = 0.5
     scheduler_error_interval_s: float = 2.0
@@ -201,6 +204,8 @@ class LeanAppConfig(StrictModel):
                 self.codex_base_config_path = self.codex_config_home / "config.toml"
             if self.codex_auth_json_path is None:
                 self.codex_auth_json_path = self.codex_config_home / "auth.json"
+        if self.operator_data_api_enabled and not _is_loopback_host(self.admin_http_host):
+            raise ValueError("operator_data_api_enabled requires a loopback admin_http_host")
         return self
 
     def mcp_http_effective_base_url(self) -> str:
@@ -239,6 +244,7 @@ class LeanAppConfig(StrictModel):
             materialize_agent_homes=self.materialize_agent_homes,
             scheduler_enabled=self.scheduler_enabled,
             test_control_enabled=self.test_control_enabled,
+            operator_data_api_enabled=self.operator_data_api_enabled,
             scheduler_tick_interval_s=self.scheduler_tick_interval_s,
             scheduler_idle_interval_s=self.scheduler_idle_interval_s,
             scheduler_error_interval_s=self.scheduler_error_interval_s,
@@ -285,6 +291,7 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         "materialize_agent_homes": "LEAN_CONSTELLATION_MATERIALIZE_AGENT_HOMES",
         "scheduler_enabled": "LEAN_CONSTELLATION_SCHEDULER_ENABLED",
         "test_control_enabled": "LEAN_CONSTELLATION_TEST_CONTROL_ENABLED",
+        "operator_data_api_enabled": "LEAN_CONSTELLATION_OPERATOR_DATA_API_ENABLED",
         "scheduler_tick_interval_s": "LEAN_CONSTELLATION_SCHEDULER_TICK_INTERVAL_S",
         "scheduler_idle_interval_s": "LEAN_CONSTELLATION_SCHEDULER_IDLE_INTERVAL_S",
         "scheduler_error_interval_s": "LEAN_CONSTELLATION_SCHEDULER_ERROR_INTERVAL_S",
@@ -298,6 +305,18 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
     _apply_toolkit_env(data, env)
     _apply_native_lake_env(data, env)
     _apply_workspace_config_env(data, env)
+
+
+def _is_loopback_host(host: str) -> bool:
+    value = str(host).strip().lower()
+    if value == "localhost":
+        return True
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    try:
+        return ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 def _apply_toolkit_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
