@@ -280,15 +280,14 @@ class RuntimeMatrixWorkspace:
         assert trusted.ok, trusted.issues
 
     def allocate_resource_branch_draft(self, *, target_kind: str, target: str) -> str:
-        flow_input = self.runtime.material.submit_resource_request(
-            {"repo_root": self.provider_repo, "node_path": "Main.Core"},
+        prepared_target = self.runtime.material.prepare_resource_target(
             target_kind=target_kind,
             target=target,
         )
-        assert flow_input.ok and flow_input.value is not None, flow_input.issues
+        assert prepared_target.ok and prepared_target.value is not None, prepared_target.issues
         draft = self.runtime.material.allocate_resource_draft(
             self.provider_repo,
-            target=flow_input.value.normalized_target,
+            target=prepared_target.value,
             title_hint="Runtime Matrix branch resource",
         )
         assert draft.ok and draft.value is not None, draft.issues
@@ -302,15 +301,14 @@ class RuntimeMatrixWorkspace:
 
     def create_active_resource(self, *, target_kind: str, target: str) -> str:
         draft_id = self.allocate_resource_branch_draft(target_kind=target_kind, target=target)
-        flow_input = self.runtime.material.submit_resource_request(
-            {"repo_root": self.provider_repo, "node_path": "Main.Core"},
+        prepared_target = self.runtime.material.prepare_resource_target(
             target_kind=target_kind,
             target=target,
         )
-        assert flow_input.ok and flow_input.value is not None, flow_input.issues
+        assert prepared_target.ok and prepared_target.value is not None, prepared_target.issues
         promoted = self.runtime.material.submit_local_resource_created(
             self.provider_repo,
-            flow_input=flow_input.value,
+            target=prepared_target.value,
             draft_id=draft_id,
             summary="Runtime Matrix duplicate fixture resource.",
         )
@@ -390,12 +388,10 @@ class RuntimeMatrixWorkspace:
 
     def _prepare_minimal_source_index(self, *, path: str) -> None:
         material = self.runtime.material
-        update_id = "runtime-matrix-minimal-source-index"
         resolved = material.resolve_source_scope(self.provider_repo, source_scope=SourceScope(mode="all"))
         assert resolved.ok and resolved.value is not None, resolved.issues
         opened = material.open_source_index_update(
             self.provider_repo,
-            update_id=update_id,
             resolved_scope=resolved.value,
             index_policy="auto",
         )
@@ -403,7 +399,6 @@ class RuntimeMatrixWorkspace:
         assert material.set_source_index_overview(
             self.provider_repo,
             overview="Runtime Matrix source index.",
-            expected_update_id=update_id,
         ).ok
         assert material.create_source_block(
             self.provider_repo,
@@ -412,7 +407,6 @@ class RuntimeMatrixWorkspace:
             title="Runtime Matrix theorem source",
             summary="A small source block supporting the runtime matrix theorem.",
             subtype=None,
-            expected_update_id=update_id,
         ).ok
         assert material.add_source_block_ref(
             self.provider_repo,
@@ -421,27 +415,25 @@ class RuntimeMatrixWorkspace:
             start_line=1,
             end_line=3,
             role="main",
-            expected_update_id=update_id,
         ).ok
         for block_id in ("b_0001", "root"):
             assert material.mark_block_refs_done(
-                self.provider_repo, block_id=block_id, expected_update_id=update_id
+                self.provider_repo, block_id=block_id
             ).ok
             assert material.mark_block_links_done(
-                self.provider_repo, block_id=block_id, expected_update_id=update_id
+                self.provider_repo, block_id=block_id
             ).ok
             assert material.mark_block_completed(
-                self.provider_repo, block_id=block_id, expected_update_id=update_id
+                self.provider_repo, block_id=block_id
             ).ok
         assert material.set_file_survey_status(
             self.provider_repo,
             path=path,
             status="surveyed",
             summary="Read in full.",
-            expected_update_id=update_id,
         ).ok
         assert material.set_file_indexing_status(
-            self.provider_repo, path=path, status="indexed", expected_update_id=update_id
+            self.provider_repo, path=path, status="indexed"
         ).ok
         readme_path = self.provider_repo / ".lean_constellation" / "source" / "README.md"
         if path != "README.md" and readme_path.exists():
@@ -450,18 +442,15 @@ class RuntimeMatrixWorkspace:
                 path="README.md",
                 status="skipped",
                 summary="Entry file only; source.md contains the indexed material.",
-                expected_update_id=update_id,
             ).ok
             assert material.set_file_indexing_status(
                 self.provider_repo,
                 path="README.md",
                 status="skipped",
-                expected_update_id=update_id,
             ).ok
         assert material.validate_source_index(self.provider_repo).ok
         validated = material.validate_source_index_update(
             self.provider_repo,
-            update_id=update_id,
             baseline_index=None,
             expected_baseline_digest=opened.value.baseline_digest,
             resolved_scope=resolved.value.resolved_file_paths,
@@ -471,7 +460,6 @@ class RuntimeMatrixWorkspace:
         assert validated.value.gate.passed, validated.value.gate.issues
         committed = material.commit_source_index_update(
             self.provider_repo,
-            update_id=update_id,
             validated=validated.value,
         )
         assert committed.ok, committed.issues

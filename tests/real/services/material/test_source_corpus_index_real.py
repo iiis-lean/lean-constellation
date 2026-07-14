@@ -94,12 +94,10 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
     assert source_valid.ok and source_valid.value is not None
     assert source_valid.value.valid
 
-    update_id = "real-source-index-lifecycle"
     resolved = service.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
     assert resolved.ok and resolved.value is not None
     opened = service.open_source_index_update(
         repo_root,
-        update_id=update_id,
         resolved_scope=resolved.value,
         index_policy="auto",
     )
@@ -112,7 +110,6 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         kind="definition",
         title="Contraction definition",
         summary="The source definition describing contractions.",
-        expected_update_id=update_id,
     )
     theorem = service.create_source_block(
         repo_root,
@@ -120,7 +117,6 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         kind="theorem",
         title="Fixed point theorem",
         summary="The main fixed point theorem and proof sketch.",
-        expected_update_id=update_id,
     )
     assert definition.ok and definition.value is not None
     assert theorem.ok and theorem.value is not None
@@ -132,7 +128,6 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         start_line=1,
         end_line=1,
         role="definition statement",
-        expected_update_id=update_id,
     )
     theorem_ref = service.add_source_block_ref(
         repo_root,
@@ -141,14 +136,13 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         start_line=3,
         end_line=4,
         role="main theorem and proof sketch",
-        expected_update_id=update_id,
     )
     assert definition_ref.ok and definition_ref.value is not None
     assert theorem_ref.ok and theorem_ref.value is not None
 
     for block_id in (definition.value.block_id, theorem.value.block_id):
         refs_done = service.mark_block_refs_done(
-            repo_root, block_id=block_id, expected_update_id=update_id
+            repo_root, block_id=block_id
         )
         assert refs_done.ok
         assert refs_done.value is not None
@@ -161,20 +155,19 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
         target_hint=None,
         link_kind="uses-definition",
         evidence_ref_ids=[theorem_ref.value.refs[0].ref_id],
-        expected_update_id=update_id,
     )
     assert link.ok
     assert link.value is not None
 
     for block_id in (definition.value.block_id, theorem.value.block_id):
         links_done = service.mark_block_links_done(
-            repo_root, block_id=block_id, expected_update_id=update_id
+            repo_root, block_id=block_id
         )
         assert links_done.ok
         assert links_done.value is not None
         assert links_done.value.passed
         completed = service.mark_block_completed(
-            repo_root, block_id=block_id, expected_update_id=update_id
+            repo_root, block_id=block_id
         )
         assert completed.ok
         assert completed.value is not None
@@ -186,10 +179,9 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
             path=path,
             status="surveyed",
             summary=f"Surveyed {path}.",
-            expected_update_id=update_id,
         )
         indexed = service.set_file_indexing_status(
-            repo_root, path=path, status="indexed", expected_update_id=update_id
+            repo_root, path=path, status="indexed"
         )
         assert surveyed.ok
         assert indexed.ok
@@ -207,7 +199,6 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
     )
     update_gate = service.validate_source_index_update(
         repo_root,
-        update_id=update_id,
         baseline_index=None,
         expected_baseline_digest=opened.value.baseline_digest,
         resolved_scope=resolved.value.resolved_file_paths,
@@ -215,7 +206,7 @@ def test_material_source_corpus_index_real_lifecycle(tmp_path: Path) -> None:
     )
     assert update_gate.ok and update_gate.value is not None and update_gate.value.gate.passed
     commit = service.commit_source_index_update(
-        repo_root, update_id=update_id, validated=update_gate.value
+        repo_root, validated=update_gate.value
     )
     committed = service.get_source_index(repo_root)
 

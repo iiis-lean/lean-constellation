@@ -7,6 +7,7 @@ import pytest
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -17,7 +18,7 @@ from lean_constellation.services.foundation import (
     IndexBundle,
     IndexMetadata,
 )
-from lean_constellation.services.validation_snapshot import RepoCheckpointKind, ValidationSnapshotService
+from lean_constellation.services.validation_snapshot import RepoCheckpointKind
 
 
 class RealSnapshotRuntimeStabilityProvider:
@@ -135,12 +136,12 @@ def test_snapshot_restore_real_filesystem_checkpoint_roundtrip(tmp_path: Path) -
     assert first_index.ok and first_index.value is not None
 
     ark = RealSnapshotArkProvider(foundation)
-    service = ValidationSnapshotService(
+    snapshots = ApplicationSnapshotRuntime(
         foundation.runtime,
-        runtime_stability_provider=RealSnapshotRuntimeStabilityProvider(foundation),
-        ark_snapshot_provider=ark,
+        ark,
+        runtime_stability=RealSnapshotRuntimeStabilityProvider(foundation),
     )
-    created = service.create_repo_stable_point_snapshot(
+    created = snapshots.create_repo_stable_point_snapshot(
         repo_root,
         checkpoint_kind=RepoCheckpointKind.REQUIREMENT_BOOTSTRAP_TERMINAL,
         label="real filesystem checkpoint",
@@ -153,7 +154,7 @@ def test_snapshot_restore_real_filesystem_checkpoint_roundtrip(tmp_path: Path) -
     (repo_root / "Extra.lean").write_text("-- extra file should survive restore\n", encoding="utf-8")
     (repo_root / ".lake" / "cache.txt").write_text("cache after checkpoint\n", encoding="utf-8")
 
-    restored = service.restore_repo_checkpoint_snapshot(repo_root, snapshot_id=created.value.snapshot_id)
+    restored = snapshots.restore_repo_checkpoint_snapshot(repo_root, snapshot_id=created.value.snapshot_id)
 
     assert restored.ok
     assert restored.value is not None

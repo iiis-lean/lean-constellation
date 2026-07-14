@@ -751,12 +751,10 @@ def _prepare_committed_source_index(ws: RuntimeMatrixWorkspace) -> None:
         encoding="utf-8",
     )
     material = ws.runtime.material
-    update_id = "strict-decl-stage-source-index"
     resolved = material.resolve_source_scope(ws.provider_repo, source_scope=SourceScope(mode="all"))
     assert resolved.ok and resolved.value is not None, resolved.issues
     opened = material.open_source_index_update(
         ws.provider_repo,
-        update_id=update_id,
         resolved_scope=resolved.value,
         index_policy="auto",
     )
@@ -764,7 +762,6 @@ def _prepare_committed_source_index(ws: RuntimeMatrixWorkspace) -> None:
     assert material.set_source_index_overview(
         ws.provider_repo,
         overview="Strict decl stage proof source index.",
-        expected_update_id=update_id,
     ).ok
     block = material.create_source_block(
         ws.provider_repo,
@@ -772,7 +769,6 @@ def _prepare_committed_source_index(ws: RuntimeMatrixWorkspace) -> None:
         kind="proof",
         title="Strict proof source",
         summary="Strict proof source summary.",
-        expected_update_id=update_id,
     )
     assert block.ok and block.value is not None, block.issues
     ref = ws.runtime.material.add_source_block_ref(
@@ -782,31 +778,28 @@ def _prepare_committed_source_index(ws: RuntimeMatrixWorkspace) -> None:
         start_line=1,
         end_line=1,
         role="main",
-        expected_update_id=update_id,
     )
     assert ref.ok, ref.issues
     assert material.mark_block_refs_done(
-        ws.provider_repo, block_id=block.value.block_id, expected_update_id=update_id
+        ws.provider_repo, block_id=block.value.block_id
     ).ok
     assert material.mark_block_links_done(
-        ws.provider_repo, block_id=block.value.block_id, expected_update_id=update_id
+        ws.provider_repo, block_id=block.value.block_id
     ).ok
     assert material.mark_block_completed(
-        ws.provider_repo, block_id=block.value.block_id, expected_update_id=update_id
+        ws.provider_repo, block_id=block.value.block_id
     ).ok
     assert material.set_file_survey_status(
         ws.provider_repo,
         path="source.md",
         status="surveyed",
         summary="Read in full.",
-        expected_update_id=update_id,
     ).ok
     assert material.set_file_indexing_status(
-        ws.provider_repo, path="source.md", status="indexed", expected_update_id=update_id
+        ws.provider_repo, path="source.md", status="indexed"
     ).ok
     validated = material.validate_source_index_update(
         ws.provider_repo,
-        update_id=update_id,
         baseline_index=None,
         expected_baseline_digest=opened.value.baseline_digest,
         resolved_scope=resolved.value.resolved_file_paths,
@@ -815,7 +808,7 @@ def _prepare_committed_source_index(ws: RuntimeMatrixWorkspace) -> None:
     assert validated.ok and validated.value is not None, validated.issues
     assert validated.value.gate.passed, validated.value.gate.issues
     committed = material.commit_source_index_update(
-        ws.provider_repo, update_id=update_id, validated=validated.value
+        ws.provider_repo, validated=validated.value
     )
     assert committed.ok and committed.value is not None, committed.issues
 

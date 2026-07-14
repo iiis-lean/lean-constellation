@@ -9,9 +9,8 @@ import pytest
 from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus, RepoWorkMode
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.external_clients import ToolchainCommandView
-from lean_constellation.services.validation_snapshot import PreparedRepoReleaseView, ValidationSnapshotService
+from lean_constellation.services.validation_snapshot import PreparedRepoReleaseView
 from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo
-from tests.unit.services.validation_snapshot.test_release_finalizer import _ArkSnapshots, _StableRuntime
 
 
 def _prepared(runtime, repo_root: Path, release: RepoRelease) -> PreparedRepoReleaseView:  # noqa: ANN001
@@ -37,11 +36,6 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
     runtime.ark.flow_service = SimpleNamespace(list_flows=lambda **_filters: [])
     runtime.ark.step_service = SimpleNamespace(list_steps=lambda **_filters: [])
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
-    runtime.app.validation_snapshot = ValidationSnapshotService(
-        runtime,
-        runtime_stability_provider=_StableRuntime(runtime.foundation),
-        ark_snapshot_provider=_ArkSnapshots(runtime.foundation),
-    )
     (repo_root / "lakefile.toml").write_text(
         'name = "ReleaseRestoreReal"\nversion = "0.1.0"\ndefaultTargets = ["Main"]\n\n'
         '[[lean_lib]]\nname = "Main"\n',
@@ -58,7 +52,7 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
         summary="Declared R1.",
     )
     committed_r1 = runtime.validation_snapshot.commit_prepared_release(
-        repo_root, prepared=_prepared(runtime, repo_root, r1), owner_flow_id="flow", scope_ids=["repo:real"]
+        repo_root, prepared=_prepared(runtime, repo_root, r1)
     )
     assert committed_r1.ok, committed_r1.issues
 
@@ -83,7 +77,7 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
         summary="Proved R2.",
     )
     committed_r2 = runtime.validation_snapshot.commit_prepared_release(
-        repo_root, prepared=_prepared(runtime, repo_root, r2), owner_flow_id="flow", scope_ids=["repo:real"]
+        repo_root, prepared=_prepared(runtime, repo_root, r2)
     )
     assert committed_r2.ok, committed_r2.issues
     audit = runtime.validation_snapshot.audit_repo_release_storage(repo_root)

@@ -35,12 +35,10 @@ def test_material_context_view_real_small_source_resource_node_fixture(tmp_path:
         overview="Real context view source corpus.",
         preparation_summary="Prepared source files.",
     ).ok
-    update_id = "real-material-context-source-index"
     resolved = material.resolve_source_scope(repo_root, source_scope=SourceScope(mode="all"))
     assert resolved.ok and resolved.value is not None, resolved.issues
     opened = material.open_source_index_update(
         repo_root,
-        update_id=update_id,
         resolved_scope=resolved.value,
         index_policy="auto",
     )
@@ -51,7 +49,6 @@ def test_material_context_view_real_small_source_resource_node_fixture(tmp_path:
         kind="theorem",
         title="Real theorem",
         summary="The source-indexed theorem.",
-        expected_update_id=update_id,
     )
     assert block.ok and block.value is not None
     assert material.add_source_block_ref(
@@ -61,7 +58,6 @@ def test_material_context_view_real_small_source_resource_node_fixture(tmp_path:
         start_line=2,
         end_line=2,
         role="statement",
-        expected_update_id=update_id,
     ).ok
 
     target = material.normalize_resource_target("https://example.com/real-context-resource")

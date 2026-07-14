@@ -87,16 +87,15 @@ def test_material_resource_curation_submit_outcomes_real_local_and_duplicate(tmp
     local_source.write_text("outcome resource\nwith theorem text\n", encoding="utf-8")
     service = make_runtime().material
 
-    flow_input = service.submit_resource_request(
-        {"repo_root": repo_root, "current_node": "Main.Topic"},
+    prepared_target = service.prepare_resource_target(
         target_kind="local_file",
         target=str(local_source),
     )
-    assert flow_input.ok and flow_input.value is not None
+    assert prepared_target.ok and prepared_target.value is not None
 
     draft = service.allocate_resource_draft(
         repo_root,
-        target=flow_input.value.normalized_target,
+        target=prepared_target.value,
         resource_kind="local_file",
         title_hint="Outcome resource",
     )
@@ -108,7 +107,7 @@ def test_material_resource_curation_submit_outcomes_real_local_and_duplicate(tmp
 
     local_result = service.submit_local_resource_created(
         repo_root,
-        flow_input=flow_input.value,
+        target=prepared_target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Created through ResourceCurator local submit gate.",
     )
@@ -118,7 +117,7 @@ def test_material_resource_curation_submit_outcomes_real_local_and_duplicate(tmp
 
     duplicate_result = service.submit_resource_duplicate(
         repo_root,
-        flow_input=flow_input.value,
+        target=prepared_target.value,
         existing_kind="resource",
         existing_resource_key=local_result.value.resource_key,
         duplicate_reason="The same local file target has already been curated.",

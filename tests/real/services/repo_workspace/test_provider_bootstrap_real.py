@@ -113,7 +113,7 @@ def test_provider_runtime_shell_can_be_initialized_as_native_without_starting_fl
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    created = runtime.repo_workspace.prepare_provider_repo_runtime_shell(
+    created = runtime.repo_workspace.prepare_provider_repo_shell(
         workspace,
         target_repo="ProviderNative",
         preparation_input=_provider_input(source_corpus_mode=SourceCorpusMode.PREPARE),
@@ -149,7 +149,7 @@ def test_provider_runtime_shell_can_be_initialized_as_adapter_without_network(tm
     _create_local_upstream_git_repo(upstream)
     upstream_uri = upstream.resolve().as_uri()
 
-    created = runtime.repo_workspace.prepare_provider_repo_runtime_shell(
+    created = runtime.repo_workspace.prepare_provider_repo_shell(
         workspace,
         target_repo="ProviderAdapter",
         preparation_input=_provider_input(source_corpus_mode=SourceCorpusMode.NONE),

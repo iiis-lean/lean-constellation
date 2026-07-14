@@ -30,7 +30,7 @@ from lean_constellation.app import (
     complete_external_takeover_handoff,
     create_app_runtime_services,
     create_test_control_runtime_services,
-    initialize_repo_runtime,
+    initialize_repo_business_truth,
     materialize_agent_home,
 )
 from lean_constellation.agents import build_agent_type_specs, derive_agent_type_spec
@@ -1627,7 +1627,7 @@ def test_semireal_snapshot_restore_pauses_and_resume_continues_scheduler(tmp_pat
     _install_provider(runtime, provider)
     _create_homes(runtime, "CoordinatorAgent")
     repo_root = tmp_path / "workspace" / "Repo"
-    assert initialize_repo_runtime(runtime, repo_root).ok
+    assert initialize_repo_business_truth(runtime, repo_root).ok
     written = runtime.repo_workspace.preparation.write_preparation_input(
         repo_root,
         input=RepoPreparationInput(goal="Prepare repo.", source_corpus_mode=SourceCorpusMode.PREPARE),

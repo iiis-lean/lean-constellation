@@ -6,12 +6,12 @@ import pytest
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.validation_snapshot import (
     RepoCheckpointKind,
     RepoCheckpointSnapshotManifest,
     SnapshotFilesManifest,
-    ValidationSnapshotService,
 )
 
 
@@ -114,19 +114,19 @@ def test_s1_s3_checkpoint_scope_policy_and_manifest(tmp_path: Path) -> None:
     assert core is not None and consumer is not None
     runtime_stability = RecordingRuntimeStabilityProvider(foundation)
     ark = RecordingArkSnapshotProvider(foundation)
-    service = ValidationSnapshotService(
+    snapshots = ApplicationSnapshotRuntime(
         foundation.runtime,
-        runtime_stability_provider=runtime_stability,
-        ark_snapshot_provider=ark,
+        ark,
+        runtime_stability=runtime_stability,
     )
 
-    before_dispatch = service.create_repo_stable_point_snapshot(
+    before_dispatch = snapshots.create_repo_stable_point_snapshot(
         repo_root,
         checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
         label="S1 before dispatch",
         node_paths=[" Main.Topic.Core ", "Main.Topic.Core"],
     )
-    after_batch = service.create_repo_stable_point_snapshot(
+    after_batch = snapshots.create_repo_stable_point_snapshot(
         repo_root,
         checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL,
         label="S3 after batch",
@@ -156,16 +156,11 @@ def test_s1_s3_checkpoint_scope_policy_and_manifest(tmp_path: Path) -> None:
     )
     assert before_manifest.ok and before_manifest.value is not None
     assert after_manifest.ok and after_manifest.value is not None
-    assert before_manifest.value.refreshed_scope_ids == ["repo:repo", f"repo:repo:node:{core.node_id}"]
-    assert [ref.path for ref in before_manifest.value.node_refs] == ["Main.Topic.Core"]
-    assert [ref.node_id for ref in before_manifest.value.node_refs] == [core.node_id]
-    assert after_manifest.value.refreshed_scope_ids == [
-        "repo:repo",
-        f"repo:repo:node:{core.node_id}",
-        f"repo:repo:node:{consumer.node_id}",
-    ]
-    assert [ref.path for ref in after_manifest.value.node_refs] == ["Main.Topic.Core", "Main.Topic.Consumer"]
-    assert [ref.node_id for ref in after_manifest.value.node_refs] == [core.node_id, consumer.node_id]
+    assert before_manifest.value.ark_runtime_snapshot_id == "real_scope_ark_1"
+    assert after_manifest.value.ark_runtime_snapshot_id == "real_scope_ark_2"
+    assert "refreshed_scope_ids" not in before_manifest.value.model_dump()
+    assert "ark_runtime_scope_ids" not in before_manifest.value.model_dump()
+    assert "node_refs" not in before_manifest.value.model_dump()
 
     files_manifest = foundation.store.read_json(
         Path(after_batch.value.root) / "files_manifest.json",

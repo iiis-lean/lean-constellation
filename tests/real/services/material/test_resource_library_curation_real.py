@@ -6,7 +6,7 @@ import pytest
 
 from tests.unit_services_helpers import make_runtime
 
-from lean_constellation.services.material import MaterialService, ResourceMetadataInput
+from lean_constellation.services.material import ResourceMetadataInput
 
 
 @pytest.mark.real
@@ -27,25 +27,23 @@ def test_material_resource_library_curation_real_local_file(tmp_path: Path) -> N
     )
     service = make_runtime().material
 
-    flow_input = service.submit_resource_request(
-        {"repo_root": repo_root, "current_node": "Main.Topic"},
+    prepared_target = service.prepare_resource_target(
         target_kind="local_file",
         target=str(local_source),
     )
-    assert flow_input.ok
-    assert flow_input.value is not None
-    assert flow_input.value.normalized_target.kind == "local_file"
-    assert flow_input.value.caller_node == "Main.Topic"
+    assert prepared_target.ok
+    assert prepared_target.value is not None
+    assert prepared_target.value.kind == "local_file"
 
-    duplicate_before = service.find_duplicate_resource(repo_root, target=flow_input.value.normalized_target)
+    duplicate_before = service.find_duplicate_resource(repo_root, target=prepared_target.value)
     assert duplicate_before.ok
     assert duplicate_before.value is not None
     assert duplicate_before.value.duplicate is False
 
     decision = service.resource_curation.decide_local_or_external(
-        {"repo_root": repo_root},
-        target=flow_input.value.normalized_target,
+        target=prepared_target.value,
         duplicate=duplicate_before.value,
+        repo_root=repo_root,
     )
     assert decision.ok
     assert decision.value is not None
@@ -53,7 +51,7 @@ def test_material_resource_library_curation_real_local_file(tmp_path: Path) -> N
 
     curated = service.resource_curation.curate_local_resource(
         repo_root,
-        target=flow_input.value.normalized_target,
+        target=prepared_target.value,
         temp_root=tmp_path / "curation-work",
         metadata=ResourceMetadataInput(
             title="Local resource fixture",
@@ -74,7 +72,7 @@ def test_material_resource_library_curation_real_local_file(tmp_path: Path) -> N
 
     loaded = service.resource_library.get_resource(repo_root, resource_key=resource_key)
     listed = service.resource_library.list_resources(repo_root, query="fixture")
-    duplicate_after = service.find_duplicate_resource(repo_root, target=flow_input.value.normalized_target)
+    duplicate_after = service.find_duplicate_resource(repo_root, target=prepared_target.value)
     preview = service.resource_library.preview_resource(repo_root, resource_key=resource_key)
     structured_preview = service.preview_resource_ref(repo_root, resource_key=resource_key, start_line=2, end_line=3)
     read = service.read_resource_range(repo_root, resource_key=resource_key, start_line=2, end_line=3, context_lines=1)
@@ -120,9 +118,9 @@ def test_material_resource_curation_real_external_repo_and_rejection_decisions(t
     assert dir_target.value is not None
 
     external_decision = service.resource_curation.decide_local_or_external(
-        {"repo_root": repo_root},
         target=dir_target.value,
         duplicate=None,
+        repo_root=repo_root,
     )
     assert external_decision.ok
     assert external_decision.value is not None
