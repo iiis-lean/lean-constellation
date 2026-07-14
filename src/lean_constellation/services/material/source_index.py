@@ -727,6 +727,83 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(saved.issues)
         return self.runtime.foundation.ok(self._to_block_view(saved.value, block.value))
 
+    def update_source_block_ref(
+        self,
+        repo_root: Path,
+        *,
+        block_id: str,
+        ref_id: str,
+        path: str,
+        start_line: int,
+        end_line: int,
+        role: str,
+    ) -> ServiceResult[SourceBlockView]:
+        index = self._load_mutable(repo_root)
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.fail(index.issues)
+        block = self._block_or_issue(index.value, block_id)
+        if not block.ok or block.value is None:
+            return self.runtime.foundation.fail(block.issues)
+        ref = next((item for item in block.value.refs if item.ref_id == ref_id), None)
+        if ref is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("source_ref_missing", f"Source ref not found: {ref_id}")
+            )
+        validation = self.source_corpus.validate_source_ref(
+            repo_root,
+            path=path,
+            start_line=start_line,
+            end_line=end_line,
+        )
+        if not validation.ok or validation.value is None:
+            return self.runtime.foundation.fail(validation.issues)
+        if not validation.value.valid:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    validation.value.issue_code or "source_ref_invalid",
+                    validation.value.summary,
+                    object_ref=path,
+                )
+            )
+        if validation.value.path not in index.value.active_file_scope:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_ref_outside_active_scope",
+                    "Updated SourceIndex refs must point into the active file scope.",
+                    object_ref=validation.value.path,
+                )
+            )
+        role = role.strip()
+        if not role:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_ref_role_empty",
+                    "Source ref role must be non-empty.",
+                    object_ref=block_id,
+                    field="role",
+                )
+            )
+        previous = ref.material_ref
+        updated = MaterialRef(
+            kind="source",
+            ref=SourceRef(
+                path=validation.value.path,
+                start_line=start_line,
+                end_line=end_line,
+            ),
+        )
+        ref.material_ref = updated
+        ref.role = role
+        for link in index.value.links.values():
+            link.evidence_refs = [updated if item == previous else item for item in link.evidence_refs]
+        block.value.lifecycle_status = "draft"
+        block.value.updated_at = utc_now_iso()
+        self._touch(index.value, "Updated source block ref.")
+        saved = self._save_model(repo_root, index.value)
+        if not saved.ok or saved.value is None:
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._to_block_view(saved.value, block.value))
+
     def mark_block_refs_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
@@ -824,6 +901,81 @@ class SourceIndexComponent:
         source.value.lifecycle_status = "refs_done"
         source.value.updated_at = utc_now_iso()
         self._touch(index.value, "Created source link.")
+        saved = self._save_model(repo_root, index.value)
+        if not saved.ok or saved.value is None:
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(self._to_link_view(saved.value, link))
+
+    def update_source_link(
+        self,
+        repo_root: Path,
+        *,
+        link_id: str,
+        target_block_id: str | None,
+        target_hint: str | None,
+        link_kind: str,
+        evidence_ref_ids: list[str],
+    ) -> ServiceResult[SourceLinkView]:
+        index = self._load_mutable(repo_root)
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.fail(index.issues)
+        link = index.value.links.get(link_id)
+        if link is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("source_link_missing", f"Link missing: {link_id}")
+            )
+        source = self._block_or_issue(index.value, link.source_block_id)
+        if not source.ok or source.value is None:
+            return self.runtime.foundation.fail(source.issues)
+        if target_block_id and target_block_id not in index.value.blocks:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_link_target_missing", f"Target block not found: {target_block_id}"
+                )
+            )
+        link_kind = link_kind.strip()
+        target_hint = target_hint.strip() if target_hint else None
+        if not link_kind:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_link_kind_empty",
+                    "Source link kind must be non-empty.",
+                    object_ref=link.source_block_id,
+                )
+            )
+        if not target_block_id and not target_hint:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_link_target_missing",
+                    "Source link requires a target block or target hint.",
+                    object_ref=link_id,
+                )
+            )
+        if not evidence_ref_ids:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_link_evidence_empty",
+                    "Source link needs at least one evidence ref.",
+                    object_ref=link_id,
+                )
+            )
+        ref_by_id = {ref.ref_id: ref for ref in source.value.refs}
+        missing_refs = [ref_id for ref_id in evidence_ref_ids if ref_id not in ref_by_id]
+        if missing_refs:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_link_evidence_missing",
+                    "Evidence refs must belong to the source block.",
+                    current=", ".join(missing_refs),
+                )
+            )
+        link.target_block_id = target_block_id
+        link.target_hint = target_hint
+        link.link_kind = link_kind
+        link.evidence_refs = [ref_by_id[ref_id].material_ref for ref_id in evidence_ref_ids]
+        source.value.lifecycle_status = "refs_done"
+        source.value.updated_at = utc_now_iso()
+        self._touch(index.value, "Updated source link.")
         saved = self._save_model(repo_root, index.value)
         if not saved.ok or saved.value is None:
             return self.runtime.foundation.fail(saved.issues)
@@ -1555,20 +1707,7 @@ class SourceIndexComponent:
 
     @staticmethod
     def _manifest_digest(manifest: SourceCorpusManifestView) -> str:
-        payload = {
-            "relpath": manifest.relpath,
-            "files": [
-                {
-                    "path": item.path,
-                    "size_bytes": item.size_bytes,
-                    "readable_text": item.readable_text,
-                    "line_count": item.line_count,
-                    "sha256": item.sha256,
-                }
-                for item in sorted(manifest.files, key=lambda value: value.path)
-            ],
-        }
-        return SourceIndexComponent._payload_digest(payload)
+        return SourceCorpusComponent.canonical_manifest_digest(manifest)
 
     @staticmethod
     def _unsafe_scope_selector(selector: str) -> str | None:

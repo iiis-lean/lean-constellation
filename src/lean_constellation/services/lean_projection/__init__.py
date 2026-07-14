@@ -38,6 +38,11 @@ from lean_constellation.services.lean_projection.repair import (
     RepairDeclProvider,
 )
 from lean_constellation.services.lean_projection.service import LeanProjectionService
+from lean_constellation.services.lean_projection.safe_apply import (
+    FormalApplyStage,
+    SafeFormalApplyComponent,
+    SafeFormalApplyView,
+)
 
 __all__ = [
     "AdapterFacadeComponent",
@@ -56,6 +61,9 @@ __all__ = [
     "LeanDiagnosticItemView",
     "LeanDiagnosticsView",
     "LeanProjectionService",
+    "FormalApplyStage",
+    "SafeFormalApplyComponent",
+    "SafeFormalApplyView",
     "NodeProjectionComponent",
     "ProjectionView",
     "ProjectionAuditView",

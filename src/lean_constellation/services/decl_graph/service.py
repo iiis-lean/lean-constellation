@@ -41,6 +41,16 @@ from lean_constellation.services.decl_graph.views import DeclGraphViewMapper
 from lean_constellation.services.decl_graph.declared_api import DeclaredApiFingerprintComponent
 from lean_constellation.services.decl_graph.ref_compatibility import DeclRefCompatibilityComponent
 from lean_constellation.services.decl_graph.release_guard import DeclReleaseGuard
+from lean_constellation.services.decl_graph.round_execution import (
+    DeclRoundExecutionComponent,
+    DeclStageName,
+    RoundCloseoutView,
+    RoundFinalAuditView,
+    RoundStageGateView,
+    RoundStageReview,
+    DeclDraftSpec,
+    RoundDraftBatchView,
+)
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.lean_projection.lean_check import LeanCheckView
 from lean_constellation.services.node.export import DeclPublicView
@@ -68,6 +78,7 @@ class DeclGraphService:
         declared_api: DeclaredApiFingerprintComponent | None = None,
         ref_compatibility: DeclRefCompatibilityComponent | None = None,
         release_guard: DeclReleaseGuard | None = None,
+        round_execution: DeclRoundExecutionComponent | None = None,
     ) -> None:
         self.runtime = runtime
         self.views = view_mapper or DeclGraphViewMapper()
@@ -92,6 +103,88 @@ class DeclGraphService:
         self.decl_catalog.release_guard = self.release_guard
         self.ref_compatibility = ref_compatibility or DeclRefCompatibilityComponent(runtime, self.declared_api)
         self.readiness = readiness or DeclReadinessComponent(runtime, self.decl_catalog, self.dependency)
+        self.round_execution = round_execution or DeclRoundExecutionComponent(runtime, self)
+
+    def create_round_with_decl_drafts(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        strategy_id: str,
+        objective: str,
+        declarations: list[DeclDraftSpec],
+    ) -> ServiceResult[RoundDraftBatchView]:
+        return self.round_execution.create_round_with_decl_drafts(
+            repo_root,
+            node_path=node_path,
+            strategy_id=strategy_id,
+            objective=objective,
+            declarations=declarations,
+        )
+
+    def gate_and_advance_round_stage(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        stage: DeclStageName,
+        target_decl_names: list[str],
+        review: RoundStageReview,
+        retry_count: int = 0,
+        max_retries: int = 2,
+    ) -> ServiceResult[RoundStageGateView]:
+        return self.round_execution.gate_and_advance(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            stage=stage,
+            target_decl_names=target_decl_names,
+            review=review,
+            retry_count=retry_count,
+            max_retries=max_retries,
+        )
+
+    def audit_round_final(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+    ) -> ServiceResult[RoundFinalAuditView]:
+        return self.round_execution.final_audit(repo_root, node_path=node_path, round_id=round_id)
+
+    def round_revision_satisfies_proof_policy(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_revisions: dict[str, DeclRevision],
+        revision: DeclRevision,
+        target_proof_availability: ProofAvailability,
+    ) -> tuple[bool, str | None]:
+        return self.round_execution.round_revision_satisfies_proof_policy(
+            repo_root,
+            node_path=node_path,
+            round_revisions=round_revisions,
+            revision=revision,
+            target_proof_availability=target_proof_availability,
+        )
+
+    def closeout_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        outcome: str,
+    ) -> ServiceResult[RoundCloseoutView]:
+        return self.round_execution.build_round_result(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            outcome=outcome,  # type: ignore[arg-type]
+        )
 
     def ensure_decl_graph(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphStoreView]:
         return self.graph_store.ensure_graph(repo_root, node_path=node_path)
@@ -651,6 +744,9 @@ class DeclGraphService:
             deps=deps,
         )
 
+    def write_statement_nl_typed(self, repo_root: Path, **kwargs) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.write_statement_nl_typed(repo_root, **kwargs)
+
     def set_statement_nl(
         self,
         repo_root: Path,
@@ -744,6 +840,9 @@ class DeclGraphService:
             origin=origin,
             deps=deps,
         )
+
+    def write_proof_nl_typed(self, repo_root: Path, **kwargs) -> ServiceResult[DeclRevision]:
+        return self.stage_mutation.write_proof_nl_typed(repo_root, **kwargs)
 
     def set_proof_nl(
         self,

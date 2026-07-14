@@ -16,11 +16,11 @@ from lean_constellation.services.foundation import (
     IssueSeverity,
     ServiceIssue,
     ServiceResult,
-    WriteMode,
 )
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent
+from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
@@ -197,7 +197,7 @@ class DependencyComponent:
         if not expected_refs.ok or expected_refs.value is None:
             return self.runtime.foundation.fail(expected_refs.issues)
 
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_deps(opened.value.contract.deps)
@@ -229,12 +229,9 @@ class DependencyComponent:
             )
         )
         opened.value.contract.deps = list(current.value)
-        saved = self._save_contract(repo_root, node_path, opened.value.contract)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
-        if not refreshed.ok:
-            return self.runtime.foundation.fail(refreshed.issues)
+        persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
+        if not persisted.ok:
+            return self.runtime.foundation.fail(persisted.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def remove_node_dep(
@@ -248,7 +245,7 @@ class DependencyComponent:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_deps(opened.value.contract.deps)
@@ -268,12 +265,9 @@ class DependencyComponent:
         if not permission.ok:
             return self.runtime.foundation.fail(permission.issues)
         opened.value.contract.deps = [item for item_index, item in enumerate(current.value) if item_index != index]
-        saved = self._save_contract(repo_root, node_path, opened.value.contract)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
-        if not refreshed.ok:
-            return self.runtime.foundation.fail(refreshed.issues)
+        persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
+        if not persisted.ok:
+            return self.runtime.foundation.fail(persisted.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def validate_node_deps(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
@@ -428,17 +422,9 @@ class DependencyComponent:
         existing_keys = {self._decl_ref_key(ref) for ref in existing.expected_decl_refs}
         new_refs = [ref for ref in expected_refs if self._decl_ref_key(ref) not in existing_keys]
         reason_change = bool(reason.strip()) and existing.reason != reason.strip()
-        if actor == NodeDepActor.WORKER and existing.added_by != NodeDepActor.WORKER and (new_refs or reason_change):
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "node_dep_permission_denied",
-                    "Worker cannot modify a node dependency that was added by the coordinator.",
-                    object_ref=node_path,
-                    field="deps",
-                    current=existing.added_by.value,
-                    expected=NodeDepActor.WORKER.value,
-                )
-            )
+        permission = self._check_mutation_permission(node_path, existing.added_by, actor)
+        if not permission.ok and (new_refs or reason_change):
+            return self.runtime.foundation.fail(permission.issues)
         warnings: list[ServiceIssue] = []
         changed = False
         if new_refs:
@@ -462,12 +448,9 @@ class DependencyComponent:
                 return self.runtime.foundation.fail(view.issues)
             return self.runtime.foundation.ok(view.value, warnings=warnings)
         setattr(contract, "deps", list(deps))
-        saved = self._save_contract(repo_root, node_path, contract)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
-        if not refreshed.ok:
-            return self.runtime.foundation.fail(refreshed.issues)
+        persisted = self._save_and_refresh_prelude(repo_root, node_path, contract)
+        if not persisted.ok:
+            return self.runtime.foundation.fail(persisted.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def _resolve_expected_decl_names(
@@ -633,6 +616,17 @@ class DependencyComponent:
             node_projection = lean_projection.node_projection
         return node_projection.refresh_prelude(repo_root, node_path=node_path)
 
+    def _save_and_refresh_prelude(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
+        return persist_contract_with_projection(
+            self.runtime,
+            repo_root=repo_root,
+            node_path=node_path,
+            candidate=contract,
+            projection_kind="prelude",
+            save=self._save_contract,
+            refresh=lambda: self._refresh_prelude(repo_root, node_path=node_path),
+        )
+
     def _has_local_dep_path(self, repo_root: Path, *, start: str, target: str) -> bool:
         graph = self._local_dep_graph(repo_root)
         stack = list(graph.get(start, set()))
@@ -663,14 +657,24 @@ class DependencyComponent:
         return graph
 
     def _check_remove_permission(self, node_path: str, target_actor: NodeDepActor, actor: NodeDepActor) -> ServiceResult[None]:
-        if actor == NodeDepActor.WORKER and target_actor != NodeDepActor.WORKER:
+        return self._check_mutation_permission(node_path, target_actor, actor)
+
+    def _check_mutation_permission(self, node_path: str, target_actor: NodeDepActor, actor: NodeDepActor) -> ServiceResult[None]:
+        allowed = (
+            target_actor == NodeDepActor.WORKER
+            if actor == NodeDepActor.WORKER
+            else target_actor != NodeDepActor.OPERATOR
+            if actor == NodeDepActor.COORDINATOR
+            else target_actor == NodeDepActor.OPERATOR
+        )
+        if not allowed:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "node_dep_permission_denied",
-                    "Worker can only remove node dependencies that were added by a worker.",
+                    "The caller cannot modify a node dependency owned by another authority.",
                     object_ref=node_path,
                     current=target_actor.value,
-                    expected=NodeDepActor.WORKER.value,
+                    expected=actor.value,
                 )
             )
         return self.runtime.foundation.ok(None)
@@ -679,14 +683,10 @@ class DependencyComponent:
         try:
             return self.runtime.foundation.ok(NodeDepActor(actor))
         except ValueError:
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_dep_actor_invalid", "actor must be coordinator or worker.", field="actor"))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("node_dep_actor_invalid", "actor must be coordinator, worker, or operator.", field="actor"))
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
-        if not node.ok or node.value is None:
-            return self.runtime.foundation.fail(node.issues)
-        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
-        return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
+        return self.contract._persist_open_candidate(repo_root, node_path=node_path, candidate=contract)
 
     def _stable_dep_id(self, target: NodeRef) -> str:
         payload = json.dumps(target.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)

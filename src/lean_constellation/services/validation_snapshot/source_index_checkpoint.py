@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.preparation import RepoPreparationInput
 from lean_constellation.flows.repo_lifecycle.source_index_steps import SourceIndexBaselineCheckpointView
-from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.services.foundation import FoundationContext, ServiceResult
 from lean_constellation.services.material import SourceIndex
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
     RepoCheckpointKind,
@@ -24,6 +24,17 @@ class RootInterfaceBaselineCheckpointView(StrictModel):
     preparation_input: RepoPreparationInput
     source_index: SourceIndex | None = None
     source_index_digest: str
+    summary: str
+
+
+class OperatorSourceIndexBaselineArtifact(StrictModel):
+    locator: str
+    repo_root: str
+    baseline_index: SourceIndex | None = None
+    baseline_digest: str
+    resolved_file_scope: list[str]
+    source_manifest_digest: str
+    created_at: str
     summary: str
 
 
@@ -149,6 +160,139 @@ class SourceIndexCheckpointAdapter:
                 )
             )
 
+    def persist_operator_source_index_baseline(
+        self,
+        repo_root: Path,
+        *,
+        resolved_file_scope: list[str],
+        source_manifest_digest: str,
+        expected_baseline_digest: str,
+    ) -> ServiceResult[OperatorSourceIndexBaselineArtifact]:
+        """Persist the complete pre-update baseline used by restart-safe operator calls."""
+
+        repo_root = Path(repo_root).resolve(strict=False)
+        path = self._operator_baseline_path(repo_root)
+        if path.exists():
+            existing = self.load_operator_source_index_baseline(repo_root)
+            if not existing.ok or existing.value is None:
+                return self.runtime.foundation.fail(existing.issues)
+            if (
+                existing.value.baseline_digest != expected_baseline_digest
+                or existing.value.resolved_file_scope != list(resolved_file_scope)
+                or existing.value.source_manifest_digest != source_manifest_digest
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "operator_source_index_baseline_conflict",
+                        "A different operator SourceIndex update baseline is already persisted.",
+                        object_ref=existing.value.locator,
+                    )
+                )
+            return existing
+        current = self.runtime.material.source_index.get_source_index_model(repo_root)
+        if current.ok and current.value is not None:
+            baseline_index: SourceIndex | None = current.value
+        elif any(issue.kind == "source_index_missing" for issue in current.issues):
+            baseline_index = None
+        else:
+            return self.runtime.foundation.fail(current.issues)
+        current_digest = self._digest(baseline_index)
+        if current_digest != expected_baseline_digest:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_index_baseline_digest_mismatch",
+                    "Current SourceIndex does not match the requested operator baseline.",
+                    current=current_digest,
+                    expected=expected_baseline_digest,
+                )
+            )
+        locator = path.relative_to(repo_root).as_posix()
+        artifact = OperatorSourceIndexBaselineArtifact(
+            locator=locator,
+            repo_root=str(repo_root),
+            baseline_index=baseline_index,
+            baseline_digest=current_digest,
+            resolved_file_scope=list(resolved_file_scope),
+            source_manifest_digest=source_manifest_digest,
+            created_at=utc_now_iso(),
+            summary="Persisted complete operator SourceIndex baseline.",
+        )
+        written = self.runtime.foundation.store.write_json_atomic(path, artifact)
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(artifact)
+
+    def load_operator_source_index_baseline(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[OperatorSourceIndexBaselineArtifact]:
+        repo_root = Path(repo_root).resolve(strict=False)
+        path = self._operator_baseline_path(repo_root)
+        loaded = self.runtime.foundation.store.read_json(path, OperatorSourceIndexBaselineArtifact)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "operator_source_index_baseline_missing",
+                    "Operator SourceIndex baseline artifact is missing or invalid.",
+                    object_ref=str(path),
+                    details={"issues": [issue.model_dump(mode="json") for issue in loaded.issues]},
+                )
+            )
+        value = loaded.value
+        expected_locator = path.relative_to(repo_root).as_posix()
+        if value.repo_root != str(repo_root) or value.locator != expected_locator:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "operator_source_index_baseline_identity_invalid",
+                    "Operator SourceIndex baseline does not identify this repository.",
+                    object_ref=str(path),
+                )
+            )
+        if self._digest(value.baseline_index) != value.baseline_digest:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "operator_source_index_baseline_digest_invalid",
+                    "Operator SourceIndex baseline payload does not match its canonical digest.",
+                    object_ref=value.locator,
+                )
+            )
+        return self.runtime.foundation.ok(value)
+
+    def clear_operator_source_index_baseline(
+        self,
+        repo_root: Path,
+        *,
+        expected_locator: str,
+        expected_baseline_digest: str,
+    ) -> ServiceResult[bool]:
+        loaded = self.load_operator_source_index_baseline(repo_root)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        if (
+            loaded.value.locator != expected_locator
+            or loaded.value.baseline_digest != expected_baseline_digest
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "operator_source_index_baseline_identity_mismatch",
+                    "Operator SourceIndex baseline changed before cleanup.",
+                    current=loaded.value.locator,
+                    expected=expected_locator,
+                )
+            )
+        path = self._operator_baseline_path(Path(repo_root).resolve(strict=False))
+        try:
+            path.unlink()
+        except OSError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "operator_source_index_baseline_cleanup_failed",
+                    str(exc),
+                    object_ref=str(path),
+                )
+            )
+        return self.runtime.foundation.ok(True)
+
     def validate_root_interface_baseline_checkpoint(
         self,
         repo_root: Path,
@@ -249,10 +393,23 @@ class SourceIndexCheckpointAdapter:
             )
         return self.runtime.foundation.ok(matched[0])
 
+    def _operator_baseline_path(self, repo_root: Path) -> Path:
+        return (
+            self.runtime.foundation.layout.constellation_root(
+                FoundationContext(repo_root=Path(repo_root))
+            )
+            / "source_index"
+            / "operator_baseline.json"
+        )
+
     def _digest(self, index: SourceIndex | None) -> str:
         if index is None:
             return self.runtime.material.source_index.missing_source_index_digest()
         return self.runtime.material.source_index.canonical_source_index_digest(index)
 
 
-__all__ = ["RootInterfaceBaselineCheckpointView", "SourceIndexCheckpointAdapter"]
+__all__ = [
+    "OperatorSourceIndexBaselineArtifact",
+    "RootInterfaceBaselineCheckpointView",
+    "SourceIndexCheckpointAdapter",
+]

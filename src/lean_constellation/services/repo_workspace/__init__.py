@@ -16,6 +16,7 @@ from lean_constellation.services.repo_workspace.repo_preparation import (
 )
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
 from lean_constellation.services.repo_workspace.service import (
+    NativeRepoCreationView,
     RequirementConsumeView,
     RequirementResumeCandidateView,
     RequirementWaitingView,
@@ -36,6 +37,7 @@ __all__ = [
     "LakeDependencyComponent",
     "LakeDependencyEntry",
     "LakeDependencyView",
+    "NativeRepoCreationView",
     "RequirementConsumeView",
     "RequirementGroupSummaryView",
     "RequirementResumeCandidateView",

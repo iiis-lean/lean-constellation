@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -69,6 +71,13 @@ class SourceCorpusPreparedView(StrictModel):
     summary: str
 
 
+class SourceCorpusImportView(StrictModel):
+    prepared: SourceCorpusPreparedView
+    manifest_digest: str
+    replaced_existing: bool
+    summary: str
+
+
 class SourceCorpusBlockedSubmitView(StrictModel):
     blocked: bool
     reason: str
@@ -129,6 +138,270 @@ class SourceCorpusComponent:
             summary=f"Scanned {len(files)} source files.",
         )
         return self.runtime.foundation.ok(manifest)
+
+    def import_local_source_corpus(
+        self,
+        repo_root: Path,
+        *,
+        source_dir: Path,
+        entry_path: str,
+        overview: str,
+        preparation_summary: str,
+        replace_existing: bool = False,
+        expected_manifest_digest: str | None = None,
+    ) -> ServiceResult[SourceCorpusImportView]:
+        """Gate and atomically promote a trusted local directory into SourceCorpus truth."""
+
+        repo_root = Path(repo_root).resolve(strict=False)
+        requested_source_dir = Path(source_dir).expanduser()
+        if requested_source_dir.is_symlink():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_import_symlink_unsupported",
+                    "Source corpus local-dir import rejects symbolic links.",
+                    object_ref=str(requested_source_dir),
+                )
+            )
+        source_dir = requested_source_dir.resolve(strict=False)
+        if not source_dir.exists() or not source_dir.is_dir():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_import_directory_missing",
+                    f"Source corpus import directory does not exist: {source_dir}",
+                    object_ref=str(source_dir),
+                )
+            )
+        if source_dir.is_symlink() or any(path.is_symlink() for path in source_dir.rglob("*")):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_import_symlink_unsupported",
+                    "Source corpus local-dir import rejects symbolic links.",
+                    object_ref=str(source_dir),
+                )
+            )
+        canonical_relpath = self._source_relpath(repo_root)
+        canonical_root = self.runtime.foundation.layout.source_corpus_root(
+            FoundationContext(repo_root=repo_root),
+            canonical_relpath,
+        )
+        try:
+            source_dir.relative_to(canonical_root)
+        except ValueError:
+            pass
+        else:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_import_source_inside_destination",
+                    "Source corpus import directory cannot be inside the canonical corpus.",
+                    object_ref=str(source_dir),
+                )
+            )
+        try:
+            canonical_root.relative_to(source_dir)
+        except ValueError:
+            pass
+        else:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_import_destination_inside_source",
+                    "Source corpus import directory cannot contain the destination repository.",
+                    object_ref=str(source_dir),
+                )
+            )
+
+        existing = canonical_root.exists()
+        previous_manifest_bytes: bytes | None = None
+        manifest_path = self._manifest_path(repo_root)
+        if manifest_path.exists():
+            try:
+                previous_manifest_bytes = manifest_path.read_bytes()
+            except OSError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "source_corpus_manifest_read_failed",
+                        str(exc),
+                        object_ref=str(manifest_path),
+                    )
+                )
+        if existing:
+            if not replace_existing:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "source_corpus_already_exists",
+                        "Canonical SourceCorpus already exists; replacement must be explicit.",
+                        object_ref=str(canonical_root),
+                    )
+                )
+            if expected_manifest_digest is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "source_corpus_expected_manifest_digest_required",
+                        "Replacing SourceCorpus requires the current canonical manifest digest.",
+                        object_ref=str(canonical_root),
+                    )
+                )
+            current_manifest = self.scan_source_corpus(
+                repo_root,
+                relpath=canonical_relpath,
+            )
+            if not current_manifest.ok or current_manifest.value is None:
+                return self.runtime.foundation.fail(current_manifest.issues)
+            current_digest = self.canonical_manifest_digest(current_manifest.value)
+            if current_digest != expected_manifest_digest:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "source_corpus_manifest_digest_mismatch",
+                        "Canonical SourceCorpus changed before replacement.",
+                        current=current_digest,
+                        expected=expected_manifest_digest,
+                    )
+                )
+        elif expected_manifest_digest is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_corpus_manifest_digest_unexpected",
+                    "A manifest digest cannot be supplied when no canonical SourceCorpus exists.",
+                    expected=self.missing_manifest_digest(),
+                    current=expected_manifest_digest,
+                )
+            )
+
+        staging_parent = (
+            self.runtime.foundation.layout.constellation_root(FoundationContext(repo_root=repo_root))
+            / ".source_corpus_staging"
+        )
+        allocated = self.runtime.foundation.store.allocate_uuid(
+            lambda candidate: (staging_parent / candidate).exists(),
+            prefix="source_import",
+        )
+        if not allocated.ok or allocated.value is None:
+            return self.runtime.foundation.fail(allocated.issues)
+        transaction_root = staging_parent / allocated.value
+        staged_root = transaction_root / "corpus"
+        backup_root = transaction_root / "previous"
+        manifest_recovery_path = transaction_root / "previous_manifest.json"
+        staged_relpath = staged_root.relative_to(repo_root).as_posix()
+        promoted = False
+        backed_up = False
+        preserve_recovery_artifacts = False
+        try:
+            staging_parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source_dir, staged_root, copy_function=shutil.copy2)
+            if previous_manifest_bytes is not None:
+                manifest_recovery_path.write_bytes(previous_manifest_bytes)
+            checked = self.check_source_corpus_prepared(
+                repo_root,
+                entry_path=entry_path,
+                overview=overview,
+                preparation_summary=preparation_summary,
+                relpath=staged_relpath,
+            )
+            if not checked.ok or checked.value is None:
+                return self.runtime.foundation.fail(checked.issues)
+            canonical_root.parent.mkdir(parents=True, exist_ok=True)
+            if existing:
+                os.replace(canonical_root, backup_root)
+                backed_up = True
+            os.replace(staged_root, canonical_root)
+            promoted = True
+            canonical_manifest = self.scan_source_corpus(
+                repo_root,
+                relpath=canonical_relpath,
+                overview=overview.strip(),
+                entry_path=entry_path,
+                created_from_mode="operator_local_dir",
+            )
+            if not canonical_manifest.ok or canonical_manifest.value is None:
+                raise OSError("failed to scan promoted SourceCorpus")
+            written = self.runtime.foundation.store.write_json_atomic(
+                manifest_path,
+                canonical_manifest.value,
+            )
+            if not written.ok:
+                raise OSError("; ".join(issue.message for issue in written.issues))
+            prepared = SourceCorpusPreparedView(
+                prepared=True,
+                manifest=canonical_manifest.value,
+                preparation_summary=preparation_summary.strip(),
+                summary="Source corpus prepared and atomically promoted.",
+            )
+            return self.runtime.foundation.ok(
+                SourceCorpusImportView(
+                    prepared=prepared,
+                    manifest_digest=self.canonical_manifest_digest(canonical_manifest.value),
+                    replaced_existing=existing,
+                    summary="Imported local directory as canonical SourceCorpus.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - rollback and normalize transaction failures.
+            rollback_issues = []
+            if promoted:
+                try:
+                    shutil.rmtree(canonical_root)
+                except OSError as rollback_exc:
+                    rollback_issues.append(
+                        self.runtime.foundation.issue(
+                            "source_corpus_import_rollback_canonical_remove_failed",
+                            f"Failed to remove the promoted SourceCorpus during rollback: {rollback_exc}",
+                            object_ref=str(canonical_root),
+                        )
+                    )
+            if backed_up and backup_root.exists():
+                if canonical_root.exists():
+                    rollback_issues.append(
+                        self.runtime.foundation.issue(
+                            "source_corpus_import_rollback_destination_busy",
+                            "The promoted SourceCorpus still occupies the canonical destination.",
+                            object_ref=str(canonical_root),
+                        )
+                    )
+                else:
+                    try:
+                        os.replace(backup_root, canonical_root)
+                    except OSError as rollback_exc:
+                        rollback_issues.append(
+                            self.runtime.foundation.issue(
+                                "source_corpus_import_rollback_backup_restore_failed",
+                                f"Failed to restore the previous SourceCorpus backup: {rollback_exc}",
+                                object_ref=str(backup_root),
+                                suggested_action=(
+                                    "Recover the previous corpus from the preserved transaction directory."
+                                ),
+                            )
+                        )
+            try:
+                if previous_manifest_bytes is None:
+                    manifest_path.unlink(missing_ok=True)
+                else:
+                    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(manifest_recovery_path, manifest_path)
+            except OSError as rollback_exc:
+                rollback_issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_import_rollback_manifest_restore_failed",
+                        f"Failed to restore the previous SourceCorpus manifest: {rollback_exc}",
+                        object_ref=str(manifest_recovery_path),
+                        suggested_action=(
+                            "Recover the manifest from the preserved transaction directory."
+                        ),
+                    )
+                )
+            primary_issue = self.runtime.foundation.issue(
+                "source_corpus_import_failed",
+                f"Failed to import SourceCorpus atomically: {exc}",
+                object_ref=str(source_dir),
+            )
+            if rollback_issues:
+                preserve_recovery_artifacts = True
+                return self.runtime.foundation.fail([primary_issue, *rollback_issues])
+            return self.runtime.foundation.fail(primary_issue)
+        finally:
+            if not preserve_recovery_artifacts:
+                shutil.rmtree(transaction_root, ignore_errors=True)
+                try:
+                    staging_parent.rmdir()
+                except OSError:
+                    pass
 
     def acquire_source_material(
         self,
@@ -462,6 +735,33 @@ class SourceCorpusComponent:
         if not written.ok:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(scanned.value)
+
+    @staticmethod
+    def canonical_manifest_digest(manifest: SourceCorpusManifestView) -> str:
+        payload = {
+            "relpath": manifest.relpath,
+            "files": [
+                {
+                    "path": item.path,
+                    "size_bytes": item.size_bytes,
+                    "readable_text": item.readable_text,
+                    "line_count": item.line_count,
+                    "sha256": item.sha256,
+                }
+                for item in sorted(manifest.files, key=lambda value: value.path)
+            ],
+        }
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def missing_manifest_digest() -> str:
+        return hashlib.sha256(b"lean-constellation:source-corpus:missing").hexdigest()
 
     def validate_source_ref(
         self,

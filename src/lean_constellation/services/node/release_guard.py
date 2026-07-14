@@ -366,7 +366,7 @@ class NodeReleaseGuard:
             blockers.append("open_decl_graph_work")
             inbound.extend(f"current:{item}" for item in open_decl_truth)
         return self.runtime.foundation.ok(
-            DeleteImpactView(
+            DeleteImpactView.build(
                 path=path,
                 deletable=not blockers,
                 affected_children=children,

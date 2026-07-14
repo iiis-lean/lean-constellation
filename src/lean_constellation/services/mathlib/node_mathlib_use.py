@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import (
-    FoundationContext,
     GateReport,
     IssueSeverity,
     ServiceIssue,
     ServiceResult,
-    WriteMode,
 )
 from lean_constellation.services.mathlib.mathlib_index import MathlibDeclEntryView, MathlibIndexComponent
 from lean_constellation.services.node import ContractComponent, NodeContractView
 from lean_constellation.services.node.contract_fields import MathlibUseActor, NodeMathlibDeclUse, NodeMathlibModuleUse
+from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection import NodeProjectionComponent
@@ -77,7 +76,7 @@ class NodeMathlibUseComponent:
         if not index_warnings.ok or index_warnings.value is None:
             return self.runtime.foundation.fail(index_warnings.issues)
 
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_module_uses(opened.value.contract.mathlib_modules)
@@ -111,12 +110,9 @@ class NodeMathlibUseComponent:
             )
         )
         opened.value.contract.mathlib_modules = list(current.value)
-        saved = self._save_contract(repo_root, node_path, opened.value.contract)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
-        if not refreshed.ok:
-            return self.runtime.foundation.fail(refreshed.issues)
+        persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
+        if not persisted.ok:
+            return self.runtime.foundation.fail(persisted.issues)
         view = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not view.ok:
             return self.runtime.foundation.fail(view.issues)
@@ -273,7 +269,7 @@ class NodeMathlibUseComponent:
         normalized_module = self._normalize_dotted_name(module, field="module", issue_prefix="mathlib_module")
         if not normalized_module.ok or normalized_module.value is None:
             return self.runtime.foundation.fail(normalized_module.issues)
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_module_uses(opened.value.contract.mathlib_modules)
@@ -294,12 +290,9 @@ class NodeMathlibUseComponent:
             return self.runtime.foundation.fail(permission.issues)
 
         opened.value.contract.mathlib_modules = [item for item in current.value if item.module != normalized_module.value]
-        saved = self._save_contract(repo_root, node_path, opened.value.contract)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        refreshed = self._refresh_prelude(repo_root, node_path=node_path)
-        if not refreshed.ok:
-            return self.runtime.foundation.fail(refreshed.issues)
+        persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
+        if not persisted.ok:
+            return self.runtime.foundation.fail(persisted.issues)
         return self.contract.get_current_contract(repo_root, node_path=node_path)
 
     def add_mathlib_decl_use(
@@ -321,7 +314,7 @@ class NodeMathlibUseComponent:
         if not decl_entry.ok:
             return self.runtime.foundation.fail(decl_entry.issues)
 
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_decl_uses(opened.value.contract.mathlib_decls)
@@ -377,7 +370,7 @@ class NodeMathlibUseComponent:
         normalized_decl = self._normalize_dotted_name(decl_name, field="decl_name", issue_prefix="mathlib_decl")
         if not normalized_decl.ok or normalized_decl.value is None:
             return self.runtime.foundation.fail(normalized_decl.issues)
-        opened = self.contract.ensure_open_contract(repo_root, node_path=node_path)
+        opened = self.contract.get_edit_contract(repo_root, node_path=node_path)
         if not opened.ok or opened.value is None:
             return self.runtime.foundation.fail(opened.issues)
         current = self._normalize_decl_uses(opened.value.contract.mathlib_decls)
@@ -613,15 +606,22 @@ class NodeMathlibUseComponent:
         target_actor: MathlibUseActor,
         actor: MathlibUseActor,
     ) -> ServiceResult[None]:
-        if actor == MathlibUseActor.WORKER and target_actor != MathlibUseActor.WORKER:
+        allowed = (
+            target_actor == MathlibUseActor.WORKER
+            if actor == MathlibUseActor.WORKER
+            else target_actor != MathlibUseActor.OPERATOR
+            if actor == MathlibUseActor.COORDINATOR
+            else target_actor == MathlibUseActor.OPERATOR
+        )
+        if not allowed:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "mathlib_use_permission_denied",
-                    "Worker can only remove Mathlib uses that were added by a worker.",
+                    "The caller cannot remove a Mathlib use owned by another authority.",
                     object_ref=node_path,
                     field=field_name,
                     current=target_actor.value,
-                    expected=MathlibUseActor.WORKER.value,
+                    expected=actor.value,
                 )
             )
         return self.runtime.foundation.ok(None)
@@ -667,7 +667,7 @@ class NodeMathlibUseComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "mathlib_use_actor_invalid",
-                    "actor must be coordinator or worker.",
+                    "actor must be coordinator, worker, or operator.",
                     field="actor",
                     current=str(actor),
                 )
@@ -689,11 +689,18 @@ class NodeMathlibUseComponent:
         return self.runtime.foundation.ok(normalized)
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
-        node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)
-        if not node.ok or node.value is None:
-            return self.runtime.foundation.fail(node.issues)
-        path = self.runtime.node.node_tree.node_store.contract_path(repo_root, node_id=node.value.node_id, version=getattr(contract, "version"))
-        return self.runtime.foundation.store.write_json_atomic(path, contract, mode=WriteMode.UPDATE_EXISTING)
+        return self.contract._persist_open_candidate(repo_root, node_path=node_path, candidate=contract)
+
+    def _save_and_refresh_prelude(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
+        return persist_contract_with_projection(
+            self.runtime,
+            repo_root=repo_root,
+            node_path=node_path,
+            candidate=contract,
+            projection_kind="prelude",
+            save=self._save_contract,
+            refresh=lambda: self._refresh_prelude(repo_root, node_path=node_path),
+        )
 
     def _refresh_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[object]:
         node_projection = self.node_projection

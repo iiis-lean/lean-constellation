@@ -21,6 +21,12 @@ from lean_constellation.services.lean_projection.repair import (
     RepairComponent,
     RepairDeclProvider,
 )
+from lean_constellation.services.lean_projection.safe_apply import (
+    FormalApplyStage,
+    SafeFormalApplyComponent,
+    SafeFormalApplyView,
+)
+from lean_constellation.services.decl_graph.models import DeclState
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -42,6 +48,7 @@ class LeanProjectionService:
         node_projection: NodeProjectionComponent | None = None,
         repair: RepairComponent | None = None,
         repair_decl_provider: RepairDeclProvider | None = None,
+        safe_apply: SafeFormalApplyComponent | None = None,
     ) -> None:
         self.runtime = runtime
         self.adapter_facade = adapter_facade or AdapterFacadeComponent(
@@ -64,6 +71,51 @@ class LeanProjectionService:
             decl_file=self.decl_file,
             decl_provider=repair_decl_provider,
         )
+        self.safe_apply = safe_apply or SafeFormalApplyComponent(
+            runtime,
+            decl_file=self.decl_file,
+            repair=self.repair,
+        )
+
+    def current_revision_digest(self, repo_root: Path, *, node_path: str, decl_name: str) -> ServiceResult[str]:
+        return self.safe_apply.current_revision_digest(repo_root, node_path=node_path, decl_name=decl_name)
+
+    def apply_formal_code(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        stage: FormalApplyStage,
+        lean_code: str,
+        expected_revision: int,
+        expected_state: DeclState | str,
+        expected_revision_digest: str,
+    ) -> ServiceResult[SafeFormalApplyView]:
+        return self.safe_apply.apply(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            stage=stage,
+            lean_code=lean_code,
+            expected_revision=expected_revision,
+            expected_state=expected_state,
+            expected_revision_digest=expected_revision_digest,
+        )
+
+    def apply_statement_formal_code(
+        self,
+        repo_root: Path,
+        **kwargs,
+    ) -> ServiceResult[SafeFormalApplyView]:
+        return self.apply_formal_code(repo_root, stage="statement", **kwargs)
+
+    def apply_proof_formal_code(
+        self,
+        repo_root: Path,
+        **kwargs,
+    ) -> ServiceResult[SafeFormalApplyView]:
+        return self.apply_formal_code(repo_root, stage="proof", **kwargs)
 
     def prepare_statement_formal_stage_file(
         self,

@@ -17,6 +17,7 @@ from lean_constellation.services.foundation import FoundationContext, GateReport
 from lean_constellation.services.node.contract import ContractComponent, NodeContractView
 from lean_constellation.services.node.export import DeclPublicView, ExportComponent
 from lean_constellation.services.node.node_tree import NodeContract, NodeKind
+from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
@@ -222,10 +223,7 @@ class InterfaceComponent:
         interface.bound_decl = resolved.value
         warnings = list(resolved.issues)
         if changed:
-            saved = self._save_contract(repo_root, node_path, opened.value.contract)
-            if not saved.ok:
-                return self.runtime.foundation.fail(saved.issues)
-            refreshed = self._refresh_interfaces(repo_root, node_path)
+            refreshed = self._save_and_refresh_interfaces(repo_root, node_path, opened.value.contract)
             if not refreshed.ok:
                 return self.runtime.foundation.fail(refreshed.issues)
             warnings.extend(refreshed.issues)
@@ -257,10 +255,7 @@ class InterfaceComponent:
         interface.bound_decl = None
         warnings = []
         if changed:
-            saved = self._save_contract(repo_root, node_path, opened.value.contract)
-            if not saved.ok:
-                return self.runtime.foundation.fail(saved.issues)
-            refreshed = self._refresh_interfaces(repo_root, node_path)
+            refreshed = self._save_and_refresh_interfaces(repo_root, node_path, opened.value.contract)
             if not refreshed.ok:
                 return self.runtime.foundation.fail(refreshed.issues)
             warnings.extend(refreshed.issues)
@@ -791,6 +786,17 @@ class InterfaceComponent:
                 return self.runtime.foundation.ok(None)
             projection = lean_projection.node_projection
         return projection.refresh_interfaces(repo_root, node_path=node_path)
+
+    def _save_and_refresh_interfaces(self, repo_root: Path, node_path: str, contract: NodeContract) -> ServiceResult[object]:
+        return persist_contract_with_projection(
+            self.runtime,
+            repo_root=repo_root,
+            node_path=node_path,
+            candidate=contract,
+            projection_kind="interfaces",
+            save=self._save_contract,
+            refresh=lambda: self._refresh_interfaces(repo_root, node_path),
+        )
 
     def _protected_names(self, repo_root: Path, node_path: str) -> ServiceResult[set[str]]:
         if node_path != "Main":

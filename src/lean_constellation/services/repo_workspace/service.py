@@ -15,6 +15,7 @@ from lean_constellation.domain.preparation import (
     ProviderReadyView,
     RepoDependencyRequirementStatus,
     ProviderRepoPreparationView,
+    RepoPreparationInputView,
     RepoRequirementRef,
     RepoPreparationInput,
     RequirementResumeCandidateView,
@@ -26,6 +27,7 @@ from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoFormat,
     RepoWorkMode,
+    RepoConfigView,
     WorkspaceConfig,
     WorkspaceCoordinatorView,
     proof_availability_satisfies,
@@ -42,7 +44,11 @@ from lean_constellation.services.repo_workspace.repo_preparation import Preparat
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
 from lean_constellation.services.repo_workspace.repo_release import RepoReleaseComponent
 from lean_constellation.services.repo_workspace.repo_run import RepoRunComponent
-from lean_constellation.services.repo_workspace.repo_lifecycle_lock import RepoLifecycleLockComponent
+from lean_constellation.services.repo_workspace.repo_lifecycle_lock import (
+    RepoLifecycleLockBusyError,
+    RepoLifecycleLockComponent,
+    WorkspaceRepoCreationLockComponent,
+)
 from lean_constellation.services.repo_workspace.provider_availability import ProviderAvailabilityComponent
 from lean_constellation.services.repo_workspace.workspace_catalog import WorkspaceCatalogComponent
 
@@ -57,6 +63,16 @@ class RequirementConsumeView(StrictModel):
     handled: bool
     summary: str
     issues: list[str] = Field(default_factory=list)
+
+
+class NativeRepoCreationView(StrictModel):
+    repo_root: str
+    repo_key: str
+    project_name: str
+    config: RepoConfigView
+    preparation_input: RepoPreparationInputView
+    skeleton: RepoSkeletonView
+    summary: str
 
 
 class RepoWorkspaceService:
@@ -95,6 +111,7 @@ class RepoWorkspaceService:
         )
         self.run = RepoRunComponent(runtime, self.metadata, self.preparation, self.release)
         self.lifecycle_lock = RepoLifecycleLockComponent(runtime)
+        self.workspace_creation_lock = WorkspaceRepoCreationLockComponent(runtime)
         self.workspace_catalog = workspace_catalog or WorkspaceCatalogComponent(
             runtime,
             self.metadata,
@@ -216,6 +233,120 @@ class RepoWorkspaceService:
             project_name=project_name,
             input=input,
         )
+
+    def create_native_repo(
+        self,
+        workspace_root: Path,
+        *,
+        repo_key: str,
+        project_name: str,
+        preparation_input: RepoPreparationInput,
+        target_proof_availability: ProofAvailability | str,
+        work_mode: RepoWorkMode | str,
+        default_requirement_proof_availability: ProofAvailability | str,
+        native_config: NativeLakeProjectConfig,
+    ) -> ServiceResult[NativeRepoCreationView]:
+        """Create one provider-neutral native repo as a rollback-safe Service transaction."""
+
+        workspace_root = Path(workspace_root).resolve(strict=False)
+        try:
+            repo_key = self.runtime.foundation.layout.ensure_safe_key(repo_key)
+            target = ProofAvailability(target_proof_availability)
+            mode = RepoWorkMode(work_mode)
+            default_requirement = ProofAvailability(default_requirement_proof_availability)
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("native_repo_creation_input_invalid", str(exc))
+            )
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "workspace_not_found",
+                    f"Workspace root not found: {workspace_root}",
+                    object_ref=str(workspace_root),
+                )
+            )
+        validation = self.preparation.validate_preparation_input(preparation_input)
+        if not validation.ok:
+            return self.runtime.foundation.fail(validation.issues)
+        if preparation_input.source_corpus_mode == SourceCorpusMode.NONE:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "invalid_source_corpus_mode",
+                    "Native repo creation requires source_corpus_mode != none.",
+                )
+            )
+        repo_root = workspace_root / repo_key
+        try:
+            with self.workspace_creation_lock.locked(workspace_root):
+                if repo_root.exists():
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "target_repo_already_exists",
+                            f"Repo already exists: {repo_key}",
+                            object_ref=str(repo_root),
+                        )
+                    )
+                shell = self.preparation.create_provider_repo_shell(
+                    workspace_root,
+                    target_repo=repo_key,
+                    project_name=project_name,
+                )
+                if not shell.ok:
+                    return self.runtime.foundation.fail(shell.issues)
+                configured = self.metadata.update_repo_config(
+                    repo_root,
+                    target_proof_availability=target,
+                    work_mode=mode,
+                    default_requirement_proof_availability=default_requirement,
+                )
+                if not configured.ok or configured.value is None:
+                    self.preparation.rollback_created_repo(repo_root)
+                    return self.runtime.foundation.fail(configured.issues)
+                prepared = self.preparation.write_preparation_input(
+                    repo_root,
+                    input=preparation_input,
+                )
+                if not prepared.ok or prepared.value is None:
+                    self.preparation.rollback_created_repo(repo_root)
+                    return self.runtime.foundation.fail(prepared.issues)
+                skeleton = self.lake_dependency.initialize_native_repo_skeleton(
+                    repo_root,
+                    project_name=project_name,
+                    config=native_config,
+                )
+                if not skeleton.ok or skeleton.value is None:
+                    self.preparation.rollback_created_repo(repo_root)
+                    return self.runtime.foundation.fail(skeleton.issues)
+                return self.runtime.foundation.ok(
+                    NativeRepoCreationView(
+                        repo_root=str(repo_root),
+                        repo_key=repo_key,
+                        project_name=skeleton.value.project_name,
+                        config=configured.value,
+                        preparation_input=prepared.value,
+                        skeleton=skeleton.value,
+                        summary=f"Created native repo {repo_key}.",
+                    )
+                )
+        except RepoLifecycleLockBusyError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "workspace_repo_creation_lock_busy",
+                    str(exc),
+                    object_ref=str(workspace_root),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - rollback and normalize transaction failures.
+            if repo_root.exists():
+                self.preparation.rollback_created_repo(repo_root)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "native_repo_creation_failed",
+                    f"Native repo creation failed and was rolled back: {exc}",
+                    object_ref=str(repo_root),
+                )
+            )
 
     def write_preparation_input(self, repo_root: Path, *, input: RepoPreparationInput):
         return self.preparation.write_preparation_input(repo_root, input=input)

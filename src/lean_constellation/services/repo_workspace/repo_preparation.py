@@ -89,7 +89,7 @@ class RepoPreparationComponent:
         *,
         input: RepoPreparationInput,
     ) -> ServiceResult[RepoPreparationInputView]:
-        validation = self._validate_input(input)
+        validation = self.validate_preparation_input(input)
         if not validation.ok:
             return self.runtime.foundation.fail(validation.issues)
         path = self.runtime.foundation.layout.preparation_input_path(FoundationContext(repo_root=Path(repo_root)))
@@ -100,6 +100,12 @@ class RepoPreparationComponent:
         return self.runtime.foundation.ok(
             RepoPreparationInputView(repo_root=str(Path(repo_root)), input=input, summary="Wrote preparation input.")
         )
+
+    def validate_preparation_input(
+        self,
+        input: RepoPreparationInput,
+    ) -> ServiceResult[None]:
+        return self._validate_input(input)
 
     def get_preparation_input(self, repo_root: Path) -> ServiceResult[RepoPreparationInputView]:
         path = self.runtime.foundation.layout.preparation_input_path(FoundationContext(repo_root=Path(repo_root)))
@@ -365,6 +371,7 @@ class RepoPreparationComponent:
         repo_root.mkdir(parents=True)
         ensure = self.metadata.ensure_repo_model(repo_root)
         if not ensure.ok:
+            self.rollback_created_repo(repo_root)
             return self.runtime.foundation.fail(ensure.issues)
         return self.runtime.foundation.ok(
             RepoShellView(
@@ -422,7 +429,7 @@ class RepoPreparationComponent:
                 required_proof_availability = self.workspace_config.default_requirement_proof_availability
                 provider_work_mode = self._provider_work_mode(required_proof_availability)
             else:
-                self._rollback_created_repo(created_repo_root)
+                self.rollback_created_repo(created_repo_root)
                 return self.runtime.foundation.fail(config.issues)
         else:
             required_proof_availability = config.value.required_proof_availability
@@ -433,12 +440,12 @@ class RepoPreparationComponent:
             work_mode=provider_work_mode,
         )
         if not configured.ok or configured.value is None:
-            self._rollback_created_repo(created_repo_root)
+            self.rollback_created_repo(created_repo_root)
             return self.runtime.foundation.fail(configured.issues)
 
         input_view = self.write_preparation_input(created_repo_root, input=preparation_input)
         if not input_view.ok or input_view.value is None:
-            self._rollback_created_repo(created_repo_root)
+            self.rollback_created_repo(created_repo_root)
             return self.runtime.foundation.fail(input_view.issues)
 
         return self.runtime.foundation.ok(
@@ -530,6 +537,7 @@ class RepoPreparationComponent:
         repo_root.mkdir(parents=True)
         ensure = self.metadata.ensure_repo_model(repo_root)
         if not ensure.ok:
+            self.rollback_created_repo(repo_root)
             return self.runtime.foundation.fail(ensure.issues)
         configured = self.metadata.update_repo_config(
             repo_root,
@@ -538,10 +546,12 @@ class RepoPreparationComponent:
             default_requirement_proof_availability=self.workspace_config.default_requirement_proof_availability,
         )
         if not configured.ok:
+            self.rollback_created_repo(repo_root)
             return self.runtime.foundation.fail(configured.issues)
         if input is not None:
             written = self.write_preparation_input(repo_root, input=input)
             if not written.ok:
+                self.rollback_created_repo(repo_root)
                 return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(
             RepoShellView(
@@ -887,7 +897,7 @@ class RepoPreparationComponent:
         return self.runtime.foundation.ok(expected)
 
     @staticmethod
-    def _rollback_created_repo(repo_root: Path) -> None:
+    def rollback_created_repo(repo_root: Path) -> None:
         shutil.rmtree(repo_root, ignore_errors=True)
 
     @staticmethod

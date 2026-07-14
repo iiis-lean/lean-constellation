@@ -58,6 +58,30 @@ class StageMutationComponent:
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 
+    def write_statement_nl_typed(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        nl: str,
+        origin: list[DeclOriginRef],
+        deps: list[DeclDep],
+    ) -> ServiceResult[DeclRevision]:
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        if not nl.strip():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("statement_nl_required", "Statement NL text is required.", field="nl"))
+        revision.value.statement.nl = revision.value.statement.nl.model_copy(update={"text": nl.strip(), "origin": origin}) if revision.value.statement.nl is not None else None
+        if revision.value.statement.nl is None:
+            revision.value.statement_nl = nl.strip()
+            revision.value.statement.nl.origin = origin
+        revision.value.statement.deps = deps
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
     def set_statement_nl(
         self,
         repo_root: Path,
@@ -266,6 +290,35 @@ class StageMutationComponent:
         revision.value.proof_nl = nl.strip()
         revision.value.proof_origin = self._normalize_origin(origin)
         revision.value.proof_deps = self._normalize_deps(deps)
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+
+    def write_proof_nl_typed(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        nl: str,
+        origin: list[DeclOriginRef],
+        deps: list[DeclDep],
+    ) -> ServiceResult[DeclRevision]:
+        theorem_like = self._require_theorem_like(repo_root, node_path=node_path, decl_name=decl_name)
+        if not theorem_like.ok:
+            return self.runtime.foundation.fail(theorem_like.issues)
+        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        if not nl.strip():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("proof_nl_required", "Proof NL text is required.", field="nl"))
+        if not revision.value.statement_lean_code:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("statement_formal_missing", "Statement formal code must be written before proof planning.", object_ref=decl_name))
+        revision.value.proof_nl = nl.strip()
+        proof = revision.value._ensure_proof()
+        assert proof.nl is not None
+        proof.nl.origin = origin
+        proof.deps = deps
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
 

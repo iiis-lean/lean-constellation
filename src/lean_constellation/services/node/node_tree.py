@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -116,12 +118,38 @@ class NodeTreeView(StrictModel):
 
 class DeleteImpactView(StrictModel):
     path: str
+    impact_identity: str
     deletable: bool
     affected_children: list[str] = Field(default_factory=list)
     inbound_refs: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
     public_decl_count: int = 0
     summary: str
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        path: str,
+        deletable: bool,
+        affected_children: list[str],
+        inbound_refs: list[str],
+        blocking_reasons: list[str],
+        public_decl_count: int,
+        summary: str,
+    ) -> "DeleteImpactView":
+        payload = {
+            "path": path,
+            "deletable": deletable,
+            "affected_children": sorted(affected_children),
+            "inbound_refs": sorted(inbound_refs),
+            "blocking_reasons": sorted(blocking_reasons),
+            "public_decl_count": public_decl_count,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return cls(impact_identity=f"node_delete_{digest}", summary=summary, **payload)
 
 
 class RunnableContentNodeView(StrictModel):

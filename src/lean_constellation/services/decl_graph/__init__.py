@@ -53,6 +53,16 @@ from lean_constellation.services.decl_graph.ref_compatibility import (
 )
 from lean_constellation.services.decl_graph.review_gate import ReviewGateComponent
 from lean_constellation.services.decl_graph.service import DeclGraphService
+from lean_constellation.services.decl_graph.round_execution import (
+    DeclRoundExecutionComponent,
+    DeclStageName,
+    RoundCloseoutView,
+    RoundFinalAuditView,
+    RoundStageGateView,
+    RoundStageReview,
+    DeclDraftSpec,
+    RoundDraftBatchView,
+)
 from lean_constellation.services.decl_graph.stage_mutation import StageMutationComponent
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
 
@@ -71,6 +81,9 @@ __all__ = [
     "DeclGraphIndex",
     "DeclGraphRoundView",
     "DeclGraphService",
+    "DeclRoundExecutionComponent",
+    "DeclDraftSpec",
+    "DeclStageName",
     "DeclGraphStoreView",
     "DeclGraphStrategyView",
     "DeclLifecycle",
@@ -103,6 +116,11 @@ __all__ = [
     "DeclGraphViewMapper",
     "GraphStoreComponent",
     "ReviewGateComponent",
+    "RoundCloseoutView",
+    "RoundDraftBatchView",
+    "RoundFinalAuditView",
+    "RoundStageGateView",
+    "RoundStageReview",
     "StageMutationComponent",
     "StageReviewResultView",
     "StrategyRoundComponent",

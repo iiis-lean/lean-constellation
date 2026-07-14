@@ -12,21 +12,16 @@ from agent_runtime_kit.flow.standard_steps.agent_step import AgentStepState
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
     DeclReviewMarkRecord,
     DeclRevision,
-    DeclRoundResultKind,
     DeclRoundStatus,
     DeclState,
     DeclStrategyStatus,
 )
-from lean_constellation.services.decl_graph.proof_nl_validation import proof_nl_validation_message, validate_proof_deps
-from lean_constellation.services.decl_graph.statement_nl_validation import statement_nl_validation_message
-from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.services.decl_graph.round_execution import RoundStageReview
 
 
 DeclStageName = Literal["statement_nl", "statement_formal", "proof_nl", "proof_formal"]
@@ -516,97 +511,50 @@ class StageGateAndAuditStep(BaseStep):
         reviewer_result = getattr(flow.state, "latest_reviewer_result", None)
         if not isinstance(reviewer_result, DeclStageReviewerStepResult):
             return ctx.complete_step(_stage_gate_failed(state.stage, "Stage gate requires the latest reviewer result."))
-        if reviewer_result.outcome == "incomplete":
-            return ctx.complete_step(_stage_gate_failed(state.stage, reviewer_result.incomplete_reason or "Reviewer did not submit a result."))
-        context_check = _reviewer_result_context_for_stage(reviewer_result, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
-        if context_check is not None:
-            return ctx.complete_step(context_check)
-        if reviewer_result.outcome == "rejected":
-            rejected_decl_names = sorted(set(reviewer_result.failed_decl_names) | set(reviewer_result.missing_decl_names))
-            if not rejected_decl_names:
-                rejected_decl_names = list(state.target_decl_names)
-            retry_count = state.retry_count + 1
-            retry_remaining = max(state.max_retries - retry_count, 0)
-            if state.retry_count < state.max_retries:
-                return ctx.complete_step(
-                    StageGateAndAuditStepResult(
-                        outcome="retry_worker",
-                        stage=state.stage,
-                        rejected_decl_names=rejected_decl_names,
-                        retry_count=retry_count,
-                        retry_remaining=retry_remaining,
-                        feedback_summary=reviewer_result.summary,
-                        summary=f"{state.stage} review rejected; retry {retry_count} is available.",
-                    )
-                )
-            return ctx.complete_step(
-                StageGateAndAuditStepResult(
-                    outcome="failed",
-                    stage=state.stage,
-                    rejected_decl_names=rejected_decl_names,
-                    retry_count=retry_count,
-                    retry_remaining=0,
-                    feedback_summary=reviewer_result.summary,
-                    error=RoundTerminalReason(
-                        code="review_retry_exhausted",
-                        message=reviewer_result.summary or f"{state.stage} review retry budget exhausted.",
-                        stage=state.stage,
-                        affected_decl_names=rejected_decl_names,
-                        suggested_plan_action="Review stage feedback and open a new round if this execution route is still viable.",
-                    ),
-                    summary=f"{state.stage} review retry budget exhausted.",
-                )
-            )
-
-        consistency = _statement_nl_consistency_for_stage(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
-        if consistency is not None:
-            return ctx.complete_step(consistency)
-        consistency = _proof_nl_consistency_for_stage(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
-        if consistency is not None:
-            return ctx.complete_step(consistency)
-        consistency = _formal_consistency_for_stage(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage, state.target_decl_names)
-        if consistency is not None:
-            return ctx.complete_step(consistency)
-        audit = _validation_snapshot(ctx).run_round_local_audit(repo_root, node_path=input_model.node_path, round_id=input_model.round_id, stage=state.stage)
-        if not audit.ok or audit.value is None:
-            return ctx.complete_step(_stage_gate_failed(state.stage, _first_issue_message(audit.issues, "Round-local audit failed."), state.target_decl_names))
-        if not audit.value.passed:
-            return ctx.complete_step(
-                StageGateAndAuditStepResult(
-                    outcome="blocked",
-                    stage=state.stage,
-                    rejected_decl_names=list(state.target_decl_names),
-                    retry_count=state.retry_count,
-                    retry_remaining=max(state.max_retries - state.retry_count, 0),
-                    audit_summary=audit.value.summary,
-                    error=RoundTerminalReason(
-                        code="round_local_audit_failed",
-                        message=audit.value.summary,
-                        stage=state.stage,
-                        affected_decl_names=list(state.target_decl_names),
-                        suggested_plan_action="Inspect round-local audit findings and split or repair the round.",
-                    ),
-                    summary=audit.value.summary,
-                )
-            )
-        advanced = _decl_graph(ctx).advance_stage_state(
+        gated = _decl_graph(ctx).gate_and_advance_round_stage(
             repo_root,
             node_path=input_model.node_path,
             round_id=input_model.round_id,
             stage=state.stage,
-            decl_names=list(state.target_decl_names),
+            target_decl_names=list(state.target_decl_names),
+            review=RoundStageReview(
+                outcome=reviewer_result.outcome,
+                round_id=reviewer_result.round_id,
+                node_path=reviewer_result.node_path,
+                stage=reviewer_result.stage,
+                reviewed_decl_names=list(reviewer_result.reviewed_decl_names),
+                failed_decl_names=list(reviewer_result.failed_decl_names),
+                missing_decl_names=list(reviewer_result.missing_decl_names),
+                summary=reviewer_result.summary,
+                incomplete_reason=reviewer_result.incomplete_reason,
+            ),
+            retry_count=state.retry_count,
+            max_retries=state.max_retries,
         )
-        if not advanced.ok or advanced.value is None:
-            return ctx.complete_step(_stage_gate_failed(state.stage, _first_issue_message(advanced.issues, "Stage state advance failed."), state.target_decl_names))
+        if not gated.ok or gated.value is None:
+            return ctx.complete_step(_stage_gate_failed(state.stage, _first_issue_message(gated.issues, "Stage gate failed."), state.target_decl_names))
+        view = gated.value
+        error = None
+        if view.issue_message is not None:
+            code = view.issue_code or "stage_gate_failed"
+            error = RoundTerminalReason(
+                code=code,  # type: ignore[arg-type]
+                message=view.issue_message,
+                stage=state.stage,
+                affected_decl_names=list(view.affected_decl_names),
+            )
         return ctx.complete_step(
             StageGateAndAuditStepResult(
-                outcome="stage_passed",
+                outcome=view.outcome,
                 stage=state.stage,
-                advanced_decl_names=list(advanced.value),
-                retry_count=state.retry_count,
-                retry_remaining=max(state.max_retries - state.retry_count, 0),
-                audit_summary=audit.value.summary,
-                summary=f"{state.stage} passed for {len(state.target_decl_names)} declarations.",
+                advanced_decl_names=list(view.advanced_decl_names),
+                rejected_decl_names=list(view.rejected_decl_names),
+                retry_count=view.retry_count,
+                retry_remaining=view.retry_remaining,
+                audit_summary=view.audit_summary,
+                feedback_summary=view.feedback_summary,
+                error=error,
+                summary=view.summary,
             )
         )
 
@@ -625,80 +573,33 @@ class RoundFinalAuditStep(BaseStep):
         repo_root = _repo_root(input_model)
         if repo_root is None:
             return ctx.complete_step(_final_audit_failed("DeclGraphRoundFlow requires repo_path in Flow input."))
-        revisions = _round_revisions(ctx, repo_root, input_model.node_path, input_model.round_id)
-        if not revisions.ok or revisions.value is None:
-            return ctx.complete_step(_final_audit_failed(_first_issue_message(revisions.issues, "Cannot load round revisions.")))
-        reached: list[str] = []
-        missing: list[str] = []
-        unsatisfied: list[str] = []
-        round_revisions = {revision.decl_name: revision for revision in revisions.value}
-        for revision in revisions.value:
-            change = revision.change
-            if change is None:
-                missing.append(revision.decl_name)
-                continue
-            if change.kind == DeclChangeKind.DELETE:
-                reached.append(revision.decl_name)
-                continue
-            if change.end_after_state is None:
-                missing.append(revision.decl_name)
-                continue
-            if _state_reaches(revision.state, change.end_after_state):
-                reached.append(revision.decl_name)
-            else:
-                missing.append(revision.decl_name)
-                continue
-            if change.require_target_state_satisfied:
-                target = _proof_availability_for_target_state(change.end_after_state)
-                satisfied, _reason = _round_revision_satisfies_proof_policy(
-                    ctx,
-                    repo_root,
-                    node_path=input_model.node_path,
-                    round_revisions=round_revisions,
-                    revision=revision,
-                    target_proof_availability=target,
-                )
-                if not satisfied:
-                    unsatisfied.append(revision.decl_name)
-        if missing:
+        audit = _decl_graph(ctx).audit_round_final(
+            repo_root,
+            node_path=input_model.node_path,
+            round_id=input_model.round_id,
+        )
+        if not audit.ok or audit.value is None:
+            return ctx.complete_step(_final_audit_failed(_first_issue_message(audit.issues, "Cannot audit round.")))
+        if not audit.value.passed:
             return ctx.complete_step(
                 RoundFinalAuditStepResult(
                     outcome="failed",
-                    reached_target_decl_names=sorted(reached),
-                    missing_target_decl_names=sorted(missing),
+                    reached_target_decl_names=list(audit.value.reached_target_decl_names),
+                    missing_target_decl_names=list(audit.value.missing_target_decl_names),
                     error=RoundTerminalReason(
                         code="final_audit_failed",
-                        message=f"{len(missing)} declarations did not reach their target state.",
-                        affected_decl_names=sorted(missing),
-                        suggested_plan_action="Inspect failed stage results and repair or re-plan this round.",
+                        message=audit.value.issue_message or audit.value.summary,
+                        affected_decl_names=list(audit.value.missing_target_decl_names),
                     ),
-                    summary=f"Round final audit failed: {len(missing)} declarations did not reach their target state.",
-                )
-            )
-        if unsatisfied:
-            return ctx.complete_step(
-                RoundFinalAuditStepResult(
-                    outcome="failed",
-                    reached_target_decl_names=sorted(reached),
-                    missing_target_decl_names=sorted(unsatisfied),
-                    error=RoundTerminalReason(
-                        code="final_audit_failed",
-                        message=f"{len(unsatisfied)} declarations reached target state but did not satisfy proof policy.",
-                        affected_decl_names=sorted(unsatisfied),
-                        suggested_plan_action=(
-                            "Inspect dependencies and either prove missing dependencies or plan an intermediate round with "
-                            "require_target_state_satisfied=false when appropriate."
-                        ),
-                    ),
-                    summary=f"Round final audit failed: {len(unsatisfied)} declarations did not satisfy proof policy.",
+                    summary=audit.value.summary,
                 )
             )
         return ctx.complete_step(
             RoundFinalAuditStepResult(
                 outcome="passed",
-                reached_target_decl_names=sorted(reached),
+                reached_target_decl_names=list(audit.value.reached_target_decl_names),
                 readiness_summary="Round target states and required proof-policy satisfaction checks passed.",
-                summary="Decl round final audit passed.",
+                summary=audit.value.summary,
             )
         )
 
@@ -722,65 +623,14 @@ class BuildRoundResultStep(BaseStep):
         input_model = _require_decl_round_input(flow.input)
         repo_root = _repo_root(input_model)
         if repo_root is not None:
-            round_record = _decl_graph(ctx).get_round(repo_root, node_path=input_model.node_path, round_id=input_model.round_id)
-            if not round_record.ok or round_record.value is None:
-                raise FlowStepValidationError(_first_issue_message(round_record.issues, "Failed to load DeclGraph round."))
-            if state.flow_outcome == "completed":
-                revisions = _decl_graph(ctx).list_round_revisions(repo_root, node_path=input_model.node_path, round_id=input_model.round_id)
-                if not revisions.ok or revisions.value is None:
-                    raise FlowStepValidationError(_first_issue_message(revisions.issues, "Failed to load round revisions."))
-                for revision in revisions.value:
-                    if revision.change is not None and revision.change.kind == DeclChangeKind.DELETE:
-                        continue
-                    if revision.status != "open":
-                        continue
-                    committed = _decl_graph(ctx).commit_decl_revision(
-                        repo_root,
-                        node_path=input_model.node_path,
-                        name=revision.decl_name,
-                        revision=revision.revision,
-                        state=revision.state,
-                    )
-                    if not committed.ok:
-                        raise FlowStepValidationError(_first_issue_message(committed.issues, "Failed to commit round revision."))
-                projection = _lean_projection(ctx).refresh_node_projection(repo_root, node_path=input_model.node_path)
-                if not projection.ok or projection.value is None:
-                    raise FlowStepValidationError(_first_issue_message(projection.issues, "Projection refresh failed."))
-            for change_id in round_record.value.change_ids:
-                if change_id in round_record.value.change_summaries:
-                    continue
-                summarized = _decl_graph(ctx).write_decl_change_summary(
-                    repo_root,
-                    node_path=input_model.node_path,
-                    round_id=input_model.round_id,
-                    change_id=change_id,
-                    summary=f"DeclGraphRoundFlow {state.flow_outcome} for change {change_id}.",
-                )
-                if not summarized.ok:
-                    raise FlowStepValidationError(_first_issue_message(summarized.issues, "Failed to write decl change summary."))
-            if not round_record.value.summary:
-                summarized_round = _decl_graph(ctx).write_round_summary(
-                    repo_root,
-                    node_path=input_model.node_path,
-                    round_id=input_model.round_id,
-                    summary=f"DeclGraphRoundFlow finished with {state.flow_outcome}.",
-                )
-                if not summarized_round.ok:
-                    raise FlowStepValidationError(_first_issue_message(summarized_round.issues, "Failed to write round summary."))
-            result_kind = {
-                "completed": DeclRoundResultKind.SUCCESS,
-                "blocked": DeclRoundResultKind.BLOCKED,
-                "failed": DeclRoundResultKind.FAILED,
-            }[state.flow_outcome]
-            marked = _decl_graph(ctx).mark_round_terminal(
+            closed = _decl_graph(ctx).closeout_round(
                 repo_root,
                 node_path=input_model.node_path,
                 round_id=input_model.round_id,
-                result_kind=result_kind,
-                reason=f"DeclGraphRoundFlow finished with {state.flow_outcome}.",
+                outcome=state.flow_outcome,
             )
-            if not marked.ok:
-                raise FlowStepValidationError(_first_issue_message(marked.issues, "Failed to mark DeclGraph round terminal."))
+            if not closed.ok:
+                raise FlowStepValidationError(_first_issue_message(closed.issues, "Failed to close DeclGraph round."))
         return ctx.complete_step(
             BuildRoundResultStepResult(
                 flow_outcome=state.flow_outcome,
@@ -987,128 +837,6 @@ def _stage_required(stage: DeclStageName, kind: str, revision, end_after_state: 
     return False
 
 
-def _formal_consistency_for_stage(
-    ctx: StepRunContext,
-    repo_root: Path,
-    node_path: str,
-    round_id: str,
-    stage: DeclStageName,
-    targets: list[str],
-) -> StageGateAndAuditStepResult | None:
-    if stage not in {"statement_formal", "proof_formal"}:
-        return None
-    check_stage = "statement" if stage == "statement_formal" else "proof"
-    for decl_name in targets:
-        gate = _validation_snapshot(ctx).check_formal_stage_consistency(repo_root, node_path=node_path, decl_name=decl_name, stage=check_stage)
-        if not gate.ok or gate.value is None:
-            return _stage_gate_failed(stage, _first_issue_message(gate.issues, "Formal stage consistency check failed."), targets)
-        if not gate.value.passed:
-            return StageGateAndAuditStepResult(
-                outcome="failed",
-                stage=stage,
-                rejected_decl_names=list(targets),
-                error=RoundTerminalReason(
-                    code="stage_gate_failed",
-                    message=gate.value.summary,
-                    stage=stage,
-                    affected_decl_names=[decl_name],
-                    suggested_plan_action="Return to the formal worker with consistency findings or re-plan the round.",
-                ),
-                summary=gate.value.summary,
-            )
-        if stage == "proof_formal":
-            dep_gate = _proof_deps_gate_for_stage(ctx, repo_root, node_path, round_id, decl_name, stage)
-            if dep_gate is not None:
-                return dep_gate
-    return None
-
-
-def _proof_deps_gate_for_stage(
-    ctx: StepRunContext,
-    repo_root: Path,
-    node_path: str,
-    round_id: str,
-    decl_name: str,
-    stage: DeclStageName,
-) -> StageGateAndAuditStepResult | None:
-    decl = _decl_graph(ctx).get_decl(repo_root, node_path=node_path, name=decl_name)
-    if not decl.ok or decl.value is None:
-        return _stage_gate_failed(stage, _first_issue_message(decl.issues, "Proof dependency gate could not load declaration."), [decl_name])
-    revision = _decl_graph(ctx).get_decl_revision(repo_root, node_path=node_path, name=decl_name, revision=decl.value.current_revision)
-    if not revision.ok or revision.value is None:
-        return _stage_gate_failed(stage, _first_issue_message(revision.issues, "Proof dependency gate could not load declaration revision."), [decl_name])
-    deps = list(revision.value.proof.deps) if revision.value.proof is not None else []
-    checked = validate_proof_deps(ctx.app, repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, deps=deps)
-    if checked.ok:
-        return None
-    return _stage_gate_failed(stage, _first_issue_message(checked.issues, "Proof dependency gate failed."), [decl_name])
-
-
-def _reviewer_result_context_for_stage(
-    reviewer_result: DeclStageReviewerStepResult,
-    node_path: str,
-    round_id: str,
-    stage: DeclStageName,
-    targets: list[str],
-) -> StageGateAndAuditStepResult | None:
-    issues: list[str] = []
-    if reviewer_result.round_id != round_id:
-        issues.append(f"round_id={reviewer_result.round_id!r}, expected {round_id!r}")
-    if reviewer_result.node_path != node_path:
-        issues.append(f"node_path={reviewer_result.node_path!r}, expected {node_path!r}")
-    if reviewer_result.stage != stage:
-        issues.append(f"stage={reviewer_result.stage!r}, expected {stage!r}")
-    target_set = set(targets)
-    reviewed_set = set(reviewer_result.reviewed_decl_names)
-    failed_set = set(reviewer_result.failed_decl_names)
-    missing_set = set(reviewer_result.missing_decl_names)
-    unexpected = sorted((reviewed_set | failed_set | missing_set) - target_set)
-    if unexpected:
-        issues.append(f"review result references declarations outside current target batch: {', '.join(unexpected)}")
-    if reviewer_result.outcome == "passed":
-        if reviewed_set != target_set:
-            issues.append("passed review result must review exactly the current target batch")
-        if failed_set or missing_set:
-            issues.append("passed review result must not contain failed or missing declarations")
-    if issues:
-        return _stage_gate_failed(stage, "Reviewer result context mismatch: " + "; ".join(issues), targets)
-    return None
-
-
-def _statement_nl_consistency_for_stage(
-    ctx: StepRunContext,
-    repo_root: Path,
-    node_path: str,
-    round_id: str,
-    stage: DeclStageName,
-    targets: list[str],
-) -> StageGateAndAuditStepResult | None:
-    if stage != "statement_nl":
-        return None
-    for decl_name in targets:
-        issue = statement_nl_validation_message(ctx.app, repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
-        if issue is not None:
-            return _stage_gate_failed(stage, issue, [decl_name])
-    return None
-
-
-def _proof_nl_consistency_for_stage(
-    ctx: StepRunContext,
-    repo_root: Path,
-    node_path: str,
-    round_id: str,
-    stage: DeclStageName,
-    targets: list[str],
-) -> StageGateAndAuditStepResult | None:
-    if stage != "proof_nl":
-        return None
-    for decl_name in targets:
-        issue = proof_nl_validation_message(ctx.app, repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
-        if issue is not None:
-            return _stage_gate_failed(stage, issue, [decl_name])
-    return None
-
-
 def _is_theorem_like(kind: str) -> bool:
     return kind in {"theorem", "lemma", "proposition", "corollary"}
 
@@ -1126,171 +854,6 @@ def _state_rank(state: DeclState) -> int:
 
 def _state_reaches(current: DeclState, target: DeclState) -> bool:
     return _state_rank(current) >= _state_rank(target)
-
-
-def _proof_availability_for_target_state(target: DeclState) -> ProofAvailability:
-    return ProofAvailability.PROVED if target == DeclState.PROVED else ProofAvailability.DECLARED
-
-
-def _round_revision_satisfies_proof_policy(
-    ctx: StepRunContext,
-    repo_root: Path,
-    *,
-    node_path: str,
-    round_revisions: dict[str, DeclRevision],
-    revision: DeclRevision,
-    target_proof_availability: ProofAvailability,
-    stack: list[str] | None = None,
-) -> tuple[bool, str | None]:
-    stack = stack or []
-    decl_name = revision.decl_name
-    stack_key = f"{Path(repo_root).name}:{node_path}:{decl_name}"
-    if stack_key in stack:
-        return False, f"Dependency cycle detected: {' -> '.join([*stack, stack_key])}."
-    decl_result = _decl_graph(ctx).get_decl(repo_root, node_path=node_path, name=decl_name)
-    if not decl_result.ok or decl_result.value is None:
-        return False, _first_issue_message(decl_result.issues, f"Declaration {decl_name} is missing.")
-    decl = decl_result.value
-    required_state = _required_state_for_proof_availability(decl.kind, target_proof_availability)
-    if not _state_reaches(revision.state, required_state):
-        return False, f"{decl_name} is {revision.state.value}, expected at least {required_state.value}."
-    stage = _required_formal_stage_for_proof_availability(decl.kind, target_proof_availability)
-    check = revision.proof_lean_check if stage == "proof" else revision.statement_lean_check
-    if not _lean_check_passed(check):
-        return False, f"{decl_name} does not have an acceptable {stage} Lean check."
-
-    requirements = _decl_graph(ctx).dependency_ref_requirements_for_proof_policy(
-        decl,
-        revision,
-        target_proof_availability=target_proof_availability,
-    )
-    for dep_ref, dep_target in requirements:
-        dep_label = _decl_ref_label(dep_ref, fallback_node_path=node_path)
-        dep_node = dep_ref.node
-        if dep_ref.repo is None and dep_node == "Main" and node_path != "Main":
-            dep_node = node_path
-        round_dep = round_revisions.get(dep_ref.name) if dep_ref.repo is None and dep_node == node_path else None
-        if round_dep is not None and round_dep.revision == dep_ref.revision:
-            satisfied, reason = _round_revision_satisfies_proof_policy(
-                ctx,
-                repo_root,
-                node_path=node_path,
-                round_revisions=round_revisions,
-                revision=round_dep,
-                target_proof_availability=dep_target,
-                stack=[*stack, stack_key],
-            )
-            if not satisfied:
-                return False, reason
-            continue
-        resolved = _resolve_dependency_ref(ctx, repo_root, ref=dep_ref, fallback_node_path=node_path, local_target=dep_target)
-        if not resolved.ok:
-            return False, _first_issue_message(resolved.issues, f"Dependency {dep_label} provider resolution failed.")
-        if resolved.value is None:
-            return False, f"Dependency {dep_label} could not be resolved or its provider is not stable."
-        dep_root, dep_node, effective_target = resolved.value
-        dep_report = _decl_graph(ctx).check_decl_proof_policy_satisfied(
-            dep_root,
-            node_path=dep_node,
-            decl_name=dep_ref.name,
-            target_proof_availability=effective_target,
-        )
-        if not dep_report.ok or dep_report.value is None:
-            return False, _first_issue_message(dep_report.issues, f"Dependency {dep_label} proof policy check failed.")
-        if not dep_report.value.proof_policy_satisfied:
-            return False, dep_report.value.summary
-    return True, None
-
-
-def _resolve_dependency_ref(
-    ctx: StepRunContext,
-    repo_root: Path,
-    *,
-    ref: DeclRef,
-    fallback_node_path: str,
-    local_target: ProofAvailability,
-) -> ServiceResult[tuple[Path, str, ProofAvailability] | None]:
-    foundation = getattr(ctx.app, "foundation", None)
-    if foundation is None:
-        raise FlowStepValidationError("Lean foundation service is not registered in app services.")
-    if ref.repo:
-        repo_workspace = getattr(ctx.app, "repo_workspace", None)
-        decl_graph = getattr(ctx.app, "decl_graph", None)
-        if repo_workspace is None or decl_graph is None:
-            return foundation.ok(None)
-        provider_key = foundation.layout.ensure_safe_key(ref.repo)
-        provider_root = Path(repo_root).parent / provider_key
-        config = repo_workspace.metadata.get_repo_config(provider_root)
-        if not config.ok or config.value is None:
-            return foundation.fail(config.issues)
-        effective_target = config.value.config.target_proof_availability
-        compatible = decl_graph.ref_compatibility.resolve_public_decl_ref(
-            repo_root,
-            ref=ref,
-            required_availability=effective_target,
-        )
-        if not compatible.ok:
-            return foundation.fail(compatible.issues)
-        if compatible.value is None or not compatible.value.compatible:
-            return foundation.ok(None)
-        return foundation.ok((provider_root, ref.node, effective_target))
-    dep_node = ref.node
-    if dep_node == "Main" and fallback_node_path != "Main":
-        dep_node = fallback_node_path
-    local_ref = ref.model_copy(update={"node": dep_node})
-    compatible = _decl_graph(ctx).ref_compatibility.resolve_decl_ref(
-        repo_root,
-        ref=local_ref,
-        required_availability=local_target,
-    )
-    if not compatible.ok or compatible.value is None or not compatible.value.compatible:
-        return foundation.ok(None)
-    return foundation.ok((Path(repo_root), dep_node, local_target))
-
-
-def _decl_ref_label(ref: DeclRef, *, fallback_node_path: str) -> str:
-    node = ref.node
-    if ref.repo is None and node == "Main" and fallback_node_path != "Main":
-        node = fallback_node_path
-    if ref.repo:
-        return f"{ref.repo}:{node}:{ref.name}"
-    return ref.name if node == fallback_node_path else f"{node}:{ref.name}"
-
-
-def _required_state_for_proof_availability(kind: str, target: ProofAvailability) -> DeclState:
-    if target == ProofAvailability.DECLARED:
-        return DeclState.DECLARED
-    return DeclState.PROVED if _is_theorem_like(kind) else DeclState.DECLARED
-
-
-def _required_formal_stage_for_proof_availability(kind: str, target: ProofAvailability) -> str:
-    if target == ProofAvailability.PROVED and _is_theorem_like(kind):
-        return "proof"
-    return "statement"
-
-
-def _lean_check_passed(check: dict[str, str] | None) -> bool:
-    if check is None:
-        return False
-    if _truthy(check.get("contains_axiom")) or _truthy(check.get("contains_admit")) or _truthy(check.get("contains_opaque")) or _truthy(check.get("contains_unsafe")):
-        return False
-    if _truthy(check.get("contains_sorry")) and not _truthy(check.get("allow_sorry")):
-        return False
-    status = (check.get("status") or "").strip().lower()
-    if status:
-        return status == "passed"
-    passed = check.get("passed")
-    if passed is not None:
-        return _truthy(passed)
-    return False
-
-
-def _truthy(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "passed"}
-
-
-def _is_theorem_like(kind: str) -> bool:
-    return kind.strip().lower() in {"theorem", "lemma"}
 
 
 def _prepare_stage_state(state: BaseStepState) -> PrepareStageTargetsStepState:

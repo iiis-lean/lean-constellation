@@ -36,6 +36,7 @@ from lean_constellation.services.material.source_corpus import (
     SourceCorpusBlockedSubmitView,
     SourceCorpusComponent,
     SourceCorpusManifestView,
+    SourceCorpusImportView,
     SourceCorpusPreparedView,
     SourceExtractionView,
 )
@@ -139,6 +140,27 @@ class MaterialService:
         if not gate.value.passed:
             return self.runtime.foundation.fail(gate.value.issues)
         return self.source_corpus.scan_source_corpus(repo_root, relpath=relpath, created_from_mode="existing")
+
+    def import_local_source_corpus(
+        self,
+        repo_root: Path,
+        *,
+        source_dir: Path,
+        entry_path: str,
+        overview: str,
+        preparation_summary: str,
+        replace_existing: bool = False,
+        expected_manifest_digest: str | None = None,
+    ) -> ServiceResult[SourceCorpusImportView]:
+        return self.source_corpus.import_local_source_corpus(
+            repo_root,
+            source_dir=source_dir,
+            entry_path=entry_path,
+            overview=overview,
+            preparation_summary=preparation_summary,
+            replace_existing=replace_existing,
+            expected_manifest_digest=expected_manifest_digest,
+        )
 
     def scan_source_corpus(
         self,
@@ -796,6 +818,27 @@ class MaterialService:
     def remove_source_block_ref(self, repo_root: Path, *, block_id: str, ref_id: str) -> ServiceResult[SourceBlockView]:
         return self.source_index.remove_source_block_ref(repo_root, block_id=block_id, ref_id=ref_id)
 
+    def update_source_block_ref(
+        self,
+        repo_root: Path,
+        *,
+        block_id: str,
+        ref_id: str,
+        path: str,
+        start_line: int,
+        end_line: int,
+        role: str,
+    ) -> ServiceResult[SourceBlockView]:
+        return self.source_index.update_source_block_ref(
+            repo_root,
+            block_id=block_id,
+            ref_id=ref_id,
+            path=path,
+            start_line=start_line,
+            end_line=end_line,
+            role=role,
+        )
+
     def mark_block_refs_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         return self.source_index.mark_block_refs_done(repo_root, block_id=block_id)
 
@@ -820,6 +863,25 @@ class MaterialService:
 
     def mark_block_links_done(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         return self.source_index.mark_block_links_done(repo_root, block_id=block_id)
+
+    def update_source_link(
+        self,
+        repo_root: Path,
+        *,
+        link_id: str,
+        target_block_id: str | None,
+        target_hint: str | None,
+        link_kind: str,
+        evidence_ref_ids: list[str],
+    ) -> ServiceResult[SourceLinkView]:
+        return self.source_index.update_source_link(
+            repo_root,
+            link_id=link_id,
+            target_block_id=target_block_id,
+            target_hint=target_hint,
+            link_kind=link_kind,
+            evidence_ref_ids=evidence_ref_ids,
+        )
 
     def mark_block_completed(self, repo_root: Path, *, block_id: str) -> ServiceResult[GateReport]:
         return self.source_index.mark_block_completed(repo_root, block_id=block_id)

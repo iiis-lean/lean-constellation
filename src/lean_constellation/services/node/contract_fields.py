@@ -13,6 +13,7 @@ from lean_constellation.domain.refs import DeclRef, MaterialRef, NodeRef
 class MaterialRefActor(StrEnum):
     COORDINATOR = "coordinator"
     WORKER = "worker"
+    OPERATOR = "operator"
 
 
 class ContractMaterialRef(StrictModel):
@@ -25,6 +26,7 @@ class ContractMaterialRef(StrictModel):
 class NodeDepActor(StrEnum):
     COORDINATOR = "coordinator"
     WORKER = "worker"
+    OPERATOR = "operator"
 
 
 class NodeDep(StrictModel):
@@ -38,6 +40,7 @@ class NodeDep(StrictModel):
 class MathlibUseActor(StrEnum):
     COORDINATOR = "coordinator"
     WORKER = "worker"
+    OPERATOR = "operator"
 
 
 class NodeMathlibModuleUse(StrictModel):

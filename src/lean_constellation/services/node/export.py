@@ -13,6 +13,7 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent, NodeView
+from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
@@ -252,12 +253,7 @@ class ExportComponent:
             )
             if not guarded.ok:
                 return self.runtime.foundation.fail(guarded.issues)
-            saved = self.contract._persist_open_candidate(
-                repo_root, node_path=scope_path, candidate=candidate_contract
-            )
-            if not saved.ok:
-                return self.runtime.foundation.fail(saved.issues)
-            refreshed = self._refresh_interfaces(repo_root, scope_path)
+            refreshed = self._save_and_refresh_interfaces(repo_root, scope_path, candidate_contract)
             if not refreshed.ok:
                 return self.runtime.foundation.fail(refreshed.issues)
             warnings.extend(refreshed.issues)
@@ -314,12 +310,7 @@ class ExportComponent:
         )
         if not guarded.ok:
             return self.runtime.foundation.fail(guarded.issues)
-        saved = self.contract._persist_open_candidate(
-            repo_root, node_path=scope_path, candidate=candidate_contract
-        )
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        refreshed = self._refresh_interfaces(repo_root, scope_path)
+        refreshed = self._save_and_refresh_interfaces(repo_root, scope_path, candidate_contract)
         if not refreshed.ok:
             return self.runtime.foundation.fail(refreshed.issues)
         listed = self.list_scope_exports(repo_root, scope_path=scope_path)
@@ -617,6 +608,19 @@ class ExportComponent:
                 return self.runtime.foundation.ok(None)
             projection = lean_projection.node_projection
         return projection.refresh_interfaces(repo_root, node_path=scope_path)
+
+    def _save_and_refresh_interfaces(self, repo_root: Path, scope_path: str, contract: object) -> ServiceResult[object]:
+        return persist_contract_with_projection(
+            self.runtime,
+            repo_root=repo_root,
+            node_path=scope_path,
+            candidate=contract,
+            projection_kind="interfaces",
+            save=lambda root, path, candidate: self.contract._persist_open_candidate(
+                root, node_path=path, candidate=candidate
+            ),
+            refresh=lambda: self._refresh_interfaces(repo_root, scope_path),
+        )
 
     def _decl_ref_key(self, ref: DeclRef) -> tuple[str | None, str, str, int]:
         return (ref.repo, ref.node, ref.name, ref.revision)

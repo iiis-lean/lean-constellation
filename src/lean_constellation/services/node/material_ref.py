@@ -12,7 +12,6 @@ from pydantic import Field, TypeAdapter
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import MaterialRef, ResourceRef, SourceRef
 from lean_constellation.services.foundation import (
-    FoundationContext,
     IssueSeverity,
     ServiceIssue,
     ServiceResult,
@@ -289,15 +288,15 @@ class MaterialRefComponent:
                 )
             )
         target = current.value[index]
-        if normalized_actor.value == MaterialRefActor.WORKER and target.added_by != MaterialRefActor.WORKER:
+        if not self._actor_can_manage(normalized_actor.value, target.added_by):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "material_ref_permission_denied",
-                    "Worker can only remove material refs that were added by a worker.",
+                    "The caller cannot remove a material ref owned by another authority.",
                     object_ref=node_path,
                     field=field_name,
                     current=target.added_by.value,
-                    expected=MaterialRefActor.WORKER.value,
+                    expected=normalized_actor.value.value,
                 )
             )
         setattr(
@@ -457,11 +456,19 @@ class MaterialRefComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "material_ref_actor_invalid",
-                    "actor must be coordinator or worker.",
+                    "actor must be coordinator, worker, or operator.",
                     field="actor",
                     current=str(actor),
                 )
             )
+
+    @staticmethod
+    def _actor_can_manage(actor: MaterialRefActor, target: MaterialRefActor) -> bool:
+        if actor == MaterialRefActor.WORKER:
+            return target == MaterialRefActor.WORKER
+        if actor == MaterialRefActor.COORDINATOR:
+            return target != MaterialRefActor.OPERATOR
+        return target == MaterialRefActor.OPERATOR
 
     def _save_contract(self, repo_root: Path, node_path: str, contract: object) -> ServiceResult[object]:
         node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path=node_path)

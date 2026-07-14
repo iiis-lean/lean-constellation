@@ -41,4 +41,33 @@ class RepoLifecycleLockComponent:
                 handle.close()
 
 
-__all__ = ["RepoLifecycleLockBusyError", "RepoLifecycleLockComponent"]
+class WorkspaceRepoCreationLockComponent:
+    """Serialize repo-directory creation without requiring a repo runtime."""
+
+    def __init__(self, runtime: LeanRuntimeServices) -> None:
+        self.runtime = runtime
+
+    @contextmanager
+    def locked(self, workspace_root: Path) -> Iterator[Path]:
+        workspace_root = Path(workspace_root).resolve(strict=False)
+        path = workspace_root / ".lean_constellation_workspace" / ".locks" / "repo_creation.lock"
+        self.runtime.foundation.store.ensure_dir(path.parent)
+        handle = path.open("a+", encoding="utf-8")
+        try:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RepoLifecycleLockBusyError(f"Workspace repo creation lock is busy: {path}") from exc
+            yield path
+        finally:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+
+__all__ = [
+    "RepoLifecycleLockBusyError",
+    "RepoLifecycleLockComponent",
+    "WorkspaceRepoCreationLockComponent",
+]
