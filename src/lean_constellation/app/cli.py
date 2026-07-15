@@ -23,6 +23,9 @@ from lean_constellation.app.runtime import create_app_runtime_from_config
 from lean_constellation.app.server import run_production_app_server
 
 
+_INTERFACE_DOC_SURFACES = ("operator", "admin", "agent-tools")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lean-constellation", description="Lean Constellation admin CLI")
     parser.add_argument("--config", type=Path, default=None, help="Path to JSON/TOML app config.")
@@ -30,6 +33,25 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("config-view", help="Print redacted config view.")
+    docs_export = sub.add_parser(
+        "docs-export",
+        help="Export deterministic Operator, Admin, and Agent Tool/View interface references.",
+    )
+    docs_export.add_argument("--output-dir", type=Path, required=True)
+    docs_export.add_argument(
+        "--surface",
+        action="append",
+        choices=[*_INTERFACE_DOC_SURFACES, "all"],
+        default=None,
+        help="Surface to export. Repeat to select several; defaults to all.",
+    )
+    docs_export.add_argument(
+        "--format",
+        action="append",
+        choices=["json", "markdown", "all"],
+        default=None,
+        help="Format to export. Repeat to select both; defaults to both.",
+    )
     sub.add_parser("status", help="Read production server runtime status over Admin HTTP.")
     flow_tree = sub.add_parser("flow-tree", help="Read production flow/step tree over Admin HTTP.")
     flow_tree.add_argument("--repo-key", required=True)
@@ -220,6 +242,31 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
+        return 0
+    if args.command == "docs-export":
+        from lean_constellation.app.interface_docs import export_interface_docs
+
+        requested_surfaces = args.surface or ["all"]
+        surfaces = (
+            _INTERFACE_DOC_SURFACES
+            if "all" in requested_surfaces
+            else tuple(dict.fromkeys(requested_surfaces))
+        )
+        requested_formats = args.format or ["all"]
+        formats = ("json", "markdown") if "all" in requested_formats else tuple(dict.fromkeys(requested_formats))
+        written = export_interface_docs(args.output_dir, surfaces=surfaces, formats=formats)
+        print(
+            json.dumps(
+                {
+                    "output_dir": str(args.output_dir),
+                    "surfaces": list(surfaces),
+                    "formats": list(formats),
+                    "written": [str(path) for path in written],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     config = load_app_config(args.config)
     if args.command == "config-view":
