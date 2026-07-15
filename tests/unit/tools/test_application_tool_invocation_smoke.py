@@ -26,7 +26,7 @@ from lean_constellation.services.foundation import FoundationContext, ServiceRes
 from lean_constellation.services.material import ResourceMetadataInput
 from lean_constellation.services.node import DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
-from tests.unit_services_helpers import lean_check_payload, publish_native_provider_release
+from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, publish_native_provider_release
 
 
 def _raw(
@@ -188,6 +188,7 @@ def _create_public_decl(
     kind: str = "definition",
     public: bool = True,
 ):
+    initialize_native_test_repo(repo_root, project_name=repo_root.name)
     assert runtime.decl_graph.ensure_decl_graph(repo_root, node_path=node_path).ok
     strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=node_path, objective=f"Create {name}.")
     assert strategy.ok and strategy.value is not None
@@ -1025,11 +1026,21 @@ def test_current_node_decl_read_tools_invoke_decl_graph(tmp_path: Path) -> None:
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="inspect_current_node_decl",
-            flat_args={"decl_name": "topic_def", "include_statement_nl": True, "include_statement_formal": True},
+            flat_args={"decl_name": "topic_def", "include_statement_nl": True, "include_formal": True},
         )
     )
     assert "statement_nl" in included
-    assert "statement_lean_code" in included
+    assert included["formal_stage"] == "none"
+    assert included["formal_preview"] is None
+    assert "statement_lean_code" not in included
+    legacy = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="inspect_current_node_decl",
+            flat_args={"decl_name": "topic_def", "include_statement_formal": True},
+        )
+    )
+    assert legacy[0].kind == "tool_arguments_invalid"
 
 
 def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) -> None:
@@ -1131,6 +1142,7 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     provider_decl = DeclPublicView(
         ref=DeclRef(repo=None, node="Main.Core", name="provider_result", revision=1),
         kind="theorem",
+        module="Main.Core.Theorems.provider_result",
         summary="Provider result.",
         ready=True,
         stale=False,
@@ -1151,15 +1163,24 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     assert revision.ok and revision.value is not None
     revision.value.state = DeclState.PROVED
     revision.value.status = DeclRevisionStatus.COMMITTED
+    revision.value.lean_decl_name = "provider_result"
+    managed_statement = (
+        "-- lean-constellation: managed-imports-begin\n"
+        "import Mathlib\n"
+        "-- lean-constellation: managed-imports-end\n\n"
+        "-- lean-constellation: declaration-source-begin\n\n"
+        "/--\n# lean-constellation target: `provider_result`\n-/\n"
+        "theorem provider_result : True := by\n  sorry\n"
+    )
     revision.value.statement = DeclStatement(
         formal=DeclFormalSection(
-            code="import Mathlib\n\ntheorem provider_result : True := by\n  sorry\n",
+            code=managed_statement,
             check=lean_check_payload(contains_sorry=True),
         )
     )
     revision.value.proof = DeclProof(
         formal=DeclFormalSection(
-            code="theorem provider_result : True := by\n  trivial\n",
+            code=managed_statement.replace("sorry", "trivial"),
             check=lean_check_payload(),
         )
     )
@@ -1214,6 +1235,17 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
             flat_args={"repo_key": "Provider", "decl_name": "provider_result"},
         )
     )
+    source = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="read_visible_decl_lean_file",
+            flat_args={
+                "repo_key": "Provider",
+                "node_path": "Main.Core",
+                "decl_name": "provider_result",
+            },
+        )
+    )
 
     assert [repo.repo_key for repo in candidates["items"]] == ["Provider"]
     assert public["items"][0]["ref"]["repo"] == "Provider"
@@ -1224,6 +1256,8 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     assert public["items"][0]["released_state"] == "proved"
     assert public["items"][0]["release_protected"] is True
     assert public["items"][0]["state"] == "proved"
+    assert public["items"][0]["module"] == "Provider.Main.Core.Theorems.provider_result"
+    assert public["items"][0]["lean_decl_name"] == "provider_result"
     assert public["items"][0]["proof_policy_satisfied"] is True
     assert "ready" not in public["items"][0]
     assert "stale" not in public["items"][0]
@@ -1233,6 +1267,12 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     assert inspected["resolved_revision"] == 1
     assert inspected["state"] == "proved"
     assert inspected["proof_policy_satisfied"] is True
+    assert inspected["formal_stage"] == "proof"
+    assert inspected["formal_preview"].startswith("theorem provider_result")
+    assert source["revision"] == 1
+    assert source["stage"] == "proof"
+    assert source["source"] == "captured_revision"
+    assert "# lean-constellation target: `provider_result`" in source["content"]
 
 
 def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp_path: Path) -> None:
@@ -1262,6 +1302,9 @@ def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp
     )
 
     assert added_dep["deps"]["deps"][0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
+    assert added_dep["managed_projection_changed"] is True
+    assert added_dep["changed_files"]
+    assert added_dep["reread_required"] is True
 
     material = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
@@ -1348,9 +1391,17 @@ def test_coordinator_node_contract_write_tools_invoke_path_based_mutation_wrappe
     )
 
     assert added_dep["deps"]["deps"][0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
+    assert added_dep["managed_projection_changed"] is True
+    assert added_dep["changed_files"]
+    assert added_dep["reread_required"] is True
     assert added_material["material_refs"]["context_refs"][0]["path"] == "notes.md"
     assert added_hint["hints"]["modules"][0]["module"] == "Mathlib.Data.Nat.Basic"
+    assert added_hint["managed_projection_changed"] is True
+    assert added_hint["changed_files"]
+    assert added_hint["reread_required"] is True
     assert added_decl_hint["hints"]["declarations"][0]["name"] == "Nat.succ_eq_add_one"
+    assert "changed_files" in added_decl_hint
+    assert "reread_required" in added_decl_hint
 
     removed_material = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
@@ -1579,6 +1630,7 @@ def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: P
 
 def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_content_node(
         tmp_path,
@@ -1620,11 +1672,11 @@ def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) 
                 round_id=round_record.value.round_id,
                 batch_decls=["main_result"],
             ),
-            tool_name="set_statement_nl",
-            flat_args={
-                "decl_name": "main_result",
-                "nl": "The main result states True.",
-            },
+                tool_name="set_statement_nl",
+                flat_args={
+                    "decl_name": "main_result",
+                    "text": "The main result states True.",
+                },
         )
     )
     view = _unwrap_tool_result(
@@ -1649,16 +1701,19 @@ def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) 
         )
     )
 
-    assert view["state"] == "planned"
-    assert view["statement_origin"][0]["kind"] == "source"
-    assert view["statement_origin"][0]["source_path"] == "notes.md"
-    assert view["statement_deps"] == []
-    assert "statement" not in view
-    assert "decl_deps" not in view
+    assert view["decl"]["state"] == "planned"
+    assert view["decl"]["statement_origin"][0]["kind"] == "source"
+    assert view["decl"]["statement_origin"][0]["source_path"] == "notes.md"
+    assert view["decl"]["statement_deps"] == []
+    assert view["changed_files"] == []
+    assert view["reread_required"] is False
+    assert "statement" not in view["decl"]
+    assert "decl_deps" not in view["decl"]
 
 
 def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_content_node(
         tmp_path,
@@ -1810,7 +1865,8 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
                 "name": "main_result",
                 "kind": "theorem",
                 "module": "Upstream.Basic",
-                "plan_summary": "Expose the upstream main result.",
+                "lean_decl_name": "upstreamSmoke",
+                "summary": "Expose the upstream main result.",
             },
         )
     )
@@ -1822,7 +1878,6 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
             flat_args={
                 "name": "main_result",
                 "code": "theorem main_result : True := by\n  sorry",
-                "upstream_decl_name": "upstreamSmoke",
             },
         )
     )
@@ -1830,7 +1885,7 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="find_adapter_decl_by_upstream",
-            flat_args={"module": "Upstream.Basic", "upstream_decl_name": "upstreamSmoke"},
+            flat_args={"module": "Upstream.Basic", "lean_decl_name": "upstreamSmoke"},
         )
     )
     preflight = _unwrap_tool_result(
@@ -1843,7 +1898,7 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
     assert root_interfaces["node_path"] == "Main"
     assert created["name"] == "main_result"
     assert created["decl"]["name"] == "main_result"
-    assert formal["revision"]["statement"]["formal"]["upstream_decl_name"] == "upstreamSmoke"
+    assert formal["revision"]["lean_decl_name"] == "upstreamSmoke"
     assert [item["name"] for item in matches["matches"]] == ["main_result"]
     assert preflight["passed"] is False
     inspected = _unwrap_tool_result(
@@ -1854,4 +1909,4 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
         )
     )
     assert inspected["module"] == "Upstream.Basic"
-    assert inspected["revision"]["module"] == "Upstream.Basic"
+    assert inspected["revision"]["lean_decl_name"] == "upstreamSmoke"

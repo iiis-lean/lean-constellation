@@ -195,10 +195,14 @@ def test_public_decl_read_tools_visible_to_coordinator_plan_and_recon() -> None:
     }
     assert visibility_tools.isdisjoint(coordinator.value)
     assert path_public_decl_tools <= set(coordinator.value)
+    assert "read_visible_decl_lean_file" in coordinator.value
     assert current_public_decl_tools.isdisjoint(coordinator.value)
     assert visibility_tools | current_public_decl_tools | path_public_decl_tools <= set(content_plan.value)
+    assert "read_visible_decl_lean_file" in content_plan.value
     assert visibility_tools | current_public_decl_tools | path_public_decl_tools <= set(node_dir.value)
+    assert "read_visible_decl_lean_file" in node_dir.value
     assert visibility_tools | current_public_decl_tools | path_public_decl_tools <= set(statement_worker.value)
+    assert "read_visible_decl_lean_file" in statement_worker.value
 
 
 def test_current_node_decl_read_tools_visible_to_content_plan_only() -> None:

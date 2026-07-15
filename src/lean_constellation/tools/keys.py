@@ -77,6 +77,7 @@ class ApplicationToolGroupKey(StrEnum):
     REPO_READY_READ = "repo_ready_read"
     PUBLIC_DECL_READ_COORDINATOR = "public_decl_read_coordinator"
     PUBLIC_DECL_READ = "public_decl_read"
+    VISIBLE_DECL_LEAN_FILE_READ = "visible_decl_lean_file_read"
     RESOURCE_CURATION_CONTEXT_READ = "resource_curation_context_read"
     RESOURCE_ACQUISITION = "resource_acquisition"
     RESOURCE_DRAFT_CURRENT_READ = "resource_draft_current_read"

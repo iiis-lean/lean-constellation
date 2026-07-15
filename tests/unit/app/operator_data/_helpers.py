@@ -9,6 +9,7 @@ from lean_constellation.app.operator_data.common import (
     OperatorOperationSpec,
 )
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
+from tests.unit_services_helpers import initialize_native_test_repo
 
 
 READ_OPERATION = OperatorOperationSpec(
@@ -32,7 +33,7 @@ SELF_MANAGED_OPERATION = OperatorOperationSpec(
 
 def make_repo(workspace: Path, name: str = "MainRepo") -> Path:
     repo_root = workspace / name
-    (repo_root / ".lean_constellation").mkdir(parents=True)
+    initialize_native_test_repo(repo_root, project_name=name)
     return repo_root
 
 

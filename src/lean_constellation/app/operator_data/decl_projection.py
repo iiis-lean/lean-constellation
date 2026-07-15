@@ -22,6 +22,8 @@ from lean_constellation.services.decl_graph import DeclDraftSpec, DeclState, Mat
 from lean_constellation.services.decl_graph.models import DeclOriginRef
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.lean_projection import (
+    DeclOwnedLeanFileView,
+    ModuleBuildView,
     ProjectionRepairView,
     SafeFormalApplyView,
 )
@@ -69,11 +71,14 @@ class DeclCreateInput(RoundIdentityInput):
     public: bool = False
     end_after_state: DeclState = DeclState.DECLARED
     require_target_state_satisfied: bool = True
-    module: str | None = None
 
 
 class DeclIdentityInput(NodeInput):
     decl_name: str
+
+
+class DeclFileReadInput(DeclIdentityInput):
+    revision: int | None = Field(default=None, ge=1)
 
 
 class DeclRevisionInput(RoundIdentityInput):
@@ -132,12 +137,29 @@ class CanonicalDeclFileView(StrictModel):
     summary: str
 
 
+class OperatorDeclOwnedLeanFileView(StrictModel):
+    node_path: str
+    decl_name: str
+    revision: int
+    stage: Literal["statement", "proof"]
+    module: str
+    lean_decl_name: str | None = None
+    visibility: Literal["public", "private"]
+    source: Literal["physical_current", "captured_revision"]
+    content: str
+    line_count: int
+    summary: str
+
+
 class OperatorSafeFormalApplyView(StrictModel):
     node_path: str
     decl_name: str
     revision: int
     state: DeclState
     stage: Literal["statement", "proof"]
+    module: str
+    lean_decl_name: str
+    build: ModuleBuildView
     revision_digest: str
     capture_summary: str
     projection_summary: str
@@ -165,6 +187,9 @@ def _safe_formal_apply_view(value: SafeFormalApplyView) -> OperatorSafeFormalApp
         revision=value.revision,
         state=value.state,
         stage=value.stage,
+        module=value.module,
+        lean_decl_name=value.lean_decl_name,
+        build=value.build,
         revision_digest=value.revision_digest,
         capture_summary=value.capture_summary,
         projection_summary=value.projection_summary,
@@ -185,6 +210,22 @@ def _projection_repair_view(value: ProjectionRepairView) -> OperatorProjectionRe
             )
             for action in value.actions
         ],
+        summary=value.summary,
+    )
+
+
+def _decl_owned_file_view(value: DeclOwnedLeanFileView) -> OperatorDeclOwnedLeanFileView:
+    return OperatorDeclOwnedLeanFileView(
+        node_path=value.node_path,
+        decl_name=value.decl_name,
+        revision=value.revision,
+        stage=value.stage,
+        module=value.module,
+        lean_decl_name=value.lean_decl_name,
+        visibility=value.visibility,
+        source=value.source,
+        content=value.content,
+        line_count=value.line_count,
         summary=value.summary,
     )
 
@@ -238,7 +279,13 @@ class DeclProjectionOperator:
         return self.executor.execute(
             repo_key,
             MUTATE_DECL,
-            lambda ctx: ctx.runtime.decl_graph.create_round_with_decl_drafts(ctx.repo_root, **request.model_dump()),
+            lambda ctx: ctx.runtime.decl_graph.create_round_with_decl_drafts(
+                ctx.repo_root,
+                node_path=request.node_path,
+                strategy_id=request.strategy_id,
+                objective=request.objective,
+                declarations=request.declarations,
+            ),
         )
 
     def start_round(self, repo_key: str, request: RoundIdentityInput) -> ServiceResult:
@@ -252,12 +299,10 @@ class DeclProjectionOperator:
         return self.executor.execute(repo_key, READ_DECL, lambda ctx: ctx.runtime.decl_graph.list_round_views(ctx.repo_root, node_path=request.node_path))
 
     def create_decl(self, repo_key: str, request: DeclCreateInput) -> ServiceResult:
-        payload = request.model_dump()
-        payload["name"] = payload.pop("decl_name", None) or request.name
         return self.executor.execute(
             repo_key,
             MUTATE_DECL,
-            lambda ctx: ctx.runtime.decl_graph.create_decl_revision_view(ctx.repo_root, **payload),
+            lambda ctx: ctx.runtime.decl_graph.create_decl_revision_view(ctx.repo_root, **request.model_dump()),
         )
 
     def get_decl(self, repo_key: str, request: DeclIdentityInput) -> ServiceResult:
@@ -269,6 +314,21 @@ class DeclProjectionOperator:
 
     def list_decls(self, repo_key: str, request: NodeInput) -> ServiceResult:
         return self.executor.execute(repo_key, READ_DECL, lambda ctx: ctx.runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=request.node_path))
+
+    def read_decl_lean_file(self, repo_key: str, request: DeclFileReadInput) -> ServiceResult:
+        return project_operator_result(
+            self.executor.execute(
+                repo_key,
+                READ_DECL,
+                lambda ctx: ctx.runtime.lean_projection.read_decl_owned_lean_file(
+                    ctx.repo_root,
+                    node_path=request.node_path,
+                    decl_name=request.decl_name,
+                    revision=request.revision,
+                ),
+            ),
+            _decl_owned_file_view,
+        )
 
     def open_decl_update(self, repo_key: str, request: DeclUpdateInput) -> ServiceResult:
         return self.executor.execute(repo_key, MUTATE_DECL, lambda ctx: self._open_update(ctx, request))

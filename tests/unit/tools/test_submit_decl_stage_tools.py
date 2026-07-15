@@ -20,7 +20,12 @@ from lean_constellation.services.tool_facade import (
 )
 from lean_constellation.tools.submit_args import SubmitStageReviewArgs, SubmitStageWorkerBlockedArgs, SubmitStageWorkerCompletedArgs
 from lean_constellation.tools.submit_handlers import submit_stage_review, submit_stage_worker_blocked, submit_stage_worker_completed
-from tests.unit_services_helpers import lean_check_payload
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    write_proof_formal_for_test,
+    write_statement_formal_for_test,
+)
 from tests.unit.tools._submit_family_helpers import assert_submit_tools
 
 
@@ -154,6 +159,14 @@ class _FakeLeanProjectionSync:
     def __init__(self, runtime, *, passed: bool) -> None:
         self.runtime = runtime
         self.passed = passed
+        self.decl_file = runtime.lean_projection.decl_file
+
+    def refresh_decl_managed_projection(self, repo_root: Path, *, node_path: str, decl_name: str):
+        return self.decl_file.refresh_decl_managed_projection(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
 
     def check_decl_file_snapshot_sync(self, repo_root: Path, *, node_path: str, decl_name: str, stage: str):
         del repo_root, node_path, decl_name, stage
@@ -176,6 +189,7 @@ def _setup_statement_formal_candidate(
     lean_check: dict[str, str] | None = None,
     deps: list[str] | None = None,
 ) -> str:
+    initialize_native_test_repo(repo_root)
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(repo_root, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -215,7 +229,7 @@ def _setup_statement_formal_candidate(
         nl="The main theorem states True.",
     ).ok
     if write_formal:
-        assert runtime.decl_graph.write_statement_formal(
+        assert write_statement_formal_for_test(runtime,
             repo_root,
             node_path="Main.Topic.Core",
             round_id=round_record.value.round_id,
@@ -229,6 +243,7 @@ def _setup_statement_formal_candidate(
 
 def _setup_statement_nl_candidate(runtime, repo_root: Path, *, decl_names: list[str] | None = None) -> str:
     decl_names = decl_names or ["main_result"]
+    initialize_native_test_repo(repo_root)
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(repo_root, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -274,6 +289,7 @@ def _setup_statement_nl_candidate(runtime, repo_root: Path, *, decl_names: list[
 
 def _setup_proof_nl_candidate(runtime, repo_root: Path, *, decl_names: list[str] | None = None) -> str:
     decl_names = decl_names or ["main_result"]
+    initialize_native_test_repo(repo_root)
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(repo_root, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -314,7 +330,7 @@ def _setup_proof_nl_candidate(runtime, repo_root: Path, *, decl_names: list[str]
             decl_name=decl_name,
             nl=f"{decl_name} states True.",
         ).ok
-        assert runtime.decl_graph.write_statement_formal(
+        assert write_statement_formal_for_test(runtime,
             repo_root,
             node_path="Main.Topic.Core",
             round_id=round_record.value.round_id,
@@ -344,7 +360,7 @@ def _setup_proof_formal_candidate(
     round_id = _setup_proof_nl_candidate(runtime, repo_root, decl_names=decl_names)
     if write_formal:
         for decl_name in decl_names:
-            assert runtime.decl_graph.write_proof_formal(
+            assert write_proof_formal_for_test(runtime,
                 repo_root,
                 node_path="Main.Topic.Core",
                 round_id=round_id,

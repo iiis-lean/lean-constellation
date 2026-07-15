@@ -108,22 +108,22 @@ def test_live_toolkit_adapter_upstream_capture_and_projection(tmp_path: Path) ->
     outline = service.list_upstream_module_declarations(repo_root, module="Upstream")
     assert outline.ok, outline.issues
     assert outline.value is not None
-    assert any(item.decl_name in {"upstreamSmoke", "Upstream.upstreamSmoke"} for item in outline.value.declarations)
-    detail = service.inspect_upstream_declaration(repo_root, module="Upstream", decl_name="upstreamSmoke")
+    assert any(item.lean_decl_name in {"upstreamSmoke", "Upstream.upstreamSmoke"} for item in outline.value.declarations)
+    detail = service.inspect_upstream_declaration(repo_root, module="Upstream", lean_decl_name="upstreamSmoke")
     assert detail.ok, detail.issues
     assert detail.value is not None
     assert detail.value.code_excerpt
     statement = service.capture_upstream_declaration_code(
         repo_root,
         module="Upstream",
-        decl_name="upstreamSmoke",
+        lean_decl_name="upstreamSmoke",
         capture_mode="statement_only",
     )
     assert statement.ok, statement.issues
     full = service.capture_upstream_declaration_code(
         repo_root,
         module="Upstream",
-        decl_name="upstreamSmoke",
+        lean_decl_name="upstreamSmoke",
         capture_mode="full_declaration",
     )
     assert full.ok, full.issues
@@ -133,22 +133,21 @@ def test_live_toolkit_adapter_upstream_capture_and_projection(tmp_path: Path) ->
         name="upstreamSmoke",
         kind=DeclKind.THEOREM,
         module="Upstream",
-        plan_summary="Expose upstreamSmoke.",
+        lean_decl_name="upstreamSmoke",
+        summary="Expose upstreamSmoke.",
     ).ok
     assert service.set_adapter_statement_formal(
         repo_root,
         name="upstreamSmoke",
         code=statement.value.code,
-        upstream_decl_name="upstreamSmoke",
     ).ok
-    assert service.set_adapter_statement_nl(repo_root, name="upstreamSmoke", summary="Upstream smoke statement.").ok
+    assert service.set_adapter_statement_nl(repo_root, name="upstreamSmoke", text="Upstream smoke statement.").ok
     assert service.set_adapter_proof_formal(
         repo_root,
         name="upstreamSmoke",
         code=full.value.code,
-        upstream_decl_name="upstreamSmoke",
     ).ok
-    assert service.set_adapter_proof_nl(repo_root, name="upstreamSmoke", summary="Upstream smoke proof.").ok
+    assert service.set_adapter_proof_nl(repo_root, name="upstreamSmoke", text="Upstream smoke proof.").ok
     assert service.finalize_adapter_decl(repo_root, name="upstreamSmoke").ok
     assert service.bind_adapter_interface(
         repo_root,

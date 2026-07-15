@@ -1140,12 +1140,12 @@ Do these exact actions:
 1. Read the developer instructions and find the first token that starts with RTCODEX_DEV_MARKER_ADAPTER_DECL_CATALOG_STRICT_.
 2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report the actual skill directory names you see, even if the list is empty.
 3. Call application MCP tools "inspect_adapter_input", "list_preparation_requirements", "list_root_interfaces", "get_adapter_upstream_metadata", and "get_adapter_upstream_status".
-4. Call application MCP tool "create_adapter_decl" with name "main_result", kind "theorem", module "Upstream", and plan_summary "Expose the upstream smoke theorem."
-5. Call application MCP tool "set_adapter_statement_nl" for "main_result" with summary "The upstream smoke theorem states True." and detail "Runtime Matrix real Codex adapter probe."
-6. Call application MCP tool "set_adapter_statement_formal" for "main_result" with code exactly "theorem upstreamSmoke : True := by\\n  trivial" and upstream_decl_name "upstreamSmoke".
-7. Call application MCP tool "find_adapter_decl_by_upstream" with module "Upstream", upstream_decl_name "upstreamSmoke", and adapter_name_query null.
-8. Call application MCP tool "set_adapter_proof_nl" for "main_result" with summary "Use triviality." and detail "The upstream theorem is already proved by triviality."
-9. Call application MCP tool "set_adapter_proof_formal" for "main_result" with code exactly "theorem upstreamSmoke : True := by\\n  trivial" and upstream_decl_name "upstreamSmoke".
+4. Call application MCP tool "create_adapter_decl" with name "main_result", kind "theorem", module "Upstream", lean_decl_name "upstreamSmoke", and summary "Expose the upstream smoke theorem."
+5. Call application MCP tool "set_adapter_statement_nl" for "main_result" with text exactly "The upstream smoke theorem states True.\\n\\nRuntime Matrix real Codex adapter probe."
+6. Call application MCP tool "set_adapter_statement_formal" for "main_result" with code exactly "theorem upstreamSmoke : True := by\\n  trivial".
+7. Call application MCP tool "find_adapter_decl_by_upstream" with module "Upstream", lean_decl_name "upstreamSmoke", and adapter_name_query null.
+8. Call application MCP tool "set_adapter_proof_nl" for "main_result" with text exactly "Use triviality.\\n\\nThe upstream theorem is already proved by triviality."
+9. Call application MCP tool "set_adapter_proof_formal" for "main_result" with code exactly "theorem upstreamSmoke : True := by\\n  trivial".
 10. Call application MCP tool "finalize_adapter_decl" with name "main_result".
 11. Call application MCP tool "bind_adapter_interface" with interface_name "main_result", decl_name "main_result", and binding_summary "Runtime Matrix real Codex binds required interface to finalized adapter declaration."
 12. Call application MCP tool "check_adapter_catalog_ready_preflight".

@@ -13,6 +13,7 @@ from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import CONTENT_NODE_PATH, RuntimeMatrixWorkspace
 from tests.real.runtime_matrix.strict.tool_sweep_partitions import decl_graph_tool_sweep_names
 from tests.real.runtime_matrix.strict_helpers import call_tool_with_evidence, checkpoint_with_evidence, restore_with_evidence
+from tests.unit_services_helpers import write_proof_formal_for_test, write_statement_formal_for_test
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
@@ -406,7 +407,7 @@ def _seed_ready_decl(ws: RuntimeMatrixWorkspace, name: str, *, public: bool) -> 
         origin=[{"kind": "runtime_matrix_strict", "ref": name}],
         deps=[],
     ).ok
-    assert ws.runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(ws.runtime,
         ws.provider_repo,
         node_path=CONTENT_NODE_PATH,
         round_id=round_record.value.round_id,
@@ -424,7 +425,7 @@ def _seed_ready_decl(ws: RuntimeMatrixWorkspace, name: str, *, public: bool) -> 
         origin=[{"kind": "runtime_matrix_strict", "ref": f"{name}:proof"}],
         deps=[],
     ).ok
-    assert ws.runtime.decl_graph.write_proof_formal(
+    assert write_proof_formal_for_test(ws.runtime,
         ws.provider_repo,
         node_path=CONTENT_NODE_PATH,
         round_id=round_record.value.round_id,

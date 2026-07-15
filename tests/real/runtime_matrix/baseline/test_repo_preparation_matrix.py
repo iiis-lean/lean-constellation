@@ -301,7 +301,8 @@ def _complete_adapter_catalog_actions():
                 "name": "main_result",
                 "kind": "theorem",
                 "module": "Upstream",
-                "plan_summary": "Expose the upstream smoke theorem.",
+                "lean_decl_name": "upstreamSmoke",
+                "summary": "Expose the upstream smoke theorem.",
             },
         ),
         (
@@ -309,8 +310,7 @@ def _complete_adapter_catalog_actions():
             "set_adapter_statement_nl",
             {
                 "name": "main_result",
-                "summary": "The upstream smoke theorem states True.",
-                "detail": "Runtime Matrix adapter fixture.",
+                "text": "The upstream smoke theorem states True.\n\nRuntime Matrix adapter fixture.",
             },
         ),
         (
@@ -319,7 +319,6 @@ def _complete_adapter_catalog_actions():
             {
                 "name": "main_result",
                 "code": "theorem upstreamSmoke : True := by\n  trivial",
-                "upstream_decl_name": "upstreamSmoke",
             },
         ),
         (
@@ -327,8 +326,7 @@ def _complete_adapter_catalog_actions():
             "set_adapter_proof_nl",
             {
                 "name": "main_result",
-                "summary": "Use triviality.",
-                "detail": "The upstream theorem is already proved by triviality.",
+                "text": "Use triviality.\n\nThe upstream theorem is already proved by triviality.",
             },
         ),
         (
@@ -337,7 +335,6 @@ def _complete_adapter_catalog_actions():
             {
                 "name": "main_result",
                 "code": "theorem upstreamSmoke : True := by\n  trivial",
-                "upstream_decl_name": "upstreamSmoke",
             },
         ),
         ("application", "finalize_adapter_decl", {"name": "main_result"}),

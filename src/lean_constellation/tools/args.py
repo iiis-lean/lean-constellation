@@ -587,17 +587,16 @@ class RoundTerminalArgs(RoundIdArgs):
 
 class DeclCreateArgs(StrictModel):
     round_id: str = Field(description="Round id in which to plan this declaration creation.")
-    name: str = Field(description="Declaration name inside the current content node.")
+    name: str = Field(description="Flat Lean Constellation declaration key and native module filename segment; dots and path separators are not allowed.")
     kind: str = Field(description="Declaration kind.")
-    objective: str = Field(description="Objective for this declaration change.")
-    summary: str = Field(description="Plan summary for the new declaration.")
+    objective: str = Field(description="Mathematical objective for this declaration change in the current round.")
+    summary: str = Field(description="Concise stable catalog summary of the new declaration.")
     public: bool = Field(default=False, description="Whether the declaration should be public.")
     end_after_state: str = Field(default="declared", description="Target state after this round: declared or proved.")
     require_target_state_satisfied: bool = Field(
         default=True,
         description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
     )
-    module: str | None = Field(default=None, description="Optional upstream/native module override.")
 
 
 class DeclUpdateArgs(StrictModel):
@@ -605,7 +604,10 @@ class DeclUpdateArgs(StrictModel):
     name: str = Field(description="Existing declaration name.")
     objective: str = Field(description="Objective for this update.")
     end_after_state: str = Field(description="Target state after this update: declared or proved.")
-    start_before_state: str | None = Field(default=None, description="Expected state before the update, if constrained.")
+    start_before_state: str | None = Field(
+        default=None,
+        description="Optional requested state to reset to before this round; release protection may forbid crossing an accepted statement boundary.",
+    )
     require_target_state_satisfied: bool = Field(
         default=True,
         description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
@@ -629,9 +631,8 @@ class DeclRevisionArgs(DeclNameArgs):
 class DeclInspectArgs(DeclNameArgs):
     revision: int | None = Field(default=None, ge=1, description="Optional revision number; omit to inspect the current revision.")
     include_statement_nl: bool = Field(default=False, description="Whether to include natural-language statement content.")
-    include_statement_formal: bool = Field(default=False, description="Whether to include formal statement code and check.")
     include_proof_nl: bool = Field(default=False, description="Whether to include natural-language proof content.")
-    include_proof_formal: bool = Field(default=False, description="Whether to include formal proof code and check.")
+    include_formal: bool = Field(default=False, description="Whether to include the complete primary formal declaration source and check.")
 
 
 class NodePublicDeclListArgs(NodePathArgs):
@@ -658,6 +659,11 @@ class RepoPublicDeclInspectArgs(RepoKeyArgs, DeclInspectArgs):
     pass
 
 
+class VisibleDeclLeanFileArgs(NodePathArgs, DeclNameArgs):
+    repo_key: str | None = Field(default=None, description="Optional visible provider repo key; omit for the current repo.")
+    revision: int | None = Field(default=None, ge=1, description="Optional visible revision; omit to use the effective current/public revision.")
+
+
 class DeclNamesArgs(StrictModel):
     decl_names: list[str] = Field(description="Declaration names in the current content node.")
 
@@ -666,18 +672,9 @@ class DeclReadyArgs(DeclNameArgs):
     policy: str | None = Field(default=None, description="Optional readiness policy override.")
 
 
-class DeclStageNlArgs(StrictModel):
-    round_id: str | None = Field(default=None, description="Current declaration round id; omit to use the current stage round.")
-    decl_name: str = Field(description="Declaration name to update.")
-    nl: str = Field(description="Natural-language statement or proof content.")
-    origin: list[dict[str, object]] | None = Field(default=None, description="Optional structured material origins.")
-    deps: list[str] | None = Field(default=None, description="Optional declaration dependency names.")
-
-
 class StatementNlSetArgs(StrictModel):
     decl_name: str = Field(description="Declaration name to update in the current Statement NL stage batch.")
-    nl: str = Field(description="Natural-language statement text.")
-    summary: str | None = Field(default=None, description="Optional short summary of the statement update.")
+    text: str = Field(description="Complete natural-language statement text; may contain multiple Markdown paragraphs.")
 
 
 class StatementSourceOriginAddArgs(StrictModel):
@@ -734,8 +731,7 @@ class StatementDepsClearArgs(StrictModel):
 
 class ProofNlSetArgs(StrictModel):
     decl_name: str = Field(description="Theorem-like declaration name to update in the current Proof NL stage batch.")
-    proof_nl: str = Field(description="Natural-language proof route for the current accepted formal statement.")
-    summary: str | None = Field(default=None, description="Optional short summary of the proof-route update.")
+    text: str = Field(description="Complete natural-language proof route; may contain multiple Markdown paragraphs.")
 
 
 class ProofSourceOriginAddArgs(StrictModel):
@@ -898,7 +894,7 @@ class UpstreamModuleArgs(StrictModel):
 
 class UpstreamDeclInspectArgs(StrictModel):
     module: str = Field(description="Upstream module name.")
-    decl_name: str = Field(description="Upstream declaration name.")
+    lean_decl_name: str = Field(description="Complete upstream Lean declaration name.")
 
 
 class UpstreamSourceContextArgs(UpstreamDeclInspectArgs):
@@ -912,20 +908,19 @@ class UpstreamCaptureArgs(UpstreamDeclInspectArgs):
 class AdapterDeclCreateArgs(StrictModel):
     name: str = Field(description="Adapter declaration name.")
     kind: str = Field(description="Declaration kind.")
-    plan_summary: str = Field(description="Short declaration plan summary.")
     module: str = Field(description="Upstream module containing the declaration.")
+    lean_decl_name: str = Field(description="Complete upstream Lean declaration name.")
+    summary: str = Field(description="Short adapter catalog summary.")
 
 
 class AdapterFormalArgs(StrictModel):
     name: str = Field(description="Adapter declaration name.")
     code: str = Field(description="Lean code captured from the upstream repo.")
-    upstream_decl_name: str | None = Field(default=None, description="Optional upstream declaration name if it differs from adapter name.")
 
 
 class AdapterNlArgs(StrictModel):
     name: str = Field(description="Adapter declaration name.")
-    summary: str = Field(description="Natural-language statement or proof summary.")
-    detail: str | None = Field(default=None, description="Optional detailed natural-language content.")
+    text: str = Field(description="Complete natural-language statement or proof text; may contain multiple Markdown paragraphs.")
 
 
 class AdapterOriginArgs(StrictModel):
@@ -962,7 +957,7 @@ class AdapterDeclOptionalNameArgs(StrictModel):
 
 class AdapterDeclUpstreamFindArgs(StrictModel):
     module: str = Field(description="Upstream module containing the declaration.")
-    upstream_decl_name: str | None = Field(default=None, description="Optional upstream declaration name to match.")
+    lean_decl_name: str | None = Field(default=None, description="Optional complete upstream Lean declaration name to match.")
     adapter_name_query: str | None = Field(default=None, description="Optional adapter declaration name text query.")
 
 

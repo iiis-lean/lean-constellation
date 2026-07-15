@@ -12,19 +12,19 @@ EXPECTED_SURFACE_COUNTS = {
     "RootInterfacePrepareAgent": (5, 11, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 21, 1, 4, 2),
-    "CoordinatorAgent": (34, 83, 2, 4, 19),
-    "ContentPlanAgent": (25, 73, 3, 6, 17),
-    "NodeDirDependencyReconAgent": (4, 13, 1, 1, 2),
+    "CoordinatorAgent": (35, 84, 2, 4, 19),
+    "ContentPlanAgent": (26, 74, 3, 6, 17),
+    "NodeDirDependencyReconAgent": (5, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 19, 2, 3, 4),
-    "StatementNLWorkerAgent": (12, 49, 1, 2, 4),
-    "StatementNLReviewerAgent": (12, 41, 1, 1, 2),
-    "StatementFormalWorkerAgent": (16, 53, 1, 2, 8),
-    "StatementFormalReviewerAgent": (12, 41, 1, 1, 2),
-    "ProofNLWorkerAgent": (17, 62, 1, 2, 7),
-    "ProofNLReviewerAgent": (14, 44, 1, 1, 2),
-    "ProofFormalWorkerAgent": (19, 63, 1, 2, 8),
-    "ProofFormalReviewerAgent": (13, 43, 1, 1, 2),
+    "StatementNLWorkerAgent": (13, 50, 1, 2, 4),
+    "StatementNLReviewerAgent": (13, 42, 1, 1, 2),
+    "StatementFormalWorkerAgent": (17, 54, 1, 2, 8),
+    "StatementFormalReviewerAgent": (13, 42, 1, 1, 2),
+    "ProofNLWorkerAgent": (18, 63, 1, 2, 7),
+    "ProofNLReviewerAgent": (15, 45, 1, 1, 2),
+    "ProofFormalWorkerAgent": (20, 64, 1, 2, 8),
+    "ProofFormalReviewerAgent": (14, 44, 1, 1, 2),
 }
 
 
@@ -157,8 +157,9 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
     assert len(report.skills) == 19
-    assert len(report.application_group_keys) == 34
-    assert len(report.application_tools) == 83
+    assert len(report.application_group_keys) == 35
+    assert len(report.application_tools) == 84
+    assert "read_visible_decl_lean_file" in tools
     assert len(report.submit_group_keys) == 2
     assert len(report.submit_tools) == 4
     assert {

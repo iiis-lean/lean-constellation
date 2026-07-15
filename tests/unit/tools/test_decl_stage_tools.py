@@ -7,7 +7,7 @@ from lean_constellation.services import create_test_runtime_services
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.tool_facade import ActorContext, DeclStageContextView, NodeContextView, RepoContextView, RuntimeToolContext, ToolExecutionContext
 from lean_constellation.tools import build_application_tool_specs
-from tests.unit_services_helpers import lean_check_payload
+from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, write_statement_formal_for_test
 from lean_constellation.tools.args import (
     DeclStageFileCheckArgs,
     NoArgs,
@@ -359,6 +359,7 @@ def _create_local_resource(runtime, repo_root: Path) -> str:
 
 def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -404,11 +405,19 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
     statement = _set_statement_nl(
         runtime,
         ctx,
-        StatementNlSetArgs(decl_name="main_result", nl="The main result states True.", summary="set statement"),
+        StatementNlSetArgs(decl_name="main_result", text="The main result states True."),
     )
     assert statement.ok, statement.issues
-    assert statement.value.statement_nl == "The main result states True."
-    assert statement.value.state == DeclState.PLANNED
+    assert statement.value.decl.statement_nl == "The main result states True."
+    assert statement.value.decl.state == DeclState.PLANNED
+    assert statement.value.changed_files == []
+    assert statement.value.reread_required is False
+    prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert prepared.ok, prepared.issues
 
     origin = _add_statement_source_origin(
         runtime,
@@ -416,12 +425,15 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
         StatementSourceOriginAddArgs(decl_name="main_result", source_path="notes.md", start_line=2, end_line=4, note="Definition range."),
     )
     assert origin.ok, origin.issues
-    assert len(origin.value.statement_origin) == 1
-    assert origin.value.statement_origin[0].kind == "source"
-    assert origin.value.statement_origin[0].source_path == "notes.md"
-    assert origin.value.statement_origin[0].start_line == 2
-    assert origin.value.statement_origin[0].end_line == 4
-    assert origin.value.statement_origin[0].note == "Definition range."
+    assert len(origin.value.decl.statement_origin) == 1
+    assert origin.value.decl.statement_origin[0].kind == "source"
+    assert origin.value.decl.statement_origin[0].source_path == "notes.md"
+    assert origin.value.decl.statement_origin[0].start_line == 2
+    assert origin.value.decl.statement_origin[0].end_line == 4
+    assert origin.value.decl.statement_origin[0].note == "Definition range."
+    assert origin.value.managed_projection_changed is True
+    assert origin.value.changed_files == [prepared.value.path]
+    assert origin.value.reread_required is True
 
     dep = _add_statement_decl_dep(
         runtime,
@@ -429,7 +441,7 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
         StatementDeclDepAddArgs(decl_name="main_result", dep_name="supporting_statement", reason="Statement uses supporting notation."),
     )
     assert dep.ok, dep.issues
-    assert dep.value.statement_deps == ["supporting_statement"]
+    assert dep.value.decl.statement_deps == ["supporting_statement"]
     stored = runtime.decl_graph.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert stored.ok and stored.value is not None
     assert stored.value.statement.deps[0].kind == "repo_decl"
@@ -455,7 +467,7 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
         StatementMathlibDepAddArgs(decl_name="main_result", mathlib_decl_name="Nat.succ", module="Mathlib.Data.Nat.Basic", reason="Statement uses successor."),
     )
     assert mathlib.ok, mathlib.issues
-    assert mathlib.value.statement_deps == ["Nat.succ", "supporting_statement"]
+    assert mathlib.value.decl.statement_deps == ["Nat.succ", "supporting_statement"]
     stored = runtime.decl_graph.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert stored.ok and stored.value is not None
     assert {item.kind for item in stored.value.statement.deps} == {"repo_decl", "mathlib_decl"}
@@ -463,6 +475,7 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
 
 def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -503,7 +516,7 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
             decl_name=decl_name,
             nl=f"{decl_name} statement.",
         ).ok
-        assert runtime.decl_graph.write_statement_formal(
+        assert write_statement_formal_for_test(runtime,
             tmp_path,
             node_path="Main.Topic.Core",
             round_id=round_record.value.round_id,
@@ -524,11 +537,13 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
     proof = _set_proof_nl(
         runtime,
         ctx,
-        ProofNlSetArgs(decl_name="main_result", proof_nl="Use proved_helper and finish by trivial.", summary="set proof"),
+        ProofNlSetArgs(decl_name="main_result", text="Use proved_helper and finish by trivial."),
     )
     assert proof.ok, proof.issues
-    assert proof.value.proof_nl == "Use proved_helper and finish by trivial."
-    assert proof.value.state == DeclState.PLANNED
+    assert proof.value.decl.proof_nl == "Use proved_helper and finish by trivial."
+    assert proof.value.decl.state == DeclState.PLANNED
+    assert proof.value.changed_files == []
+    assert proof.value.reread_required is False
 
     missing_source = _add_proof_source_origin(
         runtime,
@@ -544,9 +559,9 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
         ProofResourceOriginAddArgs(decl_name="main_result", resource_key=resource_key, start_locator="main.md:1", note="Proof resource."),
     )
     assert origin.ok, origin.issues
-    assert len(origin.value.proof_origin) == 1
-    assert origin.value.proof_origin[0].kind == "resource"
-    assert origin.value.proof_origin[0].resource_key == resource_key
+    assert len(origin.value.decl.proof_origin) == 1
+    assert origin.value.decl.proof_origin[0].kind == "resource"
+    assert origin.value.decl.proof_origin[0].resource_key == resource_key
 
     dep = _add_proof_decl_dep(
         runtime,
@@ -554,9 +569,9 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
         ProofDeclDepAddArgs(decl_name="main_result", dep_name="proved_helper", reason="Main proof uses helper."),
     )
     assert dep.ok, dep.issues
-    assert dep.value.proof_deps == ["proved_helper"]
-    assert dep.value.proof_dep_refs[0].kind == "repo_decl"
-    assert dep.value.proof_dep_refs[0].reason == "Main proof uses helper."
+    assert dep.value.decl.proof_deps == ["proved_helper"]
+    assert dep.value.decl.proof_dep_refs[0].kind == "repo_decl"
+    assert dep.value.decl.proof_dep_refs[0].reason == "Main proof uses helper."
     stored = runtime.decl_graph.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert stored.ok and stored.value is not None
     assert stored.value.proof.deps[0].kind == "repo_decl"
@@ -589,13 +604,14 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
         ProofMathlibDepAddArgs(decl_name="main_result", mathlib_decl_name="Nat.succ", module="Mathlib.Data.Nat.Basic", reason="Proof uses successor facts."),
     )
     assert mathlib.ok, mathlib.issues
-    assert mathlib.value.proof_deps == ["Nat.succ", "proved_helper"]
-    assert [item.kind for item in mathlib.value.proof_dep_refs] == ["mathlib_decl", "repo_decl"]
-    assert mathlib.value.proof_dep_refs[0].ref.module == "Mathlib.Data.Nat.Basic"
+    assert mathlib.value.decl.proof_deps == ["Nat.succ", "proved_helper"]
+    assert [item.kind for item in mathlib.value.decl.proof_dep_refs] == ["mathlib_decl", "repo_decl"]
+    assert mathlib.value.decl.proof_dep_refs[0].ref.module == "Mathlib.Data.Nat.Basic"
 
 
 def test_proof_formal_dep_tool_rejects_unproved_same_round_dep(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -636,7 +652,7 @@ def test_proof_formal_dep_tool_rejects_unproved_same_round_dep(tmp_path: Path) -
             decl_name=decl_name,
             nl=f"{decl_name} statement.",
         ).ok
-        assert runtime.decl_graph.write_statement_formal(
+        assert write_statement_formal_for_test(runtime,
             tmp_path,
             node_path="Main.Topic.Core",
             round_id=round_record.value.round_id,
@@ -786,6 +802,7 @@ def test_formal_read_checks_allow_reviewer_role_on_reviewed_formal_stage(tmp_pat
 def test_statement_nl_review_tools_record_marks_and_report_status(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
     runtime.ark.step_service = _FakeStepService()
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -856,6 +873,7 @@ def test_proof_nl_review_tools_record_marks_and_report_status(tmp_path: Path) ->
     runtime.ark.step_service = _FakeStepService(
         _FakeReviewerStep(stage="proof_nl", agent_type="ProofNLReviewerAgent", agent_role="proof_nl_reviewer")
     )
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -934,6 +952,7 @@ def test_proof_formal_review_tools_record_marks_with_next_action(tmp_path: Path)
     runtime.ark.step_service = _FakeStepService(
         _FakeReviewerStep(stage="proof_formal", agent_type="ProofFormalReviewerAgent", agent_role="proof_formal_reviewer")
     )
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -1012,6 +1031,7 @@ def test_proof_formal_review_tools_record_marks_with_next_action(tmp_path: Path)
 
 def test_statement_formal_deps_tool_updates_only_current_batch_statement_deps(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(
@@ -1070,14 +1090,14 @@ def test_statement_formal_deps_tool_updates_only_current_batch_statement_deps(tm
 
     assert updated.ok, updated.issues
     assert updated.value is not None
-    assert updated.value.statement_deps == ["supporting_statement"]
+    assert updated.value.decl.statement_deps == ["supporting_statement"]
     cleared = _clear_statement_deps(
         runtime,
         ctx,
         StatementDepsClearArgs(decl_name="main_result", reason="No expression deps needed."),
     )
     assert cleared.ok, cleared.issues
-    assert cleared.value.statement_deps == []
+    assert cleared.value.decl.statement_deps == []
 
     out_of_batch = _clear_statement_deps(
         runtime,
@@ -1098,6 +1118,7 @@ def test_statement_formal_review_tools_record_stage_specific_marks_and_validate_
             agent_role="statement_formal_reviewer",
         )
     )
+    initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic", boundary="Topic boundary").ok
     assert runtime.node.create_content_node(

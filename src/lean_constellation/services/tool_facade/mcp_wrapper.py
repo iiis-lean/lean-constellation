@@ -183,11 +183,13 @@ class MCPWrapperComponent:
                 )
             try:
                 from lean_constellation.services.foundation import DeclFileKey
+                from lean_constellation.services.foundation.module_layout import local_projection_path
 
-                path = self.runtime.foundation.layout.decl_file_path(
+                logical_path = self.runtime.foundation.layout.decl_file_path(
                     FoundationContext(repo_root=ctx.repo_root),
                     DeclFileKey(node_path=ctx.node.node_path, decl_kind=decl_kind, decl_name=arg_value),
                 )
+                path = local_projection_path(ctx.repo_root, logical_path)
                 self.runtime.foundation.layout.assert_within(ctx.repo_root, path)
             except Exception as exc:  # noqa: BLE001
                 return self.runtime.foundation.fail(

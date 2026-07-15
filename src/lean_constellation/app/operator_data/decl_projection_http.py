@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from lean_constellation.app.operator_data.decl_projection import (
     DeclCreateInput,
     DeclDeleteInput,
+    DeclFileReadInput,
     DeclIdentityInput,
     DeclUpdateInput,
     FormalApplyInput,
@@ -43,6 +44,7 @@ DECL_PROJECTION_ROUTES = (
     DeclProjectionRoute("POST", "/repos/{repo_key}/decl/declarations", DeclCreateInput, "create_decl"),
     DeclProjectionRoute("GET", "/repos/{repo_key}/decl/declarations/item", DeclIdentityInput, "get_decl"),
     DeclProjectionRoute("GET", "/repos/{repo_key}/decl/declarations", NodeInput, "list_decls"),
+    DeclProjectionRoute("GET", "/repos/{repo_key}/decl/declarations/file", DeclFileReadInput, "read_decl_lean_file"),
     DeclProjectionRoute("POST", "/repos/{repo_key}/decl/declarations/update", DeclUpdateInput, "open_decl_update"),
     DeclProjectionRoute("POST", "/repos/{repo_key}/decl/declarations/delete", DeclDeleteInput, "mark_decl_delete"),
     DeclProjectionRoute("POST", "/repos/{repo_key}/decl/stages/statement-nl", NaturalLanguageInput, "write_statement_nl"),

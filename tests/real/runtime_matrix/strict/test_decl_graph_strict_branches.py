@@ -13,6 +13,7 @@ from tests.real.runtime_matrix.baseline.test_decl_graph_round_matrix import (
     _start_decl_round,
     _wait_round_completed,
 )
+from tests.unit_services_helpers import write_proof_formal_for_test, write_statement_formal_for_test
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
@@ -158,7 +159,7 @@ def _seed_committed_decl(ws: RuntimeMatrixWorkspace, *, name: str, public: bool)
         origin=[{"kind": "runtime_matrix_strict", "ref": name}],
         deps=[],
     ).ok
-    assert ws.runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(ws.runtime,
         ws.provider_repo,
         node_path=round_fixture.node_path,
         round_id=round_fixture.round_id,
@@ -176,7 +177,7 @@ def _seed_committed_decl(ws: RuntimeMatrixWorkspace, *, name: str, public: bool)
         origin=[{"kind": "runtime_matrix_strict", "ref": f"{name}:proof"}],
         deps=[],
     ).ok
-    assert ws.runtime.decl_graph.write_proof_formal(
+    assert write_proof_formal_for_test(ws.runtime,
         ws.provider_repo,
         node_path=round_fixture.node_path,
         round_id=round_fixture.round_id,

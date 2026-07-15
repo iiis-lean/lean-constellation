@@ -257,3 +257,15 @@ def test_repo_material_route_declarations_keep_repo_identity_out_of_body() -> No
         assert "do not accept" in str(exc)
     else:
         raise AssertionError("read route accepted an identity-bearing body")
+
+
+def test_check_native_skeleton_projects_gate_report(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    make_repo(workspace)
+    api = _api(workspace)
+
+    result = api.check_native_skeleton("MainRepo")
+
+    assert result.ok and result.value is not None, result.issues
+    assert result.value.gate_name == "native_repo_skeleton"
+    assert isinstance(result.value.passed, bool)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.domain.refs import DeclRef, MathlibRef
-from lean_constellation.services.decl_graph.models import DeclOriginRef, DeclState, MathlibDeclDep, RepoDeclDep
+from lean_constellation.services.decl_graph.models import DeclOriginRef, DeclStageMutationToolView, DeclState, MathlibDeclDep, RepoDeclDep
 from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_origin_ref
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
@@ -147,6 +147,23 @@ def _current_decl_view(runtime, ctx, decl_name: str):
     return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=decl_name)
 
 
+def _current_decl_mutation_view(runtime, ctx, decl_name: str, mutation):
+    current = _current_decl_view(runtime, ctx, decl_name)
+    if not current.ok or current.value is None:
+        return current
+    return runtime.foundation.ok(
+        DeclStageMutationToolView(
+            decl=current.value,
+            projection_stage=mutation.value.projection_stage,
+            managed_projection_changed=mutation.value.managed_projection_changed,
+            changed_files=list(mutation.value.changed_files),
+            reread_required=mutation.value.reread_required,
+            summary=mutation.value.summary,
+        ),
+        warnings=[*mutation.issues, *current.issues],
+    )
+
+
 def _set_statement_nl(runtime, ctx, args: StatementNlSetArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
     if not allowed.ok:
@@ -156,11 +173,11 @@ def _set_statement_nl(runtime, ctx, args: StatementNlSetArgs):
         node_path=_node(ctx),
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
-        nl=args.nl,
+        nl=args.text,
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _add_statement_source_origin(runtime, ctx, args: StatementSourceOriginAddArgs):
@@ -181,7 +198,7 @@ def _add_statement_source_origin(runtime, ctx, args: StatementSourceOriginAddArg
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _add_statement_resource_origin(runtime, ctx, args: StatementResourceOriginAddArgs):
@@ -198,7 +215,7 @@ def _add_statement_resource_origin(runtime, ctx, args: StatementResourceOriginAd
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _remove_statement_origin(runtime, ctx, args: StatementOriginRemoveArgs):
@@ -214,7 +231,7 @@ def _remove_statement_origin(runtime, ctx, args: StatementOriginRemoveArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _clear_statement_origins(runtime, ctx, args: StatementOriginsClearArgs):
@@ -229,7 +246,7 @@ def _clear_statement_origins(runtime, ctx, args: StatementOriginsClearArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _actor_role(ctx) -> str:
@@ -340,7 +357,7 @@ def _add_statement_decl_dep(runtime, ctx, args: StatementDeclDepAddArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _add_statement_mathlib_dep(runtime, ctx, args: StatementMathlibDepAddArgs):
@@ -363,7 +380,7 @@ def _add_statement_mathlib_dep(runtime, ctx, args: StatementMathlibDepAddArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _remove_statement_dep(runtime, ctx, args: StatementDepRemoveArgs):
@@ -379,7 +396,7 @@ def _remove_statement_dep(runtime, ctx, args: StatementDepRemoveArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _clear_statement_deps(runtime, ctx, args: StatementDepsClearArgs):
@@ -394,7 +411,7 @@ def _clear_statement_deps(runtime, ctx, args: StatementDepsClearArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _set_proof_nl(runtime, ctx, args: ProofNlSetArgs):
@@ -406,11 +423,11 @@ def _set_proof_nl(runtime, ctx, args: ProofNlSetArgs):
         node_path=_node(ctx),
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
-        nl=args.proof_nl,
+        nl=args.text,
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _add_proof_source_origin(runtime, ctx, args: ProofSourceOriginAddArgs):
@@ -434,7 +451,7 @@ def _add_proof_source_origin(runtime, ctx, args: ProofSourceOriginAddArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _add_proof_resource_origin(runtime, ctx, args: ProofResourceOriginAddArgs):
@@ -454,7 +471,7 @@ def _add_proof_resource_origin(runtime, ctx, args: ProofResourceOriginAddArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _remove_proof_origin(runtime, ctx, args: ProofOriginRemoveArgs):
@@ -470,7 +487,7 @@ def _remove_proof_origin(runtime, ctx, args: ProofOriginRemoveArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _clear_proof_origins(runtime, ctx, args: ProofOriginsClearArgs):
@@ -485,7 +502,7 @@ def _clear_proof_origins(runtime, ctx, args: ProofOriginsClearArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _assert_proof_decl_dep_visible(runtime, ctx, *, decl_name: str, args: ProofDeclDepAddArgs):
@@ -560,7 +577,7 @@ def _add_proof_decl_dep(runtime, ctx, args: ProofDeclDepAddArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _add_proof_mathlib_dep(runtime, ctx, args: ProofMathlibDepAddArgs):
@@ -583,7 +600,7 @@ def _add_proof_mathlib_dep(runtime, ctx, args: ProofMathlibDepAddArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):
@@ -599,7 +616,7 @@ def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _clear_proof_deps(runtime, ctx, args: ProofDepsClearArgs):
@@ -614,7 +631,7 @@ def _clear_proof_deps(runtime, ctx, args: ProofDepsClearArgs):
     )
     if not written.ok:
         return written
-    return _current_decl_view(runtime, ctx, args.decl_name)
+    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
 
 
 def _assert_statement_deps_visible(runtime, ctx, *, decl_name: str, deps: list[str]):
@@ -1189,7 +1206,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Set the natural-language statement text for one declaration in the current Statement NL stage without changing origins, dependencies, proof artifacts, or declaration state.",
             args_model=StatementNlSetArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
             roles=worker_roles,
             handler=_set_statement_nl,
@@ -1199,7 +1216,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add one typed source-origin range supporting the statement NL candidate in the current Statement NL stage.",
             args_model=StatementSourceOriginAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
             roles=worker_roles,
             handler=_add_statement_source_origin,
@@ -1209,7 +1226,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add one typed resource-origin reference supporting the statement NL candidate in the current Statement NL stage.",
             args_model=StatementResourceOriginAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
             roles=worker_roles,
             handler=_add_statement_resource_origin,
@@ -1219,7 +1236,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove one statement origin from the current Statement NL candidate by 0-based origin index.",
             args_model=StatementOriginRemoveArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
             roles=worker_roles,
             handler=_remove_statement_origin,
@@ -1229,7 +1246,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Clear all statement origins from the current Statement NL candidate without changing statement text or dependencies.",
             args_model=StatementOriginsClearArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE},
             roles=worker_roles,
             handler=_clear_statement_origins,
@@ -1239,7 +1256,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add one typed project declaration dependency needed to express the statement candidate.",
             args_model=StatementDeclDepAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
             roles=worker_roles,
             handler=_add_statement_decl_dep,
@@ -1249,7 +1266,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add one typed Mathlib declaration dependency needed to express the statement candidate.",
             args_model=StatementMathlibDepAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
             roles=worker_roles,
             handler=_add_statement_mathlib_dep,
@@ -1259,7 +1276,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove one statement dependency from the current candidate by 0-based dependency index.",
             args_model=StatementDepRemoveArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
             roles=worker_roles,
             handler=_remove_statement_dep,
@@ -1269,7 +1286,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Clear all statement dependencies from the current candidate without changing statement text or origins.",
             args_model=StatementDepsClearArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
             roles=worker_roles,
             handler=_clear_statement_deps,
@@ -1279,7 +1296,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Set the natural-language proof route for one theorem-like declaration in the current Proof NL stage without changing origins, dependencies, formal artifacts, or declaration state.",
             args_model=ProofNlSetArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
             roles=worker_roles,
             handler=_set_proof_nl,
@@ -1289,7 +1306,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add one typed source-origin range supporting the proof route in the current Proof NL stage.",
             args_model=ProofSourceOriginAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
             roles=worker_roles,
             handler=_add_proof_source_origin,
@@ -1299,7 +1316,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add one typed resource-origin reference supporting the proof route in the current Proof NL stage.",
             args_model=ProofResourceOriginAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
             roles=worker_roles,
             handler=_add_proof_resource_origin,
@@ -1309,7 +1326,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove one proof origin from the current Proof NL candidate by 0-based origin index.",
             args_model=ProofOriginRemoveArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
             roles=worker_roles,
             handler=_remove_proof_origin,
@@ -1319,7 +1336,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Clear all proof origins from the current Proof NL candidate without changing proof text or dependencies.",
             args_model=ProofOriginsClearArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE},
             roles=worker_roles,
             handler=_clear_proof_origins,
@@ -1329,7 +1346,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add one typed project declaration dependency used by the proof route or formal proof.",
             args_model=ProofDeclDepAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
             roles=worker_roles,
             handler=_add_proof_decl_dep,
@@ -1339,7 +1356,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add one typed Mathlib declaration dependency used by the proof route or formal proof.",
             args_model=ProofMathlibDepAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
             roles=worker_roles,
             handler=_add_proof_mathlib_dep,
@@ -1349,7 +1366,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove one proof dependency from the current candidate by 0-based dependency index.",
             args_model=ProofDepRemoveArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
             roles=worker_roles,
             handler=_remove_proof_dep,
@@ -1359,14 +1376,14 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Clear all proof dependencies from the current candidate without changing proof text or origins.",
             args_model=ProofDepsClearArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="decl_stage_mutation",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
             roles=worker_roles,
             handler=_clear_proof_deps,
         ),
         handler_tool(
             name="prepare_statement_formal_file",
-            description="Create or refresh the declaration-owned Lean file scaffold for statement formalization in the current stage.",
+            description="Create or restore the managed statement formal file; this can replace uncaptured edits.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="lean_file",
@@ -1376,7 +1393,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="capture_statement_formal_file",
-            description="Run capture checks on the statement formal Lean file and save the accepted statement formal capture into the current DeclRevision.",
+            description="Build the statement module, discover and confirm its Lean declaration name, run capture checks, and save the accepted statement formal capture into the current DeclRevision.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="formal_capture",
@@ -1386,7 +1403,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="prepare_proof_formal_file",
-            description="Create or refresh the declaration-owned Lean file scaffold for proof formalization in the current stage.",
+            description="Create or restore the managed proof formal file from the accepted statement capture; this can replace uncaptured edits.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="lean_file",
@@ -1396,7 +1413,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="capture_proof_formal_file",
-            description="Run capture checks on the proof formal Lean file and save the accepted proof formal capture into the current DeclRevision.",
+            description="Build the proof module, verify the registered Lean declaration name and header, run capture checks, and save the accepted proof formal capture into the current DeclRevision.",
             args_model=DeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="formal_capture",

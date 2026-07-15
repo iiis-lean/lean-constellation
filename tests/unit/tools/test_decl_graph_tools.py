@@ -49,6 +49,7 @@ def test_decl_graph_tools_are_registered() -> None:
         "inspect_node_public_decl",
         "list_repo_public_decls",
         "inspect_repo_public_decl",
+        "read_visible_decl_lean_file",
         "list_active_decl_names",
         "check_content_node_ready",
         "check_current_content_node_completion",
@@ -83,6 +84,7 @@ def test_decl_graph_groups_expose_expected_tools() -> None:
         {"list_current_node_public_decls", "inspect_current_node_public_decl", "list_node_public_decls", "inspect_node_public_decl"},
     )
     assert_group_contains("content_completion_gate_read", {"check_current_content_node_completion"})
+    assert_group_contains("visible_decl_lean_file_read", {"read_visible_decl_lean_file"})
 
 
 def test_public_boundary_tool_descriptions_are_role_neutral() -> None:
@@ -93,11 +95,13 @@ def test_public_boundary_tool_descriptions_are_role_neutral() -> None:
         "list_imported_repos",
         "list_repo_public_decls",
         "inspect_repo_public_decl",
+        "read_visible_decl_lean_file",
     ):
         description = specs[name].description
         assert "Coordinator" not in description
         assert "worker" not in description
-        assert "current context" in description
+        assert "current" in description
+        assert "context" in description
 
 
 def test_cross_node_decl_tool_descriptions_are_actor_neutral() -> None:

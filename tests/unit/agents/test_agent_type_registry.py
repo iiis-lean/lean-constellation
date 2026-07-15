@@ -125,6 +125,7 @@ def test_coordinator_public_fragments_match_native_repo_target_order() -> None:
         "node.node_tree_decomposition_policy",
         "scope.scope_contract_exports_context",
         "decl.proof_policy_satisfaction_context",
+        "decl.identity_projection_context",
         "quality.source_fidelity",
     ]
     assert "repo.adapter_repo_context" not in coordinator.instruction_fragment_keys

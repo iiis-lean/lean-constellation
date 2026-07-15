@@ -10,6 +10,7 @@ from lean_constellation.app.operator_data.api import OperatorDataApi
 from lean_constellation.app.operator_data.http import create_operator_data_http_routes
 from lean_constellation.app.operator_data.decl_projection import (
     DeclCreateInput,
+    DeclFileReadInput,
     DeclIdentityInput,
     FormalApplyInput,
     NaturalLanguageInput,
@@ -56,6 +57,7 @@ from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.decl_graph import DeclState, RoundStageReview
 from lean_constellation.services.external_clients import (
     ExternalCommandResult,
+    LeanCheckSummaryView,
     LeanDiagnosticsResult,
 )
 
@@ -109,6 +111,21 @@ class _DeterministicLake:
             cwd=str(repo_root),
             exit_code=0,
             summary="Deterministic synthetic Lake build passed.",
+        )
+
+    def run_snippet_check(
+        self,
+        *,
+        repo_root: Path,
+        imports: list[str],
+        code: str,
+        timeout_seconds: int | None = None,
+    ) -> LeanCheckSummaryView:
+        del repo_root, timeout_seconds
+        return LeanCheckSummaryView(
+            ok=True,
+            command=["lake", "env", "lean"],
+            summary=f"Deterministically confirmed {code} from {imports[0]}.",
         )
 
 
@@ -471,7 +488,7 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
         )
     assert prepared_http.status_code == 200
     http_value = prepared_http.json()["value"]
-    assert "lean-constellation target: synthetic_result" in http_value["content"]
+    assert "# lean-constellation target: `synthetic_result`" in http_value["content"]
     assert "path" not in http_value
     assert "repo_root" not in http_value
 
@@ -485,12 +502,11 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
         assert "lean-constellation target:" in prepared_file.content
         assert "path" not in prepared_file.model_dump(mode="json")
         assert "repo_root" not in prepared_file.model_dump(mode="json")
-        lean_code = prepared_file.content
+        lean_code = prepared_file.content.rstrip() + "\n\n"
         if name == "synthetic_value":
-            lean_code = lean_code.replace(
-                "def synthetic_value : Unit := ()",
-                "def synthetic_value : Nat := 7",
-            )
+            lean_code += "def synthetic_value : Nat := 7\n"
+        else:
+            lean_code += "theorem synthetic_result : True := by\n  sorry\n"
         digest = _require(
             api.decl_projection.revision_digest(
                 REPO_KEY,
@@ -511,7 +527,22 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
                 ),
             )
         )
+        kind_dir = "Defs" if name == "synthetic_value" else "Theorems"
+        assert applied.module == f"SyntheticDeclared.Main.Core.{kind_dir}.{name}"
+        assert applied.lean_decl_name == name
+        assert applied.build.target == f"+{applied.module}"
         _assert_public_output(applied, workspace=workspace)
+        owned_file = _require(
+            api.decl_projection.read_decl_lean_file(
+                REPO_KEY,
+                DeclFileReadInput(node_path=NODE_PATH, decl_name=name),
+            )
+        )
+        assert owned_file.module == applied.module
+        assert owned_file.lean_decl_name == name
+        assert owned_file.source == "physical_current"
+        assert owned_file.content == lean_code.rstrip() + "\n"
+        _assert_public_output(owned_file, workspace=workspace)
     formal_gate = _require(
         api.decl_projection.gate_and_advance_stage(
             REPO_KEY,

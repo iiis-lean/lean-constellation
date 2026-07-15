@@ -1152,11 +1152,14 @@ Before planning changes:
 
 Use `plan_create_decl` for new declarations. Each create change should have:
 
-- a clear declaration name and kind;
+- a flat `Decl.name` and clear kind; the name is one Lean module filename segment, so it cannot contain dots or path separators;
+- a concise catalog summary distinct from the current round objective;
 - visibility appropriate for the node contract;
 - a concise mathematical objective;
 - end_after_state;
 - require_target_state_satisfied.
+
+For a native repository, do not plan or guess `Decl.module` or the Lean full declaration name. The system derives the module from repo/node/kind/name and formal capture discovers the full name.
 
 Helper lemmas that matter to later work should be tracked as their own declarations. Do not hide important helper lemmas as untracked local Lean code.
 
@@ -1261,7 +1264,7 @@ A natural-language claim is not enough. Use the content completion gate and subm
 
 ## Ready
 
-Before ready, call `check_current_content_node_completion`. Use the returned gate report as the authority for whether the current node satisfies its contract, proof-policy requirements, dependencies, interfaces, and unresolved callback requirements.
+Before ready, call `check_current_content_node_completion`. Use the returned gate report as the authority for whether the current node satisfies its contract, proof-policy requirements, dependency identities, managed-file synchronization, interfaces, and unresolved callback requirements. The deterministic gate refreshes the node boundary and builds its `Interfaces` module so every current public declaration is checked through the actual import surface and standard artifacts are generated.
 
 Call `submit_content_node_ready` only when the current tools show the node satisfies its contract. After an accepted ready submit, stop.
 
@@ -1321,6 +1324,12 @@ Use this skill when a declaration worker or reviewer must connect a statement or
 13. Do not use unfinished same-round declarations as stable dependencies unless the current truth already marks them accepted and suitable for this stage.
 14. Before submit, self-check that origins are stable, dependencies are visible, source support is not invented, and blocked needs name the missing material, dependency, helper declaration, resource, provider repo, or planning change.
 
+## Dependency Display And Projection
+
+Project dependencies are displayed as `[repo-key::]node-path::Decl.name` → `Lean full name` from `Lean module`. Use the left locator with Constellation inspect tools, the arrow target in Lean expressions, and the module for imports. Current-repo locators omit the repo key; external-repo locators include it. Mathlib dependencies are displayed as `Lean full name` from `module`.
+
+The revision/reason remains structured truth and is not copied into the docstring. Formal capture requires every dependency to resolve to a module and full name. Dependency mutation refreshes managed docstrings and imports. A Formal worker must re-read the file whenever the mutation result reports that rereading is required; do not hand-write an import that the managed projection derives.
+
 ## Boundaries
 
 - Do not invent source support for generated ideas.
@@ -1341,9 +1350,11 @@ Use this skill when a declaration worker or reviewer must connect a statement or
             (
                 "Use the current stage's prepare tool only to generate or recover the legal declaration-owned working file when the scaffold, marker, docstring, or file structure is missing or damaged.",
                 "Treat prepare as destructive for uncaptured working-file edits.",
-                "Edit only the region that the current formal stage owns and keep system markers and prepared structure intact.",
+                "Read the prepared file first. Keep the managed imports and managed docstring unchanged; helpers go before the target docstring, and the marker-adjacent primary declaration follows it as the last principal declaration.",
+                "A native `Decl.name` is only the flat module filename key. Do not manually set the Lean full name; statement capture discovers it from the marker-adjacent declaration and confirms it with Lean. Proof capture requires the same full name and theorem header.",
+                "After a dependency or Mathlib mutation reports that rereading is required, reload the file before further edits because managed imports/docstrings may have changed.",
                 "Use the current stage's diagnostics while iterating.",
-                "Use the current stage's capture tool to save durable formal state after editing.",
+                "Use the current stage's capture tool to build the exact module, generate standard `.olean`/`.ilean` artifacts, confirm identity, and save durable formal state after editing.",
                 "After capture, edit only if you will capture again.",
                 "Use the current stage's consistency gate before worker submit when it is available, and require it to pass.",
                 "Statement formal theorem-like declarations may use the workflow's statement-stage proof placeholder; proof formal completed work must not contain sorry, admit, axiom, opaque, unsafe, or equivalent shortcuts.",
@@ -1381,8 +1392,10 @@ Use this skill when a declaration worker or reviewer must connect a statement or
                 "Map variables, assumptions, definitions, and conclusions to Lean deliberately.",
                 "Search dependencies in visible project context and Mathlib before adding imports, dependencies, or hints.",
                 "Prepare the declaration-owned file with `prepare_statement_formal_file` only to recover missing or damaged scaffold, marker, docstring, or file structure. Do not call it casually after valid uncaptured edits because it rewrites the working file.",
-                "Edit only the statement formalization area and use `run_lean_file_diagnostics` while iterating.",
-                "Capture with `capture_statement_formal_file`, require `check_formal_stage_consistency` to pass, and refine typed statement dependencies with add/remove/clear statement dependency tools before `submit_stage_worker_completed`.",
+                "Preserve managed imports/docstring; place small local helpers before the target docstring and the primary declaration immediately after it. Keep reusable helpers as separate tracked Decls.",
+                "Use `run_lean_file_diagnostics` while iterating. Do not guess or report the Lean full name: `capture_statement_formal_file` builds the exact module and discovers/compiler-confirms it.",
+                "Refine typed statement dependencies with add/remove/clear tools. If a mutation refreshes the file, re-read it before editing and do not duplicate derived imports.",
+                "Capture with `capture_statement_formal_file`, require `check_formal_stage_consistency` to pass, and then call `submit_stage_worker_completed`.",
                 "Read current node Mathlib hints first, then the repo MathlibIndex; only use broader search/navigation when those are insufficient.",
                 "For a Mathlib candidate you intend to use, inspect or check it first, then record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`.",
                 "Record current-node relevance with `add_current_mathlib_decl_hint` or `add_current_mathlib_module_hint` only for confirmed current statement needs.",
@@ -1419,11 +1432,11 @@ Use this skill when a declaration worker or reviewer must connect a statement or
             (
                 "Start from the accepted formal statement, reviewed proof route, proof origins/deps, current decl history, and prior feedback.",
                 "Inspect the prepared proof formal file first. Use `prepare_proof_formal_file` only to repair missing or damaged scaffold, marker, docstring, theorem header, or file structure; it rewrites from accepted statement formal capture and discards uncaptured proof edits.",
-                "Edit only the proof body and small proof-local helpers. Block for planning when a helper is major, reusable, or mathematically meaningful enough to be tracked as a declaration.",
+                "Preserve the registered Lean full name and theorem header. Put small proof-local helpers before the target docstring; block for planning when a helper is major, reusable, or mathematically meaningful enough to be tracked as a declaration.",
                 "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` while iterating; proof formal completed work must satisfy strict proof policy.",
                 "Capture at the durable boundary with `capture_proof_formal_file`; if any edit happens after capture, capture again.",
                 "Before submit, require `check_formal_stage_consistency` to pass.",
-                "Refine typed proof dependencies with `add_proof_decl_dep`, `add_proof_mathlib_dep`, `remove_proof_dep`, or `clear_proof_deps`; these are proof deps, not statement deps.",
+                "Refine typed proof dependencies with `add_proof_decl_dep`, `add_proof_mathlib_dep`, `remove_proof_dep`, or `clear_proof_deps`; these are proof deps, not statement deps. Re-read after any mutation that refreshes managed imports/docstring.",
                 "Read current node Mathlib hints first, then repo MathlibIndex; search or navigate only when those are insufficient.",
                 "For a Mathlib candidate you intend to use in the current proof, inspect or check it first, record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`, record current-node relevance with hint tools, and add the typed proof Mathlib dep.",
                 "Use `add_current_node_dep` only when the final proof actually needs a verified provider public declaration that is not already available.",

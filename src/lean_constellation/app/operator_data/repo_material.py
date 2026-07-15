@@ -587,7 +587,7 @@ class RepoMaterialOperatorApi:
             lambda ctx: ctx.runtime.repo_workspace.lake_dependency.check_native_repo_skeleton(
                 ctx.repo_root
             ),
-        ), _skeleton_view)
+        ), operator_gate_view)
 
     def inspect_workspace(self, repo_key: str) -> ServiceResult[Any]:
         return project_operator_result(self.executor.execute(

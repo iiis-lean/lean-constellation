@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
+from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.tools.args import (
     ChangeIdArgs,
     ChangeSummaryArgs,
@@ -28,6 +29,7 @@ from lean_constellation.tools.args import (
     StrategyCloseArgs,
     StrategyEnsureArgs,
     StrategyIdArgs,
+    VisibleDeclLeanFileArgs,
 )
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import current_node_path, handler_tool
@@ -74,6 +76,7 @@ def _decl_list_item(runtime, repo_root, view) -> dict[str, object]:
         "current_revision": view.current_revision,
         "revision_ids": list(view.revision_ids),
         "module": view.module,
+        "lean_decl_name": view.lean_decl_name,
         "state": view.state.value if view.state is not None and hasattr(view.state, "value") else view.state,
         "status": view.status.value if view.status is not None and hasattr(view.status, "value") else view.status,
         "proof_policy_satisfied": proof_policy_satisfied,
@@ -94,17 +97,76 @@ def _decl_revision_item(runtime, repo_root, view, args: DeclInspectArgs) -> dict
     )
     data["released_state"] = release.value.released_state if release.ok and release.value is not None else None
     data["release_protected"] = bool(release.value.release_protected) if release.ok and release.value is not None else False
+    data["statement_dependency_display"] = _dependency_display_lines(
+        runtime,
+        repo_root,
+        node_path=view.node_path,
+        dependencies=view.statement_dep_refs,
+    )
+    data["proof_dependency_display"] = _dependency_display_lines(
+        runtime,
+        repo_root,
+        node_path=view.node_path,
+        dependencies=view.proof_dep_refs,
+    )
     if not args.include_statement_nl:
         data.pop("statement_nl", None)
-    if not args.include_statement_formal:
-        data.pop("statement_lean_code", None)
-        data.pop("statement_lean_check", None)
     if not args.include_proof_nl:
         data.pop("proof_nl", None)
-    if not args.include_proof_formal:
-        data.pop("proof_lean_code", None)
-        data.pop("proof_lean_check", None)
+    formal_stage, formal_code, formal_check = _effective_formal(view)
+    data["formal_stage"] = formal_stage
+    data["formal_check"] = formal_check
+    data["formal_preview"] = None
+    if formal_code is not None:
+        repo_format = runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        managed = not (
+            repo_format.ok
+            and repo_format.value is not None
+            and repo_format.value.repo_format == RepoFormat.ADAPTER
+        )
+        primary = runtime.lean_projection.annotation.extract_primary_declaration_source(
+            formal_code,
+            decl_name=view.decl_name,
+            lean_decl_name=view.lean_decl_name,
+            managed=managed,
+        )
+        if primary.ok and primary.value is not None:
+            data["formal_preview"] = _formal_preview(primary.value.code)
+            if args.include_formal:
+                data["primary_formal_code"] = primary.value.code
+        else:
+            data["formal_projection_issues"] = [issue.model_dump(mode="json") for issue in primary.issues]
+    data.pop("statement_lean_code", None)
+    data.pop("statement_lean_check", None)
+    data.pop("proof_lean_code", None)
+    data.pop("proof_lean_check", None)
     return data
+
+
+def _effective_formal(view) -> tuple[str, str | None, object | None]:  # noqa: ANN001
+    if view.proof_lean_code:
+        return "proof", view.proof_lean_code, view.proof_lean_check
+    if view.statement_lean_code:
+        return "statement", view.statement_lean_code, view.statement_lean_check
+    return "none", None, None
+
+
+def _formal_preview(code: str, *, limit: int = 600) -> str:
+    if len(code) <= limit:
+        return code
+    return code[:limit].rstrip() + "\n…"
+
+
+def _dependency_display_lines(runtime, repo_root, *, node_path: str, dependencies: list[object]) -> list[str]:
+    resolved = runtime.lean_projection.decl_file.resolve_dependency_projections(
+        repo_root,
+        consumer_node_path=node_path,
+        dependencies=dependencies,
+        require_complete=False,
+    )
+    if not resolved.ok or resolved.value is None:
+        return []
+    return [runtime.lean_projection.annotation.format_dependency(item) for item in resolved.value]
 
 
 def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
@@ -125,9 +187,15 @@ def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
             "compatible": bool(public_decl.ready and not public_decl.stale),
             "resolution_reason": public_decl.resolution_reason,
             "kind": public_decl.kind,
+            "name": ref.name,
+            "node_path": ref.node,
+            "module": None,
+            "lean_decl_name": None,
             "summary": public_decl.summary,
             "public": public_decl.public,
+            "visibility": "public",
             "state": None,
+            "status": None,
             "proof_policy_satisfied": False,
             "released_state": public_decl.released_state,
             "release_protected": public_decl.release_protected,
@@ -140,9 +208,15 @@ def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
         "compatible": bool(public_decl.ready and not public_decl.stale),
         "resolution_reason": public_decl.resolution_reason,
         "kind": revision.value.kind,
+        "name": ref.name,
+        "node_path": ref.node,
+        "module": decl.value.module,
+        "lean_decl_name": revision.value.lean_decl_name,
         "summary": decl.value.summary,
         "public": decl.value.public,
+        "visibility": "public",
         "state": revision.value.state.value,
+        "status": revision.value.status.value,
         "proof_policy_satisfied": public_decl.ready and not public_decl.stale,
         "released_state": public_decl.released_state,
         "release_protected": public_decl.release_protected,
@@ -503,6 +577,113 @@ def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
     return runtime.foundation.ok(item)
 
 
+def _read_visible_decl_lean_file(runtime, ctx, args: VisibleDeclLeanFileArgs):
+    role = _actor_role(ctx)
+    coordinator = role in {"coordinator", "admin"}
+    target_root = ctx.repo_root
+    target_node = args.node_path
+    resolved_revision = args.revision
+    expected_visibility: str | None = None
+
+    if args.repo_key is not None:
+        repo_key = runtime.foundation.layout.ensure_safe_key(args.repo_key)
+        public = runtime.node.public_decl_access.list_repo_public_decls(
+            ctx.repo_root,
+            repo_key=repo_key,
+            actor_role=role,
+            current_node_path=_maybe_node(ctx),
+        )
+        if not public.ok or public.value is None:
+            return runtime.foundation.fail(public.issues)
+        selected = next(
+            (
+                item
+                for item in public.value
+                if item.ref.node == args.node_path
+                and item.ref.name == args.decl_name
+                and item.ready
+                and not item.stale
+            ),
+            None,
+        )
+        if selected is None:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "visible_decl_file_not_public",
+                    "The requested declaration is not visible on the provider public boundary.",
+                    object_ref=f"{repo_key}::{args.node_path}::{args.decl_name}",
+                )
+            )
+        allowed_revisions = {selected.ref.revision, selected.resolved_revision or selected.ref.revision}
+        if resolved_revision is not None and resolved_revision not in allowed_revisions:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "visible_decl_revision_not_public",
+                    "The requested revision is not the visible public anchor or its compatible resolved revision.",
+                    object_ref=f"{repo_key}::{args.node_path}::{args.decl_name}@{resolved_revision}",
+                )
+            )
+        resolved_revision = resolved_revision or selected.resolved_revision or selected.ref.revision
+        target_root = ctx.repo_root.parent / repo_key
+        target_node = selected.ref.node
+        expected_visibility = "public"
+    elif not coordinator:
+        public = runtime.node.public_decl_access.list_node_public_decls(
+            ctx.repo_root,
+            node_path=args.node_path,
+            actor_role=role,
+            current_node_path=_maybe_node(ctx),
+        )
+        if not public.ok or public.value is None:
+            return runtime.foundation.fail(public.issues)
+        selected = next(
+            (
+                item
+                for item in public.value
+                if item.ref.name == args.decl_name and item.ready and not item.stale
+            ),
+            None,
+        )
+        if selected is None:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "visible_decl_file_not_public",
+                    "The requested declaration is not visible on the node public boundary.",
+                    object_ref=f"{args.node_path}::{args.decl_name}",
+                )
+            )
+        allowed_revisions = {selected.ref.revision, selected.resolved_revision or selected.ref.revision}
+        if resolved_revision is not None and resolved_revision not in allowed_revisions:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "visible_decl_revision_not_public",
+                    "The requested revision is not the visible public anchor or its compatible resolved revision.",
+                    object_ref=f"{args.node_path}::{args.decl_name}@{resolved_revision}",
+                )
+            )
+        resolved_revision = resolved_revision or selected.resolved_revision or selected.ref.revision
+        target_node = selected.ref.node
+        expected_visibility = "public"
+
+    read = runtime.lean_projection.decl_file.read_decl_owned_lean_file(
+        target_root,
+        node_path=target_node,
+        decl_name=args.decl_name,
+        revision=resolved_revision,
+    )
+    if not read.ok or read.value is None:
+        return runtime.foundation.fail(read.issues)
+    if expected_visibility is not None and read.value.visibility != expected_visibility:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "visible_decl_file_not_public",
+                "The resolved declaration file is not public.",
+                object_ref=f"{target_node}::{args.decl_name}",
+            )
+        )
+    return read
+
+
 def _list_active_decl_names(runtime, ctx, args: NoArgs):
     del args
     return runtime.decl_graph.list_active_decl_names(ctx.repo_root, node_path=_node(ctx))
@@ -686,7 +867,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="plan_create_decl",
-            description="Plan creation of a declaration in the current draft round.",
+            description="Plan creation of a flat-key declaration in the current draft round; native module and Lean full-name identity are derived later.",
             args_model=DeclCreateArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_revision",
@@ -950,6 +1131,17 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.PUBLIC_DECL_READ, AppGroup.PUBLIC_DECL_READ_COORDINATOR},
             roles=roles,
             handler=_inspect_repo_public_decl,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="read_visible_decl_lean_file",
+            description="Read the declaration-owned Lean file visible in the current caller context.",
+            args_model=VisibleDeclLeanFileArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_owned_lean_file",
+            groups={AppGroup.VISIBLE_DECL_LEAN_FILE_READ},
+            roles=roles,
+            handler=_read_visible_decl_lean_file,
             required_context={"repo"},
         ),
         handler_tool(
