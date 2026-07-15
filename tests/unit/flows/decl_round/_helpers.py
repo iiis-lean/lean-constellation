@@ -14,7 +14,14 @@ from lean_constellation.flows.content_node_task.decl_round.submissions import (
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclStage, DeclState
 from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.runtime import LeanRuntimeServices
-from tests.unit_services_helpers import lean_check_payload, make_runtime
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    make_runtime,
+    set_current_decl_lean_name_for_test,
+    write_proof_formal_for_test,
+    write_statement_formal_for_test,
+)
 
 
 NODE_PATH = "Main.Topic.Core"
@@ -34,6 +41,7 @@ def make_decl_round_runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, LeanRu
 
 
 def setup_content_node(runtime: LeanRuntimeServices, repo_root: Path) -> None:
+    initialize_native_test_repo(repo_root, project_name=repo_root.name)
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(
         repo_root,
@@ -98,7 +106,7 @@ def seed_committed_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, dec
         decl_name=decl_name,
         nl="The old result states True.",
     ).ok
-    assert runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -106,6 +114,12 @@ def seed_committed_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, dec
         lean_code=f"theorem {decl_name} : True := by trivial",
         lean_check=lean_check_payload(),
     ).ok
+    set_current_decl_lean_name_for_test(
+        runtime,
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name=decl_name,
+    )
     assert runtime.decl_graph.write_proof_nl(
         repo_root,
         node_path=NODE_PATH,
@@ -113,7 +127,7 @@ def seed_committed_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, dec
         decl_name=decl_name,
         nl="Use triviality.",
     ).ok
-    assert runtime.decl_graph.write_proof_formal(
+    assert write_proof_formal_for_test(runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,

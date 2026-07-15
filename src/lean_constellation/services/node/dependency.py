@@ -11,6 +11,7 @@ from pydantic import Field, TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef, NodeRef
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.foundation import (
     GateReport,
     IssueSeverity,
@@ -19,8 +20,13 @@ from lean_constellation.services.foundation import (
 )
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
+from lean_constellation.services.node.export import ContentPublicDeclProvider
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent
-from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
+from lean_constellation.services.node.projection_transaction import (
+    NodeContractProjectionMutationView,
+    node_contract_projection_mutation_view,
+    persist_contract_with_projection,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
@@ -71,11 +77,13 @@ class DependencyComponent:
         *,
         node_tree: NodeTreeComponent | None = None,
         contract: ContractComponent | None = None,
+        public_decl_provider: ContentPublicDeclProvider | None = None,
         node_projection: "NodeProjectionComponent | None" = None,
     ) -> None:
         self.runtime = runtime
         self.node_tree = node_tree or NodeTreeComponent(runtime)
         self.contract = contract or ContractComponent(runtime, self.node_tree)
+        self.public_decl_provider = public_decl_provider
         self.node_projection = node_projection
 
     def list_visible_node_boundaries(self, repo_root: Path, *, node_path: str) -> ServiceResult[VisibleBoundaryView]:
@@ -93,6 +101,15 @@ class DependencyComponent:
             contract = self.contract.get_visible_contract(repo_root, node_path=node.path)
             if not contract.ok or contract.value is None:
                 continue
+            exported_decl_refs = self._public_decl_refs(contract.value.contract)
+            if node.kind == NodeKind.CONTENT and self.public_decl_provider is not None:
+                public = self.public_decl_provider.list_content_public_decls(repo_root, node_path=node.path)
+                if not public.ok or public.value is None:
+                    return self.runtime.foundation.fail(public.issues)
+                exported_decl_refs = self._merge_decl_refs(
+                    exported_decl_refs,
+                    [item.ref for item in public.value if item.public and item.ready and not item.stale],
+                )
             boundaries.append(
                 VisibleNodeBoundaryItem(
                     repo=None,
@@ -100,7 +117,7 @@ class DependencyComponent:
                     node_kind=node.kind.value,
                     ready=True,
                     import_module=f"{node.path}.Interfaces",
-                    exported_decl_refs=self._public_decl_refs(contract.value.contract),
+                    exported_decl_refs=exported_decl_refs,
                     interface_names=[interface.name for interface in contract.value.contract.interfaces],
                     summary=f"Ready {node.kind.value} boundary {node.path}.",
                 )
@@ -146,7 +163,7 @@ class DependencyComponent:
         actor: str | NodeDepActor,
         expected_decl_names: list[str] | None = None,
         target_repo: str | None = None,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -192,7 +209,7 @@ class DependencyComponent:
         expected_decl_names: list[str],
         reason: str,
         actor: NodeDepActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
         expected_refs = self._resolve_expected_decl_names(boundary, expected_decl_names)
         if not expected_refs.ok or expected_refs.value is None:
             return self.runtime.foundation.fail(expected_refs.issues)
@@ -232,7 +249,12 @@ class DependencyComponent:
         persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
         if not persisted.ok:
             return self.runtime.foundation.fail(persisted.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        return self._projection_mutation_result(
+            repo_root,
+            node_path=node_path,
+            projection=persisted.value,
+            warnings=persisted.issues,
+        )
 
     def remove_node_dep(
         self,
@@ -241,7 +263,7 @@ class DependencyComponent:
         node_path: str,
         index: int,
         actor: str | NodeDepActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -268,7 +290,12 @@ class DependencyComponent:
         persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
         if not persisted.ok:
             return self.runtime.foundation.fail(persisted.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        return self._projection_mutation_result(
+            repo_root,
+            node_path=node_path,
+            projection=persisted.value,
+            warnings=persisted.issues,
+        )
 
     def validate_node_deps(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         current = self.contract.get_current_contract(repo_root, node_path=node_path)
@@ -280,6 +307,13 @@ class DependencyComponent:
 
         issues: list[ServiceIssue] = []
         warnings: list[ServiceIssue] = []
+        external_boundaries: list[VisibleNodeBoundaryItem] = []
+        if any(dep.target.repo is not None for dep in deps.value):
+            external = self._external_lake_boundaries(repo_root)
+            if not external.ok or external.value is None:
+                issues.extend(external.issues)
+            else:
+                external_boundaries = external.value
         target_keys = [self._target_key(dep.target) for dep in deps.value]
         for key in sorted({item for item in target_keys if target_keys.count(item) > 1}):
             issues.append(
@@ -293,15 +327,56 @@ class DependencyComponent:
         for index, dep in enumerate(deps.value):
             dep_field = f"deps.{index}"
             if dep.target.repo is not None:
-                warnings.append(
-                    self.runtime.foundation.issue(
-                        "node_dep_external_validation_deferred",
-                        f"External dependency validation is deferred: {dep.target.repo}:{dep.target.node}",
-                        severity=IssueSeverity.WARNING,
-                        object_ref=node_path,
-                        field=dep_field,
-                    )
+                boundary = next(
+                    (
+                        item
+                        for item in external_boundaries
+                        if item.repo == dep.target.repo and item.node_path == dep.target.node
+                    ),
+                    None,
                 )
+                if boundary is None:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "node_dep_external_boundary_unavailable",
+                            "External dependency is not an attached stable provider boundary.",
+                            object_ref=f"{dep.target.repo}:{dep.target.node}",
+                            field=dep_field,
+                        )
+                    )
+                    continue
+                for ref in dep.expected_decl_refs:
+                    if ref.repo != dep.target.repo:
+                        issues.append(
+                            self.runtime.foundation.issue(
+                                "node_dep_external_expected_decl_repo_mismatch",
+                                "Expected declaration does not belong to the external dependency repo.",
+                                object_ref=f"{ref.repo or ''}:{ref.node}:{ref.name}@{ref.revision}",
+                                field=dep_field,
+                                current=ref.repo,
+                                expected=dep.target.repo,
+                            )
+                        )
+                        continue
+                    resolved = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+                        repo_root,
+                        ref=ref,
+                        required_availability=ProofAvailability.DECLARED,
+                    )
+                    if not resolved.ok or resolved.value is None:
+                        issues.extend(resolved.issues)
+                        continue
+                    if not resolved.value.compatible:
+                        issues.append(
+                            self.runtime.foundation.issue(
+                                "node_dep_external_expected_decl_incompatible",
+                                "Expected declaration is no longer compatible on the provider public boundary.",
+                                object_ref=f"{ref.repo}:{ref.node}:{ref.name}@{ref.revision}",
+                                field=dep_field,
+                                current=resolved.value.reason,
+                                expected="compatible public declaration",
+                            )
+                        )
                 continue
             if dep.target.node == node_path:
                 issues.append(self.runtime.foundation.issue("node_dep_self_dependency", "A node cannot depend on itself.", object_ref=node_path, field=dep_field))
@@ -330,7 +405,20 @@ class DependencyComponent:
                     )
                 )
                 continue
-            public_refs = {self._decl_ref_key(ref) for ref in self._public_decl_refs(target_contract.value.contract)}
+            target_public_refs = self._public_decl_refs(target_contract.value.contract)
+            if target_node.value.kind == NodeKind.CONTENT and self.public_decl_provider is not None:
+                public = self.public_decl_provider.list_content_public_decls(
+                    repo_root,
+                    node_path=dep.target.node,
+                )
+                if not public.ok or public.value is None:
+                    issues.extend(public.issues)
+                    continue
+                target_public_refs = self._merge_decl_refs(
+                    target_public_refs,
+                    [item.ref for item in public.value if item.public and item.ready and not item.stale],
+                )
+            public_refs = {self._decl_ref_key(ref) for ref in target_public_refs}
             for ref in dep.expected_decl_refs:
                 if self._decl_ref_key(ref) not in public_refs:
                     issues.append(
@@ -416,7 +504,7 @@ class DependencyComponent:
         expected_refs: list[DeclRef],
         reason: str,
         actor: NodeDepActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
         existing.added_by = NodeDepActor(existing.added_by)
         existing.dep_id = existing.dep_id or self._stable_dep_id(existing.target)
         existing_keys = {self._decl_ref_key(ref) for ref in existing.expected_decl_refs}
@@ -443,15 +531,25 @@ class DependencyComponent:
                     field="deps",
                 )
             )
-            view = self.contract.get_current_contract(repo_root, node_path=node_path)
-            if not view.ok:
-                return self.runtime.foundation.fail(view.issues)
-            return self.runtime.foundation.ok(view.value, warnings=warnings)
+            refreshed = self._refresh_prelude(repo_root, node_path=node_path)
+            if not refreshed.ok:
+                return self.runtime.foundation.fail(refreshed.issues)
+            return self._projection_mutation_result(
+                repo_root,
+                node_path=node_path,
+                projection=refreshed.value,
+                warnings=[*warnings, *refreshed.issues],
+            )
         setattr(contract, "deps", list(deps))
         persisted = self._save_and_refresh_prelude(repo_root, node_path, contract)
         if not persisted.ok:
             return self.runtime.foundation.fail(persisted.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        return self._projection_mutation_result(
+            repo_root,
+            node_path=node_path,
+            projection=persisted.value,
+            warnings=persisted.issues,
+        )
 
     def _resolve_expected_decl_names(
         self,
@@ -554,6 +652,16 @@ class DependencyComponent:
                     seen.add(key)
         return refs
 
+    def _merge_decl_refs(self, *groups: list[DeclRef]) -> list[DeclRef]:
+        merged: dict[tuple[str | None, str, str, int], DeclRef] = {}
+        for group in groups:
+            for ref in group:
+                merged[self._decl_ref_key(ref)] = ref
+        return [
+            merged[key]
+            for key in sorted(merged, key=lambda item: (item[0] or "", item[1], item[2], item[3]))
+        ]
+
     def _external_lake_boundaries(self, repo_root: Path) -> ServiceResult[list[VisibleNodeBoundaryItem]]:
         repo_workspace = self.runtime.app.repo_workspace
         if repo_workspace is None:
@@ -625,6 +733,26 @@ class DependencyComponent:
             projection_kind="prelude",
             save=self._save_contract,
             refresh=lambda: self._refresh_prelude(repo_root, node_path=node_path),
+        )
+
+    def _projection_mutation_result(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        projection: object | None,
+        warnings: list[ServiceIssue] | None = None,
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
+        current = self.contract.get_current_contract(repo_root, node_path=node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        return self.runtime.foundation.ok(
+            node_contract_projection_mutation_view(
+                current.value,
+                projection_kind="prelude",
+                projection=projection,
+            ),
+            warnings=[*(warnings or []), *current.issues],
         )
 
     def _has_local_dep_path(self, repo_root: Path, *, start: str, target: str) -> bool:

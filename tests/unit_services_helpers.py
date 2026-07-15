@@ -15,9 +15,27 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_test_runtime_services  # noqa: E402
+from lean_constellation.domain.common import utc_now_iso  # noqa: E402
+from lean_constellation.domain.lean_check import LeanCheck  # noqa: E402
 
 if TYPE_CHECKING:
     from lean_constellation.domain.repo_release import RepoRelease
+
+
+def initialize_native_test_repo(repo_root: Path, *, project_name: str = "TestProject") -> None:
+    """Write the minimum native Lake identity required by module derivation tests."""
+
+    repo_root = Path(repo_root)
+    truth_root = repo_root / ".lean_constellation"
+    truth_root.mkdir(parents=True, exist_ok=True)
+    (truth_root / "repo_format.json").write_text(
+        '{"repo_format":"native","reason":"unit test fixture"}\n',
+        encoding="utf-8",
+    )
+    (repo_root / "lakefile.toml").write_text(
+        f'name = "{project_name}"\n\n[[lean_lib]]\nname = "{project_name}"\n',
+        encoding="utf-8",
+    )
 
 
 def lean_check_payload(
@@ -63,6 +81,105 @@ def lean_check_payload(
     }
 
 
+def write_statement_formal_for_test(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+    *,
+    node_path: str,
+    round_id: str,
+    decl_name: str,
+    lean_code: str,
+    lean_check: dict[str, object],
+    deps: list[str] | None = None,
+):
+    """Seed statement formal truth in tests that intentionally bypass compiler capture."""
+
+    component = runtime.decl_graph.stage_mutation
+    if not lean_code or not lean_code.strip():
+        return runtime.foundation.fail(
+            runtime.foundation.issue("statement_formal_code_required", "Statement formal Lean code is required.", field="lean_code")
+        )
+    revision = component._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+    if not revision.ok or revision.value is None:
+        return runtime.foundation.fail(revision.issues)
+    if not revision.value.statement_nl:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("statement_nl_missing", "Statement NL must be written before statement formalization.", object_ref=decl_name)
+        )
+    revision.value.statement_lean_code = lean_code.strip()
+    revision.value.statement_lean_check = LeanCheck.model_validate(lean_check)
+    revision.value.statement_deps = component._normalize_deps(deps if deps is not None else revision.value.statement_deps)
+    revision.value.updated_at = utc_now_iso()
+    return component._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
+
+
+def write_proof_formal_for_test(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+    *,
+    node_path: str,
+    round_id: str,
+    decl_name: str,
+    lean_code: str,
+    lean_check: dict[str, object],
+    deps: list[str] | None = None,
+):
+    """Seed proof formal truth in tests that intentionally bypass compiler capture."""
+
+    component = runtime.decl_graph.stage_mutation
+    if not lean_code or not lean_code.strip():
+        return runtime.foundation.fail(
+            runtime.foundation.issue("proof_formal_code_required", "Proof formal Lean code is required.", field="lean_code")
+        )
+    theorem_like = component._require_theorem_like(repo_root, node_path=node_path, decl_name=decl_name)
+    if not theorem_like.ok:
+        return runtime.foundation.fail(theorem_like.issues)
+    revision = component._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+    if not revision.ok or revision.value is None:
+        return runtime.foundation.fail(revision.issues)
+    if not revision.value.proof_nl:
+        return runtime.foundation.fail(
+            runtime.foundation.issue("proof_nl_missing", "Proof NL must be written before proof formalization.", object_ref=decl_name)
+        )
+    revision.value.proof_lean_code = lean_code.strip()
+    revision.value.proof_lean_check = LeanCheck.model_validate(lean_check)
+    revision.value.proof_deps = component._normalize_deps(deps if deps is not None else revision.value.proof_deps)
+    revision.value.updated_at = utc_now_iso()
+    return component._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
+
+
+def set_current_decl_lean_name_for_test(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+    *,
+    node_path: str,
+    decl_name: str,
+    lean_decl_name: str | None = None,
+) -> None:
+    """Stamp compiler-confirmed identity in fixtures that bypass formal capture."""
+
+    from lean_constellation.services.foundation import WriteMode
+
+    decl = runtime.decl_graph.get_decl(repo_root, node_path=node_path, name=decl_name)
+    assert decl.ok and decl.value is not None, decl.issues
+    revision = runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path=node_path,
+        name=decl_name,
+        revision=decl.value.current_revision,
+    )
+    assert revision.ok and revision.value is not None, revision.issues
+    revision.value.lean_decl_name = lean_decl_name or f"{Path(repo_root).name}.{decl_name}"
+    path = runtime.decl_graph.graph_store.revision_path(
+        repo_root,
+        node_path=node_path,
+        decl_name=decl_name,
+        revision=revision.value.revision,
+    )
+    written = runtime.foundation.store.write_json_atomic(path, revision.value, mode=WriteMode.UPDATE_EXISTING)
+    assert written.ok, written.issues
+
+
 def publish_native_provider_release(
     runtime: LeanRuntimeServices,
     repo_root: Path,
@@ -93,6 +210,7 @@ def publish_native_provider_release(
     )
 
     repo_root = Path(repo_root)
+    initialize_native_test_repo(repo_root, project_name=repo_root.name or "ProviderRepo")
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
     assert runtime.repo_workspace.metadata.set_repo_format(
         repo_root,

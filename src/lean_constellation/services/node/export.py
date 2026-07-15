@@ -25,6 +25,7 @@ class DeclPublicView(StrictModel):
     resolved_revision: int | None = None
     resolution_reason: str | None = None
     kind: str | None = None
+    module: str | None = None
     summary: str | None = None
     public: bool = True
     ready: bool = True
@@ -55,6 +56,7 @@ class ScopeExportCandidate(StrictModel):
     source_child: str
     source_kind: str
     kind: str | None = None
+    module: str | None = None
     summary: str | None = None
     ready: bool = True
     stale: bool = False
@@ -163,6 +165,7 @@ class ExportComponent:
                             source_child=child.path,
                             source_kind=NodeKind.CONTENT.value,
                             kind=decl.kind,
+                            module=decl.module,
                             summary=decl.summary,
                             ready=decl.ready,
                             stale=decl.stale,
@@ -435,6 +438,7 @@ class ExportComponent:
                             source_child=direct_child,
                             source_kind=NodeKind.CONTENT.value,
                             kind=decl.kind,
+                            module=decl.module,
                             summary=decl.summary,
                             ready=decl.ready,
                             stale=decl.stale,

@@ -17,7 +17,12 @@ from tests.unit.flows.decl_round._helpers import (
     record_passed_review,
     start_decl_round_flow,
 )
-from tests.unit_services_helpers import lean_check_payload
+from tests.unit_services_helpers import (
+    lean_check_payload,
+    set_current_decl_lean_name_for_test,
+    write_proof_formal_for_test,
+    write_statement_formal_for_test,
+)
 
 
 def test_decl_round_runs_full_theorem_stage_sequence(tmp_path: Path) -> None:
@@ -478,7 +483,7 @@ def _seed_open_proof_planned_theorem(lean_runtime, repo_root: Path, *, decl_name
         decl_name=decl_name,
         nl=f"{decl_name} states True.",
     ).ok
-    assert lean_runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(lean_runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -486,6 +491,12 @@ def _seed_open_proof_planned_theorem(lean_runtime, repo_root: Path, *, decl_name
         lean_code=f"theorem {decl_name} : True := by trivial",
         lean_check=lean_check_payload(allow_sorry=True),
     ).ok
+    set_current_decl_lean_name_for_test(
+        lean_runtime,
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name=decl_name,
+    )
     assert lean_runtime.decl_graph.write_proof_nl(
         repo_root,
         node_path=NODE_PATH,
@@ -527,7 +538,7 @@ def _prove_committed_helper_theorem(lean_runtime, repo_root: Path, *, decl_name:
     )
     assert change.ok, change.issues
     assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_record.value.round_id).ok
-    assert lean_runtime.decl_graph.write_proof_formal(
+    assert write_proof_formal_for_test(lean_runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_record.value.round_id,
@@ -622,7 +633,7 @@ def _write_statement_formal(lean_runtime, repo_root: Path, round_id: str):
     )
     assert path_view.ok and path_view.value is not None, path_view.issues
     lean_code = Path(path_view.value.path).read_text(encoding="utf-8")
-    return lean_runtime.decl_graph.write_statement_formal(
+    result = write_statement_formal_for_test(lean_runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -630,6 +641,14 @@ def _write_statement_formal(lean_runtime, repo_root: Path, round_id: str):
         lean_code=lean_code,
         lean_check=lean_check_payload(contains_sorry=True),
     )
+    if result.ok:
+        set_current_decl_lean_name_for_test(
+            lean_runtime,
+            repo_root,
+            node_path=NODE_PATH,
+            decl_name="main_result",
+        )
+    return result
 
 
 def _write_proof_formal(lean_runtime, repo_root: Path, round_id: str, *, deps: list[str] | None = None):
@@ -641,7 +660,7 @@ def _write_proof_formal(lean_runtime, repo_root: Path, round_id: str, *, deps: l
     )
     assert path_view.ok and path_view.value is not None, path_view.issues
     lean_code = Path(path_view.value.path).read_text(encoding="utf-8").replace("sorry", "trivial")
-    return lean_runtime.decl_graph.write_proof_formal(
+    return write_proof_formal_for_test(lean_runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,

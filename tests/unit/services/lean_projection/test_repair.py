@@ -1,4 +1,4 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from pathlib import Path
 from typing import Any
@@ -341,6 +341,7 @@ def test_full_projection_audit_reports_failed_then_passed_after_repair(tmp_path:
 
 
 def test_full_projection_audit_skips_adapter_facade_for_native_repo_format(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path)
     _create_nodes(tmp_path)
     component = _repair_component(tmp_path)
     formatted = component.runtime.repo_workspace.metadata.set_repo_format(

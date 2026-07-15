@@ -19,6 +19,7 @@ from lean_constellation.services.foundation import (
     ServiceResult,
     WriteMode,
 )
+from lean_constellation.services.foundation.module_layout import local_projection_path
 from lean_constellation.services.node.contract_fields import (
     ContractMaterialRef,
     NodeDep,
@@ -409,7 +410,10 @@ class NodeTreeComponent:
             success_criteria=success_criteria.strip() if success_criteria else None,
             constraints=constraints.strip() if constraints else None,
         )
-        projection_dir = self.runtime.foundation.layout.node_projection_dir(FoundationContext(repo_root=Path(repo_root)), path)
+        projection_dir = local_projection_path(
+            repo_root,
+            self.runtime.foundation.layout.node_projection_dir(FoundationContext(repo_root=Path(repo_root)), path),
+        )
         ensured = self.runtime.foundation.store.ensure_dir(projection_dir)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)

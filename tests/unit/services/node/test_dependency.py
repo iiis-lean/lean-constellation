@@ -7,8 +7,19 @@ from tests.unit_services_helpers import make_runtime, publish_native_provider_re
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.refs import NodeRef
 from lean_constellation.services.foundation import FoundationContext, WriteMode
-from lean_constellation.services.node import ContractVersionStatus, NodeContractSnapshot
+from lean_constellation.services import LeanProviderOverrides
+from lean_constellation.services.foundation import FoundationService, ServiceResult
+from lean_constellation.services.node import ContractVersionStatus, DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
+
+
+class FakePublicDeclProvider:
+    def __init__(self, foundation: FoundationService, decls: dict[str, list[DeclPublicView]]) -> None:
+        self.foundation = foundation
+        self.decls = decls
+
+    def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
+        return self.foundation.ok(self.decls.get(node_path, []))
 
 
 def _create_base_tree(tmp_path: Path) -> None:
@@ -85,6 +96,56 @@ def test_list_visible_node_boundaries_only_shows_committed_boundaries(tmp_path: 
     assert visible.value.boundaries[0].exported_decl_refs[0].name == "helper"
 
 
+def test_visible_content_boundary_includes_ready_public_declarations(tmp_path: Path) -> None:
+    _create_base_tree(tmp_path)
+    base = make_runtime()
+    public_ref = DeclRef(repo=None, node="Main.Topic.A", name="content_helper", revision=1)
+    runtime = make_runtime(
+        providers=LeanProviderOverrides(
+            content_public_decl_provider=FakePublicDeclProvider(
+                base.foundation,
+                {
+                    "Main.Topic.A": [
+                        DeclPublicView(ref=public_ref, kind="definition", ready=True, stale=False)
+                    ]
+                },
+            )
+        )
+    )
+    committed = runtime.node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.A",
+        summary="Expose the ready content declaration.",
+    )
+    assert committed.ok, committed.issues
+
+    visible = runtime.node.dependency.list_visible_node_boundaries(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+
+    assert visible.ok, visible.issues
+    assert visible.value is not None
+    boundary = next(item for item in visible.value.boundaries if item.node_path == "Main.Topic.A")
+    assert boundary.exported_decl_refs == [public_ref]
+    added = runtime.node.dependency.add_node_dep(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        target_node="Main.Topic.A",
+        expected_decl_names=["content_helper"],
+        reason="Use the committed Content public declaration.",
+        actor="coordinator",
+    )
+    assert added.ok, added.issues
+    validated = runtime.node.dependency.validate_node_deps(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+    assert validated.ok, validated.issues
+    assert validated.value is not None
+    assert validated.value.passed is True
+
+
 def test_visible_node_boundaries_use_active_committed_contract_not_open_draft(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     _commit_provider_scope(tmp_path)
@@ -127,6 +188,43 @@ def test_list_visible_node_boundaries_includes_lake_dependency_boundaries(tmp_pa
     assert [(item.repo, item.node_path, item.import_module) for item in visible.value.boundaries] == [
         ("ProviderRepo", "Main", "ProviderRepo.Main.Interfaces")
     ]
+
+
+def test_external_node_dep_requires_attached_stable_boundary_and_reports_prelude_change(tmp_path: Path) -> None:
+    _create_base_tree(tmp_path)
+    provider = tmp_path.parent / "ProviderRepo"
+    runtime = make_runtime()
+    publish_native_provider_release(runtime, provider, summary="Stable provider.")
+    (tmp_path / "lakefile.toml").write_text(
+        'name = "consumer"\n\n'
+        '[[require]]\nname = "ProviderRepo"\npath = "../ProviderRepo"\n',
+        encoding="utf-8",
+    )
+
+    added = runtime.node.dependency.add_node_dep(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        target_repo="ProviderRepo",
+        target_node="Main",
+        expected_decl_names=[],
+        reason="Use the stable provider boundary.",
+        actor="coordinator",
+    )
+
+    assert added.ok, added.issues
+    assert added.value is not None
+    assert added.value.managed_projection_changed is True
+    assert added.value.reread_required is True
+    assert added.value.changed_files == [added.value.projection_path]
+    valid = runtime.node.dependency.validate_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert valid.ok and valid.value is not None
+    assert valid.value.passed is True
+
+    assert runtime.repo_workspace.metadata.mark_repo_developing(provider).ok
+    unavailable = runtime.node.dependency.validate_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert unavailable.ok and unavailable.value is not None
+    assert unavailable.value.passed is False
+    assert unavailable.value.issues[0].kind == "node_dep_external_boundary_unavailable"
 
 
 def test_add_node_dep_resolves_expected_decl_and_refreshes_prelude(tmp_path: Path) -> None:
@@ -406,7 +504,7 @@ def test_validate_node_deps_reports_cycle_and_batch_dependency(tmp_path: Path) -
     assert batch.value.issues[0].kind == "content_batch_dependency_present"
 
 
-def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_external_warning(tmp_path: Path) -> None:
+def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_unattached_external(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
     ref = _commit_provider_scope(tmp_path)
     component = make_runtime().node.dependency
@@ -484,8 +582,8 @@ def test_validate_node_deps_reports_invalid_expected_public_missing_unready_and_
     external = component.validate_node_deps(tmp_path, node_path="Main.Topic.Consumer")
     assert external.ok
     assert external.value is not None
-    assert external.value.passed is True
-    assert [issue.kind for issue in external.value.issues] == ["node_dep_external_validation_deferred"]
+    assert external.value.passed is False
+    assert [issue.kind for issue in external.value.issues] == ["node_dep_external_boundary_unavailable"]
 
 
 def test_check_content_batch_independent_reports_pass_duplicates_missing_noncontent_and_transitive_dependency(tmp_path: Path) -> None:

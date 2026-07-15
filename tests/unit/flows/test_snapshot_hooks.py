@@ -37,6 +37,17 @@ class FakeLakeClient:
         self.checked.append((Path(repo_root), module))
         return LeanCheckSummaryView(ok=True, module=module, command=["lean"], summary=f"import {module} ok")
 
+    def run_snippet_check(
+        self,
+        *,
+        repo_root: Path,
+        imports: list[str],
+        code: str,
+        timeout_seconds: int | None = None,
+    ) -> LeanCheckSummaryView:
+        del repo_root, imports, code, timeout_seconds
+        return LeanCheckSummaryView(ok=True, command=["lean"], summary="registered declaration identity confirmed")
+
     def summarize_command_result(self, result: ExternalCommandResult):
         from lean_constellation.services.external_clients import LakeCommandSummaryView
 
@@ -377,22 +388,21 @@ def _complete_adapter_catalog(lean_runtime, repo_root: Path) -> None:
         name="main_result",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Expose the upstream main theorem.",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose the upstream main theorem.",
     ).ok
     assert adapter.set_adapter_statement_formal(
         repo_root,
         name="main_result",
         code="theorem main_result : True := by\n  sorry",
-        upstream_decl_name="Upstream.Basic.main_result",
     ).ok
-    assert adapter.set_adapter_statement_nl(repo_root, name="main_result", summary="Main theorem.").ok
+    assert adapter.set_adapter_statement_nl(repo_root, name="main_result", text="Main theorem.").ok
     assert adapter.set_adapter_proof_formal(
         repo_root,
         name="main_result",
         code="theorem main_result : True := by\n  trivial",
-        upstream_decl_name="Upstream.Basic.main_result",
     ).ok
-    assert adapter.set_adapter_proof_nl(repo_root, name="main_result", summary="Trivial proof.").ok
+    assert adapter.set_adapter_proof_nl(repo_root, name="main_result", text="Trivial proof.").ok
     assert adapter.finalize_adapter_decl(repo_root, name="main_result").ok
     assert adapter.bind_adapter_interface(
         repo_root,

@@ -47,6 +47,9 @@ def test_node_mathlib_hint_view_and_module_mutation(tmp_path: Path) -> None:
     assert added.value is not None
     assert added.value.changed is True
     assert added.value.changed_items == ["Mathlib.Data.Finset.Basic"]
+    assert added.value.managed_projection_changed is True
+    assert added.value.changed_files == [str(_prelude_path(tmp_path, service))]
+    assert added.value.reread_required is True
     assert added.value.hints.modules[0].module == "Mathlib.Data.Finset.Basic"
     assert "import Mathlib.Data.Finset.Basic" in _prelude_path(tmp_path, service).read_text(encoding="utf-8")
 
@@ -88,8 +91,11 @@ def test_node_mathlib_decl_hint_mutation_and_missing_remove_noop(tmp_path: Path)
     assert added.ok, added.issues
     assert added.value is not None
     assert added.value.changed is True
+    assert added.value.managed_projection_changed is True
+    assert added.value.changed_files == [str(_prelude_path(tmp_path, service))]
+    assert added.value.reread_required is True
     assert added.value.hints.declarations[0].module == "Mathlib.Data.Finset.Basic"
-    assert not _prelude_path(tmp_path, service).exists()
+    assert "import Mathlib.Data.Finset.Basic" in _prelude_path(tmp_path, service).read_text(encoding="utf-8")
 
     removed = service.remove_node_mathlib_decl_hint(
         tmp_path,

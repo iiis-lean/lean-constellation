@@ -61,6 +61,7 @@ def _component_with_provider(tmp_path: Path) -> ExportComponent:
             DeclPublicView(
                 ref=DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1),
                 kind="theorem",
+                module="Main.Topic.Core.Theorems.main_result",
                 summary="Main result.",
                 ready=True,
                 stale=False,

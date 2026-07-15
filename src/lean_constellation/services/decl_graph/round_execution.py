@@ -22,6 +22,7 @@ from lean_constellation.services.decl_graph.models import (
 from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_nl_candidate
 from lean_constellation.services.decl_graph.statement_nl_validation import validate_statement_nl_candidate
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
+from lean_constellation.services.foundation.module_layout import local_projection_path
 
 if TYPE_CHECKING:
     from lean_constellation.services.decl_graph.service import DeclGraphService
@@ -83,7 +84,6 @@ class DeclDraftSpec(StrictModel):
     public: bool = False
     end_after_state: DeclState = DeclState.DECLARED
     require_target_state_satisfied: bool = True
-    module: str | None = None
 
 
 class RoundDraftBatchView(StrictModel):
@@ -279,30 +279,31 @@ class DeclRoundExecutionComponent:
         reached: list[str] = []
         missing: list[str] = []
         unsatisfied: list[str] = []
-        round_revisions = {revision.decl_name: revision for revision in revisions.value}
-        for revision in revisions.value:
+        round_revisions = dict(revisions.value)
+        for decl_name, revision in revisions.value:
             change = revision.change
             if change is None:
-                missing.append(revision.decl_name)
+                missing.append(decl_name)
                 continue
             if change.kind == DeclChangeKind.DELETE:
-                reached.append(revision.decl_name)
+                reached.append(decl_name)
                 continue
             if change.end_after_state is None or not self._state_reaches(revision.state, change.end_after_state):
-                missing.append(revision.decl_name)
+                missing.append(decl_name)
                 continue
-            reached.append(revision.decl_name)
+            reached.append(decl_name)
             if change.require_target_state_satisfied:
                 target = ProofAvailability.PROVED if change.end_after_state == DeclState.PROVED else ProofAvailability.DECLARED
                 satisfied, _reason = self.round_revision_satisfies_proof_policy(
                     repo_root,
                     node_path=node_path,
                     round_revisions=round_revisions,
+                    decl_name=decl_name,
                     revision=revision,
                     target_proof_availability=target,
                 )
                 if not satisfied:
-                    unsatisfied.append(revision.decl_name)
+                    unsatisfied.append(decl_name)
         failed = missing or unsatisfied
         affected = missing or unsatisfied
         message = None
@@ -329,7 +330,10 @@ class DeclRoundExecutionComponent:
         outcome: RoundFlowOutcome,
     ) -> ServiceResult[RoundCloseoutView]:
         graph_root = self.graph.graph_store.graph_root(repo_root, node_path=node_path)
-        projection_root = self.runtime.foundation.layout.node_projection_dir(FoundationContext(repo_root=repo_root), node_path)
+        projection_root = local_projection_path(
+            repo_root,
+            self.runtime.foundation.layout.node_projection_dir(FoundationContext(repo_root=repo_root), node_path),
+        )
         snapshot = _RoundTreesSnapshot([graph_root, projection_root])
         try:
             return self._build_round_result(repo_root, node_path=node_path, round_id=round_id, outcome=outcome)
@@ -372,7 +376,7 @@ class DeclRoundExecutionComponent:
                 raise _CloseoutFailure([issue])
             revisions = self.graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
             self._require(revisions)
-            for revision in revisions.value or []:
+            for decl_name, revision in revisions.value or []:
                 if revision.change is not None and revision.change.kind == DeclChangeKind.DELETE:
                     continue
                 if revision.status != "open":
@@ -380,12 +384,12 @@ class DeclRoundExecutionComponent:
                 committed = self.graph.commit_decl_revision(
                     repo_root,
                     node_path=node_path,
-                    name=revision.decl_name,
+                    name=decl_name,
                     revision=revision.revision,
                     state=revision.state,
                 )
                 self._require(committed)
-                committed_names.append(revision.decl_name)
+                committed_names.append(decl_name)
             projection = self.runtime.lean_projection.refresh_node_projection(repo_root, node_path=node_path)
             self._require(projection)
             projection_summary = projection.value.summary if projection.value is not None else None
@@ -507,12 +511,12 @@ class DeclRoundExecutionComponent:
         *,
         node_path: str,
         round_revisions: dict[str, object],
+        decl_name: str,
         revision,
         target_proof_availability: ProofAvailability,
         stack: list[str] | None = None,
     ) -> tuple[bool, str | None]:
         stack = stack or []
-        decl_name = revision.decl_name
         stack_key = f"{Path(repo_root).name}:{node_path}:{decl_name}"
         if stack_key in stack:
             return False, f"Dependency cycle detected: {' -> '.join([*stack, stack_key])}."
@@ -543,6 +547,7 @@ class DeclRoundExecutionComponent:
                     repo_root,
                     node_path=node_path,
                     round_revisions=round_revisions,
+                    decl_name=dep_ref.name,
                     revision=round_dep,
                     target_proof_availability=dep_target,
                     stack=[*stack, stack_key],
@@ -550,6 +555,34 @@ class DeclRoundExecutionComponent:
                 if not satisfied:
                     return False, reason
                 continue
+            if (
+                dep_ref.repo is None
+                and dep_node == node_path
+                and dep_ref.name not in round_revisions
+            ):
+                local_dep = self.graph.get_decl_revision(
+                    repo_root,
+                    node_path=node_path,
+                    name=dep_ref.name,
+                    revision=dep_ref.revision,
+                )
+                if (
+                    local_dep.ok
+                    and local_dep.value is not None
+                    and local_dep.value.status == "committed"
+                ):
+                    satisfied, reason = self.round_revision_satisfies_proof_policy(
+                        repo_root,
+                        node_path=node_path,
+                        round_revisions=round_revisions,
+                        decl_name=dep_ref.name,
+                        revision=local_dep.value,
+                        target_proof_availability=dep_target,
+                        stack=[*stack, stack_key],
+                    )
+                    if not satisfied:
+                        return False, reason
+                    continue
             resolved = self._resolve_dependency_ref(
                 repo_root,
                 ref=dep_ref,

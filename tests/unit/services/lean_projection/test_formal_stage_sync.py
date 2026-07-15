@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.services.decl_graph import DeclState
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
+from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
 from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -43,12 +43,27 @@ class FakeLake:
             summary="fake lake diagnostics",
         )
 
+    def run_lake_build(self, repo_root: Path, target: str | None = None, targets=None, timeout_seconds=None):  # noqa: ANN001, ANN201
+        del targets, timeout_seconds
+        return ExternalCommandResult(
+            ok=True,
+            command=["lake", "build", target or ""],
+            cwd=str(repo_root),
+            exit_code=0,
+            summary="fake module build",
+        )
+
+    def run_snippet_check(self, *, repo_root: Path, imports: list[str], code: str, timeout_seconds: int | None = None) -> LeanCheckSummaryView:
+        del timeout_seconds
+        return LeanCheckSummaryView(ok=True, command=["lake", "env", "lean"], summary=f"confirmed {code} from {imports[0]}")
+
 
 def _runtime() -> LeanRuntimeServices:
     return make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
 
 
 def _setup_theorem_round(repo_root: Path, runtime: LeanRuntimeServices) -> str:
+    initialize_native_test_repo(repo_root)
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     content = runtime.node.create_content_node(
@@ -96,6 +111,13 @@ def _setup_theorem_round(repo_root: Path, runtime: LeanRuntimeServices) -> str:
     return round_record.value.round_id
 
 
+def _write_statement_target(path: Path) -> None:
+    path.write_text(
+        path.read_text(encoding="utf-8") + "theorem actualResult : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+
+
 def _current_revision(runtime: LeanRuntimeServices, repo_root: Path) -> Any:
     revision = runtime.decl_graph.get_decl_revision(repo_root, node_path=NODE_PATH, name=DECL_NAME, revision=1)
     assert revision.ok and revision.value is not None
@@ -112,13 +134,16 @@ def test_statement_capture_writes_decl_graph_snapshot_and_sync_gate(tmp_path: Pa
         decl_name=DECL_NAME,
     )
     assert prepared.ok, prepared.issues
+    assert prepared.value is not None
+    _write_statement_target(Path(prepared.value.path))
     captured = runtime.lean_projection.capture_statement_formal(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
 
     assert captured.ok, captured.issues
     revision = _current_revision(runtime, tmp_path)
     assert revision.state == DeclState.PLANNED
     assert revision.statement_lean_code is not None
-    assert "theorem main_result : True := by" in revision.statement_lean_code
+    assert "theorem actualResult : True := by" in revision.statement_lean_code
+    assert revision.lean_decl_name == "actualResult"
     assert revision.statement_lean_check is not None
     assert revision.statement_lean_check["status"] == "passed"
     assert revision.statement_lean_check["policy"] == "statement_formal"
@@ -149,7 +174,9 @@ def test_statement_capture_writes_decl_graph_snapshot_and_sync_gate(tmp_path: Pa
 def test_proof_restore_capture_and_strict_sync_use_decl_graph_snapshot(tmp_path: Path) -> None:
     runtime = _runtime()
     round_id = _setup_theorem_round(tmp_path, runtime)
-    assert runtime.lean_projection.prepare_statement_formal_stage_file(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME).ok
+    statement_file = runtime.lean_projection.prepare_statement_formal_stage_file(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
+    assert statement_file.ok and statement_file.value is not None
+    _write_statement_target(Path(statement_file.value.path))
     assert runtime.lean_projection.capture_statement_formal(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME).ok
     proof_nl = runtime.decl_graph.write_proof_nl(
         tmp_path,
@@ -166,9 +193,9 @@ def test_proof_restore_capture_and_strict_sync_use_decl_graph_snapshot(tmp_path:
     assert prepared.ok, prepared.issues
     path = Path(prepared.value.path)
     text = path.read_text(encoding="utf-8")
-    assert "stage: proof" in text
+    assert "## Proof outline" in text
     assert "Use triviality." in text
-    assert "theorem main_result : True := by" in text
+    assert "theorem actualResult : True := by" in text
 
     strict_failure = runtime.lean_projection.capture_proof_formal(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert not strict_failure.ok

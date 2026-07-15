@@ -68,6 +68,7 @@ from lean_constellation.services.node.public_decl_access import (
     VisibleNodeAccessItem,
     VisibleNodeAccessView,
 )
+from lean_constellation.services.node.projection_transaction import NodeContractProjectionMutationView
 from lean_constellation.services.node.service import (
     ContentTaskFinalizeInput,
     ContentTaskFinalizeView,
@@ -75,6 +76,7 @@ from lean_constellation.services.node.service import (
     ContentTaskReadyGateProvider,
     ContentTaskResultView,
     CurrentNodeContractView,
+    CurrentNodeContractMutationView,
     NodeBoundaryView,
     NodeService,
     RepoReadyNodeView,
@@ -90,6 +92,7 @@ __all__ = [
     "ContentTaskReadyGateProvider",
     "ContentTaskResultView",
     "CurrentNodeContractView",
+    "CurrentNodeContractMutationView",
     "ContractComponent",
     "ContractVersionStatus",
     "ContractMaterialRef",
@@ -126,6 +129,7 @@ __all__ = [
     "NodeMaterialRefView",
     "NodeMaterialRefsView",
     "NodeMetadata",
+    "NodeContractProjectionMutationView",
     "NodeIndex",
     "NodeIndexEntry",
     "NodeStore",

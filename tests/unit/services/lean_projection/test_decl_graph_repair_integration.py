@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.services.decl_graph import DeclState
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
+from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
 from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -42,12 +42,21 @@ class FakeLake:
             summary="fake lake diagnostics",
         )
 
+    def run_lake_build(self, repo_root: Path, target: str | None = None, targets=None, timeout_seconds=None):  # noqa: ANN001, ANN201
+        del targets, timeout_seconds
+        return ExternalCommandResult(ok=True, command=["lake", "build", target or ""], cwd=str(repo_root), exit_code=0, summary="built")
+
+    def run_snippet_check(self, *, repo_root: Path, imports: list[str], code: str, timeout_seconds: int | None = None) -> LeanCheckSummaryView:
+        del timeout_seconds
+        return LeanCheckSummaryView(ok=True, command=["lake", "env", "lean"], summary=f"confirmed {code} from {imports[0]}")
+
 
 def _runtime() -> LeanRuntimeServices:
     return make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
 
 
 def _ensure_content_node(runtime: LeanRuntimeServices, repo_root: Path) -> None:
+    initialize_native_test_repo(repo_root)
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal", boundary="Topic boundary").ok
     created = runtime.node.create_content_node(
@@ -102,6 +111,12 @@ def _seed_committed_proved_theorem(runtime: LeanRuntimeServices, repo_root: Path
     assert statement.ok, statement.issues
     prepared_statement = runtime.lean_projection.prepare_statement_formal_stage_file(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert prepared_statement.ok, prepared_statement.issues
+    assert prepared_statement.value is not None
+    statement_path = Path(prepared_statement.value.path)
+    statement_path.write_text(
+        statement_path.read_text(encoding="utf-8") + "theorem actualResult : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
     captured_statement = runtime.lean_projection.capture_statement_formal(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert captured_statement.ok, captured_statement.issues
     proof_nl = runtime.decl_graph.write_proof_nl(
@@ -188,7 +203,7 @@ def test_restore_projection_to_active_graph_uses_decl_graph_reset_revision(tmp_p
     assert restored.value is not None
     assert any(action.action == "sync_decl_file" for action in restored.value.actions)
     assert proof_path.read_text(encoding="utf-8") == revision.statement_lean_code
-    assert "stage: statement" in proof_path.read_text(encoding="utf-8")
+    assert "# lean-constellation target: `main_result`" in proof_path.read_text(encoding="utf-8")
     assert "trivial" not in proof_path.read_text(encoding="utf-8")
 
 

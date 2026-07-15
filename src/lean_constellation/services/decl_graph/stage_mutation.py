@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lean_constellation.domain.common import utc_now_iso
-from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
 from lean_constellation.services.decl_graph.models import DeclChangeKind, DeclDep, DeclOriginRef, DeclRevision, DeclRoundStatus, DeclState
@@ -56,7 +55,7 @@ class StageMutationComponent:
         revision.value.statement_origin = self._normalize_origin(origin)
         revision.value.statement_deps = self._normalize_deps(deps)
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def write_statement_nl_typed(
         self,
@@ -80,7 +79,7 @@ class StageMutationComponent:
             revision.value.statement.nl.origin = origin
         revision.value.statement.deps = deps
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def set_statement_nl(
         self,
@@ -100,7 +99,7 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(revision.issues)
         revision.value.statement_nl = nl.strip()
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def add_statement_origin(
         self,
@@ -117,7 +116,7 @@ class StageMutationComponent:
         current = revision.value.statement.nl.origin if revision.value.statement.nl is not None else []
         revision.value.statement_origin = [item.model_dump(mode="json", exclude_none=True) for item in [*current, origin]]
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def remove_statement_origin(
         self,
@@ -139,7 +138,7 @@ class StageMutationComponent:
         del origins[index]
         revision.value.statement_origin = [item.model_dump(mode="json", exclude_none=True) for item in origins]
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def clear_statement_origins(
         self,
@@ -154,7 +153,7 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(revision.issues)
         revision.value.statement_origin = []
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def add_statement_dep(
         self,
@@ -175,7 +174,7 @@ class StageMutationComponent:
                 self.runtime.foundation.issue("statement_dep_invalid", str(exc), object_ref=decl_name)
             )
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def remove_statement_dep(
         self,
@@ -197,7 +196,7 @@ class StageMutationComponent:
         del deps[index]
         revision.value.statement.deps = deps
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def clear_statement_deps(
         self,
@@ -212,35 +211,7 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(revision.issues)
         revision.value.statement.deps = []
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
-
-    def write_statement_formal(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_id: str,
-        decl_name: str,
-        lean_code: str,
-        lean_check: dict[str, Any],
-        deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevision]:
-        if not lean_code or not lean_code.strip():
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("statement_formal_code_required", "Statement formal Lean code is required.", field="lean_code")
-            )
-        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
-        if not revision.ok or revision.value is None:
-            return self.runtime.foundation.fail(revision.issues)
-        if not revision.value.statement_nl:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("statement_nl_missing", "Statement NL must be written before statement formalization.", object_ref=decl_name)
-            )
-        revision.value.statement_lean_code = lean_code.strip()
-        revision.value.statement_lean_check = self._normalize_check(lean_check)
-        revision.value.statement_deps = self._normalize_deps(deps if deps is not None else revision.value.statement_deps)
-        revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def write_statement_deps(
         self,
@@ -260,7 +231,7 @@ class StageMutationComponent:
             )
         revision.value.statement_deps = self._normalize_deps(deps)
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def write_proof_nl(
         self,
@@ -291,7 +262,7 @@ class StageMutationComponent:
         revision.value.proof_origin = self._normalize_origin(origin)
         revision.value.proof_deps = self._normalize_deps(deps)
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def write_proof_nl_typed(
         self,
@@ -320,7 +291,7 @@ class StageMutationComponent:
         proof.nl.origin = origin
         proof.deps = deps
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def set_proof_nl(
         self,
@@ -347,7 +318,7 @@ class StageMutationComponent:
             )
         revision.value.proof_nl = nl.strip()
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def add_proof_origin(
         self,
@@ -368,7 +339,7 @@ class StageMutationComponent:
         current = proof.nl.origin if proof.nl is not None else []
         revision.value.proof_origin = [item.model_dump(mode="json", exclude_none=True) for item in [*current, origin]]
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def remove_proof_origin(
         self,
@@ -390,7 +361,7 @@ class StageMutationComponent:
         del origins[index]
         revision.value.proof_origin = [item.model_dump(mode="json", exclude_none=True) for item in origins]
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def clear_proof_origins(
         self,
@@ -405,7 +376,7 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(revision.issues)
         revision.value.proof_origin = []
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def add_proof_dep(
         self,
@@ -430,7 +401,7 @@ class StageMutationComponent:
                 self.runtime.foundation.issue("proof_dep_invalid", str(exc), object_ref=decl_name)
             )
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def remove_proof_dep(
         self,
@@ -453,7 +424,7 @@ class StageMutationComponent:
         proof = revision.value._ensure_proof()
         proof.deps = deps
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def clear_proof_deps(
         self,
@@ -469,38 +440,7 @@ class StageMutationComponent:
         proof = revision.value._ensure_proof()
         proof.deps = []
         revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
-
-    def write_proof_formal(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_id: str,
-        decl_name: str,
-        lean_code: str,
-        lean_check: dict[str, Any],
-        deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevision]:
-        if not lean_code or not lean_code.strip():
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("proof_formal_code_required", "Proof formal Lean code is required.", field="lean_code")
-            )
-        theorem_like = self._require_theorem_like(repo_root, node_path=node_path, decl_name=decl_name)
-        if not theorem_like.ok:
-            return self.runtime.foundation.fail(theorem_like.issues)
-        revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
-        if not revision.ok or revision.value is None:
-            return self.runtime.foundation.fail(revision.issues)
-        if not revision.value.proof_nl:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("proof_nl_missing", "Proof NL must be written before proof formalization.", object_ref=decl_name)
-            )
-        revision.value.proof_lean_code = lean_code.strip()
-        revision.value.proof_lean_check = self._normalize_check(lean_check)
-        revision.value.proof_deps = self._normalize_deps(deps if deps is not None else revision.value.proof_deps)
-        revision.value.updated_at = utc_now_iso()
-        return self._write_revision(repo_root, node_path=node_path, revision=revision.value)
+        return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
     def advance_stage_state(
         self,
@@ -516,16 +456,16 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("decl_stage_unknown", "Cannot advance accepted state for an unknown decl stage.", current=stage)
             )
-        revisions: list[DeclRevision] = []
+        revisions: list[tuple[str, DeclRevision]] = []
         for decl_name in decl_names:
             revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
             if not revision.ok or revision.value is None:
                 return self.runtime.foundation.fail(revision.issues)
-            revisions.append(revision.value)
+            revisions.append((decl_name, revision.value))
 
         advanced: list[str] = []
         with self.runtime.foundation.mutation(f"advance {stage} state") as mutation:
-            for revision in revisions:
+            for decl_name, revision in revisions:
                 if self._state_rank(revision.state) < self._state_rank(target_state):
                     revision.state = target_state
                     revision.updated_at = utc_now_iso()
@@ -533,13 +473,13 @@ class StageMutationComponent:
                         self.graph_store.revision_path(
                             repo_root,
                             node_path=node_path,
-                            decl_name=revision.decl_name,
+                            decl_name=decl_name,
                             revision=revision.revision,
                         ),
                         revision,
                         mode=WriteMode.UPDATE_EXISTING,
                     )
-                advanced.append(revision.decl_name)
+                advanced.append(decl_name)
             committed = mutation.commit()
         if not committed.ok:
             return self.runtime.foundation.fail(committed.issues)
@@ -623,13 +563,14 @@ class StageMutationComponent:
         repo_root: Path,
         *,
         node_path: str,
+        decl_name: str,
         revision: DeclRevision,
     ) -> ServiceResult[DeclRevision]:
         written = self.runtime.foundation.store.write_json_atomic(
             self.graph_store.revision_path(
                 repo_root,
                 node_path=node_path,
-                decl_name=revision.decl_name,
+                decl_name=decl_name,
                 revision=revision.revision,
             ),
             revision,
@@ -650,9 +591,6 @@ class StageMutationComponent:
             return []
         stripped = [dep.strip() for dep in deps]
         return sorted({dep for dep in stripped if dep})
-
-    def _normalize_check(self, lean_check: dict[str, Any]) -> LeanCheck:
-        return LeanCheck.model_validate(lean_check)
 
     @staticmethod
     def _target_state_for_stage(stage: str) -> DeclState | None:

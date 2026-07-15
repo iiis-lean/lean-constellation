@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclReadinessReport,
     Decl,
     DeclRevision,
+    DeclStageMutationView,
     DeclRevisionToolView,
     DeclView,
     DeclGraphRound,
@@ -51,6 +53,7 @@ from lean_constellation.services.decl_graph.round_execution import (
     DeclDraftSpec,
     RoundDraftBatchView,
 )
+from lean_constellation.services.decl_graph.projection_transaction import mutate_decl_with_projection
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.lean_projection.lean_check import LeanCheckView
 from lean_constellation.services.node.export import DeclPublicView
@@ -160,6 +163,7 @@ class DeclGraphService:
         *,
         node_path: str,
         round_revisions: dict[str, DeclRevision],
+        decl_name: str,
         revision: DeclRevision,
         target_proof_availability: ProofAvailability,
     ) -> tuple[bool, str | None]:
@@ -167,6 +171,7 @@ class DeclGraphService:
             repo_root,
             node_path=node_path,
             round_revisions=round_revisions,
+            decl_name=decl_name,
             revision=revision,
             target_proof_availability=target_proof_availability,
         )
@@ -449,7 +454,6 @@ class DeclGraphService:
         public: bool = False,
         end_after_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
-        module: str | None = None,
     ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.create_decl(
             repo_root,
@@ -462,7 +466,6 @@ class DeclGraphService:
             public=public,
             end_after_state=end_after_state,
             require_target_state_satisfied=require_target_state_satisfied,
-            module=module,
         )
 
     def create_decl_revision_view(
@@ -478,7 +481,6 @@ class DeclGraphService:
         public: bool = False,
         end_after_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
-        module: str | None = None,
     ) -> ServiceResult[DeclRevisionToolView]:
         change = self.create_decl(
             repo_root,
@@ -491,7 +493,6 @@ class DeclGraphService:
             public=public,
             end_after_state=end_after_state,
             require_target_state_satisfied=require_target_state_satisfied,
-            module=module,
         )
         if not change.ok or change.value is None or change.value.target_revision is None:
             return self.runtime.foundation.fail(change.issues)
@@ -708,7 +709,13 @@ class DeclGraphService:
     def list_round_changes(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[list[DeclChangeView]]:
         return self.decl_catalog.list_round_changes(repo_root, node_path=node_path, round_id=round_id)
 
-    def list_round_revisions(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[list[DeclRevision]]:
+    def list_round_revisions(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+    ) -> ServiceResult[list[tuple[str, DeclRevision]]]:
         return self.decl_catalog.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
 
     def compute_delete_closure(
@@ -733,19 +740,29 @@ class DeclGraphService:
         nl: str,
         origin: list[dict[str, object]] | None = None,
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.write_statement_nl(
+    ) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(
             repo_root,
             node_path=node_path,
-            round_id=round_id,
             decl_name=decl_name,
-            nl=nl,
-            origin=origin,
-            deps=deps,
+            mutate=lambda: self.stage_mutation.write_statement_nl(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                decl_name=decl_name,
+                nl=nl,
+                origin=origin,
+                deps=deps,
+            ),
         )
 
-    def write_statement_nl_typed(self, repo_root: Path, **kwargs) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.write_statement_nl_typed(repo_root, **kwargs)
+    def write_statement_nl_typed(self, repo_root: Path, **kwargs) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(
+            repo_root,
+            node_path=kwargs["node_path"],
+            decl_name=kwargs["decl_name"],
+            mutate=lambda: self.stage_mutation.write_statement_nl_typed(repo_root, **kwargs),
+        )
 
     def set_statement_nl(
         self,
@@ -755,53 +772,37 @@ class DeclGraphService:
         round_id: str,
         decl_name: str,
         nl: str,
-    ) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.set_statement_nl(
+    ) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(
             repo_root,
             node_path=node_path,
-            round_id=round_id,
             decl_name=decl_name,
-            nl=nl,
+            mutate=lambda: self.stage_mutation.set_statement_nl(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                decl_name=decl_name,
+                nl=nl,
+            ),
         )
 
-    def add_statement_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, origin) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.add_statement_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, origin=origin)
+    def add_statement_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, origin) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.add_statement_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, origin=origin))
 
-    def remove_statement_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.remove_statement_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index)
+    def remove_statement_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.remove_statement_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index))
 
-    def clear_statement_origins(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.clear_statement_origins(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+    def clear_statement_origins(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.clear_statement_origins(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name))
 
-    def add_statement_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, dep) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.add_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep)
+    def add_statement_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, dep) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.add_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep))
 
-    def remove_statement_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.remove_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index)
+    def remove_statement_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.remove_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index))
 
-    def clear_statement_deps(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.clear_statement_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
-
-    def write_statement_formal(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_id: str,
-        decl_name: str,
-        lean_code: str,
-        lean_check: dict[str, object],
-        deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.write_statement_formal(
-            repo_root,
-            node_path=node_path,
-            round_id=round_id,
-            decl_name=decl_name,
-            lean_code=lean_code,
-            lean_check=lean_check,
-            deps=deps,
-        )
+    def clear_statement_deps(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.clear_statement_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name))
 
     def write_statement_deps(
         self,
@@ -811,13 +812,18 @@ class DeclGraphService:
         round_id: str,
         decl_name: str,
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.write_statement_deps(
+    ) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(
             repo_root,
             node_path=node_path,
-            round_id=round_id,
             decl_name=decl_name,
-            deps=deps,
+            mutate=lambda: self.stage_mutation.write_statement_deps(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                decl_name=decl_name,
+                deps=deps,
+            ),
         )
 
     def write_proof_nl(
@@ -830,19 +836,29 @@ class DeclGraphService:
         nl: str,
         origin: list[dict[str, object]] | None = None,
         deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.write_proof_nl(
+    ) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(
             repo_root,
             node_path=node_path,
-            round_id=round_id,
             decl_name=decl_name,
-            nl=nl,
-            origin=origin,
-            deps=deps,
+            mutate=lambda: self.stage_mutation.write_proof_nl(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                decl_name=decl_name,
+                nl=nl,
+                origin=origin,
+                deps=deps,
+            ),
         )
 
-    def write_proof_nl_typed(self, repo_root: Path, **kwargs) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.write_proof_nl_typed(repo_root, **kwargs)
+    def write_proof_nl_typed(self, repo_root: Path, **kwargs) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(
+            repo_root,
+            node_path=kwargs["node_path"],
+            decl_name=kwargs["decl_name"],
+            mutate=lambda: self.stage_mutation.write_proof_nl_typed(repo_root, **kwargs),
+        )
 
     def set_proof_nl(
         self,
@@ -852,53 +868,37 @@ class DeclGraphService:
         round_id: str,
         decl_name: str,
         nl: str,
-    ) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.set_proof_nl(
+    ) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(
             repo_root,
             node_path=node_path,
-            round_id=round_id,
             decl_name=decl_name,
-            nl=nl,
+            mutate=lambda: self.stage_mutation.set_proof_nl(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                decl_name=decl_name,
+                nl=nl,
+            ),
         )
 
-    def add_proof_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, origin) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.add_proof_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, origin=origin)
+    def add_proof_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, origin) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.add_proof_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, origin=origin))
 
-    def remove_proof_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.remove_proof_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index)
+    def remove_proof_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.remove_proof_origin(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index))
 
-    def clear_proof_origins(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.clear_proof_origins(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
+    def clear_proof_origins(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.clear_proof_origins(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name))
 
-    def add_proof_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, dep) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.add_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep)
+    def add_proof_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, dep) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.add_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep))
 
-    def remove_proof_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.remove_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index)
+    def remove_proof_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.remove_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index))
 
-    def clear_proof_deps(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.clear_proof_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
-
-    def write_proof_formal(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_id: str,
-        decl_name: str,
-        lean_code: str,
-        lean_check: dict[str, object],
-        deps: list[str] | None = None,
-    ) -> ServiceResult[DeclRevision]:
-        return self.stage_mutation.write_proof_formal(
-            repo_root,
-            node_path=node_path,
-            round_id=round_id,
-            decl_name=decl_name,
-            lean_code=lean_code,
-            lean_check=lean_check,
-            deps=deps,
-        )
+    def clear_proof_deps(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclStageMutationView]:
+        return self._mutate_stage_with_projection(repo_root, node_path=node_path, decl_name=decl_name, mutate=lambda: self.stage_mutation.clear_proof_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name))
 
     def advance_stage_state(
         self,
@@ -1128,6 +1128,7 @@ class DeclGraphService:
         decl_name: str,
         code: str,
         check: LeanCheckView,
+        lean_decl_name: str,
     ) -> ServiceResult[DeclRevision]:
         return self.readiness.save_statement_formal_capture(
             repo_root,
@@ -1135,6 +1136,7 @@ class DeclGraphService:
             decl_name=decl_name,
             code=code,
             check=check,
+            lean_decl_name=lean_decl_name,
         )
 
     def save_proof_formal_capture(
@@ -1145,6 +1147,7 @@ class DeclGraphService:
         decl_name: str,
         code: str,
         check: LeanCheckView,
+        lean_decl_name: str,
     ) -> ServiceResult[DeclRevision]:
         return self.readiness.save_proof_formal_capture(
             repo_root,
@@ -1152,6 +1155,7 @@ class DeclGraphService:
             decl_name=decl_name,
             code=code,
             check=check,
+            lean_decl_name=lean_decl_name,
         )
 
     def list_active_decl_names(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[str]]:
@@ -1184,3 +1188,19 @@ class DeclGraphService:
         decl_names: list[str] | None = None,
     ) -> ServiceResult[AuditReport]:
         return self.readiness.run_strict_proved_audit(repo_root, node_path=node_path, decl_names=decl_names)
+
+    def _mutate_stage_with_projection(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        mutate: Callable[[], ServiceResult[DeclRevision]],
+    ) -> ServiceResult[DeclStageMutationView]:
+        return mutate_decl_with_projection(
+            self.runtime,
+            repo_root=Path(repo_root),
+            node_path=node_path,
+            decl_name=decl_name,
+            mutate=mutate,
+        )

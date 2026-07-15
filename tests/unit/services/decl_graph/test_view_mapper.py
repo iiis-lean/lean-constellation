@@ -23,12 +23,13 @@ def test_revision_tool_view_flattens_nested_truth_without_legacy_decl_deps() -> 
         name="main_result",
         node_path="Main.Topic",
         kind="theorem",
+        module="TestProject.Main.Topic.Theorems.main_result",
         public=True,
         summary="Main theorem.",
     )
     revision = DeclRevision(
-        decl_name="main_result",
         revision=2,
+        lean_decl_name="TestProject.main_result",
         state=DeclState.PROOF_PLANNED,
         change=DeclRevisionChange(
             kind=DeclChangeKind.UPDATE,
@@ -46,6 +47,8 @@ def test_revision_tool_view_flattens_nested_truth_without_legacy_decl_deps() -> 
     dumped = view.model_dump(mode="json")
 
     assert dumped["decl_name"] == "main_result"
+    assert dumped["module"] == "TestProject.Main.Topic.Theorems.main_result"
+    assert dumped["lean_decl_name"] == "TestProject.main_result"
     assert dumped["visibility"] == "public"
     assert dumped["change_id"] == "main_result@rev:2"
     assert dumped["statement_nl"] == "The main theorem states True."

@@ -8,6 +8,7 @@ from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat
 from lean_constellation.services.decl_graph import DeclState, RepoDeclDep
+from lean_constellation.services.external_clients import LeanCheckSummaryView
 from tests.unit.flows.decl_round._helpers import (
     NODE_PATH,
     commit_content_contract_head,
@@ -15,7 +16,33 @@ from tests.unit.flows.decl_round._helpers import (
     make_decl_round_runtime,
     seed_committed_theorem,
 )
-from tests.unit_services_helpers import lean_check_payload
+from tests.unit_services_helpers import (
+    lean_check_payload,
+    set_current_decl_lean_name_for_test,
+    write_proof_formal_for_test,
+    write_statement_formal_for_test,
+)
+
+
+class _AdapterIdentityLake:
+    def __init__(self, delegate: object | None = None) -> None:
+        self.delegate = delegate
+
+    def __getattr__(self, name: str):  # noqa: ANN204
+        if self.delegate is None:
+            raise AttributeError(name)
+        return getattr(self.delegate, name)
+
+    def run_snippet_check(
+        self,
+        *,
+        repo_root: Path,
+        imports: list[str],
+        code: str,
+        timeout_seconds: int | None = None,
+    ) -> LeanCheckSummaryView:
+        del repo_root, imports, code, timeout_seconds
+        return LeanCheckSummaryView(ok=True, command=["lean"], summary="registered declaration identity confirmed")
 
 
 def test_same_round_new_decl_dependency_uses_exact_round_revision(tmp_path: Path) -> None:
@@ -198,7 +225,7 @@ def _write_declared_round_theorem(lean_runtime, repo_root: Path, *, round_id: st
         decl_name=decl_name,
         nl=f"{decl_name} states True.",
     ).ok
-    assert lean_runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(lean_runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -206,6 +233,12 @@ def _write_declared_round_theorem(lean_runtime, repo_root: Path, *, round_id: st
         lean_code=f"theorem {decl_name} : True := by sorry",
         lean_check=lean_check_payload(contains_sorry=True),
     ).ok
+    set_current_decl_lean_name_for_test(
+        lean_runtime,
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name=decl_name,
+    )
     advanced = lean_runtime.decl_graph.advance_stage_state(
         repo_root,
         node_path=NODE_PATH,
@@ -230,6 +263,7 @@ def _create_external_dependency_round(lean_runtime, repo_root: Path) -> str:
 
 
 def _prepare_ready_adapter_provider(lean_runtime, provider_root: Path, *, bind_interface: bool) -> None:
+    lean_runtime.external.lean_toolchain.lake = _AdapterIdentityLake(lean_runtime.external.lean_toolchain.lake)
     interface = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the adapter theorem.")
     assert lean_runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
     assert lean_runtime.repo_workspace.metadata.set_repo_format(
@@ -272,7 +306,8 @@ def _prepare_ready_adapter_provider(lean_runtime, provider_root: Path, *, bind_i
         name="main_result",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Expose the upstream theorem.",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose the upstream theorem.",
     ).ok
     assert lean_runtime.adapter.set_adapter_statement_formal(
         provider_root,
@@ -282,7 +317,7 @@ def _prepare_ready_adapter_provider(lean_runtime, provider_root: Path, *, bind_i
     assert lean_runtime.adapter.set_adapter_statement_nl(
         provider_root,
         name="main_result",
-        summary="The adapter theorem states True.",
+        text="The adapter theorem states True.",
     ).ok
     assert lean_runtime.adapter.set_adapter_proof_formal(
         provider_root,
@@ -292,7 +327,7 @@ def _prepare_ready_adapter_provider(lean_runtime, provider_root: Path, *, bind_i
     assert lean_runtime.adapter.set_adapter_proof_nl(
         provider_root,
         name="main_result",
-        summary="Use triviality.",
+        text="Use triviality.",
     ).ok
     assert lean_runtime.adapter.finalize_adapter_decl(provider_root, name="main_result").ok
     if bind_interface:
@@ -330,7 +365,7 @@ def _write_proved_round_theorem(
         decl_name=decl_name,
         nl="Use triviality.",
     ).ok
-    assert lean_runtime.decl_graph.write_proof_formal(
+    assert write_proof_formal_for_test(lean_runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -360,11 +395,12 @@ def _write_proved_round_theorem(
 def _check_round_decl(lean_runtime, repo_root: Path, *, round_id: str, decl_name: str) -> tuple[bool, str | None]:
     revisions = lean_runtime.decl_graph.list_round_revisions(repo_root, node_path=NODE_PATH, round_id=round_id)
     assert revisions.ok and revisions.value is not None, revisions.issues
-    round_revisions = {revision.decl_name: revision for revision in revisions.value}
+    round_revisions = dict(revisions.value)
     return lean_runtime.decl_graph.round_revision_satisfies_proof_policy(
         repo_root,
         node_path=NODE_PATH,
         round_revisions=round_revisions,
+        decl_name=decl_name,
         revision=round_revisions[decl_name],
         target_proof_availability=ProofAvailability.PROVED,
     )

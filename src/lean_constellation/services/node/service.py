@@ -25,6 +25,7 @@ from lean_constellation.services.node.material_ref import MaterialRefComponent, 
 from lean_constellation.services.node.node_tree import DeleteImpactView, NodeKind, NodeTreeComponent, NodeView
 from lean_constellation.services.node.public_decl_access import PublicDeclAccessResolver
 from lean_constellation.services.node.release_guard import NodeReleaseGuard
+from lean_constellation.services.node.projection_transaction import NodeContractProjectionMutationView
 from lean_constellation.services.foundation import MutationSummaryView
 
 if TYPE_CHECKING:
@@ -85,6 +86,17 @@ class CurrentNodeContractView(StrictModel):
     mathlib_modules: list[NodeMathlibModuleUse] = Field(default_factory=list)
     mathlib_decls: list[NodeMathlibDeclUse] = Field(default_factory=list)
     summary: str
+
+
+class CurrentNodeContractMutationView(CurrentNodeContractView):
+    """Current contract view plus generated-file effects of a node mutation."""
+
+    projection_kind: Literal["prelude", "interfaces"]
+    projection_path: str | None = None
+    managed_projection_changed: bool = False
+    changed_files: list[str] = Field(default_factory=list)
+    reread_required: bool = False
+    projection_summary: str
 
 
 class ScopeChildCloseView(StrictModel):
@@ -182,6 +194,7 @@ class NodeService:
             runtime,
             node_tree=self.node_tree,
             contract=self.contract,
+            public_decl_provider=public_decl_provider,
             node_projection=node_projection,  # type: ignore[arg-type]
         )
         self.material_ref = material_ref or MaterialRefComponent(
@@ -362,7 +375,7 @@ class NodeService:
         actor: str,
         expected_public_decl_names: list[str] | None = None,
         target_repo: str | None = None,
-    ) -> ServiceResult[CurrentNodeContractView]:
+    ) -> ServiceResult[CurrentNodeContractMutationView]:
         mutation = self.dependency.add_node_dep(
             repo_root,
             node_path=node_path,
@@ -372,7 +385,7 @@ class NodeService:
             expected_decl_names=expected_public_decl_names,
             target_repo=target_repo,
         )
-        return self._current_contract_view_after_mutation(repo_root, node_path=node_path, mutation=mutation)
+        return self._current_contract_projection_view_after_mutation(repo_root, node_path=node_path, mutation=mutation)
 
     def remove_current_node_dep(
         self,
@@ -381,9 +394,9 @@ class NodeService:
         node_path: str,
         index: int,
         actor: str,
-    ) -> ServiceResult[CurrentNodeContractView]:
+    ) -> ServiceResult[CurrentNodeContractMutationView]:
         mutation = self.dependency.remove_node_dep(repo_root, node_path=node_path, index=index, actor=actor)
-        return self._current_contract_view_after_mutation(repo_root, node_path=node_path, mutation=mutation)
+        return self._current_contract_projection_view_after_mutation(repo_root, node_path=node_path, mutation=mutation)
 
     def add_current_material_ref(
         self,
@@ -850,6 +863,33 @@ class NodeService:
         if not view.ok or view.value is None:
             return self.runtime.foundation.fail(view.issues)
         return self.runtime.foundation.ok(view.value, warnings=[*mutation.issues, *view.issues])
+
+    def _current_contract_projection_view_after_mutation(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        mutation: ServiceResult[NodeContractProjectionMutationView],
+    ) -> ServiceResult[CurrentNodeContractMutationView]:
+        if not mutation.ok or mutation.value is None:
+            return self.runtime.foundation.fail(mutation.issues)
+        view = self.get_current_contract_view(repo_root, node_path=node_path)
+        if not view.ok or view.value is None:
+            return self.runtime.foundation.fail(view.issues)
+        return self.runtime.foundation.ok(
+            CurrentNodeContractMutationView.model_validate(
+                {
+                    **view.value.model_dump(mode="python"),
+                    "projection_kind": mutation.value.projection_kind,
+                    "projection_path": mutation.value.projection_path,
+                    "managed_projection_changed": mutation.value.managed_projection_changed,
+                    "changed_files": list(mutation.value.changed_files),
+                    "reread_required": mutation.value.reread_required,
+                    "projection_summary": mutation.value.projection_summary,
+                }
+            ),
+            warnings=[*mutation.issues, *view.issues],
+        )
 
     def _content_task_finalize_view(
         self,

@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit_services_helpers import lean_check_payload, make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import (
+    lean_check_payload,
+    make_runtime,
+    publish_native_provider_release,
+    write_proof_formal_for_test,
+    write_statement_formal_for_test,
+)
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.interface import DeclKind
@@ -208,7 +214,7 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
             nl=f"{name} is provided by the real requirement lifecycle fixture.",
             deps=[],
         ).ok
-        assert service.runtime.decl_graph.write_statement_formal(
+        assert write_statement_formal_for_test(service.runtime,
             provider,
             node_path="Main.Core",
             round_id=round_record.value.round_id,
@@ -226,7 +232,7 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
                 nl="The proof is by triviality in this lifecycle fixture.",
                 deps=[],
             ).ok
-            assert service.runtime.decl_graph.write_proof_formal(
+            assert write_proof_formal_for_test(service.runtime,
                 provider,
                 node_path="Main.Core",
                 round_id=round_record.value.round_id,

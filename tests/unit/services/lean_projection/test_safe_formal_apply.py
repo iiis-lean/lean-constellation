@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
+from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
+from lean_constellation.services.lean_projection.module_identity import module_artifact_relpaths
 from tests.unit.services.lean_projection.test_formal_stage_sync import (
     DECL_NAME,
     NODE_PATH,
     _current_revision,
     _setup_theorem_round,
+    _write_statement_target,
 )
 from tests.unit_services_helpers import make_runtime
 
@@ -22,6 +24,19 @@ class _Lake:
         del json, timeout_seconds
         return ExternalCommandResult(ok=True, command=["lake", "env", "lean", rel_file], cwd=str(repo_root), exit_code=0, summary="ok")
 
+    def run_lake_build(self, repo_root: Path, target: str | None = None, targets=None, timeout_seconds=None):  # noqa: ANN001, ANN201
+        del targets, timeout_seconds
+        if target and target.startswith("+"):
+            for relpath in module_artifact_relpaths(target[1:]):
+                artifact = Path(repo_root) / relpath
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_text("candidate artifact", encoding="utf-8")
+        return ExternalCommandResult(ok=True, command=["lake", "build", target or ""], cwd=str(repo_root), exit_code=0, summary="built")
+
+    def run_snippet_check(self, *, repo_root: Path, imports: list[str], code: str, timeout_seconds: int | None = None) -> LeanCheckSummaryView:
+        del timeout_seconds
+        return LeanCheckSummaryView(ok=True, command=["lake", "env", "lean"], summary=f"confirmed {code} from {imports[0]}")
+
 
 def _runtime():
     return make_runtime(external_overrides={"lean_mcp_toolkit": _Toolkit(), "lake": _Lake()})
@@ -32,6 +47,7 @@ def test_safe_statement_apply_generates_check_and_refreshes_projection(tmp_path:
     _setup_theorem_round(tmp_path, runtime)
     prepared = runtime.lean_projection.prepare_statement_formal_stage_file(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert prepared.ok and prepared.value is not None
+    _write_statement_target(Path(prepared.value.path))
     code = Path(prepared.value.path).read_text(encoding="utf-8")
     digest = runtime.lean_projection.current_revision_digest(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert digest.ok and digest.value is not None
@@ -59,8 +75,13 @@ def test_safe_statement_apply_rolls_back_file_truth_and_projection_on_refresh_fa
     prepared = runtime.lean_projection.prepare_statement_formal_stage_file(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert prepared.ok and prepared.value is not None
     path = Path(prepared.value.path)
+    _write_statement_target(path)
     before_file = path.read_bytes()
     before_revision = _current_revision(runtime, tmp_path).model_dump(mode="json")
+    module = prepared.value.module
+    artifact = tmp_path / module_artifact_relpaths(module)[0]
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("previous artifact", encoding="utf-8")
     digest = runtime.lean_projection.current_revision_digest(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert digest.ok and digest.value is not None
 
@@ -82,6 +103,7 @@ def test_safe_statement_apply_rolls_back_file_truth_and_projection_on_refresh_fa
     assert not applied.ok
     assert path.read_bytes() == before_file
     assert _current_revision(runtime, tmp_path).model_dump(mode="json") == before_revision
+    assert artifact.read_text(encoding="utf-8") == "previous artifact"
 
 
 def test_safe_statement_apply_rejects_stale_revision_without_writing(tmp_path: Path) -> None:

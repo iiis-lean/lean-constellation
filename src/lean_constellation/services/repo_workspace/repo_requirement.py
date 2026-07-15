@@ -558,14 +558,24 @@ class RepoRequirementComponent:
                     object_ref=f"{provider_key}:{node_path}:{decl_name}@{revision}",
                 )
             )
+        lean_decl_name = loaded.value.lean_decl_name
+        if lean_decl_name is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_interface_statement_contract_lean_decl_name_missing",
+                    "The provider declaration has no registered Lean declaration name.",
+                    object_ref=f"{provider_key}:{node_path}:{decl_name}@{revision}",
+                )
+            )
         actual_codes = [("statement", statement_code)]
         if loaded.value.proof_lean_code is not None and loaded.value.proof_lean_code.strip():
             actual_codes.append(("proof", loaded.value.proof_lean_code))
         for stage, actual in actual_codes:
-            compared = self.runtime.lean_projection.annotation.compare_theorem_header(
+            compared = self.runtime.lean_projection.annotation.compare_expected_theorem_header(
                 expected,
                 actual,
                 decl_name=decl_name,
+                lean_decl_name=lean_decl_name,
             )
             comparison_issues = compared.issues if not compared.ok or compared.value is None else compared.value.issues
             if comparison_issues:

@@ -251,7 +251,6 @@ class InterfaceBindingComponent:
         expected = interface.expected_statement_lean_code
         if expected is None:
             return self.runtime.foundation.ok(None)
-        name = decl.name
         if interface.kind not in {DeclKind.THEOREM, DeclKind.LEMMA}:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -271,14 +270,23 @@ class InterfaceBindingComponent:
                     object_ref=interface.name,
                 )
             )
+        lean_decl_name = decl.revision.lean_decl_name
+        if lean_decl_name is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_interface_lean_decl_name_missing",
+                    "The adapter declaration has no registered Lean declaration name.",
+                    object_ref=interface.name,
+                )
+            )
         actual_codes = [("statement", statement_code)]
         if decl.revision.proof_lean_code is not None and decl.revision.proof_lean_code.strip():
             actual_codes.append(("proof", decl.revision.proof_lean_code))
         for stage, actual in actual_codes:
-            compared = self.runtime.lean_projection.annotation.compare_theorem_header(
+            compared = self.runtime.lean_projection.annotation.compare_external_theorem_header(
                 expected,
                 actual,
-                decl_name=name,
+                lean_decl_name=lean_decl_name,
             )
             comparison_issues = compared.issues if not compared.ok or compared.value is None else compared.value.issues
             if comparison_issues:

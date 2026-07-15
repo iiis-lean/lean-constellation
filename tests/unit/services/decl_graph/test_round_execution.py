@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lean_constellation.services.decl_graph import DeclDraftSpec
-from tests.unit.flows.decl_round._helpers import NODE_PATH, make_decl_round_runtime
+from lean_constellation.services.decl_graph import DeclDraftSpec, DeclState
+from tests.unit.flows.decl_round._helpers import (
+    NODE_PATH,
+    create_round_with_decl,
+    make_decl_round_runtime,
+    seed_committed_theorem,
+)
+from tests.unit_services_helpers import lean_check_payload, write_statement_formal_for_test
 
 
 def test_round_with_decl_drafts_rolls_back_complete_graph_on_mid_batch_failure(tmp_path: Path, monkeypatch) -> None:
@@ -56,3 +62,63 @@ def test_round_with_decl_drafts_returns_structured_batch(tmp_path: Path) -> None
     assert result.ok, result.issues
     assert result.value is not None
     assert [item.decl_name for item in result.value.declarations] == ["main_def"]
+
+
+def test_final_audit_accepts_same_node_dependency_from_earlier_committed_round(tmp_path: Path) -> None:
+    _flow_runtime, runtime, repo_root = make_decl_round_runtime(tmp_path)
+    seed_committed_theorem(runtime, repo_root, decl_name="supporting_result")
+    _strategy_id, round_id, _round_index = create_round_with_decl(
+        runtime,
+        repo_root,
+        decl_name="dependent_result",
+        end_after_state=DeclState.DECLARED,
+    )
+    started = runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id)
+    assert started.ok, started.issues
+    statement_nl = runtime.decl_graph.write_statement_nl(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="dependent_result",
+        nl="The dependent result uses the earlier committed declaration.",
+        deps=["supporting_result"],
+    )
+    assert statement_nl.ok, statement_nl.issues
+    advanced_nl = runtime.decl_graph.advance_stage_state(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        stage="statement_nl",
+        decl_names=["dependent_result"],
+    )
+    assert advanced_nl.ok, advanced_nl.issues
+    statement_formal = write_statement_formal_for_test(runtime,
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="dependent_result",
+        lean_code="theorem dependent_result : True := by trivial",
+        lean_check=lean_check_payload(),
+    )
+    assert statement_formal.ok, statement_formal.issues
+    advanced_formal = runtime.decl_graph.advance_stage_state(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        stage="statement_formal",
+        decl_names=["dependent_result"],
+    )
+    assert advanced_formal.ok, advanced_formal.issues
+
+    audit = runtime.decl_graph.audit_round_final(repo_root, node_path=NODE_PATH, round_id=round_id)
+
+    assert audit.ok, audit.issues
+    assert audit.value is not None
+    assert audit.value.passed is True
+    closed = runtime.decl_graph.closeout_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        outcome="completed",
+    )
+    assert closed.ok, closed.issues

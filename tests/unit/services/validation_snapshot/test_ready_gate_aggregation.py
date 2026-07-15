@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.unit_services_helpers import lean_check_payload, make_runtime
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    make_runtime,
+    set_current_decl_lean_name_for_test,
+    write_statement_formal_for_test,
+)
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.external_clients import ExternalCommandResult
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult, WriteMode
 from lean_constellation.services.runtime import LeanRuntimeServices
 from lean_constellation.services.validation_snapshot import ReadinessGateComponent, ValidationSnapshotService
@@ -15,6 +22,22 @@ from lean_constellation.services.validation_snapshot import ReadinessGateCompone
 
 NODE_PATH = "Main.Topic.Core"
 MAIN_CONTENT_NODE_PATH = "Main.Core"
+
+
+class FakeLake:
+    def run_lake_build(self, repo_root: Path, target: str | None = None, targets=None, timeout_seconds=None):  # noqa: ANN001, ANN201
+        del targets, timeout_seconds
+        return ExternalCommandResult(
+            ok=True,
+            command=["lake", "build", target or ""],
+            cwd=str(repo_root),
+            exit_code=0,
+            summary="fake module build passed",
+        )
+
+
+def _runtime() -> LeanRuntimeServices:
+    return make_runtime(external_overrides={"lake": FakeLake()})
 
 
 class PassingConsistency:
@@ -44,6 +67,7 @@ def _write_preparation_input(
     include_interface: bool = False,
     expected_statement_lean_code: str | None = None,
 ) -> None:
+    initialize_native_test_repo(repo_root, project_name="TestProject")
     interfaces = [
         DeclInterface(
             name="main_result",
@@ -64,6 +88,7 @@ def _write_preparation_input(
 
 
 def _create_scope_and_content(runtime: LeanRuntimeServices, repo_root: Path, *, content_path: str = NODE_PATH) -> None:
+    initialize_native_test_repo(repo_root, project_name="TestProject")
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.create_scope_node(repo_root, path="Main.Topic", goal="Topic goal.", boundary="Topic boundary.").ok
     assert runtime.node.create_content_node(
@@ -139,15 +164,28 @@ def _create_declared_main_public_theorem(runtime: LeanRuntimeServices, repo_root
         nl=f"{decl_name} states True.",
         deps=[],
     ).ok
-    assert runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(runtime,
         repo_root,
         node_path=MAIN_CONTENT_NODE_PATH,
         round_id=round_record.value.round_id,
         decl_name=decl_name,
-        lean_code=f"theorem {decl_name} : True := by\n  sorry",
+        lean_code=(
+            "/--\n"
+            f"# lean-constellation target: `{decl_name}`\n\n"
+            f"{decl_name} states True.\n"
+            "-/\n"
+            f"theorem {decl_name} : True := by\n  sorry"
+        ),
         lean_check=lean_check_payload(contains_sorry=True),
         deps=[],
     ).ok
+    set_current_decl_lean_name_for_test(
+        runtime,
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        decl_name=decl_name,
+        lean_decl_name=decl_name,
+    )
     assert runtime.decl_graph.commit_decl_revision(
         repo_root,
         node_path=MAIN_CONTENT_NODE_PATH,
@@ -217,7 +255,7 @@ def _validation_with_passing_consistency(runtime: LeanRuntimeServices) -> Valida
 
 
 def test_content_ready_view_aggregates_decl_graph_not_ready(tmp_path: Path) -> None:
-    runtime = make_runtime()
+    runtime = _runtime()
     _create_scope_and_content(runtime, tmp_path)
     _create_public_decl(runtime, tmp_path)
     service = _validation_with_passing_consistency(runtime)
@@ -231,7 +269,7 @@ def test_content_ready_view_aggregates_decl_graph_not_ready(tmp_path: Path) -> N
 
 
 def test_scope_ready_view_reports_uncommitted_content_child(tmp_path: Path) -> None:
-    runtime = make_runtime()
+    runtime = _runtime()
     _create_scope_and_content(runtime, tmp_path)
 
     view = runtime.validation_snapshot.get_scope_ready_view(tmp_path, scope_path="Main.Topic")
@@ -244,7 +282,7 @@ def test_scope_ready_view_reports_uncommitted_content_child(tmp_path: Path) -> N
 
 
 def test_scope_ready_view_reports_unbound_interface(tmp_path: Path) -> None:
-    runtime = make_runtime()
+    runtime = _runtime()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal.", boundary="Topic boundary.").ok
     assert runtime.node.interface.add_interface(
@@ -265,7 +303,7 @@ def test_scope_ready_view_reports_unbound_interface(tmp_path: Path) -> None:
 
 
 def test_scope_ready_view_orders_child_issues_deterministically(tmp_path: Path) -> None:
-    runtime = make_runtime()
+    runtime = _runtime()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal.", boundary="Topic boundary.").ok
     for suffix in ["B", "A"]:
@@ -286,7 +324,7 @@ def test_scope_ready_view_orders_child_issues_deterministically(tmp_path: Path) 
 
 
 def test_repo_ready_view_passes_with_committed_main_and_passing_providers(tmp_path: Path) -> None:
-    runtime = make_runtime()
+    runtime = _runtime()
     _write_preparation_input(runtime, tmp_path)
     assert runtime.node.ensure_native_root_main_contract(tmp_path).ok
     committed = runtime.node.commit_scope_contract(tmp_path, scope_path="Main", summary="Main scope is committed.")
@@ -303,7 +341,7 @@ def test_repo_ready_view_passes_with_committed_main_and_passing_providers(tmp_pa
 
 
 def test_repo_ready_gate_uses_target_proof_availability_for_main_public_exports(tmp_path: Path) -> None:
-    runtime = make_runtime()
+    runtime = _runtime()
     _write_preparation_input(runtime, tmp_path)
     assert runtime.node.ensure_native_root_main_contract(tmp_path).ok
     configured_declared = runtime.repo_workspace.metadata.update_repo_config(
@@ -345,7 +383,7 @@ def test_repo_ready_gate_uses_target_proof_availability_for_main_public_exports(
 
 
 def test_repo_ready_gate_rechecks_exact_root_interface_statement_contract(tmp_path: Path) -> None:
-    runtime = make_runtime()
+    runtime = _runtime()
     _write_preparation_input(
         runtime,
         tmp_path,

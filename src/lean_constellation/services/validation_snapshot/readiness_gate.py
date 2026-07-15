@@ -11,6 +11,8 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services.decl_graph.availability_policy import is_theorem_like
+from lean_constellation.services.foundation.module_layout import local_module_name, native_project_name
 from lean_constellation.services.node import ContractVersionStatus, NodeKind, NodeService
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.validation_snapshot.consistency_check import ConsistencyCheckComponent
@@ -264,6 +266,12 @@ class ReadinessGateComponent:
         target = config.value.config.target_proof_availability
 
         reports: list[GateReport] = []
+        refreshed_boundary, interfaces_ready = self._refresh_node_boundary(repo_root, node_path=node_path)
+        reports.extend(refreshed_boundary)
+        node_deps = self.node.dependency.validate_node_deps(repo_root, node_path=node_path)
+        if not node_deps.ok or node_deps.value is None:
+            return self.runtime.foundation.fail(node_deps.issues)
+        reports.append(node_deps.value)
         interface_issues = []
         decl_refs: dict[tuple[str | None, str, str], DeclRef] = {}
         for interface in contract.value.contract.interfaces:
@@ -293,6 +301,8 @@ class ReadinessGateComponent:
 
         decl_issues = []
         for ref in decl_refs.values():
+            if ref.repo is None and ref.node == node_path:
+                continue
             checked = self._check_decl_ref_proof_policy(repo_root, ref=ref, fallback_node_path=node_path)
             if not checked.ok or checked.value is None:
                 return self.runtime.foundation.fail(checked.issues)
@@ -317,10 +327,77 @@ class ReadinessGateComponent:
             if decl_issues
             else self.runtime.foundation.gate_passed(
                 "content_decl_proof_policy_satisfied",
-                summary=f"{len(decl_refs)} public/interface declarations satisfy proof policy.",
+                summary="Cross-node and external interface declarations satisfy proof policy.",
                 warnings=public_decls.issues,
             )
         )
+
+        active_names = self.runtime.decl_graph.list_active_decl_names(repo_root, node_path=node_path)
+        if not active_names.ok or active_names.value is None:
+            return self.runtime.foundation.fail(active_names.issues)
+        local_policy_issues = []
+        for decl_name in active_names.value:
+            revision = self.runtime.decl_graph.get_current_decl_revision(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+            )
+            if not revision.ok or revision.value is None:
+                local_policy_issues.extend(revision.issues)
+                continue
+            stage = "proof" if target == ProofAvailability.PROVED and is_theorem_like(revision.value.kind) else "statement"
+            policy = self.runtime.decl_graph.check_decl_proof_policy_satisfied(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                target_proof_availability=target,
+            )
+            if not policy.ok or policy.value is None:
+                local_policy_issues.extend(policy.issues)
+            elif not policy.value.proof_policy_satisfied:
+                local_policy_issues.append(
+                    self.runtime.foundation.issue(
+                        "content_decl_proof_policy_unsatisfied",
+                        f"Declaration does not satisfy current proof availability policy: {decl_name}",
+                        object_ref=f"{node_path}:{decl_name}",
+                        details={"target_proof_availability": target.value, "summary": policy.value.summary},
+                    )
+                )
+            formal = self.consistency.check_formal_stage_consistency(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                stage=stage,
+            )
+            if not formal.ok or formal.value is None:
+                local_policy_issues.extend(formal.issues)
+            elif not formal.value.passed:
+                local_policy_issues.extend(formal.value.issues)
+            identity = self.lean_projection.check_decl_dependency_identity(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                stage=stage,
+            )
+            if not identity.ok or identity.value is None:
+                local_policy_issues.extend(identity.issues)
+            elif not identity.value.passed:
+                local_policy_issues.extend(identity.value.issues)
+        reports.append(
+            self.runtime.foundation.gate_failed(
+                "content_local_decl_completion",
+                local_policy_issues,
+                summary=f"{len(local_policy_issues)} local declaration completion checks failed.",
+            )
+            if local_policy_issues
+            else self.runtime.foundation.gate_passed(
+                "content_local_decl_completion",
+                summary=f"All {len(active_names.value)} active local declarations have synchronized captures and complete identities.",
+            )
+        )
+
+        if interfaces_ready:
+            reports.append(self._build_node_interfaces_gate(repo_root, node_path=node_path))
 
         projection = self.consistency.check_projection_sync(repo_root, scope=node_path)
         if not projection.ok or projection.value is None:
@@ -337,7 +414,9 @@ class ReadinessGateComponent:
                 contract_version_status=contract.value.version_status,
                 gate=gate,
                 ready_to_submit=gate.passed,
-                checked_decl_count=len(decl_refs),
+                checked_decl_count=len(set(active_names.value)) + len(
+                    [ref for ref in decl_refs.values() if ref.repo is not None or ref.node != node_path]
+                ),
                 blocking_issue_kinds=blocking_issue_kinds,
                 summary=("Content node is complete." if gate.passed else "Content node completion gate has blocking issues."),
             ),
@@ -451,6 +530,11 @@ class ReadinessGateComponent:
             return self.runtime.foundation.fail(deps.issues)
         reports.append(deps.value)
 
+        refreshed_boundary, interfaces_ready = self._refresh_node_boundary(Path(repo_root), node_path=scope_path)
+        reports.extend(refreshed_boundary)
+        if interfaces_ready:
+            reports.append(self._build_node_interfaces_gate(Path(repo_root), node_path=scope_path))
+
         projection = self.lean_projection.node_projection.check_interfaces_sync(Path(repo_root), node_path=scope_path)
         if not projection.ok or projection.value is None:
             return self.runtime.foundation.fail(projection.issues)
@@ -535,6 +619,17 @@ class ReadinessGateComponent:
             return self.runtime.foundation.fail(statement_contracts.issues)
         reports.append(statement_contracts.value)
 
+        root_deps = self.node.dependency.validate_node_deps(repo_root, node_path="Main")
+        if not root_deps.ok or root_deps.value is None:
+            return self.runtime.foundation.fail(root_deps.issues)
+        reports.append(root_deps.value)
+
+        refreshed_boundary, interfaces_ready = self._refresh_node_boundary(repo_root, node_path="Main")
+        reports.extend(refreshed_boundary)
+        if interfaces_ready:
+            reports.append(self._build_node_interfaces_gate(repo_root, node_path="Main"))
+        reports.append(self._build_module_gate(repo_root, module=native_project_name(repo_root), gate_name="repo_public_module_build"))
+
         source = self.consistency.check_source_corpus_consistency(repo_root)
         if source.ok and source.value is not None:
             reports.append(source.value)
@@ -562,6 +657,67 @@ class ReadinessGateComponent:
             return self.runtime.foundation.fail(projection.issues)
         reports.append(projection.value)
         return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports("repo_ready", reports))
+
+    def _refresh_node_boundary(self, repo_root: Path, *, node_path: str) -> tuple[list[GateReport], bool]:
+        reports: list[GateReport] = []
+        interfaces_ready = True
+        for projection_kind, refresh in [
+            ("prelude", self.lean_projection.node_projection.refresh_prelude),
+            ("interfaces", self.lean_projection.node_projection.refresh_interfaces),
+        ]:
+            refreshed = refresh(Path(repo_root), node_path=node_path)
+            if not refreshed.ok or refreshed.value is None:
+                reports.append(
+                    self.runtime.foundation.gate_failed(
+                        f"{projection_kind}_refresh",
+                        refreshed.issues,
+                        summary=f"Failed to refresh {node_path} {projection_kind} projection.",
+                    )
+                )
+                if projection_kind == "interfaces":
+                    interfaces_ready = False
+                continue
+            reports.append(
+                self.runtime.foundation.gate_passed(
+                    f"{projection_kind}_refresh",
+                    summary=refreshed.value.summary,
+                    warnings=refreshed.issues,
+                )
+            )
+        return reports, interfaces_ready
+
+    def _build_node_interfaces_gate(self, repo_root: Path, *, node_path: str) -> GateReport:
+        return self._build_module_gate(
+            Path(repo_root),
+            module=local_module_name(Path(repo_root), f"{node_path}.Interfaces"),
+            gate_name="interfaces_module_build",
+        )
+
+    def _build_module_gate(self, repo_root: Path, *, module: str | None, gate_name: str) -> GateReport:
+        if module is None:
+            return self.runtime.foundation.gate_failed(
+                gate_name,
+                [
+                    self.runtime.foundation.issue(
+                        "native_project_module_missing",
+                        "Lean module build requires an initialized native project module.",
+                        object_ref=str(repo_root),
+                    )
+                ],
+                summary="Lean module build could not resolve the native project module.",
+            )
+        built = self.lean_projection.module_identity.build_module(Path(repo_root), module=module)
+        if not built.ok or built.value is None:
+            return self.runtime.foundation.gate_failed(
+                gate_name,
+                built.issues,
+                summary=f"Lean module build failed for +{module}.",
+            )
+        return self.runtime.foundation.gate_passed(
+            gate_name,
+            summary=built.value.summary,
+            warnings=built.issues,
+        )
 
     def get_repo_ready_view(self, repo_root: Path) -> ServiceResult[RepoReadyGateView]:
         repo_root = Path(repo_root)

@@ -60,6 +60,9 @@ def test_add_mathlib_module_use_refreshes_prelude_and_dedupes(tmp_path: Path) ->
         )
     ]
     prelude_path = _prelude_path(tmp_path, service)
+    assert added.value.managed_projection_changed is True
+    assert added.value.changed_files == [str(prelude_path)]
+    assert added.value.reread_required is True
     assert "import Mathlib.Data.Finset.Basic" in prelude_path.read_text(encoding="utf-8")
     prelude_path.unlink()
 
@@ -205,7 +208,7 @@ def test_module_use_reports_prelude_refresh_failure(tmp_path: Path) -> None:
     assert node.value.open_contract_version is None
 
 
-def test_add_mathlib_decl_use_records_hint_without_prelude_import(tmp_path: Path) -> None:
+def test_add_mathlib_decl_use_records_hint_and_refreshes_prelude_import(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
     assert service.upsert_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Basic").ok
@@ -238,7 +241,12 @@ def test_add_mathlib_decl_use_records_hint_without_prelude_import(tmp_path: Path
             added_by=MathlibUseActor.WORKER,
         )
     ]
-    assert not _prelude_path(tmp_path, service).exists()
+    prelude_path = _prelude_path(tmp_path, service)
+    assert added.value.managed_projection_changed is True
+    assert added.value.changed_files == [str(prelude_path)]
+    assert added.value.reread_required is True
+    assert "import Mathlib.Data.Finset.Basic" in prelude_path.read_text(encoding="utf-8")
+    prelude_path.unlink()
 
     duplicate = service.add_mathlib_decl_use(
         tmp_path,
@@ -251,6 +259,7 @@ def test_add_mathlib_decl_use_records_hint_without_prelude_import(tmp_path: Path
     assert duplicate.value is not None
     assert [issue.kind for issue in duplicate.issues] == ["mathlib_decl_use_duplicate"]
     assert len(duplicate.value.contract.mathlib_decls) == 1
+    assert "import Mathlib.Data.Finset.Basic" in prelude_path.read_text(encoding="utf-8")
 
     removed = service.remove_mathlib_decl_use(
         tmp_path,
@@ -261,6 +270,7 @@ def test_add_mathlib_decl_use_records_hint_without_prelude_import(tmp_path: Path
     assert removed.ok
     assert removed.value is not None
     assert removed.value.contract.mathlib_decls == []
+    assert "import Mathlib.Data.Finset.Basic" not in prelude_path.read_text(encoding="utf-8")
 
 
 def test_add_mathlib_decl_use_missing_index_warning_and_remove_permission(tmp_path: Path) -> None:

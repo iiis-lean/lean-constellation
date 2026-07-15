@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, write_proof_formal_for_test, write_statement_formal_for_test
 
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclStage, DeclState
 
@@ -109,7 +109,7 @@ def _complete_theorem_round(
         origin=[{"kind": "real_test", "ref": decl_name}],
         deps=[],
     ).ok
-    assert runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -127,7 +127,7 @@ def _complete_theorem_round(
         origin=[{"kind": "real_test", "ref": f"{decl_name}:proof"}],
         deps=proof_deps or [],
     ).ok
-    assert runtime.decl_graph.write_proof_formal(
+    assert write_proof_formal_for_test(runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,

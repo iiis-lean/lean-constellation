@@ -84,7 +84,16 @@ def _write_contract(tmp_path: Path, node_path: str, contract: NodeContractSnapsh
 def _component_with_public_decls(tmp_path: Path, decls: dict[str, list[DeclPublicView]]) -> tuple[InterfaceComponent, ExportComponent]:
     base_runtime = make_runtime()
     foundation = base_runtime.foundation
-    provider = FakePublicDeclProvider(foundation, decls)
+    complete = {
+        node_path: [
+            decl
+            if decl.module is not None
+            else decl.model_copy(update={"module": f"Fixture.Public.{decl.ref.name}_{decl.ref.revision}"})
+            for decl in values
+        ]
+        for node_path, values in decls.items()
+    }
+    provider = FakePublicDeclProvider(foundation, complete)
     runtime = make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=provider))
     return runtime.node.interface, runtime.node.export
 
@@ -446,7 +455,7 @@ def test_bind_and_unbind_content_interface_to_public_decl(tmp_path: Path) -> Non
     assert bound.value is not None
     assert bound.value.changed is True
     assert bound.value.bound_decl == DeclRef(node="Main.Core", name="main_result", revision=1)
-    assert "import Main.Core.Theorems.main_result" in (tmp_path / "Main" / "Core" / "Interfaces.lean").read_text(encoding="utf-8")
+    assert "import Fixture.Public.main_result_1" in (tmp_path / "Main" / "Core" / "Interfaces.lean").read_text(encoding="utf-8")
 
     unbound = component.unbind_interface(tmp_path, node_path="Main.Core", interface_name="core_result")
     assert unbound.ok

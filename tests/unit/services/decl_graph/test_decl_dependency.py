@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
@@ -10,6 +10,7 @@ from lean_constellation.services.foundation import WriteMode
 
 
 def _create_content_node(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path)
     runtime = make_runtime()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(
@@ -42,12 +43,12 @@ def _create_round(tmp_path: Path, *, objective: str = "Plan a round.") -> str:
     return round_record.value.round_id
 
 
-def _write_revision(tmp_path: Path, revision: DeclRevision) -> None:
+def _write_revision(tmp_path: Path, *, decl_name: str, revision: DeclRevision) -> None:
     runtime = make_runtime()
     path = runtime.decl_graph.graph_store.revision_path(
         tmp_path,
         node_path="Main.Topic.Core",
-        decl_name=revision.decl_name,
+        decl_name=decl_name,
         revision=revision.revision,
     )
     assert runtime.foundation.store.write_json_atomic(path, revision, mode=WriteMode.UPDATE_EXISTING).ok
@@ -69,7 +70,7 @@ def _seed_committed_decl(tmp_path: Path, *, round_id: str, name: str, deps: list
     assert revision.ok and revision.value is not None
     revision.value.state = DeclState.PROVED
     revision.value.proof_deps = deps or []
-    _write_revision(tmp_path, revision.value)
+    _write_revision(tmp_path, decl_name=name, revision=revision.value)
     assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=DeclState.PROVED).ok
 
 

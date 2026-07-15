@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Literal
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.decl_graph.models import DeclState
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
+from lean_constellation.services.foundation.module_layout import local_projection_path
+from lean_constellation.services.lean_projection.module_identity import ModuleBuildView, module_artifact_relpaths
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.decl_file import DeclFileComponent, FormalCaptureView
@@ -29,6 +31,9 @@ class SafeFormalApplyView(StrictModel):
     revision: int
     state: DeclState
     stage: FormalApplyStage
+    module: str
+    lean_decl_name: str
+    build: ModuleBuildView
     revision_digest: str
     file_path: str
     capture_summary: str
@@ -154,8 +159,12 @@ class SafeFormalApplyComponent:
             return self.runtime.foundation.fail(path_view.issues)
         ctx = FoundationContext(repo_root=Path(repo_root))
         graph_root = self.runtime.decl_graph.graph_store.graph_root(repo_root, node_path=node_path)
-        projection_root = self.runtime.foundation.layout.node_projection_dir(ctx, node_path)
-        snapshot = _TreeSnapshot([graph_root, projection_root])
+        projection_root = local_projection_path(
+            repo_root,
+            self.runtime.foundation.layout.node_projection_dir(ctx, node_path),
+        )
+        artifact_paths = [Path(repo_root) / relpath for relpath in module_artifact_relpaths(path_view.value.module)]
+        snapshot = _TreeSnapshot([graph_root, projection_root, *artifact_paths])
         try:
             written = self._write_candidate(Path(path_view.value.path), lean_code.rstrip() + "\n")
             if not written.ok:
@@ -194,6 +203,9 @@ class SafeFormalApplyComponent:
                     revision=after.value.revision,
                     state=after.value.state,
                     stage=stage,
+                    module=capture.value.module,
+                    lean_decl_name=capture.value.lean_decl_name,
+                    build=capture.value.build,
                     revision_digest=after_digest,
                     file_path=path_view.value.path,
                     capture_summary=capture.value.summary,

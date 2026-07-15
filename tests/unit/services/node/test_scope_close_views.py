@@ -1,10 +1,11 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
+from lean_constellation.services.external_clients import ExternalCommandResult
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.node import DeclPublicView, NodeService
 
@@ -19,10 +20,19 @@ class MutablePublicDeclProvider:
 
 
 def _runtime_with_provider(provider: MutablePublicDeclProvider):
-    return make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=provider))
+    class FakeLake:
+        def run_lake_build(self, repo_root: Path, target: str | None = None, targets=None, timeout_seconds=None):  # noqa: ANN001, ANN201
+            del targets, timeout_seconds
+            return ExternalCommandResult(ok=True, command=["lake", "build", target or ""], cwd=str(repo_root), exit_code=0, summary="built")
+
+    return make_runtime(
+        providers=LeanProviderOverrides(content_public_decl_provider=provider),
+        external_overrides={"lake": FakeLake()},
+    )
 
 
 def _create_scope_and_content(service: NodeService, tmp_path: Path, *, content_path: str = "Main.Topic.Core") -> None:
+    initialize_native_test_repo(tmp_path, project_name="TestProject")
     assert service.node_tree.ensure_root_scope_node(tmp_path).ok
     assert service.create_scope_node(tmp_path, path="Main.Topic", goal="Topic goal.", boundary="Topic boundary.").ok
     assert service.create_content_node(
@@ -39,6 +49,7 @@ def _public_decl(content_path: str = "Main.Topic.Core", *, ready: bool = True, s
     return DeclPublicView(
         ref=DeclRef(repo=None, node=content_path, name="core_result", revision=1),
         kind=DeclKind.THEOREM.value,
+        module=f"TestProject.{content_path}.Theorems.core_result",
         summary="Core result.",
         public=True,
         ready=ready,

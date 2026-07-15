@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclRoundStatus, DeclState, DeclStrategyStatus
 
 
 def _create_content_node(tmp_path: Path, *, node_path: str = "Main.Topic.Core") -> None:
+    initialize_native_test_repo(tmp_path)
     runtime = make_runtime()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(

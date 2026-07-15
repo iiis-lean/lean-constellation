@@ -43,8 +43,8 @@ def _write_decl(
         module=f"{node_path}.Theorems.{name}",
     )
     revision_value = DeclRevision(
-        decl_name=name,
         revision=revision,
+        lean_decl_name=f"TestProject.{name}",
         state=state,
         status=DeclRevisionStatus.COMMITTED,
         statement=DeclStatement(
@@ -61,7 +61,6 @@ def _write_decl(
             ),
             deps=[RepoDeclDep(ref=ref) for ref in proof_deps],
         ),
-        module=f"{node_path}.Theorems.{name}",
     )
     assert runtime.foundation.store.write_json_atomic(
         runtime.decl_graph.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=name),

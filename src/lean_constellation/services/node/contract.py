@@ -487,7 +487,6 @@ class ContractComponent:
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
         issues = []
-        warnings = []
         if node.value.kind != NodeKind.SCOPE:
             issues.append(self.runtime.foundation.issue("node_not_scope", "Scope commit requires a Scope node.", object_ref=scope_path))
         contract = self._load_current_contract(repo_root, node.value)
@@ -524,17 +523,9 @@ class ContractComponent:
                         field=f"interfaces.{interface.name}.bound_decl",
                     )
                 )
-        warnings.append(
-            self.runtime.foundation.issue(
-                "scope_commit_deferred_checks",
-                "Export descendant validation, Decl revision readiness, generated Interfaces.lean sync, and dependency closure checks are deferred until their components are implemented.",
-                severity="warning",
-                object_ref=scope_path,
-            )
-        )
         if issues:
             return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("scope_commit", issues, summary=f"{len(issues)} scope commit checks failed."))
-        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("scope_commit", summary="Scope commit base checks passed.", warnings=warnings))
+        return self.runtime.foundation.ok(self.runtime.foundation.gate_passed("scope_commit", summary="Scope commit base checks passed."))
 
     def _commit_contract(
         self,

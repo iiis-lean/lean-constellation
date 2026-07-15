@@ -26,8 +26,9 @@ def _env(name: str) -> str | None:
 
 def _write_minimal_upstream_repo(repo_root: Path) -> tuple[Path, str, str, DeclKind]:
     repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n", encoding="utf-8")
     (repo_root / "lakefile.toml").write_text(
-        'name = "AdapterUpstream"\n'
+        'name = "upstream"\n'
         'version = "0.1.0"\n'
         'defaultTargets = ["Upstream"]\n\n'
         '[[lean_lib]]\n'
@@ -36,7 +37,14 @@ def _write_minimal_upstream_repo(repo_root: Path) -> tuple[Path, str, str, DeclK
     )
     (repo_root / "Upstream.lean").write_text(
         "theorem upstreamSmoke : True := by\n"
-        "  trivial\n",
+        "  trivial\n\n"
+        "def upstreamDefinition : Prop := True\n\n"
+        "namespace Upstream.Basic\n\n"
+        "def LocalType := Nat\n\n"
+        "theorem relativeSmoke (x : LocalType) : x = x := by\n"
+        "  rfl\n\n"
+        "def poly.{u} (α : Sort u) : Sort u := α\n\n"
+        "end Upstream.Basic\n",
         encoding="utf-8",
     )
     if shutil.which("lake") is not None:
@@ -49,6 +57,203 @@ def _write_minimal_upstream_repo(repo_root: Path) -> tuple[Path, str, str, DeclK
             text=True,
         )
     return repo_root, "Upstream", "upstreamSmoke", DeclKind.THEOREM
+
+
+@pytest.mark.real
+def test_adapter_finalize_compiler_confirms_registered_upstream_identity(tmp_path: Path) -> None:
+    upstream_path, module, lean_decl_name, decl_kind = _write_minimal_upstream_repo(tmp_path / "upstream")
+    repo_root = tmp_path / "adapter"
+    repo_root.mkdir()
+    (repo_root / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n", encoding="utf-8")
+    (repo_root / "lakefile.toml").write_text(
+        'name = "Adapter"\n\n'
+        '[[lean_lib]]\n'
+        'name = "Adapter"\n\n'
+        '[[require]]\n'
+        'name = "upstream"\n'
+        'path = "../upstream"\n',
+        encoding="utf-8",
+    )
+
+    runtime = make_runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    assert runtime.repo_workspace.metadata.set_repo_format(
+        repo_root,
+        repo_format=RepoFormat.ADAPTER,
+        reason="real compiler-confirmed Adapter identity test",
+    ).ok
+    assert runtime.repo_workspace.preparation.write_preparation_input(
+        repo_root,
+        input=RepoPreparationInput(
+            goal="Expose the real upstream smoke theorem through an Adapter.",
+            source_corpus_mode=SourceCorpusMode.NONE,
+            source_corpus_relpath=None,
+            interface_inputs=[
+                DeclInterface(
+                    name="upstreamSmoke",
+                    kind=DeclKind.THEOREM,
+                    summary="Expose the upstream smoke theorem.",
+                )
+            ],
+        ),
+    ).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    assert runtime.adapter.write_adapter_upstream_metadata(
+        repo_root,
+        source_kind="local_path",
+        local_path=str(upstream_path),
+        package_name="upstream",
+        dependency_name="upstream",
+        evidence_summary="Local real-test upstream.",
+        visible_modules=[module],
+    ).ok
+    assert runtime.adapter.mark_upstream_build_trusted(
+        repo_root,
+        summary="The real-test upstream was built locally.",
+    ).ok
+    assert runtime.adapter.ensure_flat_main_catalog(repo_root).ok
+    assert runtime.adapter.create_adapter_decl(
+        repo_root,
+        name="upstreamSmoke",
+        kind=decl_kind,
+        module=module,
+        lean_decl_name=lean_decl_name,
+        summary="Expose the real upstream smoke theorem.",
+    ).ok
+    assert runtime.adapter.set_adapter_statement_formal(
+        repo_root,
+        name="upstreamSmoke",
+        code="theorem upstreamSmoke : False := by\n  sorry",
+    ).ok
+    assert runtime.adapter.set_adapter_statement_nl(
+        repo_root,
+        name="upstreamSmoke",
+        text="The upstream smoke theorem states True.",
+    ).ok
+    assert runtime.adapter.set_adapter_proof_formal(
+        repo_root,
+        name="upstreamSmoke",
+        code="theorem upstreamSmoke : False := by\n  trivial",
+    ).ok
+    assert runtime.adapter.set_adapter_proof_nl(
+        repo_root,
+        name="upstreamSmoke",
+        text="The theorem is trivial.",
+    ).ok
+
+    wrong_type = runtime.adapter.finalize_adapter_decl(repo_root, name="upstreamSmoke")
+    assert not wrong_type.ok
+    assert wrong_type.issues[0].kind == "adapter_captured_decl_semantics_unconfirmed"
+
+    assert runtime.adapter.set_adapter_statement_formal(
+        repo_root,
+        name="upstreamSmoke",
+        code="theorem upstreamSmoke : True := by\n  sorry",
+    ).ok
+    assert runtime.adapter.set_adapter_proof_formal(
+        repo_root,
+        name="upstreamSmoke",
+        code="theorem upstreamSmoke : True := by\n  trivial",
+    ).ok
+    finalized = runtime.adapter.finalize_adapter_decl(repo_root, name="upstreamSmoke")
+
+    assert finalized.ok, finalized.issues
+    assert finalized.value is not None
+    assert finalized.value.lean_decl_name == lean_decl_name
+    assert finalized.value.module == module
+
+    assert runtime.adapter.create_adapter_decl(
+        repo_root,
+        name="definitionAsTheorem",
+        kind=DeclKind.THEOREM,
+        module=module,
+        lean_decl_name="upstreamDefinition",
+        summary="Deliberately misclassify an upstream definition.",
+    ).ok
+    assert runtime.adapter.set_adapter_statement_formal(
+        repo_root,
+        name="definitionAsTheorem",
+        code="theorem upstreamDefinition : Prop := by\n  sorry",
+    ).ok
+    assert runtime.adapter.set_adapter_statement_nl(
+        repo_root,
+        name="definitionAsTheorem",
+        text="A deliberately wrong kind fixture.",
+    ).ok
+    assert runtime.adapter.set_adapter_proof_formal(
+        repo_root,
+        name="definitionAsTheorem",
+        code="theorem upstreamDefinition : Prop := by\n  exact True",
+    ).ok
+    assert runtime.adapter.set_adapter_proof_nl(
+        repo_root,
+        name="definitionAsTheorem",
+        text="The captured source is theorem-like while upstream is a definition.",
+    ).ok
+    wrong_kind = runtime.adapter.finalize_adapter_decl(repo_root, name="definitionAsTheorem")
+    assert not wrong_kind.ok
+    assert wrong_kind.issues[0].kind == "adapter_captured_decl_semantics_unconfirmed"
+
+    assert runtime.adapter.create_adapter_decl(
+        repo_root,
+        name="relativeSmoke",
+        kind=DeclKind.THEOREM,
+        module=module,
+        lean_decl_name="Upstream.Basic.relativeSmoke",
+        summary="Expose a theorem whose extracted header uses a namespace-relative type.",
+    ).ok
+    assert runtime.adapter.set_adapter_statement_formal(
+        repo_root,
+        name="relativeSmoke",
+        code="theorem relativeSmoke (x : LocalType) : x = x := by\n  sorry",
+    ).ok
+    assert runtime.adapter.set_adapter_statement_nl(
+        repo_root,
+        name="relativeSmoke",
+        text="Every value of the namespace-local type equals itself.",
+    ).ok
+    assert runtime.adapter.set_adapter_proof_formal(
+        repo_root,
+        name="relativeSmoke",
+        code="theorem relativeSmoke (x : LocalType) : x = x := by\n  rfl",
+    ).ok
+    assert runtime.adapter.set_adapter_proof_nl(
+        repo_root,
+        name="relativeSmoke",
+        text="Use reflexivity.",
+    ).ok
+    relative = runtime.adapter.finalize_adapter_decl(repo_root, name="relativeSmoke")
+    assert relative.ok, relative.issues
+
+    assert runtime.adapter.create_adapter_decl(
+        repo_root,
+        name="poly",
+        kind=DeclKind.DEFINITION,
+        module=module,
+        lean_decl_name="Upstream.Basic.poly",
+        summary="Expose the universe-polymorphic identity definition.",
+    ).ok
+    assert runtime.adapter.set_adapter_statement_nl(
+        repo_root,
+        name="poly",
+        text="The identity definition at an arbitrary universe.",
+    ).ok
+    assert runtime.adapter.set_adapter_statement_formal(
+        repo_root,
+        name="poly",
+        code="def poly (α : Type) : Type := α",
+    ).ok
+    monomorphic = runtime.adapter.finalize_adapter_decl(repo_root, name="poly")
+    assert not monomorphic.ok
+    assert monomorphic.issues[0].kind == "adapter_captured_decl_semantics_unconfirmed"
+
+    assert runtime.adapter.set_adapter_statement_formal(
+        repo_root,
+        name="poly",
+        code="def poly.{v} (α : Sort v) : Sort v := α",
+    ).ok
+    polymorphic = runtime.adapter.finalize_adapter_decl(repo_root, name="poly")
+    assert polymorphic.ok, polymorphic.issues
 
 
 @pytest.mark.real
@@ -139,9 +344,9 @@ def test_adapter_upstream_projection_real(tmp_path: Path) -> None:
     outline = service.list_upstream_module_declarations(repo_root, module=module)
     assert outline.ok, outline.issues
     assert outline.value is not None
-    assert any(item.decl_name in {decl_name, adapter_name, decl_name.rsplit(".", 1)[-1]} for item in outline.value.declarations)
+    assert any(item.lean_decl_name in {decl_name, adapter_name, decl_name.rsplit(".", 1)[-1]} for item in outline.value.declarations)
 
-    detail = service.inspect_upstream_declaration(repo_root, module=module, decl_name=decl_name)
+    detail = service.inspect_upstream_declaration(repo_root, module=module, lean_decl_name=decl_name)
     assert detail.ok, detail.issues
     assert detail.value is not None
     assert detail.value.code_excerpt
@@ -149,7 +354,7 @@ def test_adapter_upstream_projection_real(tmp_path: Path) -> None:
     statement = service.capture_upstream_declaration_code(
         repo_root,
         module=module,
-        decl_name=decl_name,
+        lean_decl_name=decl_name,
         capture_mode="statement_only",
     )
     assert statement.ok, statement.issues
@@ -158,7 +363,7 @@ def test_adapter_upstream_projection_real(tmp_path: Path) -> None:
     full = service.capture_upstream_declaration_code(
         repo_root,
         module=module,
-        decl_name=decl_name,
+        lean_decl_name=decl_name,
         capture_mode="full_declaration",
     )
     assert full.ok, full.issues
@@ -169,30 +374,29 @@ def test_adapter_upstream_projection_real(tmp_path: Path) -> None:
         name=adapter_name,
         kind=decl_kind,
         module=module,
-        plan_summary=f"Register upstream declaration {decl_name}.",
+        lean_decl_name=decl_name,
+        summary=f"Register upstream declaration {decl_name}.",
     ).ok
     assert service.set_adapter_statement_formal(
         repo_root,
         name=adapter_name,
         code=statement.value.code if theorem_like else full.value.code,
-        upstream_decl_name=decl_name,
     ).ok
     assert service.set_adapter_statement_nl(
         repo_root,
         name=adapter_name,
-        summary=f"Adapter statement for upstream declaration {decl_name}.",
+        text=f"Adapter statement for upstream declaration {decl_name}.",
     ).ok
     if theorem_like:
         assert service.set_adapter_proof_formal(
             repo_root,
             name=adapter_name,
             code=full.value.code,
-            upstream_decl_name=decl_name,
         ).ok
         assert service.set_adapter_proof_nl(
             repo_root,
             name=adapter_name,
-            summary=f"Adapter proof for upstream declaration {decl_name}.",
+            text=f"Adapter proof for upstream declaration {decl_name}.",
         ).ok
 
     finalized = service.finalize_adapter_decl(repo_root, name=adapter_name)

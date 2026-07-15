@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.external_clients import (
@@ -52,6 +52,7 @@ class DictRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
+        lean_decl_name: str,
     ) -> ServiceResult[Any]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
@@ -59,6 +60,7 @@ class DictRevisionProvider:
             "code": code,
             "check": check.model_dump(mode="python"),
         }
+        revision["lean_decl_name"] = lean_decl_name
         revision["state"] = "declared"
         return self.foundation.ok(revision)
 
@@ -70,6 +72,7 @@ class DictRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
+        lean_decl_name: str,
     ) -> ServiceResult[Any]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
@@ -77,6 +80,7 @@ class DictRevisionProvider:
             "code": code,
             "check": check.model_dump(mode="python"),
         }
+        revision["lean_decl_name"] = lean_decl_name
         revision["state"] = "proved"
         return self.foundation.ok(revision)
 
@@ -89,18 +93,19 @@ def _require_lake_and_lean() -> int:
 
 
 def _write_minimal_lake_repo(repo_root: Path) -> None:
-    repo_root.mkdir(parents=True, exist_ok=True)
+    initialize_native_test_repo(repo_root, project_name="ProjectionReal")
+    (repo_root / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n", encoding="utf-8")
     (repo_root / "lakefile.toml").write_text(
         'name = "ProjectionReal"\n'
         'version = "0.1.0"\n'
-        'defaultTargets = ["Main"]\n\n'
+        'defaultTargets = ["ProjectionReal"]\n\n'
         '[[lean_lib]]\n'
-        'name = "Main"\n',
+        'name = "ProjectionReal"\n',
         encoding="utf-8",
     )
-    (repo_root / "Main.lean").write_text(
-        "import Main.Topic.Core.Prelude\n"
-        "import Main.Topic.Core.Interfaces\n",
+    (repo_root / "ProjectionReal.lean").write_text(
+        "import ProjectionReal.Main.Topic.Core.Prelude\n"
+        "import ProjectionReal.Main.Topic.Core.Interfaces\n",
         encoding="utf-8",
     )
 
@@ -126,6 +131,7 @@ def _revision() -> dict[str, Any]:
         "kind": "theorem",
         "state": "specified",
         "version_status": "open",
+        "module": "ProjectionReal.Main.Topic.Core.Theorems.main_result",
         "statement": {
             "nl": {
                 "text": "The real LeanProjection smoke statement asserts True.",
@@ -189,10 +195,20 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
     assert prepared_statement.value is not None
     decl_path = Path(prepared_statement.value.path)
     statement_text = decl_path.read_text(encoding="utf-8")
-    assert "lean-constellation target: main_result" in statement_text
-    assert "stage: statement" in statement_text
-    assert "import Main.Topic.Core.Prelude" in statement_text
-    assert "sorry" in statement_text
+    assert "# lean-constellation target: `main_result`" in statement_text
+    assert "import ProjectionReal.Main.Topic.Core.Prelude" in statement_text
+    assert "theorem main_result" not in statement_text
+    statement_text = statement_text.replace(
+        "/--\n# lean-constellation",
+        "namespace ProjectionReal\n\n/--\n# lean-constellation",
+        1,
+    )
+    decl_path.write_text(
+        statement_text
+        + "theorem actualResult : True := by\n  sorry\n\n"
+        + "end ProjectionReal\n",
+        encoding="utf-8",
+    )
 
     captured_statement = service.capture_statement_formal(
         repo_root,
@@ -205,6 +221,10 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
     assert captured_statement.value.check.status == "passed"
     assert captured_statement.value.check.allow_sorry is True
     assert revisions[("Main.Topic.Core", "main_result")]["state"] == "declared"
+    assert revisions[("Main.Topic.Core", "main_result")]["lean_decl_name"] == "ProjectionReal.actualResult"
+    assert captured_statement.value.build.target == "+ProjectionReal.Main.Topic.Core.Theorems.main_result"
+    for artifact in captured_statement.value.build.artifacts:
+        assert (repo_root / artifact).exists(), artifact
 
     prepared_proof = service.prepare_proof_formal_stage_file(
         repo_root,
@@ -229,7 +249,7 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
     decl_path.write_text(decl_path.read_text(encoding="utf-8") + "\naxiom forbidden_axiom : False\n", encoding="utf-8")
     proof_with_axiom = service.capture_proof_formal(repo_root, node_path="Main.Topic.Core", decl_name="main_result")
     assert not proof_with_axiom.ok
-    assert proof_with_axiom.issues[0].kind == "proof_lean_check_failed"
+    assert proof_with_axiom.issues[0].kind == "target_declaration_not_last"
 
     restored = service.decl_file.sync_decl_file_after_revision_reset(repo_root, node_path="Main.Topic.Core", decl_name="main_result")
     assert restored.ok, restored.issues
@@ -248,6 +268,7 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
         DeclPublicView(
             ref=DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1),
             kind="theorem",
+            module="ProjectionReal.Main.Topic.Core.Theorems.main_result",
             summary="Real LeanProjection smoke theorem.",
         )
     ]
@@ -255,13 +276,13 @@ def test_lean_projection_real_lake_decl_file_projection_and_policy_gates(tmp_pat
     assert interfaces.ok, interfaces.issues
     assert interfaces.value is not None
     interfaces_text = Path(interfaces.value.path).read_text(encoding="utf-8")
-    assert "import Main.Topic.Core.Theorems.main_result" in interfaces_text
+    assert "import ProjectionReal.Main.Topic.Core.Theorems.main_result" in interfaces_text
     assert service.node_projection.check_interfaces_sync(repo_root, node_path="Main.Topic.Core").value.passed is True  # type: ignore[union-attr]
 
     final_build = runtime.external.lake.run_lake_build(repo_root, timeout_seconds=timeout)
     assert final_build.ok, final_build.summary
 
-    bad_file = repo_root / "Main" / "Topic" / "Core" / "BadDiagnostics.lean"
+    bad_file = repo_root / "ProjectionReal" / "Main" / "Topic" / "Core" / "BadDiagnostics.lean"
     bad_file.write_text("def badNat : Nat := true\n", encoding="utf-8")
     diagnostics = service.lean_check.run_file_diagnostics(repo_root, file_path=bad_file)
     assert diagnostics.ok, diagnostics.issues

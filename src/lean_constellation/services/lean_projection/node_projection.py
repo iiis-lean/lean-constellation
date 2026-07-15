@@ -11,9 +11,15 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
-from lean_constellation.services.node.contract_fields import NodeDep, NodeMathlibModuleUse
+from lean_constellation.services.node.contract_fields import NodeDep, NodeMathlibDeclUse, NodeMathlibModuleUse
 from lean_constellation.services.node.export import ExportComponent, ScopeExportCandidate
 from lean_constellation.services.node.node_tree import NodeKind
+from lean_constellation.services.foundation.module_layout import (
+    NativeModuleLayoutError,
+    local_module_name,
+    local_projection_path,
+    native_project_name,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -45,10 +51,19 @@ class NodeProjectionComponent:
         self.export = export or ExportComponent(runtime, contract=self.contract)
 
     def render_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[str]:
+        layout_issue = self._module_layout_issue(repo_root, node_path=node_path)
+        if layout_issue is not None:
+            return self.runtime.foundation.fail(layout_issue)
         contract = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
-        imports = self._prelude_imports(node_path, contract.value.contract.deps, contract.value.contract.mathlib_modules)
+        imports = self._prelude_imports(
+            repo_root,
+            node_path,
+            contract.value.contract.deps,
+            contract.value.contract.mathlib_modules,
+            contract.value.contract.mathlib_decls,
+        )
         invalid = [module for module in imports if not self._is_safe_import_module(module)]
         if invalid:
             return self.runtime.foundation.fail(
@@ -129,7 +144,7 @@ class NodeProjectionComponent:
                     "prelude_sync",
                     self.runtime.foundation.issue(
                         "prelude_projection_stale",
-                        "Generated Prelude.lean does not match current NodeContract deps/mathlib_modules.",
+                        "Generated Prelude.lean does not match current NodeContract dependencies and Mathlib uses.",
                         object_ref=node_path,
                         details={"path": str(path)},
                     ),
@@ -144,6 +159,9 @@ class NodeProjectionComponent:
         )
 
     def render_interfaces(self, repo_root: Path, *, node_path: str) -> ServiceResult[str]:
+        layout_issue = self._module_layout_issue(repo_root, node_path=node_path)
+        if layout_issue is not None:
+            return self.runtime.foundation.fail(layout_issue)
         contract = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
@@ -259,10 +277,23 @@ class NodeProjectionComponent:
         )
 
     def _prelude_path(self, repo_root: Path, node_path: str) -> Path:
-        return self.runtime.foundation.prelude_path(FoundationContext(repo_root=Path(repo_root)), node_path)
+        logical_path = self.runtime.foundation.prelude_path(FoundationContext(repo_root=Path(repo_root)), node_path)
+        return local_projection_path(repo_root, logical_path)
 
     def _interfaces_path(self, repo_root: Path, node_path: str) -> Path:
-        return self.runtime.foundation.interfaces_path(FoundationContext(repo_root=Path(repo_root)), node_path)
+        logical_path = self.runtime.foundation.interfaces_path(FoundationContext(repo_root=Path(repo_root)), node_path)
+        return local_projection_path(repo_root, logical_path)
+
+    def _module_layout_issue(self, repo_root: Path, *, node_path: str):
+        try:
+            native_project_name(repo_root)
+        except NativeModuleLayoutError as exc:
+            return self.runtime.foundation.issue(
+                "native_module_layout_invalid",
+                str(exc),
+                object_ref=node_path,
+            )
+        return None
 
     def _content_interface_imports(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[str]]:
         public = self.export.list_content_public_decls(repo_root, node_path=node_path)
@@ -291,7 +322,15 @@ class NodeProjectionComponent:
                         expected="ready=True, stale=False",
                     )
                 )
-            imports.add(self._decl_owned_module(decl.ref, decl.kind))
+            if not decl.module:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "interfaces_decl_module_missing",
+                        "Public declaration truth has no import module.",
+                        object_ref=f"{decl.ref.node}:{decl.ref.name}@{decl.ref.revision}",
+                    )
+                )
+            imports.add(decl.module)
         return self.runtime.foundation.ok(sorted(imports), warnings=public.issues)
 
     def _scope_interface_imports(self, repo_root: Path, *, scope_path: str) -> ServiceResult[list[str]]:
@@ -319,24 +358,42 @@ class NodeProjectionComponent:
                     )
                 )
             if candidate.source_kind == NodeKind.SCOPE.value:
-                imports.add(f"{candidate.source_child}.Interfaces")
+                imports.add(local_module_name(repo_root, f"{candidate.source_child}.Interfaces"))
             else:
-                imports.add(self._decl_owned_module(ref, candidate.kind))
+                if not candidate.module:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "interfaces_decl_module_missing",
+                            "Scope export candidate truth has no import module.",
+                            object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                        )
+                    )
+                imports.add(candidate.module)
         return self.runtime.foundation.ok(sorted(imports), warnings=candidates.issues)
 
-    def _prelude_imports(self, node_path: str, deps: list[NodeDep], mathlib_modules: list[NodeMathlibModuleUse]) -> list[str]:
+    def _prelude_imports(
+        self,
+        repo_root: Path,
+        node_path: str,
+        deps: list[NodeDep],
+        mathlib_modules: list[NodeMathlibModuleUse],
+        mathlib_decls: list[NodeMathlibDeclUse],
+    ) -> list[str]:
         imports: set[str] = set()
         for dep in deps:
-            provider = self._provider_interfaces_module(node_path, dep)
+            provider = self._provider_interfaces_module(repo_root, node_path, dep)
             if provider:
                 imports.add(provider)
         for item in mathlib_modules:
             module = self._mathlib_module_name(item)
             if module:
                 imports.add(module)
+        for item in mathlib_decls:
+            if item.module and item.module.strip():
+                imports.add(item.module.strip())
         return sorted(imports)
 
-    def _provider_interfaces_module(self, node_path: str, dep: NodeDep) -> str | None:
+    def _provider_interfaces_module(self, repo_root: Path, node_path: str, dep: NodeDep) -> str | None:
         repo = dep.target.repo
         provider_node = dep.target.node.strip() if dep.target.node else ""
         if not provider_node:
@@ -344,7 +401,7 @@ class NodeProjectionComponent:
         if repo is None and provider_node == node_path:
             return None
         boundary = provider_node or "Main"
-        return f"{repo}.{boundary}.Interfaces" if repo else f"{boundary}.Interfaces"
+        return f"{repo}.{boundary}.Interfaces" if repo else local_module_name(repo_root, f"{boundary}.Interfaces")
 
     def _mathlib_module_name(self, item: NodeMathlibModuleUse) -> str | None:
         return item.module.strip() or None
@@ -354,23 +411,6 @@ class NodeProjectionComponent:
             return None
         text = str(value).strip()
         return text or None
-
-    def _decl_owned_module(self, ref: DeclRef, kind: str | None) -> str:
-        return f"{ref.node}.{self._decl_kind_dir(kind)}.{ref.name}"
-
-    def _decl_kind_dir(self, kind: str | None) -> str:
-        normalized = (kind or "other").strip().lower().replace("-", "_")
-        if normalized in {"definition", "def", "defs"}:
-            return "Defs"
-        if normalized in {"structure", "class", "type", "types"}:
-            return "Types"
-        if normalized in {"instance", "instances"}:
-            return "Instances"
-        if normalized in {"lemma", "lemmas"}:
-            return "Lemmas"
-        if normalized in {"theorem", "theorems", "proposition", "corollary"}:
-            return "Theorems"
-        return "Defs"
 
     def _decl_ref_key(self, ref: DeclRef) -> tuple[str | None, str, str, int]:
         return (ref.repo, ref.node, ref.name, ref.revision)

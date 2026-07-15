@@ -291,21 +291,21 @@ class AdapterService:
     ) -> ServiceResult[UpstreamModuleDeclsView]:
         return self.upstream_navigation.list_upstream_module_declarations(repo_root, module=module, kind_filter=kind_filter)
 
-    def inspect_upstream_declaration(self, repo_root: Path, *, module: str, decl_name: str) -> ServiceResult[UpstreamDeclDetailView]:
-        return self.upstream_navigation.inspect_upstream_declaration(repo_root, module=module, decl_name=decl_name)
+    def inspect_upstream_declaration(self, repo_root: Path, *, module: str, lean_decl_name: str) -> ServiceResult[UpstreamDeclDetailView]:
+        return self.upstream_navigation.inspect_upstream_declaration(repo_root, module=module, lean_decl_name=lean_decl_name)
 
     def read_upstream_source_context(
         self,
         repo_root: Path,
         *,
         module: str,
-        decl_name: str | None = None,
+        lean_decl_name: str | None = None,
         line_window: int = 20,
     ) -> ServiceResult[UpstreamSourceContextView]:
         return self.upstream_navigation.read_upstream_source_context(
             repo_root,
             module=module,
-            decl_name=decl_name,
+            lean_decl_name=lean_decl_name,
             line_window=line_window,
         )
 
@@ -314,13 +314,13 @@ class AdapterService:
         repo_root: Path,
         *,
         module: str,
-        decl_name: str,
+        lean_decl_name: str,
         capture_mode: Literal["statement_only", "full_declaration"],
     ) -> ServiceResult[UpstreamCaptureView]:
         return self.upstream_navigation.capture_upstream_declaration_code(
             repo_root,
             module=module,
-            decl_name=decl_name,
+            lean_decl_name=lean_decl_name,
             capture_mode=capture_mode,
         )
 
@@ -340,14 +340,16 @@ class AdapterService:
         name: str,
         kind: str,
         module: str,
-        plan_summary: str,
+        lean_decl_name: str,
+        summary: str,
     ) -> ServiceResult[AdapterDeclView]:
         return self.adapter_decl_catalog.create_adapter_decl(
             repo_root,
             name=name,
             kind=kind,
             module=module,
-            plan_summary=plan_summary,
+            lean_decl_name=lean_decl_name,
+            summary=summary,
         )
 
     def set_adapter_statement_formal(
@@ -356,13 +358,11 @@ class AdapterService:
         *,
         name: str,
         code: str,
-        upstream_decl_name: str | None = None,
     ) -> ServiceResult[AdapterDeclView]:
         return self.adapter_decl_catalog.set_adapter_statement_formal(
             repo_root,
             name=name,
             code=code,
-            upstream_decl_name=upstream_decl_name,
         )
 
     def set_adapter_statement_nl(
@@ -370,10 +370,9 @@ class AdapterService:
         repo_root: Path,
         *,
         name: str,
-        summary: str,
-        detail: str | None = None,
+        text: str,
     ) -> ServiceResult[AdapterDeclView]:
-        return self.adapter_decl_catalog.set_adapter_statement_nl(repo_root, name=name, summary=summary, detail=detail)
+        return self.adapter_decl_catalog.set_adapter_statement_nl(repo_root, name=name, text=text)
 
     def add_adapter_statement_origin(
         self,
@@ -402,13 +401,11 @@ class AdapterService:
         *,
         name: str,
         code: str,
-        upstream_decl_name: str | None = None,
     ) -> ServiceResult[AdapterDeclView]:
         return self.adapter_decl_catalog.set_adapter_proof_formal(
             repo_root,
             name=name,
             code=code,
-            upstream_decl_name=upstream_decl_name,
         )
 
     def set_adapter_proof_nl(
@@ -416,10 +413,9 @@ class AdapterService:
         repo_root: Path,
         *,
         name: str,
-        summary: str,
-        detail: str | None = None,
+        text: str,
     ) -> ServiceResult[AdapterDeclView]:
-        return self.adapter_decl_catalog.set_adapter_proof_nl(repo_root, name=name, summary=summary, detail=detail)
+        return self.adapter_decl_catalog.set_adapter_proof_nl(repo_root, name=name, text=text)
 
     def add_adapter_proof_origin(
         self,
@@ -471,13 +467,13 @@ class AdapterService:
         repo_root: Path,
         *,
         module: str,
-        upstream_decl_name: str | None = None,
+        lean_decl_name: str | None = None,
         adapter_name_query: str | None = None,
     ) -> ServiceResult[AdapterDeclMatchView]:
         return self.adapter_decl_catalog.find_adapter_decl_by_upstream(
             repo_root,
             module=module,
-            upstream_decl_name=upstream_decl_name,
+            lean_decl_name=lean_decl_name,
             adapter_name_query=adapter_name_query,
         )
 

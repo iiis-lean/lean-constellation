@@ -31,6 +31,7 @@ class DeclGraphViewMapper:
             current_revision=decl.current_revision,
             revision_ids=list(decl.revision_ids),
             module=decl.module,
+            lean_decl_name=revision.lean_decl_name if revision is not None else None,
             state=revision.state if revision is not None else None,
             status=revision.status if revision is not None else None,
             summary=decl.summary,
@@ -83,7 +84,7 @@ class DeclGraphViewMapper:
         statement_dep_refs = list(revision.statement.deps)
         proof_dep_refs = list(revision.proof.deps) if revision.proof is not None else []
         return DeclRevisionToolView(
-            decl_name=revision.decl_name,
+            decl_name=decl.name,
             node_path=decl.node_path,
             revision=revision.revision,
             kind=decl.kind,
@@ -92,8 +93,9 @@ class DeclGraphViewMapper:
             visibility="public" if decl.public else "private",
             state=revision.state,
             status=revision.status,
-            module=revision.module or decl.module,
-            change_id=self.change_id_for_revision(revision),
+            module=decl.module,
+            lean_decl_name=revision.lean_decl_name,
+            change_id=self.change_id_for_revision(decl_name=decl.name, revision=revision),
             change_kind=change.kind if change is not None else None,
             change_objective=change.objective if change is not None else None,
             change_summary=change.summary if change is not None else None,
@@ -134,10 +136,10 @@ class DeclGraphViewMapper:
             created_at=mark.created_at,
         )
 
-    def change_id_for_revision(self, revision: DeclRevision) -> str | None:
+    def change_id_for_revision(self, *, decl_name: str, revision: DeclRevision) -> str | None:
         if revision.change is None:
             return None
-        return f"{revision.decl_name}@rev:{revision.revision}"
+        return f"{decl_name}@rev:{revision.revision}"
 
 
 def _dep_key(dep: DeclDep) -> str:

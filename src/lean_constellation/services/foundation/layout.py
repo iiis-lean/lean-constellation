@@ -11,6 +11,7 @@ from pydantic import Field, field_validator
 from lean_constellation.domain.common import StrictModel
 
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_LEAN_MODULE_SEGMENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
 class FoundationContext(StrictModel):
@@ -33,6 +34,14 @@ class DeclFileKey(StrictModel):
     node_path: str
     decl_kind: str
     decl_name: str
+
+    @field_validator("decl_name")
+    @classmethod
+    def _flat_decl_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if _LEAN_MODULE_SEGMENT_RE.fullmatch(normalized) is None:
+            raise ValueError("decl_name must be one flat Lean module segment")
+        return normalized
 
 
 class LayoutPathView(StrictModel):
@@ -173,8 +182,7 @@ class LayoutComponent:
 
     def decl_file_path(self, ctx: FoundationContext, key: DeclFileKey) -> Path:
         kind_dir = self.ensure_safe_key(key.decl_kind)
-        decl_filename = f"{self.ensure_safe_key(key.decl_name)}.lean"
-        return self.node_projection_dir(ctx, key.node_path) / kind_dir / decl_filename
+        return self.node_projection_dir(ctx, key.node_path).joinpath(kind_dir, key.decl_name).with_suffix(".lean")
 
     def indexes_root(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / "indexes"

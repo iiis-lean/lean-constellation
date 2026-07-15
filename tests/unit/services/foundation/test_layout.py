@@ -59,3 +59,6 @@ def test_decl_file_path_uses_safe_kind_and_name(tmp_path) -> None:
     path = layout.decl_file_path(ctx, DeclFileKey(node_path="Main.Topic", decl_kind="Theorems", decl_name="fixed_point"))
 
     assert path == tmp_path / "Main" / "Topic" / "Theorems" / "fixed_point.lean"
+
+    with pytest.raises(ValueError, match="flat Lean module segment"):
+        DeclFileKey(node_path="Main.Topic", decl_kind="Theorems", decl_name="Example.fixed_point")

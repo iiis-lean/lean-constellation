@@ -266,6 +266,7 @@ class PublicDeclAccessResolver:
                     resolved_revision=resolved.resolved_revision,
                     resolution_reason=resolved.reason,
                     kind=decl.value.kind,
+                    module=decl.value.module,
                     public=True,
                     ready=resolved.compatible,
                     stale=not resolved.compatible,

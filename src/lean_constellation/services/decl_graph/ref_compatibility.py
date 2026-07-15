@@ -133,6 +133,7 @@ class DeclRefCompatibilityComponent:
                 or anchor_fp.value.decl_name != target_fp.value.decl_name
                 or anchor_fp.value.decl_kind != target_fp.value.decl_kind
                 or anchor_fp.value.module != target_fp.value.module
+                or anchor_fp.value.lean_decl_name != target_fp.value.lean_decl_name
             ):
                 return self.runtime.foundation.ok(self._unresolved(ref, "identity_changed"))
             if anchor_fp.value.sha256 != target_fp.value.sha256:

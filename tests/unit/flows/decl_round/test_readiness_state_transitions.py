@@ -16,7 +16,7 @@ from tests.unit.flows.decl_round._helpers import (
     record_passed_review,
     start_decl_round_flow,
 )
-from tests.unit_services_helpers import lean_check_payload
+from tests.unit_services_helpers import lean_check_payload, write_statement_formal_for_test
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ def test_declared_round_skips_proof_stages(
     prepare_formal_step = runtime.flow_service.get_step(prepare_formal_step_id)
     assert prepare_formal_step.result.outcome == "targets_ready"
     assert prepare_formal_step.result.stage == "statement_formal"
-    statement_formal = lean_runtime.decl_graph.write_statement_formal(
+    statement_formal = write_statement_formal_for_test(lean_runtime,
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,

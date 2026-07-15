@@ -364,25 +364,25 @@ class DeleteAndNormalizeStep(BaseStep):
         reset_count = 0
         projection_updates = 0
         projection = _lean_projection(ctx)
-        for revision in revisions.value:
+        for decl_name, revision in revisions.value:
             change = revision.change
             if change is None:
-                return ctx.complete_step(_delete_normalize_failed(f"Round revision {revision.decl_name}@{revision.revision} has no change metadata."))
+                return ctx.complete_step(_delete_normalize_failed(f"Round revision {decl_name}@{revision.revision} has no change metadata."))
             if change.kind == DeclChangeKind.DELETE:
-                removed = projection.remove_decl_file_for_delete(repo_root, node_path=input_model.node_path, decl_name=revision.decl_name)
+                removed = projection.remove_decl_file_for_delete(repo_root, node_path=input_model.node_path, decl_name=decl_name)
                 if not removed.ok or removed.value is None:
                     return ctx.complete_step(_delete_normalize_failed(_first_issue_message(removed.issues, "Delete projection sync failed.")))
                 deleted_count += 1
                 projection_updates += int(bool(getattr(removed.value, "changed", False)))
             elif change.kind == DeclChangeKind.CREATE:
-                synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=revision.decl_name)
+                synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=decl_name)
                 if not synced.ok or synced.value is None:
                     return ctx.complete_step(_delete_normalize_failed(_first_issue_message(synced.issues, "Create projection sync failed.")))
                 created_count += 1
                 reset_count += 1
                 projection_updates += int(bool(getattr(synced.value, "changed", False)))
             elif change.kind == DeclChangeKind.UPDATE:
-                synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=revision.decl_name)
+                synced = projection.sync_decl_file_after_revision_reset(repo_root, node_path=input_model.node_path, decl_name=decl_name)
                 if not synced.ok or synced.value is None:
                     return ctx.complete_step(_delete_normalize_failed(_first_issue_message(synced.issues, "Update projection sync failed.")))
                 updated_count += 1
@@ -405,8 +405,8 @@ class DeleteAndNormalizeStep(BaseStep):
                         code="projection_sync_failed",
                         message=audit.value.summary,
                         affected_decl_names=[
-                            revision.decl_name
-                            for revision in revisions.value
+                            decl_name
+                            for decl_name, revision in revisions.value
                             if revision.change is not None and revision.change.kind == DeclChangeKind.DELETE
                         ],
                         suggested_plan_action="Re-open planning and repair the delete closure before running this round.",
@@ -765,7 +765,7 @@ def _round_change_counts(ctx: StepRunContext, repo_root: Path, node_path: str, r
     revisions = graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
     if not revisions.ok or revisions.value is None:
         return counts
-    for revision in revisions.value:
+    for decl_name, revision in revisions.value:
         change = revision.change
         if change is None:
             continue
@@ -776,7 +776,7 @@ def _round_change_counts(ctx: StepRunContext, repo_root: Path, node_path: str, r
             counts["update_count"] += 1
         elif change.kind == DeclChangeKind.DELETE:
             counts["delete_count"] += 1
-        decl = graph.get_decl(repo_root, node_path=node_path, name=revision.decl_name)
+        decl = graph.get_decl(repo_root, node_path=node_path, name=decl_name)
         if decl.ok and decl.value is not None and _is_theorem_like(decl.value.kind):
             counts["theorem_like_count"] += 1
     return counts
@@ -793,7 +793,7 @@ def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_i
     if not revisions.ok or revisions.value is None:
         return graph.runtime.foundation.fail(revisions.issues)
     targets: list[DeclStageTargetMetadata] = []
-    for revision in revisions.value:
+    for decl_name, revision in revisions.value:
         change = revision.change
         if change is None:
             continue
@@ -801,18 +801,18 @@ def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_i
             continue
         if change.end_after_state is None:
             continue
-        decl = graph.get_decl(repo_root, node_path=node_path, name=revision.decl_name)
+        decl = graph.get_decl(repo_root, node_path=node_path, name=decl_name)
         if not decl.ok or decl.value is None:
             return graph.runtime.foundation.fail(decl.issues)
         if _stage_required(stage, decl.value.kind, revision, change.end_after_state):
-            targets.append(_decl_stage_target_metadata(revision))
+            targets.append(_decl_stage_target_metadata(decl_name, revision))
     return graph.runtime.foundation.ok(sorted(targets, key=lambda item: item.decl_name))
 
 
-def _decl_stage_target_metadata(revision: DeclRevision) -> DeclStageTargetMetadata:
+def _decl_stage_target_metadata(decl_name: str, revision: DeclRevision) -> DeclStageTargetMetadata:
     change = revision.change
     return DeclStageTargetMetadata(
-        decl_name=revision.decl_name,
+        decl_name=decl_name,
         change_kind=change.kind.value if change is not None else None,
         objective=change.objective if change is not None else None,
         start_before_state=change.start_before_state.value if change is not None and change.start_before_state is not None else None,

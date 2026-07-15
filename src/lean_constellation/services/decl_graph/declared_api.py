@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.decl_graph.models import DeclRevisionStatus
+from lean_constellation.services.decl_graph.models import Decl, DeclRevision
 from lean_constellation.services.foundation import ServiceResult
 
 if TYPE_CHECKING:
@@ -21,6 +22,7 @@ class DeclaredApiFingerprintView(StrictModel):
     decl_name: str
     decl_kind: str
     module: str
+    lean_decl_name: str
     statement_formal_code: str
     sha256: str
 
@@ -58,21 +60,55 @@ class DeclaredApiFingerprintComponent:
                     object_ref=f"{node_path}:{decl_name}@{revision}",
                 )
             )
-        code = record.value.statement.formal.code if record.value.statement.formal is not None else None
+        return self.fingerprint_candidate(
+            repo_root,
+            node_path=node_path,
+            decl=decl.value,
+            revision=record.value,
+        )
+
+    def fingerprint_candidate(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl: Decl,
+        revision: DeclRevision,
+    ) -> ServiceResult[DeclaredApiFingerprintView]:
+        node = self.runtime.node.node_tree.get_node(repo_root, path=node_path)
+        if not node.ok or node.value is None:
+            return self.runtime.foundation.fail(node.issues)
+        code = revision.statement.formal.code if revision.statement.formal is not None else None
         if code is None or not code.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "declared_api_statement_missing",
                     "Committed declaration has no stored statement formal code.",
-                    object_ref=f"{node_path}:{decl_name}@{revision}",
+                    object_ref=f"{node_path}:{decl.name}@{revision.revision}",
+                )
+            )
+        if decl.module is None or not decl.module.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "declared_api_module_missing",
+                    "Declared API fingerprint requires a stable declaration module.",
+                    object_ref=f"{node_path}:{decl.name}@{revision.revision}",
+                )
+            )
+        if revision.lean_decl_name is None or not revision.lean_decl_name.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "declared_api_lean_decl_name_missing",
+                    "Declared API fingerprint requires the captured Lean declaration name.",
+                    object_ref=f"{node_path}:{decl.name}@{revision.revision}",
                 )
             )
         canonical = canonicalize_statement_formal_code(code)
-        module = record.value.module or decl.value.module or f"{node_path}.{decl.value.kind}.{decl_name}"
         payload = {
-            "decl_kind": decl.value.kind,
-            "decl_name": decl.value.name,
-            "module": module,
+            "decl_kind": decl.kind,
+            "decl_name": decl.name,
+            "lean_decl_name": revision.lean_decl_name,
+            "module": decl.module,
             "node_id": node.value.node_id,
             "node_path": node.value.path,
             "statement_formal_code": canonical,
@@ -82,9 +118,10 @@ class DeclaredApiFingerprintComponent:
             DeclaredApiFingerprintView(
                 node_id=node.value.node_id,
                 node_path=node.value.path,
-                decl_name=decl.value.name,
-                decl_kind=decl.value.kind,
-                module=module,
+                decl_name=decl.name,
+                decl_kind=decl.kind,
+                module=decl.module,
+                lean_decl_name=revision.lean_decl_name,
                 statement_formal_code=canonical,
                 sha256=hashlib.sha256(encoded).hexdigest(),
             )

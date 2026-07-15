@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import TypeAdapter
+from pydantic import Field, TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import (
@@ -17,7 +17,11 @@ from lean_constellation.services.foundation import (
 from lean_constellation.services.mathlib.mathlib_index import MathlibDeclEntryView, MathlibIndexComponent
 from lean_constellation.services.node import ContractComponent, NodeContractView
 from lean_constellation.services.node.contract_fields import MathlibUseActor, NodeMathlibDeclUse, NodeMathlibModuleUse
-from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
+from lean_constellation.services.node.projection_transaction import (
+    NodeContractProjectionMutationView,
+    node_contract_projection_mutation_view,
+    persist_contract_with_projection,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection import NodeProjectionComponent
@@ -37,6 +41,9 @@ class NodeMathlibHintMutationView(StrictModel):
     node_path: str
     changed: bool
     changed_items: list[str]
+    managed_projection_changed: bool = False
+    changed_files: list[str] = Field(default_factory=list)
+    reread_required: bool = False
     hints: NodeMathlibHintView
     summary: str
 
@@ -65,7 +72,7 @@ class NodeMathlibUseComponent:
         module: str,
         reason: str | None,
         actor: str | MathlibUseActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -88,9 +95,6 @@ class NodeMathlibUseComponent:
             refreshed = self._refresh_prelude(repo_root, node_path=node_path)
             if not refreshed.ok:
                 return self.runtime.foundation.fail(refreshed.issues)
-            view = self.contract.get_current_contract(repo_root, node_path=node_path)
-            if not view.ok:
-                return self.runtime.foundation.fail(view.issues)
             warnings.append(
                 self.runtime.foundation.issue(
                     "mathlib_module_use_duplicate",
@@ -100,7 +104,12 @@ class NodeMathlibUseComponent:
                     field="mathlib_modules",
                 )
             )
-            return self.runtime.foundation.ok(view.value, warnings=warnings)
+            return self._projection_mutation_result(
+                repo_root,
+                node_path=node_path,
+                projection=refreshed.value,
+                warnings=[*warnings, *refreshed.issues],
+            )
 
         current.value.append(
             NodeMathlibModuleUse(
@@ -113,10 +122,12 @@ class NodeMathlibUseComponent:
         persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
         if not persisted.ok:
             return self.runtime.foundation.fail(persisted.issues)
-        view = self.contract.get_current_contract(repo_root, node_path=node_path)
-        if not view.ok:
-            return self.runtime.foundation.fail(view.issues)
-        return self.runtime.foundation.ok(view.value, warnings=warnings)
+        return self._projection_mutation_result(
+            repo_root,
+            node_path=node_path,
+            projection=persisted.value,
+            warnings=[*warnings, *persisted.issues],
+        )
 
     def get_node_mathlib_hint_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeMathlibHintView]:
         current = self.contract.get_current_contract(repo_root, node_path=node_path)
@@ -167,6 +178,9 @@ class NodeMathlibUseComponent:
                 node_path=node_path,
                 changed=changed,
                 changed_items=changed_items,
+                managed_projection_changed=added.value.managed_projection_changed,
+                changed_files=list(added.value.changed_files),
+                reread_required=added.value.reread_required,
                 hints=hints.value,
                 summary=("Added Mathlib module hint." if changed else "Mathlib module hint already existed."),
             ),
@@ -194,6 +208,9 @@ class NodeMathlibUseComponent:
                 node_path=node_path,
                 changed=True,
                 changed_items=[module.strip()],
+                managed_projection_changed=removed.value.managed_projection_changed,
+                changed_files=list(removed.value.changed_files),
+                reread_required=removed.value.reread_required,
                 hints=hints.value,
                 summary="Removed Mathlib module hint.",
             ),
@@ -222,6 +239,9 @@ class NodeMathlibUseComponent:
                 node_path=node_path,
                 changed=changed,
                 changed_items=changed_items,
+                managed_projection_changed=added.value.managed_projection_changed,
+                changed_files=list(added.value.changed_files),
+                reread_required=added.value.reread_required,
                 hints=hints.value,
                 summary=("Added Mathlib declaration hint." if changed else "Mathlib declaration hint already existed."),
             ),
@@ -249,6 +269,9 @@ class NodeMathlibUseComponent:
                 node_path=node_path,
                 changed=True,
                 changed_items=[decl_name.strip()],
+                managed_projection_changed=removed.value.managed_projection_changed,
+                changed_files=list(removed.value.changed_files),
+                reread_required=removed.value.reread_required,
                 hints=hints.value,
                 summary="Removed Mathlib declaration hint.",
             ),
@@ -262,7 +285,7 @@ class NodeMathlibUseComponent:
         node_path: str,
         module: str,
         actor: str | MathlibUseActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -293,7 +316,12 @@ class NodeMathlibUseComponent:
         persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
         if not persisted.ok:
             return self.runtime.foundation.fail(persisted.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        return self._projection_mutation_result(
+            repo_root,
+            node_path=node_path,
+            projection=persisted.value,
+            warnings=persisted.issues,
+        )
 
     def add_mathlib_decl_use(
         self,
@@ -303,7 +331,7 @@ class NodeMathlibUseComponent:
         decl_name: str,
         reason: str | None,
         actor: str | MathlibUseActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -323,9 +351,9 @@ class NodeMathlibUseComponent:
 
         warnings = list(decl_entry.issues)
         if any(item.name == normalized_decl.value for item in current.value):
-            view = self.contract.get_current_contract(repo_root, node_path=node_path)
-            if not view.ok:
-                return self.runtime.foundation.fail(view.issues)
+            refreshed = self._refresh_prelude(repo_root, node_path=node_path)
+            if not refreshed.ok:
+                return self.runtime.foundation.fail(refreshed.issues)
             warnings.append(
                 self.runtime.foundation.issue(
                     "mathlib_decl_use_duplicate",
@@ -335,7 +363,12 @@ class NodeMathlibUseComponent:
                     field="mathlib_decls",
                 )
             )
-            return self.runtime.foundation.ok(view.value, warnings=warnings)
+            return self._projection_mutation_result(
+                repo_root,
+                node_path=node_path,
+                projection=refreshed.value,
+                warnings=[*warnings, *refreshed.issues],
+            )
 
         entry = decl_entry.value
         current.value.append(
@@ -348,13 +381,15 @@ class NodeMathlibUseComponent:
             )
         )
         opened.value.contract.mathlib_decls = list(current.value)
-        saved = self._save_contract(repo_root, node_path, opened.value.contract)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        view = self.contract.get_current_contract(repo_root, node_path=node_path)
-        if not view.ok:
-            return self.runtime.foundation.fail(view.issues)
-        return self.runtime.foundation.ok(view.value, warnings=warnings)
+        persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
+        if not persisted.ok:
+            return self.runtime.foundation.fail(persisted.issues)
+        return self._projection_mutation_result(
+            repo_root,
+            node_path=node_path,
+            projection=persisted.value,
+            warnings=[*warnings, *persisted.issues],
+        )
 
     def remove_mathlib_decl_use(
         self,
@@ -363,7 +398,7 @@ class NodeMathlibUseComponent:
         node_path: str,
         decl_name: str,
         actor: str | MathlibUseActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -391,10 +426,15 @@ class NodeMathlibUseComponent:
             return self.runtime.foundation.fail(permission.issues)
 
         opened.value.contract.mathlib_decls = [item for item in current.value if item.name != normalized_decl.value]
-        saved = self._save_contract(repo_root, node_path, opened.value.contract)
-        if not saved.ok:
-            return self.runtime.foundation.fail(saved.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
+        if not persisted.ok:
+            return self.runtime.foundation.fail(persisted.issues)
+        return self._projection_mutation_result(
+            repo_root,
+            node_path=node_path,
+            projection=persisted.value,
+            warnings=persisted.issues,
+        )
 
     def validate_node_mathlib_uses(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
         current = self.contract.get_current_contract(repo_root, node_path=node_path)
@@ -643,6 +683,9 @@ class NodeMathlibUseComponent:
                 node_path=node_path,
                 changed=False,
                 changed_items=[],
+                managed_projection_changed=False,
+                changed_files=[],
+                reread_required=False,
                 hints=hints.value,
                 summary=f"Mathlib {target_kind} hint was already absent.",
             ),
@@ -710,6 +753,26 @@ class NodeMathlibUseComponent:
                 return self.runtime.foundation.ok(None)
             node_projection = lean_projection.node_projection
         return node_projection.refresh_prelude(repo_root, node_path=node_path)
+
+    def _projection_mutation_result(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        projection: object | None,
+        warnings: list[ServiceIssue] | None = None,
+    ) -> ServiceResult[NodeContractProjectionMutationView]:
+        current = self.contract.get_current_contract(repo_root, node_path=node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        return self.runtime.foundation.ok(
+            node_contract_projection_mutation_view(
+                current.value,
+                projection_kind="prelude",
+                projection=projection,
+            ),
+            warnings=[*(warnings or []), *current.issues],
+        )
 
     def _optional_text(self, value: str | None) -> str | None:
         if value is None:

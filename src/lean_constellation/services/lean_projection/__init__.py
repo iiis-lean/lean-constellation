@@ -7,13 +7,17 @@ from lean_constellation.services.lean_projection.adapter_facade import (
 )
 from lean_constellation.services.lean_projection.annotation import (
     AnnotationComponent,
+    ExternalDeclarationLocationView,
+    ExternalDeclarationProbeView,
     LeanDeclarationLocationView,
+    PrimaryDeclarationSourceView,
     TargetMarkerView,
 )
 from lean_constellation.services.lean_projection.decl_file import (
     DeclFileComponent,
     DeclFileRevisionProvider,
     DeclFileCaptureSyncView,
+    DeclOwnedLeanFileView,
     FormalCaptureView,
     LeanFileView,
     LeanPathView,
@@ -29,6 +33,13 @@ from lean_constellation.services.lean_projection.lean_check import (
 from lean_constellation.services.lean_projection.node_projection import (
     NodeProjectionComponent,
     ProjectionView,
+)
+from lean_constellation.services.lean_projection.module_identity import (
+    CapturedDeclarationIdentityView,
+    DeclarationIdentityView,
+    ModuleBuildView,
+    ModuleIdentityComponent,
+    RegisteredDeclarationIdentityView,
 )
 from lean_constellation.services.lean_projection.repair import (
     ProjectionAuditView,
@@ -49,9 +60,13 @@ __all__ = [
     "AdapterFacadeProvider",
     "AdapterModuleListView",
     "AnnotationComponent",
+    "ExternalDeclarationLocationView",
+    "ExternalDeclarationProbeView",
+    "PrimaryDeclarationSourceView",
     "DeclFileComponent",
     "DeclFileRevisionProvider",
     "DeclFileCaptureSyncView",
+    "DeclOwnedLeanFileView",
     "FormalCaptureView",
     "LeanFileView",
     "LeanPathView",
@@ -61,6 +76,11 @@ __all__ = [
     "LeanDiagnosticItemView",
     "LeanDiagnosticsView",
     "LeanProjectionService",
+    "DeclarationIdentityView",
+    "CapturedDeclarationIdentityView",
+    "ModuleBuildView",
+    "ModuleIdentityComponent",
+    "RegisteredDeclarationIdentityView",
     "FormalApplyStage",
     "SafeFormalApplyComponent",
     "SafeFormalApplyView",

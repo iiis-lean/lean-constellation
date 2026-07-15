@@ -3,7 +3,7 @@ from tests.unit_services_helpers import make_runtime
 from pathlib import Path
 from typing import Any
 
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
+from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
 from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.foundation import FoundationService, ServiceResult
 from lean_constellation.services.lean_projection import AdapterModuleListView, LeanCheckView, LeanProjectionService
@@ -20,6 +20,14 @@ class FakeLake:
     def run_lake_env_lean(self, *, repo_root: Path, rel_file: str, json: bool = True, timeout_seconds: int | None = None) -> ExternalCommandResult:
         del json, timeout_seconds
         return ExternalCommandResult(ok=True, command=["lake", "env", "lean", rel_file], cwd=str(repo_root), exit_code=0, summary="ok")
+
+    def run_lake_build(self, repo_root: Path, target: str | None = None, targets=None, timeout_seconds=None):  # noqa: ANN001, ANN201
+        del targets, timeout_seconds
+        return ExternalCommandResult(ok=True, command=["lake", "build", target or ""], cwd=str(repo_root), exit_code=0, summary="built")
+
+    def run_snippet_check(self, *, repo_root: Path, imports: list[str], code: str, timeout_seconds: int | None = None) -> LeanCheckSummaryView:
+        del timeout_seconds
+        return LeanCheckSummaryView(ok=True, command=["lake", "env", "lean"], summary=f"confirmed {code} from {imports[0]}")
 
 
 class FakeExternal:
@@ -62,10 +70,12 @@ class FakeRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
+        lean_decl_name: str,
     ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
         revision.setdefault("statement", {})["formal"] = {"code": code, "check": _current_check(check)}
+        revision["lean_decl_name"] = lean_decl_name
         revision["state"] = "declared"
         return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
@@ -77,10 +87,12 @@ class FakeRevisionProvider:
         decl_name: str,
         code: str,
         check: LeanCheckView,
+        lean_decl_name: str,
     ) -> ServiceResult[DeclFileRevisionView]:
         del repo_root
         revision = self.revisions[(node_path, decl_name)]
         revision.setdefault("proof", {})["formal"] = {"code": code, "check": _current_check(check)}
+        revision["lean_decl_name"] = lean_decl_name
         revision["state"] = "proved"
         return self.foundation.ok(DeclFileRevisionView.model_validate(revision))
 
@@ -124,6 +136,7 @@ def _revision() -> dict[str, Any]:
         "kind": "theorem",
         "state": "specified",
         "version_status": "open",
+        "module": "Main.Topic.Core.Theorems.main_result",
         "statement": {"nl": {"text": "The statement is true."}, "deps": []},
         "proof": {"nl": {"text": "Use triviality."}, "deps": []},
     }
@@ -160,6 +173,11 @@ def test_lean_projection_service_composes_components_and_stage_wrappers(tmp_path
     prepared_statement = service.prepare_statement_formal_stage_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result")
     assert prepared_statement.ok
     assert prepared_statement.value is not None
+    statement_path = Path(prepared_statement.value.path)
+    statement_path.write_text(
+        statement_path.read_text(encoding="utf-8") + "theorem actualResult : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
 
     captured_statement = service.capture_statement_formal(tmp_path, node_path="Main.Topic.Core", decl_name="main_result")
     assert captured_statement.ok

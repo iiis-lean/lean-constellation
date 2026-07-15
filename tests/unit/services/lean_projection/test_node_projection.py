@@ -50,6 +50,13 @@ def _create_nodes(tmp_path: Path) -> None:
     ).ok
 
 
+def _mark_native_repo(tmp_path: Path, project_name: str = "ExampleRepo") -> None:
+    metadata = tmp_path / ".lean_constellation"
+    metadata.mkdir(parents=True, exist_ok=True)
+    (metadata / "repo_format.json").write_text('{"repo_format":"native"}\n', encoding="utf-8")
+    (tmp_path / "lakefile.toml").write_text(f'name = "{project_name}"\n', encoding="utf-8")
+
+
 def _update_core_contract(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     ctx = FoundationContext(repo_root=tmp_path)
@@ -107,6 +114,52 @@ def _save_core_contract(tmp_path: Path, snapshot: NodeContractSnapshot) -> None:
         mode=WriteMode.UPDATE_EXISTING,
     )
     assert saved.ok
+
+
+def test_native_root_interfaces_uses_package_module_root(tmp_path: Path) -> None:
+    _create_nodes(tmp_path)
+    _mark_native_repo(tmp_path)
+    component = make_runtime().lean_projection.node_projection
+
+    refreshed = component.refresh_interfaces(tmp_path, node_path="Main")
+
+    assert refreshed.ok, refreshed.issues
+    facade = tmp_path / "ExampleRepo/Main/Interfaces.lean"
+    assert "Node: Main" in facade.read_text(encoding="utf-8")
+    synchronized = component.check_interfaces_sync(tmp_path, node_path="Main")
+    assert synchronized.ok and synchronized.value is not None
+    assert synchronized.value.passed is True
+
+    facade.write_text("import Mathlib\n", encoding="utf-8")
+    stale = component.check_interfaces_sync(tmp_path, node_path="Main")
+    assert stale.ok and stale.value is not None
+    assert stale.value.passed is False
+    assert stale.value.issues[0].kind == "interfaces_projection_stale"
+
+
+def test_native_prelude_qualifies_local_node_imports(tmp_path: Path) -> None:
+    _create_nodes(tmp_path)
+    _update_core_contract(tmp_path)
+    _mark_native_repo(tmp_path)
+    component = make_runtime().lean_projection.node_projection
+
+    rendered = component.render_prelude(tmp_path, node_path="Main.Topic.Core")
+
+    assert rendered.ok and rendered.value is not None
+    assert "import ExampleRepo.Main.Topic.Provider.Interfaces" in rendered.value
+    assert "import OtherRepo.Main.Interfaces" in rendered.value
+
+
+def test_native_projection_rejects_missing_lake_module_root(tmp_path: Path) -> None:
+    _create_nodes(tmp_path)
+    metadata = tmp_path / ".lean_constellation"
+    (metadata / "repo_format.json").write_text('{"repo_format":"native"}\n', encoding="utf-8")
+    component = make_runtime().lean_projection.node_projection
+
+    rendered = component.render_interfaces(tmp_path, node_path="Main")
+
+    assert not rendered.ok
+    assert rendered.issues[0].kind == "native_module_layout_invalid"
 
 
 def test_render_prelude_from_node_deps_and_mathlib_modules(tmp_path: Path) -> None:
@@ -210,11 +263,13 @@ def test_render_content_interfaces_from_public_decl_modules(tmp_path: Path) -> N
                 DeclPublicView(
                     ref=DeclRef(repo=None, node="Main.Topic.Core", name="core_def", revision=1),
                     kind="definition",
+                    module="Exact.Custom.CoreDef",
                     summary="Core definition.",
                 ),
                 DeclPublicView(
                     ref=DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1),
                     kind="theorem",
+                    module="Exact.Custom.MainResult",
                     summary="Main theorem.",
                 ),
             ]
@@ -228,8 +283,8 @@ def test_render_content_interfaces_from_public_decl_modules(tmp_path: Path) -> N
     assert rendered.ok
     assert rendered.value is not None
     assert "Node: Main.Topic.Core" in rendered.value
-    assert "import Main.Topic.Core.Defs.core_def" in rendered.value
-    assert "import Main.Topic.Core.Theorems.main_result" in rendered.value
+    assert "import Exact.Custom.CoreDef" in rendered.value
+    assert "import Exact.Custom.MainResult" in rendered.value
 
 
 def test_render_content_interfaces_rejects_provider_failure_cross_repo_and_not_ready(tmp_path: Path) -> None:
@@ -267,6 +322,7 @@ def test_render_content_interfaces_rejects_provider_failure_cross_repo_and_not_r
                 DeclPublicView(
                     ref=DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1),
                     kind="theorem",
+                    module="Exact.Custom.MainResult",
                     summary="Main theorem.",
                     ready=False,
                 ),
@@ -311,6 +367,7 @@ def test_refresh_and_check_scope_interfaces_from_exports(tmp_path: Path) -> None
                 DeclPublicView(
                     ref=DeclRef(repo=None, node="Main.Topic.Core", name="main_result", revision=1),
                     kind="theorem",
+                    module="Exact.Custom.MainResult",
                     summary="Main theorem.",
                 )
             ]
@@ -334,7 +391,7 @@ def test_refresh_and_check_scope_interfaces_from_exports(tmp_path: Path) -> None
     assert synced.value is not None
     assert synced.value.passed is True
     path = tmp_path / "Main" / "Topic" / "Interfaces.lean"
-    assert "import Main.Topic.Core.Theorems.main_result" in path.read_text(encoding="utf-8")
+    assert "import Exact.Custom.MainResult" in path.read_text(encoding="utf-8")
 
     path.write_text("import Bad.Module\n", encoding="utf-8")
     stale = component.check_interfaces_sync(tmp_path, node_path="Main.Topic")

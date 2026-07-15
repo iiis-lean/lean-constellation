@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import lean_check_payload, make_runtime
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    make_runtime,
+    write_proof_formal_for_test,
+    write_statement_formal_for_test,
+)
 
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.services.decl_graph import DeclReadinessReason, DeclState
@@ -15,6 +21,7 @@ NODE_PATH = "Main.Topic.Core"
 
 
 def _create_content_node(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path)
     runtime = make_runtime()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(
@@ -86,7 +93,7 @@ def _prove_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str] 
         nl=f"{name} states True.",
         deps=[],
     ).ok
-    assert runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(runtime,
         tmp_path,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -103,7 +110,7 @@ def _prove_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str] 
         nl="The proof is by triviality.",
         deps=deps or [],
     ).ok
-    assert runtime.decl_graph.write_proof_formal(
+    assert write_proof_formal_for_test(runtime,
         tmp_path,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -125,7 +132,7 @@ def _declare_theorem(tmp_path: Path, *, round_id: str, name: str, deps: list[str
         nl=f"{name} states True.",
         deps=deps or [],
     ).ok
-    assert runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(runtime,
         tmp_path,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -146,7 +153,7 @@ def _declare_definition(tmp_path: Path, *, round_id: str, name: str) -> None:
         decl_name=name,
         nl=f"{name} is a unit-valued definition.",
     ).ok
-    assert runtime.decl_graph.write_statement_formal(
+    assert write_statement_formal_for_test(runtime,
         tmp_path,
         node_path=NODE_PATH,
         round_id=round_id,
@@ -427,6 +434,7 @@ def test_decl_graph_is_default_lean_projection_revision_provider(tmp_path: Path)
         decl_name="main_result",
         code="theorem main_result : True := by\n  sorry",
         check=_passed_check(),
+        lean_decl_name="TestProject.main_result",
     )
 
     assert saved.ok and saved.value is not None

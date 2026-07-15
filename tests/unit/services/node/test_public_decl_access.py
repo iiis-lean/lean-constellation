@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import lean_check_payload, make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
@@ -54,6 +54,7 @@ def _create_consumer_tree(repo_root: Path) -> None:
 
 
 def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider") -> None:
+    initialize_native_test_repo(provider_root, project_name=provider_name)
     runtime = make_runtime()
     service = runtime.node
     assert service.node_tree.ensure_root_scope_node(provider_root).ok
@@ -73,11 +74,11 @@ def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider
         public=True,
         current_revision=1,
         revision_ids=[1],
-        module="Main.Core.Theorems.provider_result",
+        module=f"{provider_name}.Main.Core.Theorems.provider_result",
     )
     revision = DeclRevision(
-        decl_name="provider_result",
         revision=1,
+        lean_decl_name=f"{provider_name}.provider_result",
         state=DeclState.PROVED,
         status=DeclRevisionStatus.COMMITTED,
         statement=DeclStatement(
@@ -92,7 +93,6 @@ def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider
                 check=lean_check_payload(),
             )
         ),
-        module="Main.Core.Theorems.provider_result",
     )
     assert runtime.foundation.store.write_json_atomic(
         runtime.decl_graph.graph_store.decl_record_path(

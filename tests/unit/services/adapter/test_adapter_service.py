@@ -10,7 +10,7 @@ from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import RepoFormat, RepoPublicationStatus
 from lean_constellation.services.adapter import AdapterService, UpstreamMetadataComponent
-from lean_constellation.services.external_clients import LeanMcpToolkitClient
+from lean_constellation.services.external_clients import LeanCheckSummaryView, LeanMcpToolkitClient
 from lean_constellation.services.foundation import FoundationContext, FoundationService
 
 
@@ -129,6 +129,28 @@ class FakeToolkitDispatcher:
         raise KeyError(tool_name)
 
 
+class FakeSemanticLake:
+    def __init__(self, *, snippet_ok: bool = True) -> None:
+        self.snippet_ok = snippet_ok
+        self.snippet_calls: list[tuple[list[str], str]] = []
+
+    def run_snippet_check(
+        self,
+        *,
+        repo_root: Path,
+        imports: list[str],
+        code: str,
+        timeout_seconds: int | None = None,
+    ) -> LeanCheckSummaryView:
+        del repo_root, timeout_seconds
+        self.snippet_calls.append((imports, code))
+        return LeanCheckSummaryView(
+            ok=self.snippet_ok,
+            command=["lake", "env", "lean"],
+            summary="confirmed" if self.snippet_ok else "registered declaration not found in owning module",
+        )
+
+
 def _foundation() -> FoundationService:
     return make_runtime().foundation
 
@@ -156,10 +178,16 @@ def _service(
     interfaces: list[DeclInterface] | None = None,
     *,
     dispatcher: FakeToolkitDispatcher | None = None,
+    semantic_lake: FakeSemanticLake | None = None,
     create_upstream_checkout: bool = True,
 ) -> AdapterService:
     dispatcher = dispatcher or FakeToolkitDispatcher()
-    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": LeanMcpToolkitClient(dispatcher=dispatcher)})
+    runtime = make_runtime(
+        external_overrides={
+            "lean_mcp_toolkit": LeanMcpToolkitClient(dispatcher=dispatcher),
+            "lake": semantic_lake or FakeSemanticLake(),
+        }
+    )
     foundation = runtime.foundation
     _write_adapter_preparation(tmp_path, interfaces, foundation=foundation)
     repo_workspace = runtime.repo_workspace
@@ -180,8 +208,11 @@ def _service(
         (upstream / "lakefile.toml").write_text('name = "upstream"\n', encoding="utf-8")
         (upstream / "Upstream" / "Basic.lean").write_text(
             "import Mathlib\n\n"
+            "namespace Upstream.Basic\n\n"
             "theorem main_result : True := by\n"
-            "  trivial\n",
+            "  trivial\n\n"
+            "def adapter_true : Prop := True\n\n"
+            "end Upstream.Basic\n",
             encoding="utf-8",
         )
     service = runtime.adapter
@@ -212,22 +243,21 @@ def _finalize_theorem(
         name=name,
         kind="theorem",
         module=module,
-        plan_summary=f"Expose theorem {name}.",
+        lean_decl_name=f"{module}.{name}",
+        summary=f"Expose theorem {name}.",
     ).ok
     assert service.set_adapter_statement_formal(
         repo_root,
         name=name,
         code=f"theorem {name} : True := by\n  sorry",
-        upstream_decl_name=f"{module}.{name}",
     ).ok
-    assert service.set_adapter_statement_nl(repo_root, name=name, summary=f"Statement for {name}.").ok
+    assert service.set_adapter_statement_nl(repo_root, name=name, text=f"Statement for {name}.").ok
     assert service.set_adapter_proof_formal(
         repo_root,
         name=name,
         code=f"theorem {name} : True := by\n  trivial",
-        upstream_decl_name=f"{module}.{name}",
     ).ok
-    assert service.set_adapter_proof_nl(repo_root, name=name, summary=f"Proof for {name}.").ok
+    assert service.set_adapter_proof_nl(repo_root, name=name, text=f"Proof for {name}.").ok
     assert service.finalize_adapter_decl(repo_root, name=name).ok
 
 
@@ -243,15 +273,15 @@ def _finalize_definition(
         name=name,
         kind="definition",
         module=module,
-        plan_summary=f"Expose definition {name}.",
+        lean_decl_name=f"{module}.{name}",
+        summary=f"Expose definition {name}.",
     ).ok
     assert service.set_adapter_statement_formal(
         repo_root,
         name=name,
         code=f"def {name} : Prop := True",
-        upstream_decl_name=f"{module}.{name}",
     ).ok
-    assert service.set_adapter_statement_nl(repo_root, name=name, summary=f"Definition for {name}.").ok
+    assert service.set_adapter_statement_nl(repo_root, name=name, text=f"Definition for {name}.").ok
     assert service.finalize_adapter_decl(repo_root, name=name).ok
 
 
@@ -370,7 +400,7 @@ def test_navigation_uses_toolkit_and_limits_agent_views(tmp_path: Path) -> None:
     search = service.search_upstream_declarations(tmp_path, query="main", limit=5)
     assert search.ok
     assert search.value is not None
-    assert search.value.items[0].decl_name == "Upstream.Basic.main_result"
+    assert search.value.items[0].lean_decl_name == "Upstream.Basic.main_result"
     assert search.value.items[0].kind == "theorem"
     assert dispatcher.calls[-1][0] == "repo_nav.local_decl.find"
     assert dispatcher.calls[-1][1]["repo_root"].endswith(".lake/packages/upstream")
@@ -385,16 +415,16 @@ def test_navigation_uses_toolkit_and_limits_agent_views(tmp_path: Path) -> None:
     assert decls.ok
     assert decls.value is not None
     assert decls.value.imports == ["Mathlib"]
-    assert [item.decl_name for item in decls.value.declarations] == ["Upstream.Basic.main_result"]
+    assert [item.lean_decl_name for item in decls.value.declarations] == ["Upstream.Basic.main_result"]
 
-    inspected = service.inspect_upstream_declaration(tmp_path, module="Upstream.Basic", decl_name="main_result")
+    inspected = service.inspect_upstream_declaration(tmp_path, module="Upstream.Basic", lean_decl_name="main_result")
     assert inspected.ok
     assert inspected.value is not None
     assert inspected.value.kind == "theorem"
     assert inspected.value.signature == "True"
     assert inspected.value.imports == ["Mathlib"]
 
-    context = service.read_upstream_source_context(tmp_path, module="Upstream.Basic", decl_name="main_result", line_window=3)
+    context = service.read_upstream_source_context(tmp_path, module="Upstream.Basic", lean_decl_name="main_result", line_window=3)
     assert context.ok
     assert context.value is not None
     assert "main_result" in context.value.text
@@ -402,7 +432,7 @@ def test_navigation_uses_toolkit_and_limits_agent_views(tmp_path: Path) -> None:
     capture = service.capture_upstream_declaration_code(
         tmp_path,
         module="Upstream.Basic",
-        decl_name="main_result",
+        lean_decl_name="main_result",
         capture_mode="full_declaration",
     )
     assert capture.ok
@@ -429,7 +459,7 @@ def test_navigation_requires_upstream_checkout_and_metadata(tmp_path: Path) -> N
     missing_metadata = service_without_metadata.capture_upstream_declaration_code(
         tmp_path / "missing-metadata",
         module="Upstream.Basic",
-        decl_name="main_result",
+        lean_decl_name="main_result",
         capture_mode="full_declaration",
     )
     assert not missing_metadata.ok
@@ -466,7 +496,8 @@ def test_adapter_decl_catalog_finalize_and_completeness(tmp_path: Path) -> None:
         name="main_result",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Expose the upstream main theorem.",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose the upstream main theorem.",
     )
     assert created.ok
     common_decl = service.runtime.decl_graph.get_decl(tmp_path, node_path="Main", name="main_result")
@@ -492,9 +523,8 @@ def test_adapter_decl_catalog_finalize_and_completeness(tmp_path: Path) -> None:
         tmp_path,
         name="main_result",
         code="theorem main_result : True := by\n  sorry",
-        upstream_decl_name="Upstream.Basic.main_result",
     ).ok
-    assert service.set_adapter_statement_nl(tmp_path, name="main_result", summary="The upstream main theorem.").ok
+    assert service.set_adapter_statement_nl(tmp_path, name="main_result", text="The upstream main theorem.").ok
     bad_proof = service.set_adapter_proof_formal(
         tmp_path,
         name="main_result",
@@ -507,9 +537,8 @@ def test_adapter_decl_catalog_finalize_and_completeness(tmp_path: Path) -> None:
         tmp_path,
         name="main_result",
         code="theorem main_result : True := by\n  trivial",
-        upstream_decl_name="Upstream.Basic.main_result",
     ).ok
-    assert service.set_adapter_proof_nl(tmp_path, name="main_result", summary="The theorem follows by trivial.").ok
+    assert service.set_adapter_proof_nl(tmp_path, name="main_result", text="The theorem follows by trivial.").ok
 
     finalized = service.finalize_adapter_decl(tmp_path, name="main_result")
     assert finalized.ok
@@ -533,69 +562,172 @@ def test_adapter_decl_catalog_create_and_field_failures(tmp_path: Path) -> None:
         name="bad/name",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Invalid name.",
+        lean_decl_name="Upstream.Basic.bad_name",
+        summary="Invalid name.",
     )
     assert not invalid_name.ok
     assert invalid_name.issues[0].kind == "adapter_decl_name_invalid"
+
+    for invalid_flat_name in ["Nested.name", "9startsWithDigit", "bad-name"]:
+        invalid_flat = service.create_adapter_decl(
+            tmp_path,
+            name=invalid_flat_name,
+            kind="theorem",
+            module="Upstream.Basic",
+            lean_decl_name="Upstream.Basic.bad_name",
+            summary="Invalid flat name.",
+        )
+        assert not invalid_flat.ok
+        assert invalid_flat.issues[0].kind == "adapter_decl_name_invalid"
 
     invalid_module = service.create_adapter_decl(
         tmp_path,
         name="bad_module",
         kind="theorem",
         module="../bad",
-        plan_summary="Invalid module.",
+        lean_decl_name="Upstream.Basic.bad_module",
+        summary="Invalid module.",
     )
     assert not invalid_module.ok
     assert invalid_module.issues[0].kind == "adapter_module_invalid"
+
+    for invalid_lean_name in ["9Bad.result", "Upstream.bad-name"]:
+        invalid_identity = service.create_adapter_decl(
+            tmp_path,
+            name="invalidIdentity",
+            kind="theorem",
+            module="Upstream.Basic",
+            lean_decl_name=invalid_lean_name,
+            summary="Invalid Lean identity.",
+        )
+        assert not invalid_identity.ok
+        assert invalid_identity.issues[0].kind == "adapter_lean_decl_name_invalid"
 
     invalid_kind = service.create_adapter_decl(
         tmp_path,
         name="bad_kind",
         kind="corollary",
         module="Upstream.Basic",
-        plan_summary="Invalid kind.",
+        lean_decl_name="Upstream.Basic.bad_kind",
+        summary="Invalid kind.",
     )
     assert not invalid_kind.ok
     assert invalid_kind.issues[0].kind == "adapter_decl_kind_invalid"
 
-    missing_plan = service.create_adapter_decl(
+    missing_summary = service.create_adapter_decl(
         tmp_path,
-        name="missing_plan",
+        name="missing_summary",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary=" ",
+        lean_decl_name="Upstream.Basic.missing_summary",
+        summary=" ",
     )
-    assert not missing_plan.ok
-    assert missing_plan.issues[0].kind == "adapter_decl_plan_summary_required"
+    assert not missing_summary.ok
+    assert missing_summary.issues[0].kind == "adapter_decl_summary_required"
 
     assert service.create_adapter_decl(
         tmp_path,
         name="main_result",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Expose theorem.",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose theorem.",
     ).ok
     duplicate = service.create_adapter_decl(
         tmp_path,
         name="main_result",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Expose theorem again.",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose theorem again.",
     )
     assert not duplicate.ok
     assert duplicate.issues[0].kind == "adapter_decl_duplicate"
+
+    duplicate_identity = service.create_adapter_decl(
+        tmp_path,
+        name="aliasResult",
+        kind="theorem",
+        module="Upstream.Basic",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Attempt to register the same upstream symbol under another key.",
+    )
+    assert not duplicate_identity.ok
+    assert duplicate_identity.issues[0].kind == "adapter_upstream_identity_duplicate"
 
     empty_statement_code = service.set_adapter_statement_formal(tmp_path, name="main_result", code=" ")
     assert not empty_statement_code.ok
     assert empty_statement_code.issues[0].kind == "adapter_statement_code_required"
 
-    empty_statement_nl = service.set_adapter_statement_nl(tmp_path, name="main_result", summary=" ")
+    empty_statement_nl = service.set_adapter_statement_nl(tmp_path, name="main_result", text=" ")
     assert not empty_statement_nl.ok
     assert empty_statement_nl.issues[0].kind == "adapter_statement_nl_invalid"
 
     missing_decl = service.inspect_adapter_decl(tmp_path, name="unknown")
     assert not missing_decl.ok
     assert missing_decl.issues[0].kind == "adapter_decl_missing"
+
+
+def test_adapter_finalize_requires_compiler_confirmed_upstream_identity(tmp_path: Path) -> None:
+    semantic_lake = FakeSemanticLake(snippet_ok=False)
+    service = _service(tmp_path, semantic_lake=semantic_lake)
+    assert service.create_adapter_decl(
+        tmp_path,
+        name="main_result",
+        kind="theorem",
+        module="Upstream.Basic",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose theorem.",
+    ).ok
+    assert service.set_adapter_statement_formal(
+        tmp_path,
+        name="main_result",
+        code="theorem main_result : True := by\n  sorry",
+    ).ok
+    assert service.set_adapter_statement_nl(tmp_path, name="main_result", text="Statement.").ok
+    assert service.set_adapter_proof_formal(
+        tmp_path,
+        name="main_result",
+        code="theorem main_result : True := by\n  trivial",
+    ).ok
+    assert service.set_adapter_proof_nl(tmp_path, name="main_result", text="Proof.").ok
+
+    finalized = service.finalize_adapter_decl(tmp_path, name="main_result")
+
+    assert not finalized.ok
+    assert finalized.issues[0].kind == "adapter_captured_decl_semantics_unconfirmed"
+    assert semantic_lake.snippet_calls
+    assert "lc_verify_captured_decl" in semantic_lake.snippet_calls[-1][1]
+    assert "matches Upstream.Basic.main_result from Upstream.Basic" in semantic_lake.snippet_calls[-1][1]
+
+
+def test_adapter_finalize_rejects_source_name_or_kind_mismatch(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    assert service.create_adapter_decl(
+        tmp_path,
+        name="main_result",
+        kind="theorem",
+        module="Upstream.Basic",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose theorem.",
+    ).ok
+    assert service.set_adapter_statement_formal(
+        tmp_path,
+        name="main_result",
+        code="def main_result : Prop := True",
+    ).ok
+    assert service.set_adapter_statement_nl(tmp_path, name="main_result", text="Statement.").ok
+    assert service.set_adapter_proof_formal(
+        tmp_path,
+        name="main_result",
+        code="theorem main_result : True := by\n  trivial",
+    ).ok
+    assert service.set_adapter_proof_nl(tmp_path, name="main_result", text="Proof.").ok
+
+    finalized = service.finalize_adapter_decl(tmp_path, name="main_result")
+
+    assert not finalized.ok
+    assert finalized.issues[0].kind == "adapter_source_decl_kind_mismatch"
 
 
 def test_adapter_decl_catalog_origin_and_dep_lifecycle(tmp_path: Path) -> None:
@@ -606,7 +738,8 @@ def test_adapter_decl_catalog_origin_and_dep_lifecycle(tmp_path: Path) -> None:
         name="main_result",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Expose theorem.",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose theorem.",
     ).ok
 
     origin = service.add_adapter_statement_origin(
@@ -714,7 +847,7 @@ def test_adapter_decl_catalog_non_theorem_and_filters(tmp_path: Path) -> None:
     exact = service.find_adapter_decl_by_upstream(
         tmp_path,
         module="Upstream.Basic",
-        upstream_decl_name="Upstream.Basic.main_result",
+        lean_decl_name="Upstream.Basic.main_result",
     )
     assert exact.ok
     assert exact.value is not None
@@ -744,20 +877,21 @@ def test_adapter_interface_binding_projection_and_ready_gate(tmp_path: Path) -> 
         name="main_result",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Expose the upstream main theorem.",
+        lean_decl_name="Upstream.Basic.main_result",
+        summary="Expose the upstream main theorem.",
     ).ok
     assert service.set_adapter_statement_formal(
         tmp_path,
         name="main_result",
         code="theorem main_result : True := by\n  sorry",
     ).ok
-    assert service.set_adapter_statement_nl(tmp_path, name="main_result", summary="Main theorem.").ok
+    assert service.set_adapter_statement_nl(tmp_path, name="main_result", text="Main theorem.").ok
     assert service.set_adapter_proof_formal(
         tmp_path,
         name="main_result",
         code="theorem main_result : True := by\n  trivial",
     ).ok
-    assert service.set_adapter_proof_nl(tmp_path, name="main_result", summary="Trivial proof.").ok
+    assert service.set_adapter_proof_nl(tmp_path, name="main_result", text="Trivial proof.").ok
     assert service.finalize_adapter_decl(tmp_path, name="main_result").ok
 
     unbound = service.check_adapter_catalog_ready_preflight(tmp_path)
@@ -878,7 +1012,8 @@ def test_adapter_interface_binding_failures_unbind_and_validation(tmp_path: Path
         name="draft_theorem",
         kind="theorem",
         module="Upstream.Basic",
-        plan_summary="Draft theorem.",
+        lean_decl_name="Upstream.Basic.draft_theorem",
+        summary="Draft theorem.",
     ).ok
 
     missing_summary = service.bind_adapter_interface(
@@ -978,7 +1113,8 @@ def test_adapter_projection_preview_filters_finalized_and_detects_extra_import(t
         name="draft_other",
         kind="theorem",
         module="Upstream.Other",
-        plan_summary="Draft theorem.",
+        lean_decl_name="Upstream.Other.draft_other",
+        summary="Draft theorem.",
     ).ok
 
     preview = service.preview_adapter_import_modules(tmp_path)

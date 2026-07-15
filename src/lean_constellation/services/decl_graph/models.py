@@ -133,7 +133,6 @@ class DeclNaturalLanguageSection(StrictModel):
     """Natural language content for a statement or proof section."""
 
     text: str | None = None
-    detail: str | None = None
     origin: list[DeclOriginRef] = Field(default_factory=list)
 
 
@@ -142,7 +141,6 @@ class DeclFormalSection(StrictModel):
 
     code: str | None = None
     check: LeanCheck | None = None
-    upstream_decl_name: str | None = None
 
 
 class RepoDeclDep(StrictModel):
@@ -363,14 +361,6 @@ class DeclGraphRound(StrictModel):
         return {_required_text(key): _required_text(summary) for key, summary in value.items()}
 
     @property
-    def completed_at(self) -> str | None:
-        return self.committed_at
-
-    @completed_at.setter
-    def completed_at(self, value: str | None) -> None:
-        self.committed_at = value
-
-    @property
     def change_ids(self) -> list[str]:
         return [item.change_id for item in self.revision_refs]
 
@@ -390,10 +380,18 @@ class Decl(StrictModel):
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
 
-    @field_validator("name", "node_path", "kind")
+    @field_validator("node_path", "kind")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
+
+    @field_validator("name")
+    @classmethod
+    def _flat_decl_name(cls, value: str) -> str:
+        normalized = _required_text(value)
+        if not normalized[0].isalpha() or any(not (char.isalnum() or char == "_") for char in normalized):
+            raise ValueError("Decl.name must be one flat Lean module segment")
+        return normalized
 
     @field_validator("revision_ids")
     @classmethod
@@ -410,19 +408,20 @@ class Decl(StrictModel):
 class DeclRevision(StrictModel):
     """Persisted declaration revision truth."""
 
-    decl_name: str
+    lean_decl_name: str | None = None
     revision: int = 1
     state: DeclState = DeclState.PLANNED
     status: DeclRevisionStatus = DeclRevisionStatus.OPEN
     change: DeclRevisionChange | None = None
     statement: DeclStatement = Field(default_factory=DeclStatement)
     proof: DeclProof | None = None
-    module: str | None = None
     updated_at: str = Field(default_factory=utc_now_iso)
 
-    @field_validator("decl_name")
+    @field_validator("lean_decl_name")
     @classmethod
-    def _required_text(cls, value: str) -> str:
+    def _optional_lean_decl_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return _required_text(value)
 
     @field_validator("revision")
@@ -457,8 +456,7 @@ class DeclRevision(StrictModel):
             self.statement.nl = None
             return
         origin = self.statement.nl.origin if self.statement.nl is not None else []
-        detail = self.statement.nl.detail if self.statement.nl is not None else None
-        self.statement.nl = DeclNaturalLanguageSection(text=value, detail=detail, origin=origin)
+        self.statement.nl = DeclNaturalLanguageSection(text=value, origin=origin)
 
     @property
     def statement_origin(self) -> list[dict[str, object]]:
@@ -467,8 +465,7 @@ class DeclRevision(StrictModel):
     @statement_origin.setter
     def statement_origin(self, value: list[dict[str, object]]) -> None:
         text = self.statement.nl.text if self.statement.nl is not None else None
-        detail = self.statement.nl.detail if self.statement.nl is not None else None
-        self.statement.nl = DeclNaturalLanguageSection(text=text, detail=detail, origin=[DeclOriginRef.model_validate(item) for item in value])
+        self.statement.nl = DeclNaturalLanguageSection(text=text, origin=[DeclOriginRef.model_validate(item) for item in value])
 
     @property
     def statement_deps(self) -> list[str]:
@@ -489,8 +486,7 @@ class DeclRevision(StrictModel):
                 self.statement.formal = self.statement.formal.model_copy(update={"code": None})
             return
         check = self.statement.formal.check if self.statement.formal is not None else None
-        upstream = self.statement.formal.upstream_decl_name if self.statement.formal is not None else None
-        self.statement.formal = DeclFormalSection(code=value, check=check, upstream_decl_name=upstream)
+        self.statement.formal = DeclFormalSection(code=value, check=check)
 
     @property
     def statement_lean_check(self) -> dict[str, str] | None:
@@ -499,12 +495,11 @@ class DeclRevision(StrictModel):
     @statement_lean_check.setter
     def statement_lean_check(self, value: LeanCheck | dict[str, object] | None) -> None:
         code = self.statement.formal.code if self.statement.formal is not None else None
-        upstream = self.statement.formal.upstream_decl_name if self.statement.formal is not None else None
         if value is None and code is None:
             self.statement.formal = None
             return
         check = None if value is None else value if isinstance(value, LeanCheck) else LeanCheck.model_validate(value)
-        self.statement.formal = DeclFormalSection(code=code, check=check, upstream_decl_name=upstream)
+        self.statement.formal = DeclFormalSection(code=code, check=check)
 
     def _ensure_proof(self) -> DeclProof:
         if self.proof is None:
@@ -525,8 +520,7 @@ class DeclRevision(StrictModel):
             return
         proof = self._ensure_proof()
         origin = proof.nl.origin if proof.nl is not None else []
-        detail = proof.nl.detail if proof.nl is not None else None
-        proof.nl = DeclNaturalLanguageSection(text=value, detail=detail, origin=origin)
+        proof.nl = DeclNaturalLanguageSection(text=value, origin=origin)
 
     @property
     def proof_origin(self) -> list[dict[str, object]]:
@@ -536,8 +530,7 @@ class DeclRevision(StrictModel):
     def proof_origin(self, value: list[dict[str, object]]) -> None:
         proof = self._ensure_proof()
         text = proof.nl.text if proof.nl is not None else None
-        detail = proof.nl.detail if proof.nl is not None else None
-        proof.nl = DeclNaturalLanguageSection(text=text, detail=detail, origin=[DeclOriginRef.model_validate(item) for item in value])
+        proof.nl = DeclNaturalLanguageSection(text=text, origin=[DeclOriginRef.model_validate(item) for item in value])
 
     @property
     def proof_deps(self) -> list[str]:
@@ -562,8 +555,7 @@ class DeclRevision(StrictModel):
             return
         proof = self._ensure_proof()
         check = proof.formal.check if proof.formal is not None else None
-        upstream = proof.formal.upstream_decl_name if proof.formal is not None else None
-        proof.formal = DeclFormalSection(code=value, check=check, upstream_decl_name=upstream)
+        proof.formal = DeclFormalSection(code=value, check=check)
 
     @property
     def proof_lean_check(self) -> dict[str, str] | None:
@@ -573,20 +565,13 @@ class DeclRevision(StrictModel):
     def proof_lean_check(self, value: LeanCheck | dict[str, object] | None) -> None:
         proof = self._ensure_proof()
         code = proof.formal.code if proof.formal is not None else None
-        upstream = proof.formal.upstream_decl_name if proof.formal is not None else None
         if value is None and code is None:
             proof.formal = None
             if proof.nl is None and not proof.deps:
                 self.proof = None
             return
         check = None if value is None else value if isinstance(value, LeanCheck) else LeanCheck.model_validate(value)
-        proof.formal = DeclFormalSection(code=code, check=check, upstream_decl_name=upstream)
-
-DeclRevisionRecord = DeclRevision
-DeclStrategyRecord = DeclGraphStrategy
-DeclRoundRecord = DeclGraphRound
-DeclRecord = Decl
-
+        proof.formal = DeclFormalSection(code=code, check=check)
 
 class DeclFileNaturalLanguageView(StrictModel):
     """Provider-facing natural language section for Decl-owned Lean file projection."""
@@ -608,6 +593,7 @@ class DeclFileStageView(StrictModel):
     nl: DeclFileNaturalLanguageView = Field(default_factory=DeclFileNaturalLanguageView)
     formal: DeclFileFormalView | None = None
     deps: list[str] = Field(default_factory=list)
+    dep_refs: list[DeclDep] = Field(default_factory=list)
 
     @field_validator("deps")
     @classmethod
@@ -624,6 +610,7 @@ class DeclFileRevisionView(StrictModel):
     state: DeclState
     version_status: Literal["open", "committed"]
     module: str | None = None
+    lean_decl_name: str | None = None
     statement: DeclFileStageView = Field(default_factory=DeclFileStageView)
     proof: DeclFileStageView | None = None
 
@@ -640,6 +627,17 @@ class DeclFileRevisionView(StrictModel):
         return value
 
 
+class DeclStageMutationView(StrictModel):
+    """Truth mutation result with its managed Lean projection effects."""
+
+    revision: DeclRevision
+    projection_stage: Literal["statement", "proof"] | None = None
+    managed_projection_changed: bool = False
+    changed_files: list[str] = Field(default_factory=list)
+    reread_required: bool = False
+    summary: str
+
+
 class DeclView(StrictModel):
     """Agent/API-facing declaration catalog view."""
 
@@ -652,6 +650,7 @@ class DeclView(StrictModel):
     current_revision: int
     revision_ids: list[int] = Field(default_factory=list)
     module: str | None = None
+    lean_decl_name: str | None = None
     state: DeclState | None = None
     status: DeclRevisionStatus | None = None
     released_state: DeclState | None = None
@@ -726,6 +725,7 @@ class DeclRevisionToolView(StrictModel):
     released_state: DeclState | None = None
     release_protected: bool = False
     module: str | None = None
+    lean_decl_name: str | None = None
     change_id: str | None = None
     change_kind: DeclChangeKind | None = None
     change_objective: str | None = None
@@ -761,6 +761,17 @@ class DeclRevisionToolView(StrictModel):
         return _sorted_deduped_text(value)
 
 
+class DeclStageMutationToolView(StrictModel):
+    """Agent-facing Decl mutation result including managed-file side effects."""
+
+    decl: DeclRevisionToolView
+    projection_stage: Literal["statement", "proof"] | None = None
+    managed_projection_changed: bool = False
+    changed_files: list[str] = Field(default_factory=list)
+    reread_required: bool = False
+    summary: str
+
+
 class DeclChangeView(StrictModel):
     """Round-level declaration change view derived from DeclRevision.change."""
 
@@ -783,10 +794,6 @@ class DeclChangeView(StrictModel):
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
-
-
-DeclChangeRecord = DeclChangeView
-
 
 class DeclDeleteClosureView(StrictModel):
     """Downstream delete closure view for a set of declaration names."""

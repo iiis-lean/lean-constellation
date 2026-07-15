@@ -89,6 +89,9 @@ def test_current_node_dep_wrapper_resolves_expected_public_decl_and_removes(tmp_
     assert len(added.value.deps.deps) == 1
     assert added.value.deps.deps[0].expected_decl_refs == [ref]
     assert added.value.contract.contract.deps[0].expected_decl_refs == [ref]
+    assert added.value.managed_projection_changed is True
+    assert added.value.changed_files
+    assert added.value.reread_required is True
 
     removed = service.remove_current_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=0, actor="coordinator")
     assert removed.ok

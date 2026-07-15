@@ -1,6 +1,7 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,6 @@ from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus, RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.domain.refs import NodeRef
 from lean_constellation.services.adapter import AdapterDeclCompletenessView
@@ -303,6 +303,10 @@ class FakeNodeProjectionForConsistency:
             )
         )
 
+    def refresh_prelude(self, repo_root: Path, *, node_path: str):
+        del repo_root
+        return self.foundation.ok(SimpleNamespace(summary=f"Refreshed Prelude for {node_path}."))
+
     def check_interfaces_sync(self, repo_root: Path, *, node_path: str):
         del repo_root
         if self.interfaces_passed:
@@ -314,6 +318,34 @@ class FakeNodeProjectionForConsistency:
                 "interfaces_projection_sync",
                 self.foundation.issue("interfaces_projection_stale", "Interfaces projection is stale.", object_ref=node_path),
                 summary="Interfaces projection is stale.",
+            )
+        )
+
+    def refresh_interfaces(self, repo_root: Path, *, node_path: str):
+        del repo_root
+        return self.foundation.ok(SimpleNamespace(summary=f"Refreshed Interfaces for {node_path}."))
+
+
+class FakeModuleIdentityForConsistency:
+    def __init__(self, foundation: FoundationService) -> None:
+        self.foundation = foundation
+        self.build_targets: list[str] = []
+        self.build_artifacts: dict[str, list[str]] = {}
+
+    def build_module(self, repo_root: Path, *, module: str):
+        del repo_root
+        artifacts = [
+            f".lake/build/lib/lean/{module.replace('.', '/')}.olean",
+            f".lake/build/lib/lean/{module.replace('.', '/')}.ilean",
+        ]
+        self.build_targets.append(f"+{module}")
+        self.build_artifacts[module] = artifacts
+        return self.foundation.ok(
+            SimpleNamespace(
+                module=module,
+                target=f"+{module}",
+                artifacts=artifacts,
+                summary=f"Built +{module}.",
             )
         )
 
@@ -336,6 +368,7 @@ class FakeLeanProjectionForConsistency:
             prelude_passed=prelude_passed,
             interfaces_passed=interfaces_passed,
         )
+        self.module_identity = FakeModuleIdentityForConsistency(foundation)
 
     def check_decl_file_snapshot_sync(self, repo_root: Path, *, node_path: str, decl_name: str, stage: str):
         del repo_root
@@ -356,6 +389,15 @@ class FakeLeanProjectionForConsistency:
                     field=stage,
                 ),
                 summary="Fake formal capture is stale.",
+            )
+        )
+
+    def check_decl_dependency_identity(self, repo_root: Path, *, node_path: str, decl_name: str, stage: str):
+        del repo_root, stage
+        return self.foundation.ok(
+            self.foundation.gate_passed(
+                "decl_dependency_identity",
+                summary=f"Dependency identity is complete for {node_path}:{decl_name}.",
             )
         )
 
@@ -385,6 +427,15 @@ class FakeConsistencyForReadiness:
     def check_projection_sync(self, repo_root: Path, *, scope: str = "repo"):
         del repo_root
         return self.foundation.ok(self._gate("projection_sync", "projection_not_ready", self.projection_passed, object_ref=scope))
+
+    def check_formal_stage_consistency(self, repo_root: Path, *, node_path: str, decl_name: str, stage: str):
+        del repo_root
+        return self.foundation.ok(
+            self.foundation.gate_passed(
+                "formal_stage_consistency",
+                summary=f"{stage} formal stage is synchronized for {node_path}:{decl_name}.",
+            )
+        )
 
     def _gate(self, gate_name: str, issue_kind: str, passed: bool, *, object_ref: str | None = None):
         if passed:
@@ -1474,10 +1525,8 @@ def test_snapshot_list_filters_sorts_and_skips_malformed_manifests(tmp_path: Pat
 def test_native_handoff_gate_aggregates_source_index_and_main_contract(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
     material = foundation.runtime.material
-    workspace = foundation.runtime.repo_workspace
     _write_preparation_input(tmp_path)
-    assert workspace.metadata.ensure_repo_model(tmp_path).ok
-    assert workspace.metadata.set_repo_format(tmp_path, repo_format=RepoFormat.NATIVE, reason="unit test").ok
+    initialize_native_test_repo(tmp_path)
     _prepare_source_and_index(material, tmp_path)
     service = ValidationSnapshotService(foundation.runtime)
     assert service.node.ensure_native_root_main_contract(tmp_path).ok
@@ -1656,10 +1705,8 @@ def test_consistency_projection_sync_dispatches_by_scope(tmp_path: Path) -> None
 
 def test_readiness_native_handoff_reports_missing_source_index(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
-    workspace = foundation.runtime.repo_workspace
     _write_preparation_input(tmp_path)
-    assert workspace.metadata.ensure_repo_model(tmp_path).ok
-    assert workspace.metadata.set_repo_format(tmp_path, repo_format=RepoFormat.NATIVE, reason="unit test").ok
+    initialize_native_test_repo(tmp_path)
     service = ValidationSnapshotService(foundation.runtime)
     assert service.node.ensure_native_root_main_contract(tmp_path).ok
 
@@ -1768,13 +1815,15 @@ def test_readiness_content_blocked_submit_reason_and_kind(tmp_path: Path) -> Non
 
 def test_readiness_scope_commit_base_and_projection_branches(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
+    initialize_native_test_repo(tmp_path)
     _write_preparation_input(tmp_path)
     node_service = ValidationSnapshotService(foundation.runtime).node
     assert node_service.ensure_native_root_main_contract(tmp_path).ok
+    lean_projection = FakeLeanProjectionForConsistency(foundation, interfaces_passed=False)
     stale_projection = ReadinessGateComponent(foundation.runtime,
         node=node_service,
         adapter=FakeAdapterReadyForReadiness(foundation, passed=True),
-        lean_projection=FakeLeanProjectionForConsistency(foundation, interfaces_passed=False),
+        lean_projection=lean_projection,
     )
 
     missing_summary = stale_projection.check_scope_commit(tmp_path, scope_path="Main", summary=" ")
@@ -1791,19 +1840,28 @@ def test_readiness_scope_commit_base_and_projection_branches(tmp_path: Path) -> 
     assert stale.value is not None
     assert stale.value.passed is False
     assert stale.value.issues[0].kind == "interfaces_projection_stale"
+    assert lean_projection.module_identity.build_targets == ["+TestProject.Main.Interfaces"] * 2
+    assert lean_projection.module_identity.build_artifacts["TestProject.Main.Interfaces"] == [
+        ".lake/build/lib/lean/TestProject/Main/Interfaces.olean",
+        ".lake/build/lib/lean/TestProject/Main/Interfaces.ilean",
+    ]
 
 
 def test_readiness_repo_ready_base_and_consistency_branches(tmp_path: Path) -> None:
     foundation = make_runtime().foundation
+    initialize_native_test_repo(tmp_path)
     _write_preparation_input(tmp_path)
     node_service = ValidationSnapshotService(foundation.runtime).node
     assert node_service.ensure_native_root_main_contract(tmp_path).ok
+    lean_projection = FakeLeanProjectionForConsistency(foundation)
     gate = ReadinessGateComponent(foundation.runtime,
         node=node_service,
+        lean_projection=lean_projection,
         consistency=FakeConsistencyForReadiness(foundation, source_passed=True, index_passed=True, projection_passed=True),
     )
     projection_fail_gate = ReadinessGateComponent(foundation.runtime,
         node=node_service,
+        lean_projection=FakeLeanProjectionForConsistency(foundation),
         consistency=FakeConsistencyForReadiness(foundation, source_passed=True, index_passed=True, projection_passed=False),
     )
 
@@ -1821,6 +1879,14 @@ def test_readiness_repo_ready_base_and_consistency_branches(tmp_path: Path) -> N
     assert projection_failed.value.passed is False
     assert projection_failed.value.issues[0].kind == "main_scope_not_committed"
     assert "projection_not_ready" in {issue.kind for issue in projection_failed.value.issues}
+    assert lean_projection.module_identity.build_targets == [
+        "+TestProject.Main.Interfaces",
+        "+TestProject",
+    ]
+    assert lean_projection.module_identity.build_artifacts["TestProject"] == [
+        ".lake/build/lib/lean/TestProject.olean",
+        ".lake/build/lib/lean/TestProject.ilean",
+    ]
 
 
 def test_readiness_adapter_ready_delegates_adapter_gate(tmp_path: Path) -> None:

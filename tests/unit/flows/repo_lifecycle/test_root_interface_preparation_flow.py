@@ -10,7 +10,7 @@ from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import create_fake_lean_flow_runtime
@@ -26,7 +26,7 @@ from lean_constellation.flows.repo_lifecycle.submissions import RootInterfacePre
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind
 from lean_constellation.services.validation_snapshot.source_index_checkpoint import SourceIndexCheckpointAdapter
 from lean_constellation.services.material import SourceFileIndex
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 
 class _StableRuntimeProvider:
@@ -87,12 +87,8 @@ def _prepare_repo(
 ):
     runtime = make_runtime()
     repo_root.mkdir(parents=True, exist_ok=True)
+    initialize_native_test_repo(repo_root, project_name="TestProject")
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
-    assert runtime.repo_workspace.metadata.set_repo_format(
-        repo_root,
-        repo_format=RepoFormat.NATIVE,
-        reason="Root-interface flow test fixture.",
-    ).ok
     preparation = RepoPreparationInput(
         goal="Formalize the selected source material.",
         source_corpus_mode=SourceCorpusMode.EXISTING,

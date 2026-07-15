@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from tests.unit_services_helpers import lean_check_payload, make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, make_runtime
 
 from lean_constellation.services.decl_graph import DeclChangeKind, DeclState
 from lean_constellation.services.decl_graph.models import DeclRevision
@@ -9,6 +9,7 @@ from lean_constellation.services.foundation import WriteMode
 
 
 def _create_content_node(tmp_path: Path, *, node_path: str = "Main.Topic.Core") -> None:
+    initialize_native_test_repo(tmp_path)
     runtime = make_runtime()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(
@@ -41,12 +42,12 @@ def _create_round(tmp_path: Path, *, objective: str = "Plan a round.") -> tuple[
     return strategy.value.strategy_id, round_record.value.round_id
 
 
-def _write_revision(tmp_path: Path, revision: DeclRevision) -> None:
+def _write_revision(tmp_path: Path, *, decl_name: str, revision: DeclRevision) -> None:
     runtime = make_runtime()
     path = runtime.decl_graph.graph_store.revision_path(
         tmp_path,
         node_path="Main.Topic.Core",
-        decl_name=revision.decl_name,
+        decl_name=decl_name,
         revision=revision.revision,
     )
     assert runtime.foundation.store.write_json_atomic(path, revision, mode=WriteMode.UPDATE_EXISTING).ok
@@ -76,7 +77,7 @@ def _seed_committed_decl(
     revision.value.state = DeclState.PROVED
     revision.value.statement_deps = []
     revision.value.proof_deps = deps or []
-    _write_revision(tmp_path, revision.value)
+    _write_revision(tmp_path, decl_name=name, revision=revision.value)
     assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=DeclState.PROVED).ok
 
 
@@ -208,7 +209,7 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     revision.value.proof_deps = ["supporting_lemma"]
     revision.value.proof_lean_code = "by trivial"
     revision.value.proof_lean_check = lean_check_payload()
-    _write_revision(tmp_path, revision.value)
+    _write_revision(tmp_path, decl_name="main_result", revision=revision.value)
 
     _, update_round_id = _create_round(tmp_path, objective="Update only the proof.")
     update = service.open_decl_update(

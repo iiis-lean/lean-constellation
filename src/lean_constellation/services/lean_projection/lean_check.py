@@ -145,7 +145,7 @@ class LeanCheckComponent:
             file_path=None,
             passed=True,
             diagnostics=[],
-            summary=f"Trusted upstream build for module {module}; diagnostics are not re-run in adapter check.",
+            summary=f"Policy scan for compiler-confirmed upstream module {module}; source diagnostics are represented by the registered declaration identity check.",
         )
         return self.runtime.foundation.ok(
             self._build_check_view(

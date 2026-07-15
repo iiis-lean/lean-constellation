@@ -1,4 +1,4 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from pathlib import Path
 
@@ -21,6 +21,7 @@ class FakePublicDeclProvider:
 
 
 def _write_preparation_input(tmp_path: Path, *, interfaces: list[DeclInterface] | None = None) -> None:
+    initialize_native_test_repo(tmp_path, project_name="TestProject")
     runtime = make_runtime()
     foundation = runtime.foundation
     prep = RepoPreparationInput(

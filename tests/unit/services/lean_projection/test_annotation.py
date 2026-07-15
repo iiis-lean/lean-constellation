@@ -1,7 +1,10 @@
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.decl_graph import DeclFileRevisionView
-from lean_constellation.services.lean_projection import AnnotationComponent
+from lean_constellation.services.lean_projection.annotation import (
+    ResolvedMathlibDependencyProjection,
+    ResolvedRepoDeclDependencyProjection,
+)
 
 
 def _revision() -> DeclFileRevisionView:
@@ -11,184 +14,285 @@ def _revision() -> DeclFileRevisionView:
         kind="theorem",
         state="specified",
         version_status="open",
+        module="Example.Main.Topic.Theorems.foo_bar",
         statement={
             "nl": {
-                "text": "For every natural number n, n equals itself.",
-                "origin": [{"kind": "source", "ref": "chapter.md:10-12"}],
+                "text": "For every natural number n, n equals itself.\n\nThis is the reusable statement.",
+                "origin": [
+                    {"kind": "source", "source_path": "chapter.md", "start_line": 10, "end_line": 12},
+                    {"kind": "resource", "resource_key": "paper", "start_locator": "§2", "end_locator": "Theorem 1"},
+                ],
             },
-            "deps": ["Nat"],
+            "deps": ["Nat.Coprime", "helper"],
+            "dep_refs": [
+                {"kind": "mathlib_decl", "ref": {"name": "Nat.Coprime", "module": "Mathlib.Data.Nat.GCD.Basic"}},
+                {"kind": "repo_decl", "ref": {"node": "Main.Topic", "name": "helper", "revision": 1}},
+            ],
         },
         proof={
-            "nl": {"text": "Use reflexivity.", "origin": [{"kind": "source", "ref": "chapter.md:13"}]},
-            "deps": ["rfl"],
+            "nl": {"text": "Use reflexivity.", "origin": [{"kind": "reference", "ref": "Lean core"}]},
+            "deps": [],
         },
     )
 
 
-def test_render_statement_and_proof_docstrings_include_marker_and_refs() -> None:
-    component = make_runtime().lean_projection.annotation
-
-    statement = component.render_statement_docstring(_revision())
-    assert statement.ok
-    assert statement.value is not None
-    assert "lean-constellation target: foo_bar" in statement.value
-    assert "statement.nl:" in statement.value
-    assert "chapter.md" in statement.value
-    assert "- Nat" in statement.value
-
-    proof = component.render_proof_docstring(_revision())
-    assert proof.ok
-    assert proof.value is not None
-    assert "stage: proof" in proof.value
-    assert "proof.nl:" in proof.value
-    assert "Use reflexivity." in proof.value
-    assert "- rfl" in proof.value
+def _statement_dependencies():
+    return [
+        ResolvedMathlibDependencyProjection(
+            lean_decl_name="Nat.Coprime",
+            module="Mathlib.Data.Nat.GCD.Basic",
+        ),
+        ResolvedRepoDeclDependencyProjection(
+            node_path="Main.Topic",
+            decl_name="helper",
+            module="Example.Main.Topic.Defs.helper",
+            lean_decl_name="Example.helper",
+            resolved_revision=1,
+        ),
+    ]
 
 
-def test_parse_target_marker_missing_duplicate_and_found() -> None:
-    component = make_runtime().lean_projection.annotation
-    assert not component.parse_target_marker("theorem foo : True := by trivial").ok
-
-    one = component.parse_target_marker("/--\nlean-constellation target: foo\n-/\ntheorem foo : True := by trivial\n")
-    assert one.ok
-    assert one.value is not None
-    assert one.value.decl_name == "foo"
-    assert one.value.marker_line == 2
-
-    duplicate = component.parse_target_marker(
-        "/--\nlean-constellation target: foo\n-/\n/--\nlean-constellation target: bar\n-/\n"
+def _managed_source(component, declaration: str, *, proof: bool = False) -> str:
+    revision = _revision()
+    rendered = (
+        component.render_proof_docstring(
+            revision,
+            statement_dependencies=_statement_dependencies(),
+            proof_dependencies=[],
+        )
+        if proof
+        else component.render_statement_docstring(revision, dependencies=_statement_dependencies())
     )
-    assert not duplicate.ok
-    assert duplicate.issues[0].kind == "target_marker_duplicate"
+    assert rendered.ok and rendered.value is not None
+    return rendered.value + "\n" + declaration + "\n"
 
 
-def test_validate_docstring_detects_changed_docstring() -> None:
+def test_render_current_markdown_docstring_and_dependency_grammar() -> None:
     component = make_runtime().lean_projection.annotation
-    expected = component.render_statement_docstring(_revision()).value
-    assert expected is not None
-    valid = component.validate_docstring(expected + "\ntheorem foo_bar : True := by trivial\n", decl_name="foo_bar", stage="statement", expected_docstring=expected)
-    assert valid.ok
-    assert valid.value is not None
-    assert valid.value.passed
+    statement = component.render_statement_docstring(_revision(), dependencies=_statement_dependencies())
+    assert statement.ok and statement.value is not None
+    text = statement.value
+    assert "# lean-constellation target: `foo_bar`" in text
+    assert "## Sources" in text
+    assert "Source `chapter.md`, lines 10–12" in text
+    assert "Resource `paper`, `§2`–`Theorem 1`" in text
+    assert "## Statement dependencies" in text
+    assert "`Nat.Coprime` from `Mathlib.Data.Nat.GCD.Basic`" in text
+    assert "`Main.Topic::helper` → `Example.helper` from `Example.Main.Topic.Defs.helper`" in text
+    assert "stage:" not in text
+    assert "None" not in text
+    assert "revision" not in text
 
-    changed_text = expected.replace("For every natural number n", "For every integer n")
-    changed = component.validate_docstring(changed_text, decl_name="foo_bar", stage="statement", expected_docstring=expected)
-    assert changed.ok
-    assert changed.value is not None
-    assert not changed.value.passed
-    assert changed.value.issues[0].kind == "system_docstring_changed"
+    proof = component.render_proof_docstring(
+        _revision(),
+        statement_dependencies=_statement_dependencies(),
+        proof_dependencies=[],
+    )
+    assert proof.ok and proof.value is not None
+    assert "## Proof outline\n\nUse reflexivity." in proof.value
+    assert "## Proof sources\n\n- Reference `Lean core`" in proof.value
+    assert "## Proof dependencies" not in proof.value
 
 
-def test_validate_docstring_invalid_stage_missing_marker_and_decl_mismatch() -> None:
+def test_compare_unmanaged_expected_header_with_managed_statement() -> None:
     component = make_runtime().lean_projection.annotation
-    expected = component.render_statement_docstring(_revision()).value
-    assert expected is not None
+    managed = _managed_source(component, "theorem foo_bar : /- current -/ True := by\n  sorry")
 
-    invalid_stage = component.validate_docstring(expected, decl_name="foo_bar", stage="draft", expected_docstring=expected)
-    assert not invalid_stage.ok
-    assert invalid_stage.issues[0].kind == "docstring_stage_invalid"
-
-    missing_marker = component.validate_docstring(
-        "theorem foo_bar : True := by trivial",
+    same = component.compare_expected_theorem_header(
+        "theorem foo_bar : /- exact target -/ True := by sorry",
+        managed,
         decl_name="foo_bar",
-        stage="statement",
-        expected_docstring=expected,
+        lean_decl_name="foo_bar",
     )
-    assert missing_marker.ok
-    assert missing_marker.value is not None
-    assert not missing_marker.value.passed
-    assert missing_marker.value.issues[0].kind == "target_marker_missing"
+    assert same.ok and same.value is not None and same.value.passed
 
-    mismatched_docstring = expected.replace("lean-constellation target: foo_bar", "lean-constellation target: other_decl")
-    mismatch = component.validate_docstring(
-        mismatched_docstring,
+    changed = component.compare_expected_theorem_header(
+        "theorem foo_bar : False := by sorry",
+        managed,
         decl_name="foo_bar",
-        stage="statement",
-        expected_docstring=expected,
+        lean_decl_name="foo_bar",
     )
-    assert mismatch.ok
-    assert mismatch.value is not None
-    assert not mismatch.value.passed
-    assert {issue.kind for issue in mismatch.value.issues} == {"target_marker_decl_mismatch", "system_docstring_changed"}
+    assert changed.ok and changed.value is not None and not changed.value.passed
 
 
-def test_locate_target_declaration_found_and_missing() -> None:
+def test_render_requires_one_resolved_projection_per_structured_dependency() -> None:
     component = make_runtime().lean_projection.annotation
-    file_text = "import Mathlib\n\n/-- doc -/\ntheorem foo_bar (n : Nat) : n = n := by\n  rfl\n"
-    found = component.locate_target_declaration(file_text, decl_name="foo_bar")
-    assert found.ok
-    assert found.value is not None
-    assert found.value.kind == "theorem"
-    assert found.value.start_line == 4
-
-    missing = component.locate_target_declaration(file_text, decl_name="missing")
+    missing = component.render_statement_docstring(_revision())
     assert not missing.ok
-    assert missing.issues[0].kind == "target_declaration_missing"
+    assert missing.issues[0].kind == "dependency_projection_missing"
 
 
-def test_locate_target_declaration_duplicate_and_modifier_quoted_name() -> None:
+def test_parse_and_validate_current_target_marker() -> None:
     component = make_runtime().lean_projection.annotation
-    duplicate_text = "theorem foo_bar : True := by trivial\n\ntheorem foo_bar : True := by trivial\n"
-    duplicate = component.locate_target_declaration(duplicate_text, decl_name="foo_bar")
-    assert not duplicate.ok
-    assert duplicate.issues[0].kind == "target_declaration_duplicate"
+    expected = component.render_statement_docstring(_revision(), dependencies=_statement_dependencies()).value
+    assert expected is not None
+    marker = component.parse_target_marker(expected)
+    assert marker.ok and marker.value is not None
+    assert marker.value.decl_name == "foo_bar"
+    assert marker.value.marker_line == 2
 
-    modified_quoted_text = "private noncomputable theorem `foo_bar`\n    (n : Nat) : n = n := by\n  rfl\n"
-    found = component.locate_target_declaration(modified_quoted_text, decl_name="foo_bar")
-    assert found.ok
-    assert found.value is not None
+    old = component.parse_target_marker("/--\nlean-constellation target: foo_bar\n-/")
+    assert not old.ok and old.issues[0].kind == "target_marker_missing"
+    duplicate = component.parse_target_marker(expected + "\n" + expected)
+    assert not duplicate.ok and duplicate.issues[0].kind == "target_marker_duplicate"
+
+    valid = component.validate_docstring(
+        expected + "\ntheorem actualResult : True := by trivial\n",
+        decl_name="foo_bar",
+        stage="statement",
+        expected_docstring=expected,
+    )
+    assert valid.ok and valid.value is not None and valid.value.passed
+    changed = expected.replace("reusable statement", "changed statement")
+    invalid = component.validate_docstring(changed, decl_name="foo_bar", stage="statement", expected_docstring=expected)
+    assert invalid.ok and invalid.value is not None and not invalid.value.passed
+    assert invalid.value.issues[0].kind == "system_docstring_changed"
+
+
+def test_locate_marker_adjacent_declaration_uses_namespace_and_not_decl_key() -> None:
+    component = make_runtime().lean_projection.annotation
+    source = "namespace Example\nnamespace Inner\n\n" + _managed_source(
+        component,
+        "theorem actualResult (n : Nat) : n = n := by\n  rfl\nend Inner\nend Example",
+    )
+    found = component.locate_target_declaration(source, decl_name="foo_bar")
+    assert found.ok and found.value is not None, found.issues
+    assert found.value.source_name == "actualResult"
+    assert found.value.candidate_full_name == "Example.Inner.actualResult"
     assert found.value.kind == "theorem"
-    assert found.value.header_end_line == 2
+
+    changed_marker = source.replace("target: `foo_bar`", "target: `other`")
+    mismatch = component.locate_target_declaration(changed_marker, decl_name="foo_bar")
+    assert not mismatch.ok and mismatch.issues[0].kind == "target_marker_decl_mismatch"
 
 
-def test_compare_theorem_header_passes_and_detects_changes() -> None:
+def test_locate_rejects_missing_adjacent_or_later_top_level_declaration() -> None:
     component = make_runtime().lean_projection.annotation
-    statement_code = "theorem foo_bar\n    (n : Nat) :\n    n = n := by\n  sorry\n"
-    proof_code = "theorem foo_bar (n : Nat) : n = n := by\n  rfl\n"
-    same = component.compare_theorem_header(statement_code, proof_code, decl_name="foo_bar")
-    assert same.ok
-    assert same.value is not None
-    assert same.value.passed
-
-    changed_code = "theorem foo_bar (n : Nat) : n + 0 = n := by\n  simpa\n"
-    changed = component.compare_theorem_header(statement_code, changed_code, decl_name="foo_bar")
-    assert changed.ok
-    assert changed.value is not None
-    assert not changed.value.passed
-    assert changed.value.issues[0].kind == "theorem_header_changed"
+    docstring = component.render_statement_docstring(_revision(), dependencies=_statement_dependencies()).value
+    assert docstring is not None
+    missing = component.locate_target_declaration(docstring + "\n-- no declaration\n", decl_name="foo_bar")
+    assert not missing.ok and missing.issues[0].kind == "target_declaration_missing"
+    later = component.locate_target_declaration(
+        docstring + "\ntheorem actualResult : True := by trivial\n\ndef laterResult : Nat := 0\n",
+        decl_name="foo_bar",
+    )
+    assert not later.ok and later.issues[0].kind == "target_declaration_not_last"
 
 
-def test_compare_theorem_header_non_theorem_and_multiline_by_terminator() -> None:
+def test_compare_marker_adjacent_theorem_header() -> None:
     component = make_runtime().lean_projection.annotation
-    non_theorem = component.compare_theorem_header("def foo_bar : Nat := 0", "def foo_bar : Nat := 1", decl_name="foo_bar")
-    assert non_theorem.ok
-    assert non_theorem.value is not None
-    assert not non_theorem.value.passed
-    assert non_theorem.value.issues[0].kind == "target_not_theorem_like"
+    statement = _managed_source(
+        component,
+        "theorem actualResult\n    (n : Nat) :\n    n = n := by\n  sorry",
+    )
+    proof = _managed_source(
+        component,
+        "theorem actualResult (n : Nat) : n = n := by\n  rfl",
+        proof=True,
+    )
+    same = component.compare_theorem_header(statement, proof, decl_name="foo_bar")
+    assert same.ok and same.value is not None and same.value.passed
 
-    statement_code = "lemma foo_bar\n    (h : True) :\n    True\n  by\n    exact h\n"
-    proof_code = "lemma foo_bar (h : True) : True by\n  exact h\n"
-    same = component.compare_theorem_header(statement_code, proof_code, decl_name="foo_bar")
-    assert same.ok
-    assert same.value is not None
-    assert same.value.passed
+    changed = proof.replace("n = n", "n + 0 = n")
+    different = component.compare_theorem_header(statement, changed, decl_name="foo_bar")
+    assert different.ok and different.value is not None and not different.value.passed
+    assert different.value.issues[0].kind == "theorem_header_changed"
 
 
-def test_compare_theorem_header_ignores_comments_and_lexical_whitespace_only() -> None:
+def test_external_declaration_probe_preserves_comment_offsets_and_namespace() -> None:
     component = make_runtime().lean_projection.annotation
-    expected = "theorem foo_bar (n : Nat) : {x : Nat | x = n}.Nonempty := by sorry"
-    reformatted = """theorem foo_bar
-      (n:Nat) :
-      { x : Nat | /- the same predicate -/ x=n }.Nonempty := by
-      exact ⟨n, rfl⟩
-    """
+    source = (
+        "/- a comment containing theorem ignored : False -/\n"
+        "namespace Upstream.Basic\n\n"
+        "theorem main_result : True := by\n  trivial\n\n"
+        "end Upstream.Basic\n"
+    )
 
-    same = component.compare_theorem_header(expected, reformatted, decl_name="foo_bar")
+    located = component.locate_external_declaration(
+        source,
+        lean_decl_name="Upstream.Basic.main_result",
+    )
+    probe = component.build_external_declaration_probe(
+        source,
+        lean_decl_name="Upstream.Basic.main_result",
+    )
 
-    assert same.ok and same.value is not None
-    assert same.value.passed is True
+    assert located.ok and located.value is not None
+    assert located.value.source_name == "main_result"
+    assert source[located.value.source_name_start_offset : located.value.source_name_end_offset] == "main_result"
+    assert probe.ok and probe.value is not None
+    assert probe.value.probe_lean_decl_name == "LeanConstellationAdapterProbe.captured"
+    assert "theorem _root_.LeanConstellationAdapterProbe.captured : True" in probe.value.code
+    assert "theorem main_result : True" not in probe.value.code
 
-    merged_identifier = "theorem foo_bar (n : Nat) : {x : Nat | x = nn}.Nonempty := by sorry"
-    changed = component.compare_theorem_header(expected, merged_identifier, decl_name="foo_bar")
-    assert changed.ok and changed.value is not None
-    assert changed.value.passed is False
+
+def test_external_probe_restores_namespace_for_extracted_short_declaration() -> None:
+    component = make_runtime().lean_projection.annotation
+    source = "theorem result (x : LocalType) : x = x := by rfl"
+
+    probe = component.build_external_declaration_probe(
+        source,
+        lean_decl_name="Upstream.Basic.result",
+    )
+
+    assert probe.ok and probe.value is not None
+    assert probe.value.code.startswith("namespace Upstream.Basic\n")
+    assert "theorem _root_.LeanConstellationAdapterProbe.captured (x : LocalType)" in probe.value.code
+
+
+def test_external_declaration_does_not_accept_short_name_inside_wrong_namespace() -> None:
+    component = make_runtime().lean_projection.annotation
+    source = "namespace Other\n\ntheorem main_result : True := by trivial\n\nend Other\n"
+
+    result = component.locate_external_declaration(
+        source,
+        lean_decl_name="Upstream.Basic.main_result",
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "external_declaration_ambiguous"
+
+
+def test_extract_primary_source_excludes_managed_docstring_and_helpers() -> None:
+    component = make_runtime().lean_projection.annotation
+    source = (
+        "namespace Example\n\n"
+        "private lemma helper : True := by trivial\n\n"
+        + _managed_source(component, "theorem actualResult : True := by\n  trivial\n\nend Example")
+    )
+
+    extracted = component.extract_primary_declaration_source(
+        source,
+        decl_name="foo_bar",
+        lean_decl_name="Example.actualResult",
+        managed=True,
+    )
+
+    assert extracted.ok and extracted.value is not None, extracted.issues
+    assert extracted.value.source_kind == "managed"
+    assert extracted.value.code.startswith("theorem actualResult : True")
+    assert "helper" not in extracted.value.code
+    assert "lean-constellation target" not in extracted.value.code
+    assert extracted.value.code.endswith("end Example")
+
+
+def test_extract_external_primary_source_uses_registered_symbol() -> None:
+    component = make_runtime().lean_projection.annotation
+    source = (
+        "namespace Upstream\n\n"
+        "private lemma helper : True := by trivial\n\n"
+        "theorem result : True := by trivial\n\n"
+        "end Upstream\n"
+    )
+
+    extracted = component.extract_primary_declaration_source(
+        source,
+        decl_name="catalog_result",
+        lean_decl_name="Upstream.result",
+        managed=False,
+    )
+
+    assert extracted.ok and extracted.value is not None, extracted.issues
+    assert extracted.value.source_kind == "external"
+    assert extracted.value.code.startswith("theorem result : True")
+    assert "helper" not in extracted.value.code

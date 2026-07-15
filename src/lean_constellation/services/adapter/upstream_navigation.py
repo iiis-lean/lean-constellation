@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 class UpstreamDeclSearchItem(StrictModel):
     module: str | None = None
-    decl_name: str
+    lean_decl_name: str
     kind: str | None = None
     statement: str | None = None
     match_reason: str | None = None
@@ -51,7 +51,7 @@ class UpstreamModuleDeclsView(StrictModel):
 
 class UpstreamDeclDetailView(StrictModel):
     module: str
-    decl_name: str
+    lean_decl_name: str
     kind: str | None = None
     signature: str | None = None
     code_excerpt: str | None = None
@@ -61,7 +61,7 @@ class UpstreamDeclDetailView(StrictModel):
 
 class UpstreamSourceContextView(StrictModel):
     module: str
-    decl_name: str | None = None
+    lean_decl_name: str | None = None
     text: str
     truncated: bool = False
     summary: str
@@ -69,7 +69,7 @@ class UpstreamSourceContextView(StrictModel):
 
 class UpstreamCaptureView(StrictModel):
     module: str
-    decl_name: str
+    lean_decl_name: str
     capture_mode: Literal["statement_only", "full_declaration"]
     code: str
     scan: SorryAxiomScanView
@@ -201,12 +201,12 @@ class UpstreamNavigationComponent:
             )
         )
 
-    def inspect_upstream_declaration(self, repo_root: Path, *, module: str, decl_name: str) -> ServiceResult[UpstreamDeclDetailView]:
+    def inspect_upstream_declaration(self, repo_root: Path, *, module: str, lean_decl_name: str) -> ServiceResult[UpstreamDeclDetailView]:
         module_result = self._normalize_module_or_fail(module)
         if not module_result.ok or module_result.value is None:
             return self.runtime.foundation.fail(module_result.issues)
-        if not decl_name or not decl_name.strip():
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("upstream_decl_name_required", "Declaration name is required.", field="decl_name"))
+        if not lean_decl_name or not lean_decl_name.strip():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("upstream_lean_decl_name_required", "Lean declaration name is required.", field="lean_decl_name"))
         gate = self._metadata_available(repo_root)
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
@@ -214,15 +214,15 @@ class UpstreamNavigationComponent:
         if not outline.ok:
             return self.runtime.foundation.fail(outline.issues)
         outline_value = outline.value or {}
-        outline_item = self._find_decl_item(outline_value, decl_name.strip()) or {}
-        extracted = self.runtime.external.lean_toolchain.extract_declaration(gate.value["upstream_root"], module_result.value, decl_name.strip())
+        outline_item = self._find_decl_item(outline_value, lean_decl_name.strip()) or {}
+        extracted = self.runtime.external.lean_toolchain.extract_declaration(gate.value["upstream_root"], module_result.value, lean_decl_name.strip())
         if not extracted.ok:
-            return self.runtime.foundation.fail(self.runtime.foundation.issue(extracted.issue_code or "upstream_decl_inspect_failed", extracted.summary, object_ref=decl_name))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(extracted.issue_code or "upstream_decl_inspect_failed", extracted.summary, object_ref=lean_decl_name))
         code = extracted.code or extracted.raw_excerpt or ""
         return self.runtime.foundation.ok(
             UpstreamDeclDetailView(
                 module=extracted.module or module_result.value,
-                decl_name=decl_name.strip(),
+                lean_decl_name=lean_decl_name.strip(),
                 kind=getattr(extracted, "kind", None) or self._field(outline_item, "kind", "decl_kind"),
                 signature=getattr(extracted, "signature", None) or self._field(outline_item, "signature", "type", "header_preview"),
                 code_excerpt=self._excerpt(code),
@@ -236,7 +236,7 @@ class UpstreamNavigationComponent:
         repo_root: Path,
         *,
         module: str,
-        decl_name: str | None = None,
+        lean_decl_name: str | None = None,
         line_window: int = 20,
     ) -> ServiceResult[UpstreamSourceContextView]:
         module_result = self._normalize_module_or_fail(module)
@@ -248,11 +248,11 @@ class UpstreamNavigationComponent:
         line_window = max(1, min(int(line_window), 200))
         start_line: int | None = None
         end_line: int | None = None
-        if decl_name and decl_name.strip():
+        if lean_decl_name and lean_decl_name.strip():
             outline = self._repo_module_outline(gate.value["upstream_root"], module_result.value)
             if not outline.ok:
                 return self.runtime.foundation.fail(outline.issues)
-            item = self._find_decl_item(outline.value or {}, decl_name.strip())
+            item = self._find_decl_item(outline.value or {}, lean_decl_name.strip())
             raw_start = item.get("line_start") if item else None
             raw_end = item.get("line_end") if item else None
             if raw_start is not None:
@@ -278,7 +278,7 @@ class UpstreamNavigationComponent:
         return self.runtime.foundation.ok(
             UpstreamSourceContextView(
                 module=module_result.value,
-                decl_name=self._strip(decl_name),
+                lean_decl_name=self._strip(lean_decl_name),
                 text=excerpt,
                 truncated=len(text) > len(excerpt),
                 summary=f"Read upstream source context for {module_result.value}.",
@@ -290,20 +290,20 @@ class UpstreamNavigationComponent:
         repo_root: Path,
         *,
         module: str,
-        decl_name: str,
+        lean_decl_name: str,
         capture_mode: Literal["statement_only", "full_declaration"],
     ) -> ServiceResult[UpstreamCaptureView]:
         module_result = self._normalize_module_or_fail(module)
         if not module_result.ok or module_result.value is None:
             return self.runtime.foundation.fail(module_result.issues)
-        if not decl_name or not decl_name.strip():
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("upstream_decl_name_required", "Declaration name is required.", field="decl_name"))
+        if not lean_decl_name or not lean_decl_name.strip():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("upstream_lean_decl_name_required", "Lean declaration name is required.", field="lean_decl_name"))
         gate = self._metadata_available(repo_root)
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
-        extracted = self.runtime.external.lean_toolchain.extract_declaration(gate.value["upstream_root"], module_result.value, decl_name.strip())
+        extracted = self.runtime.external.lean_toolchain.extract_declaration(gate.value["upstream_root"], module_result.value, lean_decl_name.strip())
         if not extracted.ok or not extracted.code:
-            return self.runtime.foundation.fail(self.runtime.foundation.issue(extracted.issue_code or "upstream_decl_capture_failed", extracted.summary, object_ref=decl_name))
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(extracted.issue_code or "upstream_decl_capture_failed", extracted.summary, object_ref=lean_decl_name))
         code = extracted.code if capture_mode == "full_declaration" else self._statement_only(extracted.code)
         scan = self.lean_check.detect_sorry_axiom(code)
         if not scan.ok or scan.value is None:
@@ -311,11 +311,11 @@ class UpstreamNavigationComponent:
         return self.runtime.foundation.ok(
             UpstreamCaptureView(
                 module=extracted.module or module_result.value,
-                decl_name=decl_name.strip(),
+                lean_decl_name=lean_decl_name.strip(),
                 capture_mode=capture_mode,
                 code=code,
                 scan=scan.value,
-                summary=f"Captured {capture_mode} code for upstream declaration {decl_name.strip()}.",
+                summary=f"Captured {capture_mode} code for upstream declaration {lean_decl_name.strip()}.",
             )
         )
 
@@ -436,7 +436,7 @@ class UpstreamNavigationComponent:
         name = self._field(item, "decl_name", "full_name", "name", "declaration") or self._field(item, "value") or "<unknown>"
         return UpstreamDeclSearchItem(
             module=module or self._field(item, "module", "module_name", "module_path"),
-            decl_name=name,
+            lean_decl_name=name,
             kind=self._field(item, "kind", "decl_kind"),
             statement=self._field(item, "statement", "type", "signature", "summary", "header_preview"),
             match_reason=self._field(item, "match_reason", "reason"),
@@ -461,14 +461,14 @@ class UpstreamNavigationComponent:
                 return str(value).strip()
         return None
 
-    def _find_decl_item(self, value: dict[str, Any], decl_name: str) -> dict[str, Any] | None:
+    def _find_decl_item(self, value: dict[str, Any], lean_decl_name: str) -> dict[str, Any] | None:
         candidates = self._items(value, key="declarations")
-        short = decl_name.rsplit(".", 1)[-1]
+        short = lean_decl_name.rsplit(".", 1)[-1]
         return next(
             (
                 item
                 for item in candidates
-                if any(self._field(item, field) in {decl_name, short} for field in ["full_name", "name", "short_name"])
+                if any(self._field(item, field) in {lean_decl_name, short} for field in ["full_name", "name", "short_name"])
             ),
             None,
         )

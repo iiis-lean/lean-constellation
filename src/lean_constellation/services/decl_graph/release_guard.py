@@ -181,26 +181,15 @@ class DeclReleaseGuard:
         return self.runtime.foundation.ok((decl.value, revision.value))
 
     def _fingerprint_candidate(self, repo_root: Path, *, node_path: str, decl: Decl, revision: DeclRevision) -> ServiceResult[str]:
-        from lean_constellation.services.decl_graph.declared_api import canonicalize_statement_formal_code
-        import hashlib
-        import json
-
-        node = self.runtime.node.node_tree.get_node(repo_root, path=node_path)
-        if not node.ok or node.value is None:
-            return self.runtime.foundation.fail(node.issues)
-        code = revision.statement.formal.code if revision.statement.formal else None
-        if code is None:
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("declared_api_statement_missing", "Declaration statement is missing."))
-        payload = {
-            "decl_kind": decl.kind,
-            "decl_name": decl.name,
-            "module": revision.module or decl.module or f"{node_path}.{decl.kind}.{decl.name}",
-            "node_id": node.value.node_id,
-            "node_path": node.value.path,
-            "statement_formal_code": canonicalize_statement_formal_code(code),
-        }
-        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return self.runtime.foundation.ok(hashlib.sha256(encoded).hexdigest())
+        fingerprint = self.runtime.decl_graph.declared_api.fingerprint_candidate(
+            repo_root,
+            node_path=node_path,
+            decl=decl,
+            revision=revision,
+        )
+        if not fingerprint.ok or fingerprint.value is None:
+            return self.runtime.foundation.fail(fingerprint.issues)
+        return self.runtime.foundation.ok(fingerprint.value.sha256)
 
     def _blocked(self, kind: str, node_path: str, decl_name: str) -> ServiceResult[None]:
         return self.runtime.foundation.fail(

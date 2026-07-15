@@ -24,6 +24,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclReadinessReport,
     Decl,
     DeclRevision,
+    DeclRevisionStatus,
     DeclState,
 )
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult, WriteMode
@@ -126,6 +127,7 @@ class DeclReadinessComponent:
                     resolved_revision=decl.current_revision,
                     resolution_reason="current_decl_revision",
                     kind=decl.kind,
+                    module=decl.module,
                     summary=decl.summary,
                     public=True,
                     ready=satisfied.value.proof_policy_satisfied,
@@ -155,6 +157,7 @@ class DeclReadinessComponent:
         decl_name: str,
         code: str,
         check: LeanCheckView,
+        lean_decl_name: str,
     ) -> ServiceResult[DeclFileRevisionView]:
         current = self._current_decl_and_revision(Path(repo_root), node_path=node_path, decl_name=decl_name)
         if not current.ok or current.value is None:
@@ -172,7 +175,8 @@ class DeclReadinessComponent:
             )
         revision.statement_lean_code = code
         revision.statement_lean_check = check
-        written = self._write_revision(Path(repo_root), node_path=node_path, revision=revision)
+        revision.lean_decl_name = lean_decl_name
+        written = self._write_revision(Path(repo_root), node_path=node_path, decl_name=decl_name, revision=revision)
         if not written.ok or written.value is None:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(self._decl_file_revision_view(decl, written.value))
@@ -185,6 +189,7 @@ class DeclReadinessComponent:
         decl_name: str,
         code: str,
         check: LeanCheckView,
+        lean_decl_name: str,
     ) -> ServiceResult[DeclFileRevisionView]:
         current = self._current_decl_and_revision(Path(repo_root), node_path=node_path, decl_name=decl_name)
         if not current.ok or current.value is None:
@@ -212,7 +217,8 @@ class DeclReadinessComponent:
             )
         revision.proof_lean_code = code
         revision.proof_lean_check = check
-        written = self._write_revision(Path(repo_root), node_path=node_path, revision=revision)
+        revision.lean_decl_name = lean_decl_name
+        written = self._write_revision(Path(repo_root), node_path=node_path, decl_name=decl_name, revision=revision)
         if not written.ok or written.value is None:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(self._decl_file_revision_view(decl, written.value))
@@ -653,6 +659,24 @@ class DeclReadinessComponent:
         dep_node = ref.node
         if dep_node == "Main" and fallback_node_path != "Main":
             dep_node = fallback_node_path
+        if dep_node == fallback_node_path:
+            local_decl = self.decl_catalog.get_decl(repo_root, node_path=dep_node, name=ref.name)
+            local_revision = self.decl_catalog.get_decl_revision(
+                repo_root,
+                node_path=dep_node,
+                name=ref.name,
+                revision=ref.revision,
+            )
+            if (
+                local_decl.ok
+                and local_decl.value is not None
+                and local_decl.value.lifecycle == DeclLifecycle.ACTIVE
+                and local_decl.value.current_revision == ref.revision
+                and local_revision.ok
+                and local_revision.value is not None
+                and local_revision.value.status == DeclRevisionStatus.COMMITTED
+            ):
+                return self.runtime.foundation.ok((Path(repo_root), dep_node, local_target))
         local_ref = ref.model_copy(update={"node": dep_node})
         compatible = self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
             repo_root,
@@ -735,12 +759,19 @@ class DeclReadinessComponent:
             return self.runtime.foundation.fail(revision.issues)
         return self.runtime.foundation.ok((decl.value, revision.value))
 
-    def _write_revision(self, repo_root: Path, *, node_path: str, revision: DeclRevision) -> ServiceResult[DeclRevision]:
+    def _write_revision(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: DeclRevision,
+    ) -> ServiceResult[DeclRevision]:
         written = self.runtime.foundation.store.write_json_atomic(
             self.decl_catalog.graph_store.revision_path(
                 repo_root,
                 node_path=node_path,
-                decl_name=revision.decl_name,
+                decl_name=decl_name,
                 revision=revision.revision,
             ),
             revision,
@@ -762,6 +793,7 @@ class DeclReadinessComponent:
                 else None
             ),
             deps=revision.statement_deps,
+            dep_refs=list(revision.statement.deps),
         )
         proof = None
         if revision.proof is not None:
@@ -776,14 +808,16 @@ class DeclReadinessComponent:
                     else None
                 ),
                 deps=revision.proof_deps,
+                dep_refs=list(revision.proof.deps),
             )
         return DeclFileRevisionView(
-            decl_name=revision.decl_name,
+            decl_name=decl.name,
             revision=revision.revision,
             kind=decl.kind,
             state=revision.state,
             version_status=revision.status.value,
-            module=revision.module or decl.module,
+            module=decl.module,
+            lean_decl_name=revision.lean_decl_name,
             statement=statement,
             proof=proof,
         )

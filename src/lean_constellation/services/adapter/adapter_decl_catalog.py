@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,7 @@ from lean_constellation.services.decl_graph.models import (
     RepoDeclDep,
 )
 from lean_constellation.services.foundation import IssueSeverity, ServiceIssue, ServiceResult, WriteMode
+from lean_constellation.services.foundation.module_layout import NativeModuleLayoutError, validate_module_segment
 from lean_constellation.services.lean_projection.lean_check import LeanCheckComponent
 
 if TYPE_CHECKING:
@@ -35,6 +37,15 @@ if TYPE_CHECKING:
 
 _ADAPTER_NODE_PATH = "Main"
 _THEOREM_LIKE = {DeclKind.THEOREM, DeclKind.LEMMA}
+_LEAN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*$")
+_ADAPTER_SOURCE_KINDS = {
+    DeclKind.DEFINITION: {"def", "abbrev"},
+    DeclKind.THEOREM: {"theorem"},
+    DeclKind.LEMMA: {"lemma"},
+    DeclKind.INSTANCE: {"instance"},
+    DeclKind.STRUCTURE: {"structure"},
+    DeclKind.CLASS: {"class"},
+}
 
 
 class AdapterDeclView(StrictModel):
@@ -46,19 +57,29 @@ class AdapterDeclView(StrictModel):
     module: str
     finalized: bool
     state: str
-    plan_summary: str
-    upstream_decl_name: str | None = None
+    status: str
+    released_state: str | None = None
+    release_protected: bool = False
+    public: bool = True
+    visibility: str = "public"
+    lean_decl_name: str
     summary: str
 
 
 class AdapterDeclSummaryView(StrictModel):
+    node_path: str = _ADAPTER_NODE_PATH
     name: str
     kind: DeclKind
     module: str
     finalized: bool
     state: str
-    plan_summary: str
-    upstream_decl_name: str | None = None
+    status: str
+    released_state: str | None = None
+    release_protected: bool = False
+    public: bool = True
+    visibility: str = "public"
+    lean_decl_name: str
+    summary: str
 
 
 class AdapterModuleSummaryItem(StrictModel):
@@ -135,7 +156,8 @@ class AdapterDeclCatalogComponent:
         name: str,
         kind: str | DeclKind,
         module: str,
-        plan_summary: str,
+        lean_decl_name: str,
+        summary: str,
     ) -> ServiceResult[AdapterDeclView]:
         ensured = self._ensure_catalog_graph(repo_root)
         if not ensured.ok:
@@ -148,19 +170,51 @@ class AdapterDeclCatalogComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("adapter_module_invalid", "Adapter decl module must be a valid Lean module name.", field="module")
             )
+        normalized_lean_decl_name = self._normalize_lean_decl_name(lean_decl_name)
+        if normalized_lean_decl_name is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_lean_decl_name_invalid",
+                    "Adapter lean_decl_name must be a valid complete Lean declaration name.",
+                    field="lean_decl_name",
+                )
+            )
         try:
             decl_kind = DeclKind(kind)
         except ValueError:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("adapter_decl_kind_invalid", "Adapter decl kind is invalid.", field="kind", current=str(kind))
             )
-        if not plan_summary or not plan_summary.strip():
+        if not summary or not summary.strip():
             return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("adapter_decl_plan_summary_required", "Adapter decl plan_summary is required.", field="plan_summary")
+                self.runtime.foundation.issue("adapter_decl_summary_required", "Adapter decl summary is required.", field="summary")
             )
         if self._decl_path(repo_root, normalized_name.value).exists():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("adapter_decl_duplicate", f"Adapter decl already exists: {normalized_name.value}", object_ref=normalized_name.value)
+            )
+        existing = self._load_all(repo_root)
+        if not existing.ok or existing.value is None:
+            return self.runtime.foundation.fail(existing.issues)
+        duplicate_identity = next(
+            (
+                decl
+                for decl, revision in existing.value
+                if decl.lifecycle == DeclLifecycle.ACTIVE
+                and decl.module == normalized_module
+                and revision.lean_decl_name == normalized_lean_decl_name
+            ),
+            None,
+        )
+        if duplicate_identity is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_upstream_identity_duplicate",
+                    "An active Adapter Decl already registers this upstream module and Lean declaration name.",
+                    object_ref=normalized_name.value,
+                    current=f"{normalized_module}::{normalized_lean_decl_name}",
+                    expected=f"a unique identity; already registered by {duplicate_identity.name}",
+                )
             )
         decl = Decl(
             name=normalized_name.value,
@@ -170,27 +224,26 @@ class AdapterDeclCatalogComponent:
             current_revision=1,
             revision_ids=[1],
             module=normalized_module,
-            summary=plan_summary.strip(),
+            summary=summary.strip(),
         )
         revision = DeclRevision(
-            decl_name=normalized_name.value,
+            lean_decl_name=normalized_lean_decl_name,
             revision=1,
             state=DeclState.PLANNED,
             status=DeclRevisionStatus.OPEN,
             change=DeclRevisionChange(
                 kind=DeclChangeKind.CREATE,
                 end_after_state=DeclState.PROVED if decl_kind in _THEOREM_LIKE else DeclState.DECLARED,
-                objective=plan_summary.strip(),
-                summary=plan_summary.strip(),
+                objective=summary.strip(),
+                summary=summary.strip(),
             ),
             statement=DeclStatement(),
             proof=DeclProof() if decl_kind in _THEOREM_LIKE else None,
-            module=normalized_module,
         )
         saved = self._write_new_pair(repo_root, decl, revision)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
-        return self.runtime.foundation.ok(self._view(decl, revision, summary=f"Created adapter decl {decl.name}."))
+        return self.runtime.foundation.ok(self._view(repo_root, decl, revision))
 
     def set_adapter_statement_formal(
         self,
@@ -198,7 +251,6 @@ class AdapterDeclCatalogComponent:
         *,
         name: str,
         code: str,
-        upstream_decl_name: str | None = None,
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
@@ -213,32 +265,27 @@ class AdapterDeclCatalogComponent:
         if forbidden:
             return self.runtime.foundation.fail(forbidden)
         check = revision.statement.formal.check if revision.statement.formal is not None else None
-        revision.statement.formal = DeclFormalSection(
-            code=code,
-            check=check,
-            upstream_decl_name=self._strip(upstream_decl_name),
-        )
+        revision.statement.formal = DeclFormalSection(code=code, check=check)
         revision.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision, f"Updated statement formal code for {decl.name}.")
+        return self._save_and_view(repo_root, decl, revision)
 
     def set_adapter_statement_nl(
         self,
         repo_root: Path,
         *,
         name: str,
-        summary: str,
-        detail: str | None = None,
+        text: str,
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
         decl, revision = loaded.value
-        if not summary or not summary.strip():
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_statement_nl_invalid", "Statement NL is invalid: summary must be non-empty"))
+        if not text or not text.strip():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_statement_nl_invalid", "Statement NL text must be non-empty."))
         origin = revision.statement.nl.origin if revision.statement.nl is not None else []
-        revision.statement.nl = DeclNaturalLanguageSection(text=summary.strip(), detail=self._strip(detail), origin=origin)
+        revision.statement.nl = DeclNaturalLanguageSection(text=text.strip(), origin=origin)
         revision.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision, f"Updated statement natural language summary for {decl.name}.")
+        return self._save_and_view(repo_root, decl, revision)
 
     def add_adapter_statement_origin(
         self,
@@ -278,7 +325,6 @@ class AdapterDeclCatalogComponent:
         *,
         name: str,
         code: str,
-        upstream_decl_name: str | None = None,
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
@@ -298,21 +344,16 @@ class AdapterDeclCatalogComponent:
             return self.runtime.foundation.fail(forbidden)
         proof = self._ensure_proof(revision)
         check = proof.formal.check if proof.formal is not None else None
-        proof.formal = DeclFormalSection(
-            code=code,
-            check=check,
-            upstream_decl_name=self._strip(upstream_decl_name),
-        )
+        proof.formal = DeclFormalSection(code=code, check=check)
         revision.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision, f"Updated proof formal code for {decl.name}.")
+        return self._save_and_view(repo_root, decl, revision)
 
     def set_adapter_proof_nl(
         self,
         repo_root: Path,
         *,
         name: str,
-        summary: str,
-        detail: str | None = None,
+        text: str,
     ) -> ServiceResult[AdapterDeclView]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
@@ -322,13 +363,13 @@ class AdapterDeclCatalogComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("adapter_proof_not_applicable", "Proof NL is only valid for theorem-like adapter declarations.", object_ref=name)
             )
-        if not summary or not summary.strip():
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_proof_nl_invalid", "Proof NL is invalid: summary must be non-empty"))
+        if not text or not text.strip():
+            return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_proof_nl_invalid", "Proof NL text must be non-empty."))
         proof = self._ensure_proof(revision)
         origin = proof.nl.origin if proof.nl is not None else []
-        proof.nl = DeclNaturalLanguageSection(text=summary.strip(), detail=self._strip(detail), origin=origin)
+        proof.nl = DeclNaturalLanguageSection(text=text.strip(), origin=origin)
         revision.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision, f"Updated proof natural language summary for {decl.name}.")
+        return self._save_and_view(repo_root, decl, revision)
 
     def add_adapter_proof_origin(
         self,
@@ -384,10 +425,91 @@ class AdapterDeclCatalogComponent:
         if not completeness.value.complete:
             return self.runtime.foundation.fail(completeness.value.issues)
         decl_kind = self._decl_kind(decl)
-        code = revision.proof.formal.code if decl_kind in _THEOREM_LIKE and revision.proof and revision.proof.formal else revision.statement.formal.code  # type: ignore[union-attr]
+        assert decl.module is not None
+        assert revision.lean_decl_name is not None
+        assert revision.statement.formal is not None
+        statement_code = revision.statement.formal.code
+        statement_source = self.runtime.lean_projection.annotation.locate_external_declaration(
+            statement_code,
+            lean_decl_name=revision.lean_decl_name,
+        )
+        if not statement_source.ok or statement_source.value is None:
+            return self.runtime.foundation.fail(statement_source.issues)
+        expected_kinds = _ADAPTER_SOURCE_KINDS.get(decl_kind)
+        if expected_kinds is not None and statement_source.value.kind not in expected_kinds:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_source_decl_kind_mismatch",
+                    "The captured statement declaration kind does not match the registered Adapter Decl kind.",
+                    object_ref=decl.name,
+                    current=statement_source.value.kind,
+                    expected=" | ".join(sorted(expected_kinds)),
+                )
+            )
+        statement_probe = self.runtime.lean_projection.annotation.build_external_declaration_probe(
+            statement_code,
+            lean_decl_name=revision.lean_decl_name,
+        )
+        if not statement_probe.ok or statement_probe.value is None:
+            return self.runtime.foundation.fail(statement_probe.issues)
+        statement_semantics = self.runtime.lean_projection.module_identity.verify_captured_declaration(
+            repo_root,
+            module=decl.module,
+            lean_decl_name=revision.lean_decl_name,
+            probe_code=statement_probe.value.code,
+            probe_lean_decl_name=statement_probe.value.probe_lean_decl_name,
+        )
+        if not statement_semantics.ok:
+            return self.runtime.foundation.fail(statement_semantics.issues)
+
+        code = statement_code
+        if decl_kind in _THEOREM_LIKE:
+            proof = self._ensure_proof(revision)
+            assert proof.formal is not None
+            code = proof.formal.code
+            proof_source = self.runtime.lean_projection.annotation.locate_external_declaration(
+                code,
+                lean_decl_name=revision.lean_decl_name,
+            )
+            if not proof_source.ok or proof_source.value is None:
+                return self.runtime.foundation.fail(proof_source.issues)
+            if expected_kinds is not None and proof_source.value.kind not in expected_kinds:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "adapter_source_decl_kind_mismatch",
+                        "The captured proof declaration kind does not match the registered Adapter Decl kind.",
+                        object_ref=decl.name,
+                        current=proof_source.value.kind,
+                        expected=" | ".join(sorted(expected_kinds)),
+                    )
+                )
+            header = self.runtime.lean_projection.annotation.compare_external_theorem_header(
+                statement_code,
+                code,
+                lean_decl_name=revision.lean_decl_name,
+            )
+            if not header.ok or header.value is None:
+                return self.runtime.foundation.fail(header.issues)
+            if not header.value.passed:
+                return self.runtime.foundation.fail(header.value.issues)
+            proof_probe = self.runtime.lean_projection.annotation.build_external_declaration_probe(
+                code,
+                lean_decl_name=revision.lean_decl_name,
+            )
+            if not proof_probe.ok or proof_probe.value is None:
+                return self.runtime.foundation.fail(proof_probe.issues)
+            proof_semantics = self.runtime.lean_projection.module_identity.verify_captured_declaration(
+                repo_root,
+                module=decl.module,
+                lean_decl_name=revision.lean_decl_name,
+                probe_code=proof_probe.value.code,
+                probe_lean_decl_name=proof_probe.value.probe_lean_decl_name,
+            )
+            if not proof_semantics.ok:
+                return self.runtime.foundation.fail(proof_semantics.issues)
         lean_check = self.lean_check.build_trusted_adapter_check(
             repo_root,
-            module=self._module(decl, revision),
+            module=decl.module,
             code=code,
             theorem_like=decl_kind in _THEOREM_LIKE,
         )
@@ -414,7 +536,7 @@ class AdapterDeclCatalogComponent:
         revision.updated_at = utc_now_iso()
         decl.current_revision = revision.revision
         decl.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision, f"Finalized adapter decl {decl.name}.")
+        return self._save_and_view(repo_root, decl, revision)
 
     def list_adapter_decls(
         self,
@@ -452,7 +574,7 @@ class AdapterDeclCatalogComponent:
                 continue
             if query and query.lower() not in decl.name.lower():
                 continue
-            items.append(self._summary(decl, revision))
+            items.append(self._summary(repo_root, decl, revision))
         items.sort(key=lambda item: (item.module, item.name))
         return self.runtime.foundation.ok(items)
 
@@ -460,7 +582,7 @@ class AdapterDeclCatalogComponent:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
-        return self.runtime.foundation.ok(self._view(loaded.value[0], loaded.value[1], summary=f"Loaded adapter decl {loaded.value[0].name}."))
+        return self.runtime.foundation.ok(self._view(repo_root, loaded.value[0], loaded.value[1]))
 
     def list_registered_adapter_modules(self, repo_root: Path) -> ServiceResult[AdapterModuleSummaryView]:
         loaded = self._load_all(repo_root)
@@ -515,7 +637,7 @@ class AdapterDeclCatalogComponent:
         repo_root: Path,
         *,
         module: str,
-        upstream_decl_name: str | None = None,
+        lean_decl_name: str | None = None,
         adapter_name_query: str | None = None,
     ) -> ServiceResult[AdapterDeclMatchView]:
         normalized_module = self._normalize_module(module)
@@ -524,25 +646,17 @@ class AdapterDeclCatalogComponent:
         loaded = self._load_all(repo_root)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
-        upstream = self._strip(upstream_decl_name)
+        lean_name = self._strip(lean_decl_name)
         query = self._strip(adapter_name_query)
         matches = []
         for decl, revision in loaded.value:
             if self._module(decl, revision) != normalized_module:
                 continue
-            upstream_names = {
-                item
-                for item in [
-                    revision.statement.formal.upstream_decl_name if revision.statement.formal else None,
-                    revision.proof.formal.upstream_decl_name if revision.proof and revision.proof.formal else None,
-                ]
-                if item
-            }
-            if upstream and upstream in upstream_names:
-                matches.append(self._summary(decl, revision))
+            if lean_name and revision.lean_decl_name == lean_name:
+                matches.append(self._summary(repo_root, decl, revision))
                 continue
             if query and query.lower() in decl.name.lower():
-                matches.append(self._summary(decl, revision))
+                matches.append(self._summary(repo_root, decl, revision))
         return self.runtime.foundation.ok(
             AdapterDeclMatchView(
                 matches=sorted(matches, key=lambda item: item.name),
@@ -575,11 +689,11 @@ class AdapterDeclCatalogComponent:
                 severity=IssueSeverity.WARNING,
                 object_ref=decl.name,
             )
-            return self.runtime.foundation.ok(self._view(decl, revision, summary=f"{stage.title()} origin already recorded."), warnings=[warning])
+            return self.runtime.foundation.ok(self._view(repo_root, decl, revision), warnings=[warning])
         nl.origin.append(origin)
         section.nl = nl
         revision.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision, f"Added {stage} origin for {decl.name}.")
+        return self._save_and_view(repo_root, decl, revision)
 
     def _add_dep(
         self,
@@ -605,11 +719,11 @@ class AdapterDeclCatalogComponent:
         section = revision.statement if stage == "statement" else self._ensure_proof(revision)
         if dep_key.value in self._dep_names(section.deps):
             warning = self.runtime.foundation.issue("adapter_dep_duplicate", "Adapter dependency is already recorded.", severity=IssueSeverity.WARNING, object_ref=decl.name)
-            return self.runtime.foundation.ok(self._view(decl, revision, summary=f"{stage.title()} dependency already recorded."), warnings=[warning])
+            return self.runtime.foundation.ok(self._view(repo_root, decl, revision), warnings=[warning])
         section.deps.append(RepoDeclDep(ref=DeclRef(repo=None, node=_ADAPTER_NODE_PATH, name=dep_key.value, revision=1), reason=reason.strip()))
         section.deps = sorted(section.deps, key=lambda item: self._dep_key(item))
         revision.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision, f"Added {stage} dependency for {decl.name}.")
+        return self._save_and_view(repo_root, decl, revision)
 
     def _remove_dep(
         self,
@@ -624,12 +738,14 @@ class AdapterDeclCatalogComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_dep_not_found", f"{stage.title()} dependency was not found.", object_ref=decl.name, field=dep_name))
         section.deps = [item for item in section.deps if self._dep_name(item) != dep_name]
         revision.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision, f"Removed {stage} dependency for {decl.name}.")
+        return self._save_and_view(repo_root, decl, revision)
 
     def _record_issues(self, decl: Decl, revision: DeclRevision) -> list[ServiceIssue]:
         issues: list[ServiceIssue] = []
         if not self._module(decl, revision):
             issues.append(self._issue(decl, "adapter_decl_module_missing", "module", "Adapter decl module is missing."))
+        if not revision.lean_decl_name:
+            issues.append(self._issue(decl, "adapter_lean_decl_name_missing", "lean_decl_name", "Adapter Lean declaration name is missing."))
         if revision.statement.formal is None or not revision.statement.formal.code:
             issues.append(self._issue(decl, "adapter_statement_formal_missing", "statement.formal", "Statement formal code is missing."))
         if revision.statement.nl is None or not revision.statement.nl.text:
@@ -746,14 +862,14 @@ class AdapterDeclCatalogComponent:
             return self.runtime.foundation.fail(rebuilt.issues)
         return self.runtime.foundation.ok((decl, revision))
 
-    def _save_and_view(self, repo_root: Path, decl: Decl, revision: DeclRevision, summary: str) -> ServiceResult[AdapterDeclView]:
+    def _save_and_view(self, repo_root: Path, decl: Decl, revision: DeclRevision) -> ServiceResult[AdapterDeclView]:
         decl.updated_at = utc_now_iso()
         revision.updated_at = utc_now_iso()
         written_decl = self.runtime.foundation.store.write_json_atomic(self._decl_path(repo_root, decl.name), decl, mode=WriteMode.UPDATE_EXISTING)
         if not written_decl.ok:
             return self.runtime.foundation.fail(written_decl.issues)
         written_revision = self.runtime.foundation.store.write_json_atomic(
-            self._revision_path(repo_root, revision.decl_name, revision.revision),
+            self._revision_path(repo_root, decl.name, revision.revision),
             revision,
             mode=WriteMode.UPDATE_EXISTING,
         )
@@ -762,7 +878,7 @@ class AdapterDeclCatalogComponent:
         rebuilt = self.runtime.decl_graph.rebuild_decl_graph_index(repo_root, node_path=_ADAPTER_NODE_PATH)
         if not rebuilt.ok:
             return self.runtime.foundation.fail(rebuilt.issues)
-        return self.runtime.foundation.ok(self._view(decl, revision, summary=summary))
+        return self.runtime.foundation.ok(self._view(repo_root, decl, revision))
 
     def _decl_path(self, repo_root: Path, name: str) -> Path:
         return self.runtime.decl_graph.graph_store.decl_record_path(repo_root, node_path=_ADAPTER_NODE_PATH, decl_name=name)
@@ -772,21 +888,19 @@ class AdapterDeclCatalogComponent:
 
     def _safe_decl_name(self, name: str) -> ServiceResult[str]:
         try:
-            return self.runtime.foundation.ok(self.runtime.foundation.layout.ensure_safe_key(name.strip()))
-        except Exception as exc:  # noqa: BLE001
+            return self.runtime.foundation.ok(validate_module_segment(name.strip(), label="Adapter Decl.name"))
+        except NativeModuleLayoutError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_decl_name_invalid", f"Adapter decl name is invalid: {exc}", field="name"))
 
     def _normalize_module(self, module: str) -> str | None:
         value = module.strip()
-        if not value or any(ch.isspace() for ch in value):
-            return None
-        if "/" in value or "\\" in value or ".." in value:
-            return None
-        if any(not part for part in value.split(".")):
-            return None
-        return value
+        return value if _LEAN_NAME_RE.fullmatch(value) is not None else None
 
-    def _view(self, decl: Decl, revision: DeclRevision, *, summary: str) -> AdapterDeclView:
+    def _normalize_lean_decl_name(self, name: str) -> str | None:
+        return self._normalize_module(name)
+
+    def _view(self, repo_root: Path, decl: Decl, revision: DeclRevision) -> AdapterDeclView:
+        released_state, release_protected = self._release_fields(repo_root, decl)
         return AdapterDeclView(
             decl=decl,
             revision=revision,
@@ -796,39 +910,54 @@ class AdapterDeclCatalogComponent:
             module=self._module(decl, revision),
             finalized=self._finalized(decl, revision),
             state=self._adapter_state(revision),
-            plan_summary=self._plan_summary(decl, revision),
-            upstream_decl_name=self._upstream_decl_name(revision),
-            summary=summary,
+            status=revision.status.value,
+            released_state=released_state,
+            release_protected=release_protected,
+            public=decl.public,
+            visibility="public" if decl.public else "private",
+            lean_decl_name=revision.lean_decl_name or "",
+            summary=self._catalog_summary(decl, revision),
         )
 
-    def _summary(self, decl: Decl, revision: DeclRevision) -> AdapterDeclSummaryView:
+    def _summary(self, repo_root: Path, decl: Decl, revision: DeclRevision) -> AdapterDeclSummaryView:
+        released_state, release_protected = self._release_fields(repo_root, decl)
         return AdapterDeclSummaryView(
+            node_path=decl.node_path,
             name=decl.name,
             kind=self._decl_kind(decl),
             module=self._module(decl, revision),
             finalized=self._finalized(decl, revision),
             state=self._adapter_state(revision),
-            plan_summary=self._plan_summary(decl, revision),
-            upstream_decl_name=self._upstream_decl_name(revision),
+            status=revision.status.value,
+            released_state=released_state,
+            release_protected=release_protected,
+            public=decl.public,
+            visibility="public" if decl.public else "private",
+            lean_decl_name=revision.lean_decl_name or "",
+            summary=self._catalog_summary(decl, revision),
         )
 
     def _decl_kind(self, decl: Decl) -> DeclKind:
         return DeclKind(decl.kind)
 
     def _module(self, decl: Decl, revision: DeclRevision) -> str:
-        return revision.module or decl.module or ""
+        del revision
+        return decl.module or ""
 
-    def _plan_summary(self, decl: Decl, revision: DeclRevision) -> str:
+    def _catalog_summary(self, decl: Decl, revision: DeclRevision) -> str:
         if revision.change and revision.change.objective:
             return revision.change.objective
         return decl.summary or ""
 
-    def _upstream_decl_name(self, revision: DeclRevision) -> str | None:
-        if revision.proof and revision.proof.formal and revision.proof.formal.upstream_decl_name:
-            return revision.proof.formal.upstream_decl_name
-        if revision.statement.formal and revision.statement.formal.upstream_decl_name:
-            return revision.statement.formal.upstream_decl_name
-        return None
+    def _release_fields(self, repo_root: Path, decl: Decl) -> tuple[str | None, bool]:
+        release = self.runtime.repo_workspace.release.get_decl_release_status(
+            repo_root,
+            node_path=decl.node_path,
+            decl_name=decl.name,
+        )
+        if not release.ok or release.value is None:
+            return None, False
+        return release.value.released_state, bool(release.value.release_protected)
 
     def _adapter_state(self, revision: DeclRevision) -> str:
         if revision.state in {DeclState.PLANNED, DeclState.SPECIFIED, DeclState.PROOF_PLANNED}:

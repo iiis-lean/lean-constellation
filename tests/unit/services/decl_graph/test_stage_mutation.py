@@ -1,12 +1,19 @@
 import json
 from pathlib import Path
 
-from tests.unit_services_helpers import lean_check_payload, make_runtime
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    make_runtime,
+    write_proof_formal_for_test,
+    write_statement_formal_for_test,
+)
 
 from lean_constellation.services.decl_graph import DeclState
 
 
 def _create_content_node(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path)
     runtime = make_runtime()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(
@@ -26,7 +33,8 @@ def _create_content_node(tmp_path: Path) -> None:
 
 
 def _create_running_round_with_decl(tmp_path: Path, *, name: str = "main_result", kind: str = "theorem") -> str:
-    service = make_runtime().decl_graph
+    runtime = make_runtime()
+    service = runtime.decl_graph
     strategy = service.ensure_open_strategy(tmp_path, node_path="Main.Topic.Core", objective="Strategy.")
     assert strategy.ok and strategy.value is not None
     round_record = service.create_round_draft(
@@ -53,7 +61,8 @@ def _create_running_round_with_decl(tmp_path: Path, *, name: str = "main_result"
 def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_revision_state(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_running_round_with_decl(tmp_path)
-    service = make_runtime().decl_graph
+    runtime = make_runtime()
+    service = runtime.decl_graph
 
     statement_nl = service.write_statement_nl(
         tmp_path,
@@ -65,11 +74,11 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         deps=["supporting_lemma"],
     )
     assert statement_nl.ok and statement_nl.value is not None
-    assert statement_nl.value.state == DeclState.PLANNED
-    assert statement_nl.value.statement_origin == [{"kind": "source", "ref": "source:main"}]
-    assert statement_nl.value.statement_deps == ["supporting_lemma"]
+    assert statement_nl.value.revision.state == DeclState.PLANNED
+    assert statement_nl.value.revision.statement_origin == [{"kind": "source", "ref": "source:main"}]
+    assert statement_nl.value.revision.statement_deps == ["supporting_lemma"]
 
-    statement_formal = service.write_statement_formal(
+    statement_formal = write_statement_formal_for_test(runtime,
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
@@ -96,11 +105,11 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         deps=["supporting_lemma", "proof_helper"],
     )
     assert proof_nl.ok and proof_nl.value is not None
-    assert proof_nl.value.state == DeclState.PLANNED
-    assert proof_nl.value.statement_deps == ["supporting_lemma"]
-    assert proof_nl.value.proof_deps == ["proof_helper", "supporting_lemma"]
+    assert proof_nl.value.revision.state == DeclState.PLANNED
+    assert proof_nl.value.revision.statement_deps == ["supporting_lemma"]
+    assert proof_nl.value.revision.proof_deps == ["proof_helper", "supporting_lemma"]
 
-    proof_formal = service.write_proof_formal(
+    proof_formal = write_proof_formal_for_test(runtime,
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
@@ -163,9 +172,10 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
 def test_statement_formal_requires_statement_nl(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_running_round_with_decl(tmp_path)
-    service = make_runtime().decl_graph
+    runtime = make_runtime()
+    service = runtime.decl_graph
 
-    result = service.write_statement_formal(
+    result = write_statement_formal_for_test(runtime,
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
@@ -181,7 +191,8 @@ def test_statement_formal_requires_statement_nl(tmp_path: Path) -> None:
 def test_advance_stage_state_is_explicit_after_candidate_write(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_running_round_with_decl(tmp_path)
-    service = make_runtime().decl_graph
+    runtime = make_runtime()
+    service = runtime.decl_graph
 
     candidate = service.write_statement_nl(
         tmp_path,
@@ -191,7 +202,7 @@ def test_advance_stage_state_is_explicit_after_candidate_write(tmp_path: Path) -
         nl="The main result states True.",
     )
     assert candidate.ok and candidate.value is not None
-    assert candidate.value.state == DeclState.PLANNED
+    assert candidate.value.revision.state == DeclState.PLANNED
 
     advanced = service.advance_stage_state(
         tmp_path,
@@ -216,7 +227,8 @@ def test_advance_stage_state_is_explicit_after_candidate_write(tmp_path: Path) -
 def test_advance_stage_state_validates_whole_batch_before_writing(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_running_round_with_decl(tmp_path)
-    service = make_runtime().decl_graph
+    runtime = make_runtime()
+    service = runtime.decl_graph
     candidate = service.write_statement_nl(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -248,7 +260,8 @@ def test_advance_stage_state_validates_whole_batch_before_writing(tmp_path: Path
 def test_proof_stages_reject_non_theorem_like_decl(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_running_round_with_decl(tmp_path, name="main_def", kind="definition")
-    service = make_runtime().decl_graph
+    runtime = make_runtime()
+    service = runtime.decl_graph
     assert service.write_statement_nl(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -256,7 +269,7 @@ def test_proof_stages_reject_non_theorem_like_decl(tmp_path: Path) -> None:
         decl_name="main_def",
         nl="The definition has type Nat.",
     ).ok
-    assert service.write_statement_formal(
+    assert write_statement_formal_for_test(runtime,
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
