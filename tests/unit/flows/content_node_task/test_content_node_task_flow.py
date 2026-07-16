@@ -16,7 +16,7 @@ from lean_constellation.flows.content_node_task.submissions import (
     ContentNodeReadySubmission,
     ContentPreparationDispatchSubmission,
 )
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
@@ -29,8 +29,10 @@ def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
     return flow_runtime, lean_runtime
 
 
-def _prepare_content_repo(lean_runtime, repo_root: Path) -> None:
+def _prepare_content_repo(lean_runtime, repo_root: Path, *, native_project_name: str | None = None) -> None:
     repo_root.mkdir(parents=True)
+    if native_project_name is not None:
+        initialize_native_test_repo(repo_root, project_name=native_project_name)
     assert lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
     written = lean_runtime.repo_workspace.preparation.write_preparation_input(
         repo_root,
@@ -178,6 +180,31 @@ def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(
     assert runtime.agent_service.start_records[0].workdir == _expected_node_workdir(repo_root)
     assert runtime.agent_service.start_records[1].workdir == _expected_node_workdir(repo_root)
     assert "Node deps found." in (runtime.agent_service.start_records[1].prompt or "")
+
+
+def test_content_node_task_plan_agent_uses_native_project_projection_workdir(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root, native_project_name="Repo")
+    flow_id = _start_content_task(runtime, repo_root)
+
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(
+        ContentNodeBlockedSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_blocked",
+            tool_name="submit_content_node_blocked",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            reason="Stop after verifying the native projection workdir.",
+            summary="Native projection workdir verified.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+
+    expected = repo_root / "Repo" / "Main" / "Core"
+    assert expected.is_dir()
+    assert runtime.agent_service.start_records[-1].workdir == str(expected)
 
 
 def test_content_node_task_rejects_duplicate_preparation_dispatch(tmp_path: Path) -> None:

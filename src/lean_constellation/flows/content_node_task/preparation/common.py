@@ -11,6 +11,7 @@ from pydantic import Field
 from lean_constellation.flows.common.business_flows import LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput
 from lean_constellation.services.foundation import FoundationContext, LayoutComponent
+from lean_constellation.services.foundation.module_layout import local_projection_path
 
 
 PreparationKind = Literal["node_dir_dependency", "mathlib", "resource"]
@@ -51,5 +52,7 @@ class PreparationReconState(BaseFlowState):
 def content_node_workdir(repo_path: str | None, node_path: str) -> str | None:
     if repo_path is None:
         return None
-    ctx = FoundationContext(repo_root=Path(repo_path))
-    return str(LayoutComponent().node_projection_dir(ctx, node_path))
+    repo_root = Path(repo_path)
+    ctx = FoundationContext(repo_root=repo_root)
+    logical_path = LayoutComponent().node_projection_dir(ctx, node_path)
+    return str(local_projection_path(repo_root, logical_path))
