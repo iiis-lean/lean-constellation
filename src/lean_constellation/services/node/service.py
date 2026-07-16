@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.foundation import GateReport, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, GateReport, MutationSummaryView, ServiceResult
+from lean_constellation.services.foundation.module_layout import local_projection_path
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
 from lean_constellation.services.node.contract_fields import NodeMathlibDeclUse, NodeMathlibModuleUse
 from lean_constellation.services.node.dependency import DependencyComponent, NodeDepsView
@@ -26,7 +27,6 @@ from lean_constellation.services.node.node_tree import DeleteImpactView, NodeKin
 from lean_constellation.services.node.public_decl_access import PublicDeclAccessResolver
 from lean_constellation.services.node.release_guard import NodeReleaseGuard
 from lean_constellation.services.node.projection_transaction import NodeContractProjectionMutationView
-from lean_constellation.services.foundation import MutationSummaryView
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -277,7 +277,17 @@ class NodeService:
         return self.interface.check_root_interface_statement_contracts(repo_root, node_path="Main")
 
     def prepare_content_task_admission(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
-        return self.contract.check_content_task_admission(repo_root, node_path=node_path)
+        admission = self.contract.check_content_task_admission(repo_root, node_path=node_path)
+        if not admission.ok or admission.value is None or not admission.value.passed:
+            return admission
+        logical_path = self.runtime.foundation.layout.node_projection_dir(
+            FoundationContext(repo_root=Path(repo_root)), node_path
+        )
+        projection_dir = local_projection_path(repo_root, logical_path)
+        ensured = self.runtime.foundation.store.ensure_dir(projection_dir)
+        if not ensured.ok:
+            return self.runtime.foundation.fail(ensured.issues)
+        return admission
 
     def submit_content_node_batch_preflight(self, repo_root: Path, *, node_paths: list[str]) -> ServiceResult[GateReport]:
         return self.dependency.check_content_batch_independent(repo_root, node_paths=node_paths)

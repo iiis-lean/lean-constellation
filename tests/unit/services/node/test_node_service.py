@@ -83,10 +83,16 @@ def test_node_service_content_admission_batch_and_commit_wrappers(tmp_path: Path
     )
     assert content.ok
 
+    projection_dir = tmp_path / "TestProject" / "Main" / "Topic" / "Core"
+    assert projection_dir.is_dir()
+    projection_dir.rmdir()
+    assert not projection_dir.exists()
+
     admission = service.prepare_content_task_admission(tmp_path, node_path="Main.Topic.Core")
     assert admission.ok
     assert admission.value is not None
     assert admission.value.passed is True
+    assert projection_dir.is_dir()
 
     batch = service.submit_content_node_batch_preflight(tmp_path, node_paths=["Main.Topic.Core"])
     assert batch.ok

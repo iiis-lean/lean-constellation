@@ -186,6 +186,10 @@ def test_content_node_task_plan_agent_uses_native_project_projection_workdir(tmp
     runtime, lean_runtime = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
     _prepare_content_repo(lean_runtime, repo_root, native_project_name="Repo")
+    expected = repo_root / "Repo" / "Main" / "Core"
+    assert expected.is_dir()
+    expected.rmdir()
+    assert not expected.exists()
     flow_id = _start_content_task(runtime, repo_root)
 
     _advance_and_run(runtime, flow_id)
@@ -202,7 +206,6 @@ def test_content_node_task_plan_agent_uses_native_project_projection_workdir(tmp
     )
     _advance_and_run(runtime, flow_id)
 
-    expected = repo_root / "Repo" / "Main" / "Core"
     assert expected.is_dir()
     assert runtime.agent_service.start_records[-1].workdir == str(expected)
 
