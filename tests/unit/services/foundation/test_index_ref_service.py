@@ -16,6 +16,7 @@ from lean_constellation.services.foundation import (
     RefValidationResult,
     ResolvedRef,
     ResultErrorComponent,
+    WriteMode,
 )
 
 
@@ -161,6 +162,25 @@ def test_index_ensure_cache_hit_and_stale_rebuild(tmp_path) -> None:
     assert third.ok is True and third.value is not None and third.value.data == {"calls": 2}
     assert builder.calls == 2
     metadata = service.index.list_index_metadata(ctx)
+    assert metadata.ok is True
+    assert [item.index_name for item in metadata.value or []] == ["demo_index"]
+
+
+def test_list_index_metadata_ignores_non_registry_index_files(tmp_path) -> None:
+    service = make_runtime().foundation
+    ctx = FoundationContext(repo_root=tmp_path, caller="test")
+    builder = CountingBuilder()
+    assert service.register_index_builder(builder).ok is True
+    assert service.ensure_index(ctx, "demo_index").ok is True
+    foreign_path = service.layout.index_cache_path(ctx, "mathlib")
+    assert service.store.write_json_atomic(
+        foreign_path,
+        {"declarations": {}, "modules": {}},
+        mode=WriteMode.CREATE_ONLY,
+    ).ok is True
+
+    metadata = service.index.list_index_metadata(ctx)
+
     assert metadata.ok is True
     assert [item.index_name for item in metadata.value or []] == ["demo_index"]
 

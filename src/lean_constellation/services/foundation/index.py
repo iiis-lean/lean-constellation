@@ -223,10 +223,15 @@ class IndexComponent:
         root = self.layout.indexes_root(ctx)
         if not root.exists():
             return self.result.ok([])
-        bundles = self.store.list_json(root, IndexBundle[Any])
-        if not bundles.ok:
-            return self.result.fail(bundles.issues)
-        metadata = sorted((bundle.metadata for bundle in bundles.value or []), key=lambda item: item.index_name)
+        metadata: list[IndexMetadata] = []
+        for index_name in sorted(self._builders):
+            path = self.layout.index_cache_path(ctx, index_name)
+            if not path.exists():
+                continue
+            bundle = self.store.read_json(path, IndexBundle[Any])
+            if not bundle.ok or bundle.value is None:
+                return self.result.fail(bundle.issues)
+            metadata.append(bundle.value.metadata)
         return self.result.ok(metadata)
 
     def rebuild_all(self, ctx: FoundationContext) -> ServiceResult[list[IndexRebuildView]]:
