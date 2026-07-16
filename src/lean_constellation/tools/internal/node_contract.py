@@ -39,6 +39,7 @@ from lean_constellation.tools.specs import actor_for_write, current_node_path, d
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.flows.common.flow_requests import node_scope_id
+from lean_constellation.services.node import ContentTaskResultView
 
 
 class ContentTaskResultItemView(StrictModel):
@@ -422,7 +423,12 @@ def _commit_content_contract(runtime, ctx, args: NodeContractCommitArgs):
     return runtime.node.finalize_content_task_result(
         ctx.repo_root,
         node_path=args.node_path,
-        task_result=selected.value,
+        task_result=ContentTaskResultView(
+            outcome=selected.value.outcome,
+            contract_version=selected.value.contract_version,
+            summary=selected.value.summary,
+            reason=selected.value.reason,
+        ),
         coordinator_summary=args.summary,
     )
 

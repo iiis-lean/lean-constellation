@@ -24,7 +24,7 @@ from lean_constellation.services.decl_graph.models import (
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
 from lean_constellation.services.material import ResourceMetadataInput
-from lean_constellation.services.node import DeclPublicView, NodeContractSnapshot
+from lean_constellation.services.node import ContentTaskResultView, DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, publish_native_provider_release
 
@@ -512,12 +512,14 @@ def test_commit_content_contract_tool_binds_latest_callback_result(tmp_path: Pat
     )
     captured: dict[str, object] = {}
 
-    def _fake_finalize(repo_root: Path, *, node_path: str, task_result: ContentNodeTaskResult, coordinator_summary: str):
+    def _fake_finalize(repo_root: Path, *, node_path: str, task_result: ContentTaskResultView, coordinator_summary: str):
+        assert isinstance(task_result, ContentTaskResultView)
         captured.update(
             {
                 "repo_root": repo_root,
                 "node_path": node_path,
                 "contract_version": task_result.contract_version,
+                "task_result": task_result.model_dump(mode="json"),
                 "coordinator_summary": coordinator_summary,
             }
         )
@@ -535,6 +537,12 @@ def test_commit_content_contract_tool_binds_latest_callback_result(tmp_path: Pat
 
     assert captured["node_path"] == "Main.Core"
     assert captured["contract_version"] == 3
+    assert captured["task_result"] == {
+        "outcome": "ready",
+        "contract_version": 3,
+        "summary": "Core ready.",
+        "reason": None,
+    }
     assert value["summary"] == "Coordinator accepts core."
 
 
