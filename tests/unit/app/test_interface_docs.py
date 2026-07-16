@@ -60,6 +60,21 @@ def test_interface_catalogs_follow_live_registries() -> None:
     assert start["input_model"] == "RepoRunStartInput"
     assert start["schema_status"] == "typed_body"
 
+    resume_operations = [
+        item
+        for item in admin["operations"]
+        if item["path"] in {
+            "/admin/workspace/repos/{repo_key:str}/resume",
+            "/admin/repos/{repo_key:str}/runtime/resume",
+        }
+    ]
+    assert len(resume_operations) == 2
+    assert {item["input_model"] for item in resume_operations} == {"RuntimeResumeInput"}
+    for resume in resume_operations:
+        assert resume["schema_status"] == "typed_body"
+        assert "budget" in resume["input_schema"]["properties"]
+        assert "SchedulerRunBudget" in resume["input_schema"]["$defs"]
+
     submit_requirement = next(
         item for item in tools["tools"] if item["name"] == "submit_repo_requirement"
     )

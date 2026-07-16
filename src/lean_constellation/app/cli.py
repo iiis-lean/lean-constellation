@@ -89,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="Resume production server scheduler over Admin HTTP.")
     resume.add_argument("--repo-key", required=True)
     resume.add_argument("--scope-id", default=None)
+    resume.add_argument("--flow-advances", type=int, default=None)
+    resume.add_argument("--step-starts", type=int, default=None)
 
     serve = sub.add_parser("serve", help="Run the unified production Admin HTTP + MCP HTTP server.")
     serve.add_argument("--host", default=None, help="Admin HTTP bind host. Defaults to config admin_http_host.")
@@ -394,7 +396,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "pause":
         return _print_http_result(_request_json("POST", f"{admin_base_url}/admin/repos/{args.repo_key}/runtime/pause", {"scope_id": args.scope_id}))
     if args.command == "resume":
-        return _print_http_result(_request_json("POST", f"{admin_base_url}/admin/repos/{args.repo_key}/runtime/resume", {"scope_id": args.scope_id}))
+        payload = _runtime_resume_payload(args, parser)
+        return _print_http_result(
+            _request_json(
+                "POST",
+                f"{admin_base_url}/admin/repos/{args.repo_key}/runtime/resume",
+                payload,
+            )
+        )
     if args.command == "start-flow":
         return _print_http_result(
             _request_json(
@@ -623,6 +632,30 @@ def main(argv: list[str] | None = None) -> int:
         )
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def _runtime_resume_payload(args, parser: argparse.ArgumentParser) -> dict[str, object]:  # noqa: ANN001
+    flow_advances = args.flow_advances
+    step_starts = args.step_starts
+    if (flow_advances is None) != (step_starts is None):
+        parser.error("resume requires --flow-advances and --step-starts together")
+    payload: dict[str, object] = {}
+    if args.scope_id is not None:
+        payload["scope_id"] = args.scope_id
+    if flow_advances is None:
+        return payload
+    assert step_starts is not None
+    if flow_advances < 0 or step_starts < 0:
+        parser.error("resume budgets must be non-negative")
+    if flow_advances == 0 and step_starts == 0:
+        parser.error("resume budget must allow at least one action")
+    if args.scope_id is not None:
+        parser.error("bounded scheduler resume cannot be combined with --scope-id")
+    payload["budget"] = {
+        "flow_advances": flow_advances,
+        "step_starts": step_starts,
+    }
+    return payload
 
 
 def _parse_params(values: list[str]) -> dict[str, str]:

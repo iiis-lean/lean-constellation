@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Literal
 
+from agent_runtime_kit.flow import SchedulerRunBudget, SchedulerRunControlView
 from agent_runtime_kit.flow.models import FlowStatus
 from pydantic import Field
 
@@ -34,6 +35,7 @@ class RepoRuntimeStatusView(StrictModel):
     state: RepoRuntimeState
     loaded: bool
     paused: bool | None = None
+    run_control: SchedulerRunControlView | None = None
     flow_count: int | None = None
     step_count: int | None = None
     agent_count: int | None = None
@@ -362,6 +364,63 @@ class RepoRuntimeRegistry:
             record = self._records.get(normalized.value)
         return record.runtime if record is not None else None
 
+    def _check_bounded_resume_admission(self, record: RepoRuntimeRecord) -> ServiceResult[None]:
+        """Validate a repo-global bounded lease without rejecting runnable candidates."""
+
+        runtime = record.runtime
+        if runtime is None:
+            return self.result.fail(
+                self.result.issue(
+                    "bounded_resume_runtime_unloaded",
+                    "Repo runtime must be loaded before bounded resume.",
+                    object_ref=record.repo_key,
+                )
+            )
+        controller = runtime.ark.pause_controller
+        if controller is None or not hasattr(controller, "is_paused") or not controller.is_paused(None):
+            return self.result.fail(
+                self.result.issue(
+                    "bounded_resume_requires_global_pause",
+                    "Bounded scheduler resume requires a globally paused runtime.",
+                    object_ref=record.repo_key,
+                )
+            )
+        try:
+            agent_service = runtime.ark.agent_service
+            step_service = runtime.ark.step_service
+            schedule_service = runtime.ark.schedule_service
+            if agent_service is None or not hasattr(agent_service, "list_running_agents"):
+                raise RuntimeError("agent runtime inspection is unavailable")
+            if step_service is None or not hasattr(step_service, "list_running_steps"):
+                raise RuntimeError("step runtime inspection is unavailable")
+            if schedule_service is None or not hasattr(schedule_service, "active_flow_advances"):
+                raise RuntimeError("scheduler runtime inspection is unavailable")
+            running_agents = list(agent_service.list_running_agents())
+            running_steps = list(step_service.list_running_steps())
+            active_advances = list(schedule_service.active_flow_advances)
+        except Exception as exc:  # noqa: BLE001 - admission must fail closed.
+            return self.result.fail(
+                self.result.issue(
+                    "bounded_resume_inspection_failed",
+                    f"Failed to inspect bounded resume admission: {exc}",
+                    object_ref=record.repo_key,
+                )
+            )
+        if running_agents or running_steps or active_advances:
+            return self.result.fail(
+                self.result.issue(
+                    "bounded_resume_runtime_busy",
+                    "Bounded scheduler resume requires no running Agent, Step, or Flow advance.",
+                    object_ref=record.repo_key,
+                    details={
+                        "running_agents": len(running_agents),
+                        "running_steps": len(running_steps),
+                        "active_flow_advances": len(active_advances),
+                    },
+                )
+            )
+        return self.result.ok(None)
+
     def pause(self, repo_key: str) -> ServiceResult[RepoRuntimeStatusView]:
         runtime_result = self.get_or_load(repo_key, refresh_homes=False)
         if not runtime_result.ok or runtime_result.value is None:
@@ -374,10 +433,27 @@ class RepoRuntimeRegistry:
             controller = runtime_result.value.ark.pause_controller
             if controller is not None:
                 controller.pause(None)
+            schedule_service = runtime_result.value.ark.schedule_service
+            if schedule_service is not None and hasattr(schedule_service, "clear_run_budget"):
+                schedule_service.clear_run_budget(reason="manual_pause")
             record.state = "paused"
             return self.result.ok(self._status_for_record(record))
 
-    def resume(self, repo_key: str, *, rebuild_queues: bool = True) -> ServiceResult[RepoRuntimeStatusView]:
+    def resume(
+        self,
+        repo_key: str,
+        *,
+        budget: SchedulerRunBudget | None = None,
+        rebuild_queues: bool = True,
+    ) -> ServiceResult[RepoRuntimeStatusView]:
+        if budget is not None and not rebuild_queues:
+            return self.result.fail(
+                self.result.issue(
+                    "bounded_resume_rebuild_required",
+                    "Bounded scheduler resume requires candidate queue rebuild.",
+                    object_ref=repo_key,
+                )
+            )
         runtime_result = self.get_or_load(repo_key, refresh_homes=False)
         if not runtime_result.ok or runtime_result.value is None:
             return self.result.fail(runtime_result.issues)
@@ -386,12 +462,54 @@ class RepoRuntimeRegistry:
             return self.result.fail(normalized.issues)
         record = self._records[normalized.value]
         with record.lock:
-            controller = runtime_result.value.ark.pause_controller
-            if controller is not None:
+            runtime = runtime_result.value
+            controller = runtime.ark.pause_controller
+            schedule_service = runtime.ark.schedule_service
+            if controller is None:
+                return self.result.fail(
+                    self.result.issue(
+                        "pause_controller_missing",
+                        "ARK pause controller is not configured.",
+                        object_ref=record.repo_key,
+                    )
+                )
+            if schedule_service is None:
+                return self.result.fail(
+                    self.result.issue(
+                        "schedule_service_missing",
+                        "ARK schedule service is not configured.",
+                        object_ref=record.repo_key,
+                    )
+                )
+            if budget is not None:
+                admission = self._check_bounded_resume_admission(record)
+                if not admission.ok:
+                    return self.result.fail(admission.issues)
+            was_paused = bool(controller.is_paused(None)) if hasattr(controller, "is_paused") else False
+            try:
+                if budget is None:
+                    schedule_service.clear_run_budget()
+                else:
+                    schedule_service.configure_run_budget(budget)
+                if rebuild_queues:
+                    schedule_service.rebuild_candidate_queues(scope_id=None)
                 controller.resume(None)
-            if rebuild_queues:
-                self._rebuild_queues(record)
-            record.state = "active"
+            except Exception as exc:  # noqa: BLE001 - registry mutation boundary.
+                if was_paused:
+                    controller.pause(None)
+                else:
+                    controller.resume(None)
+                if hasattr(schedule_service, "clear_run_budget"):
+                    schedule_service.clear_run_budget(reason="resume_failed")
+                record.state = "paused" if _runtime_paused(runtime) else "active"
+                return self.result.fail(
+                    self.result.issue(
+                        "repo_runtime_resume_failed",
+                        f"Failed to resume repo runtime: {exc}",
+                        object_ref=record.repo_key,
+                    )
+                )
+            record.state = "paused" if _runtime_paused(runtime) else "active"
             return self.result.ok(self._status_for_record(record))
 
     def unload(self, repo_key: str, *, require_stable: bool = True) -> ServiceResult[RepoRuntimeStatusView]:
@@ -572,8 +690,15 @@ class RepoRuntimeRegistry:
     def _status_for_record(self, record: RepoRuntimeRecord) -> RepoRuntimeStatusView:
         runtime = record.runtime
         paused = _runtime_paused(runtime) if runtime is not None else None
+        run_control = None
         flow_count = step_count = agent_count = None
         if runtime is not None:
+            try:
+                schedule_service = runtime.ark.schedule_service
+                if schedule_service is not None and hasattr(schedule_service, "get_run_control_view"):
+                    run_control = schedule_service.get_run_control_view()
+            except Exception:  # noqa: BLE001 - status should be best-effort.
+                run_control = None
             try:
                 flow_count = len(runtime.list_flows())
             except Exception:  # noqa: BLE001 - status should be best-effort.
@@ -594,6 +719,7 @@ class RepoRuntimeRegistry:
             state=record.state,
             loaded=record.loaded,
             paused=paused,
+            run_control=run_control,
             flow_count=flow_count,
             step_count=step_count,
             agent_count=agent_count,

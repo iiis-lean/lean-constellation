@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
+from agent_runtime_kit.flow import SchedulerRunBudget
 from lean_constellation.app.scheduler_loop import run_registry_scheduler_loop
 from lean_constellation.app import LeanAppConfig, RepoRuntimeRegistry
 from lean_constellation.services.validation_snapshot import RepoReleaseStorageAuditView
@@ -177,6 +178,156 @@ def test_repo_runtime_registry_resume_rebuilds_and_marks_active(tmp_path) -> Non
     assert resumed.value.state == "active"
     assert loaded.value.ark.pause_controller is not None
     assert not loaded.value.ark.pause_controller.is_paused()
+
+
+def test_repo_runtime_registry_bounded_resume_is_atomic_and_visible_in_status(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    registry = RepoRuntimeRegistry(LeanAppConfig(
+        workspace_root=workspace,
+        materialize_agent_homes=False,
+        server_start_paused=True,
+    ))
+    loaded = registry.get_or_load("MainRepo")
+    assert loaded.ok and loaded.value is not None
+    controller = loaded.value.ark.pause_controller
+    scheduler = loaded.value.ark.schedule_service
+    events: list[str] = []
+    original_configure = scheduler.configure_run_budget
+    original_rebuild = scheduler.rebuild_candidate_queues
+    original_resume = controller.resume
+
+    def configure(budget):  # noqa: ANN001
+        assert controller.is_paused(None)
+        events.append("configure")
+        return original_configure(budget)
+
+    def rebuild(*, scope_id=None):  # noqa: ANN001
+        assert controller.is_paused(None)
+        events.append("rebuild")
+        return original_rebuild(scope_id=scope_id)
+
+    def resume(scope_id=None):  # noqa: ANN001
+        events.append("resume")
+        return original_resume(scope_id)
+
+    monkeypatch.setattr(scheduler, "configure_run_budget", configure)
+    monkeypatch.setattr(scheduler, "rebuild_candidate_queues", rebuild)
+    monkeypatch.setattr(controller, "resume", resume)
+
+    resumed = registry.resume(
+        "MainRepo",
+        budget=SchedulerRunBudget(flow_advances=1, step_starts=0),
+    )
+
+    assert resumed.ok and resumed.value is not None
+    assert events == ["configure", "rebuild", "resume"]
+    assert resumed.value.state == "active"
+    assert resumed.value.run_control is not None
+    assert resumed.value.run_control.mode == "bounded"
+    assert resumed.value.run_control.remaining_flow_advances == 1
+
+
+def test_repo_runtime_registry_bounded_resume_fails_closed_when_active_or_busy(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    registry = RepoRuntimeRegistry(LeanAppConfig(
+        workspace_root=workspace,
+        materialize_agent_homes=False,
+        server_start_paused=True,
+    ))
+    loaded = registry.get_or_load("MainRepo")
+    assert loaded.ok and loaded.value is not None
+    budget = SchedulerRunBudget(flow_advances=0, step_starts=1)
+    controller = loaded.value.ark.pause_controller
+    scheduler = loaded.value.ark.schedule_service
+    controller.resume(None)
+
+    active = registry.resume("MainRepo", budget=budget)
+
+    assert not active.ok
+    assert active.issues[0].kind == "bounded_resume_requires_global_pause"
+    assert scheduler.get_run_control_view().requested_step_starts is None
+    controller.pause(None)
+    monkeypatch.setattr(loaded.value.ark.step_service, "list_running_steps", lambda: ["step-1"])
+
+    busy = registry.resume("MainRepo", budget=budget)
+
+    assert not busy.ok
+    assert busy.issues[0].kind == "bounded_resume_runtime_busy"
+    assert scheduler.get_run_control_view().requested_step_starts is None
+    assert controller.is_paused(None)
+
+
+def test_registry_scheduler_loop_syncs_auto_paused_repo_state(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    registry = RepoRuntimeRegistry(LeanAppConfig(
+        workspace_root=workspace,
+        materialize_agent_homes=False,
+        server_start_paused=True,
+    ))
+    loaded = registry.get_or_load("MainRepo")
+    assert loaded.ok and loaded.value is not None
+    resumed = registry.resume(
+        "MainRepo",
+        budget=SchedulerRunBudget(flow_advances=0, step_starts=1),
+    )
+    assert resumed.ok
+
+    async def run_loop_briefly() -> None:
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(
+                partial(
+                    run_registry_scheduler_loop,
+                    registry,
+                    tick_interval_s=0.001,
+                    idle_interval_s=0.001,
+                    error_interval_s=0.001,
+                )
+            )
+            for _ in range(50):
+                status = registry.get_status("MainRepo")
+                if status.ok and status.value is not None and status.value.state == "paused":
+                    break
+                await anyio.sleep(0.001)
+            task_group.cancel_scope.cancel()
+
+    anyio.run(run_loop_briefly)
+
+    status = registry.get_status("MainRepo")
+    assert status.ok and status.value is not None
+    assert status.value.state == "paused"
+    assert status.value.paused is True
+    assert status.value.run_control is not None
+    assert status.value.run_control.pause_reason == "no_runnable_candidate"
+
+
+def test_repo_runtime_registry_reload_does_not_persist_bounded_lease(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    registry = RepoRuntimeRegistry(LeanAppConfig(
+        workspace_root=workspace,
+        materialize_agent_homes=False,
+        server_start_paused=True,
+    ))
+    loaded = registry.get_or_load("MainRepo")
+    assert loaded.ok and loaded.value is not None
+    assert registry.resume(
+        "MainRepo",
+        budget=SchedulerRunBudget(flow_advances=2, step_starts=1),
+    ).ok
+    assert registry.pause("MainRepo").ok
+    assert registry.unload("MainRepo").ok
+
+    reloaded = registry.get_or_load("MainRepo")
+
+    assert reloaded.ok and reloaded.value is not None
+    assert reloaded.value.ark.pause_controller.is_paused(None)
+    view = reloaded.value.ark.schedule_service.get_run_control_view()
+    assert view.mode == "paused"
+    assert view.requested_flow_advances is None
+    assert view.remaining_step_starts is None
 
 
 def test_repo_runtime_registry_unload_requires_stable_runtime(tmp_path, monkeypatch) -> None:

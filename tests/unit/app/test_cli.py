@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from urllib import error
 
+import pytest
+
 from lean_constellation.app.cli import build_parser, main
 
 
@@ -145,6 +147,82 @@ def test_cli_start_flow_uses_admin_http(tmp_path, capsys, monkeypatch) -> None:
             },
         )
     ]
+
+
+def test_cli_resume_sends_exact_bounded_and_empty_payloads(tmp_path, capsys, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'workspace_root = "{tmp_path / "workspace"}"\nadmin_http_base_url = "http://admin.test"\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_request_json(method, url, payload=None):  # noqa: ANN001
+        calls.append((method, url, payload))
+        return {"ok": True, "value": {"paused": False}}
+
+    monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
+
+    bounded_exit = main([
+        "--config",
+        str(config_path),
+        "resume",
+        "--repo-key",
+        "Repo",
+        "--flow-advances",
+        "1",
+        "--step-starts",
+        "0",
+    ])
+    empty_exit = main([
+        "--config",
+        str(config_path),
+        "resume",
+        "--repo-key",
+        "Repo",
+    ])
+    capsys.readouterr()
+
+    assert bounded_exit == 0
+    assert empty_exit == 0
+    assert calls == [
+        (
+            "POST",
+            "http://admin.test/admin/repos/Repo/runtime/resume",
+            {"budget": {"flow_advances": 1, "step_starts": 0}},
+        ),
+        (
+            "POST",
+            "http://admin.test/admin/repos/Repo/runtime/resume",
+            {},
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--flow-advances", "1"],
+        ["--flow-advances", "0", "--step-starts", "0"],
+        ["--flow-advances", "-1", "--step-starts", "0"],
+        ["--scope-id", "repo:Repo", "--flow-advances", "1", "--step-starts", "0"],
+    ],
+)
+def test_cli_resume_rejects_invalid_budget_combinations(tmp_path, arguments) -> None:  # noqa: ANN001
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(f'workspace_root = "{tmp_path / "workspace"}"\n', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "--config",
+            str(config_path),
+            "resume",
+            "--repo-key",
+            "Repo",
+            *arguments,
+        ])
+
+    assert exc_info.value.code == 2
 
 
 def test_cli_agent_turn_uses_admin_http_query(tmp_path, capsys, monkeypatch) -> None:

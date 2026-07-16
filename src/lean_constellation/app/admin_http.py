@@ -28,6 +28,8 @@ from lean_constellation.app.admin_api import (
     RepoRunRequestInput,
     RepoRunStartInput,
     RequirementResumeInput,
+    RuntimePauseView,
+    RuntimeResumeInput,
     SnapshotCreateInput,
     SnapshotListInput,
     SnapshotRestoreInput,
@@ -124,11 +126,18 @@ def create_workspace_admin_http_routes(
         return _service_result_response(registry.pause(request.path_params["repo_key"]))
 
     async def repo_resume(request: Request) -> JSONResponse:
-        data = await _json_or_empty(request)
+        try:
+            data = await _json_or_empty(request)
+            input_model = RuntimeResumeInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        if input_model.scope_id is not None:
+            return _request_validation_response("Workspace repo resume is global and cannot specify scope_id.")
         return _service_result_response(
             registry.resume(
                 request.path_params["repo_key"],
-                rebuild_queues=not _body_bool(data.get("skip_rebuild")),
+                budget=input_model.budget,
+                rebuild_queues=not input_model.skip_rebuild,
             )
         )
 
@@ -264,24 +273,78 @@ def create_workspace_admin_http_routes(
             return _service_result_response(record)
         with record.value.lock:
             result = admin.pause_runtime(scope_id=data.get("scope_id"))
-            if result.ok:
-                registry.pause(request.path_params["repo_key"])
-        return _service_result_response(result)
+            if not result.ok:
+                return _service_result_response(result)
+            paused_record = registry.pause(request.path_params["repo_key"])
+            if not paused_record.ok:
+                return _service_result_response(paused_record)
+            controller = loaded.value.ark.pause_controller
+            schedule_service = loaded.value.ark.schedule_service
+            scope_id = data.get("scope_id")
+            paused = bool(controller.is_paused(scope_id)) if controller is not None else False
+            run_control = (
+                schedule_service.get_run_control_view()
+                if schedule_service is not None and hasattr(schedule_service, "get_run_control_view")
+                else None
+            )
+            return _service_result_response(
+                loaded.value.foundation.ok(
+                    RuntimePauseView(
+                        paused=paused,
+                        scope_id=scope_id,
+                        run_control=run_control,
+                        summary="Paused runtime scheduling.",
+                    )
+                )
+            )
 
     async def repo_runtime_resume(request: Request) -> JSONResponse:
+        try:
+            data = await _json_or_empty(request)
+            input_model = RuntimeResumeInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
         loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
         if not loaded.ok or loaded.value is None:
             return _service_result_response(loaded)
-        data = await _json_or_empty(request)
         admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
         record = registry.discover_repo(request.path_params["repo_key"])
         if not record.ok or record.value is None:
             return _service_result_response(record)
         with record.value.lock:
-            result = admin.resume_runtime(scope_id=data.get("scope_id"))
-            if result.ok:
-                registry.resume(request.path_params["repo_key"], rebuild_queues=False)
-        return _service_result_response(result)
+            if input_model.scope_id is None:
+                resumed = registry.resume(
+                    request.path_params["repo_key"],
+                    budget=input_model.budget,
+                    rebuild_queues=not input_model.skip_rebuild,
+                )
+            else:
+                scoped = admin.resume_runtime(input_model)
+                if not scoped.ok:
+                    return _service_result_response(scoped)
+                resumed = registry.resume(
+                    request.path_params["repo_key"],
+                    rebuild_queues=False,
+                )
+            if not resumed.ok:
+                return _service_result_response(resumed)
+            controller = loaded.value.ark.pause_controller
+            schedule_service = loaded.value.ark.schedule_service
+            paused = bool(controller.is_paused(input_model.scope_id)) if controller is not None else False
+            run_control = (
+                schedule_service.get_run_control_view()
+                if schedule_service is not None and hasattr(schedule_service, "get_run_control_view")
+                else None
+            )
+            result = loaded.value.foundation.ok(
+                RuntimePauseView(
+                    paused=paused,
+                    scope_id=input_model.scope_id,
+                    run_control=run_control,
+                    summary="Resumed runtime scheduling.",
+                )
+            )
+            return _service_result_response(result)
 
     def repo_admin(request: Request) -> ServiceResult[LeanAdminApi]:
         loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)

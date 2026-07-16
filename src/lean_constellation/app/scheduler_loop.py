@@ -80,6 +80,8 @@ async def run_registry_scheduler_loop(
                         if schedule_service is None:
                             raise RuntimeError("ARK schedule_service is not configured.")
                         tick = schedule_service.schedule_ready()
+                        if bool(getattr(tick, "auto_paused", False)):
+                            record.state = "paused"
                     repo_tick_count = dict(loop_state.get("repo_tick_count", {}) or {})
                     repo_tick_count[record.repo_key] = int(repo_tick_count.get(record.repo_key, 0)) + 1
                     loop_state["repo_tick_count"] = repo_tick_count

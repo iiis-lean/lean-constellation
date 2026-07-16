@@ -63,6 +63,92 @@ def test_production_app_server_exposes_workspace_registry_admin_and_repo_mcp(tmp
     assert app.state.lean_constellation_registry is registry
 
 
+def test_production_resume_routes_expose_typed_bounded_control_and_empty_body_compatibility(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    config = LeanAppConfig(
+        workspace_root=workspace,
+        scheduler_enabled=False,
+        materialize_agent_homes=False,
+        server_start_paused=True,
+        test_control_enabled=False,
+    )
+    app_result = create_production_app_server(config)
+    assert app_result.ok and app_result.value is not None
+
+    with TestClient(app_result.value) as client:
+        bounded = client.post(
+            "/admin/repos/MainRepo/runtime/resume",
+            json={"budget": {"flow_advances": 1, "step_starts": 0}},
+        )
+        status = client.get("/admin/repos/MainRepo/runtime/status")
+        paused = client.post("/admin/repos/MainRepo/runtime/pause", json={})
+        unbounded = client.post("/admin/repos/MainRepo/runtime/resume", json={})
+        active_bounded = client.post(
+            "/admin/repos/MainRepo/runtime/resume",
+            json={"budget": {"flow_advances": 0, "step_starts": 1}},
+        )
+        client.post("/admin/repos/MainRepo/runtime/pause", json={})
+        workspace_bounded = client.post(
+            "/admin/workspace/repos/MainRepo/resume",
+            json={"budget": {"flow_advances": 0, "step_starts": 1}},
+        )
+        scoped_bounded = client.post(
+            "/admin/repos/MainRepo/runtime/resume",
+            json={
+                "scope_id": "repo:MainRepo",
+                "budget": {"flow_advances": 1, "step_starts": 0},
+            },
+        )
+        zero_budget = client.post(
+            "/admin/repos/MainRepo/runtime/resume",
+            json={"budget": {"flow_advances": 0, "step_starts": 0}},
+        )
+
+    assert bounded.status_code == 200
+    assert bounded.json()["value"]["paused"] is False
+    assert bounded.json()["value"]["run_control"]["mode"] == "bounded"
+    assert status.status_code == 200
+    assert status.json()["value"]["test_control_enabled"] is False
+    assert status.json()["value"]["run_control"]["remaining_flow_advances"] == 1
+    assert paused.status_code == 200
+    assert paused.json()["value"]["run_control"]["pause_reason"] == "manual_pause"
+    assert unbounded.status_code == 200
+    assert unbounded.json()["value"]["run_control"]["mode"] == "unbounded"
+    assert active_bounded.status_code == 400
+    assert active_bounded.json()["issues"][0]["kind"] == "bounded_resume_requires_global_pause"
+    assert workspace_bounded.status_code == 200
+    assert workspace_bounded.json()["value"]["run_control"]["mode"] == "bounded"
+    assert scoped_bounded.status_code == 422
+    assert "repo-global" in scoped_bounded.json()["issues"][0]["message"]
+    assert zero_budget.status_code == 422
+    assert "at least one action" in zero_budget.json()["issues"][0]["message"]
+
+
+def test_invalid_bounded_resume_fails_before_repo_runtime_load(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(LeanAppConfig(
+        workspace_root=workspace,
+        scheduler_enabled=False,
+        materialize_agent_homes=False,
+    ))
+    assert app_result.ok and app_result.value is not None
+    registry = app_result.value.state.lean_constellation_registry
+
+    with TestClient(app_result.value) as client:
+        response = client.post(
+            "/admin/repos/MainRepo/runtime/resume",
+            json={
+                "scope_id": "repo:MainRepo",
+                "budget": {"flow_advances": 1, "step_starts": 0},
+            },
+        )
+
+    assert response.status_code == 422
+    assert registry.try_get_loaded("MainRepo") is None
+
+
 def test_repo_lifecycle_route_rejects_cross_repo_body_identity(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     repo_a = _make_repo(workspace, "RepoA")

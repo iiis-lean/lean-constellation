@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from agent_runtime_kit.agent.models import to_jsonable
+from agent_runtime_kit.flow import SchedulerRunBudget, SchedulerRunControlView
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus
 from agent_runtime_kit.flow.standard_steps import AgentStepState
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.app.external_takeover import (
     ExternalTakeoverCompleteInput,
@@ -75,12 +76,28 @@ class RepoRunStatusView(StrictModel):
 class RuntimePauseView(StrictModel):
     paused: bool
     scope_id: str | None = None
+    run_control: SchedulerRunControlView | None = None
     summary: str
+
+
+class RuntimeResumeInput(StrictModel):
+    scope_id: str | None = None
+    budget: SchedulerRunBudget | None = None
+    skip_rebuild: bool = False
+
+    @model_validator(mode="after")
+    def validate_bounded_resume(self) -> "RuntimeResumeInput":
+        if self.budget is not None and self.scope_id is not None:
+            raise ValueError("bounded scheduler resume is repo-global and cannot specify scope_id")
+        if self.budget is not None and self.skip_rebuild:
+            raise ValueError("bounded scheduler resume requires candidate queue rebuild")
+        return self
 
 
 class RuntimeStatusView(StrictModel):
     paused: bool
     test_control_enabled: bool
+    run_control: SchedulerRunControlView | None = None
     flow_candidate_queue: list[str] = Field(default_factory=list)
     step_candidate_queue: list[str] = Field(default_factory=list)
     queued_flow_ids: list[str] = Field(default_factory=list)
@@ -1197,20 +1214,73 @@ class LeanAdminApi:
         if controller is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("pause_controller_missing", "ARK pause controller is not configured."))
         controller.pause(scope_id)
+        schedule_service = self.runtime.ark.schedule_service
+        if scope_id is None and schedule_service is not None and hasattr(schedule_service, "clear_run_budget"):
+            schedule_service.clear_run_budget(reason="manual_pause")
         return self.runtime.foundation.ok(
-            RuntimePauseView(paused=True, scope_id=scope_id, summary="Paused runtime scheduling.")
+            RuntimePauseView(
+                paused=True,
+                scope_id=scope_id,
+                run_control=self._run_control_view(),
+                summary="Paused runtime scheduling.",
+            )
         )
 
-    def resume_runtime(self, *, scope_id: str | None = None) -> ServiceResult[RuntimePauseView]:
+    def resume_runtime(
+        self,
+        input_model: RuntimeResumeInput | None = None,
+        *,
+        scope_id: str | None = None,
+    ) -> ServiceResult[RuntimePauseView]:
+        if input_model is not None and scope_id is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "runtime_resume_input_conflict",
+                    "Provide either RuntimeResumeInput or scope_id, not both.",
+                )
+            )
+        request = input_model or RuntimeResumeInput(scope_id=scope_id)
         controller = self.runtime.ark.pause_controller
         if controller is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("pause_controller_missing", "ARK pause controller is not configured."))
-        controller.resume(scope_id)
         schedule_service = self.runtime.ark.schedule_service
-        if schedule_service is not None and hasattr(schedule_service, "rebuild_candidate_queues"):
-            schedule_service.rebuild_candidate_queues(scope_id=scope_id)
+        if schedule_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("schedule_service_missing", "ARK schedule service is not configured.")
+            )
+        if request.budget is not None:
+            admission = self._validate_bounded_resume_admission()
+            if not admission.ok:
+                return self.runtime.foundation.fail(admission.issues)
+        was_paused = bool(controller.is_paused(request.scope_id)) if hasattr(controller, "is_paused") else False
+        try:
+            if request.budget is None:
+                schedule_service.clear_run_budget()
+            else:
+                schedule_service.configure_run_budget(request.budget)
+            if not request.skip_rebuild:
+                schedule_service.rebuild_candidate_queues(scope_id=request.scope_id)
+            controller.resume(request.scope_id)
+        except Exception as exc:  # noqa: BLE001 - admin mutation boundary.
+            if was_paused:
+                controller.pause(request.scope_id)
+            else:
+                controller.resume(request.scope_id)
+            if hasattr(schedule_service, "clear_run_budget"):
+                schedule_service.clear_run_budget(reason="resume_failed")
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "runtime_resume_failed",
+                    f"Failed to resume runtime scheduling: {exc}",
+                )
+            )
         return self.runtime.foundation.ok(
-            RuntimePauseView(paused=False, scope_id=scope_id, summary="Resumed runtime scheduling.")
+            RuntimePauseView(
+                paused=False,
+                scope_id=request.scope_id,
+                run_control=self._run_control_view(),
+                summary="Resumed runtime scheduling.",
+            )
         )
 
     def get_runtime_status(self) -> ServiceResult[RuntimeStatusView]:
@@ -1223,6 +1293,7 @@ class LeanAdminApi:
             RuntimeStatusView(
                 paused=paused,
                 test_control_enabled=self.runtime.test_control_enabled,
+                run_control=self._run_control_view(),
                 flow_candidate_queue=queues.flow_candidate_queue,
                 step_candidate_queue=queues.step_candidate_queue,
                 queued_flow_ids=queues.queued_flow_ids,
@@ -1233,6 +1304,55 @@ class LeanAdminApi:
                 summary="Loaded runtime status.",
             )
         )
+
+    def _validate_bounded_resume_admission(self) -> ServiceResult[None]:
+        controller = self.runtime.ark.pause_controller
+        if controller is None or not hasattr(controller, "is_paused") or not controller.is_paused(None):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "bounded_resume_requires_global_pause",
+                    "Bounded scheduler resume requires a globally paused runtime.",
+                )
+            )
+        try:
+            agent_service = self.runtime.ark.agent_service
+            step_service = self.runtime.ark.step_service
+            schedule_service = self.runtime.ark.schedule_service
+            if agent_service is None or not hasattr(agent_service, "list_running_agents"):
+                raise RuntimeError("agent runtime inspection is unavailable")
+            if step_service is None or not hasattr(step_service, "list_running_steps"):
+                raise RuntimeError("step runtime inspection is unavailable")
+            if schedule_service is None or not hasattr(schedule_service, "active_flow_advances"):
+                raise RuntimeError("scheduler runtime inspection is unavailable")
+            running_agents = list(agent_service.list_running_agents())
+            running_steps = list(step_service.list_running_steps())
+            active_advances = list(schedule_service.active_flow_advances)
+        except Exception as exc:  # noqa: BLE001 - admission must fail closed.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "bounded_resume_inspection_failed",
+                    f"Failed to inspect bounded resume admission: {exc}",
+                )
+            )
+        if running_agents or running_steps or active_advances:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "bounded_resume_runtime_busy",
+                    "Bounded scheduler resume requires no running Agent, Step, or Flow advance.",
+                    details={
+                        "running_agents": len(running_agents),
+                        "running_steps": len(running_steps),
+                        "active_flow_advances": len(active_advances),
+                    },
+                )
+            )
+        return self.runtime.foundation.ok(None)
+
+    def _run_control_view(self) -> SchedulerRunControlView | None:
+        schedule_service = self.runtime.ark.schedule_service
+        if schedule_service is None or not hasattr(schedule_service, "get_run_control_view"):
+            return None
+        return schedule_service.get_run_control_view()
 
     def list_flow_tree(
         self,
