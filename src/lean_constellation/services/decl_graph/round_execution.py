@@ -390,9 +390,23 @@ class DeclRoundExecutionComponent:
                 )
                 self._require(committed)
                 committed_names.append(decl_name)
-            projection = self.runtime.lean_projection.refresh_node_projection(repo_root, node_path=node_path)
-            self._require(projection)
-            projection_summary = projection.value.summary if projection.value is not None else None
+            public_decls = self.graph.list_content_public_decls(repo_root, node_path=node_path)
+            self._require(public_decls)
+            deferred_public_names = sorted(
+                decl.ref.name
+                for decl in public_decls.value or []
+                if not decl.ready and not decl.stale
+            )
+            if deferred_public_names:
+                projection_summary = (
+                    "Deferred node interface projection until public declarations satisfy the repo proof policy: "
+                    + ", ".join(deferred_public_names)
+                    + "."
+                )
+            else:
+                projection = self.runtime.lean_projection.refresh_node_projection(repo_root, node_path=node_path)
+                self._require(projection)
+                projection_summary = projection.value.summary if projection.value is not None else None
         current_round = self.graph.get_round(repo_root, node_path=node_path, round_id=round_id)
         self._require(current_round)
         assert current_round.value is not None

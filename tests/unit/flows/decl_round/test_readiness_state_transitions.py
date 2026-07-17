@@ -46,6 +46,7 @@ def test_declared_round_skips_proof_stages(
         repo_root,
         kind=kind,
         end_after_state=DeclState.DECLARED,
+        public=kind == "theorem",
     )
     flow_id = start_decl_round_flow(
         runtime,
@@ -116,6 +117,9 @@ def test_declared_round_skips_proof_stages(
     assert flow.result.outcome == "completed"
     assert flow.result.completed_stages == ["statement_nl", "statement_formal"]
     assert flow.result.skipped_stages == skipped
+    if kind == "theorem":
+        interfaces = repo_root / "Repo/Main/Topic/Core/Interfaces.lean"
+        assert not interfaces.exists() or "MainResult" not in interfaces.read_text(encoding="utf-8")
     revision = lean_runtime.decl_graph.get_decl_revision(
         repo_root,
         node_path=NODE_PATH,
