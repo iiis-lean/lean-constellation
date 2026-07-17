@@ -18,6 +18,8 @@ from lean_constellation.services.node.contract_fields import ContractMaterialRef
 from lean_constellation.services.validation_snapshot import (
     CandidateReleaseGateView,
     PreparedRepoReleaseView,
+    RepoCheckpointKind,
+    RepoCheckpointSnapshotManifest,
     ValidationSnapshotService,
 )
 from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo
@@ -600,6 +602,30 @@ def test_audit_finds_and_cleanup_removes_unreachable_release(tmp_path: Path) -> 
     assert runtime.validation_snapshot.audit_repo_release_storage(tmp_path).value.passed
 
 
+def test_release_audit_ignores_non_release_checkpoints(tmp_path: Path) -> None:
+    runtime, _, _ = _prepared_repo(tmp_path)
+    checkpoint_root = runtime.validation_snapshot.snapshot_restore._snapshot_root(tmp_path)
+    ordinary = checkpoint_root / "repo_cp_ordinary"
+    ordinary.mkdir(parents=True)
+    assert runtime.foundation.store.write_json_atomic(
+        ordinary / "snapshot.json",
+        RepoCheckpointSnapshotManifest(
+            snapshot_id=ordinary.name,
+            checkpoint_kind=RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
+            created_at="2026-07-17T00:00:00Z",
+            repo_root=str(tmp_path),
+            ark_runtime_snapshot_id=None,
+            files_manifest_relpath="files_manifest.json",
+            summary="Ordinary automatic checkpoint.",
+        ),
+    ).ok
+
+    audit = runtime.validation_snapshot.audit_repo_release_storage(tmp_path)
+
+    assert audit.ok and audit.value is not None and audit.value.passed
+    assert audit.value.orphan_checkpoint_ids == []
+
+
 def test_digest_guarded_bulk_cleanup_only_removes_unreferenced_checkpoint_and_staging(
     tmp_path: Path,
 ) -> None:
@@ -618,6 +644,18 @@ def test_digest_guarded_bulk_cleanup_only_removes_unreferenced_checkpoint_and_st
     checkpoint_root = runtime.validation_snapshot.snapshot_restore._snapshot_root(tmp_path)
     orphan_checkpoint = checkpoint_root / "checkpoint_unreferenced"
     orphan_checkpoint.mkdir(parents=True)
+    assert runtime.foundation.store.write_json_atomic(
+        orphan_checkpoint / "snapshot.json",
+        RepoCheckpointSnapshotManifest(
+            snapshot_id=orphan_checkpoint.name,
+            checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
+            created_at="2026-07-17T00:00:00Z",
+            repo_root=str(tmp_path),
+            ark_runtime_snapshot_id=None,
+            files_manifest_relpath="files_manifest.json",
+            summary="Unreferenced release checkpoint.",
+        ),
+    ).ok
     staging = checkpoint_root / ".staging" / "interrupted"
     staging.mkdir(parents=True)
 

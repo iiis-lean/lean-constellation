@@ -238,6 +238,8 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
         release = publish_native_provider_release(loaded.value, repo_root, release_id="release-r1")
 
         listed = client.get("/admin/repos/Provider/releases")
+        audited = client.get("/admin/repos/Provider/releases/audit")
+        preview_validation = client.post("/admin/repos/Provider/releases/preview", json={})
         shown = client.get(f"/admin/repos/Provider/releases/{release.release_id}")
         unsafe = client.get("/admin/repos/Provider/releases/unsafe!release")
         rejected = client.post(f"/admin/repos/Provider/releases/{release.release_id}/restore", json={
@@ -246,6 +248,11 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
 
     assert listed.status_code == 200
     assert [item["release"]["release_id"] for item in listed.json()["value"]["releases"]] == ["release-r1"]
+    assert audited.status_code == 200
+    assert audited.json()["ok"] is True
+    assert audited.json()["value"]["orphan_checkpoint_ids"] == []
+    assert preview_validation.status_code == 422
+    assert preview_validation.json()["issues"][0]["kind"] == "request_validation_failed"
     assert shown.status_code == 200
     assert shown.json()["value"]["release"]["release_id"] == "release-r1"
     assert unsafe.status_code == 422

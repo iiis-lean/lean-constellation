@@ -742,6 +742,8 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/source-index/update", repo_start_source_index, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/root-interfaces/prepare", repo_start_root_interfaces, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/releases", repo_releases, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/releases/preview", repo_release_preview, methods=["POST"]),
+        Route("/admin/repos/{repo_key:str}/releases/audit", repo_release_audit, methods=["GET"]),
         Route(
             "/admin/repos/{repo_key:str}/releases/cleanup-orphans",
             repo_release_cleanup_orphans,

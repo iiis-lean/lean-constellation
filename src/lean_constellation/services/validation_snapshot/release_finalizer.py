@@ -28,6 +28,7 @@ from lean_constellation.services.foundation import GateReport, MutationSummaryVi
 from lean_constellation.services.foundation import FoundationContext
 from lean_constellation.services.node import ContractVersionStatus, NodeKind, NodeLifecycle
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
+    RepoCheckpointKind,
     RepoCheckpointSnapshotView,
     SnapshotRestoreView,
 )
@@ -984,11 +985,16 @@ class RepoReleaseFinalizerComponent:
                     ):
                         issues.append("release_checkpoint_truth_mismatch")
         all_release_ids = {item.release.release_id for item in releases.value}
+        release_checkpoints = (
+            self.runtime.validation_snapshot.snapshot_restore.list_repo_checkpoint_snapshots(
+                repo_root,
+                checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
+            )
+        )
+        if not release_checkpoints.ok or release_checkpoints.value is None:
+            return self.runtime.foundation.fail(release_checkpoints.issues)
+        checkpoint_ids = {item.snapshot_id for item in release_checkpoints.value}
         checkpoint_root = self.runtime.validation_snapshot.snapshot_restore._snapshot_root(repo_root)
-        checkpoint_ids = {
-            path.name for path in checkpoint_root.iterdir()
-            if path.is_dir() and path.name != ".staging"
-        } if checkpoint_root.exists() else set()
         referenced_checkpoints = {item.release.repo_checkpoint_id for item in releases.value}
         staging_root = checkpoint_root / ".staging"
         staging = [str(path) for path in sorted(staging_root.iterdir())] if staging_root.exists() else []
