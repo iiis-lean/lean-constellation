@@ -18,6 +18,7 @@ from pydantic import Field
 
 from lean_constellation.domain.repo_run import RepoRunSpec
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
+from lean_constellation.flows.common.checkpoint_policy import record_checkpoint_skip_summary, repo_flow_boundary_checkpoints_enabled
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.repo_lifecycle.steps import (
     ApplyRepoFormatChoiceStep,
@@ -685,6 +686,12 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
             return
         result = ctx.step.result
         if not isinstance(result, PrepareCoordinatorDispatchStepResult) or result.outcome != "prepared":
+            return
+        if not repo_flow_boundary_checkpoints_enabled(ctx.app):
+            record_checkpoint_skip_summary(
+                ctx,
+                "Before-Coordinator checkpoint skipped because repo flow-boundary checkpoints are disabled.",
+            )
             return
         input_model = _require_native_preparation_input(self.input)
         repo_root = _native_repo_root(input_model)

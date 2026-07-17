@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_runtime_kit.flow.models import FlowStatus
 
+from lean_constellation.app.config import AutomaticCheckpointAppConfig
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
@@ -95,6 +96,7 @@ class FakeArkSnapshotProvider:
 
 def test_requirement_bootstrap_terminal_snapshot(tmp_path: Path) -> None:
     runtime, repo_root, stability, ark_snapshot = _runtime(tmp_path)
+    runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(repo_flow_boundaries_enabled=False)
     _write_preparation_input(runtime.app, repo_root)
     flow_id = _start_requirement_bootstrap(runtime, repo_root)
 
@@ -174,6 +176,32 @@ def test_coordinator_requirement_waiting_snapshot(tmp_path: Path) -> None:
     assert coordinator_step.result.snapshot_id is not None
     assert stability.calls == [(RepoCheckpointKind.COORDINATOR_REQUIREMENT_WAITING, [])]
     assert ark_snapshot.created == [(["repo:Repo"], "coordinator requirement waiting for Repo")]
+
+
+def test_coordinator_requirement_waiting_snapshot_is_skipped_when_repo_boundary_group_is_disabled(tmp_path: Path) -> None:
+    runtime, repo_root, stability, ark_snapshot = _runtime(tmp_path)
+    runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(repo_flow_boundaries_enabled=False)
+    flow_id = _start_coordinator(runtime, repo_root)
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoRequirementSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_requirement",
+            tool_name="submit_repo_requirement",
+            requirement_name="need_provider",
+            target_repo="ProviderRepo",
+            reason="A supporting provider repo is required.",
+            summary="Need provider repo.",
+        )
+    )
+
+    coordinator_step_id = _advance_and_run(runtime, flow_id)
+
+    coordinator_step = runtime.flow_service.get_step(coordinator_step_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "waiting_requirement"
+    assert coordinator_step.result.snapshot_id is None
+    assert "checkpoint skipped" in coordinator_step.result.summary
+    assert stability.calls == []
+    assert ark_snapshot.created == []
 
 
 def test_coordinator_requirement_waiting_checkpoint_policy() -> None:

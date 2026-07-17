@@ -584,10 +584,13 @@ class RepoRuntimeRegistry:
                 max_concurrent_steps=self.config.max_concurrent_steps,
                 start_paused=start_paused,
                 test_control_enabled=self.config.test_control_enabled,
+                automatic_checkpoints=self.config.automatic_checkpoints,
+                agent_trace_reports=self.config.agent_trace_reports,
             )
             record.runtime = runtime
             self._rebuild_queues(record)
             self._audit_release_state(record)
+            self._audit_content_checkpoint_parallelism(record)
             if self.config.materialize_agent_homes:
                 homes = self._materialize_homes(record)
                 if not homes.ok:
@@ -641,6 +644,33 @@ class RepoRuntimeRegistry:
         schedule_service = runtime.ark.schedule_service
         if schedule_service is not None and hasattr(schedule_service, "rebuild_candidate_queues"):
             schedule_service.rebuild_candidate_queues()
+
+    def _audit_content_checkpoint_parallelism(self, record: RepoRuntimeRecord) -> None:
+        if not self.config.automatic_checkpoints.content_task_progress_enabled:
+            return
+        runtime = record.runtime
+        if runtime is None:
+            return
+        parallelism_values: set[int] = set()
+        try:
+            flows = runtime.list_flows()
+        except Exception as exc:  # noqa: BLE001 - startup warning audit is advisory.
+            record.startup_warnings.append(f"content_checkpoint_startup_audit_failed: {exc}")
+            return
+        for flow in flows:
+            input_model = getattr(flow, "input", None)
+            run_context = getattr(input_model, "run_context", None)
+            run_spec = getattr(run_context, "run_spec", None)
+            value = getattr(run_spec, "max_parallel_content_node_tasks", None)
+            if value is None and getattr(flow, "flow_type", None) == "content_node_task":
+                value = getattr(input_model, "max_parallel_content_node_tasks", None)
+            if value is not None and int(value) != 1:
+                parallelism_values.add(int(value))
+        for value in sorted(parallelism_values):
+            record.startup_warnings.append(
+                "content_task_progress_checkpoint_skipped: "
+                f"max_parallel_content_node_tasks={value}; internal checkpoints require 1"
+            )
 
     def _audit_release_state(self, record: RepoRuntimeRecord) -> None:
         """Run the startup release audit without repairing or deleting truth."""

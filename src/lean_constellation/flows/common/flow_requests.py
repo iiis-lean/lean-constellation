@@ -55,12 +55,14 @@ def build_content_node_task_request(
     repo_path: str | None = None,
     contract_version: int | None = None,
     task_mode: str = "run",
+    max_parallel_content_node_tasks: int = 1,
 ) -> FlowRequest:
     params = {
         "repo_key": repo_key,
         "node_path": node_path,
         "contract_version": contract_version,
         "task_mode": task_mode,
+        "max_parallel_content_node_tasks": max_parallel_content_node_tasks,
     }
     if repo_path is not None:
         params["repo_path"] = repo_path

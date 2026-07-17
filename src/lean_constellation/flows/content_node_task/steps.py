@@ -176,6 +176,27 @@ class ContentTaskAdmissionStepResult(LeanRenderableStepResult):
         }
 
 
+class ContentProgressCheckpointStepResult(LeanRenderableStepResult):
+    result_type: Literal["content_progress_checkpoint"] = "content_progress_checkpoint"
+    outcome: Literal["checkpoint_ready", "blocked"]
+    checkpoint_kind: Literal[
+        "after_content_preparation_terminal",
+        "after_content_decl_round_terminal",
+    ]
+    node_path: str
+    task_mode: str
+    child_kind: str
+    child_flow_id: str
+    child_outcome: Literal["completed", "failed"]
+    decl_round_count: int | None = None
+    callback_summary: str | None = None
+    snapshot_id: str | None = None
+    error_code: str | None = None
+
+    def agent_fields(self) -> dict[str, object]:
+        return self.model_dump(mode="json")
+
+
 class EnsureDeclStageAgentsStepResult(LeanRenderableStepResult):
     result_type: Literal["ensure_decl_stage_agents"] = "ensure_decl_stage_agents"
     outcome: Literal["ready", "failed"]
@@ -249,6 +270,43 @@ class ContentTaskAdmissionStep(BaseStep):
                 node_path=input_model.node_path,
                 contract_version=input_model.contract_version,
                 summary=gate.value.summary or "Content node task admission accepted.",
+            )
+        )
+
+
+class ContentProgressCheckpointStep(BaseStep):
+    step_type: ClassVar[str] = "content_progress_checkpoint_step"
+    State: ClassVar[type[BaseStepState]] = BaseStepState
+    Result: ClassVar[type[BaseStepResult]] = ContentProgressCheckpointStepResult
+    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
+        "content_progress_checkpoint": ContentProgressCheckpointStepResult,
+    }
+
+    checkpoint_kind: Literal[
+        "after_content_preparation_terminal",
+        "after_content_decl_round_terminal",
+    ]
+    node_path: str
+    task_mode: str
+    child_kind: str
+    child_flow_id: str
+    child_outcome: Literal["completed", "failed"]
+    decl_round_count: int | None = None
+    callback_summary: str | None = None
+
+    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
+        return ctx.complete_step(
+            ContentProgressCheckpointStepResult(
+                outcome="checkpoint_ready",
+                checkpoint_kind=self.checkpoint_kind,
+                node_path=self.node_path,
+                task_mode=self.task_mode,
+                child_kind=self.child_kind,
+                child_flow_id=self.child_flow_id,
+                child_outcome=self.child_outcome,
+                decl_round_count=self.decl_round_count,
+                callback_summary=self.callback_summary,
+                summary="Content task progress checkpoint is ready for stable-hook materialization.",
             )
         )
 
@@ -361,5 +419,6 @@ def _first_issue_message(issues: list[object], fallback: str) -> str:
 
 CONTENT_NODE_TASK_STEP_TYPES: tuple[type[BaseStep], ...] = (
     ContentTaskAdmissionStep,
+    ContentProgressCheckpointStep,
     EnsureDeclStageAgentsStep,
 )

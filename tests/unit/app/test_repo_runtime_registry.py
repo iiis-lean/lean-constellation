@@ -67,6 +67,37 @@ def test_repo_runtime_registry_loads_repo_local_runtime_root(tmp_path) -> None:
     assert loaded.value.ark.flow_service.runtime_root == repo_root / ".agent_runtime"
 
 
+def test_repo_runtime_status_warns_when_content_progress_conflicts_with_run_parallelism(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    config = LeanAppConfig(
+        workspace_root=workspace,
+        materialize_agent_homes=False,
+        automatic_checkpoints={"content_task_progress_enabled": True},
+    )
+    registry = RepoRuntimeRegistry(config)
+    record = registry.discover_repo("MainRepo").value
+    assert record is not None
+    record.runtime = SimpleNamespace(
+        list_flows=lambda: [
+            SimpleNamespace(
+                flow_type="native_repo_coordinator",
+                input=SimpleNamespace(
+                    run_context=SimpleNamespace(
+                        run_spec=SimpleNamespace(max_parallel_content_node_tasks=2),
+                    )
+                ),
+            )
+        ]
+    )
+
+    registry._audit_content_checkpoint_parallelism(record)
+
+    assert record.startup_warnings == [
+        "content_task_progress_checkpoint_skipped: max_parallel_content_node_tasks=2; internal checkpoints require 1"
+    ]
+
+
 def test_workspace_runtime_forwards_workspace_config_without_runtime_history(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     repo_root = _make_repo(workspace, "MainRepo")

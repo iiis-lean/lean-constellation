@@ -621,7 +621,7 @@ def _run_stage(
 
 
 def _expected_node_workdir(repo_root: Path) -> str:
-    return str(repo_root.joinpath(*NODE_PATH.split(".")))
+    return str(repo_root.joinpath(repo_root.name, *NODE_PATH.split(".")))
 
 
 def _write_statement_formal(lean_runtime, repo_root: Path, round_id: str):

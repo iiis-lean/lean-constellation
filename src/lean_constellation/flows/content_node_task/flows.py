@@ -4,17 +4,21 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowReadContext, FlowStepContext
-from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, FlowPosition, FlowStatus
+from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowReadContext, FlowStepContext, StableStepTerminalContext
+from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, FlowPosition, FlowStatus, utc_now_iso
 from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, AgentStepState, DispatchStep, DispatchStepResult, DispatchStepState
 from pydantic import Field
 
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
+from lean_constellation.flows.common.checkpoint_policy import content_task_progress_checkpoints_enabled
+from lean_constellation.flows.common.flow_requests import repo_scope_id
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
 from lean_constellation.flows.content_node_task.preparation.common import content_node_workdir
 from lean_constellation.flows.content_node_task.steps import (
     ContentPlanStepResult,
+    ContentProgressCheckpointStep,
+    ContentProgressCheckpointStepResult,
     ContentTaskAdmissionStep,
     ContentTaskAdmissionStepResult,
     EnsureDeclStageAgentsStep,
@@ -33,6 +37,7 @@ class ContentNodeTaskParams(LeanFlowParams):
     repo_path: str | None = None
     contract_version: int | None = None
     task_mode: str = "run"
+    max_parallel_content_node_tasks: int = Field(default=1, ge=1)
 
 
 class ContentNodeTaskInput(LeanRenderableFlowInput):
@@ -42,6 +47,7 @@ class ContentNodeTaskInput(LeanRenderableFlowInput):
     node_path: str
     contract_version: int | None = None
     task_mode: str = "run"
+    max_parallel_content_node_tasks: int = Field(default=1, ge=1)
 
     def agent_title(self) -> str:
         return f"Run content node task {self.node_path}"
@@ -52,6 +58,7 @@ class ContentNodeTaskInput(LeanRenderableFlowInput):
             "node_path": self.node_path,
             "contract_version": self.contract_version,
             "task_mode": self.task_mode,
+            "max_parallel_content_node_tasks": self.max_parallel_content_node_tasks,
         }
 
 
@@ -66,6 +73,9 @@ class ContentNodeTaskState(BaseFlowState):
     waiting_child_kind: Literal["node_dir_dependency", "mathlib", "resource", "resource_curation", "decl_graph_round"] | None = None
     stage_agent_bindings_initialized: bool = False
     latest_callback_summary: str | None = None
+    completed_child_flow_id: str | None = None
+    completed_child_outcome: Literal["completed", "failed"] | None = None
+    progress_checkpoint_repo_scope_captured: bool = False
 
 
 class ContentNodeTaskResult(LeanRenderableFlowResult):
@@ -117,8 +127,25 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
 
     def on_exit_waiting(self, ctx: FlowContext) -> None:
         state = _require_content_task_state(self.state)
+        input_model = _require_content_task_input(self.input)
+        children = _child_flows_for_dispatch(ctx, self.flow_id, state.waiting_dispatch_step_id)
         state.latest_callback_summary = _child_callback_summary(ctx, self.flow_id, state.waiting_dispatch_step_id)
-        state.position = FlowPosition(phase="callback_plan_agent", round_index=state.decl_round_count)
+        if children:
+            child = children[0]
+            state.completed_child_flow_id = child.flow_id
+            state.completed_child_outcome = "failed" if child.status is FlowStatus.FAILED else "completed"
+        if _should_create_progress_checkpoint(ctx.app, input_model, state):
+            state.position = FlowPosition(phase="after_child_terminal_checkpoint", round_index=state.decl_round_count)
+        else:
+            if content_task_progress_checkpoints_enabled(ctx.app) and input_model.max_parallel_content_node_tasks != 1:
+                warning = (
+                    "Content task progress checkpoint skipped because "
+                    f"max_parallel_content_node_tasks={input_model.max_parallel_content_node_tasks}, expected 1."
+                )
+                state.latest_callback_summary = "; ".join(
+                    part for part in [state.latest_callback_summary, warning] if part
+                )
+            state.position = FlowPosition(phase="callback_plan_agent", round_index=state.decl_round_count)
         super().on_exit_waiting(ctx)
 
     def create_next_step(self, ctx: FlowContext) -> str | None:
@@ -138,6 +165,11 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
         if state.position.phase == "callback_plan_agent":
             _inherit_content_plan_binding_from_prior_task(ctx, self)
             return ctx.create_step(_content_plan_agent_step(self, input_model, state, callback=True))
+        if state.position.phase == "after_child_terminal_checkpoint":
+            checkpoint = _content_progress_checkpoint_step(self, input_model, state)
+            if checkpoint is None:
+                return None
+            return ctx.create_step(checkpoint)
         if state.position.phase == "ensure_stage_agents":
             return ctx.create_step(
                 EnsureDeclStageAgentsStep(
@@ -169,11 +201,72 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             self._consume_plan_result(state, input_model, result, ctx.step.submission, ctx.step.step_id)
         elif isinstance(result, EnsureDeclStageAgentsStepResult):
             self._consume_stage_agents_result(state, input_model, result)
+        elif isinstance(result, ContentProgressCheckpointStepResult):
+            if result.outcome == "checkpoint_ready":
+                state.position = FlowPosition(phase="callback_plan_agent", round_index=state.decl_round_count)
+            else:
+                self.error = BaseFlowError(
+                    error_type=result.error_code or "content_progress_checkpoint_blocked",
+                    message=result.summary or "Content task progress checkpoint was blocked.",
+                )
         elif isinstance(result, DispatchStepResult):
             self._consume_dispatch_result(state, input_model, result, ctx.step.step_id)
         super().on_step_terminal(ctx)
         if self.result is None and self.error is None and state.position.phase == "waiting_child":
             self.status = FlowStatus.WAITING
+
+    def after_step_terminal_stable(self, ctx: StableStepTerminalContext) -> None:
+        result = ctx.step.result
+        if not isinstance(result, ContentProgressCheckpointStepResult) or result.outcome != "checkpoint_ready":
+            return
+        input_model = _require_content_task_input(self.input)
+        state = _require_content_task_state(self.state)
+        repo_root = _content_repo_root(input_model)
+        snapshot_runtime = getattr(ctx.app, "snapshot_runtime", None)
+        if repo_root is None or snapshot_runtime is None:
+            _mark_content_progress_snapshot_failed(
+                ctx,
+                "content_progress_snapshot_runtime_missing",
+                "Content progress checkpoint requires repo_path and snapshot runtime.",
+            )
+            return
+        refresh_scope_ids = [ctx.flow.scope_id]
+        if not state.progress_checkpoint_repo_scope_captured:
+            refresh_scope_ids.insert(0, repo_scope_id(input_model.repo_key))
+        label_parts = [
+            result.checkpoint_kind,
+            f"node={result.node_path}",
+            f"task_mode={result.task_mode}",
+            f"kind={result.child_kind}",
+            f"child={result.child_flow_id}",
+            f"outcome={result.child_outcome}",
+        ]
+        if result.decl_round_count is not None:
+            label_parts.append(f"round={result.decl_round_count}")
+        snapshot = snapshot_runtime.create_repo_stable_point_snapshot(
+            repo_root,
+            checkpoint_kind=result.checkpoint_kind,
+            label=" ".join(label_parts),
+            node_paths=[input_model.node_path],
+            scope_ids=refresh_scope_ids,
+        )
+        if not snapshot.ok or snapshot.value is None:
+            message = "; ".join(str(getattr(issue, "message", issue)) for issue in snapshot.issues)
+            _mark_content_progress_snapshot_failed(
+                ctx,
+                "content_progress_stable_snapshot_failed",
+                message or "Content progress checkpoint snapshot failed.",
+            )
+            return
+
+        def patch_flow(flow) -> None:  # noqa: ANN001
+            flow.state.progress_checkpoint_repo_scope_captured = True
+
+        def patch_step(step) -> None:  # noqa: ANN001
+            step.result = step.result.model_copy(update={"snapshot_id": snapshot.value.snapshot_id})
+
+        ctx.ark.flow_service.store.update_flow_record(ctx.flow.flow_id, patch_flow)
+        ctx.ark.flow_service.store.update_step_record(ctx.step.step_id, patch_step)
 
     def _consume_admission_result(
         self,
@@ -425,6 +518,77 @@ def _dispatch_step_from_pending(ctx: FlowContext, flow: ContentNodeTaskFlow, sta
             continuation=submission.continuation,
         ),
     )
+
+
+def _should_create_progress_checkpoint(app, input_model: ContentNodeTaskInput, state: ContentNodeTaskState) -> bool:  # noqa: ANN001
+    if not content_task_progress_checkpoints_enabled(app):
+        return False
+    if input_model.max_parallel_content_node_tasks != 1:
+        return False
+    if state.completed_child_flow_id is None or state.completed_child_outcome is None:
+        return False
+    return state.waiting_child_kind in {
+        "node_dir_dependency",
+        "mathlib",
+        "resource",
+        "decl_graph_round",
+    }
+
+
+def _content_progress_checkpoint_step(
+    flow: ContentNodeTaskFlow,
+    input_model: ContentNodeTaskInput,
+    state: ContentNodeTaskState,
+) -> ContentProgressCheckpointStep | None:
+    if state.completed_child_flow_id is None or state.completed_child_outcome is None:
+        return None
+    checkpoint_kind: Literal[
+        "after_content_preparation_terminal",
+        "after_content_decl_round_terminal",
+    ]
+    if state.waiting_child_kind == "decl_graph_round":
+        checkpoint_kind = "after_content_decl_round_terminal"
+    elif state.waiting_child_kind in {"node_dir_dependency", "mathlib", "resource"}:
+        checkpoint_kind = "after_content_preparation_terminal"
+    else:
+        return None
+    return ContentProgressCheckpointStep(
+        step_id=new_content_step_id("content_progress_checkpoint"),
+        flow_id=flow.flow_id,
+        scope_id=flow.scope_id,
+        checkpoint_kind=checkpoint_kind,
+        node_path=input_model.node_path,
+        task_mode=input_model.task_mode,
+        child_kind=str(state.waiting_child_kind),
+        child_flow_id=state.completed_child_flow_id,
+        child_outcome=state.completed_child_outcome,
+        decl_round_count=state.decl_round_count if state.waiting_child_kind == "decl_graph_round" else None,
+        callback_summary=state.latest_callback_summary,
+    )
+
+
+def _content_repo_root(input_model: ContentNodeTaskInput):
+    if not input_model.repo_path:
+        return None
+    from pathlib import Path
+
+    return Path(input_model.repo_path)
+
+
+def _mark_content_progress_snapshot_failed(
+    ctx: StableStepTerminalContext,
+    error_type: str,
+    message: str,
+) -> None:
+    now = utc_now_iso()
+
+    def patch_flow(flow) -> None:  # noqa: ANN001
+        flow.error = BaseFlowError(error_type=error_type, message=message)
+        flow.status = FlowStatus.FAILED
+        flow.finished_at = now
+        flow.updated_at = now
+
+    ctx.ark.flow_service.store.update_flow_record(ctx.flow.flow_id, patch_flow)
 
 
 def _child_flows_for_dispatch(ctx: FlowReadContext | FlowContext, parent_flow_id: str, dispatch_step_id: str | None):

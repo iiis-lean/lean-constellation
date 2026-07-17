@@ -63,7 +63,13 @@ from lean_constellation.app.admin_api import (
     WaitingRequirementsMonitorView,
     WriteMainRepoPreparationInput,
 )
-from lean_constellation.app.config import LeanAppConfig, LeanAppConfigView, load_app_config
+from lean_constellation.app.config import (
+    AgentTraceReportAppConfig,
+    AutomaticCheckpointAppConfig,
+    LeanAppConfig,
+    LeanAppConfigView,
+    load_app_config,
+)
 from lean_constellation.app.external_takeover import (
     ExternalTakeoverCompleteInput,
     ExternalTakeoverHandoffView,
@@ -101,6 +107,8 @@ __all__ = [
     "AgentMonitorView",
     "AgentReportIndexView",
     "AgentStepControlView",
+    "AgentTraceReportAppConfig",
+    "AutomaticCheckpointAppConfig",
     "BootstrapMainNativeRepoInput",
     "ClearAgentStepOverrideInput",
     "CreateMainRepoShellInput",

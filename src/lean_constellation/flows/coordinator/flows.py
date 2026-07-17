@@ -12,6 +12,7 @@ from pydantic import Field
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.domain.repo_run import RepoRunContext
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
+from lean_constellation.flows.common.checkpoint_policy import record_checkpoint_skip_summary, repo_flow_boundary_checkpoints_enabled
 from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.coordinator.submissions import (
@@ -359,6 +360,12 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         state = _require_native_coordinator_state(self.state)
         if state.position.phase != "waiting_requirement":
             return
+        if not repo_flow_boundary_checkpoints_enabled(ctx.app):
+            record_checkpoint_skip_summary(
+                ctx,
+                "Coordinator requirement-waiting checkpoint skipped because repo flow-boundary checkpoints are disabled.",
+            )
+            return
         input_model = _require_native_coordinator_input(self.input)
         repo_root = _coordinator_repo_root(input_model)
         if repo_root is None:
@@ -384,6 +391,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         submission: object | None,
         step_id: str,
     ) -> None:
+        input_model = _require_native_coordinator_input(self.input)
         requirement_resume_turn = state.position.phase == "coordinator_requirement_resume"
         state.coordinator_turn_index += 1
         if isinstance(result, AgentStepIncompleteResult) or result is None:
@@ -402,6 +410,17 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             state.resuming_requirement_name = None
             state.resuming_provider_repo = None
         if result.outcome == "content_tasks" and isinstance(submission, CoordinatorContentTasksSubmission) and result.content_tasks is not None:
+            max_parallel = (
+                input_model.run_context.run_spec.max_parallel_content_node_tasks
+                if input_model.run_context is not None
+                else 1
+            )
+            if len(result.content_tasks.node_paths) > max_parallel:
+                self._fail_coordinator(
+                    "content_task_batch_parallelism_exceeded",
+                    f"Coordinator requested {len(result.content_tasks.node_paths)} content tasks; run maximum is {max_parallel}.",
+                )
+                return
             state.pending_dispatch_source_step_id = step_id
             state.pending_dispatch_source_submission_id = submission.submission_id
             state.pending_dispatch_kind = "content_tasks"
@@ -497,7 +516,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         state: NativeRepoCoordinatorState,
         result: CoordinatorContentBatchSnapshotStepResult,
     ) -> None:
-        if result.outcome != "snapshot_created":
+        if result.outcome not in {"snapshot_created", "skipped"}:
             self._fail_coordinator(result.error_code or "coordinator_snapshot_failed", result.error_message or result.summary or "Coordinator snapshot failed.")
             return
         if result.checkpoint_kind == "before_content_task_dispatch":

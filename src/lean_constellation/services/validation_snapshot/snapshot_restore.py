@@ -38,6 +38,8 @@ class RepoCheckpointKind(StrEnum):
     AFTER_CONTENT_TASK_BATCH_TERMINAL = "after_content_task_batch_terminal"
     BEFORE_RESOURCE_REQUEST_DISPATCH = "before_resource_request_dispatch"
     AFTER_RESOURCE_REQUEST_TERMINAL = "after_resource_request_terminal"
+    AFTER_CONTENT_PREPARATION_TERMINAL = "after_content_preparation_terminal"
+    AFTER_CONTENT_DECL_ROUND_TERMINAL = "after_content_decl_round_terminal"
     MANUAL_TEST_STABLE_POINT = "manual_test_stable_point"
 
 
@@ -165,6 +167,16 @@ class SnapshotRestoreComponent:
                 checkpoint_kind=RepoCheckpointKind.AFTER_RESOURCE_REQUEST_TERMINAL,
                 gate_name="after_resource_request_terminal_stable_point",
                 summary="A resource request has reached a terminal flow state.",
+            ),
+            RepoCheckpointKind.AFTER_CONTENT_PREPARATION_TERMINAL: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_PREPARATION_TERMINAL,
+                gate_name="after_content_preparation_terminal_stable_point",
+                summary="A ContentNodeTask preparation recon is terminal before its PlanAgent callback.",
+            ),
+            RepoCheckpointKind.AFTER_CONTENT_DECL_ROUND_TERMINAL: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_DECL_ROUND_TERMINAL,
+                gate_name="after_content_decl_round_terminal_stable_point",
+                summary="A ContentNodeTask Decl round is terminal before its PlanAgent callback.",
             ),
             RepoCheckpointKind.MANUAL_TEST_STABLE_POINT: RepoCheckpointPolicy(
                 checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,

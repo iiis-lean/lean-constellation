@@ -287,4 +287,4 @@ def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp
 
     assert restored.ok and restored.value is not None, restored.issues
     assert set(store.list_scope_ids()) == {repo_scope, node_scope}
-    assert json.loads(node_report.read_text(encoding="utf-8"))["version"] == "before"
+    assert not node_report.exists()

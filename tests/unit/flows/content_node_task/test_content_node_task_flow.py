@@ -1,22 +1,47 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
-from agent_runtime_kit.flow.models import FlowStatus
+import pytest
+from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.flows.common.flow_requests import build_decl_round_request, build_preparation_recon_request
+from lean_constellation.app.config import AutomaticCheckpointAppConfig
+from lean_constellation.flows.common.flow_requests import build_decl_round_request, build_preparation_recon_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.content_node_task.decl_round.flow import DeclGraphRoundResult
 from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
+from lean_constellation.flows.content_node_task.flows import ContentNodeTaskState
+from lean_constellation.flows.content_node_task.preparation.mathlib_recon.flow import MathlibReconResult
 from lean_constellation.flows.content_node_task.preparation.node_dir_recon.flow import NodeDirDependencyReconResult
+from lean_constellation.flows.content_node_task.preparation.resource_recon.flow import ResourceReconResult
 from lean_constellation.flows.content_node_task.submissions import (
     ContentNodeBlockedSubmission,
     ContentNodeReadySubmission,
     ContentPreparationDispatchSubmission,
+    ContentResourceRequestSubmission,
 )
+from lean_constellation.flows.resource_request.flows import ResourceCurationResult
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
+
+
+class RecordingContentSnapshotRuntime:
+    def __init__(self, lean_runtime) -> None:  # noqa: ANN001
+        self.lean_runtime = lean_runtime
+        self.calls: list[dict[str, object]] = []
+        self.fail = False
+
+    def create_repo_stable_point_snapshot(self, repo_root, **kwargs):  # noqa: ANN001, ANN003
+        self.calls.append({"repo_root": str(repo_root), **kwargs})
+        if self.fail:
+            return self.lean_runtime.foundation.fail(
+                self.lean_runtime.foundation.issue("injected_snapshot_failure", "Injected snapshot failure.")
+            )
+        return self.lean_runtime.foundation.ok(
+            SimpleNamespace(snapshot_id=f"content_snapshot_{len(self.calls)}")
+        )
 
 
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
@@ -97,6 +122,17 @@ def _complete_child_flow(runtime: FakeLeanFlowRuntime, child_flow_id: str, resul
     )
 
 
+def _fail_child_flow(runtime: FakeLeanFlowRuntime, child_flow_id: str) -> None:
+    runtime.flow_service.store.update_flow_record(
+        child_flow_id,
+        lambda flow: (
+            setattr(flow, "error", BaseFlowError(error_type="injected_child_failure", message="Injected child failure.")),
+            setattr(flow, "status", FlowStatus.FAILED),
+            setattr(flow, "current_step_id", None),
+        ),
+    )
+
+
 def _node_dir_submission(repo_root: Path) -> ContentPreparationDispatchSubmission:
     return ContentPreparationDispatchSubmission(
         submission_id=new_submission_id("sub"),
@@ -117,6 +153,29 @@ def _node_dir_submission(repo_root: Path) -> ContentPreparationDispatchSubmissio
             )
         ],
         summary="Dispatch node dependency recon.",
+    )
+
+
+def _preparation_submission(repo_root: Path, recon_kind: str) -> ContentPreparationDispatchSubmission:
+    return ContentPreparationDispatchSubmission(
+        submission_id=new_submission_id("sub"),
+        submission_type="content_preparation_dispatch",
+        tool_name="submit_content_preparation_recon",
+        repo_key=repo_root.name,
+        node_path="Main.Core",
+        recon_kind=recon_kind,
+        objective=f"Run {recon_kind} preparation.",
+        requests=[
+            build_preparation_recon_request(
+                recon_kind=recon_kind,
+                repo_key=repo_root.name,
+                node_path="Main.Core",
+                repo_path=str(repo_root),
+                scope_id=f"repo:{repo_root.name}:node:Main.Core",
+                objective=f"Run {recon_kind} preparation.",
+            )
+        ],
+        summary=f"Dispatch {recon_kind} preparation.",
     )
 
 
@@ -509,3 +568,322 @@ def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Pa
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "ready"
+
+
+def test_content_progress_checkpoints_run_before_callback_and_narrow_later_scope(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
+    snapshots = RecordingContentSnapshotRuntime(lean_runtime)
+    lean_runtime.app.snapshot_runtime = snapshots
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+
+    runtime.agent_service.queue_submission(_node_dir_submission(repo_root))
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    _complete_child_flow(
+        runtime,
+        child.flow_id,
+        NodeDirDependencyReconResult(
+            outcome="completed",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            summary="Preparation complete.",
+        ),
+    )
+
+    preparation_checkpoint_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert preparation_checkpoint_step_id is not None
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "after_child_terminal_checkpoint"
+    assert flow.state.completed_child_flow_id == child.flow_id
+    runtime.run_step(preparation_checkpoint_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "callback_plan_agent"
+    assert flow.state.progress_checkpoint_repo_scope_captured is True
+    assert snapshots.calls[0]["checkpoint_kind"] == "after_content_preparation_terminal"
+    assert snapshots.calls[0]["scope_ids"] == ["repo:Repo", "repo:Repo:node:Main.Core"]
+
+    runtime.agent_service.queue_submission(
+        DeclRoundDispatchSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="decl_round_dispatch",
+            tool_name="submit_current_decl_round",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            strategy_id="strategy_1",
+            round_id="round_1",
+            round_index=1,
+            requests=[
+                build_decl_round_request(
+                    repo_key=repo_root.name,
+                    node_path="Main.Core",
+                    scope_id="repo:Repo:node:Main.Core",
+                    strategy_id="strategy_1",
+                    round_id="round_1",
+                    round_index=1,
+                )
+            ],
+            summary="Dispatch decl round.",
+        )
+    )
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert callback_step_id is not None
+    runtime.run_step(callback_step_id)
+    _advance_and_run(runtime, flow_id)
+    round_dispatch_step_id = _advance_and_run(runtime, flow_id)
+    round_child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=round_dispatch_step_id,
+    )[0]
+    _complete_child_flow(
+        runtime,
+        round_child.flow_id,
+        DeclGraphRoundResult(
+            outcome="completed",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            round_id="round_1",
+            completed_stages=["statement_nl"],
+            summary="Round complete.",
+        ),
+    )
+
+    round_checkpoint_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert round_checkpoint_step_id is not None
+    runtime.run_step(round_checkpoint_step_id)
+    assert snapshots.calls[1]["checkpoint_kind"] == "after_content_decl_round_terminal"
+    assert snapshots.calls[1]["scope_ids"] == ["repo:Repo:node:Main.Core"]
+    round_step = runtime.flow_service.get_step(round_checkpoint_step_id)
+    assert round_step.result.decl_round_count == 1
+    assert round_step.result.child_outcome == "completed"
+    assert round_step.result.snapshot_id == "content_snapshot_2"
+
+
+@pytest.mark.parametrize("recon_kind", ["node_dir_dependency", "mathlib", "resource"])
+def test_each_preparation_kind_creates_terminal_progress_checkpoint(tmp_path: Path, recon_kind: str) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
+    snapshots = RecordingContentSnapshotRuntime(lean_runtime)
+    lean_runtime.app.snapshot_runtime = snapshots
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(_preparation_submission(repo_root, recon_kind))
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    if recon_kind == "node_dir_dependency":
+        result = NodeDirDependencyReconResult(
+            outcome="completed", repo_key="Repo", node_path="Main.Core", summary="Preparation complete."
+        )
+    elif recon_kind == "mathlib":
+        result = MathlibReconResult(
+            outcome="completed", repo_key="Repo", node_path="Main.Core", summary="Preparation complete."
+        )
+    else:
+        result = ResourceReconResult(
+            outcome="completed", repo_key="Repo", node_path="Main.Core", summary="Preparation complete."
+        )
+    _complete_child_flow(runtime, child.flow_id, result)
+
+    checkpoint_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert checkpoint_step_id is not None
+    runtime.run_step(checkpoint_step_id)
+
+    assert snapshots.calls[0]["checkpoint_kind"] == "after_content_preparation_terminal"
+    assert f"kind={recon_kind}" in str(snapshots.calls[0]["label"])
+    assert f"child={child.flow_id}" in str(snapshots.calls[0]["label"])
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "callback_plan_agent"
+
+
+def test_failed_preparation_child_outcome_is_recorded_in_progress_checkpoint(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
+    snapshots = RecordingContentSnapshotRuntime(lean_runtime)
+    lean_runtime.app.snapshot_runtime = snapshots
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(_node_dir_submission(repo_root))
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    _fail_child_flow(runtime, child.flow_id)
+
+    checkpoint_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert checkpoint_step_id is not None
+    runtime.run_step(checkpoint_step_id)
+
+    step = runtime.flow_service.get_step(checkpoint_step_id)
+    assert step.result.child_outcome == "failed"
+    assert "outcome=failed" in str(snapshots.calls[0]["label"])
+
+
+def test_legacy_content_task_state_defaults_new_progress_checkpoint_fields() -> None:
+    state = ContentNodeTaskState.model_validate(
+        {
+            "state_type": "content_node_task",
+            "position": {"phase": "waiting_child", "round_index": 0},
+            "waiting_child_kind": "node_dir_dependency",
+        }
+    )
+
+    assert state.completed_child_flow_id is None
+    assert state.completed_child_outcome is None
+    assert state.progress_checkpoint_repo_scope_captured is False
+
+
+def test_content_progress_snapshot_failure_fails_owning_flow(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
+    snapshots = RecordingContentSnapshotRuntime(lean_runtime)
+    snapshots.fail = True
+    lean_runtime.app.snapshot_runtime = snapshots
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(_node_dir_submission(repo_root))
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    _complete_child_flow(
+        runtime,
+        child.flow_id,
+        NodeDirDependencyReconResult(outcome="completed", repo_key="Repo", node_path="Main.Core", summary="Done."),
+    )
+
+    checkpoint_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert checkpoint_step_id is not None
+    runtime.run_step(checkpoint_step_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.FAILED
+    assert flow.error.error_type == "content_progress_stable_snapshot_failed"
+
+
+def test_content_progress_enabled_skips_when_task_parallelism_is_not_one(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
+    snapshots = RecordingContentSnapshotRuntime(lean_runtime)
+    lean_runtime.app.snapshot_runtime = snapshots
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = runtime.start_flow(
+        "content_node_task",
+        {
+            "repo_key": repo_root.name,
+            "repo_path": str(repo_root),
+            "node_path": "Main.Core",
+            "contract_version": 1,
+            "task_mode": "run",
+            "max_parallel_content_node_tasks": 2,
+        },
+        scope_id="repo:Repo:node:Main.Core",
+    )
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(_node_dir_submission(repo_root))
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    _complete_child_flow(
+        runtime,
+        child.flow_id,
+        NodeDirDependencyReconResult(outcome="completed", repo_key="Repo", node_path="Main.Core", summary="Done."),
+    )
+
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+
+    assert callback_step_id is not None
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "callback_plan_agent"
+    assert "max_parallel_content_node_tasks=2" in flow.state.latest_callback_summary
+    assert snapshots.calls == []
+
+
+def test_direct_resource_curation_does_not_create_preparation_checkpoint(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
+    snapshots = RecordingContentSnapshotRuntime(lean_runtime)
+    lean_runtime.app.snapshot_runtime = snapshots
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(
+        ContentResourceRequestSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_resource_request",
+            tool_name="submit_resource_request",
+            repo_key="Repo",
+            node_path="Main.Core",
+            target_kind="local_file",
+            target="notes.md",
+            requests=[
+                build_resource_curation_request(
+                    scope_id="repo:Repo:node:Main.Core",
+                    target_kind="local_file",
+                    target="notes.md",
+                    repo_key="Repo",
+                    repo_root=str(repo_root),
+                    node_path="Main.Core",
+                )
+            ],
+            summary="Curate notes.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    _complete_child_flow(
+        runtime,
+        child.flow_id,
+        ResourceCurationResult(
+            outcome="rejected",
+            repo_key="Repo",
+            target_summary="local_file:notes.md",
+            summary="Resource rejected.",
+        ),
+    )
+
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+
+    assert callback_step_id is not None
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "callback_plan_agent"
+    assert snapshots.calls == []

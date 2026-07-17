@@ -741,6 +741,14 @@ def submit_resource_rejected(runtime: Any, ctx: ToolExecutionContext, args: Subm
 def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: SubmitContentNodeTasksArgs) -> ServiceResult[PreparedSubmissionView]:
     if not args.node_paths:
         return _fail(runtime, "content_task_nodes_required", "submit_content_node_tasks requires at least one node path.", field="node_paths")
+    max_parallel = _current_coordinator_content_parallelism(runtime, ctx)
+    if len(args.node_paths) > max_parallel:
+        return _fail(
+            runtime,
+            "content_task_batch_parallelism_exceeded",
+            f"Requested {len(args.node_paths)} content node tasks, but this run allows at most {max_parallel}.",
+            field="node_paths",
+        )
     gate_result = runtime.node.submit_content_node_batch_preflight(ctx.repo_root, node_paths=args.node_paths)
     if not gate_result.ok or gate_result.value is None:
         return runtime.foundation.fail(gate_result.issues)
@@ -762,6 +770,7 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
             repo_path=str(ctx.repo_root),
             contract_version=contract.value.version,
             task_mode=args.task_mode,
+            max_parallel_content_node_tasks=max_parallel,
         ))
     return _prepared(
         runtime,
@@ -772,6 +781,19 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
         ),
         agent_view={"gate": gate_result.value.model_dump(mode="json")},
     )
+
+
+def _current_coordinator_content_parallelism(runtime: Any, ctx: ToolExecutionContext) -> int:
+    flow_id = ctx.runtime.flow_id
+    if not flow_id:
+        return 1
+    try:
+        flow = runtime.get_flow(flow_id)
+    except RuntimeError:
+        return 1
+    run_context = getattr(getattr(flow, "input", None), "run_context", None)
+    run_spec = getattr(run_context, "run_spec", None)
+    return int(getattr(run_spec, "max_parallel_content_node_tasks", 1))
 
 
 def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoRequirementArgs) -> ServiceResult[PreparedSubmissionView]:

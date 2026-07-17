@@ -9,6 +9,22 @@ from lean_constellation.app import LeanAppConfig, load_app_config
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
 
 
+def test_checkpoint_and_trace_report_config_defaults(tmp_path) -> None:
+    config = LeanAppConfig(workspace_root=tmp_path / "workspace")
+
+    assert config.automatic_checkpoints.repo_flow_boundaries_enabled is True
+    assert config.automatic_checkpoints.content_task_progress_enabled is False
+    assert config.agent_trace_reports.persistence == "latest_only"
+    assert config.agent_trace_reports.include_in_snapshots is False
+
+
+def test_checkpoint_and_trace_report_config_reject_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        LeanAppConfig.model_validate({"automatic_checkpoints": {"unknown": True}})
+    with pytest.raises(ValidationError):
+        LeanAppConfig.model_validate({"agent_trace_reports": {"persistence": "unknown"}})
+
+
 def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secrets(tmp_path) -> None:
     config_home = tmp_path / "codex"
     config_home.mkdir()
@@ -27,6 +43,12 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
                 'mode = "managed"',
                 "port = 8288",
                 'required_tools = ["diagnostics.file"]',
+                "[automatic_checkpoints]",
+                "repo_flow_boundaries_enabled = false",
+                "content_task_progress_enabled = true",
+                "[agent_trace_reports]",
+                'persistence = "latest_and_turns"',
+                "include_in_snapshots = true",
             ]
         )
         + "\n",
@@ -54,6 +76,10 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
     assert view.toolkit.mode == "managed"
     assert view.toolkit.effective_base_url() == "http://127.0.0.1:8288"
     assert view.toolkit.required_tools == ["diagnostics.file"]
+    assert view.automatic_checkpoints.repo_flow_boundaries_enabled is False
+    assert view.automatic_checkpoints.content_task_progress_enabled is True
+    assert view.agent_trace_reports.persistence == "latest_and_turns"
+    assert view.agent_trace_reports.include_in_snapshots is True
     assert view.native_lake_project.lean_toolchain == "leanprover/lean4:v4.28.0"
     assert view.native_lake_project.mathlib_rev == "v4.28.0"
     assert "secret-token" not in dumped
@@ -79,6 +105,10 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
             "LEAN_CONSTELLATION_LEAN_VERSION": "4.29.0",
             "LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PROJECT_ROOT": str(tmp_path / "template"),
             "LEAN_CONSTELLATION_LOCAL_LAKE_CACHE_PACKAGE_NAMES": "mathlib,aesop",
+            "LEAN_CONSTELLATION_CHECKPOINT_REPO_FLOW_BOUNDARIES_ENABLED": "false",
+            "LEAN_CONSTELLATION_CHECKPOINT_CONTENT_TASK_PROGRESS_ENABLED": "true",
+            "LEAN_CONSTELLATION_AGENT_TRACE_REPORT_PERSISTENCE": "disabled",
+            "LEAN_CONSTELLATION_AGENT_TRACE_REPORT_INCLUDE_IN_SNAPSHOTS": "true",
         },
     )
 
@@ -100,6 +130,10 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
     assert config.native_lake_project.local_package_cache.packages_root == tmp_path / "template" / ".lake" / "packages"
     assert config.native_lake_project.local_package_cache.manifest_path == tmp_path / "template" / "lake-manifest.json"
     assert config.native_lake_project.local_package_cache.package_names == ["mathlib", "aesop"]
+    assert config.automatic_checkpoints.repo_flow_boundaries_enabled is False
+    assert config.automatic_checkpoints.content_task_progress_enabled is True
+    assert config.agent_trace_reports.persistence == "disabled"
+    assert config.agent_trace_reports.include_in_snapshots is True
 
 
 def test_load_app_config_reads_workspace_repo_defaults_from_env(tmp_path) -> None:

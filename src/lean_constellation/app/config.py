@@ -46,6 +46,8 @@ class LeanAppConfigView(StrictModel):
     scheduler_idle_interval_s: float
     scheduler_error_interval_s: float
     toolkit: "LeanToolkitAppConfig"
+    automatic_checkpoints: "AutomaticCheckpointAppConfig"
+    agent_trace_reports: "AgentTraceReportAppConfig"
     native_lake_project: NativeLakeProjectConfig
     workspace_config: WorkspaceConfig
     summary: str
@@ -125,6 +127,16 @@ class LeanToolkitAppConfig(StrictModel):
         return None
 
 
+class AutomaticCheckpointAppConfig(StrictModel):
+    repo_flow_boundaries_enabled: bool = True
+    content_task_progress_enabled: bool = False
+
+
+class AgentTraceReportAppConfig(StrictModel):
+    persistence: Literal["disabled", "latest_only", "latest_and_turns"] = "latest_only"
+    include_in_snapshots: bool = False
+
+
 class LeanAppConfig(StrictModel):
     workspace_root: Path
     runtime_root: Path | None = Field(
@@ -151,6 +163,8 @@ class LeanAppConfig(StrictModel):
     scheduler_idle_interval_s: float = 0.5
     scheduler_error_interval_s: float = 2.0
     toolkit: LeanToolkitAppConfig = Field(default_factory=LeanToolkitAppConfig)
+    automatic_checkpoints: AutomaticCheckpointAppConfig = Field(default_factory=AutomaticCheckpointAppConfig)
+    agent_trace_reports: AgentTraceReportAppConfig = Field(default_factory=AgentTraceReportAppConfig)
     native_lake_project: NativeLakeProjectConfig = Field(default_factory=NativeLakeProjectConfig)
     workspace_config: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
 
@@ -249,6 +263,8 @@ class LeanAppConfig(StrictModel):
             scheduler_idle_interval_s=self.scheduler_idle_interval_s,
             scheduler_error_interval_s=self.scheduler_error_interval_s,
             toolkit=self.toolkit,
+            automatic_checkpoints=self.automatic_checkpoints,
+            agent_trace_reports=self.agent_trace_reports,
             native_lake_project=self.native_lake_project,
             workspace_config=self.workspace_config,
             summary="Loaded Lean Constellation app config with secret-bearing file contents redacted.",
@@ -303,6 +319,8 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         if value is not None and str(value).strip():
             data[field] = value
     _apply_toolkit_env(data, env)
+    _apply_checkpoint_env(data, env)
+    _apply_agent_trace_report_env(data, env)
     _apply_native_lake_env(data, env)
     _apply_workspace_config_env(data, env)
 
@@ -348,6 +366,34 @@ def _apply_toolkit_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
             toolkit[field] = value
     if toolkit:
         data["toolkit"] = toolkit
+
+
+def _apply_checkpoint_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
+    aliases = {
+        "repo_flow_boundaries_enabled": "LEAN_CONSTELLATION_CHECKPOINT_REPO_FLOW_BOUNDARIES_ENABLED",
+        "content_task_progress_enabled": "LEAN_CONSTELLATION_CHECKPOINT_CONTENT_TASK_PROGRESS_ENABLED",
+    }
+    section: dict[str, Any] = dict(data.get("automatic_checkpoints") or {})
+    for field, env_key in aliases.items():
+        value = env.get(env_key)
+        if value is not None and str(value).strip():
+            section[field] = value
+    if section:
+        data["automatic_checkpoints"] = section
+
+
+def _apply_agent_trace_report_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
+    aliases = {
+        "persistence": "LEAN_CONSTELLATION_AGENT_TRACE_REPORT_PERSISTENCE",
+        "include_in_snapshots": "LEAN_CONSTELLATION_AGENT_TRACE_REPORT_INCLUDE_IN_SNAPSHOTS",
+    }
+    section: dict[str, Any] = dict(data.get("agent_trace_reports") or {})
+    for field, env_key in aliases.items():
+        value = env.get(env_key)
+        if value is not None and str(value).strip():
+            section[field] = value
+    if section:
+        data["agent_trace_reports"] = section
 
 
 def _apply_native_lake_env(data: dict[str, Any], env: Mapping[str, str]) -> None:

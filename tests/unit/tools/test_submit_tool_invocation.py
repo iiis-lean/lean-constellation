@@ -1036,3 +1036,46 @@ def test_submit_content_node_tasks_passes_open_contract_version(tmp_path: Path) 
     submission = gateway.accepted[0]
     assert submission.submission_type == "coordinator_content_tasks"
     assert submission.requests[0].params["contract_version"] == 1
+
+
+def test_submit_content_node_tasks_enforces_run_parallelism_before_dispatch(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    for path in ("Main.Left", "Main.Right"):
+        assert runtime.node.create_content_node(
+            tmp_path,
+            path=path,
+            goal=f"{path} goal.",
+            boundary=f"{path} boundary.",
+            objective=f"Run {path} task.",
+            success_criteria=f"{path} completes.",
+        ).ok
+    owner_flow = SimpleNamespace(
+        input=SimpleNamespace(
+            run_context=SimpleNamespace(
+                run_spec=SimpleNamespace(max_parallel_content_node_tasks=1),
+            )
+        )
+    )
+    runtime.ark.flow_service = SimpleNamespace(get_flow=lambda _flow_id: owner_flow)
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_content_node_tasks",
+        flat_args={"node_paths": ["Main.Left", "Main.Right"], "summary": "Run both."},
+    )
+
+    assert result.ok and result.value is not None and result.value.ok is False
+    assert result.value.issues[0].kind == "content_task_batch_parallelism_exceeded"
+    assert gateway.accepted == []

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from agent_runtime_kit.flow.scheduler import RuntimeScheduleService
 from agent_runtime_kit.flow.standard_steps import DispatchStep
+from agent_runtime_kit.agent.report_policy import TraceReportPersistence
 
 from lean_constellation.app import create_app_runtime_services, create_test_control_runtime_services
+from lean_constellation.app.config import AgentTraceReportAppConfig, AutomaticCheckpointAppConfig
 from lean_constellation.agents import derive_agent_type_spec
 from lean_constellation.flows.testing import CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES
 
@@ -35,6 +37,25 @@ def test_app_runtime_factory_can_start_paused(tmp_path) -> None:
 
     assert runtime.ark.pause_controller is not None
     assert runtime.ark.pause_controller.is_paused()
+
+
+def test_app_runtime_factory_wires_checkpoint_and_trace_report_policies(tmp_path) -> None:
+    runtime = create_app_runtime_services(
+        runtime_root=tmp_path / ".agent_runtime",
+        automatic_checkpoints=AutomaticCheckpointAppConfig(
+            repo_flow_boundaries_enabled=False,
+            content_task_progress_enabled=True,
+        ),
+        agent_trace_reports=AgentTraceReportAppConfig(
+            persistence="disabled",
+            include_in_snapshots=True,
+        ),
+    )
+
+    assert runtime.app.automatic_checkpoints.repo_flow_boundaries_enabled is False
+    assert runtime.app.automatic_checkpoints.content_task_progress_enabled is True
+    assert runtime.ark.agent_service.trace_report_policy.persistence is TraceReportPersistence.DISABLED
+    assert runtime.ark.snapshot_service.trace_report_policy.include_in_snapshots is True
 
 
 def test_test_control_runtime_factory_wires_controlled_profile(tmp_path) -> None:

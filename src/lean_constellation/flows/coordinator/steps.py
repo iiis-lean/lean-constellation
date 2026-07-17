@@ -11,6 +11,7 @@ from agent_runtime_kit.flow.models import BaseStep, BaseStepResult, BaseStepStat
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.flows.common.checkpoint_policy import repo_flow_boundary_checkpoints_enabled
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
@@ -72,7 +73,7 @@ class CoordinatorStepResult(LeanRenderableStepResult):
 
 class CoordinatorContentBatchSnapshotStepResult(LeanRenderableStepResult):
     result_type: Literal["coordinator_content_batch_snapshot"] = "coordinator_content_batch_snapshot"
-    outcome: Literal["snapshot_created", "blocked"]
+    outcome: Literal["snapshot_created", "skipped", "blocked"]
     checkpoint_kind: Literal[
         "before_content_task_dispatch",
         "after_content_task_batch_terminal",
@@ -165,6 +166,15 @@ class CoordinatorContentBatchSnapshotStep(BaseStep):
     node_paths: list[str] = Field(default_factory=list)
 
     def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
+        if not repo_flow_boundary_checkpoints_enabled(ctx.app):
+            return ctx.complete_step(
+                CoordinatorContentBatchSnapshotStepResult(
+                    outcome="skipped",
+                    checkpoint_kind=self.checkpoint_kind,
+                    node_paths=list(self.node_paths),
+                    summary="Repo/Coordinator flow-boundary automatic checkpoints are disabled.",
+                )
+            )
         flow = _load_native_coordinator_flow(ctx)
         input_model = _require_native_coordinator_input(flow.input)
         repo_root = _repo_root(input_model)

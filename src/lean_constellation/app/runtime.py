@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import current_thread
 
+from agent_runtime_kit.agent.report_policy import AgentTraceReportPolicy, TraceReportPersistence
 from agent_runtime_kit.agent.snapshots import AgentSnapshotService
 from agent_runtime_kit.agent.service import AgentService
 from agent_runtime_kit.flow.models import BaseStep
@@ -19,7 +20,7 @@ from agent_runtime_kit.runtime import ARKServices
 from agent_runtime_kit.runtime.mcp_tool_gateway import RuntimeMcpToolGateway
 from agent_runtime_kit.runtime.services import RuntimePauseController
 
-from lean_constellation.app.config import LeanAppConfig
+from lean_constellation.app.config import AgentTraceReportAppConfig, AutomaticCheckpointAppConfig, LeanAppConfig
 from lean_constellation.agents.ark import build_ark_agent_type_registry
 from lean_constellation.agents.models import AgentTypeSpec
 from lean_constellation.agents.registry import build_agent_type_specs
@@ -58,6 +59,8 @@ def create_app_runtime_services(
     max_concurrent_steps: int = 1,
     start_paused: bool = False,
     test_control_enabled: bool = False,
+    automatic_checkpoints: AutomaticCheckpointAppConfig | None = None,
+    agent_trace_reports: AgentTraceReportAppConfig | None = None,
 ) -> LeanRuntimeServices:
     """Create a runtime with ARK Flow/Step/Agent services and Lean app services."""
 
@@ -110,6 +113,12 @@ def create_app_runtime_services(
         test_control_enabled=test_control_enabled,
     )
     runtime_gateway.delegate.app = runtime.app
+    runtime.app.automatic_checkpoints = automatic_checkpoints or AutomaticCheckpointAppConfig()
+    trace_config = agent_trace_reports or AgentTraceReportAppConfig()
+    trace_report_policy = AgentTraceReportPolicy(
+        persistence=TraceReportPersistence(trace_config.persistence),
+        include_in_snapshots=trace_config.include_in_snapshots,
+    )
 
     ark.agent_service = AgentService(
         root,
@@ -118,6 +127,7 @@ def create_app_runtime_services(
         ark_services=ark,
         app_services=runtime.app,
         start_paused=start_paused,
+        trace_report_policy=trace_report_policy,
     )
     ark.flow_service = FlowService(
         root,
@@ -146,6 +156,7 @@ def create_app_runtime_services(
         agent_service=ark.agent_service,
         ark_services=ark,
         app_services=runtime.app,
+        trace_report_policy=trace_report_policy,
     )
     ark_snapshot_provider = ArkRuntimeSnapshotProviderAdapter(runtime, ark.snapshot_service)
     runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(runtime, ark_snapshot_provider)
@@ -186,6 +197,8 @@ def create_app_runtime_from_config(
             start_paused=start_paused,
             native_lake_project_config=config.native_lake_project,
             workspace_config=config.workspace_config,
+            automatic_checkpoints=config.automatic_checkpoints,
+            agent_trace_reports=config.agent_trace_reports,
         )
     return create_app_runtime_services(
         runtime_root=runtime_root,
@@ -202,6 +215,8 @@ def create_app_runtime_from_config(
         max_concurrent_steps=config.max_concurrent_steps,
         start_paused=start_paused,
         test_control_enabled=test_control_enabled,
+        automatic_checkpoints=config.automatic_checkpoints,
+        agent_trace_reports=config.agent_trace_reports,
     )
 
 
@@ -239,6 +254,8 @@ def create_test_control_runtime_services(
     max_concurrent_flow_advances: int = 1,
     max_concurrent_steps: int = 1,
     start_paused: bool = True,
+    automatic_checkpoints: AutomaticCheckpointAppConfig | None = None,
+    agent_trace_reports: AgentTraceReportAppConfig | None = None,
 ) -> LeanRuntimeServices:
     """Create a runtime profile for paused, externally controlled scheduler tests."""
 
@@ -280,6 +297,8 @@ def create_test_control_runtime_services(
         max_concurrent_steps=max_concurrent_steps,
         start_paused=start_paused,
         test_control_enabled=True,
+        automatic_checkpoints=automatic_checkpoints,
+        agent_trace_reports=agent_trace_reports,
     )
 
 
@@ -306,6 +325,8 @@ class ApplicationSnapshotRuntime:
     _NODE_SCOPE_KINDS = {
         RepoCheckpointKind.BEFORE_CONTENT_TASK_DISPATCH,
         RepoCheckpointKind.AFTER_CONTENT_TASK_BATCH_TERMINAL,
+        RepoCheckpointKind.AFTER_CONTENT_PREPARATION_TERMINAL,
+        RepoCheckpointKind.AFTER_CONTENT_DECL_ROUND_TERMINAL,
     }
 
     def __init__(

@@ -5,9 +5,11 @@ from pathlib import Path
 from agent_runtime_kit.flow.contexts import StableStepTerminalContext
 from agent_runtime_kit.flow.models import FlowStatus
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
+from lean_constellation.app.config import AutomaticCheckpointAppConfig
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus, RepoWorkMode
+from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
@@ -135,8 +137,27 @@ def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object, FakeRuntimeSt
     return flow_runtime, lean_runtime, runtime_stability, ark_snapshot
 
 
-def _start_coordinator(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
+def _start_coordinator(
+    runtime: FakeLeanFlowRuntime,
+    repo_root: Path,
+    *,
+    max_parallel_content_node_tasks: int | None = None,
+) -> str:
     repo_root.mkdir(parents=True, exist_ok=True)
+    run_context = None
+    if max_parallel_content_node_tasks is not None:
+        run_context = RepoRunContext(
+            start_kind="initial",
+            run_spec=RepoRunSpec(
+                run_objective="Run coordinator concurrency test.",
+                target_proof_availability=ProofAvailability.PROVED,
+                work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+                source_scope=SourceScope(mode="none"),
+                index_policy="reuse",
+                root_interface_policy="reuse",
+                max_parallel_content_node_tasks=max_parallel_content_node_tasks,
+            ),
+        )
     return runtime.start_flow(
         "native_repo_coordinator",
         {
@@ -144,6 +165,7 @@ def _start_coordinator(runtime: FakeLeanFlowRuntime, repo_root: Path) -> str:
             "repo_root": str(repo_root),
             "start_mode": "admin_start",
             "start_reason": "unit",
+            "run_context": run_context.model_dump(mode="json") if run_context is not None else None,
         },
         scope_id=f"repo:{repo_root.name}",
     )
@@ -288,6 +310,108 @@ def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> 
     assert len(runtime.agent_service.start_records) == 2
     assert runtime.agent_service.start_records[0].agent_id == runtime.agent_service.start_records[1].agent_id
     assert "The child workflows you requested have finished." in (runtime.agent_service.start_records[1].prompt or "")
+
+
+def test_repo_flow_boundary_group_disabled_skips_coordinator_snapshot_step(tmp_path: Path) -> None:
+    runtime, lean_runtime, runtime_stability, ark_snapshot = _runtime(tmp_path)
+    lean_runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        repo_flow_boundaries_enabled=False,
+    )
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id = _start_coordinator(runtime, repo_root)
+    node_id = _ensure_main_core_node(lean_runtime, repo_root)
+    runtime.agent_service.queue_submission(
+        CoordinatorContentTasksSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_content_tasks",
+            tool_name="submit_content_node_tasks",
+            repo_key="Repo",
+            node_paths=["Main.Core"],
+            requests=[
+                build_content_node_task_request(
+                    repo_key="Repo",
+                    node_path="Main.Core",
+                    scope_id=f"repo:Repo:node:{node_id}",
+                )
+            ],
+            continuation="wait_for_callback",
+            summary="Run Main.Core.",
+        )
+    )
+
+    _advance_and_run(runtime, flow_id)
+    snapshot_step_id = _advance_and_run(runtime, flow_id)
+
+    step = runtime.flow_service.get_step(snapshot_step_id)
+    assert step.result.outcome == "skipped"
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "dispatch_content_tasks"
+    assert runtime_stability.calls == []
+    assert ark_snapshot.created == []
+
+
+def test_coordinator_enforces_content_task_batch_parallelism_from_run_context(tmp_path: Path) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    first_id = _ensure_main_core_node(lean_runtime, repo_root)
+    second = lean_runtime.node.create_content_node(
+        repo_root,
+        path="Main.Other",
+        goal="Other goal",
+        boundary="Other boundary",
+        objective="Build other.",
+        success_criteria="Other ready.",
+    )
+    assert second.ok and second.value is not None
+    requests = [
+        build_content_node_task_request(
+            repo_key="Repo",
+            node_path="Main.Core",
+            scope_id=f"repo:Repo:node:{first_id}",
+            max_parallel_content_node_tasks=2,
+        ),
+        build_content_node_task_request(
+            repo_key="Repo",
+            node_path="Main.Other",
+            scope_id=f"repo:Repo:node:{second.value.node_id}",
+            max_parallel_content_node_tasks=2,
+        ),
+    ]
+
+    accepted_flow_id = _start_coordinator(runtime, repo_root, max_parallel_content_node_tasks=2)
+    runtime.agent_service.queue_submission(
+        CoordinatorContentTasksSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_content_tasks",
+            tool_name="submit_content_node_tasks",
+            repo_key="Repo",
+            node_paths=["Main.Core", "Main.Other"],
+            requests=requests,
+            continuation="wait_for_callback",
+            summary="Run two content tasks.",
+        )
+    )
+    _advance_and_run(runtime, accepted_flow_id)
+    accepted = runtime.flow_service.get_flow(accepted_flow_id)
+    assert accepted.error is None
+    assert accepted.state.position.phase == "before_content_task_dispatch_snapshot"
+
+    rejected_flow_id = _start_coordinator(runtime, repo_root, max_parallel_content_node_tasks=1)
+    runtime.agent_service.queue_submission(
+        CoordinatorContentTasksSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_content_tasks",
+            tool_name="submit_content_node_tasks",
+            repo_key="Repo",
+            node_paths=["Main.Core", "Main.Other"],
+            requests=requests,
+            continuation="wait_for_callback",
+            summary="Run two content tasks.",
+        )
+    )
+    _advance_and_run(runtime, rejected_flow_id)
+    rejected = runtime.flow_service.get_flow(rejected_flow_id)
+    assert rejected.status is FlowStatus.FAILED
+    assert rejected.error.error_type == "content_task_batch_parallelism_exceeded"
 
 
 def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:

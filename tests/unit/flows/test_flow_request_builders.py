@@ -29,6 +29,7 @@ class ContentNodeTaskParams(_StrictParams):
     node_path: str
     contract_version: int | None = None
     task_mode: str
+    max_parallel_content_node_tasks: int
 
 
 class PreparationReconParams(_StrictParams):
@@ -64,6 +65,7 @@ def test_flow_request_builders_preserve_business_params() -> None:
     assert content.flow_type == "content_node_task"
     assert content.params["node_path"] == "Main.Core"
     assert content.params["contract_version"] == 2
+    assert content.params["max_parallel_content_node_tasks"] == 1
 
     recon = build_preparation_recon_request(recon_kind="mathlib", repo_key="Repo", node_path="Main.Core", scope_id="scope_node")
     assert recon.flow_type == "mathlib_recon"
