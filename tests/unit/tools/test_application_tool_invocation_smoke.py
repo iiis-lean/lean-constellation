@@ -208,7 +208,7 @@ def _create_public_decl(
         objective=f"Create {name}.",
         summary=f"{name} summary.",
         public=public,
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
     assert created.ok and created.value is not None
     return created.value
@@ -1665,7 +1665,7 @@ def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) 
         kind="theorem",
         objective="Create main_result.",
         summary="Main result.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     ).ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic", round_id=round_record.value.round_id).ok
 
@@ -1748,7 +1748,7 @@ def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: 
         kind="theorem",
         objective="Create main_result.",
         summary="Main result.",
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     ).ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic", round_id=round_record.value.round_id).ok
     assert runtime.decl_graph.write_statement_nl(

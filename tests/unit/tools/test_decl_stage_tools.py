@@ -388,7 +388,7 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
             kind="theorem",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.DECLARED,
+            target_state=DeclState.DECLARED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -504,7 +504,7 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
             kind="theorem",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.PROVED,
+            target_state=DeclState.PROVED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -640,7 +640,7 @@ def test_proof_formal_dep_tool_rejects_unproved_same_round_dep(tmp_path: Path) -
             kind="theorem",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.PROVED,
+            target_state=DeclState.PROVED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -831,7 +831,7 @@ def test_statement_nl_review_tools_record_marks_and_report_status(tmp_path: Path
             kind="theorem" if decl_name == "main_result" else "definition",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.DECLARED,
+            target_state=DeclState.DECLARED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -902,7 +902,7 @@ def test_proof_nl_review_tools_record_marks_and_report_status(tmp_path: Path) ->
             kind="theorem",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.PROVED,
+            target_state=DeclState.PROVED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -981,7 +981,7 @@ def test_proof_formal_review_tools_record_marks_with_next_action(tmp_path: Path)
             kind="theorem",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.PROVED,
+            target_state=DeclState.PROVED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -1060,7 +1060,7 @@ def test_statement_formal_deps_tool_updates_only_current_batch_statement_deps(tm
             kind="theorem",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.DECLARED,
+            target_state=DeclState.DECLARED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -1147,7 +1147,7 @@ def test_statement_formal_review_tools_record_stage_specific_marks_and_validate_
             kind="theorem" if decl_name == "main_result" else "definition",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.DECLARED,
+            target_state=DeclState.DECLARED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok

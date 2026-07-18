@@ -37,7 +37,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     assert initial_build.ok, initial_build.summary
     active_resource_key = ws.create_active_resource(target_kind="local_file", target=str(ws.resources.local_file))
     _prepare_committed_source_index(ws)
-    round_fixture = ws.create_decl_round(end_after_state=DeclState.PROVED)
+    round_fixture = ws.create_decl_round(target_state=DeclState.PROVED)
     support = ws.runtime.decl_graph.create_decl(
         ws.provider_repo,
         node_path=round_fixture.node_path,
@@ -47,7 +47,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         objective="Create supporting_statement.",
         summary="Supporting statement for strict ToolSweep dependency coverage.",
         public=False,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert support.ok, support.issues
     started = ws.runtime.decl_graph.start_round(
@@ -97,7 +97,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         "set_statement_nl",
         {
             "decl_name": round_fixture.decl_name,
-            "nl": "The strict Runtime Matrix declaration states True.",
+            "text": "The strict Runtime Matrix declaration states True.",
         },
         runtime_context=statement_nl_ctx,
         recorder=evidence_recorder,
@@ -412,7 +412,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         "set_proof_nl",
         {
             "decl_name": round_fixture.decl_name,
-            "proof_nl": "Use triviality.",
+            "text": "Use triviality.",
         },
         runtime_context=proof_nl_ctx,
         recorder=evidence_recorder,

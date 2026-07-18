@@ -66,7 +66,7 @@ def create_round_with_decl(
     *,
     decl_name: str = "main_result",
     kind: str = "theorem",
-    end_after_state: DeclState = DeclState.PROVED,
+    target_state: DeclState = DeclState.PROVED,
     require_target_state_satisfied: bool = True,
     public: bool = False,
 ) -> tuple[str, str, int]:
@@ -88,7 +88,7 @@ def create_round_with_decl(
         objective=f"Create {decl_name}.",
         summary=f"{decl_name} summary.",
         public=public,
-        end_after_state=end_after_state,
+        target_state=target_state,
         require_target_state_satisfied=require_target_state_satisfied,
     )
     assert created.ok, created.issues

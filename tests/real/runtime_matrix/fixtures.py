@@ -15,6 +15,7 @@ from agent_runtime_kit.agent.homes import HomeCreateSpec
 from lean_constellation.app import LeanAdminApi, create_test_control_runtime_services
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
+from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
@@ -348,7 +349,7 @@ class RuntimeMatrixWorkspace:
         node_path: str = CONTENT_NODE_PATH,
         decl_name: str = "main_result",
         kind: str = "theorem",
-        end_after_state: DeclState = DeclState.PROVED,
+        target_state: DeclState = DeclState.PROVED,
         public: bool = False,
     ) -> DeclRoundFixture:
         repo_root = repo_root or self.provider_repo
@@ -375,7 +376,7 @@ class RuntimeMatrixWorkspace:
             objective=f"Create {decl_name}.",
             summary=f"{decl_name} summary.",
             public=public,
-            end_after_state=end_after_state,
+            target_state=target_state,
         )
         assert created.ok, created.issues
         return DeclRoundFixture(
@@ -504,6 +505,12 @@ def create_runtime_matrix_workspace(
         max_concurrent_steps=1,
         start_paused=True,
     )
+    initialized_provider = runtime.repo_workspace.metadata.set_repo_format(
+        provider_repo,
+        repo_format=RepoFormat.NATIVE,
+        reason="Runtime Matrix fixture provides an existing minimal native Lake project.",
+    )
+    assert initialized_provider.ok, initialized_provider.issues
     return RuntimeMatrixWorkspace(
         tmp_path=tmp_path,
         runtime_root=runtime_root,

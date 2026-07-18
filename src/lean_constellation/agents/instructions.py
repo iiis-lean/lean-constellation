@@ -128,7 +128,21 @@ Declaration work inside a content node should follow an explicit strategy. Befor
 A declaration round is a concrete batch of declaration changes to attempt next. It may create, update, or delete declarations when safe.""",
     "decl.stage_pipeline_context": """## Declaration Stage Pipeline
 
-A tracked declaration represents one mathematical object. For theorem-like declarations, first clarify the natural-language statement, then formalize the Lean statement, then design the proof idea, and finally formalize the proof in Lean.
+A tracked declaration represents one mathematical object. Its accepted-state pipeline is fixed:
+
+`planned --Statement NL--> specified`
+
+`specified --Statement Formal--> declared`
+
+`declared --Proof NL--> proof_planned`
+
+`proof_planned --Proof Formal--> proved`
+
+Each create or update runs the half-open interval (reset_to_state, target_state]. The Flow, not an individual Agent, selects the required stages in that interval. target_state is the round's global destination; it never expands the authority of the current stage. Later-stage artifacts may legitimately be absent while an earlier stage is running.
+
+Work only on the current stage transition. In particular, Statement Formal owns `specified -> declared`: it must capture a valid formal statement, but it must not require a proof plan or proof code merely because `target_state=proved`. Proof NL and Proof Formal own those later artifacts. Reviewers judge only their current layer; the deterministic final audit judges the global target.
+
+Use blocked only for a concrete prerequisite that prevents the current stage and lies outside that stage's authority. Missing artifacts that belong to a later scheduled stage are not blockers.
 
 Do not treat a later stage as a place to silently rewrite the meaning accepted by an earlier stage. Dependencies should describe real mathematical or Lean dependencies.""",
     "decl.identity_projection_context": """## Declaration Identity and Lean Projection
@@ -447,7 +461,7 @@ Maintain strategies before planning rounds. Use `ensure_open_decl_strategy` to c
 
 After a DeclGraphRoundFlow callback, close out the returned round before starting another round. Read the terminal round state, write per-declaration summaries with `write_decl_change_summary`, write the round summary with `write_decl_round_summary`, commit the terminal closeout with `mark_decl_round_terminal`, then re-read truth before deciding whether to plan another round, run preparation, or complete the content node task. These closeout tools are ordinary state tools, not submit tools.
 
-When planning a new round, ensure an open strategy, create a draft, add small create/update/delete changes, validate the draft with `validate_decl_round_draft`, and submit with `submit_current_decl_round`. A create uses a flat `Decl.name`, catalog summary, mathematical objective, kind, visibility, and target state; native module/full-name identity is derived later, not planned here. Every create/update change must choose end_after_state and require_target_state_satisfied. After an accepted round submit, stop. Do not choose ready as a planned declaration state, and do not hide important reusable or mathematical helper lemmas as untracked local Lean code.
+When planning a new round, ensure an open strategy, create a draft, add small create/update/delete changes, validate the draft with `validate_decl_round_draft`, and submit with `submit_current_decl_round`. A create uses a flat `Decl.name`, catalog summary, mathematical objective, kind, visibility, and target state; native module/full-name identity is derived later, not planned here. Every create/update change must choose target_state and require_target_state_satisfied. For updates, choose an optional committed base_revision and a reset_to_state boundary only when the default is not the intended range; the Flow runs (reset_to_state, target_state]. After an accepted round submit, stop. Do not choose ready as a planned declaration state, and do not hide important reusable or mathematical helper lemmas as untracked local Lean code.
 
 Before submitting ready, call `check_current_content_node_completion`. Call `submit_content_node_ready` only when the gate passes. Call `submit_content_node_blocked` when required Coordinator action, external provider work, missing source material, or another prerequisite outside your authority is needed. Call `submit_content_node_failed` only when the current automated route is exhausted and the reason is not an external prerequisite. After any accepted terminal submit, stop.
 
@@ -530,7 +544,7 @@ Review current statement_formal candidates for semantic equivalence to the accep
 
 Process every assigned declaration in the current review batch. For each declaration, inspect the accepted natural-language statement, current primary formal statement preview/code, statement dependencies, module/full-name identity, relevant source/resource evidence, visible local declarations, node contract context, and Mathlib context. Use `read_visible_decl_lean_file` only when the visible primary projection is insufficient. Check that the Lean statement preserves the accepted meaning without strengthening, weakening, dropping hypotheses, adding hidden assumptions, changing binders or typeclass requirements incorrectly, or depending on unavailable or unnecessary declarations. For theorem-like declarations, a statement-stage proof placeholder may exist; judge the statement shape and dependencies, not proof completion.
 
-When end_after_state=declared and target satisfaction is required, reject candidates whose current statement layer appears unable to satisfy declared-level requirements. When end_after_state=proved, do not require proved-level closure at statement review; proof stages and deterministic gates handle proof completion. Use `inspect_current_stage_review_status` before final submit when useful.
+When target_state=declared and target satisfaction is required, reject candidates whose current statement layer appears unable to satisfy declared-level requirements. When target_state=proved, do not require proved-level closure at statement review; proof stages and deterministic gates handle proof completion. Use `inspect_current_stage_review_status` before final submit when useful.
 
 Record passed decisions with `record_statement_formal_review_passed`. Record rejected decisions with `record_statement_formal_review_rejected`, including concrete semantic, dependency, visibility, or evidence issue categories and actionable required changes. For typed dependency problems, prefer specific categories such as unavailable_repo_decl_dependency, unresolved_mathlib_dependency, ambiguous_mathlib_dependency, proof_only_dependency_in_statement_deps, and same_round_repo_decl_dependency instead of a generic dependency label. Then call `submit_stage_review` with a concise stage-level summary.
 

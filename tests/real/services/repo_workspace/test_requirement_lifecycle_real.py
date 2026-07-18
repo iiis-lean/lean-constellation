@@ -200,7 +200,7 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
             objective=f"Create {name}.",
             summary=f"{name} summary.",
             public=True,
-            end_after_state=DeclState.DECLARED,
+            target_state=DeclState.DECLARED,
         )
         assert created.ok, created.issues
     started = service.runtime.decl_graph.start_round(provider, node_path="Main.Core", round_id=round_record.value.round_id)

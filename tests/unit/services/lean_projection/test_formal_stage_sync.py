@@ -93,7 +93,7 @@ def _setup_theorem_round(repo_root: Path, runtime: LeanRuntimeServices) -> str:
         objective="Create a trivial theorem.",
         summary="A trivial theorem used by formal stage sync tests.",
         public=True,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
     started = runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_record.value.round_id)

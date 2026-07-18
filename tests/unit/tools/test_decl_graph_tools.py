@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from lean_constellation.tools import build_application_tool_specs
+from lean_constellation.tools.args import DeclUpdateArgs
 
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
@@ -57,6 +61,38 @@ def test_decl_graph_tools_are_registered() -> None:
     }
 
     assert_tools_registered(expected)
+
+
+def test_decl_update_tool_schema_exposes_new_transition_fields_and_rejects_legacy_fields() -> None:
+    parsed = DeclUpdateArgs.model_validate(
+        {
+            "round_id": "round_1",
+            "name": "main_result",
+            "objective": "Continue proof work.",
+            "target_state": "proved",
+            "base_revision": 2,
+            "reset_to_state": "declared",
+        }
+    )
+    assert parsed.base_revision == 2
+    assert parsed.reset_to_state == "declared"
+    schema = DeclUpdateArgs.model_json_schema()["properties"]
+    assert "base_revision" in schema
+    assert "reset_to_state" in schema
+    assert "target_state" in schema
+    assert "start_before_state" not in schema
+    assert "end_after_state" not in schema
+
+    with pytest.raises(ValidationError):
+        DeclUpdateArgs.model_validate(
+            {
+                "round_id": "round_1",
+                "name": "main_result",
+                "objective": "Legacy request.",
+                "target_state": "proved",
+                "start_before_state": "declared",
+            }
+        )
 
 
 def test_decl_graph_groups_expose_expected_tools() -> None:

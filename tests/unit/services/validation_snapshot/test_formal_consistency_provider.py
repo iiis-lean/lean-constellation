@@ -98,7 +98,7 @@ def _setup_formal_captures(runtime: LeanRuntimeServices, repo_root: Path) -> Pat
         objective="Create a trivial theorem.",
         summary="A trivial theorem for formal consistency tests.",
         public=False,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
     assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_record.value.round_id).ok

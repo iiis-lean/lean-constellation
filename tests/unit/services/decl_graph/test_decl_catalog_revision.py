@@ -59,6 +59,7 @@ def _seed_committed_decl(
     round_id: str,
     name: str,
     deps: list[str] | None = None,
+    state: DeclState = DeclState.PROVED,
 ) -> None:
     service = make_runtime().decl_graph
     created = service.create_decl(
@@ -69,16 +70,16 @@ def _seed_committed_decl(
         kind="theorem",
         objective=f"Create {name}.",
         summary=f"{name} summary.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED if state == DeclState.PROVED else DeclState.DECLARED,
     )
     assert created.ok
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, revision=1)
     assert revision.ok and revision.value is not None
-    revision.value.state = DeclState.PROVED
+    revision.value.state = state
     revision.value.statement_deps = []
     revision.value.proof_deps = deps or []
     _write_revision(tmp_path, decl_name=name, revision=revision.value)
-    assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=DeclState.PROVED).ok
+    assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=state).ok
 
 
 def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> None:
@@ -95,12 +96,12 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
         objective="Create the main theorem declaration.",
         summary="The main theorem.",
         public=True,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
 
     assert change.ok and change.value is not None
     assert change.value.kind == DeclChangeKind.CREATE
-    assert change.value.end_after_state == DeclState.PROVED
+    assert change.value.target_state == DeclState.PROVED
     assert change.value.require_target_state_satisfied is True
     assert change.value.target_revision == 1
 
@@ -154,7 +155,7 @@ def test_create_decl_revision_view_records_relaxed_satisfaction_target(tmp_path:
         kind="theorem",
         objective="Create a top-down theorem shell.",
         summary="The proof may depend on helper lemmas planned later.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
         require_target_state_satisfied=False,
     )
 
@@ -218,13 +219,14 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
         round_id=update_round_id,
         name="main_result",
         objective="Redo the proof.",
-        start_before_state=DeclState.DECLARED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.DECLARED,
+        target_state=DeclState.PROVED,
     )
 
     assert update.ok and update.value is not None
     assert update.value.kind == DeclChangeKind.UPDATE
-    assert update.value.start_before_state == DeclState.DECLARED
+    assert update.value.base_revision == 1
+    assert update.value.reset_to_state == DeclState.DECLARED
     assert update.value.target_revision == 2
 
     opened = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=2)
@@ -236,6 +238,123 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     assert opened.value.proof_lean_code is None
     assert opened.value.statement_deps == ["supporting_lemma"]
     assert opened.value.proof_deps == []
+    assert opened.value.change is not None
+    assert opened.value.change.base_revision == 1
+
+
+def test_open_decl_update_defaults_to_committed_declared_head_and_starts_proof_pipeline(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="main_result", state=DeclState.DECLARED)
+    service = make_runtime().decl_graph
+    _, update_round_id = _create_round(tmp_path, objective="Prove the accepted statement.")
+
+    update = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=update_round_id,
+        name="main_result",
+        objective="Prove it.",
+        target_state=DeclState.PROVED,
+    )
+
+    assert update.ok, update.issues
+    assert update.value is not None
+    assert update.value.base_revision == 1
+    assert update.value.reset_to_state == DeclState.DECLARED
+    opened = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=2)
+    assert opened.ok and opened.value is not None
+    assert opened.value.state == DeclState.DECLARED
+
+
+def test_open_decl_update_requires_explicit_redo_when_base_already_reaches_target(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="main_result")
+    service = make_runtime().decl_graph
+    _, update_round_id = _create_round(tmp_path, objective="Redo proved work.")
+
+    update = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=update_round_id,
+        name="main_result",
+        objective="Redo it.",
+        target_state=DeclState.PROVED,
+    )
+
+    assert not update.ok
+    assert update.issues[0].kind == "decl_update_reset_required"
+
+
+def test_open_decl_update_can_branch_from_older_committed_base_with_monotonic_revision(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="main_result")
+    service = make_runtime().decl_graph
+    _, second_round_id = _create_round(tmp_path, objective="Create revision two.")
+    second = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=second_round_id,
+        name="main_result",
+        objective="Redo proof.",
+        reset_to_state=DeclState.DECLARED,
+        target_state=DeclState.PROVED,
+    )
+    assert second.ok and second.value is not None
+    assert service.commit_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=2,
+        state=DeclState.PROVED,
+    ).ok
+    _, third_round_id = _create_round(tmp_path, objective="Branch from revision one.")
+
+    third = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=third_round_id,
+        name="main_result",
+        objective="Try an alternate proof from the original revision.",
+        base_revision=1,
+        reset_to_state=DeclState.DECLARED,
+        target_state=DeclState.PROVED,
+    )
+
+    assert third.ok, third.issues
+    assert third.value is not None
+    assert third.value.target_revision == 3
+    assert third.value.base_revision == 1
+    decl = service.get_decl(tmp_path, node_path="Main.Topic.Core", name="main_result")
+    assert decl.ok and decl.value is not None
+    assert decl.value.current_revision == 3
+    assert decl.value.revision_ids == [1, 2, 3]
+    revision_two = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=2)
+    assert revision_two.ok and revision_two.value is not None
+    assert revision_two.value.status == "committed"
+
+
+def test_open_decl_update_rejects_reset_later_than_base_state(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(tmp_path, round_id=round_id, name="main_result", state=DeclState.DECLARED)
+    service = make_runtime().decl_graph
+    _, update_round_id = _create_round(tmp_path, objective="Invalid reset.")
+
+    update = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=update_round_id,
+        name="main_result",
+        objective="Skip proof planning.",
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
+    )
+
+    assert not update.ok
+    assert update.issues[0].kind == "decl_update_reset_above_base"
 
 
 def test_open_decl_update_rejects_open_current_revision(tmp_path: Path) -> None:
@@ -258,7 +377,7 @@ def test_open_decl_update_rejects_open_current_revision(tmp_path: Path) -> None:
         round_id=round_id,
         name="main_result",
         objective="Update it.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
 
     assert not update.ok
@@ -303,8 +422,8 @@ def test_round_draft_validation_rejects_internal_update_dependency(tmp_path: Pat
         round_id=update_round_id,
         name="A",
         objective="Update A.",
-        start_before_state=DeclState.PROVED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
     ).ok
     assert service.open_decl_update(
         tmp_path,
@@ -312,8 +431,8 @@ def test_round_draft_validation_rejects_internal_update_dependency(tmp_path: Pat
         round_id=update_round_id,
         name="B",
         objective="Update B.",
-        start_before_state=DeclState.PROVED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
     ).ok
 
     gate = service.validate_round_draft(tmp_path, node_path="Main.Topic.Core", round_id=update_round_id)

@@ -56,7 +56,7 @@ def test_same_round_new_decl_dependency_uses_exact_round_revision(tmp_path: Path
         kind="theorem",
         objective="Create B.",
         summary="B summary.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
     assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
@@ -86,12 +86,28 @@ def test_same_round_update_historical_anchor_uses_semantic_resolver(tmp_path: Pa
         round_id=round_id,
         name="B",
         objective="Keep B proved.",
-        start_before_state=DeclState.PROVED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
     )
     assert updated.ok, updated.issues
     assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
-    assert lean_runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name="B", state=DeclState.PROVED).ok
+    assert write_proof_formal_for_test(
+        lean_runtime,
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        decl_name="B",
+        lean_code="theorem B : True := by trivial",
+        lean_check=lean_check_payload(),
+    ).ok
+    assert lean_runtime.decl_graph.advance_stage_state(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        stage="proof_formal",
+        decl_names=["B"],
+    ).ok
+    assert lean_runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name="B").ok
     _write_proved_round_theorem(
         lean_runtime,
         repo_root,
@@ -126,7 +142,7 @@ def test_same_round_dependency_wrong_revision_is_rejected(tmp_path: Path) -> Non
         kind="theorem",
         objective="Create B.",
         summary="B summary.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
     assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
@@ -156,7 +172,7 @@ def test_same_round_dependency_wrong_stage_is_rejected(tmp_path: Path) -> None:
         kind="theorem",
         objective="Create B.",
         summary="B summary.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
     assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok

@@ -223,7 +223,7 @@ def test_node_delete_core_service_preserves_open_work_blockers(tmp_path: Path) -
         kind="definition",
         objective="Create a private helper definition.",
         summary="A private helper.",
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     ).ok
 
     open_graph = service.preview_delete_node(tmp_path, path="Main.Working")

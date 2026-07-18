@@ -100,7 +100,7 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
         kind="lemma",
         objective="Create the supporting lemma.",
         summary="Supporting lemma.",
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
     assert change_a.ok and change_a.value is not None, change_a.issues
     change_b = service.create_decl(
@@ -111,7 +111,7 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
         kind="theorem",
         objective="Create the target theorem.",
         summary="Target theorem.",
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
     assert change_b.ok and change_b.value is not None, change_b.issues
     round_record = service.get_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id)

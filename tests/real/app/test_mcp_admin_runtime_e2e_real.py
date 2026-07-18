@@ -1854,7 +1854,7 @@ def test_real_lean_decl_stage_worker_submit_gate_env_gated(tmp_path: Path) -> No
     strategy_id, round_id, round_index = create_round_with_decl(
         runtime,
         repo_root,
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
     decl_path_view = runtime.lean_projection.decl_file.derive_decl_file_path(
         repo_root,

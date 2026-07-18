@@ -208,11 +208,19 @@ class DeclRevisionChange(StrictModel):
     """Reason and transition metadata embedded in a DeclRevision."""
 
     kind: DeclChangeKind
-    start_before_state: DeclState | None = None
-    end_after_state: DeclState | None = None
+    base_revision: int | None = None
+    reset_to_state: DeclState | None = None
+    target_state: DeclState | None = None
     require_target_state_satisfied: bool = True
     objective: str | None = None
     summary: str | None = None
+
+    @field_validator("base_revision")
+    @classmethod
+    def _base_revision_valid(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("base_revision must be >= 1")
+        return value
 
     @field_validator("objective", "summary")
     @classmethod
@@ -730,8 +738,9 @@ class DeclRevisionToolView(StrictModel):
     change_kind: DeclChangeKind | None = None
     change_objective: str | None = None
     change_summary: str | None = None
-    start_before_state: DeclState | None = None
-    end_after_state: DeclState | None = None
+    base_revision: int | None = None
+    reset_to_state: DeclState | None = None
+    target_state: DeclState | None = None
     require_target_state_satisfied: bool = True
     statement_nl: str | None = None
     statement_origin: list[DeclOriginRef] = Field(default_factory=list)
@@ -780,8 +789,9 @@ class DeclChangeView(StrictModel):
     round_id: str
     kind: DeclChangeKind
     decl_name: str
-    start_before_state: DeclState | None = None
-    end_after_state: DeclState | None = None
+    base_revision: int | None = None
+    reset_to_state: DeclState | None = None
+    target_state: DeclState | None = None
     require_target_state_satisfied: bool = True
     objective: str
     summary: str | None = None

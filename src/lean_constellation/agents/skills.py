@@ -194,15 +194,15 @@ Use bottom-up, top-down, or mixed strategy according to the mathematical structu
 
 Bottom-up strategy:
 
-1. Create or update needed foundations with `end_after_state=declared` and `require_target_state_satisfied=true`.
-2. Prove low-level helper lemmas with `end_after_state=proved` and `require_target_state_satisfied=true` when they can be proved from already satisfied dependencies.
+1. Create or update needed foundations with `target_state=declared` and `require_target_state_satisfied=true`.
+2. Prove low-level helper lemmas with `target_state=proved` and `require_target_state_satisfied=true` when they can be proved from already satisfied dependencies.
 3. Continue upward through intermediate lemmas and final theorem-like outputs.
 
 Top-down strategy:
 
-1. Create the top theorem statement with `end_after_state=declared` and usually `require_target_state_satisfied=true`.
-2. Create helper lemma statements with `end_after_state=declared` and usually `require_target_state_satisfied=true`.
-3. If the top theorem can be proved using helper lemmas whose proofs are not yet satisfied, update the top theorem with `end_after_state=proved` and `require_target_state_satisfied=false`.
+1. Create the top theorem statement with `target_state=declared` and usually `require_target_state_satisfied=true`.
+2. Create helper lemma statements with `target_state=declared` and usually `require_target_state_satisfied=true`.
+3. If the top theorem can be proved using helper lemmas whose proofs are not yet satisfied, update the top theorem with `target_state=proved` and `require_target_state_satisfied=false`.
 4. Prove the helper lemmas. If a helper still needs smaller helper lemmas, recursively apply the same pattern until the dependency closure is satisfied.
 
 Keep require_target_state_satisfied=true by default. Use false only for explicit top-down intermediate proof changes, and make the follow-up dependency-closure plan explicit in the strategy, round objective, or summary.
@@ -227,8 +227,8 @@ Bottom-up skeleton strategy:
 
 Top-down skeleton strategy:
 
-1. Create the top theorem statements first with `end_after_state=declared` and `require_target_state_satisfied=true`.
-2. Then create helper lemma statements expected to support future proofs, also with `end_after_state=declared` and `require_target_state_satisfied=true`.
+1. Create the top theorem statements first with `target_state=declared` and `require_target_state_satisfied=true`.
+2. Then create helper lemma statements expected to support future proofs, also with `target_state=declared` and `require_target_state_satisfied=true`.
 3. Recursively add lower-level helper statements when they clarify the future proof structure.
 
 Do not add proof formal stages merely to link these statements. Future proof relationships belong in strategy rationale, round objective, or summary text unless a real proof artifact is created.
@@ -245,8 +245,8 @@ The goal is the smallest useful declared interface for this content node. Expose
 
 Typical round order:
 
-1. Create or update foundational non-theorem-like declarations with `end_after_state=declared` and `require_target_state_satisfied=true`.
-2. Create public theorem-like statements with `end_after_state=declared` and `require_target_state_satisfied=true`.
+1. Create or update foundational non-theorem-like declarations with `target_state=declared` and `require_target_state_satisfied=true`.
+2. Create public theorem-like statements with `target_state=declared` and `require_target_state_satisfied=true`.
 3. Add only extra declarations required for those public statements to compile and be semantically meaningful.
 
 Do not create proof-only hidden helper lemmas unless they are necessary to state the public interface. Do not enter proof NL or proof formal stages for theorem-like declarations under this mode.
@@ -1156,7 +1156,7 @@ Use `plan_create_decl` for new declarations. Each create change should have:
 - a concise catalog summary distinct from the current round objective;
 - visibility appropriate for the node contract;
 - a concise mathematical objective;
-- end_after_state;
+- target_state;
 - require_target_state_satisfied.
 
 For a native repository, do not plan or guess `Decl.module` or the Lean full declaration name. The system derives the module from repo/node/kind/name and formal capture discovers the full name.
@@ -1165,13 +1165,19 @@ Helper lemmas that matter to later work should be tracked as their own declarati
 
 ## Update Changes
 
-Use `plan_update_decl` when an existing declaration needs a targeted repair or stage advancement. The start-before-state field is the requested reset point for this round, not merely an assertion. For a release-protected declaration it cannot cross beneath the accepted formal statement: restarting proof work at declared is allowed, while resetting statement work is not. A proof-planned reset clears proof artifacts/checks only. Include the intended end_after_state and require_target_state_satisfied.
+Use `plan_update_decl` when an existing declaration needs a targeted repair or stage advancement. The execution interval is (reset_to_state, target_state] over the fixed pipeline:
+
+`planned --Statement NL--> specified --Statement Formal--> declared --Proof NL--> proof_planned --Proof Formal--> proved`.
+
+By default, the service copies the current committed head and uses that base revision's state as reset_to_state. If that base already reaches target_state, you must explicitly choose a lower reset_to_state to describe the redo range. Use optional base_revision only to copy a specific older committed revision; this creates a new monotonic revision and does not move history backward.
+
+reset_to_state is a retained boundary, not a stage to run: reset_to_state=declared and target_state=proved begins with Proof NL. For a release-protected declaration it cannot cross beneath the accepted formal statement. A proof_planned reset retains the proof plan and clears only proof-formal artifacts/checks. Include the intended target_state and require_target_state_satisfied.
 
 Do not use an update change to silently change a previously accepted mathematical meaning.
 
 ## Target Satisfaction
 
-Use `end_after_state=declared` when the round should produce or repair the statement layer. Use `end_after_state=proved` when the round should produce or repair the proof layer for a theorem-like declaration.
+Use `target_state=declared` when the round should produce or repair the statement layer. Use `target_state=proved` when the round should produce or repair the proof layer for a theorem-like declaration.
 
 Keep `require_target_state_satisfied=true` unless the selected mode skill explicitly justifies a state-only intermediate change. A state-only intermediate change must be followed by later changes that make its dependency closure proof-policy satisfied.
 

@@ -30,7 +30,7 @@ def test_decl_round_runs_full_theorem_stage_sequence(tmp_path: Path) -> None:
     strategy_id, round_id, round_index = create_round_with_decl(
         lean_runtime,
         repo_root,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     flow_id = start_decl_round_flow(
         runtime,
@@ -133,7 +133,7 @@ def test_decl_round_final_audit_rejects_unsatisfied_target_by_default(tmp_path: 
     strategy_id, round_id, round_index = create_round_with_decl(
         lean_runtime,
         repo_root,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     flow_id = start_decl_round_flow(
         runtime,
@@ -165,7 +165,7 @@ def test_statement_nl_stage_gate_rejects_missing_statement_dependency(tmp_path: 
     strategy_id, round_id, round_index = create_round_with_decl(
         lean_runtime,
         repo_root,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     flow_id = start_decl_round_flow(
         runtime,
@@ -209,7 +209,7 @@ def test_stage_gate_rejects_reviewer_result_context_mismatch(tmp_path: Path) -> 
     strategy_id, round_id, round_index = create_round_with_decl(
         lean_runtime,
         repo_root,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     flow_id = start_decl_round_flow(
         runtime,
@@ -250,7 +250,7 @@ def test_decl_round_final_audit_allows_unsatisfied_target_when_opted_out(tmp_pat
     strategy_id, round_id, round_index = create_round_with_decl(
         lean_runtime,
         repo_root,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
         require_target_state_satisfied=False,
     )
     flow_id = start_decl_round_flow(
@@ -281,7 +281,7 @@ def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path
     strategy_id, round_id, round_index = create_round_with_decl(
         lean_runtime,
         repo_root,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
         require_target_state_satisfied=False,
     )
     flow_id = start_decl_round_flow(
@@ -334,7 +334,7 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     strategy_id, round_id, round_index = create_round_with_decl(
         lean_runtime,
         repo_root,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
         require_target_state_satisfied=False,
     )
     flow_id = start_decl_round_flow(
@@ -351,18 +351,21 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     prepare_step = runtime.flow_service.get_step(prepare_step_id)
     assert prepare_step.result.outcome == "targets_ready"
     assert prepare_step.result.target_metadata[0].decl_name == "main_result"
-    assert prepare_step.result.target_metadata[0].end_after_state == "proved"
+    assert prepare_step.result.target_metadata[0].target_state == "proved"
     assert prepare_step.result.target_metadata[0].require_target_state_satisfied is False
 
     queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
     advance_and_run(runtime, flow_id)
     worker_record = runtime.agent_service.start_records[-1]
     assert worker_record.variables["target_metadata"][0]["decl_name"] == "main_result"
-    assert worker_record.variables["target_metadata"][0]["end_after_state"] == "proved"
+    assert worker_record.variables["target_metadata"][0]["target_state"] == "proved"
     assert worker_record.variables["target_metadata"][0]["require_target_state_satisfied"] is False
     assert "Target change metadata:" in (worker_record.prompt or "")
+    assert "Pipeline position: planned --Statement NL--> specified" in (worker_record.prompt or "")
+    assert "global target_state does not expand this stage's authority" in (worker_record.prompt or "")
     assert "change_kind=create" in (worker_record.prompt or "")
-    assert "end_after_state=proved" in (worker_record.prompt or "")
+    assert "base_revision=none" in (worker_record.prompt or "")
+    assert "target_state=proved" in (worker_record.prompt or "")
     assert "require_target_state_satisfied=False" in (worker_record.prompt or "")
     assert "current_state=planned" in (worker_record.prompt or "")
     assert "known_statement_deps=[none]" in (worker_record.prompt or "")
@@ -373,6 +376,8 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     reviewer_record = runtime.agent_service.start_records[-1]
     assert reviewer_record.variables["target_metadata"][0]["decl_name"] == "main_result"
     assert "Review decl stage statement_nl." in (reviewer_record.prompt or "")
+    assert "Pipeline position: planned --Statement NL--> specified" in (reviewer_record.prompt or "")
+    assert "Review only this layer" in (reviewer_record.prompt or "")
     assert "Target change metadata:" in (reviewer_record.prompt or "")
     assert "require_target_state_satisfied=False" in (reviewer_record.prompt or "")
 
@@ -473,7 +478,7 @@ def _seed_open_proof_planned_theorem(lean_runtime, repo_root: Path, *, decl_name
         lean_runtime,
         repo_root,
         decl_name=decl_name,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
     assert lean_runtime.decl_graph.write_statement_nl(
@@ -533,8 +538,8 @@ def _prove_committed_helper_theorem(lean_runtime, repo_root: Path, *, decl_name:
         round_id=round_record.value.round_id,
         name=decl_name,
         objective=f"Prove {decl_name}.",
-        start_before_state=DeclState.PROOF_PLANNED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
     )
     assert change.ok, change.issues
     assert lean_runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_record.value.round_id).ok

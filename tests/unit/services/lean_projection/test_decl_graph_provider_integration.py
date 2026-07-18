@@ -55,7 +55,7 @@ def _create_decl_with_statement(repo_root: Path, *, round_id: str, name: str, ki
         objective=f"Create {name}.",
         summary=f"{name} summary.",
         public=True,
-        end_after_state=DeclState.PROVED if kind == "theorem" else DeclState.DECLARED,
+        target_state=DeclState.PROVED if kind == "theorem" else DeclState.DECLARED,
     )
     assert created.ok, created.issues
     started = runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id)
@@ -196,7 +196,7 @@ def test_origin_and_dependency_mutations_roll_truth_and_file_back_atomically(
             objective=f"Create {name}.",
             summary=f"{name} summary.",
             public=True,
-            end_after_state=DeclState.PROVED,
+            target_state=DeclState.PROVED,
         )
         assert created.ok, created.issues
     assert runtime.decl_graph.start_round(tmp_path, node_path=NODE_PATH, round_id=round_id).ok
@@ -379,7 +379,7 @@ def test_native_catalog_rejects_unsupported_decl_kind(tmp_path: Path) -> None:
         objective="Reject unsupported kind.",
         summary="Unsupported kind.",
         public=True,
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
 
     assert not result.ok

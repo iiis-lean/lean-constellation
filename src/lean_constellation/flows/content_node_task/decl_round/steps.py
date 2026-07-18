@@ -57,8 +57,9 @@ class DeclStageTargetMetadata(StrictModel):
     decl_name: str
     change_kind: str | None = None
     objective: str | None = None
-    start_before_state: str | None = None
-    end_after_state: str | None = None
+    base_revision: int | None = None
+    reset_to_state: str | None = None
+    target_state: str | None = None
     require_target_state_satisfied: bool = True
     current_state: str
     current_revision: int
@@ -799,12 +800,12 @@ def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_i
             continue
         if change.kind == DeclChangeKind.DELETE:
             continue
-        if change.end_after_state is None:
+        if change.target_state is None:
             continue
         decl = graph.get_decl(repo_root, node_path=node_path, name=decl_name)
         if not decl.ok or decl.value is None:
             return graph.runtime.foundation.fail(decl.issues)
-        if _stage_required(stage, decl.value.kind, revision, change.end_after_state):
+        if _stage_required(stage, decl.value.kind, revision, change.target_state):
             targets.append(_decl_stage_target_metadata(decl_name, revision))
     return graph.runtime.foundation.ok(sorted(targets, key=lambda item: item.decl_name))
 
@@ -815,8 +816,9 @@ def _decl_stage_target_metadata(decl_name: str, revision: DeclRevision) -> DeclS
         decl_name=decl_name,
         change_kind=change.kind.value if change is not None else None,
         objective=change.objective if change is not None else None,
-        start_before_state=change.start_before_state.value if change is not None and change.start_before_state is not None else None,
-        end_after_state=change.end_after_state.value if change is not None and change.end_after_state is not None else None,
+        base_revision=change.base_revision if change is not None else None,
+        reset_to_state=change.reset_to_state.value if change is not None and change.reset_to_state is not None else None,
+        target_state=change.target_state.value if change is not None and change.target_state is not None else None,
         require_target_state_satisfied=change.require_target_state_satisfied if change is not None else True,
         current_state=revision.state.value,
         current_revision=revision.revision,
@@ -825,15 +827,15 @@ def _decl_stage_target_metadata(decl_name: str, revision: DeclRevision) -> DeclS
     )
 
 
-def _stage_required(stage: DeclStageName, kind: str, revision, end_after_state: DeclState) -> bool:
+def _stage_required(stage: DeclStageName, kind: str, revision, target_state: DeclState) -> bool:
     if stage == "statement_nl":
         return not _state_reaches(revision.state, DeclState.SPECIFIED)
     if stage == "statement_formal":
-        return _state_rank(end_after_state) >= _state_rank(DeclState.DECLARED) and not _state_reaches(revision.state, DeclState.DECLARED)
+        return _state_rank(target_state) >= _state_rank(DeclState.DECLARED) and not _state_reaches(revision.state, DeclState.DECLARED)
     if stage == "proof_nl":
-        return end_after_state == DeclState.PROVED and _is_theorem_like(kind) and not _state_reaches(revision.state, DeclState.PROOF_PLANNED)
+        return target_state == DeclState.PROVED and _is_theorem_like(kind) and not _state_reaches(revision.state, DeclState.PROOF_PLANNED)
     if stage == "proof_formal":
-        return end_after_state == DeclState.PROVED and _is_theorem_like(kind) and not _state_reaches(revision.state, DeclState.PROVED)
+        return target_state == DeclState.PROVED and _is_theorem_like(kind) and not _state_reaches(revision.state, DeclState.PROVED)
     return False
 
 

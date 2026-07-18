@@ -140,7 +140,7 @@ def _create_decl(
     round_id: str,
     name: str,
     public: bool = True,
-    end_after_state: DeclState = DeclState.PROVED,
+    target_state: DeclState = DeclState.PROVED,
 ) -> Any:
     created = runtime.decl_graph.create_decl(
         repo_root,
@@ -151,7 +151,7 @@ def _create_decl(
         objective=f"Create {name}.",
         summary=f"{name} summary.",
         public=public,
-        end_after_state=end_after_state,
+        target_state=target_state,
     )
     assert created.ok and created.value is not None, created.issues
     return created.value
@@ -209,7 +209,7 @@ def _seed_declared_public_theorem(
 ) -> None:
     _create_content_node(runtime, repo_root)
     round_id = _create_round(runtime, repo_root)
-    _create_decl(runtime, repo_root, round_id=round_id, name="main_result", public=True, end_after_state=DeclState.DECLARED)
+    _create_decl(runtime, repo_root, round_id=round_id, name="main_result", public=True, target_state=DeclState.DECLARED)
     assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
     assert runtime.decl_graph.write_statement_nl(
         repo_root,

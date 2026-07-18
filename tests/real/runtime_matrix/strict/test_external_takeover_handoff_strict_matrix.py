@@ -187,7 +187,7 @@ def test_strict_external_takeover_handoff_payload_for_formal_workers(
     _require_lake_and_lean()
 
     statement_ws = _formal_workspace(tmp_path / "statement_formal")
-    statement_round = statement_ws.create_decl_round(end_after_state=DeclState.PROVED)
+    statement_round = statement_ws.create_decl_round(target_state=DeclState.PROVED)
     statement_flow_id = _start_decl_round(statement_ws, statement_round)
     _complete_statement_nl_stage_for_real_codex(statement_ws, statement_flow_id, statement_round, evidence_recorder)
     run_next_created_step(statement_ws.admin, statement_flow_id, timeout_s=20)
@@ -215,7 +215,7 @@ def test_strict_external_takeover_handoff_payload_for_formal_workers(
     )
 
     proof_ws = _formal_workspace(tmp_path / "proof_formal")
-    proof_round = proof_ws.create_decl_round(end_after_state=DeclState.PROVED)
+    proof_round = proof_ws.create_decl_round(target_state=DeclState.PROVED)
     proof_flow_id = _start_decl_round(proof_ws, proof_round)
     _complete_statement_nl_stage_for_real_codex(proof_ws, proof_flow_id, proof_round, evidence_recorder)
     _complete_statement_formal_stage_for_real_codex(proof_ws, proof_flow_id, proof_round, evidence_recorder)

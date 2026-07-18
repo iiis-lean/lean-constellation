@@ -572,6 +572,8 @@ def _stage_worker_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRound
         f"Mode: {mode}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
         f"Target declarations: {targets}.\n"
+        f"Pipeline position: {_stage_pipeline_position(stage)}\n"
+        "The Flow owns later stages; global target_state does not expand this stage's authority. Missing later-stage artifacts are expected here.\n"
         f"Target change metadata:\n{metadata}\n"
         f"Retry attempt: {state.current_retry_count} of {state.max_retries_per_stage}. "
         f"Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}."
@@ -594,6 +596,8 @@ def _stage_reviewer_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRou
         f"Mode: {mode}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
         f"Target declarations: {targets}.\n"
+        f"Pipeline position: {_stage_pipeline_position(stage)}\n"
+        "Review only this layer. The deterministic final audit, not this review, decides whether global target_state was reached.\n"
         f"Target change metadata:\n{metadata}\n"
         f"Review attempt: {state.current_retry_count}. Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}.\n"
         f"Worker summary: {worker_summary or '(not provided)'}.\n"
@@ -628,8 +632,9 @@ def _format_stage_target_metadata(items: list[DeclStageTargetMetadata]) -> str:
             f"{item.decl_name}: "
             f"change_kind={item.change_kind or 'unknown'}, "
             f"objective={item.objective or '(not provided)'}, "
-            f"start_before_state={item.start_before_state or 'none'}, "
-            f"end_after_state={item.end_after_state or 'none'}, "
+            f"base_revision={item.base_revision or 'none'}, "
+            f"reset_to_state={item.reset_to_state or 'none'}, "
+            f"target_state={item.target_state or 'none'}, "
             f"require_target_state_satisfied={item.require_target_state_satisfied}, "
             f"current_state={item.current_state}, "
             f"current_revision={item.current_revision}, "
@@ -637,6 +642,16 @@ def _format_stage_target_metadata(items: list[DeclStageTargetMetadata]) -> str:
             f"known_proof_deps=[{proof_deps}]"
         )
     return "\n".join(lines)
+
+
+def _stage_pipeline_position(stage: str) -> str:
+    positions = {
+        "statement_nl": "planned --Statement NL--> specified",
+        "statement_formal": "specified --Statement Formal--> declared",
+        "proof_nl": "declared --Proof NL--> proof_planned",
+        "proof_formal": "proof_planned --Proof Formal--> proved",
+    }
+    return positions[stage]
 
 
 def _require_stage(state: DeclGraphRoundState) -> DeclStageName:

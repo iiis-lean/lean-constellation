@@ -66,7 +66,7 @@ def _create_decl(
     name: str,
     kind: str = "theorem",
     public: bool = False,
-    end_after_state: DeclState = DeclState.PROVED,
+    target_state: DeclState = DeclState.PROVED,
 ) -> None:
     runtime = make_runtime()
     created = runtime.decl_graph.create_decl(
@@ -78,7 +78,7 @@ def _create_decl(
         objective=f"Create {name}.",
         summary=f"{name} summary.",
         public=public,
-        end_after_state=end_after_state,
+        target_state=target_state,
     )
     assert created.ok
 
@@ -259,7 +259,7 @@ def test_definition_declared_with_statement_check_is_ready(tmp_path: Path) -> No
         name="main_def",
         kind="definition",
         public=True,
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
     _start_round(tmp_path, round_id)
     _declare_definition(tmp_path, round_id=round_id, name="main_def")
@@ -273,8 +273,8 @@ def test_definition_declared_with_statement_check_is_ready(tmp_path: Path) -> No
 def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_round_draft(tmp_path)
-    _create_decl(tmp_path, round_id=round_id, name="supporting_def", kind="definition", end_after_state=DeclState.DECLARED)
-    _create_decl(tmp_path, round_id=round_id, name="main_result", public=True, end_after_state=DeclState.DECLARED)
+    _create_decl(tmp_path, round_id=round_id, name="supporting_def", kind="definition", target_state=DeclState.DECLARED)
+    _create_decl(tmp_path, round_id=round_id, name="main_result", public=True, target_state=DeclState.DECLARED)
     _start_round(tmp_path, round_id)
     _declare_definition(tmp_path, round_id=round_id, name="supporting_def")
     _declare_theorem(tmp_path, round_id=round_id, name="main_result", deps=["supporting_def"])
@@ -307,7 +307,7 @@ def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(
 def test_proved_policy_checks_proof_deps_but_declared_policy_ignores_them(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_round_draft(tmp_path)
-    _create_decl(tmp_path, round_id=round_id, name="supporting_lemma", end_after_state=DeclState.DECLARED)
+    _create_decl(tmp_path, round_id=round_id, name="supporting_lemma", target_state=DeclState.DECLARED)
     _create_decl(tmp_path, round_id=round_id, name="main_result", public=True)
     _start_round(tmp_path, round_id)
     _declare_theorem(tmp_path, round_id=round_id, name="supporting_lemma")
@@ -339,7 +339,7 @@ def test_proved_policy_checks_proof_deps_but_declared_policy_ignores_them(tmp_pa
 def test_strict_proved_audit_rejects_declared_only_public_theorem(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_round_draft(tmp_path)
-    _create_decl(tmp_path, round_id=round_id, name="public_result", public=True, end_after_state=DeclState.DECLARED)
+    _create_decl(tmp_path, round_id=round_id, name="public_result", public=True, target_state=DeclState.DECLARED)
     _start_round(tmp_path, round_id)
     _declare_theorem(tmp_path, round_id=round_id, name="public_result")
 

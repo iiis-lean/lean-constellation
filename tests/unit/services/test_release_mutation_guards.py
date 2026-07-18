@@ -46,8 +46,8 @@ def test_released_statement_reset_is_blocked_but_proof_reset_is_allowed(tmp_path
         round_id=round_id,
         name="PublicResult",
         objective="Illegally reopen the released statement.",
-        start_before_state=DeclState.SPECIFIED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.SPECIFIED,
+        target_state=DeclState.PROVED,
     )
     assert not blocked.ok
     assert blocked.issues[0].kind == "release_protected_statement_floor"
@@ -58,8 +58,8 @@ def test_released_statement_reset_is_blocked_but_proof_reset_is_allowed(tmp_path
         round_id=round_id,
         name="PublicResult",
         objective="Replace only the proof.",
-        start_before_state=DeclState.DECLARED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.DECLARED,
+        target_state=DeclState.PROVED,
     )
     assert allowed.ok
     revision = runtime.decl_graph.get_decl_revision(

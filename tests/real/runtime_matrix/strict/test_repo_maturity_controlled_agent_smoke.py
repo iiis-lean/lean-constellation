@@ -101,7 +101,7 @@ def test_declared_interface_content_plan_controlled_agent_smoke(
             "objective": "Expose the public theorem statement for this declared interface node.",
             "summary": "The public theorem statement is the declared interface.",
             "public": True,
-            "end_after_state": "declared",
+            "target_state": "declared",
             "require_target_state_satisfied": True,
         },
         evidence_recorder,

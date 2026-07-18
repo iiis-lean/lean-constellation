@@ -92,7 +92,7 @@ def _complete_theorem_round(
         objective=f"Create and prove {decl_name}.",
         summary=f"{decl_name} theorem.",
         public=public,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
     assert created.value is not None

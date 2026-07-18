@@ -69,7 +69,7 @@ class DeclCreateInput(RoundIdentityInput):
     objective: str
     summary: str
     public: bool = False
-    end_after_state: DeclState = DeclState.DECLARED
+    target_state: DeclState = DeclState.DECLARED
     require_target_state_satisfied: bool = True
 
 
@@ -88,8 +88,9 @@ class DeclRevisionInput(RoundIdentityInput):
 
 class DeclUpdateInput(DeclRevisionInput):
     objective: str
-    end_after_state: DeclState
-    start_before_state: DeclState | None = None
+    target_state: DeclState
+    base_revision: int | None = Field(default=None, ge=1)
+    reset_to_state: DeclState | None = None
     require_target_state_satisfied: bool = True
 
 
@@ -455,8 +456,9 @@ class DeclProjectionOperator:
             round_id=request.round_id,
             name=request.decl_name,
             objective=request.objective,
-            end_after_state=request.end_after_state,
-            start_before_state=request.start_before_state,
+            target_state=request.target_state,
+            base_revision=request.base_revision,
+            reset_to_state=request.reset_to_state,
             require_target_state_satisfied=request.require_target_state_satisfied,
         )
 

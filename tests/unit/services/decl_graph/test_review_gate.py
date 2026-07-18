@@ -45,7 +45,7 @@ def _create_running_round(tmp_path: Path, decl_kinds: dict[str, str]) -> str:
             kind=kind,
             objective=f"Create {name}.",
             summary=f"{name} summary.",
-            end_after_state=DeclState.PROVED if kind == "theorem" else DeclState.DECLARED,
+            target_state=DeclState.PROVED if kind == "theorem" else DeclState.DECLARED,
         ).ok
     assert service.start_round(tmp_path, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
     return round_record.value.round_id

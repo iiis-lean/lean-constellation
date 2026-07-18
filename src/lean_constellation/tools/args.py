@@ -592,7 +592,7 @@ class DeclCreateArgs(StrictModel):
     objective: str = Field(description="Mathematical objective for this declaration change in the current round.")
     summary: str = Field(description="Concise stable catalog summary of the new declaration.")
     public: bool = Field(default=False, description="Whether the declaration should be public.")
-    end_after_state: str = Field(default="declared", description="Target state after this round: declared or proved.")
+    target_state: str = Field(default="declared", description="Target state after this round: declared or proved.")
     require_target_state_satisfied: bool = Field(
         default=True,
         description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
@@ -603,10 +603,15 @@ class DeclUpdateArgs(StrictModel):
     round_id: str = Field(description="Round id in which to plan this update.")
     name: str = Field(description="Existing declaration name.")
     objective: str = Field(description="Objective for this update.")
-    end_after_state: str = Field(description="Target state after this update: declared or proved.")
-    start_before_state: str | None = Field(
+    target_state: str = Field(description="Target state after this update: declared or proved.")
+    base_revision: int | None = Field(
         default=None,
-        description="Optional requested state to reset to before this round; release protection may forbid crossing an accepted statement boundary.",
+        ge=1,
+        description="Optional committed revision to copy; defaults to the current committed head.",
+    )
+    reset_to_state: str | None = Field(
+        default=None,
+        description="Optional state boundary to retain before this round; execution begins at the next pipeline stage.",
     )
     require_target_state_satisfied: bool = Field(
         default=True,

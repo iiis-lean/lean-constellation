@@ -82,7 +82,7 @@ class DeclDraftSpec(StrictModel):
     objective: str
     summary: str
     public: bool = False
-    end_after_state: DeclState = DeclState.DECLARED
+    target_state: DeclState = DeclState.DECLARED
     require_target_state_satisfied: bool = True
 
 
@@ -288,12 +288,12 @@ class DeclRoundExecutionComponent:
             if change.kind == DeclChangeKind.DELETE:
                 reached.append(decl_name)
                 continue
-            if change.end_after_state is None or not self._state_reaches(revision.state, change.end_after_state):
+            if change.target_state is None or not self._state_reaches(revision.state, change.target_state):
                 missing.append(decl_name)
                 continue
             reached.append(decl_name)
             if change.require_target_state_satisfied:
-                target = ProofAvailability.PROVED if change.end_after_state == DeclState.PROVED else ProofAvailability.DECLARED
+                target = ProofAvailability.PROVED if change.target_state == DeclState.PROVED else ProofAvailability.DECLARED
                 satisfied, _reason = self.round_revision_satisfies_proof_policy(
                     repo_root,
                     node_path=node_path,
@@ -364,6 +364,8 @@ class DeclRoundExecutionComponent:
         self._require(round_record)
         committed_names: list[str] = []
         projection_summary: str | None = None
+        revisions = self.graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
+        self._require(revisions)
         if outcome == "completed":
             audit = self.final_audit(repo_root, node_path=node_path, round_id=round_id)
             self._require(audit)
@@ -374,22 +376,20 @@ class DeclRoundExecutionComponent:
                     object_ref=round_id,
                 )
                 raise _CloseoutFailure([issue])
-            revisions = self.graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
-            self._require(revisions)
-            for decl_name, revision in revisions.value or []:
-                if revision.change is not None and revision.change.kind == DeclChangeKind.DELETE:
-                    continue
-                if revision.status != "open":
-                    continue
-                committed = self.graph.commit_decl_revision(
-                    repo_root,
-                    node_path=node_path,
-                    name=decl_name,
-                    revision=revision.revision,
-                    state=revision.state,
-                )
-                self._require(committed)
-                committed_names.append(decl_name)
+        for decl_name, revision in revisions.value or []:
+            if revision.status != "open":
+                continue
+            committed = self.graph.commit_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=decl_name,
+                revision=revision.revision,
+                state=revision.state,
+                apply_delete_lifecycle=outcome == "completed",
+            )
+            self._require(committed)
+            committed_names.append(decl_name)
+        if outcome == "completed":
             public_decls = self.graph.list_content_public_decls(repo_root, node_path=node_path)
             self._require(public_decls)
             deferred_public_names = sorted(

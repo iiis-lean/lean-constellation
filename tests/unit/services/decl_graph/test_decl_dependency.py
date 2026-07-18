@@ -64,7 +64,7 @@ def _seed_committed_decl(tmp_path: Path, *, round_id: str, name: str, deps: list
         kind="theorem",
         objective=f"Create {name}.",
         summary=f"{name} summary.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     ).ok
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, revision=1)
     assert revision.ok and revision.value is not None
@@ -106,7 +106,7 @@ def test_dependency_helpers_split_statement_and_proof_policy_requirements(tmp_pa
         kind="theorem",
         objective="Create MainResult.",
         summary="MainResult summary.",
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     ).ok
     decl = service.get_decl(tmp_path, node_path="Main.Topic.Core", name="MainResult")
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="MainResult", revision=1)
@@ -173,8 +173,8 @@ def test_audit_round_dependencies_delegates_round_draft_gate(tmp_path: Path) -> 
         round_id=update_round_id,
         name="A",
         objective="Update A.",
-        start_before_state=DeclState.PROVED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
     ).ok
     assert service.open_decl_update(
         tmp_path,
@@ -182,8 +182,8 @@ def test_audit_round_dependencies_delegates_round_draft_gate(tmp_path: Path) -> 
         round_id=update_round_id,
         name="B",
         objective="Update B.",
-        start_before_state=DeclState.PROVED,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
     ).ok
 
     audit = service.audit_round_dependencies(tmp_path, node_path="Main.Topic.Core", round_id=update_round_id)

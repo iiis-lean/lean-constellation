@@ -52,6 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Format to export. Repeat to select both; defaults to both.",
     )
+    decl_transition_migration = sub.add_parser(
+        "migrate-decl-transition-schema",
+        help="Offline one-time migration of live Decl transition metadata; never rewrites snapshots or reports.",
+    )
+    decl_transition_migration.add_argument("mode", choices=["dry-run", "apply", "validate"])
+    decl_transition_migration.add_argument("repo_root", type=Path)
+    decl_transition_migration.add_argument("--manifest-dir", type=Path, default=None)
+    decl_transition_migration.add_argument("--rebuild-runtime-indexes", action="store_true")
     sub.add_parser("status", help="Read production server runtime status over Admin HTTP.")
     flow_tree = sub.add_parser("flow-tree", help="Read production flow/step tree over Admin HTTP.")
     flow_tree.add_argument("--repo-key", required=True)
@@ -269,6 +277,24 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
+        return 0
+    if args.command == "migrate-decl-transition-schema":
+        from lean_constellation.app.decl_transition_migration import (
+            DeclTransitionMigrationError,
+            migrate_decl_transition_schema,
+        )
+
+        try:
+            report = migrate_decl_transition_schema(
+                args.repo_root,
+                mode=args.mode,
+                manifest_dir=args.manifest_dir,
+                rebuild_runtime_indexes=args.rebuild_runtime_indexes,
+            )
+        except DeclTransitionMigrationError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            return 1
+        print(json.dumps({"ok": True, "value": report.to_dict()}, indent=2, sort_keys=True))
         return 0
     config = load_app_config(args.config)
     if args.command == "config-view":

@@ -59,7 +59,7 @@ def test_strict_real_codex_statement_formal_lean_tool_latency_probe(
     )
     initial_build = ws.lake.run_lake_build(ws.provider_repo, timeout_seconds=120)
     assert initial_build.ok, initial_build
-    round_fixture = ws.create_decl_round(end_after_state=DeclState.PROVED)
+    round_fixture = ws.create_decl_round(target_state=DeclState.PROVED)
     ws.create_home("StatementNLWorkerControlledTestAgent")
     ws.create_home("StatementNLReviewerControlledTestAgent")
     home_root = materialize_strict_codex_home(

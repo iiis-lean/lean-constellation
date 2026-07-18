@@ -59,12 +59,12 @@ class DeclCatalogComponent:
         objective: str,
         summary: str,
         public: bool = False,
-        end_after_state: DeclState | str = DeclState.DECLARED,
+        target_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclChangeView]:
-        end_state = self._coerce_end_state(end_after_state)
+        end_state = self._coerce_end_state(target_state)
         if end_state is None:
-            return self._unsupported_end_state(str(end_after_state))
+            return self._unsupported_end_state(str(target_state))
         preflight = self._round_for_planning(repo_root, node_path=node_path, round_id=round_id)
         if not preflight.ok or preflight.value is None:
             return self.runtime.foundation.fail(preflight.issues)
@@ -104,7 +104,7 @@ class DeclCatalogComponent:
             status=DeclRevisionStatus.OPEN,
             change=DeclRevisionChange(
                 kind=DeclChangeKind.CREATE,
-                end_after_state=end_state,
+                target_state=end_state,
                 require_target_state_satisfied=require_target_state_satisfied,
                 objective=objective,
             ),
@@ -152,45 +152,117 @@ class DeclCatalogComponent:
         round_id: str,
         name: str,
         objective: str,
-        end_after_state: DeclState | str,
-        start_before_state: DeclState | str | None = None,
+        target_state: DeclState | str,
+        base_revision: int | None = None,
+        reset_to_state: DeclState | str | None = None,
         require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclChangeView]:
-        end_state = self._coerce_end_state(end_after_state)
+        end_state = self._coerce_end_state(target_state)
         if end_state is None:
-            return self._unsupported_end_state(str(end_after_state))
+            return self._unsupported_end_state(str(target_state))
         preflight = self._round_for_planning(repo_root, node_path=node_path, round_id=round_id)
         if not preflight.ok:
             return self.runtime.foundation.fail(preflight.issues)
         decl = self.get_decl(repo_root, node_path=node_path, name=name)
         if not decl.ok or decl.value is None:
             return self.runtime.foundation.fail(decl.issues)
-        latest = self.get_decl_revision(
+        current = self.get_decl_revision(
             repo_root,
             node_path=node_path,
             name=name,
             revision=decl.value.current_revision,
         )
-        if not latest.ok or latest.value is None:
-            return self.runtime.foundation.fail(latest.issues)
-        if latest.value.status == "open":
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        if current.value.status == "open":
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "decl_revision_already_open",
                     "Current declaration revision is already open.",
                     object_ref=name,
-                    current=str(latest.value.revision),
+                    current=str(current.value.revision),
                 )
             )
-        start_state = DeclState(start_before_state) if start_before_state is not None else DeclState.PLANNED
+        source_revision_id = base_revision if base_revision is not None else decl.value.current_revision
+        if source_revision_id not in decl.value.revision_ids:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_base_revision_not_found",
+                    "Update base_revision must identify an existing revision of this declaration.",
+                    object_ref=name,
+                    current=str(source_revision_id),
+                )
+            )
+        source = self.get_decl_revision(
+            repo_root,
+            node_path=node_path,
+            name=name,
+            revision=source_revision_id,
+        )
+        if not source.ok or source.value is None:
+            return self.runtime.foundation.fail(source.issues)
+        if source.value.status != DeclRevisionStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_base_revision_not_committed",
+                    "Update base_revision must be committed.",
+                    object_ref=name,
+                    current=f"{source_revision_id}:{source.value.status.value}",
+                )
+            )
+        if reset_to_state is None:
+            if self._state_reaches(source.value.state, end_state):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "decl_update_reset_required",
+                        "The selected base revision already reaches target_state; specify reset_to_state for an explicit redo range.",
+                        object_ref=name,
+                        current=source.value.state.value,
+                        expected=end_state.value,
+                    )
+                )
+            start_state = source.value.state
+        else:
+            try:
+                start_state = DeclState(reset_to_state)
+            except ValueError:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "unsupported_reset_to_state",
+                        "reset_to_state must be a declaration pipeline state.",
+                        object_ref=name,
+                        current=str(reset_to_state),
+                    )
+                )
+            if start_state in {DeclState.OBSOLETE} or not self._state_reaches(source.value.state, start_state):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "decl_update_reset_above_base",
+                        "reset_to_state cannot be later than the selected base revision state.",
+                        object_ref=name,
+                        current=start_state.value,
+                        expected=source.value.state.value,
+                    )
+                )
+        if self._state_reaches(start_state, end_state):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_update_range_empty_or_reversed",
+                    "reset_to_state must be earlier than target_state so the update runs at least one stage.",
+                    object_ref=name,
+                    current=start_state.value,
+                    expected=end_state.value,
+                )
+            )
         next_revision_id = max(decl.value.revision_ids) + 1
-        next_revision = latest.value.model_copy(deep=True)
+        next_revision = source.value.model_copy(deep=True)
         next_revision.revision = next_revision_id
         next_revision.status = DeclRevisionStatus.OPEN
         next_revision.change = DeclRevisionChange(
             kind=DeclChangeKind.UPDATE,
-            start_before_state=start_state,
-            end_after_state=end_state,
+            base_revision=source_revision_id,
+            reset_to_state=start_state,
+            target_state=end_state,
             require_target_state_satisfied=require_target_state_satisfied,
             objective=objective,
         )
@@ -285,8 +357,9 @@ class DeclCatalogComponent:
         next_revision.state = DeclState.OBSOLETE
         next_revision.change = DeclRevisionChange(
             kind=DeclChangeKind.DELETE,
-            start_before_state=latest.value.state,
-            end_after_state=DeclState.OBSOLETE,
+            base_revision=latest.value.revision,
+            reset_to_state=latest.value.state,
+            target_state=DeclState.OBSOLETE,
             objective=objective,
         )
         next_revision.updated_at = utc_now_iso()
@@ -333,6 +406,7 @@ class DeclCatalogComponent:
         name: str,
         revision: int | None = None,
         state: DeclState | str | None = None,
+        apply_delete_lifecycle: bool = True,
     ) -> ServiceResult[DeclRevision]:
         decl = self.get_decl(repo_root, node_path=node_path, name=name)
         if not decl.ok or decl.value is None:
@@ -373,7 +447,7 @@ class DeclCatalogComponent:
                 return self.runtime.foundation.fail(guarded.issues)
         record.value.status = DeclRevisionStatus.COMMITTED
         record.value.updated_at = utc_now_iso()
-        if record.value.state == DeclState.OBSOLETE:
+        if record.value.state == DeclState.OBSOLETE and apply_delete_lifecycle:
             decl.value.lifecycle = DeclLifecycle.DELETED
             decl.value.updated_at = utc_now_iso()
         with self.runtime.foundation.store.mutation("commit_decl_revision") as mutation:
@@ -384,7 +458,7 @@ class DeclCatalogComponent:
                 record.value,
                 mode=WriteMode.UPDATE_EXISTING,
             )
-            if record.value.state == DeclState.OBSOLETE:
+            if record.value.state == DeclState.OBSOLETE and apply_delete_lifecycle:
                 mutation.stage_json(
                     self.graph_store.decl_record_path(repo_root, node_path=node_path, decl_name=name),
                     decl.value,
@@ -783,8 +857,9 @@ class DeclCatalogComponent:
             round_id=round_id,
             kind=revision.change.kind,
             decl_name=decl_name,
-            start_before_state=revision.change.start_before_state,
-            end_after_state=revision.change.end_after_state,
+            base_revision=revision.change.base_revision,
+            reset_to_state=revision.change.reset_to_state,
+            target_state=revision.change.target_state,
             require_target_state_satisfied=revision.change.require_target_state_satisfied,
             objective=revision.change.objective or "",
             summary=revision.change.summary,
@@ -873,11 +948,21 @@ class DeclCatalogComponent:
             return None
         return state
 
+    def _state_reaches(self, current: DeclState, target: DeclState) -> bool:
+        order = {
+            DeclState.PLANNED: 0,
+            DeclState.SPECIFIED: 1,
+            DeclState.DECLARED: 2,
+            DeclState.PROOF_PLANNED: 3,
+            DeclState.PROVED: 4,
+        }
+        return current in order and target in order and order[current] >= order[target]
+
     def _unsupported_end_state(self, value: str) -> ServiceResult[DeclChangeView]:
         return self.runtime.foundation.fail(
             self.runtime.foundation.issue(
-                "unsupported_end_after_state",
-                "Decl change end_after_state must be declared or proved.",
+                "unsupported_target_state",
+                "Decl change target_state must be declared or proved.",
                 current=value,
                 expected="declared, proved",
             )

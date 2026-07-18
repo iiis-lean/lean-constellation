@@ -18,7 +18,7 @@ def test_decl_graph_round_four_stage_completed_matrix(
     runtime_matrix_workspace: RuntimeMatrixWorkspace,
 ) -> None:
     ws = runtime_matrix_workspace
-    round_fixture = ws.create_decl_round(end_after_state=DeclState.PROVED)
+    round_fixture = ws.create_decl_round(target_state=DeclState.PROVED)
     decl_path = _decl_file_path(ws, round_fixture)
     provider = ScriptedMcpProvider(
         ws.runtime,
@@ -30,7 +30,7 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         "set_statement_nl",
                         {
                             "decl_name": round_fixture.decl_name,
-                            "nl": "The Runtime Matrix main result states True.",
+                            "text": "The Runtime Matrix main result states True.",
                         },
                     ),
                     (
@@ -52,8 +52,11 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         {
                             "repo_root": str(ws.provider_repo),
                             "path": str(decl_path),
-                            "old": "  sorry",
-                            "new": "  trivial",
+                            "old": "The Runtime Matrix main result states True.\n-/",
+                            "new": (
+                                "The Runtime Matrix main result states True.\n-/\n\n"
+                                "theorem main_result : True := by\n  trivial"
+                            ),
                         },
                     ),
                     ("application", "capture_statement_formal_file", {"decl_name": round_fixture.decl_name}),
@@ -79,7 +82,7 @@ def test_decl_graph_round_four_stage_completed_matrix(
                         "set_proof_nl",
                         {
                             "decl_name": round_fixture.decl_name,
-                            "proof_nl": "The proof closes by triviality.",
+                            "text": "The proof closes by triviality.",
                         },
                     ),
                     (
@@ -152,7 +155,7 @@ def test_decl_graph_round_review_rejected_then_worker_blocked_matrix(
     runtime_matrix_workspace: RuntimeMatrixWorkspace,
 ) -> None:
     ws = runtime_matrix_workspace
-    round_fixture = ws.create_decl_round(end_after_state=DeclState.DECLARED)
+    round_fixture = ws.create_decl_round(target_state=DeclState.DECLARED)
     provider = ScriptedMcpProvider(
         ws.runtime,
         {
@@ -163,7 +166,7 @@ def test_decl_graph_round_review_rejected_then_worker_blocked_matrix(
                         "set_statement_nl",
                         {
                             "decl_name": round_fixture.decl_name,
-                            "nl": "The rejected branch statement is intentionally sparse.",
+                            "text": "The rejected branch statement is intentionally sparse.",
                         },
                     ),
                     (

@@ -442,7 +442,7 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
                     objective=f"Declare {name}.",
                     summary=f"Synthetic declaration {name}.",
                     public=public,
-                    end_after_state=DeclState.DECLARED,
+                    target_state=DeclState.DECLARED,
                 ),
             )
         )

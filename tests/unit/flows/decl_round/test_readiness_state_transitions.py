@@ -45,7 +45,7 @@ def test_declared_round_skips_proof_stages(
         lean_runtime,
         repo_root,
         kind=kind,
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
         public=kind == "theorem",
     )
     flow_id = start_decl_round_flow(

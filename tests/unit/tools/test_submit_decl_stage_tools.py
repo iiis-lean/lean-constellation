@@ -217,7 +217,7 @@ def _setup_statement_formal_candidate(
         kind="theorem",
         objective="Create theorem",
         summary="Theorem",
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
     assert created.ok
     assert runtime.decl_graph.start_round(repo_root, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -272,7 +272,7 @@ def _setup_statement_nl_candidate(runtime, repo_root: Path, *, decl_names: list[
             kind="theorem",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.DECLARED,
+            target_state=DeclState.DECLARED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(repo_root, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok
@@ -318,7 +318,7 @@ def _setup_proof_nl_candidate(runtime, repo_root: Path, *, decl_names: list[str]
             kind="theorem",
             objective=f"Create {decl_name}",
             summary=decl_name,
-            end_after_state=DeclState.PROVED,
+            target_state=DeclState.PROVED,
         )
         assert created.ok
     assert runtime.decl_graph.start_round(repo_root, node_path="Main.Topic.Core", round_id=round_record.value.round_id).ok

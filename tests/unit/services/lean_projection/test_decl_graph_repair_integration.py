@@ -95,7 +95,7 @@ def _seed_committed_proved_theorem(runtime: LeanRuntimeServices, repo_root: Path
         objective="Create a trivial theorem.",
         summary="A trivial theorem used by repair integration tests.",
         public=False,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok and created.value is not None, created.issues
     assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
@@ -165,8 +165,8 @@ def _open_update_round(runtime: LeanRuntimeServices, repo_root: Path, *, start_s
         round_id=round_id,
         name=DECL_NAME,
         objective=f"Reset current working revision to {start_state.value}.",
-        start_before_state=start_state,
-        end_after_state=DeclState.PROVED,
+        reset_to_state=start_state,
+        target_state=DeclState.PROVED,
     )
     assert update.ok, update.issues
     started = runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id)

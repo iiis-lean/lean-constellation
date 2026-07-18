@@ -685,7 +685,7 @@ def _setup_decl_round(runtime, repo_root: Path) -> str:
         objective="Create a trivial theorem.",
         summary="A trivial theorem for Lean latency capture.",
         public=False,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
     started = runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_record.value.round_id)

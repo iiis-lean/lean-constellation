@@ -452,7 +452,7 @@ class DeclGraphService:
         objective: str,
         summary: str,
         public: bool = False,
-        end_after_state: DeclState | str = DeclState.DECLARED,
+        target_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.create_decl(
@@ -464,7 +464,7 @@ class DeclGraphService:
             objective=objective,
             summary=summary,
             public=public,
-            end_after_state=end_after_state,
+            target_state=target_state,
             require_target_state_satisfied=require_target_state_satisfied,
         )
 
@@ -479,7 +479,7 @@ class DeclGraphService:
         objective: str,
         summary: str,
         public: bool = False,
-        end_after_state: DeclState | str = DeclState.DECLARED,
+        target_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclRevisionToolView]:
         change = self.create_decl(
@@ -491,7 +491,7 @@ class DeclGraphService:
             objective=objective,
             summary=summary,
             public=public,
-            end_after_state=end_after_state,
+            target_state=target_state,
             require_target_state_satisfied=require_target_state_satisfied,
         )
         if not change.ok or change.value is None or change.value.target_revision is None:
@@ -511,8 +511,9 @@ class DeclGraphService:
         round_id: str,
         name: str,
         objective: str,
-        end_after_state: DeclState | str,
-        start_before_state: DeclState | str | None = None,
+        target_state: DeclState | str,
+        base_revision: int | None = None,
+        reset_to_state: DeclState | str | None = None,
         require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclChangeView]:
         return self.decl_catalog.open_decl_update(
@@ -521,8 +522,9 @@ class DeclGraphService:
             round_id=round_id,
             name=name,
             objective=objective,
-            end_after_state=end_after_state,
-            start_before_state=start_before_state,
+            target_state=target_state,
+            base_revision=base_revision,
+            reset_to_state=reset_to_state,
             require_target_state_satisfied=require_target_state_satisfied,
         )
 
@@ -534,8 +536,9 @@ class DeclGraphService:
         round_id: str,
         name: str,
         objective: str,
-        end_after_state: DeclState | str,
-        start_before_state: DeclState | str | None = None,
+        target_state: DeclState | str,
+        base_revision: int | None = None,
+        reset_to_state: DeclState | str | None = None,
         require_target_state_satisfied: bool = True,
     ) -> ServiceResult[DeclRevisionToolView]:
         change = self.open_decl_update(
@@ -544,8 +547,9 @@ class DeclGraphService:
             round_id=round_id,
             name=name,
             objective=objective,
-            end_after_state=end_after_state,
-            start_before_state=start_before_state,
+            target_state=target_state,
+            base_revision=base_revision,
+            reset_to_state=reset_to_state,
             require_target_state_satisfied=require_target_state_satisfied,
         )
         if not change.ok or change.value is None or change.value.target_revision is None:
@@ -601,6 +605,7 @@ class DeclGraphService:
         name: str,
         revision: int | None = None,
         state: DeclState | str | None = None,
+        apply_delete_lifecycle: bool = True,
     ) -> ServiceResult[DeclRevision]:
         return self.decl_catalog.commit_decl_revision(
             repo_root,
@@ -608,6 +613,7 @@ class DeclGraphService:
             name=name,
             revision=revision,
             state=state,
+            apply_delete_lifecycle=apply_delete_lifecycle,
         )
 
     def get_decl(self, repo_root: Path, *, node_path: str, name: str) -> ServiceResult[Decl]:

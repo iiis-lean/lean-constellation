@@ -233,7 +233,7 @@ class AdapterDeclCatalogComponent:
             status=DeclRevisionStatus.OPEN,
             change=DeclRevisionChange(
                 kind=DeclChangeKind.CREATE,
-                end_after_state=DeclState.PROVED if decl_kind in _THEOREM_LIKE else DeclState.DECLARED,
+                target_state=DeclState.PROVED if decl_kind in _THEOREM_LIKE else DeclState.DECLARED,
                 objective=summary.strip(),
                 summary=summary.strip(),
             ),

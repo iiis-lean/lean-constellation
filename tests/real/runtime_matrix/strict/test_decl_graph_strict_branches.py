@@ -13,7 +13,7 @@ from tests.real.runtime_matrix.baseline.test_decl_graph_round_matrix import (
     _start_decl_round,
     _wait_round_completed,
 )
-from tests.unit_services_helpers import write_proof_formal_for_test, write_statement_formal_for_test
+from tests.unit_services_helpers import lean_check_payload, write_proof_formal_for_test, write_statement_formal_for_test
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
@@ -24,7 +24,7 @@ def test_strict_decl_graph_review_rejected_then_worker_blocked_evidence(
     evidence_recorder: EvidenceRecorder,
 ) -> None:
     ws = runtime_matrix_workspace
-    round_fixture = ws.create_decl_round(end_after_state=DeclState.DECLARED)
+    round_fixture = ws.create_decl_round(target_state=DeclState.DECLARED)
     provider = ScriptedMcpProvider(
         ws.runtime,
         {
@@ -35,7 +35,7 @@ def test_strict_decl_graph_review_rejected_then_worker_blocked_evidence(
                         "set_statement_nl",
                         {
                             "decl_name": round_fixture.decl_name,
-                            "nl": "The strict rejected branch statement is intentionally sparse.",
+                            "text": "The strict rejected branch statement is intentionally sparse.",
                         },
                     ),
                     (
@@ -135,7 +135,7 @@ def _seed_committed_decl(ws: RuntimeMatrixWorkspace, *, name: str, public: bool)
         objective=f"Create {name}.",
         summary=f"{name} summary.",
         public=public,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok and created.value is not None, created.issues
     round_fixture = DeclRoundFixture(
@@ -248,22 +248,8 @@ def _create_delete_round(ws: RuntimeMatrixWorkspace, *, name: str) -> DeclRoundF
 
 
 def _passed_statement_check() -> dict[str, object]:
-    return {
-        "status": "passed",
-        "policy": "statement_formal",
-        "allow_sorry": True,
-        "contains_sorry": True,
-        "contains_axiom": False,
-        "message": "Strict delete/normalize statement check passed.",
-    }
+    return lean_check_payload(contains_sorry=True, allow_sorry=True)
 
 
 def _passed_proof_check() -> dict[str, object]:
-    return {
-        "status": "passed",
-        "policy": "proof_formal",
-        "allow_sorry": False,
-        "contains_sorry": False,
-        "contains_axiom": False,
-        "message": "Strict delete/normalize proof check passed.",
-    }
+    return lean_check_payload()

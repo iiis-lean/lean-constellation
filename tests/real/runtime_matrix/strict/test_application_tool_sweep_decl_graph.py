@@ -13,7 +13,7 @@ from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import CONTENT_NODE_PATH, RuntimeMatrixWorkspace
 from tests.real.runtime_matrix.strict.tool_sweep_partitions import decl_graph_tool_sweep_names
 from tests.real.runtime_matrix.strict_helpers import call_tool_with_evidence, checkpoint_with_evidence, restore_with_evidence
-from tests.unit_services_helpers import write_proof_formal_for_test, write_statement_formal_for_test
+from tests.unit_services_helpers import lean_check_payload, write_proof_formal_for_test, write_statement_formal_for_test
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
@@ -141,7 +141,7 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
             "objective": "Create a new strict ToolSweep theorem.",
             "summary": "Strict ToolSweep created theorem.",
             "public": False,
-            "end_after_state": "declared",
+            "target_state": "declared",
         },
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
@@ -157,8 +157,8 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
             "round_id": round_id,
             "name": "existing_result",
             "objective": "Open a strict ToolSweep update revision.",
-            "end_after_state": "proved",
-            "start_before_state": "declared",
+            "target_state": "proved",
+            "reset_to_state": "declared",
         },
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
@@ -394,7 +394,7 @@ def _seed_ready_decl(ws: RuntimeMatrixWorkspace, name: str, *, public: bool) -> 
         objective=f"Create {name}.",
         summary=f"{name} summary.",
         public=public,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok and created.value is not None, created.issues
     assert ws.runtime.decl_graph.start_round(ws.provider_repo, node_path=CONTENT_NODE_PATH, round_id=round_record.value.round_id).ok
@@ -480,25 +480,11 @@ def _seed_ready_decl(ws: RuntimeMatrixWorkspace, name: str, *, public: bool) -> 
 
 
 def _passed_statement_check() -> dict[str, object]:
-    return {
-        "status": "passed",
-        "policy": "statement_formal",
-        "allow_sorry": True,
-        "contains_sorry": True,
-        "contains_axiom": False,
-        "message": "Strict ToolSweep statement check passed.",
-    }
+    return lean_check_payload(contains_sorry=True, allow_sorry=True)
 
 
 def _passed_proof_check() -> dict[str, object]:
-    return {
-        "status": "passed",
-        "policy": "proof_formal",
-        "allow_sorry": False,
-        "contains_sorry": False,
-        "contains_axiom": False,
-        "message": "Strict ToolSweep proof check passed.",
-    }
+    return lean_check_payload()
 
 
 def _field(value: Any, *path: str) -> Any:

@@ -64,6 +64,180 @@ def test_round_with_decl_drafts_returns_structured_batch(tmp_path: Path) -> None
     assert [item.decl_name for item in result.value.declarations] == ["main_def"]
 
 
+def test_blocked_business_terminal_commits_partial_revision_and_allows_follow_up_update(tmp_path: Path) -> None:
+    _flow_runtime, runtime, repo_root = make_decl_round_runtime(tmp_path)
+    _strategy_id, round_id, _round_index = create_round_with_decl(
+        runtime,
+        repo_root,
+        decl_name="main_result",
+        target_state=DeclState.PROVED,
+    )
+    assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
+
+    closed = runtime.decl_graph.closeout_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        outcome="blocked",
+    )
+
+    assert closed.ok, closed.issues
+    assert closed.value is not None
+    assert closed.value.committed_decl_names == ["main_result"]
+    revision = runtime.decl_graph.get_decl_revision(repo_root, node_path=NODE_PATH, name="main_result", revision=1)
+    assert revision.ok and revision.value is not None
+    assert revision.value.status == "committed"
+    assert revision.value.state == DeclState.PLANNED
+    strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Continue.")
+    assert strategy.ok and strategy.value is not None
+    follow_up = runtime.decl_graph.create_round_draft(
+        repo_root,
+        node_path=NODE_PATH,
+        strategy_id=strategy.value.strategy_id,
+        objective="Continue the partial declaration.",
+    )
+    assert follow_up.ok and follow_up.value is not None
+    update = runtime.decl_graph.open_decl_update(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=follow_up.value.round_id,
+        name="main_result",
+        objective="Resume from the achieved state.",
+        target_state=DeclState.PROVED,
+    )
+    assert update.ok, update.issues
+    assert update.value is not None
+    assert update.value.base_revision == 1
+    assert update.value.reset_to_state == DeclState.PLANNED
+
+
+def test_failed_business_terminal_commits_partial_revision(tmp_path: Path) -> None:
+    _flow_runtime, runtime, repo_root = make_decl_round_runtime(tmp_path)
+    _strategy_id, round_id, _round_index = create_round_with_decl(
+        runtime,
+        repo_root,
+        decl_name="main_result",
+        target_state=DeclState.PROVED,
+    )
+    assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
+
+    closed = runtime.decl_graph.closeout_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        outcome="failed",
+    )
+
+    assert closed.ok, closed.issues
+    assert closed.value is not None
+    assert closed.value.committed_decl_names == ["main_result"]
+    revision = runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path=NODE_PATH,
+        name="main_result",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.status == "committed"
+    assert revision.value.state == DeclState.PLANNED
+
+
+def test_blocked_delete_commits_obsolete_revision_without_deleting_decl_lifecycle(tmp_path: Path) -> None:
+    _flow_runtime, runtime, repo_root = make_decl_round_runtime(tmp_path)
+    seed_committed_theorem(runtime, repo_root, decl_name="old_result")
+    strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Delete it.")
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        repo_root,
+        node_path=NODE_PATH,
+        strategy_id=strategy.value.strategy_id,
+        objective="Delete old_result.",
+    )
+    assert round_record.ok and round_record.value is not None
+    deleted = runtime.decl_graph.mark_decl_delete(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+        name="old_result",
+        objective="Delete old_result.",
+    )
+    assert deleted.ok, deleted.issues
+    assert runtime.decl_graph.start_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+    ).ok
+
+    closed = runtime.decl_graph.closeout_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+        outcome="blocked",
+    )
+
+    assert closed.ok, closed.issues
+    revision = runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path=NODE_PATH,
+        name="old_result",
+        revision=2,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.status == "committed"
+    assert revision.value.state == DeclState.OBSOLETE
+    decl = runtime.decl_graph.get_decl(repo_root, node_path=NODE_PATH, name="old_result")
+    assert decl.ok and decl.value is not None
+    assert decl.value.lifecycle == "active"
+
+
+def test_completed_delete_commits_obsolete_revision_and_deletes_decl_lifecycle(tmp_path: Path) -> None:
+    _flow_runtime, runtime, repo_root = make_decl_round_runtime(tmp_path)
+    seed_committed_theorem(runtime, repo_root, decl_name="old_result")
+    strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Delete it.")
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        repo_root,
+        node_path=NODE_PATH,
+        strategy_id=strategy.value.strategy_id,
+        objective="Delete old_result.",
+    )
+    assert round_record.ok and round_record.value is not None
+    deleted = runtime.decl_graph.mark_decl_delete(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+        name="old_result",
+        objective="Delete old_result.",
+    )
+    assert deleted.ok, deleted.issues
+    assert runtime.decl_graph.start_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+    ).ok
+
+    closed = runtime.decl_graph.closeout_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_record.value.round_id,
+        outcome="completed",
+    )
+
+    assert closed.ok, closed.issues
+    revision = runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path=NODE_PATH,
+        name="old_result",
+        revision=2,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.status == "committed"
+    assert revision.value.state == DeclState.OBSOLETE
+    decl = runtime.decl_graph.get_decl(repo_root, node_path=NODE_PATH, name="old_result")
+    assert decl.ok and decl.value is not None
+    assert decl.value.lifecycle == "deleted"
+
+
 def test_final_audit_accepts_same_node_dependency_from_earlier_committed_round(tmp_path: Path) -> None:
     _flow_runtime, runtime, repo_root = make_decl_round_runtime(tmp_path)
     seed_committed_theorem(runtime, repo_root, decl_name="supporting_result")
@@ -71,7 +245,7 @@ def test_final_audit_accepts_same_node_dependency_from_earlier_committed_round(t
         runtime,
         repo_root,
         decl_name="dependent_result",
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
     started = runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id)
     assert started.ok, started.issues

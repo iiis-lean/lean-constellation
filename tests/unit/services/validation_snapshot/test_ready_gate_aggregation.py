@@ -120,7 +120,7 @@ def _create_public_decl(runtime: LeanRuntimeServices, repo_root: Path, *, decl_n
         objective="Create the public result.",
         summary="Public theorem that is intentionally not ready.",
         public=True,
-        end_after_state=DeclState.PROVED,
+        target_state=DeclState.PROVED,
     )
     assert created.ok, created.issues
 
@@ -152,7 +152,7 @@ def _create_declared_main_public_theorem(runtime: LeanRuntimeServices, repo_root
         objective="Create the public result.",
         summary="Public theorem with a declared statement only.",
         public=True,
-        end_after_state=DeclState.DECLARED,
+        target_state=DeclState.DECLARED,
     )
     assert created.ok, created.issues
     assert runtime.decl_graph.start_round(repo_root, node_path=MAIN_CONTENT_NODE_PATH, round_id=round_record.value.round_id).ok
