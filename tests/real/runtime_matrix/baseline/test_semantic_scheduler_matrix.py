@@ -12,7 +12,7 @@ from tests.real.runtime_matrix.scripted_provider import ScriptedMcpProvider, ins
 pytestmark = [pytest.mark.real, pytest.mark.slow]
 
 
-def test_mixed_step_and_content_phase_semantic_advances(
+def test_content_phase_semantic_advance_runs_initial_admission_plan_and_child(
     runtime_matrix_workspace: RuntimeMatrixWorkspace,
 ) -> None:
     ws = runtime_matrix_workspace
@@ -67,21 +67,6 @@ def test_mixed_step_and_content_phase_semantic_advances(
     unwrap(
         ws.admin.semantic_advance(
             RuntimeSemanticAdvanceInput(
-                granularity="step",
-                action="logic",
-                scope_id=f"repo:Provider:node:{CONTENT_NODE_PATH}",
-            )
-        )
-    )
-    schedule_until(ws.runtime, lambda: ws.runtime.ark.pause_controller.is_paused(None), limit=20)
-    task = ws.runtime.ark.flow_service.get_flow(flow_id)
-    first_plan_step = ws.runtime.ark.step_service.store.get_step(task.current_step_id)
-    assert first_plan_step.step_type == "content_plan_agent_step"
-    assert first_plan_step.status is StepStatus.CREATED
-
-    unwrap(
-        ws.admin.semantic_advance(
-            RuntimeSemanticAdvanceInput(
                 granularity="content_phase",
                 action="plan",
                 content_task_flow_id=flow_id,
@@ -90,6 +75,22 @@ def test_mixed_step_and_content_phase_semantic_advances(
     )
     schedule_until(ws.runtime, lambda: ws.runtime.ark.pause_controller.is_paused(None), limit=20)
     task = ws.runtime.ark.flow_service.get_flow(flow_id)
+    first_plan_step = next(
+        step
+        for step in ws.runtime.ark.flow_service.list_steps(
+            flow_id=flow_id,
+            step_type="content_plan_agent_step",
+        )
+    )
+    admission_step = next(
+        step
+        for step in ws.runtime.ark.flow_service.list_steps(
+            flow_id=flow_id,
+            step_type="content_task_admission_step",
+        )
+    )
+    assert admission_step.status is StepStatus.COMPLETED
+    assert first_plan_step.status is StepStatus.COMPLETED
     assert task.state.position.phase == "dispatch_child"
     assert first_plan_step.step_id == task.step_ids[-1]
 

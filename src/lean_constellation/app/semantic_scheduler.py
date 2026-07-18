@@ -136,9 +136,9 @@ def _build_agent_policy(runtime, request: RuntimeSemanticAdvanceInput) -> Schedu
 def _build_content_plan_policy(runtime, request: RuntimeSemanticAdvanceInput) -> SchedulerSemanticRunPolicy:  # noqa: ANN001
     task = _content_task(runtime, request.content_task_flow_id)
     state = _content_state(task)
-    if state.position.phase not in {"plan_agent", "callback_plan_agent"}:
+    if state.position.phase not in {"admission", "plan_agent", "callback_plan_agent"}:
         raise SemanticAdvancePolicyError(
-            f"content_phase.plan requires plan_agent/callback_plan_agent, got {state.position.phase}"
+            f"content_phase.plan requires admission/plan_agent/callback_plan_agent, got {state.position.phase}"
         )
     step_service = _step_service(runtime)
     baseline_plan_ids = {
@@ -182,8 +182,13 @@ def _build_content_plan_policy(runtime, request: RuntimeSemanticAdvanceInput) ->
         allow_flow_advance=lambda flow: flow.flow_id == task.flow_id and current_plan_step() is None,
         allow_step_start=lambda step: (
             step.flow_id == task.flow_id
-            and step.step_type == "content_plan_agent_step"
-            and (step.step_id not in baseline_plan_ids or step.status is StepStatus.CREATED)
+            and (
+                (step.step_type == "content_task_admission_step" and current_plan_step() is None)
+                or (
+                    step.step_type == "content_plan_agent_step"
+                    and (step.step_id not in baseline_plan_ids or step.status is StepStatus.CREATED)
+                )
+            )
         ),
         decide=decide,
         max_flow_advances=request.safety.max_flow_advances,
