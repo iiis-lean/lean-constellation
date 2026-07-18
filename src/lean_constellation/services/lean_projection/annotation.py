@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 import unicodedata
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
@@ -659,7 +660,7 @@ class AnnotationComponent:
     def _append_text(self, body: list[str], text: str | None) -> None:
         value = self._sanitize_doc_text(text or "")
         if value:
-            body.extend(["", value])
+            body.extend(["", self._wrap_doc_text(value)])
 
     def _append_section(self, body: list[str], title: str, values: Sequence[str]) -> None:
         filtered = [value for value in values if value]
@@ -667,9 +668,28 @@ class AnnotationComponent:
             return
         body.extend(["", f"## {title}", ""])
         if title == "Proof outline":
-            body.append(filtered[0])
+            body.append(self._wrap_doc_text(filtered[0]))
         else:
-            body.extend(f"- {value}" for value in filtered)
+            body.extend(self._wrap_doc_text(f"- {value}", subsequent_indent="  ") for value in filtered)
+
+    def _wrap_doc_text(self, value: str, *, subsequent_indent: str = "") -> str:
+        """Wrap generated Markdown prose so managed docstrings satisfy Lean's style linter."""
+
+        lines: list[str] = []
+        for line in value.splitlines():
+            if not line.strip():
+                lines.append("")
+                continue
+            lines.append(
+                textwrap.fill(
+                    line,
+                    width=100,
+                    subsequent_indent=subsequent_indent,
+                    break_long_words=True,
+                    break_on_hyphens=False,
+                )
+            )
+        return "\n".join(lines)
 
     def _format_origin(self, origin: DeclOriginRef) -> str:
         if origin.kind == "source":

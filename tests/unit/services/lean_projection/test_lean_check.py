@@ -206,6 +206,21 @@ def test_formal_policies_reject_long_line_linter_warning(tmp_path: Path) -> None
     assert "linter_style_long_line" in proof.value.message
 
 
+def test_formal_policies_reject_disabling_long_line_linter(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text(
+        "set_option linter.style.longLine false\n\ntheorem foo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    component = _component(tmp_path)
+
+    statement = component.build_statement_lean_check(tmp_path, file_path=lean_file, decl_kind="theorem")
+
+    assert statement.ok and statement.value is not None
+    assert statement.value.status == "failed"
+    assert "linter_style_long_line_disabled" in statement.value.message
+
+
 def test_proof_policy_and_adapter_trusted_check_are_strict(tmp_path: Path) -> None:
     lean_file = tmp_path / "Main.lean"
     lean_file.write_text("theorem foo : True := by\n  sorry\n", encoding="utf-8")

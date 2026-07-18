@@ -94,6 +94,18 @@ def test_render_current_markdown_docstring_and_dependency_grammar() -> None:
     assert "## Proof dependencies" not in proof.value
 
 
+def test_render_docstring_wraps_generated_prose_to_style_limit() -> None:
+    component = make_runtime().lean_projection.annotation
+    revision = _revision().model_copy(deep=True)
+    revision.statement.nl.text = " ".join(["squarefree residual selection"] * 12)
+
+    rendered = component.render_statement_docstring(revision, dependencies=_statement_dependencies())
+
+    assert rendered.ok and rendered.value is not None
+    assert max(len(line) for line in rendered.value.splitlines()) <= 100
+    assert "squarefree residual selection" in rendered.value
+
+
 def test_compare_unmanaged_expected_header_with_managed_statement() -> None:
     component = make_runtime().lean_projection.annotation
     managed = _managed_source(component, "theorem foo_bar : /- current -/ True := by\n  sorry")

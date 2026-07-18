@@ -26,6 +26,7 @@ class LeanCheckComponent:
     _THEOREM_LIKE = {"theorem", "lemma", "proposition", "corollary"}
     _ERROR_SEVERITIES = {"error", "fatal"}
     _LONG_LINE_DIAGNOSTIC_MARKERS = ("linter.style.longline", "line exceeds the 100 character limit")
+    _LONG_LINE_DISABLE_RE = re.compile(r"(?m)^\s*set_option\s+linter\.style\.longLine\s+false\b")
     _FORBIDDEN_WORD_RE = re.compile(r"(?<![A-Za-z0-9_'])(sorry|admit|axiom|opaque|unsafe)(?![A-Za-z0-9_'])")
 
     def __init__(
@@ -97,6 +98,7 @@ class LeanCheckComponent:
                 diagnostics=diagnostics.value,
                 scan=scan.value,
                 allow_sorry=theorem_like,
+                source_text=text.value,
             )
         )
 
@@ -116,6 +118,7 @@ class LeanCheckComponent:
                 diagnostics=diagnostics.value,
                 scan=scan.value,
                 allow_sorry=False,
+                source_text=text.value,
             )
         )
 
@@ -148,6 +151,7 @@ class LeanCheckComponent:
                 diagnostics=diagnostics,
                 scan=scan.value,
                 allow_sorry=False,
+                source_text=code,
             )
         )
 
@@ -158,6 +162,7 @@ class LeanCheckComponent:
         diagnostics: LeanDiagnosticsView,
         scan: SorryAxiomScanView,
         allow_sorry: bool,
+        source_text: str,
     ) -> LeanCheckView:
         policy_issues: list[str] = []
         if not diagnostics.passed:
@@ -177,6 +182,8 @@ class LeanCheckComponent:
             for item in diagnostics.diagnostics
         ):
             policy_issues.append("linter_style_long_line")
+        if self._LONG_LINE_DISABLE_RE.search(source_text):
+            policy_issues.append("linter_style_long_line_disabled")
         passed = not policy_issues
         message = "Lean check passed." if passed else "Lean check failed: " + ", ".join(policy_issues)
         return LeanCheckView(
