@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -120,6 +121,7 @@ def materialize_agent_home(
             )
         record = home_service.create_home(ark_spec)
         home_root = home_service.resolve_home_root(record.cli_type, record.home_id)
+        _disable_global_codex_features(home_root / ".codex" / "config.toml")
         instruction_path = _write_agent_instruction(home_root, spec)
         manifest_path = _write_agent_home_manifest(home_root, spec)
     except Exception as exc:  # noqa: BLE001 - bootstrap boundary.
@@ -150,6 +152,7 @@ def materialize_production_agent_homes(
     mcp_http_base_url: str,
     base_config_path: Path | str | None,
     auth_json_path: Path | str | None,
+    shared_elan_home: Path | str | None = None,
     agent_type_specs: Sequence["AgentTypeSpec"] | None = None,
 ) -> ServiceResult[ProductionAgentHomesView]:
     """Materialize all production Agent homes for a long-running runtime."""
@@ -170,6 +173,15 @@ def materialize_production_agent_homes(
             )
         )
 
+    elan_home = _resolve_shared_elan_home(shared_elan_home)
+    if elan_home is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "shared_elan_home_missing",
+                "Production Agent home materialization requires an existing shared ELAN_HOME.",
+            )
+        )
+
     specs = list(agent_type_specs) if agent_type_specs is not None else build_agent_type_specs()
     materialized: list[AgentHomeMaterializationView] = []
     failed: list[dict[str, str]] = []
@@ -181,6 +193,7 @@ def materialize_production_agent_homes(
             mcp_http_base_url=mcp_http_base_url,
             base_config_path=base_config,
             auth_json_path=auth_json,
+            fixed_env={"ELAN_HOME": str(elan_home)},
             agent_type_specs=specs,
         )
         if result.ok and result.value is not None:
@@ -210,6 +223,55 @@ def materialize_production_agent_homes(
             )
         )
     return runtime.foundation.ok(view)
+
+
+def _resolve_shared_elan_home(configured: Path | str | None) -> Path | None:
+    candidates = [
+        Path(configured).expanduser() if configured is not None else None,
+        Path(os.environ["ELAN_HOME"]).expanduser() if os.environ.get("ELAN_HOME") else None,
+        Path.home() / ".elan",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.is_dir():
+            return candidate.resolve()
+    return None
+
+
+def _disable_global_codex_features(config_path: Path) -> None:
+    """Override global Codex discovery features without rewriting unrelated config."""
+
+    text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    lines = text.splitlines()
+    section_start: int | None = None
+    section_end = len(lines)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "[features]":
+            section_start = index
+            continue
+        if section_start is not None and index > section_start and stripped.startswith("[") and stripped.endswith("]"):
+            section_end = index
+            break
+
+    overrides = {"apps": "false", "plugins": "false", "tool_suggest": "false"}
+    if section_start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[features]", *(f"{key} = {value}" for key, value in overrides.items())])
+    else:
+        found: set[str] = set()
+        for index in range(section_start + 1, section_end):
+            key = lines[index].split("=", 1)[0].strip() if "=" in lines[index] else ""
+            if key in overrides:
+                lines[index] = f"{key} = {overrides[key]}"
+                found.add(key)
+        insert_at = section_end
+        for key, value in overrides.items():
+            if key not in found:
+                lines.insert(insert_at, f"{key} = {value}")
+                insert_at += 1
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _write_agent_instruction(home_root: Path, spec: AgentHomeBootstrapSpec) -> Path:

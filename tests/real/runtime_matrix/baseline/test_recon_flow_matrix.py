@@ -142,8 +142,6 @@ def test_resource_recon_request_resource_callback_branch(
                     "submit_resource_rejected",
                     {
                         "reason": "Runtime Matrix child resource branch terminal.",
-                        "target_kind": "web",
-                        "target": ws.resources.web_url,
                     },
                 )
             ],

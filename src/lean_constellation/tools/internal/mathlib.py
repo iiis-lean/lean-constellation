@@ -9,6 +9,7 @@ from lean_constellation.tools.args import (
     CurrentMathlibModuleUseArgs,
     MathlibCandidateArgs,
     MathlibCandidateIngestArgs,
+    MathlibBatchRecordArgs,
     MathlibDeclArgs,
     MathlibDeclNameArgs,
     MathlibDeclRecordArgs,
@@ -177,6 +178,20 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="mathlib",
             backing_method="record_mathlib_decl_checked",
             result_view="mathlib_decl_entry",
+            groups={AppGroup.MATHLIB_INDEX_WRITE},
+            roles=write_roles,
+        ),
+        direct_tool(
+            name="record_mathlib_batch",
+            description=(
+                "Verify up to 25 Mathlib modules and declarations in one Lean snippet, then "
+                "record the checked entries in the repo-level MathlibIndex."
+            ),
+            args_model=MathlibBatchRecordArgs,
+            capability=ToolCapability.WRITE,
+            backing_service="mathlib",
+            backing_method="record_mathlib_batch_checked",
+            result_view="mathlib_batch_record",
             groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
         ),

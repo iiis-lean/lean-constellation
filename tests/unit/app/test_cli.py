@@ -180,6 +180,7 @@ def test_cli_resume_sends_exact_bounded_and_empty_payloads(tmp_path, capsys, mon
         "resume",
         "--repo-key",
         "Repo",
+        "--unbounded",
     ])
     capsys.readouterr()
 
@@ -194,7 +195,7 @@ def test_cli_resume_sends_exact_bounded_and_empty_payloads(tmp_path, capsys, mon
         (
             "POST",
             "http://admin.test/admin/repos/Repo/runtime/resume",
-            {},
+            {"unbounded": True},
         ),
     ]
 
@@ -206,6 +207,8 @@ def test_cli_resume_sends_exact_bounded_and_empty_payloads(tmp_path, capsys, mon
         ["--flow-advances", "0", "--step-starts", "0"],
         ["--flow-advances", "-1", "--step-starts", "0"],
         ["--scope-id", "repo:Repo", "--flow-advances", "1", "--step-starts", "0"],
+        [],
+        ["--unbounded", "--flow-advances", "1", "--step-starts", "0"],
     ],
 )
 def test_cli_resume_rejects_invalid_budget_combinations(tmp_path, arguments) -> None:  # noqa: ANN001

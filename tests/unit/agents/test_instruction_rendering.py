@@ -103,6 +103,15 @@ def test_common_runtime_contract_is_the_single_truth_and_tool_authority() -> Non
     assert "hand control back" in submit.lower()
 
 
+def test_common_tool_discovery_contract_uses_role_filtered_surface() -> None:
+    text = PUBLIC_INSTRUCTION_FRAGMENTS["common.role_filtered_tool_discovery"]
+
+    assert "mcp__lean_constellation_tools_" in text
+    assert "broad or complete ALL_TOOLS" in text
+    assert "unrelated global apps or plugins" in text
+    assert "precise read tools" in text
+
+
 def test_instruction_renderer_deduplicates_public_fragments() -> None:
     spec = get_agent_type_spec("ContentPlanAgent")
     duplicate = spec.model_copy(

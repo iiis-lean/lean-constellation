@@ -11,6 +11,7 @@ from pydantic import Field
 
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
+from lean_constellation.flows.content_node_task.context_brief import build_stage_context_brief
 from lean_constellation.flows.content_node_task.preparation.common import content_node_workdir
 from lean_constellation.flows.content_node_task.decl_round.steps import (
     BuildRoundResultStep,
@@ -473,6 +474,7 @@ def _stage_worker_step(ctx: FlowContext, flow: DeclGraphRoundFlow, input_model: 
     stage = _require_stage(state)
     role = f"{stage}_worker"
     _inherit_stage_agent_binding_from_parent(ctx, flow, role)
+    brief = build_stage_context_brief(ctx, flow, input_model, state, role="worker")
     return DeclStageWorkerAgentStep(
         step_id=new_decl_round_step_id(f"{stage}_worker"),
         flow_id=flow.flow_id,
@@ -482,8 +484,14 @@ def _stage_worker_step(ctx: FlowContext, flow: DeclGraphRoundFlow, input_model: 
             agent_type=WORKER_AGENT_TYPES[stage],
             create_agent_if_missing=True,
             bind_created_agent_to="flow",
-            variables=_agent_variables(input_model, state, agent_role="worker", expected_view_key=WORKER_VIEW_KEYS[stage]),
-            prompt_override=_stage_worker_prompt(input_model, state),
+            variables=_agent_variables(
+                input_model,
+                state,
+                agent_role="worker",
+                expected_view_key=WORKER_VIEW_KEYS[stage],
+                context_brief=brief.model_dump(mode="json"),
+            ),
+            prompt_override=f"{_stage_worker_prompt(input_model, state)}\n\n{brief.render()}",
             workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
         ),
     )
@@ -495,6 +503,7 @@ def _stage_reviewer_step(ctx: FlowContext, flow: DeclGraphRoundFlow, input_model
     stage = _require_stage(state)
     role = f"{stage}_reviewer"
     _inherit_stage_agent_binding_from_parent(ctx, flow, role)
+    brief = build_stage_context_brief(ctx, flow, input_model, state, role="reviewer")
     return DeclStageReviewerAgentStep(
         step_id=new_decl_round_step_id(f"{stage}_reviewer"),
         flow_id=flow.flow_id,
@@ -509,8 +518,14 @@ def _stage_reviewer_step(ctx: FlowContext, flow: DeclGraphRoundFlow, input_model
             stage=stage,
             expected_decl_names=list(state.current_target_decl_names),
             review_attempt_index=state.current_retry_count,
-            variables=_agent_variables(input_model, state, agent_role="reviewer", expected_view_key=REVIEWER_VIEW_KEYS[stage]),
-            prompt_override=_stage_reviewer_prompt(input_model, state),
+            variables=_agent_variables(
+                input_model,
+                state,
+                agent_role="reviewer",
+                expected_view_key=REVIEWER_VIEW_KEYS[stage],
+                context_brief=brief.model_dump(mode="json"),
+            ),
+            prompt_override=f"{_stage_reviewer_prompt(input_model, state)}\n\n{brief.render()}",
             workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
         ),
     )
@@ -541,6 +556,7 @@ def _agent_variables(
     *,
     agent_role: Literal["worker", "reviewer"],
     expected_view_key: str,
+    context_brief: dict[str, object],
 ) -> dict[str, object]:
     return {
         "repo_key": input_model.repo_key,
@@ -556,6 +572,7 @@ def _agent_variables(
         "retry_attempt": state.current_retry_count,
         "agent_role": agent_role,
         "expected_view_key": expected_view_key,
+        "context_brief": context_brief,
     }
 
 

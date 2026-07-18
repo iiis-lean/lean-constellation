@@ -559,6 +559,68 @@ class LeanToolchainClient:
             }
         )
 
+    def check_mathlib_batch(
+        self,
+        repo_root: Path,
+        *,
+        imports: list[str],
+        decl_names: list[str],
+        timeout_seconds: int | None = None,
+    ) -> ToolchainLeanCheckView:
+        repo_path = Path(repo_root)
+        normalized_imports = list(dict.fromkeys(item.strip() for item in imports if item.strip()))
+        normalized_decls = list(dict.fromkeys(item.strip() for item in decl_names if item.strip()))
+        check_code = "\n".join(f"#check {name}" for name in normalized_decls) or "#check True"
+        complete_code = "\n".join(
+            [*(f"import {module}" for module in normalized_imports), check_code, ""]
+        )
+        policy = self.config.provider_policy
+        if policy.mathlib_check_prefer_lake_project and self._looks_like_lake_project(repo_path):
+            checked = self.run_snippet_check(
+                repo_path,
+                imports=normalized_imports,
+                code=check_code,
+                timeout_seconds=timeout_seconds,
+            )
+            if checked.ok or not self._should_fallback_mathlib_lake_check(checked):
+                return checked.model_copy(update={"ok": True, "passed": checked.ok})
+            fallback = self._check_snippet_with_toolkit(
+                repo_path,
+                code=complete_code,
+                attempted_tools=("lsp.run_snippet", "run_snippet"),
+            )
+            return fallback.model_copy(
+                update={
+                    "fallback_provider": "lake_command",
+                    "fallback_reason": checked.issue_code or checked.summary,
+                }
+            )
+        checked = self._check_snippet_with_toolkit(
+            repo_path,
+            code=complete_code,
+            attempted_tools=("lsp.run_snippet", "run_snippet"),
+        )
+        if (
+            checked.ok
+            or not self._should_fallback_mathlib_toolkit_check(checked)
+            or not self._looks_like_lake_project(repo_path)
+        ):
+            return checked
+        fallback = self.run_snippet_check(
+            repo_path,
+            imports=normalized_imports,
+            code=check_code,
+            timeout_seconds=timeout_seconds,
+        )
+        return fallback.model_copy(
+            update={
+                "ok": self._lake_check_provider_ran(fallback),
+                "passed": fallback.ok,
+                "fallback_provider": "lean_mcp_toolkit",
+                "fallback_reason": checked.issue_code or checked.summary,
+            }
+        )
+
     def scan_sorry_axiom(self, file_text: str) -> ToolchainPolicyScanView:
         sanitized = self._strip_comments_and_strings(file_text)
         occurrences: list[ToolchainPolicyOccurrenceView] = []

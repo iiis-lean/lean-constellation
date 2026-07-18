@@ -128,8 +128,6 @@ def test_content_node_task_resource_dispatch_callback_branch(
                     "submit_resource_rejected",
                     {
                         "reason": "Runtime Matrix content resource child rejected.",
-                        "target_kind": "web",
-                        "target": ws.resources.web_url,
                     },
                 )
             ],

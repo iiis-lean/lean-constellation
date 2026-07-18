@@ -14,6 +14,7 @@ from lean_constellation.flows.common.checkpoint_policy import content_task_progr
 from lean_constellation.flows.common.flow_requests import repo_scope_id
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
+from lean_constellation.flows.content_node_task.context_brief import build_content_plan_context_brief
 from lean_constellation.flows.content_node_task.preparation.common import content_node_workdir
 from lean_constellation.flows.content_node_task.steps import (
     ContentPlanStepResult,
@@ -161,10 +162,14 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             )
         if state.position.phase == "plan_agent":
             _inherit_content_plan_binding_from_prior_task(ctx, self)
-            return ctx.create_step(_content_plan_agent_step(self, input_model, state, callback=False))
+            return ctx.create_step(
+                _content_plan_agent_step(ctx, self, input_model, state, callback=False)
+            )
         if state.position.phase == "callback_plan_agent":
             _inherit_content_plan_binding_from_prior_task(ctx, self)
-            return ctx.create_step(_content_plan_agent_step(self, input_model, state, callback=True))
+            return ctx.create_step(
+                _content_plan_agent_step(ctx, self, input_model, state, callback=True)
+            )
         if state.position.phase == "after_child_terminal_checkpoint":
             checkpoint = _content_progress_checkpoint_step(self, input_model, state)
             if checkpoint is None:
@@ -401,6 +406,7 @@ def _require_content_task_input(input_model: BaseFlowInput | None) -> ContentNod
 
 
 def _content_plan_agent_step(
+    ctx: FlowContext,
     flow: ContentNodeTaskFlow,
     input_model: ContentNodeTaskInput,
     state: ContentNodeTaskState,
@@ -409,6 +415,8 @@ def _content_plan_agent_step(
 ):
     from lean_constellation.flows.common.agent_steps import ContentPlanAgentStep
 
+    brief = build_content_plan_context_brief(ctx, flow, input_model, state)
+    brief_text = brief.render()
     return ContentPlanAgentStep(
         step_id=new_content_step_id("content_plan_callback" if callback else "content_plan"),
         flow_id=flow.flow_id,
@@ -426,9 +434,14 @@ def _content_plan_agent_step(
                 "task_mode": input_model.task_mode,
                 "used_preparation_kinds": list(state.used_preparation_kinds),
                 "decl_round_count": state.decl_round_count,
+                "context_brief": brief.model_dump(mode="json"),
             },
             prompt_mode="callback" if callback else "initial",
-            prompt_override=None if callback else _content_plan_initial_prompt(input_model),
+            prompt_override=(
+                None
+                if callback
+                else f"{_content_plan_initial_prompt(input_model)}\n\n{brief_text}"
+            ),
             callback_dispatch_step_id=state.waiting_dispatch_step_id if callback else None,
             env_overrides={
                 "LEAN_CONSTELLATION_AGENT_TYPE": "ContentPlanAgent",

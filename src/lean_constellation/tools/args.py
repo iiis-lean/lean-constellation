@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel
 
@@ -499,6 +499,26 @@ class MathlibDeclRecordArgs(StrictModel):
     kind: str | None = Field(default=None, description="Lean declaration kind if known, such as def, theorem, lemma, or instance.")
     signature: str | None = Field(default=None, description="Lean signature or type of the declaration if known.")
     snippet: str | None = Field(default=None, description="Relevant source or documentation snippet supporting the declaration entry.")
+
+
+class MathlibBatchRecordArgs(StrictModel):
+    modules: list[MathlibModuleRecordArgs] = Field(
+        default_factory=list,
+        description="Mathlib modules to verify together and record.",
+    )
+    declarations: list[MathlibDeclRecordArgs] = Field(
+        default_factory=list,
+        description="Mathlib declarations to verify together and record.",
+    )
+
+    @model_validator(mode="after")
+    def _bounded_non_empty_batch(self) -> "MathlibBatchRecordArgs":
+        size = len(self.modules) + len(self.declarations)
+        if size == 0:
+            raise ValueError("at least one Mathlib module or declaration is required")
+        if size > 25:
+            raise ValueError("at most 25 Mathlib entries may be recorded in one batch")
+        return self
 
 
 class MathlibSemanticSearchArgs(StrictModel):

@@ -466,6 +466,15 @@ class ContentPlanAgentStep(AgentStep):
         "submit_content_node_failed",
     }
 
+    def build_callback_prompt(self, ctx, agent_id: str) -> str:
+        base = super().build_callback_prompt(ctx, agent_id)
+        state = self._agent_step_state(self._latest_agent_step(ctx))
+        brief = state.variables.get("context_brief")
+        if not isinstance(brief, dict):
+            return base
+        rendered = _render_context_brief_payload(brief)
+        return f"{base}\n\nCurrent derived ContentPlan context brief:\n{rendered}"
+
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission
         if isinstance(submission, ContentPreparationDispatchSubmission):
@@ -618,6 +627,14 @@ class ResourceReconAgentStep(AgentStep):
         "submit_resource_request",
     }
 
+    def build_callback_prompt(self, ctx, agent_id: str) -> str:
+        base = super().build_callback_prompt(ctx, agent_id)
+        state = self._agent_step_state(self._latest_agent_step(ctx))
+        prior = state.variables.get("prior_preparation_context")
+        if not isinstance(prior, str) or not prior.strip():
+            return base
+        return f"{base}\n\nPrior preparation context (do not broadly rediscover):\n{prior}"
+
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission
         if isinstance(submission, ResourceReconCompletedSubmission):
@@ -735,6 +752,12 @@ class DeclStageReviewerAgentStep(AgentStep):
     def build_incomplete_result(self, ctx, agent_id: str | None, reason: str, turn_result: object | None, attempt_count: int):
         del ctx, agent_id, turn_result, attempt_count
         return DeclStageReviewerStepResult(outcome="incomplete", incomplete_reason=reason, summary=reason)
+
+
+def _render_context_brief_payload(payload: dict[str, object]) -> str:
+    from lean_constellation.flows.content_node_task.context_brief import ContentPlanContextBrief
+
+    return ContentPlanContextBrief.model_validate(payload).render()
 
 
 BUSINESS_AGENT_STEP_TYPES: tuple[type[AgentStep], ...] = (

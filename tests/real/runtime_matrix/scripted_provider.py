@@ -199,4 +199,17 @@ def schedule_until(runtime, predicate, *, limit: int = 100, step_timeout_s: floa
         if predicate():
             return
         sleep(0.01)
-    raise AssertionError("scheduler did not reach expected Runtime Matrix state")
+    flows = [
+        f"{flow.flow_type}:{flow.flow_id}:{flow.status}:{getattr(flow.state, 'position', None)}:"
+        f"{getattr(flow, 'result', None)}"
+        for flow in runtime.ark.flow_service.list_flows()
+    ]
+    steps = [
+        f"{step.step_type}:{step.step_id}:{step.status}:{getattr(step, 'result', None)}:"
+        f"{getattr(step, 'error', None)}"
+        for step in runtime.ark.flow_service.list_steps()
+    ]
+    raise AssertionError(
+        "scheduler did not reach expected Runtime Matrix state; "
+        f"flows={flows}; steps={steps}"
+    )

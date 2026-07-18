@@ -109,6 +109,7 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
             "LEAN_CONSTELLATION_CHECKPOINT_CONTENT_TASK_PROGRESS_ENABLED": "true",
             "LEAN_CONSTELLATION_AGENT_TRACE_REPORT_PERSISTENCE": "disabled",
             "LEAN_CONSTELLATION_AGENT_TRACE_REPORT_INCLUDE_IN_SNAPSHOTS": "true",
+            "LEAN_CONSTELLATION_SHARED_ELAN_HOME": str(tmp_path / "shared_elan"),
         },
     )
 
@@ -134,6 +135,7 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
     assert config.automatic_checkpoints.content_task_progress_enabled is True
     assert config.agent_trace_reports.persistence == "disabled"
     assert config.agent_trace_reports.include_in_snapshots is True
+    assert config.shared_elan_home == tmp_path / "shared_elan"
 
 
 def test_load_app_config_reads_workspace_repo_defaults_from_env(tmp_path) -> None:

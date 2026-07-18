@@ -39,6 +39,10 @@ def test_admin_pause_resume_uses_runtime_pause_controller_without_mutating_flow_
 
 
 def test_runtime_resume_input_rejects_empty_budget_scope_and_skip_rebuild_conflicts() -> None:
+    with pytest.raises(ValidationError, match="exactly one run plan"):
+        RuntimeResumeInput()
+    with pytest.raises(ValidationError, match="exactly one run plan"):
+        RuntimeResumeInput(budget={"flow_advances": 1, "step_starts": 0}, unbounded=True)
     with pytest.raises(ValidationError, match="at least one action"):
         RuntimeResumeInput(budget={"flow_advances": 0, "step_starts": 0})
     with pytest.raises(ValidationError, match="repo-global"):
@@ -105,7 +109,7 @@ def test_admin_manual_pause_cancels_active_budget_and_unbounded_resume_clears_ev
     assert paused.value.run_control is not None
     assert paused.value.run_control.pause_reason == "manual_pause"
     assert paused.value.run_control.remaining_flow_advances == 2
-    resumed = admin.resume_runtime()
+    resumed = admin.resume_runtime(RuntimeResumeInput(unbounded=True))
     assert resumed.ok and resumed.value is not None
     assert resumed.value.run_control is not None
     assert resumed.value.run_control.mode == "unbounded"

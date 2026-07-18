@@ -158,3 +158,48 @@ def test_record_mathlib_decl_checked_rejects_failed_check_and_module_conflict(tm
     )
     assert not conflict.ok
     assert conflict.issues[0].kind == "mathlib_decl_module_conflict"
+
+
+def test_record_mathlib_batch_checked_uses_one_lean_probe_and_records_all_entries(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def dispatch(tool_name: str, payload: dict):
+        calls.append((tool_name, payload))
+        assert tool_name == "lsp.run_snippet"
+        assert payload["code"] == (
+            "import Mathlib.Data.Nat.Basic\n"
+            "import Init\n"
+            "#check Nat.add_assoc\n"
+        )
+        return {"diagnostics": []}
+
+    service = _service(dispatch)
+    recorded = service.record_mathlib_batch_checked(
+        tmp_path,
+        modules=[
+            {
+                "module_name": "Mathlib.Data.Nat.Basic",
+                "summary": "Natural number basics.",
+                "source": "batch test",
+            }
+        ],
+        declarations=[
+            {
+                "decl_name": "Nat.add_assoc",
+                "module_name": "Init",
+                "summary": "Associativity.",
+                "source": "batch test",
+                "kind": "theorem",
+                "signature": "Nat.add_assoc : ...",
+                "snippet": "theorem Nat.add_assoc",
+            }
+        ],
+    )
+
+    assert recorded.ok, recorded.issues
+    assert recorded.value is not None
+    assert [item.module for item in recorded.value.modules] == ["Mathlib.Data.Nat.Basic"]
+    assert [item.name for item in recorded.value.declarations] == ["Nat.add_assoc"]
+    assert len(calls) == 1

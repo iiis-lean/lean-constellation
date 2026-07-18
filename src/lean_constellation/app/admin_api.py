@@ -23,6 +23,11 @@ from lean_constellation.app.external_takeover import (
     list_external_takeover_tools,
 )
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
+from lean_constellation.app.semantic_scheduler import (
+    RuntimeSemanticAdvanceInput,
+    SemanticAdvancePolicyError,
+    build_semantic_run_policy,
+)
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.preparation import (
@@ -83,10 +88,13 @@ class RuntimePauseView(StrictModel):
 class RuntimeResumeInput(StrictModel):
     scope_id: str | None = None
     budget: SchedulerRunBudget | None = None
+    unbounded: bool = False
     skip_rebuild: bool = False
 
     @model_validator(mode="after")
     def validate_bounded_resume(self) -> "RuntimeResumeInput":
+        if (self.budget is None) == (not self.unbounded):
+            raise ValueError("runtime resume requires exactly one run plan: budget or unbounded=true")
         if self.budget is not None and self.scope_id is not None:
             raise ValueError("bounded scheduler resume is repo-global and cannot specify scope_id")
         if self.budget is not None and self.skip_rebuild:
@@ -213,6 +221,38 @@ class AgentListMonitorView(StrictModel):
     agent_type: str | None = None
     status: str | None = None
     agents: list[AgentMonitorView] = Field(default_factory=list)
+    summary: str
+
+
+class RunningAgentAuditItemView(StrictModel):
+    agent_id: str
+    scope_id: str
+    classification: str
+    thread_id: str | None = None
+    rollout_relpath: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class RunningAgentAuditView(StrictModel):
+    repo_key: str
+    agents: list[RunningAgentAuditItemView] = Field(default_factory=list)
+    summary: str
+
+
+class RunningAgentRepairInput(StrictModel):
+    expected_scope_id: str
+    expected_thread_id: str | None = None
+    expected_rollout_relpath: str | None = None
+    action: Literal["mark_idle"] = "mark_idle"
+    dry_run: bool = True
+
+
+class RunningAgentRepairView(StrictModel):
+    agent_id: str
+    classification: str
+    action: str
+    dry_run: bool
+    repaired: bool
     summary: str
 
 
@@ -1239,7 +1279,7 @@ class LeanAdminApi:
                     "Provide either RuntimeResumeInput or scope_id, not both.",
                 )
             )
-        request = input_model or RuntimeResumeInput(scope_id=scope_id)
+        request = input_model or RuntimeResumeInput(scope_id=scope_id, unbounded=True)
         controller = self.runtime.ark.pause_controller
         if controller is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("pause_controller_missing", "ARK pause controller is not configured."))
@@ -1280,6 +1320,51 @@ class LeanAdminApi:
                 scope_id=request.scope_id,
                 run_control=self._run_control_view(),
                 summary="Resumed runtime scheduling.",
+            )
+        )
+
+    def semantic_advance(self, input_model: RuntimeSemanticAdvanceInput) -> ServiceResult[RuntimePauseView]:
+        controller = self.runtime.ark.pause_controller
+        schedule_service = self.runtime.ark.schedule_service
+        step_service = self.runtime.ark.step_service
+        if controller is None or schedule_service is None or step_service is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "semantic_advance_runtime_missing",
+                    "Semantic advance requires pause, schedule, and step services.",
+                )
+            )
+        if not controller.is_paused(None):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "semantic_advance_requires_global_pause",
+                    "Production semantic advance requires the repo runtime to be globally paused.",
+                )
+            )
+        running_steps = step_service.list_running_steps()
+        if running_steps:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "semantic_advance_running_steps",
+                    "Production semantic advance cannot start while Steps are running.",
+                    details={"step_ids": [step.step_id for step in running_steps]},
+                )
+            )
+        try:
+            policy = build_semantic_run_policy(self.runtime, input_model)
+            schedule_service.configure_semantic_run(policy)
+            schedule_service.rebuild_candidate_queues()
+            controller.resume(None)
+        except Exception as exc:  # noqa: BLE001 - Admin mutation boundary.
+            schedule_service.clear_run_budget(reason="semantic_advance_admission_failed")
+            controller.pause(None)
+            kind = "semantic_advance_invalid" if isinstance(exc, SemanticAdvancePolicyError) else "semantic_advance_failed"
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(kind, str(exc)))
+        return self.runtime.foundation.ok(
+            RuntimePauseView(
+                paused=False,
+                run_control=schedule_service.get_run_control_view(),
+                summary=f"Started production semantic advance {policy.name}.",
             )
         )
 
@@ -1525,6 +1610,90 @@ class LeanAdminApi:
         except Exception as exc:  # noqa: BLE001 - admin boundary.
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("agent_monitor_failed", f"Failed to list agents: {exc}")
+            )
+
+    def audit_running_agents(self, *, repo_key: str) -> ServiceResult[RunningAgentAuditView]:
+        try:
+            prefix = f"repo:{repo_key}"
+            records = [
+                item
+                for item in self.runtime.ark.agent_service.audit_running_agents()
+                if item.scope_id == prefix or item.scope_id.startswith(f"{prefix}:")
+            ]
+            return self.runtime.foundation.ok(
+                RunningAgentAuditView(
+                    repo_key=repo_key,
+                    agents=[
+                        RunningAgentAuditItemView(
+                            agent_id=item.agent_id,
+                            scope_id=item.scope_id,
+                            classification=item.classification,
+                            thread_id=item.thread_id,
+                            rollout_relpath=item.rollout_relpath,
+                            evidence=list(item.evidence),
+                        )
+                        for item in records
+                    ],
+                    summary=f"Audited {len(records)} running agents for repo {repo_key}.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "running_agent_audit_failed",
+                    f"Failed to audit running agents: {exc}",
+                )
+            )
+
+    def repair_running_agent(
+        self,
+        agent_id: str,
+        input_model: RunningAgentRepairInput,
+        *,
+        repo_key: str,
+    ) -> ServiceResult[RunningAgentRepairView]:
+        prefix = f"repo:{repo_key}"
+        if not (
+            input_model.expected_scope_id == prefix
+            or input_model.expected_scope_id.startswith(f"{prefix}:")
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "running_agent_repair_scope_mismatch",
+                    "Agent repair expected_scope_id is outside the requested repo.",
+                    current=input_model.expected_scope_id,
+                    expected=prefix,
+                )
+            )
+        try:
+            result = self.runtime.ark.agent_service.repair_running_agent(
+                agent_id,
+                expected_scope_id=input_model.expected_scope_id,
+                expected_thread_id=input_model.expected_thread_id,
+                expected_rollout_relpath=input_model.expected_rollout_relpath,
+                action=input_model.action,
+                dry_run=input_model.dry_run,
+            )
+            return self.runtime.foundation.ok(
+                RunningAgentRepairView(
+                    agent_id=result.agent_id,
+                    classification=result.classification,
+                    action=result.action,
+                    dry_run=result.dry_run,
+                    repaired=result.repaired,
+                    summary=(
+                        f"Agent repair {'previewed' if result.dry_run else 'applied'} for "
+                        f"{result.agent_id}: {result.action}."
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - admin boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "running_agent_repair_rejected",
+                    f"Running agent repair was rejected: {exc}",
+                    object_ref=agent_id,
+                )
             )
 
     def get_agent_report_index(self, agent_id: str) -> ServiceResult[AgentReportIndexView]:

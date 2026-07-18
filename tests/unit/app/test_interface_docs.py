@@ -99,6 +99,22 @@ def test_interface_catalogs_follow_live_registries() -> None:
         assert "budget" in resume["input_schema"]["properties"]
         assert "SchedulerRunBudget" in resume["input_schema"]["$defs"]
 
+    semantic = next(
+        item
+        for item in admin["operations"]
+        if item["path"] == "/admin/repos/{repo_key:str}/runtime/semantic-advance"
+    )
+    assert semantic["input_model"] == "RuntimeSemanticAdvanceInput"
+    assert semantic["schema_status"] == "typed_body"
+    assert set(semantic["input_schema"]["properties"]) == {
+        "granularity",
+        "action",
+        "scope_id",
+        "step_id",
+        "content_task_flow_id",
+        "safety",
+    }
+
     submit_requirement = next(
         item for item in tools["tools"] if item["name"] == "submit_repo_requirement"
     )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from lean_constellation.agents import build_agent_home_bootstrap_spec, build_agent_type_specs, validate_agent_resources
@@ -22,7 +24,7 @@ from tests.real.runtime_matrix.admin_helpers import (
     unwrap,
     wait_for_pending_handoff,
 )
-from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
+from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace, create_runtime_matrix_workspace
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
@@ -96,9 +98,9 @@ def test_all_tool_views_expose_non_empty_mcp_tool_lists(runtime_matrix_workspace
 
 
 def test_external_takeover_handoff_includes_prompt_env_and_tool_lists(
-    runtime_matrix_workspace: RuntimeMatrixWorkspace,
+    tmp_path: Path,
 ) -> None:
-    ws = runtime_matrix_workspace
+    ws = create_runtime_matrix_workspace(tmp_path, initialize_provider_format=False)
     ws.create_home("RepoFormatDiscoveryControlledTestAgent")
     ws.write_bootstrap_preparation(ws.provider_repo)
     started = unwrap(

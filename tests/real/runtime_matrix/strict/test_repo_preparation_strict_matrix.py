@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from agent_runtime_kit.flow.models import FlowPosition
 
+from lean_constellation.app import AdminFlowAdvanceInput, AdminStepStartInput
 from lean_constellation.domain.preparation import SourceCorpusMode
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
@@ -183,12 +185,33 @@ def test_strict_native_preparation_blocked_and_direct_ready_evidence(
     _wait_completed(direct_ws, direct_flow_id)
     direct_flow = direct_ws.runtime.ark.flow_service.get_flow(direct_flow_id)
     assert direct_flow.result.outcome == "handoff_dispatched"
+
+    # Exercise the legacy monolithic phase retained for checkpoint compatibility.
+    legacy_flow_id = _start_native_preparation(direct_ws)
+    direct_ws.runtime.ark.flow_service.store.update_flow_record(
+        legacy_flow_id,
+        lambda flow: (
+            setattr(flow.state, "position", FlowPosition(phase="root_interface_prepare")),
+            setattr(flow.state, "allow_interface_supplement", False),
+        ),
+    )
+    legacy_advanced = unwrap(
+        direct_ws.admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=legacy_flow_id))
+    )
+    assert legacy_advanced.created_step_id is not None
+    legacy_started = unwrap(
+        direct_ws.admin.start_step_once(
+            AdminStepStartInput(step_id=legacy_advanced.created_step_id, wait=True)
+        )
+    )
+    assert legacy_started.status == "completed"
     evidence_recorder.record_runtime_state(direct_ws.runtime)
 
     assert {
         "validate_initialize_native_preparation_step",
         "existing_source_corpus_scan_step",
         "prepare_native_lifecycle_child_step",
+        "root_interface_direct_ready_step",
     }.issubset(evidence_recorder.evidence.logic_step_types)
     assert {
         "source_corpus_prepare_agent_step",

@@ -111,6 +111,14 @@ class MathlibAccessCheckView(StrictModel):
     summary: str
 
 
+class MathlibBatchRecordView(StrictModel):
+    modules: list[MathlibModuleEntryView] = Field(default_factory=list)
+    declarations: list[MathlibDeclEntryView] = Field(default_factory=list)
+    checked_code: str
+    toolkit_tool: str
+    summary: str
+
+
 class ToolkitIngestionComponent:
     """Convert toolkit search/navigation results into stable MathlibIndex entries."""
 
@@ -484,19 +492,213 @@ class ToolkitIngestionComponent:
                 )
             )
 
+        return self._record_mathlib_decl_unchecked(
+            repo_root,
+            decl_name=normalized_decl,
+            module=module,
+            kind=kind,
+            signature=signature,
+            summary=summary,
+            source=source,
+            snippet=snippet,
+        )
+
+    def record_mathlib_batch_checked(
+        self,
+        repo_root: Path,
+        *,
+        modules: list[dict[str, Any]],
+        declarations: list[dict[str, Any]],
+    ) -> ServiceResult[MathlibBatchRecordView]:
+        if not modules and not declarations:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_batch_empty",
+                    "At least one Mathlib module or declaration is required.",
+                )
+            )
+        if len(modules) + len(declarations) > 25:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_batch_too_large",
+                    "At most 25 Mathlib entries may be recorded in one batch.",
+                )
+            )
+
+        prepared_modules: list[dict[str, Any]] = []
+        seen_modules: set[str] = set()
+        for item in modules:
+            module_name = str(item.get("module_name") or "").strip()
+            if not module_name:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "mathlib_module_name_empty",
+                        "Mathlib module name must be non-empty.",
+                        field="module_name",
+                    )
+                )
+            if module_name in seen_modules:
+                continue
+            seen_modules.add(module_name)
+            prepared_modules.append({**item, "module_name": module_name})
+
+        prepared_decls: list[dict[str, Any]] = []
+        seen_decls: set[str] = set()
+        for item in declarations:
+            prepared = dict(item)
+            decl_name = str(prepared.get("decl_name") or "").strip()
+            if not decl_name:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "mathlib_decl_name_empty",
+                        "Mathlib declaration name must be non-empty.",
+                        field="decl_name",
+                    )
+                )
+            if decl_name in seen_decls:
+                continue
+            seen_decls.add(decl_name)
+            module = str(prepared.get("module_name") or "").strip() or None
+            if any(prepared.get(field) is None for field in ("kind", "signature", "snippet")):
+                navigation = self.inspect_mathlib_declaration(repo_root, decl_name=decl_name)
+                if navigation.ok and navigation.value is not None:
+                    module = module or navigation.value.module
+                    prepared["kind"] = prepared.get("kind") or navigation.value.kind
+                    prepared["signature"] = prepared.get("signature") or navigation.value.signature
+                    prepared["snippet"] = prepared.get("snippet") or navigation.value.code_excerpt
+            existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=decl_name)
+            if (
+                existing.ok
+                and existing.value is not None
+                and existing.value.module
+                and module
+                and existing.value.module != module
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "mathlib_decl_module_conflict",
+                        f"Mathlib declaration is already recorded with a different module: {decl_name}",
+                        object_ref=decl_name,
+                        current=existing.value.module,
+                        expected=module,
+                    )
+                )
+            prepared["decl_name"] = decl_name
+            prepared["module_name"] = module
+            prepared_decls.append(prepared)
+
+        imports = [item["module_name"] for item in prepared_modules]
+        imports.extend(
+            item["module_name"] for item in prepared_decls if item.get("module_name")
+        )
+        decl_names = [item["decl_name"] for item in prepared_decls]
+        checked = self.runtime.external.lean_toolchain.check_mathlib_batch(
+            repo_root,
+            imports=imports,
+            decl_names=decl_names,
+        )
+        if not checked.ok:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    checked.issue_code or "mathlib_batch_check_unavailable",
+                    checked.summary,
+                    details={"diagnostics": checked.diagnostics_excerpt or ""},
+                )
+            )
+        if checked.passed is False:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_batch_access_check_failed",
+                    "One or more Mathlib batch entries are not accessible from the current repo.",
+                    details={"diagnostics": checked.diagnostics_excerpt or ""},
+                )
+            )
+
+        warnings: list[ServiceIssue] = []
+        recorded_modules: list[MathlibModuleEntryView] = []
+        for item in prepared_modules:
+            recorded = self.mathlib_index.upsert_mathlib_module_entry(
+                repo_root,
+                module=item["module_name"],
+                summary=item.get("summary"),
+                note=item.get("source"),
+            )
+            if not recorded.ok or recorded.value is None:
+                return self.runtime.foundation.fail(recorded.issues)
+            warnings.extend(recorded.issues)
+            recorded_modules.append(recorded.value)
+
+        recorded_decls: list[MathlibDeclEntryView] = []
+        for item in prepared_decls:
+            recorded = self._record_mathlib_decl_unchecked(
+                repo_root,
+                decl_name=item["decl_name"],
+                module=item.get("module_name"),
+                summary=item.get("summary"),
+                source=item.get("source"),
+                kind=item.get("kind"),
+                signature=item.get("signature"),
+                snippet=item.get("snippet"),
+            )
+            if not recorded.ok or recorded.value is None:
+                return self.runtime.foundation.fail(recorded.issues)
+            warnings.extend(recorded.issues)
+            recorded_decls.append(recorded.value)
+
+        checked_code = "\n".join(
+            [
+                *(f"import {module}" for module in dict.fromkeys(imports)),
+                *(f"#check {name}" for name in decl_names),
+                *([] if decl_names else ["#check True"]),
+                "",
+            ]
+        )
+        return self.runtime.foundation.ok(
+            MathlibBatchRecordView(
+                modules=recorded_modules,
+                declarations=recorded_decls,
+                checked_code=checked_code,
+                toolkit_tool=checked.toolkit_tool or checked.provider,
+                summary=(
+                    f"Verified and recorded {len(recorded_modules)} Mathlib modules and "
+                    f"{len(recorded_decls)} declarations in one Lean check."
+                ),
+            ),
+            warnings=warnings,
+        )
+
+    def _record_mathlib_decl_unchecked(
+        self,
+        repo_root: Path,
+        *,
+        decl_name: str,
+        module: str | None,
+        summary: str | None,
+        source: str | None,
+        kind: str | None,
+        signature: str | None,
+        snippet: str | None,
+    ) -> ServiceResult[MathlibDeclEntryView]:
         warnings: list[ServiceIssue] = []
         if module is not None:
-            module_result = self.mathlib_index.upsert_mathlib_module_entry(repo_root, module=module)
+            module_result = self.mathlib_index.upsert_mathlib_module_entry(
+                repo_root,
+                module=module,
+            )
             if not module_result.ok:
                 return self.runtime.foundation.fail(module_result.issues)
             warnings.extend(module_result.issues)
-            important = self.mathlib_index.add_module_important_decl(repo_root, module=module, decl_name=normalized_decl)
+            important = self.mathlib_index.add_module_important_decl(
+                repo_root,
+                module=module,
+                decl_name=decl_name,
+            )
             if not important.ok:
                 return self.runtime.foundation.fail(important.issues)
             warnings.extend(important.issues)
         recorded = self.mathlib_index.upsert_mathlib_decl_entry(
             repo_root,
-            name=normalized_decl,
+            name=decl_name,
             module=module,
             kind=kind,
             signature=signature,

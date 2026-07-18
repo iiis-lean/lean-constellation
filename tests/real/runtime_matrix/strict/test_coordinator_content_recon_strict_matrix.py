@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
-from lean_constellation.app import RequirementResumeInput
+from lean_constellation.app import AutomaticCheckpointAppConfig, RequirementResumeInput
 from tests.unit_services_helpers import publish_adapter_provider_ready
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
@@ -70,8 +70,6 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
                     "submit_resource_rejected",
                     {
                         "reason": "Strict resource callback branch.",
-                        "target_kind": "web",
-                        "target": callback_ws.resources.web_url,
                     },
                 )
             ],
@@ -220,6 +218,9 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
     evidence_recorder.record_runtime_state(terminal_ws.runtime)
 
     prep_ws = create_runtime_matrix_workspace(tmp_path / "preparation")
+    prep_ws.runtime.app.automatic_checkpoints = AutomaticCheckpointAppConfig(
+        content_task_progress_enabled=True,
+    )
     prep_ws.setup_content_node()
     prep_provider = ScriptedMcpProvider(
         prep_ws.runtime,
@@ -281,8 +282,6 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
                     "submit_resource_rejected",
                     {
                         "reason": "Strict content resource child rejected.",
-                        "target_kind": "web",
-                        "target": resource_ws.resources.web_url,
                     },
                 )
             ],
@@ -353,6 +352,7 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
     }.issubset(evidence_recorder.evidence.flow_types)
     assert {
         "content_task_admission_step",
+        "content_progress_checkpoint_step",
         "ensure_decl_stage_agents_step",
     }.issubset(evidence_recorder.evidence.logic_step_types)
     assert {
@@ -449,8 +449,6 @@ def test_strict_recon_completed_blocked_and_resource_callback_evidence(
                     "submit_resource_rejected",
                     {
                         "reason": "Strict child resource branch terminal.",
-                        "target_kind": "web",
-                        "target": recon_ws.resources.web_url,
                     },
                 )
             ],

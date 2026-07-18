@@ -476,6 +476,7 @@ def create_runtime_matrix_workspace(
     *,
     lake_client: object | None = None,
     include_codex_provider: bool = False,
+    initialize_provider_format: bool = True,
 ) -> RuntimeMatrixWorkspace:
     runtime_root = tmp_path / ".agent_runtime"
     workspace_root = tmp_path / "workspace"
@@ -509,12 +510,13 @@ def create_runtime_matrix_workspace(
         max_concurrent_steps=1,
         start_paused=True,
     )
-    initialized_provider = runtime.repo_workspace.metadata.set_repo_format(
-        provider_repo,
-        repo_format=RepoFormat.NATIVE,
-        reason="Runtime Matrix fixture provides an existing minimal native Lake project.",
-    )
-    assert initialized_provider.ok, initialized_provider.issues
+    if initialize_provider_format:
+        initialized_provider = runtime.repo_workspace.metadata.set_repo_format(
+            provider_repo,
+            repo_format=RepoFormat.NATIVE,
+            reason="Runtime Matrix fixture provides an existing minimal native Lake project.",
+        )
+        assert initialized_provider.ok, initialized_provider.issues
     return RuntimeMatrixWorkspace(
         tmp_path=tmp_path,
         runtime_root=runtime_root,

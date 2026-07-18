@@ -99,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--scope-id", default=None)
     resume.add_argument("--flow-advances", type=int, default=None)
     resume.add_argument("--step-starts", type=int, default=None)
+    resume.add_argument("--unbounded", action="store_true")
 
     serve = sub.add_parser("serve", help="Run the unified production Admin HTTP + MCP HTTP server.")
     serve.add_argument("--host", default=None, help="Admin HTTP bind host. Defaults to config admin_http_host.")
@@ -669,7 +670,12 @@ def _runtime_resume_payload(args, parser: argparse.ArgumentParser) -> dict[str, 
     if args.scope_id is not None:
         payload["scope_id"] = args.scope_id
     if flow_advances is None:
+        if not args.unbounded:
+            parser.error("resume requires either --unbounded or an explicit flow/step budget")
+        payload["unbounded"] = True
         return payload
+    if args.unbounded:
+        parser.error("resume cannot combine --unbounded with a flow/step budget")
     assert step_starts is not None
     if flow_advances < 0 or step_starts < 0:
         parser.error("resume budgets must be non-negative")

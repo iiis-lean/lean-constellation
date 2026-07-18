@@ -17,6 +17,7 @@ from lean_constellation.services.mathlib.node_mathlib_use import NodeMathlibHint
 from lean_constellation.services.node import NodeContractView
 from lean_constellation.services.mathlib.toolkit_ingestion import (
     MathlibAccessCheckView,
+    MathlibBatchRecordView,
     MathlibCheckView,
     MathlibExternalSearchView,
     MathlibModuleNavigationView,
@@ -227,6 +228,19 @@ class MathlibService:
             kind=kind,
             signature=signature,
             snippet=snippet,
+        )
+
+    def record_mathlib_batch_checked(
+        self,
+        repo_root: Path,
+        *,
+        modules: list[dict[str, object]],
+        declarations: list[dict[str, object]],
+    ) -> ServiceResult[MathlibBatchRecordView]:
+        return self.toolkit_ingestion.record_mathlib_batch_checked(
+            repo_root,
+            modules=modules,
+            declarations=declarations,
         )
 
     def add_mathlib_module_use(

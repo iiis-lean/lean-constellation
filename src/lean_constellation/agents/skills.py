@@ -931,6 +931,7 @@ Either readiness remains unresolved and the Coordinator returns to its next-acti
             (
                 "Record modules with concise purpose and import relevance through `record_mathlib_module`.",
                 "Record declarations with statement meaning and usage notes through `record_mathlib_decl` or `ingest_mathlib_candidate`.",
+                "When two or more already-understood entries can share one accessibility probe, use `record_mathlib_batch` (maximum 25 total entries); fall back to individual checked records to isolate a failed combined probe.",
                 "Attach important declarations to module entries with `add_mathlib_module_important_decl` when useful.",
                 "Keep entries lightweight and reusable across nodes.",
                 "Re-read entries after writing with `get_mathlib_module_entry` or `get_mathlib_decl_entry`.",
@@ -976,6 +977,8 @@ Either readiness remains unresolved and the Coordinator returns to its next-acti
 Use this skill when the current content node task may need preparation before entering or continuing DeclGraph work.
 
 Preparation recon is delegated work. Your job is to decide whether a child flow is needed, give it a focused objective, and interpret its callback result. Do not do broad dependency, Mathlib, or resource recon inside the ContentPlanAgent context when a dedicated child flow should do it.
+
+The supplied ContentPlan context brief already summarizes completed preparation children and the latest child delta. Use it as an index, do not manually rebuild or paste a second full summary, and query only the exact current truth needed for the next mutation or decision.
 
 ## Recommended Order
 

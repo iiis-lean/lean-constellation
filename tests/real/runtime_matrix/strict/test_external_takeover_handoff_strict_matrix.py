@@ -43,7 +43,7 @@ def test_strict_external_takeover_handoff_payload_for_repo_coordinator_resource_
     tmp_path: Path,
     evidence_recorder: EvidenceRecorder,
 ) -> None:
-    repo_ws = create_runtime_matrix_workspace(tmp_path / "repo_format")
+    repo_ws = create_runtime_matrix_workspace(tmp_path / "repo_format", initialize_provider_format=False)
     repo_ws.create_home("RepoFormatDiscoveryControlledTestAgent")
     repo_ws.write_bootstrap_preparation(repo_ws.provider_repo)
     repo_flow_id = _start_repo_format_bootstrap(repo_ws)
@@ -98,7 +98,7 @@ def test_strict_external_takeover_handoff_payload_for_repo_coordinator_resource_
         app_call=("normalize_resource_target", {"target": resource_ws.resources.web_url}),
         submit_call=(
             "submit_resource_rejected",
-            {"reason": "Strict handoff resource branch stops after payload inspection.", "target_kind": "web", "target": resource_ws.resources.web_url},
+            {"reason": "Strict handoff resource branch stops after payload inspection."},
         ),
         recorder=evidence_recorder,
     )

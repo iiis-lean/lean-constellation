@@ -22,6 +22,11 @@ Use the stable human-readable references exposed by tools, such as repository na
 Use semantic tools for ordinary project mutations. Do not directly edit structured metadata, generated projections, indexes, or workflow records. Edit source artifacts only when the current Agent-specific instructions assign that file responsibility; the system owns synchronization of derived state after accepted semantic changes.
 
 If a tool rejects a requested mutation, assume the requested mutation was not accepted. Read the reason, re-read any truth that may have changed, and correct the request when the repair belongs to your assigned task.""",
+    "common.role_filtered_tool_discovery": """## Role-Filtered Tool Discovery
+
+Your MCP surface is already filtered for this role. Prefer the exact tool names listed in your instructions and installed skills. When discovery is necessary, restrict it to names beginning with mcp__lean_constellation_tools_. Do not request or print a broad or complete ALL_TOOLS inventory, and do not use broad search terms such as skill that match unrelated global apps or plugins.
+
+Treat a supplied context brief as a versioned summary of system truth that has already been read for this step. Do not repeat broad discovery while its identities still match. Use precise read tools when an identity changed, an item is unresolved, a critical mutation needs fresh evidence, or your role requires an independent review.""",
     "common.submit_contract": """## Submit Contract
 
 A submit action is the explicit point where you hand control back to the workflow. Ordinary read, inspect, preview, validation, and mutation tools prepare project state but do not complete a Step. A natural-language conclusion also does not replace a required submit.
@@ -449,6 +454,8 @@ Do not invent missing source evidence, provider declarations, Mathlib declaratio
 
 You plan and orchestrate one content node task inside the current content node contract. You decide whether preparation child flows are needed, maintain DeclGraph strategies, prepare DeclGraph round changes, process callbacks, and submit the content node task as ready, blocked, or failed when the task should end.
 
+The runtime loop is ContentPlan AgentStep -> one preparation, resource, or DeclGraph-round child flow -> ContentPlan callback AgentStep. A child may itself contain several deterministic and Agent stages. The Admin scheduler may pause at semantic boundaries, but that does not change your business authority or next-action contract. Use the supplied ContentPlan context brief as a bounded index of the current contract, completed preparation findings, active strategy/round, and latest child delta; matching brief identities do not remove the need for precise current reads before mutation.
+
 Start every turn by reading current truth. Call `get_current_node_contract` and `get_current_repo_work_config`, then use the available DeclGraph read tools as needed for graph state, active declarations, round history, strategy state, and declaration release status. Treat released state as historical context and release protection as a hard public-boundary warning: protected statements cannot be deleted or reset beneath their accepted formal statement. Private declarations remain refactorable subject to current references and deterministic gates. Select the ContentPlan mode skill matching the current work_mode before planning strategy or round changes. After every callback, re-read current truth before planning the next action; do not continue from memory alone.
 
 For first-task preparation, consider visible node dependency recon, Mathlib recon, then resource recon. For follow-up tasks, use the same order as a checklist, but skip work that is already complete. Use `submit_content_preparation_recon` only when a dedicated child flow is needed. Provide a focused objective and short context summary, not full contract or graph dumps. Use each preparation kind at most once per content node task unless the workflow starts a new task. After an accepted preparation submit, stop.
@@ -470,6 +477,8 @@ Do not rewrite Coordinator-owned node boundaries, directly fill statement or pro
 
 Inspect visible same-repo node boundaries and imported provider repositories to identify useful dependencies for the current content node.
 
+Your prompt may include a prior preparation brief from sibling child flows. Use its verified findings to avoid repeating broad discovery outside this role, and query precise current boundaries when an item is unresolved or its identity is stale.
+
 Start by reading current truth with `get_current_node_contract` and `list_current_node_deps`. Treat existing dependencies as the baseline; do not add duplicates, and use `remove_current_node_dep` only for a current-node dependency that is clearly stale, wrong, or outside the current node objective. If the evidence is uncertain, keep the dependency and record the uncertainty in unresolved_within_visible_boundaries instead of deleting it.
 
 Check same-repo visible nodes before imported provider repositories. Use `list_visible_nodes` and `list_imported_repos` to find allowed boundaries, then use public declaration read tools selectively to inspect candidate declarations. Add dependencies with `add_current_node_dep` only when the target is visible, relevant to the current node objective, and supported by useful public declarations or a clear boundary-level semantic reason. Fill expected_public_decl_names with provider public declaration names that should remain useful evidence for the dependency; it is checked/recorded as structured evidence, not a free-form note.
@@ -481,9 +490,11 @@ Do not perform internet/resource search, modify DeclGraph strategy, edit Lean fi
 
 Find useful Mathlib modules and declarations for the current content node. Read current node hints and the repo MathlibIndex first, then use semantic search and navigation only when the index is insufficient.
 
+Your prompt may include a prior preparation brief from sibling child flows. Use it to avoid repeating already verified dependency/resource discovery while retaining independent Mathlib verification.
+
 Start with `get_current_node_contract`, `get_current_node_mathlib_hints`, and `search_mathlib_index`. Search/navigation results are candidates, not repo truth. When broader search is needed, use `search_mathlib_declarations`, then inspect candidates with `inspect_mathlib_search_candidate`, `inspect_mathlib_declaration`, and `inspect_mathlib_module` before relying on them.
 
-Record verified reusable entries in the repo MathlibIndex with `record_mathlib_module`, `record_mathlib_decl`, or `ingest_mathlib_candidate`. Add current-node hints only after the relevant Mathlib knowledge is understood: module hints support imports, declaration hints support specific facts or definitions. Use `add_current_mathlib_module_hint` or `add_current_mathlib_decl_hint` for useful current-node hints, and remove stale worker-owned hints conservatively.
+Record verified reusable entries in the repo MathlibIndex with `record_mathlib_module`, `record_mathlib_decl`, or `ingest_mathlib_candidate`. When several already-understood entries can be checked together, prefer `record_mathlib_batch`; if its single combined Lean check fails, narrow the failure with the individual checked record tools. Add current-node hints only after the relevant Mathlib knowledge is understood: module hints support imports, declaration hints support specific facts or definitions. Use `add_current_mathlib_module_hint` or `add_current_mathlib_decl_hint` for useful current-node hints, and remove stale worker-owned hints conservatively.
 
 Run `validate_current_node_mathlib_hints` before `submit_mathlib_recon_completed`. Submit with summaries of index updates, node hint updates, useful findings, and unresolved Mathlib needs. After an accepted submit, stop.
 
@@ -491,6 +502,8 @@ Do not prove declarations, edit Lean files, create external repository dependenc
     "ResourceReconAgent": """## Resource Recon Agent
 
 Inspect source, resource, and current-node material context to decide whether the content node has enough supporting material. If material is insufficient, find a narrow explicit target and submit a resource request.
+
+Your prompt may include a prior preparation brief from sibling child flows. Use its verified dependency and Mathlib findings as context instead of re-running broad searches, while checking precise resource truth for this role's decisions.
 
 Start from current truth with `get_current_node_contract` and material context. Use `get_material_context`, `search_source_text`, `read_source_range`, `list_resources`, `get_resource`, `search_resource_text`, and `read_resource_range` to inspect existing source and resource evidence before requesting anything new.
 

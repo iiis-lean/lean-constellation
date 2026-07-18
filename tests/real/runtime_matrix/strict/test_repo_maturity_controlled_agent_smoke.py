@@ -123,6 +123,15 @@ def test_declared_interface_content_plan_controlled_agent_smoke(
     )
     _complete_external_step(ws, plan_payload, plan_step_id, "ContentPlan declared-interface round dispatched.")
 
+    decl_path_view = ws.runtime.lean_projection.decl_file.derive_decl_file_path(
+        ws.provider_repo,
+        node_path=CONTENT_NODE_PATH,
+        decl_name="main_result",
+        kind="theorem",
+    )
+    assert decl_path_view.ok and decl_path_view.value is not None, decl_path_view.issues
+    decl_path = Path(decl_path_view.value.path)
+
     provider = ScriptedMcpProvider(
         ws.runtime,
         {
@@ -133,7 +142,7 @@ def test_declared_interface_content_plan_controlled_agent_smoke(
                         "set_statement_nl",
                         {
                             "decl_name": "main_result",
-                            "nl": "The smoke interface theorem states True.",
+                            "text": "The smoke interface theorem states True.",
                         },
                     ),
                     (
@@ -147,6 +156,16 @@ def test_declared_interface_content_plan_controlled_agent_smoke(
             "StatementFormalWorkerAgent": [
                 [
                     ("application", "prepare_statement_formal_file", {"decl_name": "main_result"}),
+                    (
+                        "file_replace",
+                        "append_main_result_statement",
+                        {
+                            "repo_root": str(ws.provider_repo),
+                            "path": str(decl_path),
+                            "old": "-/\n",
+                            "new": "-/\n\ntheorem main_result : True := by\n  trivial\n",
+                        },
+                    ),
                     ("application", "capture_statement_formal_file", {"decl_name": "main_result"}),
                     ("application", "check_formal_stage_consistency", {"decl_name": "main_result", "stage": "statement"}),
                     (

@@ -7,10 +7,13 @@ from pathlib import Path
 from threading import Barrier
 
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
+from agent_runtime_kit.agent.homes import HomeCreateSpec
 from starlette.testclient import TestClient
 
 from lean_constellation.app import (
+    LeanAdminApi,
     LeanAppConfig,
+    StartFlowInput,
     create_production_app_server,
     initialize_repo_business_truth,
 )
@@ -40,12 +43,14 @@ def test_production_app_server_exposes_workspace_registry_admin_and_repo_mcp(tmp
         workspace_status = client.get("/admin/workspace/status")
         loaded = client.post("/admin/workspace/repos/MainRepo/load")
         status = client.get("/admin/repos/MainRepo/runtime/status")
-        resumed = client.post("/admin/repos/MainRepo/runtime/resume", json={})
+        resumed = client.post("/admin/repos/MainRepo/runtime/resume", json={"unbounded": True})
         mcp_index = client.get("/repos/MainRepo/mcp/views")
 
     assert health.status_code == 200
     assert health.json()["ok"] is True
     assert health.json()["mcp_base_url"] == "http://127.0.0.1:8766"
+    assert health.json()["process_instance_id"].startswith("lc_")
+    assert health.json()["process"]["pid"] > 0
     assert repos.status_code == 200
     assert repos.json()["value"]["repos"][0]["repo_key"] == "MainRepo"
     assert workspace_status.status_code == 200
@@ -63,7 +68,7 @@ def test_production_app_server_exposes_workspace_registry_admin_and_repo_mcp(tmp
     assert app.state.lean_constellation_registry is registry
 
 
-def test_production_resume_routes_expose_typed_bounded_control_and_empty_body_compatibility(tmp_path) -> None:
+def test_production_resume_routes_require_explicit_unbounded_or_bounded_control(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     _make_repo(workspace, "MainRepo")
     config = LeanAppConfig(
@@ -83,7 +88,8 @@ def test_production_resume_routes_expose_typed_bounded_control_and_empty_body_co
         )
         status = client.get("/admin/repos/MainRepo/runtime/status")
         paused = client.post("/admin/repos/MainRepo/runtime/pause", json={})
-        unbounded = client.post("/admin/repos/MainRepo/runtime/resume", json={})
+        empty = client.post("/admin/repos/MainRepo/runtime/resume", json={})
+        unbounded = client.post("/admin/repos/MainRepo/runtime/resume", json={"unbounded": True})
         active_bounded = client.post(
             "/admin/repos/MainRepo/runtime/resume",
             json={"budget": {"flow_advances": 0, "step_starts": 1}},
@@ -113,6 +119,8 @@ def test_production_resume_routes_expose_typed_bounded_control_and_empty_body_co
     assert status.json()["value"]["run_control"]["remaining_flow_advances"] == 1
     assert paused.status_code == 200
     assert paused.json()["value"]["run_control"]["pause_reason"] == "manual_pause"
+    assert empty.status_code == 422
+    assert "exactly one run plan" in empty.json()["issues"][0]["message"]
     assert unbounded.status_code == 200
     assert unbounded.json()["value"]["run_control"]["mode"] == "unbounded"
     assert active_bounded.status_code == 400
@@ -123,6 +131,63 @@ def test_production_resume_routes_expose_typed_bounded_control_and_empty_body_co
     assert "repo-global" in scoped_bounded.json()["issues"][0]["message"]
     assert zero_budget.status_code == 422
     assert "at least one action" in zero_budget.json()["issues"][0]["message"]
+
+
+def test_production_running_agent_audit_and_identity_checked_repair(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(
+        LeanAppConfig(
+            workspace_root=workspace,
+            scheduler_enabled=False,
+            materialize_agent_homes=False,
+        )
+    )
+    assert app_result.ok and app_result.value is not None
+    registry = app_result.value.state.lean_constellation_registry
+
+    with TestClient(app_result.value) as client:
+        loaded = client.post("/admin/workspace/repos/MainRepo/load")
+        assert loaded.status_code == 200
+        runtime = registry.try_get_loaded("MainRepo")
+        assert runtime is not None
+        runtime.ark.agent_service.home_service.create_home(
+            HomeCreateSpec(cli_type="codex", home_id="CoordinatorAgent")
+        )
+        agent = runtime.ark.agent_service.create_agent(
+            "repo:MainRepo",
+            "CoordinatorAgent",
+        )
+        runtime.ark.agent_service.store.patch_agent(agent.agent_id, status="running")
+
+        audit = client.get("/admin/repos/MainRepo/agents/running-audit")
+        dry_run = client.post(
+            f"/admin/repos/MainRepo/agents/{agent.agent_id}/repair-running",
+            json={
+                "expected_scope_id": "repo:MainRepo",
+                "expected_thread_id": None,
+                "expected_rollout_relpath": None,
+                "action": "mark_idle",
+                "dry_run": True,
+            },
+        )
+        applied = client.post(
+            f"/admin/repos/MainRepo/agents/{agent.agent_id}/repair-running",
+            json={
+                "expected_scope_id": "repo:MainRepo",
+                "expected_thread_id": None,
+                "expected_rollout_relpath": None,
+                "action": "mark_idle",
+                "dry_run": False,
+            },
+        )
+
+    assert audit.status_code == 200
+    assert audit.json()["value"]["agents"][0]["classification"] == "safe_to_mark_idle"
+    assert dry_run.status_code == 200
+    assert dry_run.json()["value"]["repaired"] is False
+    assert applied.status_code == 200
+    assert applied.json()["value"]["repaired"] is True
 
 
 def test_invalid_bounded_resume_fails_before_repo_runtime_load(tmp_path) -> None:
@@ -147,6 +212,41 @@ def test_invalid_bounded_resume_fails_before_repo_runtime_load(tmp_path) -> None
 
     assert response.status_code == 422
     assert registry.try_get_loaded("MainRepo") is None
+
+
+def test_production_semantic_advance_route_is_typed_and_starts_process_local_lease(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(
+        LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    )
+    assert app_result.ok and app_result.value is not None
+    registry = app_result.value.state.lean_constellation_registry
+    runtime_result = registry.get_or_load("MainRepo")
+    assert runtime_result.ok and runtime_result.value is not None
+    started = LeanAdminApi(runtime_result.value).start_arbitrary_flow(
+        StartFlowInput(
+            flow_type="native_repo_coordinator",
+            scope_id="repo:MainRepo",
+            params={"repo_key": "MainRepo", "repo_root": str(repo_root), "start_mode": "admin_start"},
+        )
+    )
+    assert started.ok
+
+    with TestClient(app_result.value) as client:
+        invalid = client.post(
+            "/admin/repos/MainRepo/runtime/semantic-advance",
+            json={"granularity": "step", "action": "logic"},
+        )
+        semantic = client.post(
+            "/admin/repos/MainRepo/runtime/semantic-advance",
+            json={"granularity": "step", "action": "logic", "scope_id": "repo:MainRepo"},
+        )
+
+    assert invalid.status_code == 422
+    assert semantic.status_code == 200
+    assert semantic.json()["value"]["run_control"]["mode"] == "semantic"
+    assert semantic.json()["value"]["run_control"]["semantic_policy"] == "step.logic"
 
 
 def test_repo_lifecycle_route_rejects_cross_repo_body_identity(tmp_path) -> None:
@@ -610,12 +710,15 @@ def test_production_app_server_materializes_repo_local_production_agent_homes_on
     base_config.parent.mkdir(parents=True)
     base_config.write_text("model = \"gpt-5-codex\"\n", encoding="utf-8")
     auth_json.write_text("{}\n", encoding="utf-8")
+    shared_elan_home = tmp_path / "shared_elan"
+    shared_elan_home.mkdir()
     repo_root = _make_repo(tmp_path / "workspace", "MainRepo")
     config = LeanAppConfig(
         workspace_root=tmp_path / "workspace",
         scheduler_enabled=False,
         codex_base_config_path=base_config,
         codex_auth_json_path=auth_json,
+        shared_elan_home=shared_elan_home,
         admin_http_port=9123,
     )
 
@@ -634,7 +737,9 @@ def test_production_app_server_materializes_repo_local_production_agent_homes_on
     assert coordinator.codex_config_path == str(codex_config)
     assert codex_config.exists()
     assert "http://127.0.0.1:9123/repos/MainRepo/mcp/views/" in codex_config.read_text(encoding="utf-8")
-    assert json.loads(manifest.read_text(encoding="utf-8"))["mcp_transport"] == "http"
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert manifest_payload["mcp_transport"] == "http"
+    assert manifest_payload["fixed_env"]["ELAN_HOME"] == str(shared_elan_home.resolve())
 
 
 def test_production_app_server_scheduler_lifespan_runs_loop(tmp_path) -> None:

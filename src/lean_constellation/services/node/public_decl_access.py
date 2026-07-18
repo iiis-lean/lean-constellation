@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -9,7 +10,8 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.domain.repo import RepoFormat, RepoPublicationStatus
+from lean_constellation.services.foundation import ServiceIssue, ServiceResult
 from lean_constellation.services.node.dependency import DependencyComponent
 from lean_constellation.services.node.export import DeclPublicView, ExportComponent
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent
@@ -48,6 +50,7 @@ class PublicDeclAccessResolver:
     """Resolve public boundary visibility without starting provider runtimes."""
 
     _COORDINATOR_ROLES = {"coordinator", "admin"}
+    _PUBLIC_DECL_CACHE_LIMIT = 64
 
     def __init__(
         self,
@@ -61,6 +64,9 @@ class PublicDeclAccessResolver:
         self.node_tree = node_tree
         self.dependency = dependency
         self.export = export
+        self._stable_public_decl_cache: OrderedDict[
+            tuple[str, str, str], tuple[list[DeclPublicView], tuple[ServiceIssue, ...]]
+        ] = OrderedDict()
 
     def list_visible_nodes(
         self,
@@ -236,6 +242,14 @@ class PublicDeclAccessResolver:
         config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
+        cache_key = self._stable_native_cache_key(
+            provider_root,
+            required_availability=config.value.config.target_proof_availability.value,
+        )
+        if cache_key is not None and cache_key in self._stable_public_decl_cache:
+            values, warnings = self._stable_public_decl_cache.pop(cache_key)
+            self._stable_public_decl_cache[cache_key] = (values, warnings)
+            return self.runtime.foundation.ok(list(values), warnings=list(warnings))
         public_refs = self.runtime.decl_graph.ref_compatibility.list_public_decl_refs(
             provider_root,
             required_availability=config.value.config.target_proof_availability,
@@ -276,6 +290,10 @@ class PublicDeclAccessResolver:
                     release_protected=status.value.release_protected,
                 )
             )
+        if cache_key is not None:
+            self._stable_public_decl_cache[cache_key] = (list(values), tuple(public_refs.issues))
+            while len(self._stable_public_decl_cache) > self._PUBLIC_DECL_CACHE_LIMIT:
+                self._stable_public_decl_cache.popitem(last=False)
         return self.runtime.foundation.ok(values, warnings=public_refs.issues)
 
     def assert_node_visible(
@@ -350,3 +368,24 @@ class PublicDeclAccessResolver:
 
     def _with_repo(self, ref: DeclRef, *, repo_key: str) -> DeclRef:
         return DeclRef(repo=repo_key, node=ref.node, name=ref.name, revision=ref.revision)
+
+    def _stable_native_cache_key(
+        self,
+        provider_root: Path,
+        *,
+        required_availability: str,
+    ) -> tuple[str, str, str] | None:
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_root)
+        if (
+            not repo_format.ok
+            or repo_format.value is None
+            or repo_format.value.repo_format != RepoFormat.NATIVE
+        ):
+            return None
+        publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_root)
+        if not publication.ok or publication.value is None:
+            return None
+        state = publication.value.publication
+        if state.status != RepoPublicationStatus.STABLE or state.latest_release_id is None:
+            return None
+        return (str(provider_root.resolve()), state.latest_release_id, required_availability)

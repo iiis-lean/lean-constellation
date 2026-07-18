@@ -28,6 +28,7 @@ class LeanAppConfigView(StrictModel):
     codex_config_home: str | None = None
     codex_base_config_configured: bool = False
     codex_auth_configured: bool = False
+    shared_elan_home: str | None = None
     max_concurrent_flow_advances: int
     max_concurrent_steps: int
     mcp_http_host: str
@@ -146,6 +147,7 @@ class LeanAppConfig(StrictModel):
     codex_config_home: Path | None = None
     codex_base_config_path: Path | None = None
     codex_auth_json_path: Path | None = None
+    shared_elan_home: Path | None = None
     max_concurrent_flow_advances: int = 1
     max_concurrent_steps: int = 1
     mcp_http_host: str = DEFAULT_MCP_HTTP_HOST
@@ -174,6 +176,7 @@ class LeanAppConfig(StrictModel):
         "codex_config_home",
         "codex_base_config_path",
         "codex_auth_json_path",
+        "shared_elan_home",
         mode="before",
     )
     @classmethod
@@ -245,6 +248,7 @@ class LeanAppConfig(StrictModel):
             codex_config_home=str(self.codex_config_home) if self.codex_config_home else None,
             codex_base_config_configured=self.codex_base_config_path is not None,
             codex_auth_configured=self.codex_auth_json_path is not None,
+            shared_elan_home=str(self.shared_elan_home) if self.shared_elan_home else None,
             max_concurrent_flow_advances=self.max_concurrent_flow_advances,
             max_concurrent_steps=self.max_concurrent_steps,
             mcp_http_host=self.mcp_http_host,
@@ -297,6 +301,7 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         "codex_config_home": "LEAN_CONSTELLATION_CODEX_CONFIG_HOME",
         "codex_base_config_path": "LEAN_CONSTELLATION_CODEX_BASE_CONFIG_PATH",
         "codex_auth_json_path": "LEAN_CONSTELLATION_CODEX_AUTH_JSON_PATH",
+        "shared_elan_home": "LEAN_CONSTELLATION_SHARED_ELAN_HOME",
         "mcp_http_host": "LEAN_CONSTELLATION_MCP_HTTP_HOST",
         "mcp_http_port": "LEAN_CONSTELLATION_MCP_HTTP_PORT",
         "mcp_http_base_url": "LEAN_CONSTELLATION_MCP_HTTP_BASE_URL",

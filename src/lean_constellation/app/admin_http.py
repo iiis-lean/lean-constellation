@@ -28,8 +28,10 @@ from lean_constellation.app.admin_api import (
     RepoRunRequestInput,
     RepoRunStartInput,
     RequirementResumeInput,
+    RunningAgentRepairInput,
     RuntimePauseView,
     RuntimeResumeInput,
+    RuntimeSemanticAdvanceInput,
     SnapshotCreateInput,
     SnapshotListInput,
     SnapshotRestoreInput,
@@ -346,6 +348,22 @@ def create_workspace_admin_http_routes(
             )
             return _service_result_response(result)
 
+    async def repo_runtime_semantic_advance(request: Request) -> JSONResponse:
+        try:
+            data = await _json_or_empty(request)
+            input_model = RuntimeSemanticAdvanceInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
+        if not loaded.ok or loaded.value is None:
+            return _service_result_response(loaded)
+        record = registry.discover_repo(request.path_params["repo_key"])
+        if not record.ok or record.value is None:
+            return _service_result_response(record)
+        with record.value.lock:
+            admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
+            return _service_result_response(admin.semantic_advance(input_model))
+
     def repo_admin(request: Request) -> ServiceResult[LeanAdminApi]:
         loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
         if not loaded.ok or loaded.value is None:
@@ -386,6 +404,30 @@ def create_workspace_admin_http_routes(
                 scope_id=query.get("scope_id"),
                 agent_type=query.get("agent_type"),
                 status=query.get("status"),
+            )
+        )
+
+    async def repo_running_agents_audit(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(
+            admin_result.value.audit_running_agents(repo_key=request.path_params["repo_key"])
+        )
+
+    async def repo_running_agent_repair(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        try:
+            input_model = RunningAgentRepairInput.model_validate(await _json_or_empty(request))
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        return _service_result_response(
+            admin_result.value.repair_running_agent(
+                request.path_params["agent_id"],
+                input_model,
+                repo_key=request.path_params["repo_key"],
             )
         )
 
@@ -742,10 +784,25 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/publication", repo_publication, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/runtime/pause", repo_runtime_pause, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/runtime/resume", repo_runtime_resume, methods=["POST"]),
+        Route(
+            "/admin/repos/{repo_key:str}/runtime/semantic-advance",
+            repo_runtime_semantic_advance,
+            methods=["POST"],
+        ),
         Route("/admin/repos/{repo_key:str}/flows/tree", repo_flow_tree, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/flows/{flow_id:str}", repo_flow_monitor, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/steps/{step_id:str}", repo_step_monitor, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/agents", repo_agents_monitor, methods=["GET"]),
+        Route(
+            "/admin/repos/{repo_key:str}/agents/running-audit",
+            repo_running_agents_audit,
+            methods=["GET"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/agents/{agent_id:str}/repair-running",
+            repo_running_agent_repair,
+            methods=["POST"],
+        ),
         Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/report-index", repo_agent_report_index, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/flows/start", repo_start_flow, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/test-control/flows/advance", repo_advance_flow, methods=["POST"]),

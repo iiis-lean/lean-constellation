@@ -11,6 +11,9 @@ from pydantic import Field
 
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowResult
+from lean_constellation.flows.content_node_task.context_brief import (
+    build_prior_preparation_prompt_context,
+)
 from lean_constellation.flows.content_node_task.preparation.resource_recon.submissions import ResourceReconRequestResourceSubmission
 from lean_constellation.flows.content_node_task.steps import ResourceReconStepResult, new_content_step_id
 from lean_constellation.flows.content_node_task.preparation.common import (
@@ -92,9 +95,13 @@ class ResourceReconFlow(LeanBusinessFlow):
         state = _require_state(self.state)
         input_model = _require_input(self.input)
         if state.position.phase == "recon_agent":
-            return ctx.create_step(_resource_recon_agent_step(self, input_model, callback=False))
+            return ctx.create_step(
+                _resource_recon_agent_step(ctx, self, input_model, callback=False)
+            )
         if state.position.phase == "recon_callback":
-            return ctx.create_step(_resource_recon_agent_step(self, input_model, callback=True))
+            return ctx.create_step(
+                _resource_recon_agent_step(ctx, self, input_model, callback=True)
+            )
         if state.position.phase == "dispatch_resource_request":
             return ctx.create_step(_dispatch_resource_request_step(ctx, self, state))
         return None
@@ -181,10 +188,17 @@ class ResourceReconFlow(LeanBusinessFlow):
         self.error = BaseFlowError(error_type="resource_recon_dispatch_failed", message=result.summary or "Resource request dispatch failed.")
 
 
-def _resource_recon_agent_step(flow: ResourceReconFlow, input_model: ResourceReconInput, *, callback: bool):
+def _resource_recon_agent_step(
+    ctx: FlowContext,
+    flow: ResourceReconFlow,
+    input_model: ResourceReconInput,
+    *,
+    callback: bool,
+):
     from lean_constellation.flows.common.agent_steps import ResourceReconAgentStep
 
     state = _require_state(flow.state)
+    prior_context = build_prior_preparation_prompt_context(ctx, flow)
     return ResourceReconAgentStep(
         step_id=new_content_step_id("resource_recon_callback" if callback else "resource_recon"),
         flow_id=flow.flow_id,
@@ -201,9 +215,15 @@ def _resource_recon_agent_step(flow: ResourceReconFlow, input_model: ResourceRec
                 "contract_version": input_model.contract_version,
                 "objective": input_model.objective,
                 "resource_request_count": state.resource_request_count,
+                "prior_preparation_context": prior_context,
             },
             prompt_mode="callback" if callback else "initial",
-            prompt_override=None if callback else _recon_prompt("resource", input_model),
+            prompt_override=(
+                None
+                if callback
+                else f"{_recon_prompt('resource', input_model)}\n\n"
+                f"Prior preparation context:\n{prior_context}"
+            ),
             callback_dispatch_step_id=state.waiting_dispatch_step_id if callback else None,
             env_overrides={
                 "LEAN_CONSTELLATION_AGENT_TYPE": "ResourceReconAgent",

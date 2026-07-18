@@ -40,7 +40,7 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         "set_statement_nl",
                         {
                             "decl_name": round_fixture.decl_name,
-                            "nl": "The strict Runtime Matrix theorem states True.",
+                            "text": "The strict Runtime Matrix theorem states True.",
                         },
                     ),
                     (
@@ -62,8 +62,12 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         {
                             "repo_root": str(ws.provider_repo),
                             "path": str(decl_path),
-                            "old": "  sorry",
-                            "new": "  trivial",
+                            "old": "-/\n",
+                            "new": (
+                                "-/\n\n"
+                                f"theorem {round_fixture.decl_name} : True := by\n"
+                                "  trivial\n"
+                            ),
                         },
                     ),
                     ("application", "capture_statement_formal_file", {"decl_name": round_fixture.decl_name}),
@@ -85,7 +89,7 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
                         "set_proof_nl",
                         {
                             "decl_name": round_fixture.decl_name,
-                            "proof_nl": "Use triviality.",
+                            "text": "Use triviality.",
                         },
                     ),
                     (

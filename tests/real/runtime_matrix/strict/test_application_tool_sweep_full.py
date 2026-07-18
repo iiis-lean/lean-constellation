@@ -27,9 +27,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 258
+    assert len(cases) == 259
     assert len(implemented_tool_cases()) == 196
-    assert len(pending_tool_cases()) == 62
+    assert len(pending_tool_cases()) == 63
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -1672,7 +1672,10 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Local upstream declaration search returned upstreamSmoke.",
     )
-    assert any(_item_field(item, "decl_name") == "upstreamSmoke" for item in upstream_decl_search.value["items"])
+    assert any(
+        _item_field(item, "lean_decl_name") == "upstreamSmoke"
+        for item in upstream_decl_search.value["items"]
+    )
 
     upstream_modules = call_tool_with_evidence(
         server,
@@ -1695,14 +1698,15 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         assertion_summary="Local upstream module declaration list returned both fixture theorems.",
     )
     assert {"upstreamSmoke", "upstreamAddZero"} <= {
-        _item_field(item, "decl_name") for item in upstream_module_decls.value["declarations"]
+        _item_field(item, "lean_decl_name")
+        for item in upstream_module_decls.value["declarations"]
     }
 
     upstream_decl = call_tool_with_evidence(
         server,
         "adapter_repo_import",
         "inspect_upstream_declaration",
-        {"module": "Upstream", "decl_name": "upstreamSmoke"},
+        {"module": "Upstream", "lean_decl_name": "upstreamSmoke"},
         runtime_context=adapter_ctx,
         recorder=recorder,
         assertion_summary="Local upstream declaration inspection returned fixture code.",
@@ -1713,7 +1717,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         server,
         "adapter_repo_import",
         "read_upstream_source_context",
-        {"module": "Upstream", "decl_name": "upstreamSmoke", "line_window": 2},
+        {"module": "Upstream", "lean_decl_name": "upstreamSmoke", "line_window": 2},
         runtime_context=adapter_ctx,
         recorder=recorder,
         assertion_summary="Local upstream source context read returned line-numbered fixture text.",
@@ -1724,7 +1728,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         server,
         "adapter_repo_import",
         "capture_upstream_declaration_code",
-        {"module": "Upstream", "decl_name": "upstreamSmoke", "capture_mode": "full_declaration"},
+        {"module": "Upstream", "lean_decl_name": "upstreamSmoke", "capture_mode": "full_declaration"},
         runtime_context=adapter_ctx,
         recorder=recorder,
         assertion_summary="Local upstream declaration capture returned policy-clean code.",
@@ -1785,7 +1789,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         "set_adapter_statement_formal",
         {
             "name": "main_result",
-            "code": "theorem main_result : True := by\n  sorry",
+            "code": "theorem upstreamSmoke : True := by\n  sorry",
         },
         runtime_context=adapter_ctx,
         recorder=recorder,
@@ -1860,7 +1864,7 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         "set_adapter_proof_formal",
         {
             "name": "main_result",
-            "code": "theorem main_result : True := by\n  trivial",
+            "code": "theorem upstreamSmoke : True := by\n  trivial",
         },
         runtime_context=adapter_ctx,
         recorder=recorder,

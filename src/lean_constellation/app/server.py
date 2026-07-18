@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
+import faulthandler
 from functools import partial
+import logging
+import os
+from pathlib import Path
+import shutil
+import uuid
 
 import anyio
 from starlette.applications import Starlette
@@ -20,6 +26,9 @@ from lean_constellation.app.scheduler_loop import run_registry_scheduler_loop
 from lean_constellation.app.toolkit_process import ManagedToolkitProcess
 from lean_constellation.mcp.http import create_repo_mcp_http_routes
 from lean_constellation.services.foundation import ServiceResult
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_production_app_server(
@@ -66,6 +75,7 @@ def _create_registry_production_app_server(
         agent_providers=agent_providers,
     )
     resolved_mcp_base_url = config.production_mcp_http_effective_base_url()
+    process_instance_id = f"lc_{uuid.uuid4().hex}"
     scheduler_state: dict[str, object] = {"running": False}
     repo_mcp_router, repo_mcp_routes = create_repo_mcp_http_routes(registry, view_keys=view_keys)
     operator_data_api = OperatorDataApi(registry) if config.operator_data_api_enabled else None
@@ -80,6 +90,8 @@ def _create_registry_production_app_server(
                 "admin_base_url": config.admin_http_effective_base_url(),
                 "mcp_base_url": resolved_mcp_base_url,
                 "scheduler": scheduler_state,
+                "process_instance_id": process_instance_id,
+                "process": _process_telemetry(config.workspace_root),
                 "repo_runtimes": repos.value.model_dump(mode="json") if repos.ok and repos.value is not None else None,
                 "toolkit": toolkit_state.model_dump(mode="json") if toolkit_state is not None else None,
             }
@@ -108,6 +120,12 @@ def _create_registry_production_app_server(
         app.state.lean_constellation_mcp_base_url = resolved_mcp_base_url
         app.state.lean_constellation_toolkit = toolkit_state
         app.state.lean_constellation_operator_data_api = operator_data_api
+        app.state.lean_constellation_process_instance_id = process_instance_id
+        logger.info(
+            "Lean Constellation server startup instance=%s telemetry=%s",
+            process_instance_id,
+            _process_telemetry(config.workspace_root),
+        )
         async with anyio.create_task_group() as task_group:
             if config.scheduler_enabled:
                 task_group.start_soon(
@@ -126,6 +144,11 @@ def _create_registry_production_app_server(
                 task_group.cancel_scope.cancel()
                 await repo_mcp_router.shutdown()
                 registry.shutdown_all()
+                logger.info(
+                    "Lean Constellation server shutdown instance=%s telemetry=%s",
+                    process_instance_id,
+                    _process_telemetry(config.workspace_root),
+                )
 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.lean_constellation_registry = registry
@@ -135,6 +158,7 @@ def _create_registry_production_app_server(
     app.state.lean_constellation_mcp_router = repo_mcp_router
     app.state.lean_constellation_toolkit = toolkit_state
     app.state.lean_constellation_operator_data_api = operator_data_api
+    app.state.lean_constellation_process_instance_id = process_instance_id
     return registry.result.ok(app)
 
 
@@ -148,6 +172,8 @@ async def run_production_app_server(
 
     toolkit_process: ManagedToolkitProcess | None = None
     toolkit_state: object | None = None
+    if not faulthandler.is_enabled():
+        faulthandler.enable()
     if config.toolkit.mode == "managed":
         toolkit_process = ManagedToolkitProcess(config.toolkit)
         toolkit_process.start()
@@ -171,6 +197,35 @@ async def run_production_app_server(
     finally:
         if toolkit_process is not None:
             toolkit_process.stop()
+
+
+def _process_telemetry(workspace_root: Path) -> dict[str, object]:
+    disk = shutil.disk_usage(Path(workspace_root).expanduser().resolve().parent)
+    return {
+        "pid": os.getpid(),
+        "disk_free_bytes": disk.free,
+        "disk_total_bytes": disk.total,
+        "cgroup_memory_current": _read_optional_int(Path("/sys/fs/cgroup/memory.current")),
+        "cgroup_memory_max": _read_optional_int(Path("/sys/fs/cgroup/memory.max")),
+        "cgroup_memory_events": _read_optional_text(Path("/sys/fs/cgroup/memory.events")),
+    }
+
+
+def _read_optional_int(path: Path) -> int | str | None:
+    value = _read_optional_text(path)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _read_optional_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
 
 
 __all__ = [

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +14,7 @@ from tests.real.runtime_matrix.admin_helpers import (
     unwrap,
 )
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
-from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
+from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace, create_runtime_matrix_workspace
 from tests.real.runtime_matrix.strict_helpers import (
     checkpoint_with_evidence,
     restore_with_evidence,
@@ -25,10 +26,10 @@ pytestmark = [pytest.mark.real, pytest.mark.slow]
 
 
 def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
-    runtime_matrix_workspace: RuntimeMatrixWorkspace,
+    tmp_path: Path,
     evidence_recorder: EvidenceRecorder,
 ) -> None:
-    ws = runtime_matrix_workspace
+    ws = create_runtime_matrix_workspace(tmp_path, initialize_provider_format=False)
 
     repo_flow_id, repo_agent_step_id, repo_checkpoint = _prepare_repo_format_branch(ws, evidence_recorder)
     _run_repo_format_branch(
@@ -68,14 +69,13 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
     resource_flow_id, resource_agent_step_id, resource_checkpoint, local_draft_id, existing_resource_key = _prepare_resource_branch(
         ws, evidence_recorder
     )
-    target = ws.resources.web_url
     _run_resource_branch(
         ws,
         evidence_recorder,
         flow_id=resource_flow_id,
         agent_step_id=resource_agent_step_id,
         tool_name="submit_resource_rejected",
-        arguments={"reason": "Strict rejected branch.", "target_kind": "web", "target": target},
+        arguments={"reason": "Strict rejected branch."},
         expected_outcome="rejected",
     )
     restore_with_evidence(
@@ -93,7 +93,7 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         flow_id=resource_flow_id,
         agent_step_id=resource_agent_step_id,
         tool_name="submit_local_resource_created",
-        arguments={"summary": "Strict local resource.", "target_kind": "web", "target": target, "draft_id": local_draft_id},
+        arguments={"summary": "Strict local resource.", "draft_id": local_draft_id},
         expected_outcome="local_resource_created",
     )
     restore_with_evidence(
@@ -113,8 +113,6 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         tool_name="submit_external_repo_required",
         arguments={
             "reason": "Strict external provider branch.",
-            "target_kind": "web",
-            "target": target,
             "source_description": "Strict web-accessible provider.",
             "suggested_repo_name": "strict_web_provider",
             "required_interfaces_hint": "Expose the reusable theorem.",
@@ -137,8 +135,6 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         agent_step_id=resource_agent_step_id,
         tool_name="submit_resource_duplicate",
         arguments={
-            "target_kind": "web",
-            "target": target,
             "existing_kind": "resource",
             "duplicate_reason": "Strict duplicate of an existing resource.",
             "existing_resource_key": existing_resource_key,
@@ -213,7 +209,7 @@ def test_strict_resource_curation_input_kinds_and_preflight_duplicate_evidence(
         flow_id=web_flow_id,
         agent_step_id=web_advanced.created_step_id,
         tool_name="submit_resource_rejected",
-        arguments={"reason": "Strict web input rejected.", "target_kind": "web", "target": ws.resources.web_url},
+        arguments={"reason": "Strict web input rejected."},
         expected_outcome="rejected",
     )
 
@@ -227,7 +223,7 @@ def test_strict_resource_curation_input_kinds_and_preflight_duplicate_evidence(
         flow_id=arxiv_flow_id,
         agent_step_id=arxiv_advanced.created_step_id,
         tool_name="submit_resource_rejected",
-        arguments={"reason": "Strict arXiv input rejected.", "target_kind": "arxiv", "target": ws.resources.arxiv_id},
+        arguments={"reason": "Strict arXiv input rejected."},
         expected_outcome="rejected",
     )
 

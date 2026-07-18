@@ -32,7 +32,7 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
     assert build.ok, build.summary
     lean_json = runtime.external.lake.run_lake_env_lean(
         repo_root=repo_root,
-        rel_file="Main/Topic/Core/Prelude.lean",
+        rel_file="RuntimeMatrixLeanReal/Main/Topic/Core/Prelude.lean",
         json=True,
         timeout_seconds=60,
     )
@@ -40,14 +40,14 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
     snippet_ok = runtime.external.lean_toolchain.run_snippet_check(
         repo_root,
         code="#check Nat",
-        imports=["Main"],
+        imports=["RuntimeMatrixLeanReal"],
         timeout_seconds=60,
     )
     assert snippet_ok.ok, snippet_ok.summary
     snippet_fail = runtime.external.lean_toolchain.run_snippet_check(
         repo_root,
         code="#check (true : Nat)",
-        imports=["Main"],
+        imports=["RuntimeMatrixLeanReal"],
         timeout_seconds=60,
     )
     assert snippet_fail.ok is False
@@ -59,7 +59,13 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
         node_path=NODE_PATH,
         decl_name=DECL_NAME,
     )
-    assert prepared_statement.ok, prepared_statement.issues
+    assert prepared_statement.ok and prepared_statement.value is not None, prepared_statement.issues
+    statement_path = Path(prepared_statement.value.path)
+    statement_path.write_text(
+        statement_path.read_text(encoding="utf-8")
+        + f"\ntheorem {DECL_NAME} : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
     statement_capture = runtime.lean_projection.capture_statement_formal(
         repo_root,
         node_path=NODE_PATH,
@@ -87,6 +93,10 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
     )
     assert prepared_proof.ok and prepared_proof.value is not None, prepared_proof.issues
     decl_path = Path(prepared_proof.value.path)
+    decl_path.write_text(
+        decl_path.read_text(encoding="utf-8").replace("  trivial\n", "  sorry\n", 1),
+        encoding="utf-8",
+    )
 
     sorry_failure = runtime.lean_projection.capture_proof_formal(
         repo_root,
@@ -109,7 +119,15 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
     assert revision.proof_lean_check["policy"] == "proof_formal"
     assert revision.proof_lean_check["status"] == "passed"
 
-    decl_path.write_text(decl_path.read_text(encoding="utf-8") + "\naxiom forbidden_axiom : False\n", encoding="utf-8")
+    target_docstring = "/--\n# lean-constellation target"
+    decl_path.write_text(
+        decl_path.read_text(encoding="utf-8").replace(
+            target_docstring,
+            "axiom forbidden_axiom : False\n\n" + target_docstring,
+            1,
+        ),
+        encoding="utf-8",
+    )
     axiom_failure = runtime.lean_projection.capture_proof_formal(
         repo_root,
         node_path=NODE_PATH,
@@ -124,7 +142,14 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
         decl_name=DECL_NAME,
     )
     assert restored.ok, restored.issues
-    decl_path.write_text(decl_path.read_text(encoding="utf-8") + "\ndef forbidden_admit : True := by admit\n", encoding="utf-8")
+    decl_path.write_text(
+        decl_path.read_text(encoding="utf-8").replace(
+            target_docstring,
+            "def forbidden_admit : True := by admit\n\n" + target_docstring,
+            1,
+        ),
+        encoding="utf-8",
+    )
     admit_failure = runtime.lean_projection.capture_proof_formal(
         repo_root,
         node_path=NODE_PATH,
@@ -160,36 +185,42 @@ def _require_lake_and_lean() -> None:
 
 def _write_real_lake_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
+    truth_root = repo_root / ".lean_constellation"
+    truth_root.mkdir(parents=True, exist_ok=True)
+    (truth_root / "repo_format.json").write_text(
+        '{"repo_format":"native","reason":"Runtime Matrix real Lean fixture"}\n',
+        encoding="utf-8",
+    )
     (repo_root / "lakefile.toml").write_text(
         'name = "RuntimeMatrixLeanReal"\n'
         'version = "0.1.0"\n'
-        'defaultTargets = ["Main"]\n\n'
+        'defaultTargets = ["RuntimeMatrixLeanReal"]\n\n'
         "[[lean_lib]]\n"
-        'name = "Main"\n',
+        'name = "RuntimeMatrixLeanReal"\n',
         encoding="utf-8",
     )
-    (repo_root / "Main.lean").write_text(
-        "import Main.Topic.Core.Prelude\n"
-        "import Main.Topic.Core.Interfaces\n",
+    (repo_root / "RuntimeMatrixLeanReal.lean").write_text(
+        "import RuntimeMatrixLeanReal.Main.Topic.Core.Prelude\n"
+        "import RuntimeMatrixLeanReal.Main.Topic.Core.Interfaces\n",
         encoding="utf-8",
     )
-    prelude = repo_root / "Main" / "Topic" / "Core" / "Prelude.lean"
+    prelude = repo_root / "RuntimeMatrixLeanReal" / "Main" / "Topic" / "Core" / "Prelude.lean"
     prelude.parent.mkdir(parents=True, exist_ok=True)
     prelude.write_text(
-        "namespace Main.Topic.Core\n\n"
+        "namespace RuntimeMatrixLeanReal.Main.Topic.Core\n\n"
         "def seedNat : Nat := 1\n\n"
         "theorem seedTrue : True := by\n"
         "  trivial\n\n"
-        "end Main.Topic.Core\n",
+        "end RuntimeMatrixLeanReal.Main.Topic.Core\n",
         encoding="utf-8",
     )
-    interfaces = repo_root / "Main" / "Topic" / "Core" / "Interfaces.lean"
+    interfaces = repo_root / "RuntimeMatrixLeanReal" / "Main" / "Topic" / "Core" / "Interfaces.lean"
     interfaces.write_text(
-        "import Main.Topic.Core.Prelude\n\n"
-        "namespace Main.Topic.Core\n\n"
+        "import RuntimeMatrixLeanReal.Main.Topic.Core.Prelude\n\n"
+        "namespace RuntimeMatrixLeanReal.Main.Topic.Core\n\n"
         "theorem interfaceTrue : True := by\n"
         "  trivial\n\n"
-        "end Main.Topic.Core\n",
+        "end RuntimeMatrixLeanReal.Main.Topic.Core\n",
         encoding="utf-8",
     )
 

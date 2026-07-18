@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tomllib
 
 from lean_constellation.agents import build_agent_type_specs, derive_agent_type_spec
 from lean_constellation.app import create_app_runtime_services, materialize_agent_home
@@ -35,6 +36,8 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
     assert "LEAN_CONSTELLATION_EXPECTED_TOOL_VIEW" in config_text
     assert "LEAN_CONSTELLATION_EXPECTED_VIEW_KEY" not in config_text
     assert "LEAN_CONSTELLATION_MCP_VIEW_KEY" not in config_text
+    config = tomllib.loads(config_text)
+    assert config["features"] == {"apps": False, "plugins": False, "tool_suggest": False}
     manifest = json.loads((home_root / ".agents" / "lean_constellation_home.json").read_text(encoding="utf-8"))
     assert manifest["tool_view_config"]["application_view_key"] == "source_corpus_prepare"
     assert manifest["tool_view_config"]["submit_view_key"] == "source_corpus_prepare_submit"
@@ -46,7 +49,10 @@ def test_agent_home_materialization_supports_base_config_and_auth_reference(tmp_
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime")
     base_config = tmp_path / "base_config.toml"
     auth = tmp_path / "auth.json"
-    base_config.write_text('model = "test-model"\n', encoding="utf-8")
+    base_config.write_text(
+        'model = "test-model"\n\n[features]\napps = true\nplugins = true\n',
+        encoding="utf-8",
+    )
     auth.write_text('{"token": "secret-token"}\n', encoding="utf-8")
 
     view = materialize_agent_home(
@@ -61,6 +67,8 @@ def test_agent_home_materialization_supports_base_config_and_auth_reference(tmp_
     home_root = Path(view.value.home_root)
     assert (home_root / ".codex" / "auth.json").read_text(encoding="utf-8") == '{"token": "secret-token"}\n'
     assert 'model = "test-model"' in (home_root / ".codex" / "config.toml").read_text(encoding="utf-8")
+    config = tomllib.loads((home_root / ".codex" / "config.toml").read_text(encoding="utf-8"))
+    assert config["features"] == {"apps": False, "plugins": False, "tool_suggest": False}
 
 
 def test_agent_home_materialization_writes_stdio_mcp_view_servers(tmp_path: Path) -> None:

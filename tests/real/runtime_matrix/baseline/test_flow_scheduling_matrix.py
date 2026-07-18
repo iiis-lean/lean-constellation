@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from agent_runtime_kit.flow.models import FlowStatus
 
-from lean_constellation.app import AdminFlowAdvanceInput, AdminStepStartInput, StartFlowInput
+from lean_constellation.app import AdminFlowAdvanceInput, StartFlowInput
 from tests.real.runtime_matrix.admin_helpers import (
     assert_flow_completed,
     checkpoint_branch,
@@ -16,16 +16,16 @@ from tests.real.runtime_matrix.admin_helpers import (
     set_external_takeover_override,
     unwrap,
 )
-from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
+from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace, create_runtime_matrix_workspace
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
 
 
 def test_repo_format_native_and_adapter_branches_restore_from_checkpoint(
-    runtime_matrix_workspace: RuntimeMatrixWorkspace,
+    tmp_path: Path,
 ) -> None:
-    ws = runtime_matrix_workspace
+    ws = create_runtime_matrix_workspace(tmp_path, initialize_provider_format=False)
     ws.create_home("RepoFormatDiscoveryControlledTestAgent")
     ws.write_bootstrap_preparation(ws.provider_repo)
     started = unwrap(
@@ -168,8 +168,6 @@ def test_resource_curator_duplicate_local_external_and_rejected_branches_restore
         tool_name="submit_resource_rejected",
         arguments={
             "reason": "Reject this web resource in the Runtime Matrix branch.",
-            "target_kind": "web",
-            "target": target,
             "details": ["Scripted branch coverage."],
         },
         expected_outcome="rejected",
@@ -185,8 +183,6 @@ def test_resource_curator_duplicate_local_external_and_rejected_branches_restore
         tool_name="submit_external_repo_required",
         arguments={
             "reason": "The target should become a provider repo.",
-            "target_kind": "web",
-            "target": target,
             "source_description": "A web-accessible upstream project.",
             "suggested_repo_name": "runtime_matrix_web_provider",
             "required_interfaces_hint": "Expose the reusable theorem.",
@@ -204,8 +200,6 @@ def test_resource_curator_duplicate_local_external_and_rejected_branches_restore
         tool_name="submit_local_resource_created",
         arguments={
             "summary": "Promote the prepared runtime matrix resource draft.",
-            "target_kind": "web",
-            "target": target,
             "draft_id": local_draft_id,
         },
         expected_outcome="local_resource_created",
@@ -220,8 +214,6 @@ def test_resource_curator_duplicate_local_external_and_rejected_branches_restore
         agent_step_id=agent_step_id,
         tool_name="submit_resource_duplicate",
         arguments={
-            "target_kind": "web",
-            "target": target,
             "existing_kind": "resource",
             "duplicate_reason": "The web target points to the same note already imported.",
             "existing_resource_key": existing_resource_key,

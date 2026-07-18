@@ -626,6 +626,7 @@ class RepoRuntimeRegistry:
             mcp_http_base_url=self.repo_mcp_http_base_url(record.repo_key),
             base_config_path=self.config.codex_base_config_path,
             auth_json_path=self.config.codex_auth_json_path,
+            shared_elan_home=self.config.shared_elan_home,
         )
         if result.ok and result.value is not None:
             record.agent_homes = result.value

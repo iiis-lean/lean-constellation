@@ -38,6 +38,7 @@ def _values(values: Iterable[StringKey]) -> list[str]:
 
 COMMON_FRAGMENTS = [
     "common.runtime_contract",
+    "common.role_filtered_tool_discovery",
     "common.submit_contract",
 ]
 BLOCKED_FRAGMENTS = [*COMMON_FRAGMENTS, "common.blocked_escalation_contract"]

@@ -67,8 +67,6 @@ def test_coordinator_content_resource_requirement_callback_matrix(
                     "submit_resource_rejected",
                     {
                         "reason": "Intentional Runtime Matrix resource callback branch.",
-                        "target_kind": "web",
-                        "target": ws.resources.web_url,
                     },
                 )
             ],

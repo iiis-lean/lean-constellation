@@ -41,6 +41,10 @@ from lean_constellation.app.admin_api import (
     RequirementResumeView,
     RuntimePauseView,
     RuntimeResumeInput,
+    RunningAgentAuditView,
+    RunningAgentRepairInput,
+    RunningAgentRepairView,
+    RuntimeSemanticAdvanceInput,
     RuntimeStatusView,
     SetAgentStepOverrideInput,
     SnapshotCreateInput,
@@ -94,6 +98,7 @@ from lean_constellation.app.repo_runtime_registry import (
 )
 from lean_constellation.app.operator_data import OperatorDataApi, create_operator_data_http_routes
 from lean_constellation.app.server import create_production_app_server, run_production_app_server
+from lean_constellation.app.semantic_scheduler import SemanticAdvanceSafety
 
 __all__ = [
     "AdminFlowStartView",
@@ -144,6 +149,11 @@ __all__ = [
     "RepoBusinessInitView",
     "RuntimePauseView",
     "RuntimeResumeInput",
+    "RunningAgentAuditView",
+    "RunningAgentRepairInput",
+    "RunningAgentRepairView",
+    "RuntimeSemanticAdvanceInput",
+    "SemanticAdvanceSafety",
     "RuntimeStatusView",
     "SetAgentStepOverrideInput",
     "SnapshotCreateInput",

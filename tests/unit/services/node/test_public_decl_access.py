@@ -199,6 +199,56 @@ def test_coordinator_reads_stable_provider_repo_main_exports(tmp_path: Path) -> 
     ]
 
 
+def test_stable_native_provider_public_decls_cache_by_release_but_recheck_visibility(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    consumer = tmp_path / "Consumer"
+    provider = tmp_path / "Provider"
+    consumer.mkdir()
+    provider.mkdir()
+    _create_consumer_tree(consumer)
+    _create_provider_repo(provider)
+    resolver = make_runtime().node.public_decl_access
+    visibility_calls = 0
+    parse_calls = 0
+    original_visible = resolver.assert_repo_visible
+    original_list = resolver.runtime.decl_graph.ref_compatibility.list_public_decl_refs
+
+    def counted_visible(*args, **kwargs):
+        nonlocal visibility_calls
+        visibility_calls += 1
+        return original_visible(*args, **kwargs)
+
+    def counted_list(*args, **kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_list(*args, **kwargs)
+
+    monkeypatch.setattr(resolver, "assert_repo_visible", counted_visible)
+    monkeypatch.setattr(
+        resolver.runtime.decl_graph.ref_compatibility,
+        "list_public_decl_refs",
+        counted_list,
+    )
+
+    first = resolver.list_repo_public_decls(
+        consumer,
+        repo_key="Provider",
+        actor_role="coordinator",
+    )
+    second = resolver.list_repo_public_decls(
+        consumer,
+        repo_key="Provider",
+        actor_role="coordinator",
+    )
+
+    assert first.ok and second.ok
+    assert first.value == second.value
+    assert visibility_calls == 2
+    assert parse_calls == 1
+
+
 def test_node_scoped_actor_only_sees_attached_available_provider_boundary(tmp_path: Path) -> None:
     consumer = tmp_path / "Consumer"
     provider = tmp_path / "Provider"

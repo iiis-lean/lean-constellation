@@ -101,8 +101,9 @@ def test_repo_format_discovery_has_native_and_adapter_context_fragments() -> Non
 
 def test_every_agent_uses_merged_common_fragments() -> None:
     for spec in build_agent_type_specs():
-        assert spec.instruction_fragment_keys[:2] == [
+        assert spec.instruction_fragment_keys[:3] == [
             "common.runtime_contract",
+            "common.role_filtered_tool_discovery",
             "common.submit_contract",
         ]
         assert "common.truth_and_tool_contract" not in spec.instruction_fragment_keys
@@ -113,6 +114,7 @@ def test_coordinator_public_fragments_match_native_repo_target_order() -> None:
 
     assert coordinator.instruction_fragment_keys == [
         "common.runtime_contract",
+        "common.role_filtered_tool_discovery",
         "common.submit_contract",
         "workspace.repo_workspace_context",
         "workspace.requirement_and_lake_dependency_context",

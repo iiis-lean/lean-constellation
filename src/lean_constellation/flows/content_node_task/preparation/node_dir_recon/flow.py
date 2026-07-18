@@ -11,6 +11,9 @@ from pydantic import Field
 
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowResult
+from lean_constellation.flows.content_node_task.context_brief import (
+    build_prior_preparation_prompt_context,
+)
 from lean_constellation.flows.content_node_task.steps import NodeDirDependencyReconStepResult, new_content_step_id
 from lean_constellation.flows.content_node_task.preparation.common import (
     PreparationReconInput,
@@ -81,6 +84,7 @@ class NodeDirDependencyReconFlow(LeanBusinessFlow):
         if state.position.phase == "recon_agent":
             from lean_constellation.flows.common.agent_steps import NodeDirDependencyReconAgentStep
 
+            prior_context = build_prior_preparation_prompt_context(ctx, self)
             return ctx.create_step(
                 NodeDirDependencyReconAgentStep(
                     step_id=new_content_step_id("node_dir_dependency_recon"),
@@ -97,8 +101,12 @@ class NodeDirDependencyReconFlow(LeanBusinessFlow):
                             "node_path": input_model.node_path,
                             "contract_version": input_model.contract_version,
                             "objective": input_model.objective,
+                            "prior_preparation_context": prior_context,
                         },
-                        prompt_override=_recon_prompt("node dependency", input_model),
+                        prompt_override=(
+                            f"{_recon_prompt('node dependency', input_model)}\n\n"
+                            f"Prior preparation context:\n{prior_context}"
+                        ),
                         env_overrides={
                             "LEAN_CONSTELLATION_AGENT_TYPE": "NodeDirDependencyReconAgent",
                             "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "node_dir_dependency_recon",

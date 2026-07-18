@@ -33,10 +33,20 @@ def test_reviewer_rejection_retries_worker_until_budget_is_exhausted(tmp_path: P
         queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
         advance_and_run(runtime, flow_id)
         assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_reviewer"
+        if attempt == 0:
+            worker_start = runtime.agent_service.start_records[-1]
+            assert "objective: Strategy objective." in worker_start.prompt
+            assert "Round objective." in worker_start.prompt
+            assert worker_start.variables["context_brief"]["strategy_round"][
+                "strategy_objective"
+            ] == "Strategy objective."
 
         queue_review(runtime, repo_root, stage="statement_nl", round_id=round_id, accepted=False)
         advance_and_run(runtime, flow_id)
         assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_gate_audit"
+        if attempt == 0:
+            reviewer_start = runtime.agent_service.start_records[-1]
+            assert "Worker receipt (navigation only, not review evidence)" in reviewer_start.prompt
 
         gate_step_id = advance_and_run(runtime, flow_id)
         gate_step = runtime.flow_service.get_step(gate_step_id)
