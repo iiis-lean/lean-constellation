@@ -206,6 +206,63 @@ def test_formal_policies_reject_long_line_linter_warning(tmp_path: Path) -> None
     assert "linter_style_long_line" in proof.value.message
 
 
+def test_formal_policies_allow_long_system_managed_imports(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text(
+        "-- lean-constellation: managed-imports-begin\n"
+        "import Project.A.Very.Long.System.Managed.Module.Name.That.Cannot.Be.Wrapped.In.Lean.Source\n"
+        "-- lean-constellation: managed-imports-end\n\n"
+        "theorem foo : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    component = _component(
+        tmp_path,
+        diagnostics=[
+            {
+                "severity": "warning",
+                "message": "This line exceeds the 100 character limit, please shorten it!",
+                "line": 2,
+                "column": 101,
+            }
+        ],
+    )
+
+    proof = component.build_proof_lean_check(tmp_path, file_path=lean_file)
+
+    assert proof.ok and proof.value is not None
+    assert proof.value.status == "passed"
+
+
+def test_formal_policies_do_not_exempt_non_import_lines_inside_managed_region(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text(
+        "-- lean-constellation: managed-imports-begin\n"
+        "-- malformed non-import content remains actionable\n"
+        "-- lean-constellation: managed-imports-end\n\n"
+        "theorem foo : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    component = _component(
+        tmp_path,
+        diagnostics=[
+            {
+                "severity": "warning",
+                "message": "This line exceeds the 100 character limit, please shorten it!",
+                "line": 2,
+                "column": 101,
+            }
+        ],
+    )
+
+    proof = component.build_proof_lean_check(tmp_path, file_path=lean_file)
+
+    assert proof.ok and proof.value is not None
+    assert proof.value.status == "failed"
+    assert "linter_style_long_line" in proof.value.message
+
+
 def test_formal_policies_reject_disabling_long_line_linter(tmp_path: Path) -> None:
     lean_file = tmp_path / "Main.lean"
     lean_file.write_text(

@@ -15,6 +15,7 @@ from lean_constellation.domain.lean_check import (
     SorryAxiomScanView,
 )
 from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.services.lean_projection.managed_file import MANAGED_IMPORTS_BEGIN, MANAGED_IMPORTS_END
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -177,8 +178,10 @@ class LeanCheckComponent:
             policy_issues.append("contains_unsafe")
         if scan.contains_sorry and not allow_sorry:
             policy_issues.append("contains_sorry")
+        managed_import_lines = self._managed_import_lines(source_text)
         if any(
             any(marker in item.message.lower() for marker in self._LONG_LINE_DIAGNOSTIC_MARKERS)
+            and item.line not in managed_import_lines
             for item in diagnostics.diagnostics
         ):
             policy_issues.append("linter_style_long_line")
@@ -196,6 +199,20 @@ class LeanCheckComponent:
             diagnostics=diagnostics,
             scan=scan,
         )
+
+    def _managed_import_lines(self, source_text: str) -> set[int]:
+        """Return 1-based system-owned import lines that agents cannot reformat."""
+        lines = source_text.splitlines()
+        try:
+            begin = lines.index(MANAGED_IMPORTS_BEGIN)
+            end = lines.index(MANAGED_IMPORTS_END, begin + 1)
+        except ValueError:
+            return set()
+        return {
+            line_number
+            for line_number, line in enumerate(lines[begin + 1 : end], start=begin + 2)
+            if line.strip().startswith("import ")
+        }
 
     def _resolve_file(self, repo_root: Path, file_path: Path) -> ServiceResult[tuple[Path, Path, str]]:
         repo = Path(repo_root).expanduser().resolve(strict=False)
