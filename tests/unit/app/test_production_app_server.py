@@ -242,6 +242,9 @@ def test_production_semantic_advance_route_is_typed_and_starts_process_local_lea
             "/admin/repos/MainRepo/runtime/semantic-advance",
             json={"granularity": "step", "action": "logic", "scope_id": "repo:MainRepo"},
         )
+        record = registry.discover_repo("MainRepo")
+        assert record.ok and record.value is not None
+        assert record.value.state == "active"
 
     assert invalid.status_code == 422
     assert semantic.status_code == 200

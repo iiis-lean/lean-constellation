@@ -362,7 +362,14 @@ def create_workspace_admin_http_routes(
             return _service_result_response(record)
         with record.value.lock:
             admin = LeanAdminApi(loaded.value, workspace_root=registry.workspace_root)
-            return _service_result_response(admin.semantic_advance(input_model))
+            advanced = admin.semantic_advance(input_model)
+            if advanced.ok:
+                # The registry scheduler admits only records marked active.  The
+                # semantic lease already resumed the process-local controller;
+                # publish the matching registry lifecycle state without routing
+                # through numeric/unbounded ``registry.resume``.
+                record.value.state = "active"
+            return _service_result_response(advanced)
 
     def repo_admin(request: Request) -> ServiceResult[LeanAdminApi]:
         loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
