@@ -176,6 +176,36 @@ def test_statement_policy_allows_theorem_sorry_but_not_def_sorry(tmp_path: Path)
     assert "contains_sorry" in def_check.value.message
 
 
+def test_formal_policies_reject_long_line_linter_warning(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text("theorem foo : True := by\n  sorry\n", encoding="utf-8")
+    component = _component(
+        tmp_path,
+        diagnostics=[
+            {
+                "severity": "warning",
+                "message": (
+                    "This line exceeds the 100 character limit, please shorten it!\n\n"
+                    "Note: This linter can be disabled with `set_option linter.style.longLine false`"
+                ),
+                "line": 1,
+                "column": 101,
+            }
+        ],
+    )
+
+    statement = component.build_statement_lean_check(tmp_path, file_path=lean_file, decl_kind="theorem")
+    assert statement.ok and statement.value is not None
+    assert statement.value.allow_sorry is True
+    assert statement.value.status == "failed"
+    assert "linter_style_long_line" in statement.value.message
+
+    proof = component.build_proof_lean_check(tmp_path, file_path=lean_file)
+    assert proof.ok and proof.value is not None
+    assert proof.value.status == "failed"
+    assert "linter_style_long_line" in proof.value.message
+
+
 def test_proof_policy_and_adapter_trusted_check_are_strict(tmp_path: Path) -> None:
     lean_file = tmp_path / "Main.lean"
     lean_file.write_text("theorem foo : True := by\n  sorry\n", encoding="utf-8")

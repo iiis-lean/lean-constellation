@@ -8,17 +8,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lean_constellation.domain.lean_check import (
-    LeanCheck,
     LeanCheckView,
-    LeanDiagnosticItem,
     LeanDiagnosticItemView,
-    LeanDiagnostics,
     LeanDiagnosticsView,
-    SorryAxiomOccurrence,
     SorryAxiomOccurrenceView,
-    SorryAxiomScan,
     SorryAxiomScanView,
-    compact_lean_check,
 )
 from lean_constellation.services.foundation import ServiceResult
 
@@ -31,6 +25,7 @@ class LeanCheckComponent:
 
     _THEOREM_LIKE = {"theorem", "lemma", "proposition", "corollary"}
     _ERROR_SEVERITIES = {"error", "fatal"}
+    _LONG_LINE_DIAGNOSTIC_MARKERS = ("linter.style.longline", "line exceeds the 100 character limit")
     _FORBIDDEN_WORD_RE = re.compile(r"(?<![A-Za-z0-9_'])(sorry|admit|axiom|opaque|unsafe)(?![A-Za-z0-9_'])")
 
     def __init__(
@@ -177,6 +172,11 @@ class LeanCheckComponent:
             policy_issues.append("contains_unsafe")
         if scan.contains_sorry and not allow_sorry:
             policy_issues.append("contains_sorry")
+        if any(
+            any(marker in item.message.lower() for marker in self._LONG_LINE_DIAGNOSTIC_MARKERS)
+            for item in diagnostics.diagnostics
+        ):
+            policy_issues.append("linter_style_long_line")
         passed = not policy_issues
         message = "Lean check passed." if passed else "Lean check failed: " + ", ".join(policy_issues)
         return LeanCheckView(
