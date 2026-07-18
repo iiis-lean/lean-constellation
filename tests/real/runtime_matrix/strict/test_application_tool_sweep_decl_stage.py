@@ -66,6 +66,8 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     assert support_advance.ok, support_advance.issues
     refreshed = ws.runtime.lean_projection.refresh_node_projection(ws.provider_repo, node_path=round_fixture.node_path)
     assert refreshed.ok, refreshed.issues
+    projection_build = ws.lake.run_lake_build(ws.provider_repo, timeout_seconds=120)
+    assert projection_build.ok, projection_build.summary
 
     server = unwrap(
         create_mcp_server(
@@ -103,7 +105,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Statement NL text was written through the typed stage worker view.",
     )
-    assert _field(statement_revision.value, "state") == "planned"
+    assert _decl_field(statement_revision.value, "state") == "planned"
     source_origin = call_tool_with_evidence(
         server,
         "statement_nl_worker",
@@ -113,7 +115,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Typed statement source origin was added.",
     )
-    assert _field(source_origin.value, "statement_origin")
+    assert _decl_field(source_origin.value, "statement_origin")
     resource_origin = call_tool_with_evidence(
         server,
         "statement_nl_worker",
@@ -123,7 +125,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Typed statement resource origin was added.",
     )
-    assert len(_field(resource_origin.value, "statement_origin")) == 2
+    assert len(_decl_field(resource_origin.value, "statement_origin")) == 2
     removed_origin = call_tool_with_evidence(
         server,
         "statement_nl_worker",
@@ -133,7 +135,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Typed statement origin removal worked.",
     )
-    assert len(_field(removed_origin.value, "statement_origin")) == 1
+    assert len(_decl_field(removed_origin.value, "statement_origin")) == 1
     cleared_origins = call_tool_with_evidence(
         server,
         "statement_nl_worker",
@@ -143,7 +145,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Typed statement origin clearing worked.",
     )
-    assert _field(cleared_origins.value, "statement_origin") == []
+    assert _decl_field(cleared_origins.value, "statement_origin") == []
     indexed_true = ws.runtime.mathlib.upsert_mathlib_decl_entry(
         ws.provider_repo,
         name="True",
@@ -161,7 +163,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Typed statement Mathlib dependency was added.",
     )
-    assert "True" in _field(mathlib_dep.value, "statement_deps")
+    assert "True" in _decl_field(mathlib_dep.value, "statement_deps")
     removed_dep = call_tool_with_evidence(
         server,
         "statement_nl_worker",
@@ -171,7 +173,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Typed statement dependency removal worked.",
     )
-    assert _field(removed_dep.value, "statement_deps") == []
+    assert _decl_field(removed_dep.value, "statement_deps") == []
     decl_dep = call_tool_with_evidence(
         server,
         "statement_nl_worker",
@@ -181,7 +183,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Typed statement declaration dependency was added.",
     )
-    assert "supporting_statement" in _field(decl_dep.value, "statement_deps")
+    assert "supporting_statement" in _decl_field(decl_dep.value, "statement_deps")
     cleared_deps = call_tool_with_evidence(
         server,
         "statement_nl_worker",
@@ -191,7 +193,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Typed statement dependency clearing worked.",
     )
-    assert _field(cleared_deps.value, "statement_deps") == []
+    assert _decl_field(cleared_deps.value, "statement_deps") == []
 
     statement_formal_ctx = _ctx(
         ws,
@@ -212,6 +214,11 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     decl_path = Path(_field(prepared_statement.value, "path"))
     assert decl_path.exists()
     rel_decl_path = decl_path.relative_to(ws.provider_repo).as_posix()
+    decl_path.write_text(
+        decl_path.read_text(encoding="utf-8")
+        + f"\ntheorem {round_fixture.decl_name} : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
 
     diagnostics = call_tool_with_evidence(
         server,
@@ -231,7 +238,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         {"file_path": rel_decl_path},
         runtime_context=statement_formal_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Sorry/axiom scan detected the initial statement skeleton sorry.",
+        assertion_summary="Sorry/axiom scan detected the ToolSweep statement fixture sorry.",
     )
     assert _field(sorry_scan.value, "contains_sorry") is True
 
@@ -266,7 +273,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Statement formal worker added a typed Mathlib statement dependency.",
     )
-    assert "True" in _field(formal_mathlib_dep.value, "statement_deps")
+    assert "True" in _decl_field(formal_mathlib_dep.value, "statement_deps")
     formal_removed_dep = call_tool_with_evidence(
         server,
         "statement_formal_worker",
@@ -276,7 +283,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Statement formal worker removed a typed statement dependency.",
     )
-    assert _field(formal_removed_dep.value, "statement_deps") == []
+    assert _decl_field(formal_removed_dep.value, "statement_deps") == []
     formal_decl_dep = call_tool_with_evidence(
         server,
         "statement_formal_worker",
@@ -286,7 +293,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Statement formal worker added a typed project statement dependency.",
     )
-    assert "supporting_statement" in _field(formal_decl_dep.value, "statement_deps")
+    assert "supporting_statement" in _decl_field(formal_decl_dep.value, "statement_deps")
     formal_cleared_deps = call_tool_with_evidence(
         server,
         "statement_formal_worker",
@@ -296,7 +303,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Statement formal worker cleared typed statement dependencies.",
     )
-    assert _field(formal_cleared_deps.value, "statement_deps") == []
+    assert _decl_field(formal_cleared_deps.value, "statement_deps") == []
     statement_sync = call_tool_with_evidence(
         server,
         "statement_formal_worker",
@@ -418,7 +425,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL was written through the stage worker view.",
     )
-    assert _field(proof_revision.value, "proof_nl") == "Use triviality."
+    assert _decl_field(proof_revision.value, "proof_nl") == "Use triviality."
     proof_source_origin = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -428,7 +435,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker added a typed source proof origin.",
     )
-    assert len(_field(proof_source_origin.value, "proof_origin")) == 1
+    assert len(_decl_field(proof_source_origin.value, "proof_origin")) == 1
     proof_resource_origin = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -438,7 +445,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker added a typed resource proof origin.",
     )
-    assert len(_field(proof_resource_origin.value, "proof_origin")) == 2
+    assert len(_decl_field(proof_resource_origin.value, "proof_origin")) == 2
     proof_removed_origin = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -448,7 +455,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker removed a typed proof origin.",
     )
-    assert len(_field(proof_removed_origin.value, "proof_origin")) == 1
+    assert len(_decl_field(proof_removed_origin.value, "proof_origin")) == 1
     proof_cleared_origins = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -458,7 +465,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker cleared typed proof origins.",
     )
-    assert _field(proof_cleared_origins.value, "proof_origin") == []
+    assert _decl_field(proof_cleared_origins.value, "proof_origin") == []
     proof_mathlib_dep = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -468,7 +475,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker added a typed Mathlib proof dependency.",
     )
-    assert "True" in _field(proof_mathlib_dep.value, "proof_deps")
+    assert "True" in _decl_field(proof_mathlib_dep.value, "proof_deps")
     proof_removed_dep = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -478,7 +485,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker removed a typed proof dependency.",
     )
-    assert _field(proof_removed_dep.value, "proof_deps") == []
+    assert _decl_field(proof_removed_dep.value, "proof_deps") == []
     proof_decl_dep = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -488,7 +495,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker added a typed project proof dependency.",
     )
-    assert "supporting_statement" in _field(proof_decl_dep.value, "proof_deps")
+    assert "supporting_statement" in _decl_field(proof_decl_dep.value, "proof_deps")
     proof_cleared_deps = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -498,7 +505,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker cleared typed proof dependencies.",
     )
-    assert _field(proof_cleared_deps.value, "proof_deps") == []
+    assert _decl_field(proof_cleared_deps.value, "proof_deps") == []
 
     proof_nl_reviewer_ctx = _ctx(ws, round_fixture, view="proof_nl_reviewer", agent_type="ProofNLReviewerAgent", role="reviewer", stage="proof_nl")
     proof_nl_reviewer_ctx = _attach_reviewer_step(ws, proof_nl_reviewer_ctx, round_fixture)
@@ -613,7 +620,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof Formal worker added a typed Mathlib proof dependency.",
     )
-    assert "True" in _field(proof_formal_mathlib_dep.value, "proof_deps")
+    assert "True" in _decl_field(proof_formal_mathlib_dep.value, "proof_deps")
     proof_formal_removed_dep = call_tool_with_evidence(
         server,
         "proof_formal_worker",
@@ -623,7 +630,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof Formal worker removed a typed proof dependency.",
     )
-    assert _field(proof_formal_removed_dep.value, "proof_deps") == []
+    assert _decl_field(proof_formal_removed_dep.value, "proof_deps") == []
     proof_formal_decl_dep = call_tool_with_evidence(
         server,
         "proof_formal_worker",
@@ -633,7 +640,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof Formal worker added a typed project proof dependency.",
     )
-    assert "supporting_statement" in _field(proof_formal_decl_dep.value, "proof_deps")
+    assert "supporting_statement" in _decl_field(proof_formal_decl_dep.value, "proof_deps")
     proof_formal_cleared_deps = call_tool_with_evidence(
         server,
         "proof_formal_worker",
@@ -643,7 +650,7 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         recorder=evidence_recorder,
         assertion_summary="Proof Formal worker cleared typed proof dependencies.",
     )
-    assert _field(proof_formal_cleared_deps.value, "proof_deps") == []
+    assert _decl_field(proof_formal_cleared_deps.value, "proof_deps") == []
 
     proof_formal_reviewer_ctx = _ctx(ws, round_fixture, view="proof_formal_reviewer", agent_type="ProofFormalReviewerAgent", role="reviewer", stage="proof_formal")
     proof_formal_reviewer_ctx = _attach_reviewer_step(ws, proof_formal_reviewer_ctx, round_fixture)
@@ -855,3 +862,7 @@ def _field(value: Any, *path: str) -> Any:
         else:
             current = getattr(current, item)
     return current
+
+
+def _decl_field(value: Any, *path: str) -> Any:
+    return _field(value, "decl", *path)

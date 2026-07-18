@@ -537,10 +537,17 @@ def test_production_app_server_repo_snapshot_restore_does_not_touch_other_repo(t
     assert initialize_repo_business_truth(runtime_b.value, repo_b).ok
 
     with TestClient(app_result.value) as client:
+        forged_snapshot = client.post(
+            "/admin/repos/RepoA/snapshots/list",
+            json={"repo_root": str(repo_b)},
+        )
+        forged_adapter = client.post(
+            "/admin/repos/RepoA/preparation/adapter/start",
+            json={"repo_root": str(repo_b), "enqueue": False},
+        )
         created = client.post(
             "/admin/repos/RepoA/snapshots/create",
             json={
-                "repo_root": str(repo_a),
                 "checkpoint_kind": "manual_test_stable_point",
                 "label": "repo-a-only",
             },
@@ -551,9 +558,13 @@ def test_production_app_server_repo_snapshot_restore_does_not_touch_other_repo(t
         (repo_b / "Marker.txt").write_text("repo-b-after\n", encoding="utf-8")
         restored = client.post(
             "/admin/repos/RepoA/snapshots/restore",
-            json={"repo_root": str(repo_a), "snapshot_id": snapshot_id, "leave_runtime_paused": True},
+            json={"snapshot_id": snapshot_id, "leave_runtime_paused": True},
         )
 
+    assert forged_snapshot.status_code == 422
+    assert "route-owned fields" in forged_snapshot.json()["issues"][0]["message"]
+    assert forged_adapter.status_code == 422
+    assert "must match" in forged_adapter.json()["issues"][0]["message"]
     assert restored.status_code == 200
     assert (repo_a / "Marker.txt").read_text(encoding="utf-8") == "repo-a-before\n"
     assert (repo_b / "Marker.txt").read_text(encoding="utf-8") == "repo-b-after\n"

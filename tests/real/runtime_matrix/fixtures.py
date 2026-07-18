@@ -487,7 +487,11 @@ def create_runtime_matrix_workspace(
     for path in (provider_repo, consumer_repo, adapter_repo, upstream_repo, resource_root):
         path.mkdir(parents=True, exist_ok=True)
 
-    _write_minimal_lake_repo(provider_repo, module_name="Main")
+    _write_minimal_lake_repo(
+        provider_repo,
+        module_name=provider_repo.name,
+        node_path=CONTENT_NODE_PATH,
+    )
     _write_consumer_repo(consumer_repo)
     _write_upstream_repo(upstream_repo)
     resources = _write_resource_fixture(resource_root)
@@ -530,7 +534,13 @@ def create_runtime_matrix_workspace(
     )
 
 
-def _write_minimal_lake_repo(repo_root: Path, *, module_name: str) -> None:
+def _write_minimal_lake_repo(
+    repo_root: Path,
+    *,
+    module_name: str,
+    node_path: str = "Topic.Core",
+) -> None:
+    node_module = f"{module_name}.{node_path}"
     repo_root.mkdir(parents=True, exist_ok=True)
     (repo_root / "lakefile.toml").write_text(
         f'name = "{repo_root.name}"\n'
@@ -541,27 +551,30 @@ def _write_minimal_lake_repo(repo_root: Path, *, module_name: str) -> None:
         encoding="utf-8",
     )
     (repo_root / f"{module_name}.lean").write_text(
-        f"import {module_name}.Topic.Core.Prelude\n"
-        f"import {module_name}.Topic.Core.Interfaces\n",
+        f"import {node_module}.Prelude\n"
+        f"import {node_module}.Interfaces\n",
         encoding="utf-8",
     )
-    prelude = repo_root / module_name / "Topic" / "Core" / "Prelude.lean"
+    node_root = repo_root / module_name
+    for segment in node_path.split("."):
+        node_root /= segment
+    prelude = node_root / "Prelude.lean"
     prelude.parent.mkdir(parents=True, exist_ok=True)
     prelude.write_text(
-        f"namespace {module_name}.Topic.Core\n\n"
+        f"namespace {node_module}\n\n"
         "def seedNat : Nat := 1\n\n"
         "theorem seedTrue : True := by\n"
         "  trivial\n\n"
-        f"end {module_name}.Topic.Core\n",
+        f"end {node_module}\n",
         encoding="utf-8",
     )
-    interfaces = repo_root / module_name / "Topic" / "Core" / "Interfaces.lean"
+    interfaces = node_root / "Interfaces.lean"
     interfaces.write_text(
-        f"import {module_name}.Topic.Core.Prelude\n\n"
-        f"namespace {module_name}.Topic.Core\n\n"
+        f"import {node_module}.Prelude\n\n"
+        f"namespace {node_module}\n\n"
         "theorem interfaceTrue : True := by\n"
         "  trivial\n\n"
-        f"end {module_name}.Topic.Core\n",
+        f"end {node_module}\n",
         encoding="utf-8",
     )
 

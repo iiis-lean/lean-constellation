@@ -42,8 +42,8 @@ def test_strict_real_lake_mathlib_name_tool_executes_with_evidence(
         "mathlib_recon",
         "check_mathlib_name",
         {
-            "module": "Main.Topic.Core.Prelude",
-            "decl_name": "Main.Topic.Core.seedTrue",
+            "module": "Provider.Main.Topic.Core.Prelude",
+            "decl_name": "Provider.Main.Topic.Core.seedTrue",
         },
         runtime_context=ctx,
         recorder=evidence_recorder,
@@ -51,4 +51,4 @@ def test_strict_real_lake_mathlib_name_tool_executes_with_evidence(
     )
     assert checked.value["passed"] is True
     assert checked.value["toolkit_tool"] == "lake_command"
-    assert "#check Main.Topic.Core.seedTrue" in checked.value["checked_code"]
+    assert "#check Provider.Main.Topic.Core.seedTrue" in checked.value["checked_code"]

@@ -59,6 +59,30 @@ def test_interface_catalogs_follow_live_registries() -> None:
     )
     assert start["input_model"] == "RepoRunStartInput"
     assert start["schema_status"] == "typed_body"
+    assert start["route_owned_fields"] == ["repo_key", "repo_root"]
+    assert "repo_root" not in start["input_schema"]["properties"]
+    assert "repo_key" not in start["input_schema"]["properties"]
+
+    adapter = next(
+        item for item in admin["operations"] if item["operation_id"] == "repo_start_adapter_preparation"
+    )
+    assert adapter["route_owned_fields"] == ["repo_key", "repo_root"]
+    assert "repo_root" not in adapter["input_schema"]["properties"]
+    assert "repo_key" not in adapter["input_schema"]["properties"]
+
+    snapshot = next(
+        item for item in admin["operations"] if item["operation_id"] == "repo_restore_snapshot"
+    )
+    assert snapshot["route_owned_fields"] == ["repo_key", "repo_root"]
+    assert "repo_root" not in snapshot["input_schema"]["properties"]
+    assert snapshot["input_schema"]["required"] == ["snapshot_id"]
+
+    release = next(
+        item for item in admin["operations"] if item["operation_id"] == "repo_release"
+    )
+    assert release["route_owned_fields"] == ["release_id", "repo_key", "repo_root"]
+    assert release["input_schema"]["properties"] == {}
+    assert release["schema_status"] == "route_only"
 
     resume_operations = [
         item

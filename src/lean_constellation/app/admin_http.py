@@ -556,16 +556,36 @@ def create_workspace_admin_http_routes(
         )
 
     async def repo_start_adapter_preparation(request: Request) -> JSONResponse:
-        return await _repo_model_route(request, registry, StartPreparationInput, LeanAdminApi.start_adapter_preparation)
+        return await _repo_lifecycle_model_route(
+            request,
+            registry,
+            StartPreparationInput,
+            LeanAdminApi.start_adapter_preparation,
+        )
 
     async def repo_create_snapshot(request: Request) -> JSONResponse:
-        return await _repo_model_route(request, registry, SnapshotCreateInput, LeanAdminApi.create_snapshot)
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            SnapshotCreateInput,
+            LeanAdminApi.create_snapshot,
+        )
 
     async def repo_list_snapshots(request: Request) -> JSONResponse:
-        return await _repo_model_route(request, registry, SnapshotListInput, LeanAdminApi.list_snapshots)
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            SnapshotListInput,
+            LeanAdminApi.list_snapshots,
+        )
 
     async def repo_restore_snapshot(request: Request) -> JSONResponse:
-        return await _repo_model_route(request, registry, SnapshotRestoreInput, LeanAdminApi.restore_snapshot)
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            SnapshotRestoreInput,
+            LeanAdminApi.restore_snapshot,
+        )
 
     async def repo_agent_rollout(request: Request) -> JSONResponse:
         admin_result = repo_admin(request)

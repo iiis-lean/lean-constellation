@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from copy import deepcopy
 import inspect
 import json
 from pathlib import Path
@@ -128,6 +129,11 @@ def build_admin_catalog() -> dict[str, Any]:
     for route in routes:
         methods = sorted(set(route.methods or ()) - {"HEAD", "OPTIONS"})
         input_model = _admin_input_model(route.endpoint)
+        route_owned_fields = _admin_route_owned_fields(route.endpoint)
+        input_schema = _without_schema_fields(
+            _model_schema(input_model),
+            route_owned_fields,
+        )
         for method in methods:
             operations.append(
                 {
@@ -136,9 +142,10 @@ def build_admin_catalog() -> dict[str, Any]:
                     "path": route.path,
                     "handler": route.endpoint.__name__,
                     "input_model": input_model.__name__ if input_model is not None else None,
-                    "input_schema": _model_schema(input_model),
+                    "input_schema": input_schema,
+                    "route_owned_fields": route_owned_fields,
                     "response_contract": "ServiceResult JSON envelope; endpoint-specific value view",
-                    "schema_status": "typed_body" if input_model is not None else "route_only",
+                    "schema_status": _admin_schema_status(input_model, input_schema),
                 }
             )
     operations.sort(key=lambda item: (item["path"], item["method"], item["operation_id"]))
@@ -152,6 +159,7 @@ def build_admin_catalog() -> dict[str, Any]:
         "coverage_notes": [
             "All registered paths and methods are exported.",
             "Typed JSON bodies are exported when the endpoint directly references a Pydantic *Input model.",
+            "Fields owned by repo/release path routing are removed from request-body schemas and listed separately as route_owned_fields.",
             "Raw-body and query parameter contracts remain documented by the handwritten manual and endpoint implementation.",
             "Response value schemas are not yet declared in Admin route metadata.",
         ],
@@ -285,6 +293,53 @@ def _admin_input_model(endpoint: Any) -> type[BaseModel] | None:
     return None
 
 
+def _admin_route_owned_fields(endpoint: Any) -> list[str]:
+    names = set(endpoint.__code__.co_names)
+    if "_repo_path_model_route" in names:
+        return ["release_id", "repo_key", "repo_root"]
+    if names.intersection(
+        {
+            "_repo_lifecycle_model_route",
+            "_repo_semantic_model_route",
+            "_repo_root_semantic_model_route",
+        }
+    ):
+        return ["repo_key", "repo_root"]
+    return []
+
+
+def _without_schema_fields(
+    schema: dict[str, Any] | None,
+    field_names: Sequence[str],
+) -> dict[str, Any] | None:
+    if schema is None or not field_names:
+        return schema
+    filtered = deepcopy(schema)
+    properties = filtered.get("properties")
+    if isinstance(properties, dict):
+        for field_name in field_names:
+            properties.pop(field_name, None)
+    required = filtered.get("required")
+    if isinstance(required, list):
+        remaining = [field_name for field_name in required if field_name not in field_names]
+        if remaining:
+            filtered["required"] = remaining
+        else:
+            filtered.pop("required", None)
+    return filtered
+
+
+def _admin_schema_status(
+    input_model: type[BaseModel] | None,
+    input_schema: dict[str, Any] | None,
+) -> str:
+    if input_model is None:
+        return "route_only"
+    if input_schema is not None and not input_schema.get("properties"):
+        return "route_only"
+    return "typed_body"
+
+
 def _model_schema(model: type[BaseModel] | None) -> dict[str, Any] | None:
     return None if model is None else model.model_json_schema()
 
@@ -364,6 +419,12 @@ def _render_http_markdown(catalog: dict[str, Any]) -> str:
                 f"- Response：{item['response_contract']}",
             ]
         )
+        route_owned_fields = item.get("route_owned_fields") or []
+        if route_owned_fields:
+            lines.append(
+                "- Route-owned fields（不得放入 body）："
+                + ", ".join(f"`{field_name}`" for field_name in route_owned_fields)
+            )
         lines.extend(_schema_markdown(item.get("input_schema")))
     return "\n".join(lines).rstrip() + "\n"
 

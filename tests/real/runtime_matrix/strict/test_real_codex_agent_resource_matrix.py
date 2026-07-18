@@ -4,8 +4,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-from typing import Any
-
 import pytest
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
@@ -437,7 +435,7 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
                 "set_statement_nl",
                 {
                     "decl_name": round_fixture.decl_name,
-                    "nl": "The strict real Codex statement formal theorem states True.",
+                    "text": "The strict real Codex statement formal theorem states True.",
                 },
             ),
             (
@@ -1529,7 +1527,7 @@ def _complete_statement_nl_stage_for_real_codex(
                 "set_statement_nl",
                 {
                     "decl_name": round_fixture.decl_name,
-                    "nl": "The strict real Codex proof formal theorem states True.",
+                    "text": "The strict real Codex proof formal theorem states True.",
                 },
             ),
             (
@@ -1624,7 +1622,7 @@ def _complete_proof_nl_stage_for_real_codex(
                 "set_proof_nl",
                 {
                     "decl_name": round_fixture.decl_name,
-                    "proof_nl": "Use triviality.",
+                    "text": "Use triviality.",
                 },
             ),
             (
@@ -1751,6 +1749,8 @@ def _complete_formal_stage_with_external_file_edit(
     )
     lean_file = Path(_field(prepared.value, "path"))
     text = lean_file.read_text(encoding="utf-8")
+    if "  sorry" not in text:
+        text += f"\ntheorem {decl_name} : True := by\n  sorry\n"
     assert "  sorry" in text
     lean_file.write_text(text.replace("  sorry", "  trivial", 1), encoding="utf-8")
 
