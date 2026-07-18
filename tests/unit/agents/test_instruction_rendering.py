@@ -288,6 +288,8 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "clear_statement_deps" in statement_worker
     assert "write_statement_formal_deps" not in statement_worker
     assert "add_current_node_dep" in statement_worker
+    assert "linter.style.longLine" in statement_worker
+    assert "declaration uses sorry" in statement_worker
     assert "check_statement_formal_policy" not in statement_worker
     assert "check_proof_formal_policy" not in statement_worker
     assert "prepare_statement_formal_file" not in statement_reviewer
@@ -296,6 +298,8 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "run_lean_file_diagnostics" not in statement_reviewer
     assert "check_decl_file_snapshot_sync" not in statement_reviewer
     assert "Do not prepare files, capture files, write Lean code, or run formal diagnostics" in statement_reviewer
+    assert "linter.style.longLine" in statement_reviewer
+    assert "declaration uses sorry" in statement_reviewer
     assert "check_proof_formal_policy" not in statement_reviewer
     assert "record_statement_formal_review_passed" in statement_reviewer
     assert "record_statement_formal_review_rejected" in statement_reviewer
@@ -321,6 +325,7 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "check_proof_formal_policy" in proof_worker
     assert "add_proof_decl_dep" in proof_worker
     assert "add_proof_mathlib_dep" in proof_worker
+    assert "linter.style.longLine" in proof_worker
     assert "check_statement_formal_policy" not in proof_worker
     assert "prepare_proof_formal_file" not in proof_reviewer
     assert "capture_proof_formal_file" not in proof_reviewer
@@ -328,6 +333,7 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "run_lean_file_diagnostics" not in proof_reviewer
     assert "check_decl_file_snapshot_sync" not in proof_reviewer
     assert "Do not prepare files, capture files, write Lean code, or run formal diagnostics" in proof_reviewer
+    assert "linter.style.longLine" in proof_reviewer
     assert "After editing, use the available capture and check workflow" not in proof_reviewer
     assert "record_proof_formal_review_passed" in proof_reviewer
     assert "record_proof_formal_review_rejected" in proof_reviewer
