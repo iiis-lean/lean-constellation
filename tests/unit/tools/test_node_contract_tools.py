@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lean_constellation.tools import build_application_tool_specs
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
 
@@ -36,6 +37,7 @@ def test_node_contract_tools_are_registered() -> None:
         "add_node_interface",
         "update_node_interface",
         "remove_node_interface",
+        "bind_current_node_interface",
         "bind_node_interface",
         "unbind_node_interface",
         "list_recent_content_task_results",
@@ -70,6 +72,7 @@ def test_node_contract_groups_expose_expected_tools() -> None:
     assert_group_contains("node_contract_material_coordinator_write", {"add_node_material_ref", "remove_node_material_ref"})
     assert_group_contains("scope_export_interface_read", {"list_node_interfaces", "list_scope_exports", "list_scope_export_candidates"})
     assert_group_contains("scope_export_interface_write", {"add_node_interface", "bind_node_interface", "add_scope_export"})
+    assert_group_contains("content_interface_current_write", {"bind_current_node_interface"})
     assert_group_contains("root_interface_state_read", {"list_root_interfaces"})
     assert_group_contains("root_interface_prepare_read", {"get_root_interface_run_context"})
     assert_group_contains("root_interface_write", {"add_root_interface", "update_root_interface", "remove_root_interface"})
@@ -81,3 +84,9 @@ def test_node_contract_groups_expose_expected_tools() -> None:
     assert_group_contains("scope_close_read", {"get_scope_close_view"})
     assert_group_contains("repo_ready_read", {"get_repo_ready_node_view"})
     assert_group_contains("content_task_admission_read", {"list_runnable_content_nodes", "check_content_task_admission", "check_content_node_batch"})
+
+
+def test_current_content_interface_binding_is_plan_or_admin_only() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    assert specs["bind_current_node_interface"].allowed_roles == {"plan", "admin"}

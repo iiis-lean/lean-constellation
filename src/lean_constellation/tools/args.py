@@ -387,6 +387,11 @@ class InterfaceBindArgs(NodePathArgs):
     decl_node: str | None = Field(default=None, description="Node containing the declaration; omit to use the current node.")
 
 
+class CurrentNodeInterfaceBindArgs(StrictModel):
+    interface_name: str = Field(description="Current content-node interface name to bind.")
+    decl_name: str = Field(description="Current content-node public declaration name to bind to the interface.")
+
+
 class CurrentNodeDependencyAddArgs(StrictModel):
     target_node: str = Field(description="Provider node path to add as a dependency.")
     reason: str = Field(description="Why the current node needs this dependency.")

@@ -1258,7 +1258,11 @@ Use `mark_decl_round_terminal` only after the change summaries and round summary
         name="content-node-completion-decision",
         description="Use when the ContentPlanAgent decides whether the current content node task should end as ready, blocked, or failed.",
         group="content_plan",
-        required_tool_groups=_groups(SubmitGroup.CONTENT_COMPLETION_SUBMIT, AppGroup.CONTENT_COMPLETION_GATE_READ),
+        required_tool_groups=_groups(
+            SubmitGroup.CONTENT_COMPLETION_SUBMIT,
+            AppGroup.CONTENT_INTERFACE_CURRENT_WRITE,
+            AppGroup.CONTENT_COMPLETION_GATE_READ,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Content Node Completion Decision
 
@@ -1267,6 +1271,12 @@ Use `mark_decl_round_terminal` only after the change summaries and round summary
 Use this skill when deciding whether the current content node task should end as ready, blocked, or failed.
 
 A natural-language claim is not enough. Use the content completion gate and submit tools to complete the task through the workflow.
+
+## Current-Node Interface Binding
+
+Before the readiness gate, inspect the current contract and current public declarations. For every required interface without a binding, choose the semantically matching public declaration on this same Content node and call `bind_current_node_interface`. The service validates declaration visibility, readiness, kind, formal statement, and current revision.
+
+This is ContentPlan closeout work. Do not treat an unbound current-node interface as a Coordinator blocker when a valid declaration is available. Do not alter the interface requirement, bind a declaration from another node, or bind parent Scope exports; those remain outside this tool's authority.
 
 ## Ready
 

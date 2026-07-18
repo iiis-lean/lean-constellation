@@ -13,7 +13,7 @@ EXPECTED_SURFACE_COUNTS = {
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 21, 1, 4, 2),
     "CoordinatorAgent": (35, 84, 2, 4, 19),
-    "ContentPlanAgent": (26, 74, 3, 6, 17),
+    "ContentPlanAgent": (27, 75, 3, 6, 17),
     "NodeDirDependencyReconAgent": (5, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 19, 2, 3, 4),
@@ -364,6 +364,8 @@ def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
     assert "list_current_node_public_decls" not in coordinator_tools
     assert "inspect_current_node_public_decl" not in coordinator_tools
     assert "add_node_dep" not in content_plan_tools
+    assert "bind_current_node_interface" in content_plan_tools
+    assert "bind_node_interface" not in content_plan_tools
     assert "add_node_mathlib_module_hint" not in mathlib_recon_tools
     assert "search_arxiv_theorems" not in mathlib_recon_tools
     assert "search_arxiv_theorems" in {tool.name for tool in reports["ProofNLWorkerAgent"].application_tools}

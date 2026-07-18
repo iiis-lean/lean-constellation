@@ -201,6 +201,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
                 AppGroup.DECL_STRATEGY_WRITE,
                 AppGroup.DECL_ROUND_CHANGE_WRITE,
                 AppGroup.DECL_ROUND_CLOSEOUT_WRITE,
+                AppGroup.CONTENT_INTERFACE_CURRENT_WRITE,
                 AppGroup.CONTENT_COMPLETION_GATE_READ,
             ],
             _aliases("content_plan", "ContentPlanAgent", "plan"),

@@ -162,6 +162,8 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "validate_decl_round_draft" in text
     assert "submit_current_decl_round" in text
     assert "check_current_content_node_completion" in text
+    assert "bind_current_node_interface" in text
+    assert "Interface binding is part of ContentPlan closeout" in text
     assert "submit_content_node_ready" in text
     assert "Do not replace NodeDirDependencyReconFlow, MathlibReconFlow, or ResourceReconFlow" in text
 

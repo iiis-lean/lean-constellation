@@ -1865,6 +1865,15 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),
+    "bind_current_node_interface": ToolCase(
+        tool_name="bind_current_node_interface",
+        status="implemented",
+        category="content_interface_current_write",
+        reason="Checkpointed current Content interface binding covered by strict DeclGraph ToolSweep.",
+        view_key="content_plan",
+        agent_type="ContentPlanAgent",
+        restore_policy="checkpoint",
+    ),
     "get_current_repo_work_config": ToolCase(
         tool_name="get_current_repo_work_config",
         status="implemented",

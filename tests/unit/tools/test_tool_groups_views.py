@@ -59,6 +59,18 @@ def test_representative_agent_type_resolves_expected_view() -> None:
     assert adapter_catalog.value.key == "adapter_repo_import"
 
 
+def test_content_plan_exposes_only_current_node_interface_binding() -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+
+    view = runtime.tool_facade.tool_view.tool_names_for_view("content_plan")
+
+    assert view.ok and view.value is not None
+    tools = set(view.value)
+    assert "bind_current_node_interface" in tools
+    assert "bind_node_interface" not in tools
+    assert "unbind_node_interface" not in tools
+
+
 def test_repo_format_discovery_view_exposes_scoped_remote_tools_only() -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
 

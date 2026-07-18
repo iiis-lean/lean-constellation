@@ -18,6 +18,7 @@ class ApplicationToolGroupKey(StrEnum):
     CONTENT_TASK_ADMISSION_READ = "content_task_admission_read"
     CONTENT_TASK_RESULT_COORDINATOR_FINALIZE = "content_task_result_coordinator_finalize"
     CONTENT_COMPLETION_GATE_READ = "content_completion_gate_read"
+    CONTENT_INTERFACE_CURRENT_WRITE = "content_interface_current_write"
     DECL_CATALOG_PLAN_WRITE = "decl_catalog_plan_write"
     CURRENT_NODE_DECL_READ = "current_node_decl_read"
     DECL_DEPENDENCY_ANALYSIS_READ = "decl_dependency_analysis_read"

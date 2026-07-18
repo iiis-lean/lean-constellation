@@ -999,6 +999,49 @@ def test_current_node_and_decl_graph_tools_invoke_context_handlers(tmp_path: Pat
     assert graph.value.ok is True
 
 
+def test_content_plan_interface_binding_is_forced_to_current_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    calls: list[dict[str, object]] = []
+
+    def _bind(repo_root: Path, **kwargs):
+        calls.append({"repo_root": repo_root, **kwargs})
+        return runtime.foundation.ok({"changed": True, "bound_decl": "Main.Topic.topic_result"})
+
+    monkeypatch.setattr(runtime.node.interface, "bind_interface_to_decl", _bind)
+    raw = _raw(tmp_path, view="content_plan", agent_type="ContentPlanAgent", role="plan", node_path="Main.Topic")
+
+    bound = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="bind_current_node_interface",
+            flat_args={"interface_name": "topic_result", "decl_name": "topic_result"},
+        )
+    )
+    invalid = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="bind_current_node_interface",
+            flat_args={
+                "interface_name": "topic_result",
+                "decl_name": "topic_result",
+                "node_path": "Main.Other",
+            },
+        )
+    )
+
+    assert bound["changed"] is True
+    assert calls == [
+        {
+            "repo_root": tmp_path,
+            "node_path": "Main.Topic",
+            "interface_name": "topic_result",
+            "decl_name": "topic_result",
+            "decl_node": "Main.Topic",
+        }
+    ]
+    assert invalid[0].kind == "tool_arguments_invalid"
+
+
 def test_current_node_decl_read_tools_invoke_decl_graph(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok

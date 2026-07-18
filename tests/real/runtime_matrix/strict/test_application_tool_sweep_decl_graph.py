@@ -29,6 +29,14 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     _seed_ready_decl(ws, "ready_public_result", public=True)
     _seed_ready_decl(ws, "existing_result", public=False)
     _seed_ready_decl(ws, "delete_result", public=False)
+    assert ws.runtime.node.interface.add_interface(
+        ws.provider_repo,
+        node_path=CONTENT_NODE_PATH,
+        name="strict_public_result",
+        kind="theorem",
+        summary="Strict ToolSweep current Content interface.",
+        actor="coordinator",
+    ).ok
 
     server = unwrap(create_mcp_server(ws.runtime, view_keys=["content_plan"]))
     plan_ctx = _ctx(ws)
@@ -279,6 +287,19 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         assertion_summary="Active declaration names were listed.",
     )
     assert "ready_public_result" in _as_items(active_names.value)
+
+    interface_binding = call_tool_with_evidence(
+        server,
+        "content_plan",
+        "bind_current_node_interface",
+        {"interface_name": "strict_public_result", "decl_name": "ready_public_result"},
+        runtime_context=plan_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Current Content interface was bound to a public ready declaration on the same node.",
+    )
+    assert _field(interface_binding.value, "changed") is True
+    assert _field(_field(interface_binding.value, "bound_decl"), "node") == CONTENT_NODE_PATH
+    assert _field(_field(interface_binding.value, "bound_decl"), "name") == "ready_public_result"
 
     content_ready = call_tool_with_evidence(
         server,

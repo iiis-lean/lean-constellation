@@ -73,6 +73,7 @@ DECL_GRAPH_TOOL_SWEEP_NAMES = frozenset(
         "validate_decl_round_draft",
         "compute_current_node_decl_dependency_closure",
         "list_active_decl_names",
+        "bind_current_node_interface",
         "check_current_content_node_completion",
     }
 )

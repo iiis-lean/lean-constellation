@@ -10,6 +10,7 @@ from lean_constellation.tools.args import (
     ContentTaskResultListArgs,
     CreateContentNodeArgs,
     CreateScopeNodeArgs,
+    CurrentNodeInterfaceBindArgs,
     CurrentMaterialRefAddArgs,
     CurrentMaterialRefRemoveArgs,
     CurrentNodeDependencyAddArgs,
@@ -375,6 +376,17 @@ def _bind_node_interface(runtime, ctx, args: InterfaceBindArgs):
         interface_name=args.interface_name,
         decl_name=args.decl_name,
         decl_node=args.decl_node,
+    )
+
+
+def _bind_current_node_interface(runtime, ctx, args: CurrentNodeInterfaceBindArgs):
+    node_path = current_node_path(ctx)
+    return runtime.node.interface.bind_interface_to_decl(
+        ctx.repo_root,
+        node_path=node_path,
+        interface_name=args.interface_name,
+        decl_name=args.decl_name,
+        decl_node=node_path,
     )
 
 
@@ -940,6 +952,16 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
             roles=coordinator_roles,
             handler=_remove_interface,
+        ),
+        handler_tool(
+            name="bind_current_node_interface",
+            description="Bind an interface on the current Content node to a public declaration on that same node.",
+            args_model=CurrentNodeInterfaceBindArgs,
+            capability=ToolCapability.WRITE,
+            result_view="interface_binding",
+            groups={AppGroup.CONTENT_INTERFACE_CURRENT_WRITE},
+            roles={"plan", "admin"},
+            handler=_bind_current_node_interface,
         ),
         handler_tool(
             name="bind_node_interface",
