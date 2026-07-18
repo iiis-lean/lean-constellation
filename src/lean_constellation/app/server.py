@@ -17,7 +17,7 @@ from lean_constellation.app.operator_data.api import OperatorDataApi
 from lean_constellation.app.operator_data.http import create_operator_data_http_routes
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.app.scheduler_loop import run_registry_scheduler_loop
-from lean_constellation.app.toolkit_process import ManagedToolkitProcess, ManagedToolkitView
+from lean_constellation.app.toolkit_process import ManagedToolkitProcess
 from lean_constellation.mcp.http import create_repo_mcp_http_routes
 from lean_constellation.services.foundation import ServiceResult
 
@@ -30,7 +30,7 @@ def create_production_app_server(
     external_overrides: dict[str, object] | None = None,
     agent_providers: dict[str, object] | None = None,
     materialize_agent_homes: bool | None = None,
-    toolkit_state: ManagedToolkitView | None = None,
+    toolkit_state: object | None = None,
 ) -> ServiceResult[Starlette]:
     """Create one ASGI app containing Admin HTTP, MCP HTTP, and scheduler loop."""
 
@@ -53,7 +53,7 @@ def _create_registry_production_app_server(
     external_overrides: dict[str, object] | None = None,
     agent_providers: dict[str, object] | None = None,
     materialize_agent_homes: bool | None = None,
-    toolkit_state: ManagedToolkitView | None = None,
+    toolkit_state: object | None = None,
 ) -> ServiceResult[Starlette]:
     """Create the production workspace app with repo-local runtime registry."""
 
@@ -147,10 +147,11 @@ async def run_production_app_server(
     """Run the unified production app server until uvicorn exits."""
 
     toolkit_process: ManagedToolkitProcess | None = None
-    toolkit_state: ManagedToolkitView | None = None
+    toolkit_state: object | None = None
     if config.toolkit.mode == "managed":
         toolkit_process = ManagedToolkitProcess(config.toolkit)
-        toolkit_state = toolkit_process.start()
+        toolkit_process.start()
+        toolkit_state = toolkit_process
     try:
         app = create_production_app_server(config, view_keys=view_keys, toolkit_state=toolkit_state)
         if not app.ok or app.value is None:

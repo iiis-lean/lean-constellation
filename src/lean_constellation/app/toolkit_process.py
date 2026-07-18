@@ -5,7 +5,9 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+import socket
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field
 
@@ -66,10 +68,25 @@ class ManagedToolkitProcess:
             self.view = view
             return view
         command = self.command()
-        self.process = subprocess.Popen(command)  # noqa: S603 - command is explicit local toolkit launcher.
         base_url = self.config.effective_base_url()
+        if self._endpoint_in_use():
+            view = ManagedToolkitView(
+                mode="managed",
+                base_url=base_url,
+                running=False,
+                health_ok=False,
+                missing_tools=list(self.config.required_tools),
+                command=command,
+                summary="Managed Toolkit endpoint is already in use; refusing to adopt an existing service.",
+            )
+            self.view = view
+            if self.config.strict_startup:
+                raise RuntimeError(view.summary)
+            return view
+        self.process = subprocess.Popen(command)  # noqa: S603 - command is explicit local toolkit launcher.
         health_ok, missing_tools = self._wait_ready(base_url)
         running = self.process.poll() is None
+        health_ok = health_ok and running
         view = ManagedToolkitView(
             mode="managed",
             base_url=base_url,
@@ -81,10 +98,30 @@ class ManagedToolkitProcess:
             summary="Managed Toolkit process is healthy." if health_ok else "Managed Toolkit process did not become healthy.",
         )
         self.view = view
-        if self.config.strict_startup and not health_ok:
+        if self.config.strict_startup and not (health_ok and running):
             self.stop()
             raise RuntimeError(view.summary)
         return view
+
+    def current_view(self) -> ManagedToolkitView | None:
+        """Return the latest child-owned state instead of the startup snapshot."""
+
+        view = self.view
+        if view is None or view.mode != "managed" or self.process is None:
+            return view
+        running = self.process.poll() is None
+        health_ok = view.health_ok and running
+        if running == view.running and health_ok == view.health_ok:
+            return view
+        summary = "Managed Toolkit process is healthy." if health_ok else "Managed Toolkit child process is not running."
+        self.view = view.model_copy(update={"running": running, "health_ok": health_ok, "summary": summary})
+        return self.view
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        """Expose a dynamic Admin-compatible view for the managed child."""
+
+        view = self.current_view()
+        return view.model_dump(**kwargs) if view is not None else {}
 
     def stop(self) -> None:
         process = self.process
@@ -119,16 +156,38 @@ class ManagedToolkitProcess:
                 return False, missing_tools
             catalog = client.probe_tool_catalog(self.config.required_tools)
             if catalog.ok:
+                if not self._child_survives_health_probe():
+                    return False, missing_tools
                 self._run_warmups(client)
+                if self.process is not None and self.process.poll() is not None:
+                    return False, missing_tools
                 return True, []
             if catalog.issue_code == "toolkit_required_tools_missing":
                 return False, list(catalog.missing_tools)
             health = client.call_tool("health", {})
             if health.ok and not self.config.required_tools:
+                if not self._child_survives_health_probe():
+                    return False, missing_tools
                 self._run_warmups(client)
+                if self.process is not None and self.process.poll() is not None:
+                    return False, missing_tools
                 return True, []
             time.sleep(self.config.health_interval_s)
         return False, missing_tools
+
+    def _child_survives_health_probe(self) -> bool:
+        process = self.process
+        if process is None or process.poll() is not None:
+            return False
+        time.sleep(self.config.health_interval_s)
+        return process.poll() is None
+
+    def _endpoint_in_use(self) -> bool:
+        try:
+            with socket.create_connection((self.config.host, self.config.port), timeout=self.config.health_interval_s):
+                return True
+        except OSError:
+            return False
 
     def _run_warmups(self, client: LeanMcpToolkitClient) -> None:
         for tool_name in self.config.warmup_tools:
