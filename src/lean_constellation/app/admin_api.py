@@ -1997,7 +1997,7 @@ class LeanAdminApi:
             owning_steps = [
                 self._step_monitor_view(step)
                 for step in self.runtime.ark.step_service.store.list_steps(scope_id=agent.scope_id)
-                if agent_id in set(step.agent_bindings.values())
+                if agent_id in set(self._agent_binding_values(step))
             ]
             next_cursor = self._encode_agent_live_cursor(
                 {
@@ -3006,8 +3006,18 @@ class LeanAdminApi:
         agent_role = getattr(getattr(step, "state", None), "agent_role", None)
         if agent_role is not None:
             return step.agent_bindings.get(agent_role)
-        bindings = list(getattr(step, "agent_bindings", {}).values())
+        bindings = LeanAdminApi._agent_binding_values(step)
         return bindings[0] if len(bindings) == 1 else None
+
+    @staticmethod
+    def _agent_binding_values(step: Any) -> list[str]:
+        bindings = getattr(step, "agent_bindings", None)
+        if bindings is None:
+            return []
+        by_role = getattr(bindings, "by_role", bindings)
+        if not isinstance(by_role, dict):
+            return []
+        return list(by_role.values())
 
     def _agent_live_snapshot(self, agent_id: str) -> dict[str, Any]:
         service = self.runtime.ark.agent_service

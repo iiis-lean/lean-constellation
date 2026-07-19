@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Barrier
 
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
+from agent_runtime_kit.flow.standard_steps import AgentStepState
 from agent_runtime_kit.agent.homes import HomeCreateSpec
 from starlette.testclient import TestClient
 
@@ -19,6 +20,7 @@ from lean_constellation.app import (
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.flows.common.agent_steps import RepoFormatDiscoveryAgentStep
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from tests.unit_services_helpers import publish_native_provider_release
 
@@ -297,17 +299,33 @@ def test_production_progress_and_agent_live_routes_are_repo_prefixed(tmp_path) -
     )
     assert started.ok and started.value is not None
     loaded.value.ark.agent_service.home_service.create_home(
-        HomeCreateSpec(cli_type="codex", home_id="CoordinatorAgent")
+        HomeCreateSpec(cli_type="codex", home_id="RepoFormatDiscoveryAgent")
     )
     agent = loaded.value.ark.agent_service.create_agent(
-        "repo:MainRepo", "CoordinatorAgent", home_id="CoordinatorAgent"
+        "repo:MainRepo:node:Main.Core",
+        "RepoFormatDiscoveryAgent",
+        home_id="RepoFormatDiscoveryAgent",
     )
+    owning_step = RepoFormatDiscoveryAgentStep(
+        step_id="agent_live_owning_step",
+        flow_id=started.value.flow_id,
+        scope_id="repo:MainRepo:node:Main.Core",
+        state=AgentStepState(
+            agent_role="repo_format_discovery",
+            agent_type="RepoFormatDiscoveryAgent",
+            home_id="RepoFormatDiscoveryAgent",
+            create_agent_if_missing=False,
+        ),
+    )
+    owning_step.agent_bindings.by_role["repo_format_discovery"] = agent.agent_id
+    loaded.value.ark.step_service.create_step(owning_step, enqueue=False)
 
     with TestClient(app_result.value) as client:
         progress = client.get(
             f"/admin/repos/MainRepo/content-tasks/{started.value.flow_id}/progress"
         )
         live = client.get(f"/admin/repos/MainRepo/agents/{agent.agent_id}/live")
+        assert live.status_code == 200, live.json()["issues"][0]["message"]
         waited = client.get(
             f"/admin/repos/MainRepo/agents/{agent.agent_id}/live",
             params={"after_cursor": live.json()["value"]["next_cursor"], "wait_s": 0},
@@ -318,6 +336,7 @@ def test_production_progress_and_agent_live_routes_are_repo_prefixed(tmp_path) -
     assert progress.json()["value"]["phase"] == "admission"
     assert live.status_code == 200
     assert live.json()["value"]["agent"]["agent_id"] == agent.agent_id
+    assert live.json()["value"]["owning_steps"][0]["step_id"] == owning_step.step_id
     assert live.json()["value"]["report_index_url"].startswith("/admin/repos/MainRepo/")
     assert waited.status_code == 200
     assert waited.json()["value"]["timed_out"] is True
