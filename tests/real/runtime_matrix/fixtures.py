@@ -544,6 +544,7 @@ def _write_minimal_lake_repo(
 ) -> None:
     node_module = f"{module_name}.{node_path}"
     repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n", encoding="utf-8")
     (repo_root / "lakefile.toml").write_text(
         f'name = "{repo_root.name}"\n'
         'version = "0.1.0"\n'
@@ -588,6 +589,7 @@ def _write_consumer_repo(repo_root: Path) -> None:
 
 def _write_upstream_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n", encoding="utf-8")
     (repo_root / "lakefile.toml").write_text(
         'name = "Upstream"\n'
         'version = "0.1.0"\n'
