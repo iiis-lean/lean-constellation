@@ -127,6 +127,8 @@ def test_stage_mutation_refreshes_managed_projection_and_preserves_agent_source(
     assert updated.ok and updated.value is not None, updated.issues
     assert updated.value.managed_projection_changed
     assert updated.value.reread_required
+    assert "same AgentStep" in updated.value.summary
+    assert "not a blocker" in updated.value.summary
     assert updated.value.changed_files == [str(path)]
     current = path.read_text(encoding="utf-8")
     assert "The refreshed statement remains true." in current

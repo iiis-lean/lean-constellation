@@ -594,7 +594,9 @@ class DeclFileComponent:
                 changed_files=[str(path)] if changed else [],
                 reread_required=changed,
                 summary=(
-                    "Truth was updated and the managed Lean projection changed; reread the file before editing."
+                    "Truth was updated successfully and the managed Lean projection changed. "
+                    "Reread the file in this same AgentStep before any further edit or submission, then continue; "
+                    "reread_required is not a blocker."
                     if changed
                     else "Truth was updated; the managed Lean projection was already current."
                 ),

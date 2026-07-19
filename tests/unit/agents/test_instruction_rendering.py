@@ -325,6 +325,10 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     assert "check_proof_formal_policy" in proof_worker
     assert "add_proof_decl_dep" in proof_worker
     assert "add_proof_mathlib_dep" in proof_worker
+    assert "reread_required=true" in proof_worker
+    assert "is not a blocker" in proof_worker
+    assert "same AgentStep" in proof_worker
+    assert "Never submit blocked merely because rereading is required" in proof_worker
     assert "linter.style.longLine" in proof_worker
     assert "check_statement_formal_policy" not in proof_worker
     assert "prepare_proof_formal_file" not in proof_reviewer

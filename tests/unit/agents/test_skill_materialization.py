@@ -305,6 +305,9 @@ def test_decl_stage_common_skills_keep_stage_specific_tools_out_of_shared_skill(
     assert "prepare_proof_formal_file" in proof
     assert "check_proof_formal_policy" in proof
     assert "capture_proof_formal_file" in proof
+    assert "reread_required=true" in proof
+    assert "is not a blocker" in proof
+    assert "same AgentStep" in proof
     assert "prepare_statement_formal_file" not in proof
     assert "check_statement_formal_policy" not in proof
     assert "capture_statement_formal_file" not in proof

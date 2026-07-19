@@ -1455,7 +1455,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` while iterating; proof formal completed work must satisfy strict proof policy.",
                 "Capture at the durable boundary with `capture_proof_formal_file`; if any edit happens after capture, capture again.",
                 "Before submit, require `check_formal_stage_consistency` to pass.",
-                "Refine typed proof dependencies with `add_proof_decl_dep`, `add_proof_mathlib_dep`, `remove_proof_dep`, or `clear_proof_deps`; these are proof deps, not statement deps. Re-read after any mutation that refreshes managed imports/docstring.",
+                "Refine typed proof dependencies with `add_proof_decl_dep`, `add_proof_mathlib_dep`, `remove_proof_dep`, or `clear_proof_deps`; these are proof deps, not statement deps. A successful mutation with `managed_projection_changed=true` or `reread_required=true` is not a blocker: re-read the declaration-owned file in the same AgentStep and continue. Add several known dependencies one at a time and re-read after each changed projection.",
                 "Read current node Mathlib hints first, then repo MathlibIndex; search or navigate only when those are insufficient.",
                 "For a Mathlib candidate you intend to use in the current proof, inspect or check it first, record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`, record current-node relevance with hint tools, and add the typed proof Mathlib dep.",
                 "Use `add_current_node_dep` only when the final proof actually needs a verified provider public declaration that is not already available.",
