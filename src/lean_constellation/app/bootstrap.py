@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
+from agent_runtime_kit.agent.homes import ModelConfigOverrides
 
 from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec, build_agent_type_specs
 from lean_constellation.domain.common import StrictModel
@@ -36,6 +38,8 @@ class AgentHomeMaterializationView(StrictModel):
     skill_paths: dict[str, str] = Field(default_factory=dict)
     mcp_server_names: list[str] = Field(default_factory=list)
     codex_config_path: str | None = None
+    effective_model: str | None = None
+    effective_reasoning_effort: str | None = None
     summary: str
 
 
@@ -94,6 +98,7 @@ def materialize_agent_home(
     fixed_env: dict[str, str] | None = None,
     required_env: set[str] | None = None,
     agent_type_specs: Sequence["AgentTypeSpec"] | None = None,
+    model_config_overrides: ModelConfigOverrides | None = None,
 ) -> ServiceResult[AgentHomeMaterializationView]:
     """Materialize one AgentType home through ARK HomeService."""
 
@@ -113,6 +118,7 @@ def materialize_agent_home(
             spec.ark_home_create_spec,
             base_config_path=Path(base_config_path).expanduser() if base_config_path is not None else None,
             auth_json_path=Path(auth_json_path).expanduser() if auth_json_path is not None else None,
+            model_config_overrides=model_config_overrides,
         )
         home_service = getattr(runtime.ark.agent_service, "home_service", None)
         if home_service is None:
@@ -123,7 +129,15 @@ def materialize_agent_home(
         home_root = home_service.resolve_home_root(record.cli_type, record.home_id)
         _disable_global_codex_features(home_root / ".codex" / "config.toml")
         instruction_path = _write_agent_instruction(home_root, spec)
-        manifest_path = _write_agent_home_manifest(home_root, spec)
+        effective_model, effective_reasoning_effort = _read_effective_model_config(
+            home_root / ".codex" / "config.toml"
+        )
+        manifest_path = _write_agent_home_manifest(
+            home_root,
+            spec,
+            effective_model=effective_model,
+            effective_reasoning_effort=effective_reasoning_effort,
+        )
     except Exception as exc:  # noqa: BLE001 - bootstrap boundary.
         return runtime.foundation.fail(runtime.foundation.issue("agent_home_materialization_failed", f"Agent home materialization failed: {exc}"))
 
@@ -141,6 +155,8 @@ def materialize_agent_home(
             skill_paths=skill_paths,
             mcp_server_names=[server.name for server in spec.mcp_servers],
             codex_config_path=str(codex_config) if codex_config.exists() else None,
+            effective_model=effective_model,
+            effective_reasoning_effort=effective_reasoning_effort,
             summary=f"Materialized Agent home {record.home_id}; manifest: {manifest_path.name}.",
         )
     )
@@ -154,6 +170,7 @@ def materialize_production_agent_homes(
     auth_json_path: Path | str | None,
     shared_elan_home: Path | str | None = None,
     agent_type_specs: Sequence["AgentTypeSpec"] | None = None,
+    agent_home_overrides: dict[str, object] | None = None,
 ) -> ServiceResult[ProductionAgentHomesView]:
     """Materialize all production Agent homes for a long-running runtime."""
 
@@ -186,6 +203,13 @@ def materialize_production_agent_homes(
     materialized: list[AgentHomeMaterializationView] = []
     failed: list[dict[str, str]] = []
     for spec in specs:
+        configured_override = (agent_home_overrides or {}).get(spec.agent_type)
+        model_override = None
+        if configured_override is not None:
+            model_override = ModelConfigOverrides(
+                model=getattr(configured_override, "model", None),
+                reasoning_effort=getattr(configured_override, "model_reasoning_effort", None),
+            )
         result = materialize_agent_home(
             runtime,
             spec.agent_type,
@@ -195,6 +219,7 @@ def materialize_production_agent_homes(
             auth_json_path=auth_json,
             fixed_env={"ELAN_HOME": str(elan_home)},
             agent_type_specs=specs,
+            model_config_overrides=model_override,
         )
         if result.ok and result.value is not None:
             materialized.append(result.value)
@@ -281,7 +306,13 @@ def _write_agent_instruction(home_root: Path, spec: AgentHomeBootstrapSpec) -> P
     return path
 
 
-def _write_agent_home_manifest(home_root: Path, spec: AgentHomeBootstrapSpec) -> Path:
+def _write_agent_home_manifest(
+    home_root: Path,
+    spec: AgentHomeBootstrapSpec,
+    *,
+    effective_model: str | None,
+    effective_reasoning_effort: str | None,
+) -> Path:
     path = home_root / ".agents" / "lean_constellation_home.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -294,9 +325,23 @@ def _write_agent_home_manifest(home_root: Path, spec: AgentHomeBootstrapSpec) ->
         "mcp_transport": _mcp_transport_summary(spec),
         "mcp_server_specs": [_mcp_server_manifest(server) for server in spec.mcp_servers],
         "skill_keys": sorted(spec.skill_specs),
+        "effective_model": effective_model,
+        "effective_reasoning_effort": effective_reasoning_effort,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _read_effective_model_config(config_path: Path) -> tuple[str | None, str | None]:
+    if not config_path.exists():
+        return None, None
+    payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    model = payload.get("model")
+    reasoning = payload.get("model_reasoning_effort")
+    return (
+        str(model) if isinstance(model, str) else None,
+        str(reasoning) if isinstance(reasoning, str) else None,
+    )
 
 
 def _mcp_transport_summary(spec: AgentHomeBootstrapSpec) -> str | None:

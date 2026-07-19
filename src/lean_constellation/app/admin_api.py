@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
+import json
 from pathlib import Path
+import time
 from typing import Any, Literal
 
 from agent_runtime_kit.agent.models import to_jsonable
-from agent_runtime_kit.flow import SchedulerRunBudget, SchedulerRunControlView
-from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus
+from agent_runtime_kit.flow import SchedulerRunBudget, SchedulerRunControlView, SchedulerRunLeaseView
+from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus, utc_now_iso
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import Field, field_validator, model_validator
 
@@ -82,6 +85,10 @@ class RuntimePauseView(StrictModel):
     paused: bool
     scope_id: str | None = None
     run_control: SchedulerRunControlView | None = None
+    lease_id: str | None = None
+    lease_version: int | None = None
+    lease_status: str | None = None
+    wait_url: str | None = None
     summary: str
 
 
@@ -113,6 +120,21 @@ class RuntimeStatusView(StrictModel):
     active_flow_advances: list[str] = Field(default_factory=list)
     running_step_ids: list[str] = Field(default_factory=list)
     created_step_ids: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class RuntimeLeaseMonitorView(StrictModel):
+    lease: SchedulerRunLeaseView
+    runtime: RuntimeStatusView
+    advanced_flows: list[FlowMonitorView] = Field(default_factory=list)
+    started_steps: list[StepMonitorView] = Field(default_factory=list)
+    current_content_task_flow_id: str | None = None
+    current_content_task_phase: str | None = None
+    current_agent_id: str | None = None
+    checkpoint_ids: list[str] = Field(default_factory=list)
+    truth_version: int
+    observed_at: str
+    timed_out: bool = False
     summary: str
 
 
@@ -221,6 +243,47 @@ class AgentListMonitorView(StrictModel):
     agent_type: str | None = None
     status: str | None = None
     agents: list[AgentMonitorView] = Field(default_factory=list)
+    summary: str
+
+
+class ContentTaskProgressView(StrictModel):
+    flow_id: str
+    node_path: str
+    contract_version: int | None = None
+    task_status: str
+    phase: str | None = None
+    plan_agent_id: str | None = None
+    active_child_flow_id: str | None = None
+    active_child_type: str | None = None
+    active_round_id: str | None = None
+    round_index: int | None = None
+    round_status: str | None = None
+    active_decl_names: list[str] = Field(default_factory=list)
+    current_stage: str | None = None
+    current_step_id: str | None = None
+    current_agent_id: str | None = None
+    latest_callback_outcome: str | None = None
+    blocker_summary: str | None = None
+    latest_content_progress_checkpoint_id: str | None = None
+    candidate_summary: dict[str, Any] = Field(default_factory=dict)
+    truth_version: str
+    observed_at: str
+    summary: str
+
+
+class AgentLiveMonitorView(StrictModel):
+    agent: AgentMonitorView
+    owning_steps: list[StepMonitorView] = Field(default_factory=list)
+    delta_turns: list[dict[str, Any]] = Field(default_factory=list)
+    delta_events: list[dict[str, Any]] = Field(default_factory=list)
+    delta_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    latest_response_available: bool = False
+    latest_response_summary: str | None = None
+    report_index_url: str
+    trace_report_url: str
+    next_cursor: str
+    timed_out: bool = False
+    observed_at: str
     summary: str
 
 
@@ -1360,12 +1423,67 @@ class LeanAdminApi:
             controller.pause(None)
             kind = "semantic_advance_invalid" if isinstance(exc, SemanticAdvancePolicyError) else "semantic_advance_failed"
             return self.runtime.foundation.fail(self.runtime.foundation.issue(kind, str(exc)))
+        run_control = schedule_service.get_run_control_view()
+        lease = schedule_service.get_run_lease(run_control.lease_id) if run_control.lease_id is not None else None
         return self.runtime.foundation.ok(
             RuntimePauseView(
                 paused=False,
-                run_control=schedule_service.get_run_control_view(),
+                run_control=run_control,
+                lease_id=run_control.lease_id,
+                lease_version=lease.version if lease is not None else None,
+                lease_status=lease.status if lease is not None else None,
                 summary=f"Started production semantic advance {policy.name}.",
             )
+        )
+
+    def get_runtime_lease(self, lease_id: str) -> ServiceResult[RuntimeLeaseMonitorView]:
+        schedule_service = self.runtime.ark.schedule_service
+        if schedule_service is None or not hasattr(schedule_service, "get_run_lease"):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "scheduler_lease_unavailable",
+                    "Scheduler run lease inspection is unavailable.",
+                )
+            )
+        try:
+            lease = schedule_service.get_run_lease(lease_id)
+        except KeyError:
+            return self._lease_lost_result(lease_id)
+        except Exception as exc:  # noqa: BLE001 - Admin observation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("scheduler_lease_read_failed", f"Failed to read scheduler lease: {exc}")
+            )
+        return self.runtime.foundation.ok(self._runtime_lease_monitor_view(lease))
+
+    def wait_runtime_lease(
+        self,
+        lease_id: str,
+        *,
+        after_version: int | None = None,
+        timeout_s: float = 30.0,
+    ) -> ServiceResult[RuntimeLeaseMonitorView]:
+        schedule_service = self.runtime.ark.schedule_service
+        if schedule_service is None or not hasattr(schedule_service, "wait_run_lease"):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "scheduler_lease_unavailable",
+                    "Scheduler run lease waiting is unavailable.",
+                )
+            )
+        try:
+            waited = schedule_service.wait_run_lease(
+                lease_id,
+                after_version=after_version,
+                timeout_s=timeout_s,
+            )
+        except KeyError:
+            return self._lease_lost_result(lease_id)
+        except Exception as exc:  # noqa: BLE001 - Admin observation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("scheduler_lease_wait_failed", f"Failed to wait for scheduler lease: {exc}")
+            )
+        return self.runtime.foundation.ok(
+            self._runtime_lease_monitor_view(waited.lease, timed_out=waited.timed_out)
         )
 
     def get_runtime_status(self) -> ServiceResult[RuntimeStatusView]:
@@ -1499,6 +1617,106 @@ class LeanAdminApi:
         except Exception as exc:  # noqa: BLE001 - admin boundary.
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("step_monitor_failed", f"Failed to load step monitor view: {exc}")
+            )
+
+    def get_content_task_progress(self, flow_id: str) -> ServiceResult[ContentTaskProgressView]:
+        try:
+            flow = self.runtime.ark.flow_service.get_flow(flow_id)
+            if flow.flow_type != "content_node_task":
+                raise TypeError(f"flow is not a ContentNodeTask: {flow_id}")
+            input_model = flow.input
+            state = flow.state
+            steps = [
+                self.runtime.ark.step_service.store.get_step(step_id)
+                for step_id in list(getattr(flow, "step_ids", []) or [])
+            ]
+            plan_agent_id = None
+            for step in reversed(steps):
+                if step.step_type == "content_plan_agent_step":
+                    plan_agent_id = self._bound_agent_id(step)
+                    if plan_agent_id is not None:
+                        break
+
+            child_flows = self.runtime.ark.flow_service.store.list_child_flows(parent_flow_id=flow_id)
+            active_child = next(
+                (child for child in reversed(child_flows) if child.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}),
+                None,
+            )
+            if active_child is None and getattr(state, "completed_child_flow_id", None):
+                active_child = next(
+                    (child for child in child_flows if child.flow_id == state.completed_child_flow_id),
+                    None,
+                )
+            active_round_id = None
+            round_status = None
+            active_decl_names: list[str] = []
+            current_stage = None
+            if active_child is not None and active_child.flow_type == "decl_graph_round":
+                active_round_id = getattr(active_child.input, "round_id", None)
+                round_status = str(active_child.status)
+                active_decl_names = list(getattr(active_child.state, "current_target_decl_names", []) or [])
+                current_stage = getattr(active_child.state, "current_stage", None)
+
+            current_step = (
+                self.runtime.ark.step_service.store.get_step(flow.current_step_id)
+                if flow.current_step_id
+                else None
+            )
+            if active_child is not None and active_child.current_step_id:
+                current_step = self.runtime.ark.step_service.store.get_step(active_child.current_step_id)
+            latest_checkpoint_id = None
+            for step in reversed(steps):
+                if getattr(getattr(step, "result", None), "result_type", None) == "content_progress_checkpoint":
+                    latest_checkpoint_id = getattr(step.result, "snapshot_id", None)
+                    if latest_checkpoint_id:
+                        break
+            queues = self._candidate_queue_view()
+            callback_outcome = getattr(state, "completed_child_outcome", None)
+            blocker_summary = getattr(state, "latest_callback_summary", None)
+            return self.runtime.foundation.ok(
+                ContentTaskProgressView(
+                    flow_id=flow.flow_id,
+                    node_path=getattr(input_model, "node_path", ""),
+                    contract_version=getattr(input_model, "contract_version", None),
+                    task_status=str(flow.status),
+                    phase=getattr(getattr(state, "position", None), "phase", None),
+                    plan_agent_id=plan_agent_id,
+                    active_child_flow_id=getattr(active_child, "flow_id", None),
+                    active_child_type=getattr(active_child, "flow_type", None),
+                    active_round_id=active_round_id,
+                    round_index=(
+                        getattr(active_child.input, "round_index", None)
+                        if active_child is not None and active_child.flow_type == "decl_graph_round"
+                        else getattr(state, "decl_round_count", None)
+                    ),
+                    round_status=round_status,
+                    active_decl_names=active_decl_names,
+                    current_stage=current_stage,
+                    current_step_id=getattr(current_step, "step_id", None),
+                    current_agent_id=self._bound_agent_id(current_step) if current_step is not None else None,
+                    latest_callback_outcome=callback_outcome,
+                    blocker_summary=blocker_summary,
+                    latest_content_progress_checkpoint_id=latest_checkpoint_id,
+                    candidate_summary={
+                        "flow_candidate": flow.flow_id in queues.flow_candidate_queue,
+                        "step_candidate": (
+                            getattr(current_step, "step_id", None) in queues.step_candidate_queue
+                            if current_step is not None
+                            else False
+                        ),
+                        "running_step_ids": queues.running_step_ids,
+                    },
+                    truth_version=str(flow.updated_at),
+                    observed_at=utc_now_iso(),
+                    summary=f"Content task {flow.flow_id} is {flow.status} at {getattr(state.position, 'phase', None)}.",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - Admin observation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "content_task_progress_failed",
+                    f"Failed to load ContentNodeTask progress: {exc}",
+                )
             )
 
     def list_waiting_requirements(
@@ -1728,6 +1946,88 @@ class LeanAdminApi:
         except Exception as exc:  # noqa: BLE001 - admin boundary.
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("agent_report_index_failed", f"Failed to load Agent report index: {exc}")
+            )
+
+    def get_agent_live(
+        self,
+        agent_id: str,
+        *,
+        repo_key: str,
+        after_cursor: str | None = None,
+        wait_s: float = 0.0,
+    ) -> ServiceResult[AgentLiveMonitorView]:
+        if wait_s < 0 or wait_s > 30:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "agent_live_wait_invalid",
+                    "Agent live wait_s must be between 0 and 30 seconds.",
+                )
+            )
+        try:
+            baseline = self._decode_agent_live_cursor(after_cursor) if after_cursor else None
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_live_cursor_invalid", str(exc))
+            )
+        deadline = time.monotonic() + wait_s
+        try:
+            while True:
+                snapshot = self._agent_live_snapshot(agent_id)
+                changed = baseline is None or any(
+                    snapshot[key] != baseline.get(key)
+                    for key in ("turns", "events", "tool_calls", "responses", "status")
+                )
+                if changed or wait_s == 0 or time.monotonic() >= deadline:
+                    break
+                time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+
+            timed_out = baseline is not None and not changed
+            turn_start = int(baseline.get("turns", 0)) if baseline else 0
+            event_start = int(baseline.get("events", 0)) if baseline else 0
+            tool_start = int(baseline.get("tool_calls", 0)) if baseline else 0
+            turns = snapshot["turn_items"]
+            tool_calls = snapshot["tool_call_items"]
+            event_delta_count = max(0, int(snapshot["events"]) - event_start)
+            delta_events = self.runtime.ark.agent_service.tail_trace_events(
+                agent_id,
+                limit=min(event_delta_count, 100),
+            ) if event_delta_count else []
+            latest_response = snapshot["latest_response"]
+            agent = snapshot["agent"]
+            owning_steps = [
+                self._step_monitor_view(step)
+                for step in self.runtime.ark.step_service.store.list_steps(scope_id=agent.scope_id)
+                if agent_id in set(step.agent_bindings.values())
+            ]
+            next_cursor = self._encode_agent_live_cursor(
+                {
+                    key: snapshot[key]
+                    for key in ("turns", "events", "tool_calls", "responses", "status")
+                }
+            )
+            return self.runtime.foundation.ok(
+                AgentLiveMonitorView(
+                    agent=self._agent_monitor_view(agent),
+                    owning_steps=owning_steps,
+                    delta_turns=[to_jsonable(item) for item in turns[turn_start:]][-50:],
+                    delta_events=[to_jsonable(item) for item in delta_events],
+                    delta_tool_calls=[to_jsonable(item) for item in tool_calls[tool_start:]][-50:],
+                    latest_response_available=latest_response is not None,
+                    latest_response_summary=(latest_response[-500:] if latest_response is not None else None),
+                    report_index_url=f"/admin/repos/{repo_key}/agents/{agent_id}/report-index",
+                    trace_report_url=f"/admin/repos/{repo_key}/agents/{agent_id}/trace-report",
+                    next_cursor=next_cursor,
+                    timed_out=timed_out,
+                    observed_at=utc_now_iso(),
+                    summary=(
+                        f"Agent {agent_id} has "
+                        f"{max(0, int(snapshot['events']) - event_start)} new rollout events."
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - Admin observation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue("agent_live_failed", f"Failed to load Agent live view: {exc}")
             )
 
     def get_external_health(
@@ -2628,6 +2928,127 @@ class LeanAdminApi:
             tool_call_count=tool_call_count,
             summary=f"Agent {agent.agent_type} is {agent.status}.",
         )
+
+    def _runtime_lease_monitor_view(
+        self,
+        lease: SchedulerRunLeaseView,
+        *,
+        timed_out: bool = False,
+    ) -> RuntimeLeaseMonitorView:
+        runtime_result = self.get_runtime_status()
+        if not runtime_result.ok or runtime_result.value is None:
+            raise RuntimeError("runtime status is unavailable while building scheduler lease view")
+        advanced_flows = []
+        for flow_id in lease.advanced_flow_ids:
+            try:
+                advanced_flows.append(
+                    self._flow_monitor_view(self.runtime.ark.flow_service.get_flow(flow_id), include_steps=False)
+                )
+            except Exception:
+                continue
+        started_steps = []
+        for step_id in lease.started_step_ids:
+            try:
+                started_steps.append(
+                    self._step_monitor_view(self.runtime.ark.step_service.store.get_step(step_id))
+                )
+            except Exception:
+                continue
+        content_tasks = self.runtime.ark.flow_service.store.list_flows(flow_type="content_node_task")
+        current_content = next(
+            (
+                flow
+                for flow in reversed(content_tasks)
+                if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+            ),
+            None,
+        )
+        running_agents = list(self.runtime.ark.agent_service.list_running_agents())
+        return RuntimeLeaseMonitorView(
+            lease=lease,
+            runtime=runtime_result.value,
+            advanced_flows=advanced_flows,
+            started_steps=started_steps,
+            current_content_task_flow_id=getattr(current_content, "flow_id", None),
+            current_content_task_phase=getattr(
+                getattr(getattr(current_content, "state", None), "position", None),
+                "phase",
+                None,
+            ),
+            current_agent_id=(running_agents[0].agent_id if running_agents else None),
+            truth_version=lease.version,
+            observed_at=utc_now_iso(),
+            timed_out=timed_out,
+            summary=(
+                f"Scheduler lease {lease.lease_id} is {lease.status}"
+                + (" after a bounded wait timeout." if timed_out else ".")
+            ),
+        )
+
+    def _lease_lost_result(self, lease_id: str) -> ServiceResult[RuntimeLeaseMonitorView]:
+        runtime = self.get_runtime_status()
+        details = {
+            "lease_id": lease_id,
+            "process_local": True,
+            "runtime": runtime.value.model_dump(mode="json") if runtime.ok and runtime.value is not None else None,
+        }
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                "lease_lost",
+                "The process-local scheduler lease is unavailable; the server may have restarted.",
+                object_ref=lease_id,
+                details=details,
+            )
+        )
+
+    @staticmethod
+    def _bound_agent_id(step: Any) -> str | None:
+        agent_role = getattr(getattr(step, "state", None), "agent_role", None)
+        if agent_role is not None:
+            return step.agent_bindings.get(agent_role)
+        bindings = list(getattr(step, "agent_bindings", {}).values())
+        return bindings[0] if len(bindings) == 1 else None
+
+    def _agent_live_snapshot(self, agent_id: str) -> dict[str, Any]:
+        service = self.runtime.ark.agent_service
+        agent = service.get_agent(agent_id)
+        rollout = service.get_rollout_info(agent_id)
+        turns = service.list_trace_turns(agent_id)
+        tool_calls = service.list_tool_calls(agent_id)
+        responses = service.list_response_texts(agent_id)
+        latest_response = service.get_latest_response_text(agent_id)
+        return {
+            "agent": agent,
+            "status": str(agent.status),
+            "turns": len(turns),
+            "events": int(rollout.event_count),
+            "tool_calls": len(tool_calls),
+            "responses": len(responses),
+            "turn_items": turns,
+            "tool_call_items": tool_calls,
+            "latest_response": latest_response,
+        }
+
+    @staticmethod
+    def _encode_agent_live_cursor(payload: dict[str, Any]) -> str:
+        raw = json.dumps({"v": 1, **payload}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_agent_live_cursor(cursor: str) -> dict[str, Any]:
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(cursor + padding).decode("utf-8"))
+            if payload.get("v") != 1:
+                raise ValueError("unsupported cursor version")
+            for key in ("turns", "events", "tool_calls", "responses"):
+                if not isinstance(payload.get(key), int) or payload[key] < 0:
+                    raise ValueError(f"invalid cursor field: {key}")
+            if not isinstance(payload.get("status"), str):
+                raise ValueError("invalid cursor field: status")
+            return payload
+        except Exception as exc:  # noqa: BLE001 - opaque cursor parsing boundary.
+            raise ValueError("after_cursor is not a valid Agent live cursor") from exc
 
     def _candidate_queue_view(self) -> TestControlCandidateQueueView:
         schedule_service = self.runtime.ark.schedule_service

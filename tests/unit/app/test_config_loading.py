@@ -25,6 +25,37 @@ def test_checkpoint_and_trace_report_config_reject_unknown_fields() -> None:
         LeanAppConfig.model_validate({"agent_trace_reports": {"persistence": "unknown"}})
 
 
+def test_agent_home_overrides_load_by_known_agent_type(tmp_path) -> None:
+    path = tmp_path / "lean_constellation.toml"
+    path.write_text(
+        "\n".join(
+            [
+                f'workspace_root = "{tmp_path / "workspace"}"',
+                "[agent_home_overrides.ContentPlanAgent]",
+                'model = "gpt-5.6-sol"',
+                'model_reasoning_effort = "high"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+
+    override = config.agent_home_overrides["ContentPlanAgent"]
+    assert override.model == "gpt-5.6-sol"
+    assert override.model_reasoning_effort == "high"
+    assert config.redacted_view().agent_home_overrides == config.agent_home_overrides
+
+
+def test_agent_home_overrides_reject_unknown_agent_type(tmp_path) -> None:
+    with pytest.raises(ValidationError, match="unknown agent_home_overrides AgentType"):
+        LeanAppConfig(
+            workspace_root=tmp_path / "workspace",
+            agent_home_overrides={"UnknownAgent": {"model": "example"}},
+        )
+
+
 def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secrets(tmp_path) -> None:
     config_home = tmp_path / "codex"
     config_home.mkdir()

@@ -179,9 +179,9 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         state = _require_native_coordinator_state(self.state)
         input_model = _require_native_coordinator_input(self.input)
         if state.position.phase == "coordinator_agent":
-            return ctx.create_step(_coordinator_agent_step(self, input_model, state, callback=False))
+            return ctx.create_step(_coordinator_agent_step(ctx, self, input_model, state, callback=False))
         if state.position.phase == "coordinator_callback":
-            return ctx.create_step(_coordinator_agent_step(self, input_model, state, callback=True))
+            return ctx.create_step(_coordinator_agent_step(ctx, self, input_model, state, callback=True))
         if state.position.phase == "requirement_resume_gate":
             return ctx.create_step(
                 CoordinatorRequirementResumeGateStep(
@@ -193,6 +193,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         if state.position.phase == "coordinator_requirement_resume":
             return ctx.create_step(
                 _coordinator_agent_step(
+                    ctx,
                     self,
                     input_model,
                     state,
@@ -664,6 +665,7 @@ def _require_native_coordinator_input(input_model: BaseFlowInput | None) -> Nati
 
 
 def _coordinator_agent_step(
+    ctx: FlowContext,
     flow: NativeRepoCoordinatorFlow,
     input_model: NativeRepoCoordinatorInput,
     state: NativeRepoCoordinatorState,
@@ -673,6 +675,7 @@ def _coordinator_agent_step(
 ):
     from lean_constellation.flows.common.agent_steps import CoordinatorAgentStep
 
+    repo_ready_rejection_prompt = _repo_ready_rejection_callback_prompt(ctx, flow) if callback else None
     return CoordinatorAgentStep(
         step_id=new_coordinator_step_id(
             "coordinator_callback"
@@ -697,15 +700,21 @@ def _coordinator_agent_step(
                 "resuming_requirement_name": state.resuming_requirement_name,
                 "resuming_provider_repo": state.resuming_provider_repo,
             },
-            prompt_mode="callback" if callback else "initial",
+            prompt_mode="callback" if callback and repo_ready_rejection_prompt is None else "initial",
             prompt_override=(
-                None
+                repo_ready_rejection_prompt
+                if repo_ready_rejection_prompt is not None
+                else None
                 if callback
                 else _coordinator_requirement_resume_prompt(state)
                 if requirement_resume
                 else _coordinator_initial_prompt(input_model)
             ),
-            callback_dispatch_step_id=state.waiting_dispatch_step_id if callback else None,
+            callback_dispatch_step_id=(
+                state.waiting_dispatch_step_id
+                if callback and repo_ready_rejection_prompt is None
+                else None
+            ),
             env_overrides={
                 "LEAN_CONSTELLATION_AGENT_TYPE": "CoordinatorAgent",
                 "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": "native_repo_coordinator",
@@ -718,6 +727,12 @@ def _coordinator_agent_step(
 
 
 def _coordinator_initial_prompt(input_model: NativeRepoCoordinatorInput) -> str:
+    work_mode = (
+        input_model.run_context.run_spec.work_mode.value
+        if input_model.run_context is not None
+        else "proved_full_graph"
+    )
+    mode_skill = f"coordinator-{work_mode.replace('_', '-').lower()}-mode"
     parts = [
         f"Coordinate native repo {input_model.repo_key or 'current repo'}.",
         f"Start mode: {input_model.start_mode}.",
@@ -729,10 +744,46 @@ def _coordinator_initial_prompt(input_model: NativeRepoCoordinatorInput) -> str:
     if input_model.admin_note:
         parts.append(f"Admin note: {input_model.admin_note}.")
     parts.append(
+        f"Required Skill re-entry for this turn: read and apply {mode_skill} from the current Home. "
+        "After choosing a branch, read its branch Skill before mutation or dispatch."
+    )
+    parts.append(
         "Observe repo truth through tools and submit exactly one coordination move: content node tasks, "
         "resource request, repo requirement, or repo ready."
     )
     return "\n".join(parts)
+
+
+def _repo_ready_rejection_callback_prompt(ctx: FlowContext, flow: NativeRepoCoordinatorFlow) -> str | None:
+    if not flow.step_ids:
+        return None
+    latest = ctx.ark.step_service.store.get_step(flow.step_ids[-1])
+    if latest.step_type != "mark_coordinator_repo_ready_step":
+        return None
+    result = latest.result
+    if not isinstance(result, MarkCoordinatorRepoReadyStepResult):
+        raise TypeError("repo-ready callback predecessor has no MarkCoordinatorRepoReadyStepResult")
+    if result.outcome not in {"blocked", "candidate_blocked"}:
+        raise TypeError(f"repo-ready callback predecessor has non-rejection outcome: {result.outcome}")
+    work_mode = (
+        flow.input.run_context.run_spec.work_mode.value
+        if isinstance(flow.input, NativeRepoCoordinatorInput) and flow.input.run_context is not None
+        else "proved_full_graph"
+    )
+    mode_skill = f"coordinator-{work_mode.replace('_', '-').lower()}-mode"
+    issue = result.error_code or "repo_ready_gate_rejected"
+    detail = result.error_message or result.summary or "The deterministic repo-ready gate rejected the candidate."
+    return "\n".join(
+        [
+            "The deterministic repo-ready lifecycle step rejected the candidate; this is an internal wake, not a child callback.",
+            f"Gate issue: {issue}.",
+            f"Gate summary: {detail}",
+            "Required Skill order for this turn: read and apply coordinator-repo-ready-lifecycle first, "
+            f"then {mode_skill}.",
+            "Repair only Coordinator-owned truth identified by the gate, re-read current runtime/repo truth, "
+            "and submit exactly one normal coordination move. Do not reuse a stale child-dispatch result.",
+        ]
+    )
 
 
 def _coordinator_requirement_resume_prompt(state: NativeRepoCoordinatorState) -> str:

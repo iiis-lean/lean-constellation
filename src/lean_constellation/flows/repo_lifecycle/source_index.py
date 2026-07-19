@@ -457,7 +457,8 @@ def _builder_prompt(input_model: SourceIndexBuildInput, state: SourceIndexBuildS
         f"Active files: {', '.join(state.resolved_file_paths) or '(none)'}",
         "Append index material only for the active files. Existing committed semantic content is immutable.",
         "Use the Flow-provided SourceIndex tools; the current Flow and Step context authorizes scoped writes.",
-        "Submit the builder round only after the scoped draft is ready for review.",
+        "On retry, repair the same scoped delta against the immutable committed baseline; do not restart or widen scope.",
+        "Submit the builder round only after the current scoped draft is ready for review.",
     ]
     if state.latest_reviewer_feedback:
         lines.extend(["", "Previous reviewer feedback:", state.latest_reviewer_feedback])
@@ -470,7 +471,8 @@ def _reviewer_prompt(input_model: SourceIndexBuildInput, state: SourceIndexBuild
         f"Run objective: {input_model.run_objective}",
         f"Active files: {', '.join(state.resolved_file_paths) or '(none)'}",
         "Reject edits to committed baseline semantics, evidence outside the active scope, incomplete blocks, or source drift.",
-        "Approve only the scoped delta; final deterministic validation remains authoritative.",
+        "Independently review the full current scoped delta for this round, including repairs from earlier feedback.",
+        "Approve only the current scoped delta; final deterministic validation remains authoritative.",
     ]
     if state.latest_builder_summary:
         lines.extend(["", "Builder summary:", state.latest_builder_summary])

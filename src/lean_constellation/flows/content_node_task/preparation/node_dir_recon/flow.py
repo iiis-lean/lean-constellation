@@ -170,9 +170,16 @@ def _require_input(input_model: BaseFlowInput | None) -> NodeDirDependencyReconI
 
 def _recon_prompt(kind: str, input_model: PreparationReconInput) -> str:
     parts = [f"Run {kind} recon for content node {input_model.node_path}."]
+    parts.append(
+        "Required Skill re-entry: read and apply content-contract-reading and "
+        "visible-node-dependency-recon from the current Home before acting."
+    )
     if input_model.objective:
         parts.append(f"Objective: {input_model.objective}.")
     if input_model.context_summary:
         parts.append(f"Context: {input_model.context_summary}.")
-    parts.append("Use tools for current truth, then call `submit_node_dir_dependency_recon_completed`.")
+    parts.append(
+        "Reuse matching verified prior preparation findings without broad re-query; independently verify only "
+        "stale, unresolved, or role-specific claims. Then call `submit_node_dir_dependency_recon_completed`."
+    )
     return "\n".join(parts)

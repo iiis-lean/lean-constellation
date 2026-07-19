@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from agent_runtime_kit.flow.models import BaseSubmission
+from agent_runtime_kit.flow.models import BaseSubmission, FlowStatus
 from agent_runtime_kit.flow.standard_steps.agent_step import AgentStep
 
 from lean_constellation.flows.content_node_task.decl_round.submissions import (
@@ -389,6 +389,30 @@ class CoordinatorAgentStep(AgentStep):
         "submit_repo_ready",
     }
 
+    def build_callback_prompt(self, ctx, agent_id: str) -> str:
+        base = super().build_callback_prompt(ctx, agent_id)
+        children = _callback_child_flows(self, ctx)
+        if any(child.flow_type == "resource_curation" for child in children):
+            guidance = (
+                "Required Skill re-entry for this turn: read and apply resource-result-closeout first, "
+                "then re-read the current Coordinator mode Skill. Close out duplicate/local/external/rejected "
+                "resource truth before choosing exactly one next coordination move."
+            )
+        else:
+            outcomes = [
+                getattr(getattr(child, "result", None), "outcome", "runtime_failed")
+                if child.status is not FlowStatus.FAILED
+                else "runtime_failed"
+                for child in children
+            ]
+            guidance = (
+                "Required Skill re-entry for this turn: read and apply coordinator-content-result-closeout "
+                "first, then re-read the current Coordinator mode Skill. Classify all content outcomes "
+                f"({', '.join(str(item) for item in outcomes) or 'none'}); if a task reports scope overflow, "
+                "choose between splitting the node and explicitly revising its contract scope."
+            )
+        return f"{base}\n\nCurrent callback routing:\n{guidance}"
+
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission
         if isinstance(submission, CoordinatorContentTasksSubmission):
@@ -468,12 +492,20 @@ class ContentPlanAgentStep(AgentStep):
 
     def build_callback_prompt(self, ctx, agent_id: str) -> str:
         base = super().build_callback_prompt(ctx, agent_id)
+        children = _callback_child_flows(self, ctx)
         state = self._agent_step_state(self._latest_agent_step(ctx))
+        guidance = _content_plan_callback_guidance(
+            children,
+            mode_skill=_current_content_plan_mode_skill(self, ctx),
+        )
         brief = state.variables.get("context_brief")
         if not isinstance(brief, dict):
-            return base
+            return f"{base}\n\nCurrent callback routing:\n{guidance}"
         rendered = _render_context_brief_payload(brief)
-        return f"{base}\n\nCurrent derived ContentPlan context brief:\n{rendered}"
+        return (
+            f"{base}\n\nCurrent callback routing:\n{guidance}"
+            f"\n\nCurrent derived ContentPlan context brief:\n{rendered}"
+        )
 
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission
@@ -629,11 +661,19 @@ class ResourceReconAgentStep(AgentStep):
 
     def build_callback_prompt(self, ctx, agent_id: str) -> str:
         base = super().build_callback_prompt(ctx, agent_id)
+        guidance = (
+            "Required Skill re-entry for this turn: read and apply resource-result-closeout first. "
+            "Consume the returned resource truth and either attach/finish it or report the precise remaining "
+            "blocker; do not restart broad discovery."
+        )
         state = self._agent_step_state(self._latest_agent_step(ctx))
         prior = state.variables.get("prior_preparation_context")
         if not isinstance(prior, str) or not prior.strip():
-            return base
-        return f"{base}\n\nPrior preparation context (do not broadly rediscover):\n{prior}"
+            return f"{base}\n\nCurrent callback routing:\n{guidance}"
+        return (
+            f"{base}\n\nCurrent callback routing:\n{guidance}"
+            f"\n\nPrior preparation context (do not broadly rediscover):\n{prior}"
+        )
 
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission
@@ -758,6 +798,73 @@ def _render_context_brief_payload(payload: dict[str, object]) -> str:
     from lean_constellation.flows.content_node_task.context_brief import ContentPlanContextBrief
 
     return ContentPlanContextBrief.model_validate(payload).render()
+
+
+def _callback_child_flows(step: AgentStep, ctx) -> list[object]:  # noqa: ANN001
+    latest = step._latest_agent_step(ctx)
+    state = step._agent_step_state(latest)
+    dispatch_step_id = state.callback_dispatch_step_id
+    if dispatch_step_id is None:
+        return []
+    dispatch = step._flow_service(ctx).get_step(dispatch_step_id)
+    children = getattr(dispatch.state, "created_children", None) or []
+    return [
+        step._flow_service(ctx).get_flow(child.child_flow_id)
+        for child in children
+        if getattr(child, "child_flow_id", None)
+    ]
+
+
+def _content_plan_callback_guidance(children: list[object], *, mode_skill: str) -> str:
+    child = children[0] if children else None
+    flow_type = getattr(child, "flow_type", None)
+    result = getattr(child, "result", None)
+    outcome = (
+        "runtime_failed"
+        if child is not None and getattr(child, "status", None) is FlowStatus.FAILED
+        else getattr(result, "outcome", "unknown")
+    )
+    if flow_type == "decl_graph_round":
+        terminal_stage = getattr(result, "terminal_stage", None)
+        affected = getattr(getattr(result, "terminal_reason", None), "affected_decl_names", []) or []
+        return (
+            "Required Skill order for this turn: read and apply decl-round-closeout first, then "
+            f"{mode_skill}, then decl-strategy-planning. The round outcome is {outcome}; "
+            f"terminal stage is {terminal_stage or 'none'}; affected declarations are "
+            f"{', '.join(affected) or 'none'}. Close out the terminal round before any new mutation, "
+            "reassess whether the strategy still explains the next round, classify any blocker, verify "
+            "known dependency closure before retrying a parent proof, and check graph hygiene and node scope."
+        )
+    if flow_type == "resource_curation":
+        return (
+            "Required Skill order for this turn: read and apply resource-result-closeout first, then "
+            f"{mode_skill}, then decl-strategy-planning. The resource outcome is {outcome}; consume its "
+            "duplicate/local/external/rejected truth before choosing a round, completion, or task blocker."
+        )
+    if flow_type in {"node_dir_dependency_recon", "mathlib_recon", "resource_recon"}:
+        return (
+            "Required Skill order for this turn: read and apply content-preparation-orchestration, then "
+            f"{mode_skill}, then decl-strategy-planning. The preparation outcome is {outcome}; reuse its "
+            "verified findings without broad rediscovery unless evidence is stale, unresolved, or this role "
+            "must independently verify it."
+        )
+    return (
+        f"Re-read and apply {mode_skill} and decl-strategy-planning now. Classify the child outcome "
+        f"({outcome}) before choosing exactly one next ContentPlan action."
+    )
+
+
+def _current_content_plan_mode_skill(step: AgentStep, ctx) -> str:  # noqa: ANN001
+    from pathlib import Path
+
+    work_mode = "proved_full_graph"
+    flow = step._flow_service(ctx).get_flow(ctx.flow_id)
+    repo_path = getattr(flow.input, "repo_path", None)
+    if repo_path:
+        loaded = ctx.app.repo_workspace.metadata.get_repo_config(Path(repo_path))
+        if loaded.ok and loaded.value is not None:
+            work_mode = loaded.value.config.work_mode.value
+    return f"content-plan-{work_mode.replace('_', '-').lower()}-mode"
 
 
 BUSINESS_AGENT_STEP_TYPES: tuple[type[AgentStep], ...] = (

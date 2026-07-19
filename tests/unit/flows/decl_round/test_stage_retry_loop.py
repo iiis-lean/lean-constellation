@@ -37,6 +37,10 @@ def test_reviewer_rejection_retries_worker_until_budget_is_exhausted(tmp_path: P
             worker_start = runtime.agent_service.start_records[-1]
             assert "objective: Strategy objective." in worker_start.prompt
             assert "Round objective." in worker_start.prompt
+            assert "catalog_summary=main_result summary." in worker_start.prompt
+            assert "objective=Create main_result." in worker_start.prompt
+            assert "content-contract-reading" in worker_start.prompt
+            assert "decl-dependency-origin-curation" in worker_start.prompt
             assert worker_start.variables["context_brief"]["strategy_round"][
                 "strategy_objective"
             ] == "Strategy objective."
@@ -47,6 +51,8 @@ def test_reviewer_rejection_retries_worker_until_budget_is_exhausted(tmp_path: P
         if attempt == 0:
             reviewer_start = runtime.agent_service.start_records[-1]
             assert "Worker receipt (navigation only, not review evidence)" in reviewer_start.prompt
+            assert "This is a read-only review role" in reviewer_start.prompt
+            assert "catalog_summary=main_result summary." in reviewer_start.prompt
 
         gate_step_id = advance_and_run(runtime, flow_id)
         gate_step = runtime.flow_service.get_step(gate_step_id)

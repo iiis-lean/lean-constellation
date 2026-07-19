@@ -190,7 +190,7 @@ For declarations carried from an earlier release, add or repair proof work witho
 
 The goal is a complete proof-oriented content node. Public or contract-required theorem-like declarations should eventually become proved-level proof-policy satisfied. Non-theorem-like foundations should become declared-level satisfied.
 
-Use bottom-up, top-down, or mixed strategy according to the mathematical structure.
+Use source-driven bottom-up construction by default. Read the committed SourceIndex and relevant SourceCorpus ranges before selecting declarations. Strategy prose may describe the top-level goal early, but formal rounds should normally establish dependencies before asking a parent theorem to reach proved.
 
 Bottom-up strategy:
 
@@ -200,12 +200,12 @@ Bottom-up strategy:
 
 Top-down strategy:
 
-1. Create the top theorem statement with `target_state=declared` and usually `require_target_state_satisfied=true`.
-2. Create helper lemma statements with `target_state=declared` and usually `require_target_state_satisfied=true`.
-3. If the top theorem can be proved using helper lemmas whose proofs are not yet satisfied, update the top theorem with `target_state=proved` and `require_target_state_satisfied=false`.
-4. Prove the helper lemmas. If a helper still needs smaller helper lemmas, recursively apply the same pattern until the dependency closure is satisfied.
+1. Use top-down only when the source or contract gives a particularly stable parent statement and declaring it first materially clarifies the boundary.
+2. Create that parent with `target_state=declared`; do not request proved while known major source stages or accepted dependencies are missing.
+3. Record the expected lower stages in strategy rationale, then prove those dependencies bottom-up.
+4. Return to the parent only after the known blocker closure is available.
 
-Keep require_target_state_satisfied=true by default. Use false only for explicit top-down intermediate proof changes, and make the follow-up dependency-closure plan explicit in the strategy, round objective, or summary.
+Before any direct `target_state=proved` change, perform a readiness preflight: locate the source proof stages, inspect current visible/accepted dependencies, and confirm every concrete blocker from the previous parent attempt has become an available declaration. Keep `require_target_state_satisfied=true` by default. Use `require_target_state_satisfied=false` only for an explicit state-only intermediate route whose closure plan is written in strategy, round objective, or summary. Do not turn recursive helper discovery into repeated unbounded parent retries.
 """
 
 
@@ -277,6 +277,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Read the current scope or content contract with `get_node_contract` before changing it.",
                 "Write goals and boundaries in mathematical terms rather than file-layout terms.",
                 "Make sibling boundaries explicit and avoid duplicate ownership.",
+                "Record expected important declarations, major SourceIndex/source stages, and a rough Lean declaration range in the existing goal/boundary/objective text; this is guidance, not a hard count gate.",
                 "Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for durable contract changes.",
                 "Attach durable source or resource context to a target node with `add_node_material_ref` or remove stale entries with `remove_node_material_ref`.",
                 "Record visible same-repo or provider node dependencies with `add_node_dep`, and remove stale dependency entries with `remove_node_dep`.",
@@ -560,13 +561,16 @@ Use this Skill when the current repository needs a new mathematical boundary, an
 
 1. Read `get_current_repo_work_config`, `get_preparation_input`, and the current tree with `get_node_tree`.
 2. Read the relevant node contracts and source/index regions rather than decomposing from filenames alone.
-3. Use the current mode policy to choose the required graph granularity.
-4. Choose Scope nodes for broad mathematical regions and Content nodes for coherent declaration work.
-5. Make sibling ownership disjoint and preserve protected root interfaces.
+3. Estimate likely Lean scale from important source definitions, lemmas, proof stages, and expected Lean-specific helpers. As a soft default, prefer a focused Content node around roughly 5--15 important declarations; treat substantially larger independent packages as split candidates rather than a hard rejection.
+4. Use the current mode policy to choose the required graph granularity.
+5. Choose Scope nodes for broad mathematical regions and Content nodes for coherent declaration work.
+6. Make sibling ownership disjoint and preserve protected root interfaces.
 
 ## Apply Structural Changes
 
 Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for semantic changes. Use `node-contract-design` when detailed goals, boundaries, objectives, success criteria, material references, dependencies, Mathlib hints, or interfaces must be written.
+
+When a running Content task reports scope overflow, decide from current source and graph truth whether an independent package should become another node or whether the existing contract should be explicitly expanded. Do not silently redispatch the same underspecified boundary.
 
 Before deletion, call `preview_delete_node`. A node containing release-protected declarations or a protected historical Scope chain cannot be deleted. A historical private node is a warning rather than an automatic blocker when no protected declaration or current dependency still needs it. Delete only when the deterministic preview permits it.
 
@@ -751,10 +755,11 @@ Use this Skill only after candidate Content nodes have clear mathematical bounda
 ## Admission And Batch
 
 1. Read each candidate contract and current tree position.
-2. Call `check_content_task_admission` for each candidate.
-3. Use `list_runnable_content_nodes` for orientation when several nodes may run.
-4. Call `check_content_node_batch` for the exact proposed batch.
-5. If admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
+2. Confirm the contract names its expected important declarations or source stages, a rough scale, and the boundary that prevents unbounded helper expansion.
+3. Call `check_content_task_admission` for each candidate.
+4. Use `list_runnable_content_nodes` for orientation when several nodes may run.
+5. Call `check_content_node_batch` for the exact proposed batch.
+6. If admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
 
 ## Submit
 
@@ -1088,6 +1093,12 @@ Analyze:
 - whether the current route should be bottom-up, top-down, helper-decomposition based, declared skeleton, declared interface, or a small repair route;
 - whether missing support should first be handled through node dependencies, Mathlib, resources, or Coordinator escalation.
 
+## Reassess Before Continue
+
+Re-read this Skill after every preparation callback, every round terminal callback, and before creating each new round. Reassessment is mandatory; replacing the strategy is not. Reassess when the source route changed, a blocker exposed a missing dependency stage, the declaration graph materially outgrew the strategy's scale assumptions, an interface or public boundary changed, repeated parent retries did not close known blockers, or current graph truth contains superseded branches the strategy no longer explains.
+
+The strategy objective and rationale should record the selected Source route, bottom-up/top-down choice and reason, known major dependency stages, intended public/interface output, scope and scale assumptions, and any explicit state-only intermediate closure plan.
+
 ## Creating Or Continuing A Strategy
 
 Use `ensure_open_decl_strategy` when no viable open strategy exists or when the current route needs to be made explicit. The strategy objective should name the mathematical route, not just say continue work.
@@ -1150,6 +1161,18 @@ Before planning changes:
 2. Re-read graph, round history, and strategy state with the available DeclGraph read tools.
 3. Ensure the next batch is small, coherent, and aligned with the open strategy.
 4. Create or reuse the draft round with `create_decl_round_draft`.
+
+## Semantic Declaration Planning
+
+For every source- or contract-derived create, update, or delete, inspect the committed SourceIndex and relevant SourceCorpus range before mutation. Keep the stable catalog summary distinct from the current change objective. The change objective must identify the semantic boundary to preserve, the relevant source/contract reference, and why this action belongs in the current route. External Resources may clarify an explicit gap but do not silently replace source semantics.
+
+## Interface Fit
+
+For every change, state which already accepted lower declarations or Mathlib facts it consumes and which upper declaration, public interface, or contract goal it must serve. Prefer repairing a private declaration whose source-derived interface does not connect over adding an unexplained bridge. Create a tracked bridge/helper only when it has independent mathematical meaning, a clear source/Lean role, or multiple real consumers.
+
+## Target Readiness
+
+Before choosing `target_state=proved`, check whether the source proof stages and known dependency closure are available. If important lower source-derived declarations are still missing, either plan those bottom-up first or, in the narrow top-down case, declare the stable parent statement without asking the same round to prove it. A blocker first discoverable only through Lean implementation may justify a later helper round; a dependency visible from source/graph truth should be planned before parent proof dispatch.
 
 ## Create Changes
 
@@ -1232,6 +1255,8 @@ Do not start a new round before closeout is recorded.
 
 Use `write_decl_change_summary` to record what happened to each declaration in the round. Mention the intended change, the terminal outcome, accepted state changes, and concrete blocker or failure details when relevant.
 
+For blocked changes, classify the blocker as source/contract evidence, visible or provider dependency, predictable tracked helper, Lean-specific helper, statement/interface drift, scope overflow, or runtime failure. Record every concrete missing dependency and the conditions that must hold before retrying a parent declaration. Mark superseded candidates and cleanup targets for the next planning decision; closeout itself does not delete them.
+
 Do not hide an important blocked cause inside a generic success or failure summary.
 
 ## Round Summary
@@ -1247,7 +1272,7 @@ Use `write_decl_round_summary` to summarize the whole round. The round summary s
 
 ## Terminal Commit
 
-Use `mark_decl_round_terminal` only after the change summaries and round summary are written. After marking terminal, read current truth again before any new planning action.
+Use `mark_decl_round_terminal` only after the change summaries and round summary are written. After marking terminal, read current truth again and re-read the current mode Skill and `decl-strategy-planning` before any new planning action.
 
 ## Boundaries
 
@@ -1274,6 +1299,10 @@ Use `mark_decl_round_terminal` only after the change summaries and round summary
 Use this skill when deciding whether the current content node task should end as ready, blocked, or failed.
 
 A natural-language claim is not enough. Use the content completion gate and submit tools to complete the task through the workflow.
+
+## Graph Hygiene And Scope Audit
+
+Before interface binding or terminal submission, inspect active consumers and historical private branches. If the node contains safely deletable superseded private declarations, obsolete route artifacts, or retry-version names, plan a small cleanup round first. If the remaining graph contains an independent mathematical package or has expanded far beyond the contract's expected source stages and reasonable helper allowance, submit blocked with a concrete split/contract-review recommendation instead of growing the node without bound.
 
 ## Current-Node Interface Binding
 

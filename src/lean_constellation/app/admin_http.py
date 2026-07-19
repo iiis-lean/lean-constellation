@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import inspect
 from typing import Any, Callable
@@ -369,7 +370,38 @@ def create_workspace_admin_http_routes(
                 # publish the matching registry lifecycle state without routing
                 # through numeric/unbounded ``registry.resume``.
                 record.value.state = "active"
+                if advanced.value is not None and advanced.value.lease_id is not None:
+                    advanced.value.wait_url = (
+                        f"/admin/repos/{record.value.repo_key}/runtime/leases/"
+                        f"{advanced.value.lease_id}/wait"
+                    )
             return _service_result_response(advanced)
+
+    async def repo_runtime_lease(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(
+            admin_result.value.get_runtime_lease(request.path_params["lease_id"])
+        )
+
+    async def repo_runtime_lease_wait(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        try:
+            after_version = _query_int(query.get("after_version"), field="after_version")
+            timeout_s = _query_float(query.get("timeout_s"), field="timeout_s")
+        except ValueError as exc:
+            return _request_validation_response(str(exc))
+        result = await asyncio.to_thread(
+            admin_result.value.wait_runtime_lease,
+            request.path_params["lease_id"],
+            after_version=after_version,
+            timeout_s=30.0 if timeout_s is None else timeout_s,
+        )
+        return _service_result_response(result)
 
     def repo_admin(request: Request) -> ServiceResult[LeanAdminApi]:
         loaded = registry.get_or_load(request.path_params["repo_key"], refresh_homes=False)
@@ -400,6 +432,14 @@ def create_workspace_admin_http_routes(
         if not admin_result.ok or admin_result.value is None:
             return _service_result_response(admin_result)
         return _service_result_response(admin_result.value.get_step_monitor(request.path_params["step_id"]))
+
+    async def repo_content_task_progress(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        return _service_result_response(
+            admin_result.value.get_content_task_progress(request.path_params["flow_id"])
+        )
 
     async def repo_agents_monitor(request: Request) -> JSONResponse:
         admin_result = repo_admin(request)
@@ -476,6 +516,24 @@ def create_workspace_admin_http_routes(
         if not admin_result.ok or admin_result.value is None:
             return _service_result_response(admin_result)
         return _service_result_response(admin_result.value.get_agent_report_index(request.path_params["agent_id"]))
+
+    async def repo_agent_live(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        query = request.query_params
+        try:
+            wait_s = _query_float(query.get("wait_s"), field="wait_s")
+        except ValueError as exc:
+            return _request_validation_response(str(exc))
+        result = await asyncio.to_thread(
+            admin_result.value.get_agent_live,
+            request.path_params["agent_id"],
+            repo_key=request.path_params["repo_key"],
+            after_cursor=query.get("after_cursor"),
+            wait_s=0.0 if wait_s is None else wait_s,
+        )
+        return _service_result_response(result)
 
     async def repo_start_flow(request: Request) -> JSONResponse:
         return await _repo_model_route(request, registry, StartFlowInput, LeanAdminApi.start_arbitrary_flow)
@@ -796,8 +854,23 @@ def create_workspace_admin_http_routes(
             repo_runtime_semantic_advance,
             methods=["POST"],
         ),
+        Route(
+            "/admin/repos/{repo_key:str}/runtime/leases/{lease_id:str}",
+            repo_runtime_lease,
+            methods=["GET"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/runtime/leases/{lease_id:str}/wait",
+            repo_runtime_lease_wait,
+            methods=["GET"],
+        ),
         Route("/admin/repos/{repo_key:str}/flows/tree", repo_flow_tree, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/flows/{flow_id:str}", repo_flow_monitor, methods=["GET"]),
+        Route(
+            "/admin/repos/{repo_key:str}/content-tasks/{flow_id:str}/progress",
+            repo_content_task_progress,
+            methods=["GET"],
+        ),
         Route("/admin/repos/{repo_key:str}/steps/{step_id:str}", repo_step_monitor, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/agents", repo_agents_monitor, methods=["GET"]),
         Route(
@@ -811,6 +884,7 @@ def create_workspace_admin_http_routes(
             methods=["POST"],
         ),
         Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/report-index", repo_agent_report_index, methods=["GET"]),
+        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/live", repo_agent_live, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/flows/start", repo_start_flow, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/test-control/flows/advance", repo_advance_flow, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/test-control/flows/run-until-step", repo_run_until_step, methods=["POST"]),
@@ -1044,6 +1118,15 @@ def _query_int(value: str | None, *, field: str) -> int | None:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"Query parameter {field!r} must be an integer, got {value!r}.") from exc
+
+
+def _query_float(value: str | None, *, field: str) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"Query parameter {field!r} must be a number, got {value!r}.") from exc
 
 
 def _query_bool(value: str | None) -> bool:

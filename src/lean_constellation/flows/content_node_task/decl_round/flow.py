@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar, Literal
 
 from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowStepContext
@@ -491,7 +492,7 @@ def _stage_worker_step(ctx: FlowContext, flow: DeclGraphRoundFlow, input_model: 
                 expected_view_key=WORKER_VIEW_KEYS[stage],
                 context_brief=brief.model_dump(mode="json"),
             ),
-            prompt_override=f"{_stage_worker_prompt(input_model, state)}\n\n{brief.render()}",
+            prompt_override=f"{_stage_worker_prompt(ctx, input_model, state)}\n\n{brief.render()}",
             workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
         ),
     )
@@ -525,7 +526,7 @@ def _stage_reviewer_step(ctx: FlowContext, flow: DeclGraphRoundFlow, input_model
                 expected_view_key=REVIEWER_VIEW_KEYS[stage],
                 context_brief=brief.model_dump(mode="json"),
             ),
-            prompt_override=f"{_stage_reviewer_prompt(input_model, state)}\n\n{brief.render()}",
+            prompt_override=f"{_stage_reviewer_prompt(ctx, input_model, state)}\n\n{brief.render()}",
             workdir_override=content_node_workdir(input_model.repo_path, input_model.node_path),
         ),
     )
@@ -576,11 +577,12 @@ def _agent_variables(
     }
 
 
-def _stage_worker_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
+def _stage_worker_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
     stage = _require_stage(state)
     mode = "retry_after_review" if state.current_retry_count else "initial"
     targets = ", ".join(state.current_target_decl_names) or "(no explicit targets)"
-    metadata = _format_stage_target_metadata(state.current_target_metadata)
+    metadata = _format_stage_target_metadata(ctx, input_model, state.current_target_metadata)
+    required_skills = _stage_required_skills(stage, role="worker")
     feedback = ""
     if state.latest_reviewer_result is not None:
         feedback = "\nPrevious review feedback:\n" + _format_reviewer_feedback(state.latest_reviewer_result)
@@ -590,20 +592,22 @@ def _stage_worker_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRound
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
         f"Target declarations: {targets}.\n"
         f"Pipeline position: {_stage_pipeline_position(stage)}\n"
+        f"Required Skill re-entry: read and apply {', '.join(required_skills)} from the current Home before acting.\n"
         "The Flow owns later stages; global target_state does not expand this stage's authority. Missing later-stage artifacts are expected here.\n"
         f"Target change metadata:\n{metadata}\n"
         f"Retry attempt: {state.current_retry_count} of {state.max_retries_per_stage}. "
         f"Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}."
         f"{feedback}\n"
-        "Use only the stage-specific tools. On retry, prioritize failed or missing declarations, but remember that the next reviewer must re-check the full current batch. Submit completed or blocked when the stage is ready."
+        "Use only the stage-specific tools. Normal stage-local reading, editing, capture, dependency mutation, or reviewer repair is not a blocker. If Planner action is required, identify affected declarations, the missing interface, and the recommended planning change. On retry, re-read the current candidate and repair failed or missing declarations without regressing accepted work; the next reviewer must re-check the full current batch. Submit completed or blocked when the stage is ready."
     )
 
 
-def _stage_reviewer_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
+def _stage_reviewer_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
     stage = _require_stage(state)
     mode = "retry_review" if state.current_retry_count else "initial_review"
     targets = ", ".join(state.current_target_decl_names) or "(no explicit targets)"
-    metadata = _format_stage_target_metadata(state.current_target_metadata)
+    metadata = _format_stage_target_metadata(ctx, input_model, state.current_target_metadata)
+    required_skills = _stage_required_skills(stage, role="reviewer")
     worker_summary = state.latest_worker_result.summary if state.latest_worker_result is not None else ""
     previous_feedback = ""
     if state.latest_reviewer_result is not None:
@@ -614,6 +618,8 @@ def _stage_reviewer_prompt(input_model: DeclGraphRoundInput, state: DeclGraphRou
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
         f"Target declarations: {targets}.\n"
         f"Pipeline position: {_stage_pipeline_position(stage)}\n"
+        f"Required Skill re-entry: read and apply {', '.join(required_skills)} from the current Home before review.\n"
+        "This is a read-only review role; do not perform worker mutation.\n"
         "Review only this layer. The deterministic final audit, not this review, decides whether global target_state was reached.\n"
         f"Target change metadata:\n{metadata}\n"
         f"Review attempt: {state.current_retry_count}. Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}.\n"
@@ -637,16 +643,30 @@ def _format_reviewer_feedback(result: DeclStageReviewerStepResult) -> str:
     return "\n".join(lines)
 
 
-def _format_stage_target_metadata(items: list[DeclStageTargetMetadata]) -> str:
+def _format_stage_target_metadata(
+    ctx: FlowContext,
+    input_model: DeclGraphRoundInput,
+    items: list[DeclStageTargetMetadata],
+) -> str:
     if not items:
         return "- (no target metadata)"
     lines: list[str] = []
     for item in items:
+        catalog_summary = "(unavailable)"
+        if input_model.repo_path:
+            loaded = ctx.app.decl_graph.get_decl(
+                Path(input_model.repo_path),
+                node_path=input_model.node_path,
+                name=item.decl_name,
+            )
+            if loaded.ok and loaded.value is not None:
+                catalog_summary = loaded.value.summary
         statement_deps = ", ".join(item.known_statement_deps) or "none"
         proof_deps = ", ".join(item.known_proof_deps) or "none"
         lines.append(
             "- "
             f"{item.decl_name}: "
+            f"catalog_summary={catalog_summary}, "
             f"change_kind={item.change_kind or 'unknown'}, "
             f"objective={item.objective or '(not provided)'}, "
             f"base_revision={item.base_revision or 'none'}, "
@@ -659,6 +679,24 @@ def _format_stage_target_metadata(items: list[DeclStageTargetMetadata]) -> str:
             f"known_proof_deps=[{proof_deps}]"
         )
     return "\n".join(lines)
+
+
+def _stage_required_skills(stage: DeclStageName, *, role: Literal["worker", "reviewer"]) -> tuple[str, ...]:
+    if role == "reviewer":
+        return ("content-contract-reading", "decl-dependency-origin-curation")
+    if stage == "statement_formal":
+        return (
+            "content-contract-reading",
+            "decl-owned-lean-file-capture-check",
+            "lean-statement-formalization",
+        )
+    if stage == "proof_formal":
+        return (
+            "content-contract-reading",
+            "decl-owned-lean-file-capture-check",
+            "lean-proof-formalization",
+        )
+    return ("content-contract-reading", "decl-dependency-origin-curation")
 
 
 def _stage_pipeline_position(stage: str) -> str:

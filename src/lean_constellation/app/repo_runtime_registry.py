@@ -627,6 +627,7 @@ class RepoRuntimeRegistry:
             base_config_path=self.config.codex_base_config_path,
             auth_json_path=self.config.codex_auth_json_path,
             shared_elan_home=self.config.shared_elan_home,
+            agent_home_overrides=self.config.agent_home_overrides,
         )
         if result.ok and result.value is not None:
             record.agent_homes = result.value

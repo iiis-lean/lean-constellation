@@ -245,11 +245,82 @@ def test_production_semantic_advance_route_is_typed_and_starts_process_local_lea
         record = registry.discover_repo("MainRepo")
         assert record.ok and record.value is not None
         assert record.value.state == "active"
+        lease_id = semantic.json()["value"]["lease_id"]
+        lease = client.get(f"/admin/repos/MainRepo/runtime/leases/{lease_id}")
+        waited = client.get(
+            f"/admin/repos/MainRepo/runtime/leases/{lease_id}/wait",
+            params={"after_version": 1, "timeout_s": 0},
+        )
+        lost = client.get("/admin/repos/MainRepo/runtime/leases/lease_from_old_process")
 
     assert invalid.status_code == 422
     assert semantic.status_code == 200
     assert semantic.json()["value"]["run_control"]["mode"] == "semantic"
     assert semantic.json()["value"]["run_control"]["semantic_policy"] == "step.logic"
+    assert lease_id.startswith("lease_")
+    assert semantic.json()["value"]["lease_version"] == 1
+    assert semantic.json()["value"]["lease_status"] == "active"
+    assert semantic.json()["value"]["wait_url"].endswith(f"/{lease_id}/wait")
+
+    assert lease.status_code == 200
+    assert lease.json()["value"]["lease"]["lease_id"] == lease_id
+    assert lease.json()["value"]["truth_version"] == 1
+    assert waited.status_code == 200
+    assert waited.json()["value"]["timed_out"] is True
+    assert lost.status_code == 400
+    assert lost.json()["issues"][0]["kind"] == "lease_lost"
+    assert lost.json()["issues"][0]["details"]["runtime"] is not None
+
+
+def test_production_progress_and_agent_live_routes_are_repo_prefixed(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(
+        LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    )
+    assert app_result.ok and app_result.value is not None
+    registry = app_result.value.state.lean_constellation_registry
+    loaded = registry.get_or_load("MainRepo")
+    assert loaded.ok and loaded.value is not None
+    started = LeanAdminApi(loaded.value).start_arbitrary_flow(
+        StartFlowInput(
+            flow_type="content_node_task",
+            scope_id="repo:MainRepo:node:Main.Core",
+            params={
+                "repo_key": "MainRepo",
+                "repo_path": str(repo_root),
+                "node_path": "Main.Core",
+                "contract_version": 1,
+                "task_mode": "run",
+            },
+        )
+    )
+    assert started.ok and started.value is not None
+    loaded.value.ark.agent_service.home_service.create_home(
+        HomeCreateSpec(cli_type="codex", home_id="CoordinatorAgent")
+    )
+    agent = loaded.value.ark.agent_service.create_agent(
+        "repo:MainRepo", "CoordinatorAgent", home_id="CoordinatorAgent"
+    )
+
+    with TestClient(app_result.value) as client:
+        progress = client.get(
+            f"/admin/repos/MainRepo/content-tasks/{started.value.flow_id}/progress"
+        )
+        live = client.get(f"/admin/repos/MainRepo/agents/{agent.agent_id}/live")
+        waited = client.get(
+            f"/admin/repos/MainRepo/agents/{agent.agent_id}/live",
+            params={"after_cursor": live.json()["value"]["next_cursor"], "wait_s": 0},
+        )
+
+    assert progress.status_code == 200
+    assert progress.json()["value"]["node_path"] == "Main.Core"
+    assert progress.json()["value"]["phase"] == "admission"
+    assert live.status_code == 200
+    assert live.json()["value"]["agent"]["agent_id"] == agent.agent_id
+    assert live.json()["value"]["report_index_url"].startswith("/admin/repos/MainRepo/")
+    assert waited.status_code == 200
+    assert waited.json()["value"]["timed_out"] is True
 
 
 def test_repo_lifecycle_route_rejects_cross_repo_body_identity(tmp_path) -> None:
@@ -723,6 +794,12 @@ def test_production_app_server_materializes_repo_local_production_agent_homes_on
         codex_auth_json_path=auth_json,
         shared_elan_home=shared_elan_home,
         admin_http_port=9123,
+        agent_home_overrides={
+            "ContentPlanAgent": {
+                "model": "gpt-5.6-sol",
+                "model_reasoning_effort": "high",
+            }
+        },
     )
 
     app_result = create_production_app_server(config)
@@ -743,6 +820,23 @@ def test_production_app_server_materializes_repo_local_production_agent_homes_on
     manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
     assert manifest_payload["mcp_transport"] == "http"
     assert manifest_payload["fixed_env"]["ELAN_HOME"] == str(shared_elan_home.resolve())
+    content_plan = next(home for home in homes.materialized if home.agent_type == "ContentPlanAgent")
+    assert content_plan.effective_model == "gpt-5.6-sol"
+    assert content_plan.effective_reasoning_effort == "high"
+    content_plan_manifest = json.loads(
+        (
+            repo_root
+            / ".agent_runtime"
+            / "homes"
+            / "codex"
+            / "ContentPlanAgent"
+            / ".agents"
+            / "lean_constellation_home.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert content_plan_manifest["effective_model"] == "gpt-5.6-sol"
+    assert content_plan_manifest["effective_reasoning_effort"] == "high"
+    assert coordinator.effective_model == "gpt-5-codex"
 
 
 def test_production_app_server_scheduler_lifespan_runs_loop(tmp_path) -> None:

@@ -713,3 +713,36 @@ def test_repo_ready_submission_prepares_and_publishes_native_release(
     retried = runtime.flow_service.get_flow(flow_id)
     assert retried.status is FlowStatus.COMPLETED
     assert retried.error is None
+
+
+def test_repo_ready_gate_rejection_uses_internal_callback_prompt_not_stale_dispatch(tmp_path: Path) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    assert lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    flow_id = _start_coordinator(runtime, repo_root)
+
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoReadySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_ready",
+            tool_name="submit_repo_ready",
+            repo_key="Repo",
+            summary="Premature ready candidate.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    mark_step_id = _advance_and_run(runtime, flow_id)
+    mark_step = runtime.flow_service.get_step(mark_step_id)
+    assert mark_step.result.outcome in {"blocked", "candidate_blocked"}
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "coordinator_callback"
+
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert callback_step_id is not None
+    callback_step = runtime.flow_service.get_step(callback_step_id)
+    prompt = callback_step.state.prompt_override or ""
+    assert callback_step.state.prompt_mode == "initial"
+    assert callback_step.state.callback_dispatch_step_id is None
+    assert "internal wake, not a child callback" in prompt
+    assert "coordinator-repo-ready-lifecycle" in prompt
+    assert "Do not reuse a stale child-dispatch result" in prompt

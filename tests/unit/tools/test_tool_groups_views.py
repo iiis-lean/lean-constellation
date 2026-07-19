@@ -27,6 +27,8 @@ def test_source_index_committed_read_views_match_handler_routing() -> None:
     }
 
     assert _COMMITTED_SOURCE_INDEX_VIEWS == committed_read_views
+    assert "content_plan" in committed_read_views
+    assert "statement_formal_worker" in committed_read_views
 
 
 def test_representative_agent_type_resolves_expected_view() -> None:

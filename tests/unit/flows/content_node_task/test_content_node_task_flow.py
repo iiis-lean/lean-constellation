@@ -238,6 +238,12 @@ def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(
     assert runtime.agent_service.start_records[0].agent_id == runtime.agent_service.start_records[1].agent_id
     assert runtime.agent_service.start_records[0].workdir == _expected_node_workdir(repo_root)
     assert runtime.agent_service.start_records[1].workdir == _expected_node_workdir(repo_root)
+    assert "content-plan-proved-full-graph-mode" in (runtime.agent_service.start_records[0].prompt or "")
+    assert "content-preparation-orchestration" in (runtime.agent_service.start_records[1].prompt or "")
+    assert "decl-strategy-planning" in (runtime.agent_service.start_records[1].prompt or "")
+    assert "reuse its verified findings without broad rediscovery" in (
+        runtime.agent_service.start_records[1].prompt or ""
+    )
     assert "Node deps found." in (runtime.agent_service.start_records[1].prompt or "")
 
 
@@ -568,6 +574,12 @@ def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Pa
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "ready"
+    callback_prompt = runtime.agent_service.start_records[-1].prompt or ""
+    assert callback_prompt.index("decl-round-closeout") < callback_prompt.index(
+        "content-plan-proved-full-graph-mode"
+    )
+    assert "decl-strategy-planning" in callback_prompt
+    assert "reassess whether the strategy still explains the next round" in callback_prompt
 
 
 def test_content_progress_checkpoints_run_before_callback_and_narrow_later_scope(tmp_path: Path) -> None:

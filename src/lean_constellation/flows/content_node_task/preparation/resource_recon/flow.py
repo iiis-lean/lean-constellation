@@ -290,12 +290,18 @@ def _require_input(input_model: BaseFlowInput | None) -> ResourceReconInput:
 
 def _recon_prompt(kind: str, input_model: PreparationReconInput) -> str:
     parts = [f"Run {kind} recon for content node {input_model.node_path}."]
+    parts.append(
+        "Required Skill re-entry: read and apply content-contract-reading from the current Home. Read "
+        "external-resource-discovery or resource-request-submission only when a concrete unresolved external "
+        "need makes that branch necessary."
+    )
     if input_model.objective:
         parts.append(f"Objective: {input_model.objective}.")
     if input_model.context_summary:
         parts.append(f"Context: {input_model.context_summary}.")
     parts.append(
-        "Use tools for current truth, then call `submit_resource_recon_completed`, "
+        "Reuse matching verified prior preparation findings without broad rediscovery unless they are stale or "
+        "unresolved. Use tools for current truth, then call `submit_resource_recon_completed`, "
         "`submit_resource_recon_blocked`, or `submit_resource_request`."
     )
     return "\n".join(parts)

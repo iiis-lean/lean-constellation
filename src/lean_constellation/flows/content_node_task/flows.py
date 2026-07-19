@@ -440,7 +440,7 @@ def _content_plan_agent_step(
             prompt_override=(
                 None
                 if callback
-                else f"{_content_plan_initial_prompt(input_model)}\n\n{brief_text}"
+                else f"{_content_plan_initial_prompt(ctx, input_model)}\n\n{brief_text}"
             ),
             callback_dispatch_step_id=state.waiting_dispatch_step_id if callback else None,
             env_overrides={
@@ -454,7 +454,8 @@ def _content_plan_agent_step(
     )
 
 
-def _content_plan_initial_prompt(input_model: ContentNodeTaskInput) -> str:
+def _content_plan_initial_prompt(ctx: FlowContext, input_model: ContentNodeTaskInput) -> str:
+    mode_skill = _content_plan_mode_skill(ctx, input_model)
     parts = [
         f"Run the content node task for {input_model.node_path}.",
         f"Repository: {input_model.repo_key}.",
@@ -463,10 +464,25 @@ def _content_plan_initial_prompt(input_model: ContentNodeTaskInput) -> str:
     if input_model.contract_version is not None:
         parts.append(f"Contract version: {input_model.contract_version}.")
     parts.append(
+        f"Required Skill re-entry for this turn: read and apply {mode_skill} and "
+        "content-preparation-orchestration from the current Home before deciding. "
+        "Do not rely on remembered Skill text from an earlier turn."
+    )
+    parts.append(
         "Read the current node contract and task context through tools. Submit exactly one next action: "
         "preparation recon, resource request, decl round, ready, blocked, or failed."
     )
     return "\n".join(parts)
+
+
+def _content_plan_mode_skill(ctx: FlowContext, input_model: ContentNodeTaskInput) -> str:
+    work_mode = "proved_full_graph"
+    repo_root = _content_repo_root(input_model)
+    if repo_root is not None:
+        loaded = ctx.app.repo_workspace.metadata.get_repo_config(repo_root)
+        if loaded.ok and loaded.value is not None:
+            work_mode = loaded.value.config.work_mode.value
+    return f"content-plan-{work_mode.replace('_', '-').lower()}-mode"
 
 
 def _inherit_content_plan_binding_from_prior_task(ctx: FlowContext, flow: ContentNodeTaskFlow) -> None:

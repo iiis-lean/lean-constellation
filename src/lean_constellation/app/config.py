@@ -49,6 +49,7 @@ class LeanAppConfigView(StrictModel):
     toolkit: "LeanToolkitAppConfig"
     automatic_checkpoints: "AutomaticCheckpointAppConfig"
     agent_trace_reports: "AgentTraceReportAppConfig"
+    agent_home_overrides: dict[str, "AgentHomeOverrideAppConfig"] = Field(default_factory=dict)
     native_lake_project: NativeLakeProjectConfig
     workspace_config: WorkspaceConfig
     summary: str
@@ -138,6 +139,21 @@ class AgentTraceReportAppConfig(StrictModel):
     include_in_snapshots: bool = False
 
 
+class AgentHomeOverrideAppConfig(StrictModel):
+    model: str | None = None
+    model_reasoning_effort: str | None = None
+
+    @field_validator("model", "model_reasoning_effort")
+    @classmethod
+    def _optional_non_empty(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Agent home model overrides must be non-empty")
+        return stripped
+
+
 class LeanAppConfig(StrictModel):
     workspace_root: Path
     runtime_root: Path | None = Field(
@@ -167,6 +183,7 @@ class LeanAppConfig(StrictModel):
     toolkit: LeanToolkitAppConfig = Field(default_factory=LeanToolkitAppConfig)
     automatic_checkpoints: AutomaticCheckpointAppConfig = Field(default_factory=AutomaticCheckpointAppConfig)
     agent_trace_reports: AgentTraceReportAppConfig = Field(default_factory=AgentTraceReportAppConfig)
+    agent_home_overrides: dict[str, AgentHomeOverrideAppConfig] = Field(default_factory=dict)
     native_lake_project: NativeLakeProjectConfig = Field(default_factory=NativeLakeProjectConfig)
     workspace_config: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
 
@@ -223,6 +240,13 @@ class LeanAppConfig(StrictModel):
                 self.codex_auth_json_path = self.codex_config_home / "auth.json"
         if self.operator_data_api_enabled and not _is_loopback_host(self.admin_http_host):
             raise ValueError("operator_data_api_enabled requires a loopback admin_http_host")
+        if self.agent_home_overrides:
+            from lean_constellation.agents import build_agent_type_specs
+
+            known_agent_types = {spec.agent_type for spec in build_agent_type_specs()}
+            unknown = sorted(set(self.agent_home_overrides) - known_agent_types)
+            if unknown:
+                raise ValueError(f"unknown agent_home_overrides AgentType(s): {', '.join(unknown)}")
         return self
 
     def mcp_http_effective_base_url(self) -> str:
@@ -269,6 +293,7 @@ class LeanAppConfig(StrictModel):
             toolkit=self.toolkit,
             automatic_checkpoints=self.automatic_checkpoints,
             agent_trace_reports=self.agent_trace_reports,
+            agent_home_overrides=self.agent_home_overrides,
             native_lake_project=self.native_lake_project,
             workspace_config=self.workspace_config,
             summary="Loaded Lean Constellation app config with secret-bearing file contents redacted.",
