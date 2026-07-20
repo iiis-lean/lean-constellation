@@ -171,8 +171,8 @@ def _require_input(input_model: BaseFlowInput | None) -> NodeDirDependencyReconI
 def _recon_prompt(kind: str, input_model: PreparationReconInput) -> str:
     parts = [f"Run {kind} recon for content node {input_model.node_path}."]
     parts.append(
-        "Required Skill re-entry: read and apply content-contract-reading and "
-        "visible-node-dependency-recon from the current Home before acting."
+        "Required Skill re-entry: read and apply $content-contract-reading and "
+        "$visible-node-dependency-recon from the current Home before acting."
     )
     if input_model.objective:
         parts.append(f"Objective: {input_model.objective}.")

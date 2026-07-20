@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 
@@ -9,6 +10,7 @@ from lean_constellation.flows.common.agent_steps import (
     MathlibReconAgentStep,
     NodeDirDependencyReconAgentStep,
     ResourceReconAgentStep,
+    _content_plan_callback_guidance,
 )
 from lean_constellation.flows.common.flow_requests import (
     build_decl_round_request,
@@ -37,6 +39,46 @@ from lean_constellation.flows.content_node_task.submissions import (
     ContentPreparationDispatchSubmission,
     ContentResourceRequestSubmission,
 )
+
+
+def test_decl_round_callback_uses_authoritative_revision_refs_when_terminal_reason_is_empty() -> None:
+    round_record = SimpleNamespace(
+        revision_refs=[
+            SimpleNamespace(decl_name="first_decl"),
+            SimpleNamespace(decl_name="second_decl"),
+            SimpleNamespace(decl_name="first_decl"),
+        ]
+    )
+    ctx = SimpleNamespace(
+        app=SimpleNamespace(
+            decl_graph=SimpleNamespace(
+                get_round=lambda *_args, **_kwargs: SimpleNamespace(ok=True, value=round_record)
+            )
+        )
+    )
+    result = SimpleNamespace(
+        outcome="completed",
+        node_path="Main.Core",
+        round_id="round_1",
+        terminal_stage=None,
+        terminal_reason=None,
+    )
+    child = SimpleNamespace(
+        flow_type="decl_graph_round",
+        status=None,
+        result=result,
+        input=SimpleNamespace(repo_path="/tmp/Repo", node_path="Main.Core", round_id="round_1"),
+    )
+
+    prompt = _content_plan_callback_guidance(
+        ctx,
+        [child],
+        mode_skill="content-plan-proved-full-graph-mode",
+    )
+
+    assert "affected declarations are first_decl, second_decl" in prompt
+    assert "$decl-round-closeout" in prompt
+    assert "$content-plan-proved-full-graph-mode" in prompt
 
 
 def _start_content_flow(runtime: FakeLeanFlowRuntime, tmp_path: Path) -> str:

@@ -246,8 +246,17 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             f"child={result.child_flow_id}",
             f"outcome={result.child_outcome}",
         ]
-        if result.decl_round_count is not None:
-            label_parts.append(f"round={result.decl_round_count}")
+        if result.child_kind == "decl_graph_round":
+            child_flow = ctx.ark.flow_service.get_flow(result.child_flow_id)
+            child_result = getattr(child_flow, "result", None)
+            round_id = getattr(child_result, "round_id", None)
+            round_index = getattr(child_result, "round_index", None)
+            if round_id:
+                label_parts.append(f"round_id={round_id}")
+            if round_index is not None:
+                label_parts.append(f"round_index={round_index}")
+            if result.decl_round_count is not None:
+                label_parts.append(f"task_round_count={result.decl_round_count}")
         snapshot = snapshot_runtime.create_repo_stable_point_snapshot(
             repo_root,
             checkpoint_kind=result.checkpoint_kind,
@@ -464,8 +473,8 @@ def _content_plan_initial_prompt(ctx: FlowContext, input_model: ContentNodeTaskI
     if input_model.contract_version is not None:
         parts.append(f"Contract version: {input_model.contract_version}.")
     parts.append(
-        f"Required Skill re-entry for this turn: read and apply {mode_skill} and "
-        "content-preparation-orchestration from the current Home before deciding. "
+        f"Required Skill re-entry for this turn: read and apply ${mode_skill} and "
+        "$content-preparation-orchestration from the current Home before deciding. "
         "Do not rely on remembered Skill text from an earlier turn."
     )
     parts.append(

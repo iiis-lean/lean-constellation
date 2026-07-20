@@ -54,7 +54,7 @@ def build_agent_home_bootstrap_spec(
     mcp_server_command: str | None = None,
     mcp_server_args: Iterable[str] | None = None,
     mcp_server_env: dict[str, str] | None = None,
-    mcp_server_name: str = "lean-constellation-tools",
+    mcp_server_name: str = "lc",
     fixed_env: dict[str, str] | None = None,
     required_env: Iterable[str] | None = None,
     specs: Sequence[AgentTypeSpec] | None = None,
@@ -107,12 +107,12 @@ def build_agent_home_bootstrap_spec(
             )
     elif mcp_server_command is not None:
         for purpose, view_key in (
-            ("application", spec.application_tool_view_key),
+            ("app", spec.application_tool_view_key),
             ("submit", spec.submit_tool_view_key),
         ):
             mcp_servers.append(
                 McpServerSpec(
-                    name=f"{mcp_server_name}-{purpose}",
+                    name=f"{mcp_server_name}_{purpose}",
                     transport="stdio",
                     command=mcp_server_command,
                     args=_stdio_args_for_view(mcp_server_args or (), view_key),
@@ -199,12 +199,12 @@ def _view_endpoint_specs(application_view_key: str, submit_view_key: str, *, mcp
         ViewMcpEndpointSpec(
             purpose="application",
             view_key=application_view_key,
-            server_name=f"{mcp_server_name}-application",
+            server_name=f"{mcp_server_name}_app",
         ),
         ViewMcpEndpointSpec(
             purpose="submit",
             view_key=submit_view_key,
-            server_name=f"{mcp_server_name}-submit",
+            server_name=f"{mcp_server_name}_submit",
         ),
     ]
 

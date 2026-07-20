@@ -24,7 +24,9 @@ Use semantic tools for ordinary project mutations. Do not directly edit structur
 If a tool rejects a requested mutation, assume the requested mutation was not accepted. Read the reason, re-read any truth that may have changed, and correct the request when the repair belongs to your assigned task.""",
     "common.role_filtered_tool_discovery": """## Role-Filtered Tool Discovery
 
-Your MCP surface is already filtered for this role. Prefer the exact tool names listed in your instructions and installed skills. When discovery is necessary, restrict it to names beginning with mcp__lean_constellation_tools_. Do not request or print a broad or complete ALL_TOOLS inventory, and do not use broad search terms such as skill that match unrelated global apps or plugins.
+Your MCP surface is already filtered for this role. Prefer the exact tool names listed in your instructions and installed skills. When discovery is necessary, restrict it to names beginning with mcp__lc_app__ or mcp__lc_submit__. Do not request or print a broad or complete ALL_TOOLS inventory, and do not use broad search terms such as skill that match unrelated global apps or plugins.
+
+For a non-injected Skill selected during the turn, use the exact locator listed under Available Skills. If it is a short aliased path, expand it using the matching entry under Skill roots. Do not search from the current workdir or guess `.agent_runtime` or Agent Home paths.
 
 Treat a supplied context brief as a versioned summary of system truth that has already been read for this step. Do not repeat broad discovery while its identities still match. Use precise read tools when an identity changed, an item is unresolved, a critical mutation needs fresh evidence, or your role requires an independent review.""",
     "common.submit_contract": """## Submit Contract
@@ -410,6 +412,8 @@ Use `coordinator-node-decomposition` when the repository needs a new Scope or Co
 
 Use `node-contract-design` for detailed contract work, including mathematical goals, boundaries, objectives, success criteria, material references, node dependencies, Mathlib hints, and interfaces.
 
+Before adding or changing a source material reference, use `validate_source_range` and `preview_source_ref`, read the returned excerpt, and confirm that it supports the reference reason, target interface, and node boundary. A structurally valid locator is not semantic evidence by itself. Source locators such as `article/sections/...` are SourceCorpus identities for semantic tools, not paths relative to the current workdir.
+
 Estimate likely Lean declaration scale from the relevant SourceIndex and source ranges, not only from index hierarchy. Put expected important declarations, major source stages, and a rough declaration range into the existing contract text. If a Content task reports material scope overflow, decide explicitly between splitting an independent package into another node and consciously revising the current contract scope before redispatch.
 
 Structural and contract mutations are synchronous. After they are complete, return to the next-action loop and reconsider the repository frontier.
@@ -426,7 +430,7 @@ Use `commit_scope_contract` only after required child boundaries, exports, inter
 
 Use `coordinator-content-task-dispatch` when one or more Content nodes have clear boundaries and are ready to run.
 
-Check admission and batch readiness with the available Content task admission tools. Do not dispatch a node whose dependency visibility, objective, contract, or required context is unresolved.
+Immediately before dispatch, re-read each current node contract and preview every owned source reference. Confirm that each excerpt still agrees with the contract goal, boundary, interfaces, and recorded reason, and that context-only material has not been treated as owned evidence. Repair a misplaced reference before dispatch. Check admission and batch readiness with the available Content task admission tools. Do not dispatch a node whose dependency visibility, objective, contract, source evidence, or required context is unresolved.
 
 Call `submit_content_node_tasks` only for a runnable batch. After it is accepted, stop.
 

@@ -254,6 +254,16 @@ class ToolkitIngestionComponent:
                     object_ref=normalized_name,
                 )
             )
+        if result.name != normalized_name:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_identity_mismatch",
+                    "Toolkit declaration metadata identity does not match the requested declaration.",
+                    object_ref=normalized_name,
+                    current=result.name,
+                    expected=normalized_name,
+                )
+            )
         kind, signature = self._parse_decl_header(result.code)
         return self.runtime.foundation.ok(
             MathlibNavigationView(
@@ -453,6 +463,7 @@ class ToolkitIngestionComponent:
             )
         module = module_name.strip() if module_name else None
         navigation_issues: list[str] = []
+        replace_missing_metadata = False
         if module is None or kind is None or signature is None or snippet is None:
             navigation = self.inspect_mathlib_declaration(repo_root, decl_name=normalized_decl)
             if navigation.ok and navigation.value is not None:
@@ -462,6 +473,7 @@ class ToolkitIngestionComponent:
                 snippet = snippet or navigation.value.code_excerpt
             else:
                 navigation_issues = [issue.message for issue in navigation.issues]
+                replace_missing_metadata = True
 
         existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=normalized_decl)
         if existing.ok and existing.value is not None and existing.value.module and module and existing.value.module != module:
@@ -501,6 +513,7 @@ class ToolkitIngestionComponent:
             summary=summary,
             source=source,
             snippet=snippet,
+            replace_missing_metadata=replace_missing_metadata,
         )
 
     def record_mathlib_batch_checked(
@@ -566,6 +579,8 @@ class ToolkitIngestionComponent:
                     prepared["kind"] = prepared.get("kind") or navigation.value.kind
                     prepared["signature"] = prepared.get("signature") or navigation.value.signature
                     prepared["snippet"] = prepared.get("snippet") or navigation.value.code_excerpt
+                else:
+                    prepared["_replace_missing_metadata"] = True
             existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=decl_name)
             if (
                 existing.ok
@@ -639,6 +654,7 @@ class ToolkitIngestionComponent:
                 kind=item.get("kind"),
                 signature=item.get("signature"),
                 snippet=item.get("snippet"),
+                replace_missing_metadata=bool(item.get("_replace_missing_metadata")),
             )
             if not recorded.ok or recorded.value is None:
                 return self.runtime.foundation.fail(recorded.issues)
@@ -678,8 +694,18 @@ class ToolkitIngestionComponent:
         kind: str | None,
         signature: str | None,
         snippet: str | None,
+        replace_missing_metadata: bool = False,
     ) -> ServiceResult[MathlibDeclEntryView]:
         warnings: list[ServiceIssue] = []
+        if replace_missing_metadata:
+            warnings.append(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_source_metadata_unavailable",
+                    "The declaration passed an exact accessibility check, but exact source metadata was unavailable; stale metadata was cleared.",
+                    severity=IssueSeverity.WARNING,
+                    object_ref=decl_name,
+                )
+            )
         if module is not None:
             module_result = self.mathlib_index.upsert_mathlib_module_entry(
                 repo_root,
@@ -705,6 +731,7 @@ class ToolkitIngestionComponent:
             summary=summary,
             note=source,
             snippet=snippet,
+            replace_missing_metadata=replace_missing_metadata,
         )
         if not recorded.ok or recorded.value is None:
             return self.runtime.foundation.fail(recorded.issues)

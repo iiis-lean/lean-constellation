@@ -277,6 +277,7 @@ class MathlibIndexComponent:
         summary: str | None,
         note: str | None,
         snippet: str | None = None,
+        replace_missing_metadata: bool = False,
     ) -> ServiceResult[MathlibDeclEntryView]:
         normalized_name = self._normalize_decl_or_fail(name)
         if not normalized_name.ok or normalized_name.value is None:
@@ -303,17 +304,18 @@ class MathlibIndexComponent:
                 )
             )
         entry = index.value.declarations.get(normalized_name.value) or MathlibDeclEntry(name=normalized_name.value)
-        if module is not None:
+        old_module = entry.module
+        if module is not None or replace_missing_metadata:
             entry.module = normalized_module
-        if kind is not None:
+        if kind is not None or replace_missing_metadata:
             entry.kind = self._optional_text(kind)
-        if signature is not None:
+        if signature is not None or replace_missing_metadata:
             entry.signature = self._optional_text(signature)
         if summary is not None:
             entry.summary = self._optional_text(summary)
         if note is not None:
             entry.note = self._optional_text(note)
-        if snippet is not None:
+        if snippet is not None or replace_missing_metadata:
             normalized_snippet = self._optional_text(snippet)
             if normalized_snippet is not None and len(normalized_snippet) > _MAX_SNIPPET_CHARS:
                 normalized_snippet = normalized_snippet[:_MAX_SNIPPET_CHARS]
@@ -327,6 +329,10 @@ class MathlibIndexComponent:
                     )
                 )
             entry.snippet = normalized_snippet
+        if old_module is not None and old_module != entry.module and old_module in index.value.modules:
+            index.value.modules[old_module].important_decl_names = [
+                item for item in index.value.modules[old_module].important_decl_names if item != normalized_name.value
+            ]
         index.value.declarations[normalized_name.value] = entry
         saved = self._save_index(repo_root, index.value)
         if not saved.ok:

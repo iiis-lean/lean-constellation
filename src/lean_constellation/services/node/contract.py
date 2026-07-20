@@ -458,7 +458,7 @@ class ContractComponent:
         warnings.append(
             self.runtime.foundation.issue(
                 "content_admission_deferred_checks",
-                "Material ref validation, dependency readiness, and prelude projection sync are deferred until their components are implemented.",
+                "Material preview validity, dependency readiness, and prelude projection sync are rechecked by their dispatch/runtime components.",
                 severity="warning",
                 object_ref=node_path,
             )

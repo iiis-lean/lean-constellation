@@ -36,8 +36,8 @@ def test_home_bootstrap_spec_embeds_ark_home_create_spec() -> None:
     assert ark_spec.required_env == {"OPENAI_API_KEY"}
     assert len(ark_spec.mcp_servers) == 2
     assert {server.name for server in ark_spec.mcp_servers} == {
-        "lean-constellation-tools-application",
-        "lean-constellation-tools-submit",
+        "lc_app",
+        "lc_submit",
     }
     assert {server.url for server in ark_spec.mcp_servers} == {
         "http://127.0.0.1:8765/mcp/views/proof_formal_worker/",

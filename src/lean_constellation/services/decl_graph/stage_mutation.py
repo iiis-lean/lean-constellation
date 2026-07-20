@@ -167,6 +167,29 @@ class StageMutationComponent:
         revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
+        existing = self._matching_dep(revision.value.statement.deps, dep)
+        if existing is not None:
+            if existing == dep:
+                return self.runtime.foundation.ok(
+                    revision.value,
+                    warnings=[
+                        self.runtime.foundation.issue(
+                            "statement_dep_already_present",
+                            "The exact statement dependency is already present; no change was needed.",
+                            severity="warning",
+                            object_ref=decl_name,
+                        )
+                    ],
+                )
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "statement_dep_conflict",
+                    "A statement dependency with the same identity already exists with different metadata.",
+                    object_ref=decl_name,
+                    current=existing.model_dump_json(exclude_none=True),
+                    expected=dep.model_dump_json(exclude_none=True),
+                )
+            )
         try:
             revision.value.statement.deps = [*revision.value.statement.deps, dep]
         except ValueError as exc:
@@ -394,6 +417,29 @@ class StageMutationComponent:
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
         proof = revision.value._ensure_proof()
+        existing = self._matching_dep(proof.deps, dep)
+        if existing is not None:
+            if existing == dep:
+                return self.runtime.foundation.ok(
+                    revision.value,
+                    warnings=[
+                        self.runtime.foundation.issue(
+                            "proof_dep_already_present",
+                            "The exact proof dependency is already present; no change was needed.",
+                            severity="warning",
+                            object_ref=decl_name,
+                        )
+                    ],
+                )
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "proof_dep_conflict",
+                    "A proof dependency with the same identity already exists with different metadata.",
+                    object_ref=decl_name,
+                    current=existing.model_dump_json(exclude_none=True),
+                    expected=dep.model_dump_json(exclude_none=True),
+                )
+            )
         try:
             proof.deps = [*proof.deps, dep]
         except ValueError as exc:
@@ -402,6 +448,17 @@ class StageMutationComponent:
             )
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
+
+    @staticmethod
+    def _matching_dep(deps: list[DeclDep], candidate: DeclDep) -> DeclDep | None:
+        candidate_key = StageMutationComponent._dep_identity(candidate)
+        return next((dep for dep in deps if StageMutationComponent._dep_identity(dep) == candidate_key), None)
+
+    @staticmethod
+    def _dep_identity(dep: DeclDep) -> tuple[object, ...]:
+        if dep.kind == "repo_decl":
+            return (dep.kind, dep.ref.repo, dep.ref.node, dep.ref.name, dep.ref.revision)
+        return (dep.kind, dep.ref.module, dep.ref.name)
 
     def remove_proof_dep(
         self,

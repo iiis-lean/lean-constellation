@@ -342,6 +342,7 @@ class LeanMcpToolkitClient:
             "lean_explore.find",
             {
                 "query": decl_name,
+                "exact_name": decl_name,
                 "limit": 5,
                 "include_module": True,
                 "include_docstring": True,
@@ -365,8 +366,7 @@ class LeanMcpToolkitClient:
             )
         items = self._items_from_value(result.value, key="results")
         exact = next((item for item in items if item.get("name") == decl_name), None)
-        item = exact or (items[0] if items else None)
-        if item is None:
+        if exact is None:
             return ToolkitDeclarationView(
                 ok=False,
                 name=decl_name,
@@ -375,6 +375,7 @@ class LeanMcpToolkitClient:
                 raw_excerpt=result.raw_excerpt,
                 warnings=list(result.warnings),
             )
+        item = exact
         warnings = [
             *result.warnings,
             *self._field_warnings([item], optional_fields=("module", "source_text"), context=f"Declaration candidate {decl_name}"),

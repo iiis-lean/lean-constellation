@@ -756,6 +756,7 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
     if not passed.ok:
         return runtime.foundation.fail(passed.issues)
     requests = []
+    material_previews: dict[str, list[dict[str, object]]] = {}
     for node_path in args.node_paths:
         node = runtime.node.node_tree.node_store.resolve_active_node(ctx.repo_root, path=node_path)
         if not node.ok or node.value is None:
@@ -763,6 +764,37 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
         contract = runtime.node.contract.get_open_contract(ctx.repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:
             return runtime.foundation.fail(contract.issues)
+        refs = runtime.node.material_ref.list_node_material_refs(ctx.repo_root, node_path=node_path)
+        if not refs.ok or refs.value is None:
+            return runtime.foundation.fail(refs.issues)
+        invalid_refs = [item for item in [*refs.value.owned_refs, *refs.value.context_refs] if item.valid is not True]
+        if invalid_refs:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "content_task_material_ref_invalid",
+                    "Content task dispatch requires every current material reference to resolve to a non-empty preview.",
+                    object_ref=node_path,
+                    details={
+                        "invalid_refs": ", ".join(
+                            f"{item.material_kind}:{item.path or item.resource_key}:{item.start_line or ''}-{item.end_line or ''}"
+                            for item in invalid_refs
+                        )
+                    },
+                )
+            )
+        material_previews[node_path] = [
+            {
+                "scope": scope,
+                "kind": item.material_kind,
+                "locator": item.path or item.resource_key,
+                "start_line": item.start_line,
+                "end_line": item.end_line,
+                "reason": item.reason,
+                "preview_summary": item.preview_summary,
+            }
+            for scope, items in (("owned", refs.value.owned_refs), ("context", refs.value.context_refs))
+            for item in items
+        ]
         requests.append(build_content_node_task_request(
             repo_key=ctx.repo.repo_key,
             node_path=node_path,
@@ -779,7 +811,10 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
             node_paths=args.node_paths,
             task_mode=args.task_mode,
         ),
-        agent_view={"gate": gate_result.value.model_dump(mode="json")},
+        agent_view={
+            "gate": gate_result.value.model_dump(mode="json"),
+            "material_ref_previews": material_previews,
+        },
     )
 
 

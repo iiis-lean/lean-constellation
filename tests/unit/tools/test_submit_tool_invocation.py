@@ -1038,6 +1038,53 @@ def test_submit_content_node_tasks_passes_open_contract_version(tmp_path: Path) 
     assert submission.requests[0].params["contract_version"] == 1
 
 
+def test_submit_content_node_tasks_rejects_a_material_ref_that_no_longer_previews(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Core",
+        goal="Core goal.",
+        boundary="Core boundary.",
+        objective="Run core task.",
+        success_criteria="Core task completes.",
+    ).ok
+    source_path = tmp_path / ".lean_constellation" / "source" / "article" / "core.md"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("core statement\ncore proof\n", encoding="utf-8")
+    assert runtime.node.material_ref.add_owned_source_ref(
+        tmp_path,
+        node_path="Main.Core",
+        path="article/core.md",
+        start_line=1,
+        end_line=2,
+        reason="Primary source contract.",
+        actor="coordinator",
+    ).ok
+    source_path.unlink()
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name="submit_content_node_tasks",
+        flat_args={"node_paths": ["Main.Core"], "summary": "Run core."},
+    )
+
+    assert result.ok and result.value is not None and result.value.ok is False
+    assert result.value.issues[0].kind == "content_task_material_ref_invalid"
+    assert gateway.accepted == []
+
+
 def test_submit_content_node_tasks_enforces_run_parallelism_before_dispatch(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)

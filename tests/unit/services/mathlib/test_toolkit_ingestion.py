@@ -3,6 +3,7 @@ from pathlib import Path
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
+from lean_constellation.services.external_clients.lean_toolchain import ToolchainDeclarationView
 from lean_constellation.services.mathlib import MathlibCandidateCache, MathlibService
 
 
@@ -101,6 +102,23 @@ def test_inspect_mathlib_declaration_and_module(tmp_path: Path) -> None:
     assert module.value.important_decl_hints == ["Finset.sum_congr", "Finset.sum_empty"]
 
 
+def test_inspect_mathlib_declaration_rejects_toolchain_identity_mismatch(tmp_path: Path) -> None:
+    service = _service(lambda tool_name, payload: (_ for _ in ()).throw(KeyError(tool_name)))
+    service.runtime.external.lean_toolchain.inspect_mathlib_declaration = lambda _name: ToolchainDeclarationView(
+        ok=True,
+        provider="test",
+        name="norm_pow_natAbs",
+        code="theorem norm_pow_natAbs : True := by trivial",
+        module="Mathlib.Analysis.Normed.Group.Basic",
+        summary="Mismatched declaration.",
+    )
+
+    inspected = service.inspect_mathlib_declaration(tmp_path, decl_name="Int.natAbs_mul")
+
+    assert not inspected.ok
+    assert inspected.issues[0].kind == "mathlib_decl_identity_mismatch"
+
+
 def test_check_mathlib_name_direct_and_fallback(tmp_path: Path) -> None:
     direct = _service(lambda tool_name, payload: {"passed": False, "diagnostics": [{"severity": "error", "message": "unknown"}]})
 
@@ -130,6 +148,50 @@ def test_check_mathlib_name_direct_and_fallback(tmp_path: Path) -> None:
     unavailable_check = unavailable.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.add_assoc")
     assert not unavailable_check.ok
     assert unavailable_check.issues[0].kind == "mathlib_check_unavailable"
+
+
+def test_record_checked_decl_clears_stale_metadata_when_exact_source_metadata_is_unavailable(tmp_path: Path) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        if tool_name == "lean_explore.find":
+            assert payload["exact_name"] == "Int.natAbs_mul"
+            return {
+                "results": [
+                    {
+                        "name": "norm_pow_natAbs",
+                        "module": "Mathlib.Analysis.Normed.Group.Basic",
+                        "source_text": "theorem norm_pow_natAbs : True := by trivial",
+                    }
+                ]
+            }
+        if tool_name == "lsp.run_snippet":
+            assert "#check Int.natAbs_mul" in payload["code"]
+            return {"diagnostics": []}
+        raise KeyError(tool_name)
+
+    service = _service(dispatch)
+    assert service.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Int.natAbs_mul",
+        module="Mathlib.Analysis.Normed.Group.Basic",
+        kind="theorem",
+        signature="theorem norm_pow_natAbs : True",
+        snippet="theorem norm_pow_natAbs : True := by trivial",
+        summary="Uses natural absolute value multiplication.",
+    ).ok
+
+    recorded = service.record_mathlib_decl_checked(
+        tmp_path,
+        decl_name="Int.natAbs_mul",
+        summary="Uses natural absolute value multiplication.",
+    )
+
+    assert recorded.ok and recorded.value is not None
+    assert [issue.kind for issue in recorded.issues] == ["mathlib_decl_source_metadata_unavailable"]
+    assert recorded.value.module is None
+    assert recorded.value.kind is None
+    assert recorded.value.signature is None
+    assert recorded.value.snippet is None
+    assert recorded.value.summary == "Uses natural absolute value multiplication."
 
 
 def test_ingest_mathlib_candidate_success_and_check_failure(tmp_path: Path) -> None:

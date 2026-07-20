@@ -265,6 +265,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE,
             AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE,
             AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE,
+            AppGroup.SOURCE_MATERIAL_TEXT_READ,
             AppGroup.NODE_CONTRACT_MATHLIB_COORDINATOR_WRITE,
             AppGroup.NODE_TREE_COORDINATOR_WRITE,
             AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
@@ -279,6 +280,8 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Make sibling boundaries explicit and avoid duplicate ownership.",
                 "Record expected important declarations, major SourceIndex/source stages, and a rough Lean declaration range in the existing goal/boundary/objective text; this is guidance, not a hard count gate.",
                 "Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for durable contract changes.",
+                "Before adding or changing a source ref, call `validate_source_range` and `preview_source_ref`, read the excerpt, and confirm that it supports the ref reason, target interface, and node boundary; a structurally valid range is not semantic evidence.",
+                "Treat SourceCorpus locators such as `article/sections/...` as semantic-tool identities, not paths relative to the current workdir.",
                 "Attach durable source or resource context to a target node with `add_node_material_ref` or remove stale entries with `remove_node_material_ref`.",
                 "Record visible same-repo or provider node dependencies with `add_node_dep`, and remove stale dependency entries with `remove_node_dep`.",
                 "Record target-node Mathlib module or declaration hints with `add_node_mathlib_module_hint` and `add_node_mathlib_decl_hint` after the candidates are verified or recorded in the repo MathlibIndex.",
@@ -745,6 +748,7 @@ The dependency gap is either resolved synchronously or classified into one preci
             AppGroup.CONTENT_TASK_ADMISSION_READ,
             AppGroup.NODE_CONTRACT_READ_COORDINATOR,
             AppGroup.NODE_TREE_COORDINATOR_READ,
+            AppGroup.SOURCE_MATERIAL_TEXT_READ,
             SubmitGroup.COORDINATOR_SUBMIT,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
@@ -754,12 +758,14 @@ Use this Skill only after candidate Content nodes have clear mathematical bounda
 
 ## Admission And Batch
 
-1. Read each candidate contract and current tree position.
-2. Confirm the contract names its expected important declarations or source stages, a rough scale, and the boundary that prevents unbounded helper expansion.
-3. Call `check_content_task_admission` for each candidate.
-4. Use `list_runnable_content_nodes` for orientation when several nodes may run.
-5. Call `check_content_node_batch` for the exact proposed batch.
-6. If admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
+1. Re-read each candidate contract and current tree position immediately before dispatch.
+2. Preview every owned source ref with `preview_source_ref`; confirm each excerpt agrees with the current goal, boundary, interfaces, and recorded reason. Source locators are semantic-tool identities, not workdir-relative file paths.
+3. Confirm that context refs have not been used as owned contract evidence.
+4. Confirm the contract names its expected important declarations or source stages, a rough scale, and the boundary that prevents unbounded helper expansion.
+5. Call `check_content_task_admission` for each candidate.
+6. Use `list_runnable_content_nodes` for orientation when several nodes may run.
+7. Call `check_content_node_batch` for the exact proposed batch.
+8. If a ref is misplaced or admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
 
 ## Submit
 

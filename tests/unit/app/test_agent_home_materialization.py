@@ -21,8 +21,8 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
     home_root = Path(view.value.home_root)
     assert Path(view.value.instruction_path).exists()
     assert view.value.mcp_server_names == [
-        "lean-constellation-tools-application",
-        "lean-constellation-tools-submit",
+        "lc_app",
+        "lc_submit",
     ]
     assert (home_root / ".agents" / "skills" / "source-material-acquisition" / "SKILL.md").exists()
     assert view.value.codex_config_path is not None
@@ -85,8 +85,8 @@ def test_agent_home_materialization_writes_stdio_mcp_view_servers(tmp_path: Path
 
     assert view.ok and view.value is not None
     assert view.value.mcp_server_names == [
-        "lean-constellation-tools-application",
-        "lean-constellation-tools-submit",
+        "lc_app",
+        "lc_submit",
     ]
     config_text = Path(view.value.codex_config_path or "").read_text(encoding="utf-8")
     assert "lean_constellation.mcp.stdio" in config_text

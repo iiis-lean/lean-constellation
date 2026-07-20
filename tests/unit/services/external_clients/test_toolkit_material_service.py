@@ -144,6 +144,7 @@ def test_toolkit_canonical_decl_module_diagnostics_and_extract(tmp_path) -> None
     extracted = client.extract_declaration(tmp_path, "Main.lean", "target_decl")
 
     assert decl.ok is True
+    assert calls[0][1]["exact_name"] == "Nat.add_assoc"
     assert decl.name == "Nat.add_assoc"
     assert decl.code == "theorem Nat.add_assoc := by sorry"
     assert module.ok is True
@@ -160,6 +161,27 @@ def test_toolkit_canonical_decl_module_diagnostics_and_extract(tmp_path) -> None
         "diagnostics.file",
         "declarations.extract",
     ]
+
+
+def test_toolkit_mathlib_inspection_does_not_substitute_first_related_result() -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "lean_explore.find"
+        assert payload["exact_name"] == "Int.natAbs_mul"
+        return {
+            "results": [
+                {
+                    "name": "norm_pow_natAbs",
+                    "module": "Mathlib.Analysis.Normed.Group.Basic",
+                    "source_text": "theorem norm_pow_natAbs : True := by trivial",
+                }
+            ]
+        }
+
+    result = LeanMcpToolkitClient(dispatcher=dispatch).inspect_mathlib_decl("Int.natAbs_mul")
+
+    assert result.ok is False
+    assert result.issue_code == "declaration_not_found"
+    assert result.name == "Int.natAbs_mul"
 
 
 def test_toolkit_call_exception_and_extract_missing_are_structured(tmp_path) -> None:

@@ -122,8 +122,14 @@ def test_record_mathlib_decl_checked_fallback_check_and_duplicate_update(tmp_pat
 
     assert first.ok, first.issues
     assert second.ok, second.issues
-    assert [issue.kind for issue in second.issues] == ["mathlib_module_important_decl_duplicate"]
+    assert [issue.kind for issue in second.issues] == [
+        "mathlib_decl_source_metadata_unavailable",
+        "mathlib_module_important_decl_duplicate",
+    ]
     assert second.value is not None
+    assert second.value.kind is None
+    assert second.value.signature is None
+    assert second.value.snippet is None
     assert second.value.summary == "Updated commutativity summary."
     assert second.value.note == "first source"
 

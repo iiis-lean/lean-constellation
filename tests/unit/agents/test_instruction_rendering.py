@@ -106,9 +106,12 @@ def test_common_runtime_contract_is_the_single_truth_and_tool_authority() -> Non
 def test_common_tool_discovery_contract_uses_role_filtered_surface() -> None:
     text = PUBLIC_INSTRUCTION_FRAGMENTS["common.role_filtered_tool_discovery"]
 
-    assert "mcp__lean_constellation_tools_" in text
+    assert "mcp__lc_app__" in text
+    assert "mcp__lc_submit__" in text
     assert "broad or complete ALL_TOOLS" in text
     assert "unrelated global apps or plugins" in text
+    assert "exact locator listed under Available Skills" in text
+    assert "Do not search from the current workdir" in text
     assert "precise read tools" in text
 
 

@@ -394,7 +394,7 @@ class CoordinatorAgentStep(AgentStep):
         children = _callback_child_flows(self, ctx)
         if any(child.flow_type == "resource_curation" for child in children):
             guidance = (
-                "Required Skill re-entry for this turn: read and apply resource-result-closeout first, "
+                "Required Skill re-entry for this turn: read and apply $resource-result-closeout first, "
                 "then re-read the current Coordinator mode Skill. Close out duplicate/local/external/rejected "
                 "resource truth before choosing exactly one next coordination move."
             )
@@ -406,7 +406,7 @@ class CoordinatorAgentStep(AgentStep):
                 for child in children
             ]
             guidance = (
-                "Required Skill re-entry for this turn: read and apply coordinator-content-result-closeout "
+                "Required Skill re-entry for this turn: read and apply $coordinator-content-result-closeout "
                 "first, then re-read the current Coordinator mode Skill. Classify all content outcomes "
                 f"({', '.join(str(item) for item in outcomes) or 'none'}); if a task reports scope overflow, "
                 "choose between splitting the node and explicitly revising its contract scope."
@@ -495,6 +495,7 @@ class ContentPlanAgentStep(AgentStep):
         children = _callback_child_flows(self, ctx)
         state = self._agent_step_state(self._latest_agent_step(ctx))
         guidance = _content_plan_callback_guidance(
+            ctx,
             children,
             mode_skill=_current_content_plan_mode_skill(self, ctx),
         )
@@ -662,7 +663,7 @@ class ResourceReconAgentStep(AgentStep):
     def build_callback_prompt(self, ctx, agent_id: str) -> str:
         base = super().build_callback_prompt(ctx, agent_id)
         guidance = (
-            "Required Skill re-entry for this turn: read and apply resource-result-closeout first. "
+            "Required Skill re-entry for this turn: read and apply $resource-result-closeout first. "
             "Consume the returned resource truth and either attach/finish it or report the precise remaining "
             "blocker; do not restart broad discovery."
         )
@@ -815,7 +816,7 @@ def _callback_child_flows(step: AgentStep, ctx) -> list[object]:  # noqa: ANN001
     ]
 
 
-def _content_plan_callback_guidance(children: list[object], *, mode_skill: str) -> str:
+def _content_plan_callback_guidance(ctx, children: list[object], *, mode_skill: str) -> str:  # noqa: ANN001
     child = children[0] if children else None
     flow_type = getattr(child, "flow_type", None)
     result = getattr(child, "result", None)
@@ -826,10 +827,10 @@ def _content_plan_callback_guidance(children: list[object], *, mode_skill: str) 
     )
     if flow_type == "decl_graph_round":
         terminal_stage = getattr(result, "terminal_stage", None)
-        affected = getattr(getattr(result, "terminal_reason", None), "affected_decl_names", []) or []
+        affected = _round_affected_decl_names(ctx, child, result)
         return (
-            "Required Skill order for this turn: read and apply decl-round-closeout first, then "
-            f"{mode_skill}, then decl-strategy-planning. The round outcome is {outcome}; "
+            "Required Skill order for this turn: read and apply $decl-round-closeout first, then "
+            f"${mode_skill}, then $decl-strategy-planning. The round outcome is {outcome}; "
             f"terminal stage is {terminal_stage or 'none'}; affected declarations are "
             f"{', '.join(affected) or 'none'}. Close out the terminal round before any new mutation, "
             "reassess whether the strategy still explains the next round, classify any blocker, verify "
@@ -837,21 +838,42 @@ def _content_plan_callback_guidance(children: list[object], *, mode_skill: str) 
         )
     if flow_type == "resource_curation":
         return (
-            "Required Skill order for this turn: read and apply resource-result-closeout first, then "
-            f"{mode_skill}, then decl-strategy-planning. The resource outcome is {outcome}; consume its "
+            "Required Skill order for this turn: read and apply $resource-result-closeout first, then "
+            f"${mode_skill}, then $decl-strategy-planning. The resource outcome is {outcome}; consume its "
             "duplicate/local/external/rejected truth before choosing a round, completion, or task blocker."
         )
     if flow_type in {"node_dir_dependency_recon", "mathlib_recon", "resource_recon"}:
         return (
-            "Required Skill order for this turn: read and apply content-preparation-orchestration, then "
-            f"{mode_skill}, then decl-strategy-planning. The preparation outcome is {outcome}; reuse its "
+            "Required Skill order for this turn: read and apply $content-preparation-orchestration, then "
+            f"${mode_skill}, then $decl-strategy-planning. The preparation outcome is {outcome}; reuse its "
             "verified findings without broad rediscovery unless evidence is stale, unresolved, or this role "
             "must independently verify it."
         )
     return (
-        f"Re-read and apply {mode_skill} and decl-strategy-planning now. Classify the child outcome "
+        f"Re-read and apply ${mode_skill} and $decl-strategy-planning now. Classify the child outcome "
         f"({outcome}) before choosing exactly one next ContentPlan action."
     )
+
+
+def _round_affected_decl_names(ctx, child: object | None, result: object | None) -> list[str]:  # noqa: ANN001
+    """Derive callback declaration identities from persisted round truth."""
+
+    from pathlib import Path
+
+    input_model = getattr(child, "input", None)
+    repo_path = getattr(input_model, "repo_path", None)
+    node_path = getattr(result, "node_path", None) or getattr(input_model, "node_path", None)
+    round_id = getattr(result, "round_id", None) or getattr(input_model, "round_id", None)
+    if repo_path and node_path and round_id:
+        round_record = ctx.app.decl_graph.get_round(
+            Path(repo_path),
+            node_path=node_path,
+            round_id=round_id,
+        )
+        if round_record.ok and round_record.value is not None:
+            return list(dict.fromkeys(ref.decl_name for ref in round_record.value.revision_refs))
+    terminal_affected = getattr(getattr(result, "terminal_reason", None), "affected_decl_names", []) or []
+    return list(dict.fromkeys(terminal_affected))
 
 
 def _current_content_plan_mode_skill(step: AgentStep, ctx) -> str:  # noqa: ANN001

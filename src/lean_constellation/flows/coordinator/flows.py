@@ -744,7 +744,7 @@ def _coordinator_initial_prompt(input_model: NativeRepoCoordinatorInput) -> str:
     if input_model.admin_note:
         parts.append(f"Admin note: {input_model.admin_note}.")
     parts.append(
-        f"Required Skill re-entry for this turn: read and apply {mode_skill} from the current Home. "
+        f"Required Skill re-entry for this turn: read and apply ${mode_skill} from the current Home. "
         "After choosing a branch, read its branch Skill before mutation or dispatch."
     )
     parts.append(
@@ -778,8 +778,8 @@ def _repo_ready_rejection_callback_prompt(ctx: FlowContext, flow: NativeRepoCoor
             "The deterministic repo-ready lifecycle step rejected the candidate; this is an internal wake, not a child callback.",
             f"Gate issue: {issue}.",
             f"Gate summary: {detail}",
-            "Required Skill order for this turn: read and apply coordinator-repo-ready-lifecycle first, "
-            f"then {mode_skill}.",
+            "Required Skill order for this turn: read and apply $coordinator-repo-ready-lifecycle first, "
+            f"then ${mode_skill}.",
             "Repair only Coordinator-owned truth identified by the gate, re-read current runtime/repo truth, "
             "and submit exactly one normal coordination move. Do not reuse a stale child-dispatch result.",
         ]

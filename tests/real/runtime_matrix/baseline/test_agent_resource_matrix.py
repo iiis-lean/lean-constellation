@@ -53,8 +53,8 @@ def test_all_production_and_controlled_agent_home_specs_validate() -> None:
         assert home.fixed_env["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"] == spec.submit_tool_view_key
         assert len(home.mcp_servers) == 2
         assert {server.name for server in home.mcp_servers} == {
-            "lean-constellation-tools-application",
-            "lean-constellation-tools-submit",
+            "lc_app",
+            "lc_submit",
         }
 
     controlled_by_base = {item.extends_agent_type: item for item in controlled_specs}

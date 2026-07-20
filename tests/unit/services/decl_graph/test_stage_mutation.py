@@ -9,7 +9,8 @@ from tests.unit_services_helpers import (
     write_statement_formal_for_test,
 )
 
-from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services.decl_graph import DeclState, RepoDeclDep
 
 
 def _create_content_node(tmp_path: Path) -> None:
@@ -186,6 +187,81 @@ def test_statement_formal_requires_statement_nl(tmp_path: Path) -> None:
 
     assert not result.ok
     assert result.issues[0].kind == "statement_nl_missing"
+
+
+def test_add_statement_dependency_is_idempotent_and_reports_metadata_conflict(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_running_round_with_decl(tmp_path)
+    runtime = make_runtime()
+    service = runtime.decl_graph
+    dep = RepoDeclDep(ref=DeclRef(name="supporting_lemma"), reason="Needed by the statement.")
+
+    added = service.add_statement_dep(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        dep=dep,
+    )
+    duplicate = service.add_statement_dep(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        dep=dep,
+    )
+    conflict = service.add_statement_dep(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        dep=RepoDeclDep(ref=DeclRef(name="supporting_lemma"), reason="Different semantic origin."),
+    )
+
+    assert added.ok and added.value is not None
+    assert duplicate.ok and duplicate.value is not None
+    assert [issue.kind for issue in duplicate.issues] == ["statement_dep_already_present"]
+    assert len(duplicate.value.revision.statement.deps) == 1
+    assert not conflict.ok
+    assert conflict.issues[0].kind == "statement_dep_conflict"
+
+
+def test_add_proof_dependency_is_idempotent_and_reports_metadata_conflict(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_running_round_with_decl(tmp_path)
+    runtime = make_runtime()
+    service = runtime.decl_graph
+    dep = RepoDeclDep(ref=DeclRef(name="supporting_lemma"), reason="Needed by the proof.")
+
+    added = service.add_proof_dep(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        dep=dep,
+    )
+    duplicate = service.add_proof_dep(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        dep=dep,
+    )
+    conflict = service.add_proof_dep(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        dep=RepoDeclDep(ref=DeclRef(name="supporting_lemma"), reason="Different semantic origin."),
+    )
+
+    assert added.ok and added.value is not None
+    assert duplicate.ok and duplicate.value is not None
+    assert [issue.kind for issue in duplicate.issues] == ["proof_dep_already_present"]
+    assert duplicate.value.revision.proof is not None
+    assert len(duplicate.value.revision.proof.deps) == 1
+    assert not conflict.ok
+    assert conflict.issues[0].kind == "proof_dep_conflict"
 
 
 def test_advance_stage_state_is_explicit_after_candidate_write(tmp_path: Path) -> None:

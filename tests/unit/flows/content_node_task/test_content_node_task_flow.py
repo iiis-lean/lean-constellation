@@ -664,6 +664,7 @@ def test_content_progress_checkpoints_run_before_callback_and_narrow_later_scope
             repo_key=repo_root.name,
             node_path="Main.Core",
             round_id="round_1",
+            round_index=7,
             completed_stages=["statement_nl"],
             summary="Round complete.",
         ),
@@ -674,6 +675,10 @@ def test_content_progress_checkpoints_run_before_callback_and_narrow_later_scope
     runtime.run_step(round_checkpoint_step_id)
     assert snapshots.calls[1]["checkpoint_kind"] == "after_content_decl_round_terminal"
     assert snapshots.calls[1]["scope_ids"] == ["repo:Repo:node:Main.Core"]
+    assert "round_id=round_1" in snapshots.calls[1]["label"]
+    assert "round_index=7" in snapshots.calls[1]["label"]
+    assert "task_round_count=1" in snapshots.calls[1]["label"]
+    assert " round=1" not in snapshots.calls[1]["label"]
     round_step = runtime.flow_service.get_step(round_checkpoint_step_id)
     assert round_step.result.decl_round_count == 1
     assert round_step.result.child_outcome == "completed"

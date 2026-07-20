@@ -85,7 +85,8 @@ def mutate_decl_with_projection(
                 changed_files=list(refreshed.value.changed_files),
                 reread_required=refreshed.value.reread_required,
                 summary=refreshed.value.summary,
-            )
+            ),
+            warnings=[*mutated.issues, *refreshed.issues],
         )
 
     truth_restored = runtime.foundation.store.write_json_atomic(
