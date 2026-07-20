@@ -117,6 +117,7 @@ class OperatorCheckpointRestoreView(StrictModel):
     dry_run: bool
     restored_files: list[str] = Field(default_factory=list)
     would_restore_files: list[str] = Field(default_factory=list)
+    would_prune_files: list[str] = Field(default_factory=list)
     would_invalidate_paths: list[str] = Field(default_factory=list)
     pruned_files: list[str] = Field(default_factory=list)
     invalidated_paths: list[str] = Field(default_factory=list)
@@ -550,6 +551,7 @@ class ReleaseCheckpointOperatorApi:
             dry_run=value.dry_run,
             restored_files=value.restored_files,
             would_restore_files=value.would_restore_files,
+            would_prune_files=value.would_prune_files,
             would_invalidate_paths=value.would_invalidate_paths,
             pruned_files=value.pruned_files,
             invalidated_paths=value.invalidated_paths,

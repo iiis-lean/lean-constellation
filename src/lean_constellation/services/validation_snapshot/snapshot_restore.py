@@ -88,6 +88,7 @@ class SnapshotRestoreView(StrictModel):
     dry_run: bool
     restored_files: list[str] = Field(default_factory=list)
     would_restore_files: list[str] = Field(default_factory=list)
+    would_prune_files: list[str] = Field(default_factory=list)
     would_invalidate_paths: list[str] = Field(default_factory=list)
     pruned_files: list[str] = Field(default_factory=list)
     invalidated_paths: list[str] = Field(default_factory=list)
@@ -549,12 +550,14 @@ class SnapshotRestoreComponent:
         if not archive_preflight.ok:
             return self.runtime.foundation.fail(archive_preflight.issues)
         if dry_run:
+            would_prune = self._extra_files_for_restore(repo_root, files.value) if prune_extra_files else []
             would_invalidate = self._lake_build_paths_to_invalidate(repo_root)
             return self.runtime.foundation.ok(
                 SnapshotRestoreView(
                     snapshot_id=snapshot_id,
                     dry_run=True,
                     would_restore_files=would_restore,
+                    would_prune_files=would_prune,
                     would_invalidate_paths=would_invalidate,
                     ark_runtime_snapshot_id=manifest.value.ark_runtime_snapshot_id,
                     summary=f"Dry-run restore would restore {len(would_restore)} files.",
@@ -812,12 +815,8 @@ class SnapshotRestoreComponent:
                 os.close(fd)
 
     def _prune_extra_files_for_restore(self, repo_root: Path, files_manifest: SnapshotFilesManifest) -> list[str]:
-        expected = {entry.source_relpath for entry in files_manifest.entries}
-        current = sorted(self._current_snapshot_managed_files(repo_root))
         pruned: list[str] = []
-        for relpath in current:
-            if relpath in expected:
-                continue
+        for relpath in self._extra_files_for_restore(repo_root, files_manifest):
             target = repo_root / relpath
             if not target.is_file():
                 continue
@@ -825,6 +824,14 @@ class SnapshotRestoreComponent:
             pruned.append(relpath)
         self._remove_empty_snapshot_managed_dirs(repo_root)
         return pruned
+
+    def _extra_files_for_restore(self, repo_root: Path, files_manifest: SnapshotFilesManifest) -> list[str]:
+        expected = {entry.source_relpath for entry in files_manifest.entries}
+        return sorted(
+            relpath
+            for relpath in self._current_snapshot_managed_files(repo_root)
+            if relpath not in expected
+        )
 
     def _current_snapshot_managed_files(self, repo_root: Path) -> list[str]:
         managed: list[str] = []

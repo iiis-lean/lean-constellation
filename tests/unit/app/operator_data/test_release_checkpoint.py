@@ -72,12 +72,29 @@ def test_lc_checkpoint_create_validate_list_and_restore_are_sanitized(tmp_path) 
     assert [item.snapshot_id for item in listed.value] == [created.value.snapshot_id]
 
     source.write_text("def changed : Nat := 2\n", encoding="utf-8")
+    extra = repo_root / "Extra.lean"
+    extra.write_text("def extra : Nat := 3\n", encoding="utf-8")
+    preview = api.release_checkpoint.restore_checkpoint(
+        "MainRepo",
+        CheckpointRestoreInput(
+            snapshot_id=created.value.snapshot_id,
+            dry_run=True,
+            prune_extra_files=True,
+        ),
+    )
+    assert preview.ok and preview.value is not None, preview.issues
+    assert preview.value.would_prune_files == ["Extra.lean"]
+    assert extra.exists()
     restored = api.release_checkpoint.restore_checkpoint(
         "MainRepo",
-        CheckpointRestoreInput(snapshot_id=created.value.snapshot_id),
+        CheckpointRestoreInput(
+            snapshot_id=created.value.snapshot_id,
+            prune_extra_files=True,
+        ),
     )
     assert restored.ok and restored.value is not None, restored.issues
     assert source.read_text(encoding="utf-8") == "def original : Nat := 1\n"
+    assert not extra.exists()
     assert runtime_sentinel.read_text(encoding="utf-8") == "ARK runtime truth is outside LC restore.\n"
     assert "ark_runtime_snapshot_id" not in restored.value.model_dump(mode="json")
 

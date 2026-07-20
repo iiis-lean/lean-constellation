@@ -1451,6 +1451,19 @@ def test_restore_can_prune_extra_snapshot_managed_files(tmp_path: Path) -> None:
     (tmp_path / ".lake").mkdir()
     (tmp_path / ".lake" / "kept.txt").write_text("build artifact\n", encoding="utf-8")
 
+    dry_run = snapshot.restore_repo_checkpoint_snapshot(
+        tmp_path,
+        snapshot_id=created.value.snapshot_id,
+        dry_run=True,
+        prune_extra_files=True,
+    )
+
+    assert dry_run.ok
+    assert dry_run.value is not None
+    assert set(dry_run.value.would_prune_files) == {"Extra.lean", ".lean_constellation/repo_format.json"}
+    assert (tmp_path / "Extra.lean").exists()
+    assert (tmp_path / ".lean_constellation" / "repo_format.json").exists()
+
     restored = snapshot.restore_repo_checkpoint_snapshot(
         tmp_path,
         snapshot_id=created.value.snapshot_id,
