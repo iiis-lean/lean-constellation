@@ -999,6 +999,100 @@ def test_current_node_and_decl_graph_tools_invoke_context_handlers(tmp_path: Pat
     assert graph.value.ok is True
 
 
+def test_mark_decl_round_terminal_commits_open_revisions_after_runtime_failure(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    initialize_native_test_repo(tmp_path, project_name=tmp_path.name)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal.",
+        boundary="Topic boundary.",
+        objective="Plan topic declarations.",
+        success_criteria="Ready content.",
+    ).ok
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic",
+        objective="Create a definition.",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic",
+        strategy_id=strategy.value.strategy_id,
+        objective="Create the definition.",
+    )
+    assert round_record.ok and round_record.value is not None
+    created = runtime.decl_graph.create_decl_revision_view(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        name="topic_def",
+        kind="definition",
+        objective="Create topic_def.",
+        summary="Topic definition.",
+        public=False,
+        target_state=DeclState.DECLARED,
+    )
+    assert created.ok and created.value is not None
+    assert runtime.decl_graph.start_round(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+    ).ok
+    current_round = runtime.decl_graph.get_round(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+    )
+    assert current_round.ok and current_round.value is not None
+    assert runtime.decl_graph.write_decl_change_summary(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        change_id=current_round.value.change_ids[0],
+        summary="Runtime failed before formal capture.",
+    ).ok
+    assert runtime.decl_graph.write_round_summary(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        summary="Close the failed round.",
+    ).ok
+
+    value = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(
+                tmp_path,
+                view="content_plan",
+                agent_type="ContentPlanAgent",
+                role="plan",
+                node_path="Main.Topic",
+            ),
+            tool_name="mark_decl_round_terminal",
+            flat_args={
+                "round_id": round_record.value.round_id,
+                "result_kind": "failed",
+                "reason": "Agent response stream disconnected.",
+            },
+        )
+    )
+
+    assert value["status"] == "committed"
+    assert value["result_kind"] == "failed"
+    assert value["result_reason"] == "Agent response stream disconnected."
+    revision = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic",
+        name="topic_def",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.status.value == "committed"
+    assert revision.value.state == DeclState.PLANNED
+
+
 def test_content_plan_interface_binding_is_forced_to_current_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     calls: list[dict[str, object]] = []

@@ -327,12 +327,24 @@ def _write_round_summary(runtime, ctx, args: RoundSummaryArgs):
 
 
 def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
-    return runtime.decl_graph.mark_round_terminal_view(
+    outcome = {
+        "success": "completed",
+        "blocked": "blocked",
+        "failed": "failed",
+    }[args.result_kind]
+    closed = runtime.decl_graph.closeout_round(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_required_round_id(runtime, ctx, args.round_id),
-        result_kind=args.result_kind,
         reason=args.reason,
+        outcome=outcome,
+    )
+    if not closed.ok:
+        return closed
+    return runtime.decl_graph.get_round_view(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_required_round_id(runtime, ctx, args.round_id),
     )
 
 

@@ -328,6 +328,7 @@ class DeclRoundExecutionComponent:
         node_path: str,
         round_id: str,
         outcome: RoundFlowOutcome,
+        reason: str | None = None,
     ) -> ServiceResult[RoundCloseoutView]:
         graph_root = self.graph.graph_store.graph_root(repo_root, node_path=node_path)
         projection_root = local_projection_path(
@@ -336,7 +337,13 @@ class DeclRoundExecutionComponent:
         )
         snapshot = _RoundTreesSnapshot([graph_root, projection_root])
         try:
-            return self._build_round_result(repo_root, node_path=node_path, round_id=round_id, outcome=outcome)
+            return self._build_round_result(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                outcome=outcome,
+                reason=reason,
+            )
         except _CloseoutFailure as failure:
             rollback_failures = snapshot.restore()
             issues = list(failure.issues)
@@ -359,6 +366,7 @@ class DeclRoundExecutionComponent:
         node_path: str,
         round_id: str,
         outcome: RoundFlowOutcome,
+        reason: str | None = None,
     ) -> ServiceResult[RoundCloseoutView]:
         round_record = self.graph.get_round(repo_root, node_path=node_path, round_id=round_id)
         self._require(round_record)
@@ -445,7 +453,7 @@ class DeclRoundExecutionComponent:
                 node_path=node_path,
                 round_id=round_id,
                 result_kind=result_kind,
-                reason=f"DeclGraphRoundFlow finished with {outcome}.",
+                reason=reason or f"DeclGraphRoundFlow finished with {outcome}.",
             )
         )
         return self.runtime.foundation.ok(

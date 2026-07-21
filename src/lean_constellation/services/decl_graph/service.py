@@ -183,12 +183,14 @@ class DeclGraphService:
         node_path: str,
         round_id: str,
         outcome: str,
+        reason: str | None = None,
     ) -> ServiceResult[RoundCloseoutView]:
         return self.round_execution.build_round_result(
             repo_root,
             node_path=node_path,
             round_id=round_id,
             outcome=outcome,  # type: ignore[arg-type]
+            reason=reason,
         )
 
     def ensure_decl_graph(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphStoreView]:
