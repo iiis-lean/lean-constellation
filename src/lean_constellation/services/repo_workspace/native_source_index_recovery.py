@@ -285,6 +285,35 @@ class NativeSourceIndexRecoveryComponent:
         )
         if not baseline.ok:
             return self.runtime.foundation.fail(baseline.issues)
+        baseline_paths = set(baseline.value.files) if baseline.value is not None else set()
+        expected_new_paths = sorted(
+            path for path in state.resolved_file_paths if path not in baseline_paths
+        )
+        current = self.runtime.material.source_index.get_source_index_model(root)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        current_committed_paths = sorted(
+            path
+            for path in state.resolved_file_paths
+            if path in current.value.files and current.value.files[path].committed
+        )
+        current_uncommitted_paths = sorted(
+            path
+            for path in state.resolved_file_paths
+            if path in current.value.files and not current.value.files[path].committed
+        )
+        if (
+            sorted(state.new_file_paths) != expected_new_paths
+            or sorted(state.already_committed_file_paths) != current_committed_paths
+            or sorted(state.uncommitted_file_paths) != current_uncommitted_paths
+            or sorted(state.already_committed_file_paths + state.uncommitted_file_paths)
+            != sorted(state.resolved_file_paths)
+        ):
+            return self._fail(
+                "native_source_index_recovery_update_context_drift",
+                "The failed child update context no longer matches its baseline and rejected draft.",
+                object_ref=child_id,
+            )
         validated = self.runtime.material.validate_source_index_update(
             root,
             baseline_index=baseline.value,
@@ -300,9 +329,6 @@ class NativeSourceIndexRecoveryComponent:
                 validated.value.gate.summary or "The rejected draft no longer validates against its original baseline.",
                 object_ref=child_id,
             )
-        current = self.runtime.material.source_index.get_source_index_model(root)
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
         draft_digest = self.runtime.material.source_index.canonical_source_index_digest(current.value)
         payload: dict[str, object] = {
             "recovery_kind": "native_source_index_successor",
@@ -323,6 +349,9 @@ class NativeSourceIndexRecoveryComponent:
             "resolved_file_paths": list(state.resolved_file_paths),
             "readable_file_paths": list(state.readable_file_paths),
             "artifact_file_paths": list(state.artifact_file_paths),
+            "new_file_paths": list(state.new_file_paths),
+            "already_committed_file_paths": list(state.already_committed_file_paths),
+            "uncommitted_file_paths": list(state.uncommitted_file_paths),
             "manifest_digest": state.manifest_digest,
             "source_corpus_mode": parent.state.source_corpus_mode,
             "allow_interface_supplement": parent.state.allow_interface_supplement,

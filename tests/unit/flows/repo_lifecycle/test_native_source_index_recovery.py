@@ -175,6 +175,9 @@ def test_recovery_preview_and_successor_preserve_rejected_draft_semantics(tmp_pa
     assert plan.reviewer_feedback == (
         "Repair the exact source range without replacing the rejected draft."
     )
+    assert plan.new_file_paths == failed_child.state.new_file_paths
+    assert plan.already_committed_file_paths == failed_child.state.already_committed_file_paths
+    assert plan.uncommitted_file_paths == failed_child.state.uncommitted_file_paths
 
     started = admin.recover_native_source_index(
         NativeSourceIndexRecoveryStartInput(
@@ -220,6 +223,9 @@ def test_recovery_preview_and_successor_preserve_rejected_draft_semantics(tmp_pa
     assert recovered.state.pre_update_checkpoint_id == plan.pre_run_mutation_checkpoint_id
     assert recovered.state.baseline_digest == plan.baseline_digest
     assert recovered.state.baseline_digest != plan.draft_digest
+    assert recovered.state.new_file_paths == plan.new_file_paths
+    assert recovered.state.already_committed_file_paths == plan.already_committed_file_paths
+    assert recovered.state.uncommitted_file_paths == plan.uncommitted_file_paths
     runtime.flow_service.assert_restorable_flows()
 
     rejected_block_id = next(
@@ -443,3 +449,23 @@ def test_recovery_rejects_a_non_home_builder_failure(tmp_path: Path) -> None:
     )
     assert not preview.ok
     assert preview.issues[0].kind == "native_source_index_recovery_failure_cause_ineligible"
+
+
+def test_recovery_rejects_drifted_open_update_context(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Provider"
+    parent_id, child_id, _ = _failed_native_source_index(runtime, lean_runtime, repo_root)
+    runtime.flow_service.store.update_flow_record(
+        child_id,
+        lambda flow: flow.state.new_file_paths.clear(),
+    )
+
+    preview = LeanAdminApi(lean_runtime).preview_native_source_index_recovery(
+        NativeSourceIndexRecoveryPreviewInput(
+            repo_root=repo_root,
+            repo_key="Provider",
+            failed_parent_flow_id=parent_id,
+        )
+    )
+    assert not preview.ok
+    assert preview.issues[0].kind == "native_source_index_recovery_update_context_drift"

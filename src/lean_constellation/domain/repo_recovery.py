@@ -33,6 +33,9 @@ class NativeSourceIndexRecoveryContract(StrictModel):
     resolved_file_paths: list[str] = Field(default_factory=list)
     readable_file_paths: list[str] = Field(default_factory=list)
     artifact_file_paths: list[str] = Field(default_factory=list)
+    new_file_paths: list[str] = Field(default_factory=list)
+    already_committed_file_paths: list[str] = Field(default_factory=list)
+    uncommitted_file_paths: list[str] = Field(default_factory=list)
     manifest_digest: str
     source_corpus_mode: Literal["existing", "prepare"]
     allow_interface_supplement: bool

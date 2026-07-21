@@ -136,17 +136,6 @@ class ValidateSourceIndexRecoveryStep(BaseStep):
                     "SourceIndex recovery preview no longer matches the persisted contract.",
                 )
             )
-        current = ctx.app.material.source_index.get_source_index_model(Path(flow.input.repo_root))
-        if not current.ok or current.value is None:
-            return ctx.complete_step(
-                ValidateSourceIndexRecoveryStepResult(
-                    outcome="blocked",
-                    error=_service_error("source_index_recovery_draft_missing", current),
-                    summary="SourceIndex recovery draft is unavailable.",
-                )
-            )
-        committed = sorted(path for path, item in current.value.files.items() if item.committed)
-        uncommitted = sorted(path for path in current.value.active_file_scope if path not in committed)
         return ctx.complete_step(
             ValidateSourceIndexRecoveryStepResult(
                 outcome="passed",
@@ -155,9 +144,9 @@ class ValidateSourceIndexRecoveryStep(BaseStep):
                 readable_file_paths=list(recovery.readable_file_paths),
                 artifact_file_paths=list(recovery.artifact_file_paths),
                 manifest_digest=recovery.manifest_digest,
-                new_file_paths=list(uncommitted),
-                already_committed_file_paths=list(committed),
-                uncommitted_file_paths=list(uncommitted),
+                new_file_paths=list(recovery.new_file_paths),
+                already_committed_file_paths=list(recovery.already_committed_file_paths),
+                uncommitted_file_paths=list(recovery.uncommitted_file_paths),
                 review_round=recovery.review_round,
                 latest_builder_summary=recovery.latest_builder_summary,
                 reviewer_feedback=recovery.reviewer_feedback,

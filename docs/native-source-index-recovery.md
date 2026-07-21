@@ -59,7 +59,8 @@ The response exposes the complete recovery contract, including:
 - the exact preserved failed-Step error type and message;
 - the original pre-mutation checkpoint and baseline digest;
 - the current rejected-draft digest;
-- the source manifest and active file scope;
+- the source manifest, active file scope, and exact open-update
+  new/committed/uncommitted file context;
 - the exact review round, round limit, builder summary, and reviewer feedback;
 - a `recovery_token` covering every field above.
 
