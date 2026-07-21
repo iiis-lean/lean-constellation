@@ -7,14 +7,11 @@ from typing import Any
 
 from lean_constellation.app import (
     AdminStepStartInput,
-    ExternalTakeoverCompleteInput,
-    ExternalTakeoverToolCallInput,
-    ExternalTakeoverToolListInput,
     ManualCheckpointInput,
     SnapshotRestoreInput,
 )
 from lean_constellation.services.tool_facade import RuntimeToolContext
-from tests.real.runtime_matrix.admin_helpers import read_handoff_json, unwrap, wait_for_pending_handoff
+from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder, ToolViewKind
 
 
@@ -105,7 +102,7 @@ def restore_with_evidence(
     )
 
 
-def run_external_submit_with_evidence(
+def run_scripted_submit_with_evidence(
     admin: Any,
     step_id: str,
     tool_name: str,
@@ -114,49 +111,16 @@ def run_external_submit_with_evidence(
     recorder: EvidenceRecorder,
     timeout_s: float = 10,
 ) -> dict[str, Any]:
-    started = unwrap(admin.start_step_once(AdminStepStartInput(step_id=step_id, wait=False)))
-    assert started.status in {"created", "running"}, started
-    handoff = wait_for_pending_handoff(admin)
-    payload = read_handoff_json(handoff.handoff_path)
-    submit_view = payload["env"]["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"]
-    listed = unwrap(admin.list_external_takeover_tools(ExternalTakeoverToolListInput(handoff_id=handoff.handoff_id, view_kind="submit")))
-    assert tool_name in {tool.name for tool in listed}
-    called = unwrap(
-        admin.call_external_takeover_tool(
-            ExternalTakeoverToolCallInput(
-                handoff_id=handoff.handoff_id,
-                view_kind="submit",
-                tool_name=tool_name,
-                arguments=arguments,
-            )
-        )
+    return run_scripted_actions_with_evidence(
+        admin,
+        step_id,
+        [("submit", tool_name, arguments)],
+        recorder=recorder,
+        timeout_s=timeout_s,
     )
-    assert called.ok is True, called
-    recorder.record_tool_call(
-        tool_name=tool_name,
-        view_key=submit_view,
-        view_kind="submit",
-        agent_type=payload["env"].get("LEAN_CONSTELLATION_AGENT_TYPE"),
-        step_id=payload["env"].get("ARK_STEP_ID"),
-        ok=True,
-        assertion_summary=f"External takeover submit through handoff {handoff.handoff_id}.",
-    )
-    completed = unwrap(
-        admin.complete_external_takeover(
-            ExternalTakeoverCompleteInput(
-                handoff_id=handoff.handoff_id,
-                final_response=f"Runtime Matrix strict external takeover called {tool_name}.",
-                thread_id=f"runtime-matrix-strict-{handoff.handoff_id}",
-            )
-        )
-    )
-    assert completed.status == "completed"
-    waited = unwrap(admin.wait_step(AdminStepStartInput(step_id=step_id, wait=True, timeout_s=timeout_s)))
-    assert waited.status == "completed", waited
-    return payload
 
 
-def run_external_actions_with_evidence(
+def run_scripted_actions_with_evidence(
     admin: Any,
     step_id: str,
     actions: list[tuple[ToolViewKind, str, dict[str, Any]]],
@@ -164,58 +128,36 @@ def run_external_actions_with_evidence(
     recorder: EvidenceRecorder,
     timeout_s: float = 10,
 ) -> dict[str, Any]:
-    started = unwrap(admin.start_step_once(AdminStepStartInput(step_id=step_id, wait=False)))
-    assert started.status in {"created", "running"}, started
-    handoff = wait_for_pending_handoff(admin)
-    payload = read_handoff_json(handoff.handoff_path)
-    listed_by_kind: dict[ToolViewKind, set[str]] = {}
-    for view_kind, tool_name, arguments in actions:
-        if view_kind not in listed_by_kind:
-            listed = unwrap(
-                admin.list_external_takeover_tools(
-                    ExternalTakeoverToolListInput(handoff_id=handoff.handoff_id, view_kind=view_kind)
-                )
-            )
-            listed_by_kind[view_kind] = {tool.name for tool in listed}
-        assert tool_name in listed_by_kind[view_kind]
-        called = unwrap(
-            admin.call_external_takeover_tool(
-                ExternalTakeoverToolCallInput(
-                    handoff_id=handoff.handoff_id,
-                    view_kind=view_kind,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                )
-            )
-        )
-        assert called.ok is True, called
-        view_key = _handoff_view_key(payload, view_kind)
-        recorder.record_tool_call(
-            tool_name=tool_name,
-            view_key=view_key,
-            view_kind=view_kind,
-            agent_type=payload["env"].get("LEAN_CONSTELLATION_AGENT_TYPE"),
-            step_id=payload["env"].get("ARK_STEP_ID"),
-            ok=True,
-            assertion_summary=f"External takeover {view_kind} call through handoff {handoff.handoff_id}.",
-        )
-    completed = unwrap(
-        admin.complete_external_takeover(
-            ExternalTakeoverCompleteInput(
-                handoff_id=handoff.handoff_id,
-                final_response=f"Runtime Matrix strict external takeover executed {len(actions)} actions.",
-                thread_id=f"runtime-matrix-strict-{handoff.handoff_id}",
-            )
-        )
+    from tests.real.runtime_matrix.scripted_provider import get_or_install_scripted_provider
+
+    provider = get_or_install_scripted_provider(admin.runtime)
+    step = admin.runtime.ark.step_service.store.get_step(step_id)
+    raw_override = dict(getattr(getattr(step, "state", None), "variables", {}) or {}).get(
+        "test_override_spec"
     )
-    assert completed.status == "completed"
-    waited = unwrap(admin.wait_step(AdminStepStartInput(step_id=step_id, wait=True, timeout_s=timeout_s)))
-    assert waited.status == "completed", waited
-    return payload
-
-
-def _handoff_view_key(payload: dict[str, Any], view_kind: ToolViewKind) -> str:
-    env = payload["env"]
-    if view_kind == "submit":
-        return env["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"]
-    return env.get("LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW") or env["LEAN_CONSTELLATION_EXPECTED_TOOL_VIEW"]
+    agent_type = (
+        raw_override.get("agent_type_override")
+        if isinstance(raw_override, dict)
+        else getattr(raw_override, "agent_type_override", None)
+    )
+    if not agent_type:
+        raise AssertionError(f"scripted step has no agent_type override: {step_id}")
+    start_index = len(provider.calls)
+    provider.enqueue(agent_type, list(actions))
+    started = unwrap(admin.start_step_once(AdminStepStartInput(step_id=step_id, wait=True, timeout_s=timeout_s)))
+    assert started.status == "completed", started
+    calls = provider.calls[start_index:]
+    assert len(calls) == len(actions)
+    for call in calls:
+        view_kind = call["view_kind"]
+        recorder.record_tool_call(
+            tool_name=call["tool_name"],
+            view_key=call["view_key"],
+            view_kind=view_kind,
+            agent_type=agent_type,
+            step_id=step_id,
+            ok=True,
+            assertion_summary=f"Standard scripted provider {view_kind} call.",
+        )
+    first = calls[0]
+    return {"env": first["env"], "prompt": first["prompt"]}

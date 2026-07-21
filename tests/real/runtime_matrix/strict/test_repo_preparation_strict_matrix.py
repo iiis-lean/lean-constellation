@@ -83,7 +83,7 @@ def test_strict_native_preparation_prepare_source_review_retry_and_handoff_evide
         "SourceIndexBuilderAgent",
         "SourceIndexReviewerAgent",
         "RootInterfacePrepareAgent",
-        cli_type="codex",
+        provider_type="scripted",
     )
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_native_preparation(ws)
@@ -149,7 +149,7 @@ def test_strict_native_preparation_blocked_and_direct_ready_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(blocked_ws.runtime, blocked_provider)
-    blocked_ws.create_home("SourceCorpusPrepareAgent", cli_type="codex")
+    blocked_ws.create_home("SourceCorpusPrepareAgent", provider_type="scripted")
     unwrap(blocked_ws.admin.resume_runtime())
     blocked_flow_id = _start_native_preparation(blocked_ws)
     _wait_completed(blocked_ws, blocked_flow_id)
@@ -179,7 +179,7 @@ def test_strict_native_preparation_blocked_and_direct_ready_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(direct_ws.runtime, direct_provider)
-    direct_ws.create_homes("SourceIndexBuilderAgent", "SourceIndexReviewerAgent", cli_type="codex")
+    direct_ws.create_homes("SourceIndexBuilderAgent", "SourceIndexReviewerAgent", provider_type="scripted")
     unwrap(direct_ws.admin.resume_runtime())
     direct_flow_id = _start_native_preparation(direct_ws)
     _wait_completed(direct_ws, direct_flow_id)
@@ -248,7 +248,7 @@ def test_strict_adapter_preparation_ready_and_blocked_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_home("AdapterDeclCatalogAgent", cli_type="codex")
+    ws.create_home("AdapterDeclCatalogAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     blocked_flow_id = _start_adapter_preparation(ws)
     _wait_completed(ws, blocked_flow_id)

@@ -25,11 +25,6 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "main-repo-status" in help_text
     assert "start-flow" in help_text
     assert "snapshot" in help_text
-    assert "external-list" in help_text
-    assert "external-complete" in help_text
-    assert "external-tools" in help_text
-    assert "external-call" in help_text
-    assert "agent-rollout-info" in help_text
     assert "agent-turns" in help_text
     assert "agent-event" in help_text
     assert "agent-trace-report" in help_text

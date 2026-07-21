@@ -135,7 +135,7 @@ def test_real_codex_coordinator_uses_repo_prefixed_production_mcp(tmp_path: Path
                     override=ControlledAgentOverrideSpec(
                         strategy="fresh_test_agent_type",
                         agent_type_override=agent_type,
-                        cli_type_override="codex",
+                        provider_type_override="codex",
                         prompt_overlay=_coordinator_resource_probe_prompt(prompt_marker),
                         developer_instructions_overlay=(
                             "\n\nRuntime Matrix strict resource probe developer marker:\n"

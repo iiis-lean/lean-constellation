@@ -198,10 +198,6 @@ class LeanRuntimeServices:
             return agent_service.load_agent(agent_id)
         raise RuntimeError("ARK agent_service does not expose get_agent/load_agent.")
 
-    def read_latest_turn_result(self, agent_id: str) -> Any:
+    def query_latest_turn(self, agent_id: str) -> Any:
         agent_service = self.require_ark_service("agent_service")
-        if hasattr(agent_service, "read_latest_turn_result"):
-            return agent_service.read_latest_turn_result(agent_id)
-        if hasattr(agent_service, "get_latest_turn_result"):
-            return agent_service.get_latest_turn_result(agent_id)
-        raise RuntimeError("ARK agent_service does not expose latest turn result reading.")
+        return agent_service.query_turn(agent_id, latest=True)

@@ -15,8 +15,11 @@ from agent_runtime_kit.agent.providers import (
     PiHomeOptions,
     build_opencode_provider_bundle,
     build_pi_provider_bundle,
+    CodexProvider,
 )
 from agent_runtime_kit.agent.providers.claude_code_home import ClaudeCodeHomeOptions
+from agent_runtime_kit.agent.providers.claude_code_bundle import build_claude_code_provider_bundle
+from agent_runtime_kit.agent.providers.codex_home import CodexHomeOptions
 
 from lean_constellation.agents.models import AgentTypeSpec
 from lean_constellation.app.config import AgentHomeOverrideAppConfig
@@ -28,6 +31,8 @@ DEFAULT_OPENAI_AGENTS_FACTORY_REF = "lean_constellation/default"
 def apply_agent_home_overrides(
     specs: Sequence[AgentTypeSpec],
     overrides: Mapping[str, AgentHomeOverrideAppConfig] | None,
+    *,
+    default_provider_type: str | None = None,
 ) -> list[AgentTypeSpec]:
     """Apply only the Provider binding; resources remain owned by AgentTypeSpec."""
 
@@ -37,6 +42,8 @@ def apply_agent_home_overrides(
             update={"home_type": configured[spec.agent_type].provider_type}
         )
         if spec.agent_type in configured and configured[spec.agent_type].provider_type is not None
+        else spec.model_copy(update={"home_type": default_provider_type})
+        if default_provider_type is not None
         else spec
         for spec in specs
     ]
@@ -46,22 +53,21 @@ def build_builtin_provider_registry(
     runtime_root: Path | str,
     specs: Sequence[AgentTypeSpec],
     overrides: Mapping[str, AgentHomeOverrideAppConfig] | None,
-) -> ProviderRegistry | None:
-    """Build configured built-in Provider bundles, leaving Codex on its legacy default."""
+) -> ProviderRegistry:
+    """Build every configured built-in Provider bundle through the common registry."""
 
     provider_types = {spec.home_type for spec in specs}
-    non_codex = provider_types - {"codex"}
-    if not non_codex:
-        return None
-
     root = Path(runtime_root).expanduser()
     registry = ProviderRegistry()
-    if "claude_code" in non_codex:
-        provider = ClaudeCodeProvider()
+    if "codex" in provider_types:
+        provider = CodexProvider(runtime_root=root)
         registry.register(provider.build_provider_bundle(runtime_root=root))
-    if "pi" in non_codex:
+    if "claude_code" in provider_types:
+        provider = ClaudeCodeProvider()
+        registry.register(build_claude_code_provider_bundle(provider, runtime_root=root))
+    if "pi" in provider_types:
         registry.register(build_pi_provider_bundle(runtime_root=root))
-    if "openai_agents" in non_codex:
+    if "openai_agents" in provider_types:
         provider = OpenAIAgentsProvider()
         provider.registry.register_agent_factory(
             DEFAULT_OPENAI_AGENTS_FACTORY_REF,
@@ -80,9 +86,9 @@ def build_builtin_provider_registry(
                     "custom OpenAI Agents factory refs require an application-provided ProviderRegistry"
                 )
         registry.register(provider.build_bundle(runtime_root=root))
-    if "opencode" in non_codex:
+    if "opencode" in provider_types:
         registry.register(build_opencode_provider_bundle(runtime_root=root))
-    unknown = sorted(non_codex - {bundle.provider_type for bundle in registry.list()})
+    unknown = sorted(provider_types - {bundle.provider_type for bundle in registry.list()})
     if unknown:
         raise ValueError(f"no built-in Provider bundle assembly for: {', '.join(unknown)}")
     return registry
@@ -106,7 +112,10 @@ def model_identity_from_override(
     if not configured:
         return None
     if override.api_provider is None or override.api_mode is None:
-        raise ValueError("provider model configuration requires api_provider and api_mode")
+        # A model-only value can still be a provider-native Home override.  It
+        # is not a complete cross-provider backend identity until both API
+        # dimensions are known, so leave the normalized identity absent.
+        return None
     return ModelBackendIdentity(
         api_provider=override.api_provider,
         api_mode=override.api_mode,
@@ -122,9 +131,10 @@ def provider_options_from_override(
 ) -> object | None:
     options = dict(override.provider_options if override is not None else {})
     if provider_type == "codex":
-        if options:
-            raise ValueError("Codex provider_options are not accepted through the LC compatibility Home")
-        return None
+        for field_name in ("auth_json_path",):
+            if field_name in options and options[field_name] is not None:
+                options[field_name] = Path(options[field_name]).expanduser()
+        return CodexHomeOptions(**options)
     if provider_type == "claude_code":
         if override is not None:
             options.setdefault("model", override.model)

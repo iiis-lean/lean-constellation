@@ -86,17 +86,16 @@ class RepoRuntimeRegistry:
         *,
         external_config: object | None = None,
         external_overrides: dict[str, object] | None = None,
-        agent_providers: dict[str, object] | None = None,
         result: ResultErrorComponent | None = None,
     ) -> None:
         self.config = config
         self.workspace_root = Path(config.workspace_root).expanduser()
         self.external_config = external_config or external_client_config_from_app_config(config)
         self.external_overrides = external_overrides
-        self.agent_providers = agent_providers
         self.agent_type_specs = apply_agent_home_overrides(
             build_agent_type_specs(),
             config.agent_home_overrides,
+            default_provider_type=config.default_agent_provider_type,
         )
         self.result = result or ResultErrorComponent()
         self._records: dict[str, RepoRuntimeRecord] = {}
@@ -597,7 +596,6 @@ class RepoRuntimeRegistry:
                 runtime_root=record.runtime_root,
                 external_config=self.external_config,
                 external_overrides=self.external_overrides,
-                agent_providers=self.agent_providers,
                 provider_registry=provider_registry,
                 agent_type_specs=runtime_agent_type_specs,
                 native_lake_project_config=self.config.native_lake_project,

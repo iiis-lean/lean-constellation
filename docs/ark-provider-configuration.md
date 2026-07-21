@@ -1,9 +1,17 @@
 # ARK Agent Provider Configuration
 
 Lean Constellation binds each application `AgentType` to an ARK Provider and
-Home. Codex remains the default, so existing configurations and persisted
-Codex Agents continue to work without changes. A deployment may override
-selected AgentTypes with `claude_code`, `pi`, `openai_agents`, or `opencode`.
+Home. `codex` is the default Provider. A deployment may select
+`claude_code`, `pi`, `openai_agents`, or `opencode` globally, and may override
+that selection for individual AgentTypes.
+
+```toml
+default_agent_provider_type = "codex"
+```
+
+The equivalent environment variable is
+`LEAN_CONSTELLATION_DEFAULT_AGENT_PROVIDER_TYPE`. A per-AgentType override
+takes precedence over the global default:
 
 ```toml
 [agent_home_overrides.RepoFormatDiscoveryAgent]
@@ -58,3 +66,9 @@ Application code that needs a custom OpenAI Agents factory can pass an
 application-built ARK `ProviderRegistry` to `create_app_runtime_services` or
 `create_app_runtime_from_config`. The production config auto-assembler uses
 the built-in `lean_constellation/default` factory.
+
+LC and ARK now read and write only the provider-neutral schema v3 Agent, Home,
+session-locator, artifact-locator, result, and snapshot records. Records from
+the removed Codex-specific schemas are not migrated or accepted. Start a fresh
+runtime root when upgrading an existing workspace; do not copy the previous
+`.agent_runtime` directory into the new workspace.

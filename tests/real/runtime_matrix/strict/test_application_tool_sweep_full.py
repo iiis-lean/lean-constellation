@@ -1380,6 +1380,23 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert deps.value["node_path"] == "Main.Core"
 
+    work_config = call_tool_with_evidence(
+        server,
+        "content_plan",
+        "get_current_repo_work_config",
+        {},
+        runtime_context=_ctx(
+            ws.provider_repo,
+            view="content_plan",
+            agent_type="ContentPlanAgent",
+            role="plan",
+            node_path="Main.Core",
+        ),
+        recorder=evidence_recorder,
+        assertion_summary="Provider-neutral current repository work configuration returned.",
+    )
+    assert work_config.value["work_mode"]
+
     evidence_recorder.record_runtime_state(ws.runtime)
     assert core_tool_sweep_names() <= evidence_recorder.evidence.application_tool_names
     evidence_recorder.export_json(tmp_path / "runtime_matrix_evidence" / "tool_sweep_subset.json")

@@ -25,8 +25,7 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
         "lc_submit",
     ]
     assert (home_root / ".agents" / "skills" / "source-material-acquisition" / "SKILL.md").exists()
-    assert view.value.codex_config_path is not None
-    config_text = Path(view.value.codex_config_path).read_text(encoding="utf-8")
+    config_text = (Path(view.value.home_root) / ".codex" / "config.toml").read_text(encoding="utf-8")
     assert "http://127.0.0.1:8765/mcp/views/source_corpus_prepare" in config_text
     assert "http://127.0.0.1:8765/mcp/views/source_corpus_prepare_submit" in config_text
     assert "env_http_headers" in config_text
@@ -88,7 +87,7 @@ def test_agent_home_materialization_writes_stdio_mcp_view_servers(tmp_path: Path
         "lc_app",
         "lc_submit",
     ]
-    config_text = Path(view.value.codex_config_path or "").read_text(encoding="utf-8")
+    config_text = (Path(view.value.home_root) / ".codex" / "config.toml").read_text(encoding="utf-8")
     assert "lean_constellation.mcp.stdio" in config_text
     assert "--view-key" in config_text
     assert "repo_format_discovery_submit" in config_text

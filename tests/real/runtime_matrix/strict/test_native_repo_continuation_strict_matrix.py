@@ -27,7 +27,7 @@ def test_strict_native_repo_continuation_reuses_stable_release_and_hands_off(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_home("CoordinatorAgent", cli_type="codex")
+    ws.create_home("CoordinatorAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     release_flow_id = ws.runtime.ark.flow_service.start_flow(
         FlowRequest(

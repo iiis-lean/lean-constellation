@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
-from agent_runtime_kit.agent.homes import HomeCreateSpec, ModelConfigOverrides
 from agent_runtime_kit.agent.provider_contracts import BaseConfigSource, ModelBackendIdentity
+from agent_runtime_kit.agent.providers.codex_home import CodexHomeOptions
 
 from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec, build_agent_type_specs
 from lean_constellation.app.agent_provider_config import (
@@ -43,7 +43,6 @@ class AgentHomeMaterializationView(StrictModel):
     instruction_path: str
     skill_paths: dict[str, str] = Field(default_factory=dict)
     mcp_server_names: list[str] = Field(default_factory=list)
-    codex_config_path: str | None = None
     effective_model: str | None = None
     effective_reasoning_effort: str | None = None
     summary: str
@@ -54,8 +53,6 @@ class ProductionAgentHomesView(StrictModel):
     materialized: list[AgentHomeMaterializationView] = Field(default_factory=list)
     failed: list[dict[str, str]] = Field(default_factory=list)
     mcp_http_base_url: str
-    codex_base_config_path: str | None = None
-    codex_auth_json_path: str | None = None
     provider_types: dict[str, str] = Field(default_factory=dict)
     summary: str
 
@@ -105,7 +102,6 @@ def materialize_agent_home(
     fixed_env: dict[str, str] | None = None,
     required_env: set[str] | None = None,
     agent_type_specs: Sequence["AgentTypeSpec"] | None = None,
-    model_config_overrides: ModelConfigOverrides | None = None,
     provider_type: str | None = None,
     model_config: ModelBackendIdentity | None = None,
     config_overrides: dict[str, object] | None = None,
@@ -115,6 +111,26 @@ def materialize_agent_home(
     """Materialize one AgentType home through ARK HomeService."""
 
     try:
+        resolved_provider_type = provider_type or next(
+            item.home_type
+            for item in (agent_type_specs or build_agent_type_specs())
+            if item.agent_type == agent_type
+        )
+        resolved_provider_options = provider_options
+        if resolved_provider_type == "codex":
+            if resolved_provider_options is not None and not isinstance(
+                resolved_provider_options, CodexHomeOptions
+            ):
+                raise TypeError("codex provider_options must be CodexHomeOptions")
+            codex_options = resolved_provider_options or CodexHomeOptions()
+            resolved_provider_options = replace(
+                codex_options,
+                auth_json_path=(
+                    Path(auth_json_path).expanduser()
+                    if auth_json_path is not None
+                    else codex_options.auth_json_path
+                ),
+            )
         spec = build_agent_home_bootstrap_spec(
             agent_type,
             home_id=home_id,
@@ -124,7 +140,7 @@ def materialize_agent_home(
             mcp_server_env=mcp_server_env,
             fixed_env=fixed_env,
             required_env=required_env,
-            provider_type=provider_type,  # type: ignore[arg-type]
+            provider_type=resolved_provider_type,  # type: ignore[arg-type]
             base_config=(
                 BaseConfigSource(path=str(Path(base_config_path).expanduser()))
                 if base_config_path is not None
@@ -133,25 +149,18 @@ def materialize_agent_home(
             config_overrides=config_overrides,
             model_config=model_config,
             auth_refs=auth_refs,
-            provider_options=provider_options,
+            provider_options=resolved_provider_options,
             specs=agent_type_specs,
         )
-        ark_spec = spec.ark_home_create_spec
-        if isinstance(ark_spec, HomeCreateSpec):
-            ark_spec = replace(
-                ark_spec,
-                base_config_path=Path(base_config_path).expanduser() if base_config_path is not None else None,
-                auth_json_path=Path(auth_json_path).expanduser() if auth_json_path is not None else None,
-                model_config_overrides=model_config_overrides,
-            )
+        ark_spec = spec.provider_home_spec
         home_service = getattr(runtime.ark.agent_service, "home_service", None)
         if home_service is None:
             return runtime.foundation.fail(
                 runtime.foundation.issue("home_service_missing", "ARK AgentService does not expose a HomeService.")
             )
         record = home_service.create_home(ark_spec)
-        home_root = home_service.resolve_home_root(record.cli_type, record.home_id)
-        if record.cli_type == "codex":
+        home_root = home_service.resolve_home_root(record.provider_type, record.home_id)
+        if record.provider_type == "codex":
             _disable_global_codex_features(home_root / ".codex" / "config.toml")
         instruction_path = _write_agent_instruction(home_root, spec)
         effective_model, effective_reasoning_effort = _effective_model_values(record, home_root)
@@ -166,22 +175,20 @@ def materialize_agent_home(
             # ARK Home v2 verifies provider-managed files at run time. LC's
             # deliberate post-processing of Codex feature flags must therefore
             # be explicitly sealed; later unsealed mutations still fail closed.
-            seal_materialization(record.cli_type, record.home_id)
+            seal_materialization(record.provider_type, record.home_id)
     except Exception as exc:  # noqa: BLE001 - bootstrap boundary.
         return runtime.foundation.fail(runtime.foundation.issue("agent_home_materialization_failed", f"Agent home materialization failed: {exc}"))
 
     skill_paths = _materialized_skill_paths(home_root, spec)
-    codex_config = home_root / ".codex" / "config.toml"
     return runtime.foundation.ok(
         AgentHomeMaterializationView(
             agent_type=spec.agent_type,
-            provider_type=record.cli_type,
+            provider_type=record.provider_type,
             home_id=record.home_id,
             home_root=str(home_root),
             instruction_path=str(instruction_path),
             skill_paths=skill_paths,
             mcp_server_names=[server.name for server in spec.mcp_servers],
-            codex_config_path=str(codex_config) if codex_config.exists() else None,
             effective_model=effective_model,
             effective_reasoning_effort=effective_reasoning_effort,
             summary=f"Materialized Agent home {record.home_id}; manifest: {manifest_path.name}.",
@@ -234,12 +241,16 @@ def materialize_production_agent_homes(
         try:
             configured_override = (agent_home_overrides or {}).get(spec.agent_type)
             provider_type = spec.home_type
-            model_override = None
-            if configured_override is not None and provider_type == "codex":
-                model_override = ModelConfigOverrides(
-                    model=getattr(configured_override, "model", None),
-                    reasoning_effort=getattr(configured_override, "model_reasoning_effort", None),
-                )
+            home_config_overrides = dict(
+                getattr(configured_override, "config_overrides", {}) or {}
+            )
+            if provider_type == "codex" and configured_override is not None:
+                if getattr(configured_override, "model", None) is not None:
+                    home_config_overrides["model"] = configured_override.model
+                if getattr(configured_override, "model_reasoning_effort", None) is not None:
+                    home_config_overrides["model_reasoning_effort"] = (
+                        configured_override.model_reasoning_effort
+                    )
             result = materialize_agent_home(
                 runtime,
                 spec.agent_type,
@@ -254,14 +265,9 @@ def materialize_production_agent_homes(
                 fixed_env={"ELAN_HOME": str(elan_home)},
                 required_env=set(getattr(configured_override, "required_env", ()) or ()),
                 agent_type_specs=specs,
-                model_config_overrides=model_override,
                 provider_type=provider_type,
-                model_config=(
-                    None
-                    if provider_type == "codex"
-                    else model_identity_from_override(configured_override)
-                ),
-                config_overrides=dict(getattr(configured_override, "config_overrides", {}) or {}),
+                model_config=model_identity_from_override(configured_override),
+                config_overrides=home_config_overrides,
                 auth_refs=tuple(getattr(configured_override, "auth_refs", ()) or ()),
                 provider_options=provider_options_from_override(provider_type, configured_override),
             )
@@ -282,8 +288,6 @@ def materialize_production_agent_homes(
         materialized=materialized,
         failed=failed,
         mcp_http_base_url=mcp_http_base_url.rstrip("/"),
-        codex_base_config_path=str(base_config) if base_config is not None else None,
-        codex_auth_json_path=str(auth_json) if auth_json is not None else None,
         provider_types={spec.agent_type: spec.home_type for spec in specs},
         summary=f"Materialized {len(materialized)}/{len(specs)} production Agent homes.",
     )
@@ -382,7 +386,7 @@ def _write_agent_home_manifest(
 
 
 def _effective_model_values(record, home_root: Path) -> tuple[str | None, str | None]:  # noqa: ANN001
-    if record.cli_type == "codex":
+    if record.provider_type == "codex":
         return _read_effective_model_config(home_root / ".codex" / "config.toml")
     defaults = record.resolved_defaults or {}
     model = defaults.get("requested_model") or defaults.get("resolved_model")

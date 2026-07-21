@@ -10,7 +10,7 @@ from lean_constellation.app import AdminFlowAdvanceInput, StartFlowInput
 from tests.real.runtime_matrix.admin_helpers import (
     assert_flow_completed,
     run_next_created_step,
-    set_external_takeover_override,
+    set_scripted_provider_override,
     unwrap,
 )
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
@@ -18,7 +18,7 @@ from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace, create_ru
 from tests.real.runtime_matrix.strict_helpers import (
     checkpoint_with_evidence,
     restore_with_evidence,
-    run_external_submit_with_evidence,
+    run_scripted_submit_with_evidence,
 )
 
 
@@ -276,13 +276,13 @@ def _run_repo_format_branch(
     arguments: dict[str, Any],
     expected_outcome: str,
 ) -> None:
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         agent_step_id,
         agent_type="RepoFormatDiscoveryControlledTestAgent",
         prompt_overlay=f"Strict Runtime Matrix: call {tool_name} exactly once.",
     )
-    run_external_submit_with_evidence(ws.admin, agent_step_id, tool_name, arguments, recorder=recorder)
+    run_scripted_submit_with_evidence(ws.admin, agent_step_id, tool_name, arguments, recorder=recorder)
     run_next_created_step(ws.admin, flow_id)
     assert_flow_completed(ws.runtime, flow_id, outcome=expected_outcome)
     recorder.record_runtime_state(ws.runtime)
@@ -322,13 +322,13 @@ def _run_resource_branch(
     arguments: dict[str, Any],
     expected_outcome: str,
 ) -> None:
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         agent_step_id,
         agent_type="ResourceCuratorControlledTestAgent",
         prompt_overlay=f"Strict Runtime Matrix: call {tool_name} exactly once.",
     )
-    run_external_submit_with_evidence(ws.admin, agent_step_id, tool_name, arguments, recorder=recorder)
+    run_scripted_submit_with_evidence(ws.admin, agent_step_id, tool_name, arguments, recorder=recorder)
     flow = assert_flow_completed(ws.runtime, flow_id, outcome=expected_outcome)
     if expected_outcome == "local_resource_created":
         assert flow.result.resource_key is not None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
@@ -155,9 +156,8 @@ def test_requirement_resume_after_snapshot_restore_uses_original_flow_and_agent(
     agent = runtime.ark.agent_service.store.create_agent_record(
         scope_id=scope_id,
         agent_type="CoordinatorAgent",
-        cli_type="codex",
+        provider_type="codex",
         home_id="CoordinatorAgent",
-        thread_id="thread-original",
     )
 
     def mark_waiting(flow) -> None:
@@ -197,7 +197,7 @@ def test_requirement_resume_after_snapshot_restore_uses_original_flow_and_agent(
     assert restored_flow.status is FlowStatus.WAITING
     assert restored_flow.state.position.phase == "waiting_requirement"
     assert restored_flow.agent_bindings.get("coordinator") == agent.agent_id
-    assert runtime.ark.agent_service.get_agent(agent.agent_id).thread_id == "thread-original"
+    assert runtime.ark.agent_service.get_agent(agent.agent_id).provider_type == "codex"
 
     publish_native_provider_release(runtime, provider, summary="Provider ready.")
     assert runtime.repo_workspace.requirement.mark_requirement_satisfied(
@@ -228,9 +228,15 @@ def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp
     repo_scope = "repo:Repo"
     node_scope = "repo:Repo:node:n_core"
     late_scope = "repo:Repo:node:n_late"
-    store.create_agent_record(scope_id=repo_scope, agent_type="CoordinatorAgent")
-    node_agent = store.create_agent_record(scope_id=node_scope, agent_type="ContentPlanAgent")
-    node_report = store.report_dir(node_agent.agent_id) / "latest.json"
+    store.create_agent_record(scope_id=repo_scope, agent_type="CoordinatorAgent", provider_type="codex")
+    node_agent = store.create_agent_record(
+        scope_id=node_scope,
+        agent_type="ContentPlanAgent",
+        provider_type="codex",
+    )
+    node_report = Path(
+        runtime.ark.agent_service.get_default_trace_report_paths(node_agent.agent_id).latest_json_path
+    )
     node_report.parent.mkdir(parents=True)
     node_report.write_text('{"version": "before"}\n', encoding="utf-8")
     admin = LeanAdminApi(runtime)
@@ -279,7 +285,7 @@ def test_repo_checkpoint_captures_all_runtime_scopes_and_prunes_later_scopes(tmp
     assert second_ark_manifest["scope_snapshot_ids"][node_scope] == ark_manifest["scope_snapshot_ids"][node_scope]
 
     node_report.write_text('{"version": "after"}\n', encoding="utf-8")
-    store.create_agent_record(scope_id=late_scope, agent_type="ContentPlanAgent")
+    store.create_agent_record(scope_id=late_scope, agent_type="ContentPlanAgent", provider_type="codex")
     assert late_scope in store.list_scope_ids()
     restored = admin.restore_snapshot(
         SnapshotRestoreInput(repo_root=repo_root, snapshot_id=second.value.snapshot_id)

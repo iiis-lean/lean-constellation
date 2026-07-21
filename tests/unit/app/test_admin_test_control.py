@@ -125,7 +125,7 @@ def test_agent_step_override_api_sets_and_clears_created_agent_step(tmp_path) ->
             override=ControlledAgentOverrideSpec(
                 strategy="fresh_test_agent_type",
                 agent_type_override="ResourceCuratorControlledTestAgent",
-                cli_type_override="external_takeover",
+                provider_type_override="codex",
                 prompt_overlay="Call the rejected-resource submit tool.",
             ),
         )

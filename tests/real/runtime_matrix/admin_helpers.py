@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from time import monotonic, sleep
 from typing import Any
 
 from agent_runtime_kit.flow.models import FlowStatus
@@ -13,9 +11,6 @@ from lean_constellation.app import (
     AdminFlowAdvanceInput,
     AdminRunUntilStepCreatedInput,
     AdminStepStartInput,
-    ExternalTakeoverCompleteInput,
-    ExternalTakeoverToolCallInput,
-    ExternalTakeoverToolListInput,
     ManualCheckpointInput,
     SetAgentStepOverrideInput,
     SnapshotRestoreInput,
@@ -70,7 +65,7 @@ def restore_branch(admin, repo_root: Path, snapshot_id: str) -> None:
     assert restored.dry_run is False
 
 
-def set_external_takeover_override(
+def set_scripted_provider_override(
     admin,
     step_id: str,
     *,
@@ -85,7 +80,7 @@ def set_external_takeover_override(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="external_takeover",
+                    provider_type_override="scripted",
                     prompt_overlay=prompt_overlay,
                     env_overrides=env_overrides or {},
                 ),
@@ -95,7 +90,7 @@ def set_external_takeover_override(
     assert view.override is not None
 
 
-def run_external_submit(
+def run_scripted_submit(
     admin,
     step_id: str,
     tool_name: str,
@@ -103,52 +98,24 @@ def run_external_submit(
     *,
     timeout_s: float = 10,
 ) -> dict[str, Any]:
-    started = unwrap(admin.start_step_once(AdminStepStartInput(step_id=step_id, wait=False)))
-    assert started.status in {"created", "running"}, started
-    handoff = wait_for_pending_handoff(admin)
-    listed = unwrap(admin.list_external_takeover_tools(ExternalTakeoverToolListInput(handoff_id=handoff.handoff_id, view_kind="submit")))
-    assert tool_name in {tool.name for tool in listed}
-    called = unwrap(
-        admin.call_external_takeover_tool(
-            ExternalTakeoverToolCallInput(
-                handoff_id=handoff.handoff_id,
-                view_kind="submit",
-                tool_name=tool_name,
-                arguments=arguments,
-            )
-        )
+    from tests.real.runtime_matrix.scripted_provider import get_or_install_scripted_provider
+
+    provider = get_or_install_scripted_provider(admin.runtime)
+    step = admin.runtime.ark.step_service.store.get_step(step_id)
+    raw_override = dict(getattr(getattr(step, "state", None), "variables", {}) or {}).get(
+        "test_override_spec"
     )
-    assert called.ok is True, called
-    completed = unwrap(
-        admin.complete_external_takeover(
-            ExternalTakeoverCompleteInput(
-                handoff_id=handoff.handoff_id,
-                final_response=f"Runtime Matrix external takeover called {tool_name}.",
-                thread_id=f"runtime-matrix-{handoff.handoff_id}",
-            )
-        )
+    agent_type = (
+        raw_override.get("agent_type_override")
+        if isinstance(raw_override, dict)
+        else getattr(raw_override, "agent_type_override", None)
     )
-    assert completed.status == "completed"
-    waited = unwrap(admin.wait_step(AdminStepStartInput(step_id=step_id, wait=True, timeout_s=timeout_s)))
-    assert waited.status == "completed", waited
-    return read_handoff_json(handoff.handoff_path)
-
-
-def wait_for_pending_handoff(admin, *, timeout_s: float = 5):
-    deadline = monotonic() + timeout_s
-    while monotonic() < deadline:
-        pending = unwrap(admin.list_external_takeovers(status="pending"))
-        if pending:
-            return pending[0]
-        sleep(0.01)
-    raise TimeoutError("external takeover handoff was not visible through Admin API")
-
-
-def read_handoff_json(path: str | Path) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    assert isinstance(data, dict)
-    return data
+    if not agent_type:
+        raise AssertionError(f"scripted step has no agent_type override: {step_id}")
+    provider.enqueue(agent_type, ("submit", tool_name, arguments))
+    started = unwrap(admin.start_step_once(AdminStepStartInput(step_id=step_id, wait=True, timeout_s=timeout_s)))
+    assert started.status == "completed", started
+    return dict(provider.calls[-1])
 
 
 def assert_flow_completed(runtime, flow_id: str, *, outcome: str | None = None):

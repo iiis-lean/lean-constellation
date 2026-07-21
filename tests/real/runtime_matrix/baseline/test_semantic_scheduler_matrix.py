@@ -47,7 +47,7 @@ def test_content_phase_semantic_advance_runs_initial_admission_plan_and_child(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("ContentPlanAgent", "NodeDirDependencyReconAgent", cli_type="codex")
+    ws.create_homes("ContentPlanAgent", "NodeDirDependencyReconAgent", provider_type="scripted")
     flow_id = ws.runtime.ark.flow_service.start_flow(
         FlowRequest(
             flow_type="content_node_task",
@@ -149,7 +149,7 @@ def test_content_task_semantic_advance_includes_coordinator_checkpoint_closeout(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("CoordinatorAgent", "ContentPlanAgent", cli_type="codex")
+    ws.create_homes("CoordinatorAgent", "ContentPlanAgent", provider_type="scripted")
     coordinator_id = ws.runtime.ark.flow_service.start_flow(
         FlowRequest(
             flow_type="native_repo_coordinator",

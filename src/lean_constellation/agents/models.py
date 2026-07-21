@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from agent_runtime_kit.agent.homes import HomeCreateSpec, McpServerSpec
+from agent_runtime_kit.agent.homes import McpServerSpec
 from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
 from agent_runtime_kit.agent.skills import SkillSpec
 from pydantic import Field, field_validator, model_validator
@@ -122,7 +122,7 @@ class AgentToolViewConfig(StrictModel):
 
 
 class AgentHomeBootstrapSpec(StrictModel):
-    """Lean-side home bootstrap data plus the ARK create spec."""
+    """Lean-side Home bootstrap data plus the provider-neutral ARK Home spec."""
 
     agent_type: str
     home_type: AgentHomeType
@@ -133,7 +133,7 @@ class AgentHomeBootstrapSpec(StrictModel):
     fixed_env: dict[str, str] = Field(default_factory=dict)
     required_env: set[str] = Field(default_factory=set)
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
-    ark_home_create_spec: HomeCreateSpec | ProviderHomeSpec
+    provider_home_spec: ProviderHomeSpec
 
 
 __all__ = [

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent_runtime_kit.agent.homes import HomeCreateSpec
 from agent_runtime_kit.agent.provider_contracts import ModelBackendIdentity, ProviderHomeSpec
+from agent_runtime_kit.agent.providers.codex_home import CodexHomeOptions
 
 from lean_constellation.agents import build_agent_home_bootstrap_spec, build_agent_type_specs, derive_agent_type_spec
 
@@ -21,41 +21,42 @@ def test_home_bootstrap_spec_contains_instruction_skills_and_tool_views() -> Non
     assert spec.fixed_env["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] == "content_plan"
 
 
-def test_home_bootstrap_spec_embeds_ark_home_create_spec() -> None:
+def test_home_bootstrap_spec_embeds_provider_home_spec() -> None:
     spec = build_agent_home_bootstrap_spec(
         "ProofFormalWorkerAgent",
         home_id="proof-formal-worker-home",
         mcp_http_base_url="http://127.0.0.1:8765",
         required_env={"OPENAI_API_KEY"},
     )
-    ark_spec = spec.ark_home_create_spec
+    ark_spec = spec.provider_home_spec
 
-    assert isinstance(ark_spec, HomeCreateSpec)
-    assert ark_spec.cli_type == "codex"
+    assert isinstance(ark_spec, ProviderHomeSpec)
+    assert ark_spec.provider_type == "codex"
     assert ark_spec.home_id == "proof-formal-worker-home"
-    assert "lean-proof-formalization" in ark_spec.skill_specs
-    assert ark_spec.required_env == {"OPENAI_API_KEY"}
-    assert len(ark_spec.mcp_servers) == 2
-    assert {server.name for server in ark_spec.mcp_servers} == {
+    assert isinstance(ark_spec.provider_options, CodexHomeOptions)
+    assert "lean-proof-formalization" in ark_spec.provider_options.skill_specs
+    assert ark_spec.required_env == ("OPENAI_API_KEY",)
+    assert len(ark_spec.provider_options.mcp_servers) == 2
+    assert {server.name for server in ark_spec.provider_options.mcp_servers} == {
         "lc_app",
         "lc_submit",
     }
-    assert {server.url for server in ark_spec.mcp_servers} == {
+    assert {server.url for server in ark_spec.provider_options.mcp_servers} == {
         "http://127.0.0.1:8765/mcp/views/proof_formal_worker/",
         "http://127.0.0.1:8765/mcp/views/decl_stage_worker_submit/",
     }
-    assert all(not server.env for server in ark_spec.mcp_servers)
-    assert all(server.env_http_headers["x-ark-flow-id"] == "ARK_FLOW_ID" for server in ark_spec.mcp_servers)
+    assert all(not server.env for server in ark_spec.provider_options.mcp_servers)
+    assert all(server.env_http_headers["x-ark-flow-id"] == "ARK_FLOW_ID" for server in ark_spec.provider_options.mcp_servers)
     assert all(
         server.env_http_headers["x-ark-expected-tool-view"] == "LEAN_CONSTELLATION_EXPECTED_TOOL_VIEW"
-        for server in ark_spec.mcp_servers
+        for server in ark_spec.provider_options.mcp_servers
     )
-    assert all(server.env_http_headers["x-ark-scope-id"] == "ARK_SCOPE_ID" for server in ark_spec.mcp_servers)
+    assert all(server.env_http_headers["x-ark-scope-id"] == "ARK_SCOPE_ID" for server in ark_spec.provider_options.mcp_servers)
     assert all(
         server.env_http_headers["x-ark-retry-attempt"] == "LEAN_CONSTELLATION_RETRY_ATTEMPT"
-        for server in ark_spec.mcp_servers
+        for server in ark_spec.provider_options.mcp_servers
     )
-    assert all("LEAN_CONSTELLATION_EXPECTED_VIEW_KEY" not in server.env_http_headers.values() for server in ark_spec.mcp_servers)
+    assert all("LEAN_CONSTELLATION_EXPECTED_VIEW_KEY" not in server.env_http_headers.values() for server in ark_spec.provider_options.mcp_servers)
 
 
 def test_home_bootstrap_spec_supports_derived_agent_type_identity() -> None:
@@ -74,7 +75,7 @@ def test_home_bootstrap_spec_supports_derived_agent_type_identity() -> None:
     assert spec.agent_type == "CoordinatorControlledTestAgent"
     assert spec.fixed_env["LEAN_CONSTELLATION_AGENT_TYPE"] == "CoordinatorControlledTestAgent"
     assert spec.fixed_env["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] == "native_repo_coordinator"
-    assert spec.ark_home_create_spec.fixed_env["LEAN_CONSTELLATION_AGENT_TYPE"] == "CoordinatorControlledTestAgent"
+    assert spec.provider_home_spec.fixed_env["LEAN_CONSTELLATION_AGENT_TYPE"] == "CoordinatorControlledTestAgent"
 
 
 def test_home_bootstrap_spec_projects_resources_to_provider_home_spec() -> None:
@@ -92,7 +93,7 @@ def test_home_bootstrap_spec_projects_resources_to_provider_home_spec() -> None:
         required_env={"DEEPSEEK_API_KEY"},
     )
 
-    ark_spec = spec.ark_home_create_spec
+    ark_spec = spec.provider_home_spec
     assert isinstance(ark_spec, ProviderHomeSpec)
     assert spec.home_type == "opencode"
     assert ark_spec.provider_type == "opencode"

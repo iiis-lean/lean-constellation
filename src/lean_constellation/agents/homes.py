@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import quote
 
-from agent_runtime_kit.agent.homes import HomeCreateSpec, McpServerSpec
+from agent_runtime_kit.agent.homes import McpServerSpec
 from agent_runtime_kit.agent.provider_contracts import (
     BaseConfigSource,
     ModelBackendIdentity,
     ProviderHomeSpec,
 )
+from agent_runtime_kit.agent.providers.codex_home import CodexHomeOptions
 
 from lean_constellation.agents.instructions import assert_instruction_is_runtime_english, render_agent_instruction
 from lean_constellation.agents.models import (
@@ -154,30 +155,28 @@ def build_agent_home_bootstrap_spec(
             )
 
     if resolved_provider_type == "codex":
-        ark_spec: HomeCreateSpec | ProviderHomeSpec = HomeCreateSpec(
-            cli_type=resolved_provider_type,
-            home_id=resolved_home_id,
-            skill_specs=skill_specs,
-            mcp_servers=mcp_servers,
-            fixed_env=env,
-            required_env=set(required_env or ()),
-            config_overrides=dict(config_overrides or {}),
+        if provider_options is not None and not isinstance(provider_options, CodexHomeOptions):
+            raise TypeError("codex provider_options must be CodexHomeOptions")
+        codex_options = provider_options or CodexHomeOptions()
+        provider_options = replace(
+            codex_options,
+            skill_specs={**codex_options.skill_specs, **skill_specs},
+            mcp_servers=codex_options.mcp_servers or tuple(mcp_servers),
         )
-    else:
-        ark_spec = ProviderHomeSpec(
-            provider_type=resolved_provider_type,
-            home_id=resolved_home_id,
-            base_config=base_config,
-            config_overrides=dict(config_overrides or {}),
-            model_config=model_config,
-            instructions=(developer_instructions,),
-            skills=tuple(skill_specs.values()),
-            mcp_servers=tuple(mcp_servers),
-            auth_refs=tuple(auth_refs or ()),
-            fixed_env=env,
-            required_env=tuple(sorted(set(required_env or ()))),
-            provider_options=provider_options,
-        )
+    ark_spec = ProviderHomeSpec(
+        provider_type=resolved_provider_type,
+        home_id=resolved_home_id,
+        base_config=base_config,
+        config_overrides=dict(config_overrides or {}),
+        model_config=model_config,
+        instructions=(developer_instructions,),
+        skills=tuple(skill_specs.values()),
+        mcp_servers=tuple(mcp_servers),
+        auth_refs=tuple(auth_refs or ()),
+        fixed_env=env,
+        required_env=tuple(sorted(set(required_env or ()))),
+        provider_options=provider_options,
+    )
     return AgentHomeBootstrapSpec(
         agent_type=spec.agent_type,
         home_type=resolved_provider_type,
@@ -193,7 +192,7 @@ def build_agent_home_bootstrap_spec(
         fixed_env=env,
         required_env=set(required_env or ()),
         mcp_servers=mcp_servers,
-        ark_home_create_spec=ark_spec,
+        provider_home_spec=ark_spec,
     )
 
 

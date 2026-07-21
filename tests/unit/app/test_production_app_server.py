@@ -8,7 +8,7 @@ from threading import Barrier
 
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 from agent_runtime_kit.flow.standard_steps import AgentStepState
-from agent_runtime_kit.agent.homes import HomeCreateSpec
+from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
 from starlette.testclient import TestClient
 
 from lean_constellation.app import (
@@ -154,7 +154,7 @@ def test_production_running_agent_audit_and_identity_checked_repair(tmp_path) ->
         runtime = registry.try_get_loaded("MainRepo")
         assert runtime is not None
         runtime.ark.agent_service.home_service.create_home(
-            HomeCreateSpec(cli_type="codex", home_id="CoordinatorAgent")
+            ProviderHomeSpec(provider_type="codex", home_id="CoordinatorAgent")
         )
         agent = runtime.ark.agent_service.create_agent(
             "repo:MainRepo",
@@ -167,8 +167,8 @@ def test_production_running_agent_audit_and_identity_checked_repair(tmp_path) ->
             f"/admin/repos/MainRepo/agents/{agent.agent_id}/repair-running",
             json={
                 "expected_scope_id": "repo:MainRepo",
-                "expected_thread_id": None,
-                "expected_rollout_relpath": None,
+                "expected_session_id": None,
+                "expected_artifact_ref": None,
                 "action": "mark_idle",
                 "dry_run": True,
             },
@@ -177,8 +177,8 @@ def test_production_running_agent_audit_and_identity_checked_repair(tmp_path) ->
             f"/admin/repos/MainRepo/agents/{agent.agent_id}/repair-running",
             json={
                 "expected_scope_id": "repo:MainRepo",
-                "expected_thread_id": None,
-                "expected_rollout_relpath": None,
+                "expected_session_id": None,
+                "expected_artifact_ref": None,
                 "action": "mark_idle",
                 "dry_run": False,
             },
@@ -299,7 +299,7 @@ def test_production_progress_and_agent_live_routes_are_repo_prefixed(tmp_path) -
     )
     assert started.ok and started.value is not None
     loaded.value.ark.agent_service.home_service.create_home(
-        HomeCreateSpec(cli_type="codex", home_id="RepoFormatDiscoveryAgent")
+        ProviderHomeSpec(provider_type="codex", home_id="RepoFormatDiscoveryAgent")
     )
     agent = loaded.value.ark.agent_service.create_agent(
         "repo:MainRepo:node:Main.Core",
@@ -619,9 +619,8 @@ def test_production_app_server_workspace_requirement_resume_wakes_consumer_runti
     coordinator = consumer_runtime.ark.agent_service.store.create_agent_record(
         scope_id=scope_id,
         agent_type="CoordinatorAgent",
-        cli_type="codex",
+        provider_type="codex",
         home_id="CoordinatorAgent",
-        thread_id="thread-consumer",
     )
 
     def mark_waiting(flow) -> None:
@@ -776,25 +775,20 @@ def test_production_app_server_repo_agent_reports_do_not_cross_repos(tmp_path) -
     runtime_b = registry.get_or_load("RepoB")
     assert runtime_a.ok and runtime_a.value is not None
     assert runtime_b.ok and runtime_b.value is not None
-    rollout = Path(runtime_a.value.ark.agent_service.runtime_root) / "homes" / "codex" / "CoordinatorAgent" / ".codex" / "sessions" / "trace.jsonl"
-    rollout.parent.mkdir(parents=True)
-    rollout.write_text('{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}\n', encoding="utf-8")
     agent = runtime_a.value.ark.agent_service.store.create_agent_record(
         scope_id="repo:RepoA",
         agent_type="CoordinatorAgent",
-        cli_type="codex",
+        provider_type="codex",
         home_id="CoordinatorAgent",
-        thread_id="thread-a",
-        rollout_relpath="sessions/trace.jsonl",
     )
 
     with TestClient(app_result.value) as client:
-        repo_a_response = client.get(f"/admin/repos/RepoA/agents/{agent.agent_id}/rollout")
-        repo_b_response = client.get(f"/admin/repos/RepoB/agents/{agent.agent_id}/rollout")
+        repo_a_response = client.get(f"/admin/repos/RepoA/agents/{agent.agent_id}/live")
+        repo_b_response = client.get(f"/admin/repos/RepoB/agents/{agent.agent_id}/live")
 
     assert repo_a_response.status_code == 200
     assert repo_b_response.status_code == 400
-    assert repo_b_response.json()["issues"][0]["kind"] == "agent_rollout_info_failed"
+    assert repo_b_response.json()["issues"][0]["kind"] == "agent_live_failed"
 
 
 def test_production_app_server_materializes_repo_local_production_agent_homes_on_load(tmp_path) -> None:
@@ -833,7 +827,6 @@ def test_production_app_server_materializes_repo_local_production_agent_homes_on
     coordinator = next(home for home in homes.materialized if home.agent_type == "CoordinatorAgent")
     codex_config = repo_root / ".agent_runtime" / "homes" / "codex" / "CoordinatorAgent" / ".codex" / "config.toml"
     manifest = repo_root / ".agent_runtime" / "homes" / "codex" / "CoordinatorAgent" / ".agents" / "lean_constellation_home.json"
-    assert coordinator.codex_config_path == str(codex_config)
     assert codex_config.exists()
     assert "http://127.0.0.1:9123/repos/MainRepo/mcp/views/" in codex_config.read_text(encoding="utf-8")
     manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))

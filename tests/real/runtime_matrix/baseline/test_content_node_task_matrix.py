@@ -33,7 +33,7 @@ def test_content_node_task_ready_blocked_and_failed_terminal_branches(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_home("ContentPlanAgent", cli_type="codex")
+    ws.create_home("ContentPlanAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
 
     ready_flow_id = _start_content_task(ws, ready_path)
@@ -88,7 +88,7 @@ def test_content_node_task_preparation_dispatch_callback_branch(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("ContentPlanAgent", "NodeDirDependencyReconAgent", cli_type="codex")
+    ws.create_homes("ContentPlanAgent", "NodeDirDependencyReconAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_content_task(ws, CONTENT_NODE_PATH)
 
@@ -134,7 +134,7 @@ def test_content_node_task_resource_dispatch_callback_branch(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("ContentPlanAgent", "ResourceCuratorAgent", cli_type="codex")
+    ws.create_homes("ContentPlanAgent", "ResourceCuratorAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_content_task(ws, CONTENT_NODE_PATH)
 
@@ -190,7 +190,7 @@ def test_content_node_task_decl_round_dispatch_callback_branch(
         "ProofNLReviewerAgent",
         "ProofFormalWorkerAgent",
         "ProofFormalReviewerAgent",
-        cli_type="codex",
+        provider_type="scripted",
     )
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_content_task(ws, round_fixture.node_path)

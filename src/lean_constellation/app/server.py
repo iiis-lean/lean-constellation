@@ -37,7 +37,6 @@ def create_production_app_server(
     view_keys: Iterable[str] | None = None,
     external_config: object | None = None,
     external_overrides: dict[str, object] | None = None,
-    agent_providers: dict[str, object] | None = None,
     materialize_agent_homes: bool | None = None,
     toolkit_state: object | None = None,
 ) -> ServiceResult[Starlette]:
@@ -48,7 +47,6 @@ def create_production_app_server(
         view_keys=view_keys,
         external_config=external_config,
         external_overrides=external_overrides,
-        agent_providers=agent_providers,
         materialize_agent_homes=materialize_agent_homes,
         toolkit_state=toolkit_state,
     )
@@ -60,7 +58,6 @@ def _create_registry_production_app_server(
     view_keys: Iterable[str] | None = None,
     external_config: object | None = None,
     external_overrides: dict[str, object] | None = None,
-    agent_providers: dict[str, object] | None = None,
     materialize_agent_homes: bool | None = None,
     toolkit_state: object | None = None,
 ) -> ServiceResult[Starlette]:
@@ -72,7 +69,6 @@ def _create_registry_production_app_server(
         config,
         external_config=external_config,
         external_overrides=external_overrides,
-        agent_providers=agent_providers,
     )
     resolved_mcp_base_url = config.production_mcp_http_effective_base_url()
     process_instance_id = f"lc_{uuid.uuid4().hex}"

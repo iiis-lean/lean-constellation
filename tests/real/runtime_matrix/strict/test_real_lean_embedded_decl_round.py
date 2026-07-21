@@ -130,7 +130,7 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
         "ProofNLReviewerAgent",
         "ProofFormalWorkerAgent",
         "ProofFormalReviewerAgent",
-        cli_type="codex",
+        provider_type="scripted",
     )
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_decl_round(ws, round_fixture)
