@@ -138,6 +138,12 @@ def materialize_agent_home(
             effective_model=effective_model,
             effective_reasoning_effort=effective_reasoning_effort,
         )
+        seal_materialization = getattr(home_service, "seal_home_materialization", None)
+        if callable(seal_materialization):
+            # ARK Home v2 verifies provider-managed files at run time. LC's
+            # deliberate post-processing of Codex feature flags must therefore
+            # be explicitly sealed; later unsealed mutations still fail closed.
+            seal_materialization(record.cli_type, record.home_id)
     except Exception as exc:  # noqa: BLE001 - bootstrap boundary.
         return runtime.foundation.fail(runtime.foundation.issue("agent_home_materialization_failed", f"Agent home materialization failed: {exc}"))
 
