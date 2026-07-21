@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Multi-repository coordination runtime for Lean formalization workflows."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2", "agent-runtime-kit>=0.1.0", "mcp>=1"]
+dependencies = ["pydantic>=2", "agent-runtime-kit>=0.2.0", "mcp>=1"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
@@ -21,6 +21,8 @@ lean-constellation = "lean_constellation.app.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest"]
+provider-claude = ["agent-runtime-kit[claude]>=0.2.0"]
+provider-openai-agents = ["agent-runtime-kit[openai-agents]>=0.2.0"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

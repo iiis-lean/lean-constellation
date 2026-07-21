@@ -10,9 +10,11 @@ the heavier workflow machinery from earlier Lean Steward prototypes.
 
 ## Current Status
 
-This repository is newly initialized as a clean project skeleton. Design notes
-are being organized under `dev_docs/`, while committed public documentation will
-live under `docs/`.
+The runtime now includes repo-local Flow/Step scheduling, Agent Home
+materialization, checkpoint/restore integration, and ARK 0.2 multi-provider
+bindings. Codex remains the compatibility default; Claude Code, Pi, OpenAI
+Agents, and OpenCode can be selected per AgentType. See
+[ARK Agent Provider Configuration](docs/ark-provider-configuration.md).
 
 ## Repository Structure
 
@@ -38,4 +40,3 @@ lean-constellation/
 - Local design notes, working plans, and daily records belong in `dev_docs/`.
 - Real local configuration files are ignored; keep only example templates in
   `configs/`.
-

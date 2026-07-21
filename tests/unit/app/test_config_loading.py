@@ -48,6 +48,64 @@ def test_agent_home_overrides_load_by_known_agent_type(tmp_path) -> None:
     assert config.redacted_view().agent_home_overrides == config.agent_home_overrides
 
 
+def test_agent_home_overrides_load_provider_neutral_home_configuration(tmp_path) -> None:
+    path = tmp_path / "lean_constellation.toml"
+    path.write_text(
+        "\n".join(
+            [
+                f'workspace_root = "{tmp_path / "workspace"}"',
+                "[agent_home_overrides.ContentPlanAgent]",
+                'provider_type = "openai_agents"',
+                'api_provider = "deepseek"',
+                'api_mode = "chat_completions"',
+                'model = "deepseek-chat"',
+                "context_window_tokens = 65536",
+                'required_env = ["DEEPSEEK_API_KEY"]',
+                "[agent_home_overrides.ContentPlanAgent.provider_options]",
+                'api_key_env = "DEEPSEEK_API_KEY"',
+                'base_url = "https://api.deepseek.com/v1"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_app_config(path)
+    override = config.agent_home_overrides["ContentPlanAgent"]
+
+    assert override.provider_type == "openai_agents"
+    assert override.api_mode == "chat_completions"
+    assert override.context_window_tokens == 65536
+    assert override.required_env == ["DEEPSEEK_API_KEY"]
+    assert override.provider_options["api_key_env"] == "DEEPSEEK_API_KEY"
+
+
+def test_agent_home_overrides_reject_inline_provider_secrets(tmp_path) -> None:
+    with pytest.raises(ValidationError, match="must use an environment or file reference"):
+        LeanAppConfig(
+            workspace_root=tmp_path / "workspace",
+            agent_home_overrides={
+                "ContentPlanAgent": {
+                    "provider_type": "openai_agents",
+                    "provider_options": {"api_key": "inline-secret"},
+                }
+            },
+        )
+
+
+def test_agent_home_overrides_reject_inline_config_secrets(tmp_path) -> None:
+    with pytest.raises(ValidationError, match="must use an environment or file reference"):
+        LeanAppConfig(
+            workspace_root=tmp_path / "workspace",
+            agent_home_overrides={
+                "ContentPlanAgent": {
+                    "provider_type": "opencode",
+                    "config_overrides": {"apiKey": "inline-secret"},
+                }
+            },
+        )
+
+
 def test_agent_home_overrides_reject_unknown_agent_type(tmp_path) -> None:
     with pytest.raises(ValidationError, match="unknown agent_home_overrides AgentType"):
         LeanAppConfig(

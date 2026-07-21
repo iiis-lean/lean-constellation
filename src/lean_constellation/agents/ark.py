@@ -40,6 +40,8 @@ def build_ark_agent_type(
         pass
 
     LeanArkAgentType.agent_type = spec.agent_type
+    LeanArkAgentType.provider_type = spec.home_type
+    LeanArkAgentType.default_home_id = spec.agent_type
     LeanArkAgentType.developer_instructions_template = instructions
     return LeanArkAgentType()
 

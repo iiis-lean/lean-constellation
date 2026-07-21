@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from agent_runtime_kit.agent.homes import HomeCreateSpec, McpServerSpec
+from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
 from agent_runtime_kit.agent.skills import SkillSpec
 from pydantic import Field, field_validator, model_validator
 
@@ -12,7 +13,7 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.tool_facade.context_resolver import ActorRole
 
 
-AgentHomeType = Literal["codex"]
+AgentHomeType = Literal["codex", "claude_code", "pi", "openai_agents", "opencode"]
 AgentLifecycleGroup = Literal[
     "repo_lifecycle",
     "coordinator",
@@ -132,7 +133,7 @@ class AgentHomeBootstrapSpec(StrictModel):
     fixed_env: dict[str, str] = Field(default_factory=dict)
     required_env: set[str] = Field(default_factory=set)
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
-    ark_home_create_spec: HomeCreateSpec
+    ark_home_create_spec: HomeCreateSpec | ProviderHomeSpec
 
 
 __all__ = [

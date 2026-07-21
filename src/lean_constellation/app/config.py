@@ -14,6 +14,7 @@ from pydantic import Field, field_validator, model_validator
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.repo import WorkspaceConfig
+from lean_constellation.agents.models import AgentHomeType
 
 
 DEFAULT_MCP_HTTP_HOST = "127.0.0.1"
@@ -140,10 +141,28 @@ class AgentTraceReportAppConfig(StrictModel):
 
 
 class AgentHomeOverrideAppConfig(StrictModel):
+    provider_type: AgentHomeType | None = None
+    base_config_path: Path | None = None
+    config_overrides: dict[str, Any] = Field(default_factory=dict)
+    api_provider: str | None = None
+    api_mode: str | None = None
     model: str | None = None
+    model_version: str | None = None
     model_reasoning_effort: str | None = None
+    context_window_tokens: int | None = None
+    effective_context_window_tokens: int | None = None
+    max_output_tokens: int | None = None
+    required_env: list[str] = Field(default_factory=list)
+    auth_refs: list[str] = Field(default_factory=list)
+    provider_options: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("model", "model_reasoning_effort")
+    @field_validator(
+        "api_provider",
+        "api_mode",
+        "model",
+        "model_version",
+        "model_reasoning_effort",
+    )
     @classmethod
     def _optional_non_empty(cls, value: str | None) -> str | None:
         if value is None:
@@ -152,6 +171,40 @@ class AgentHomeOverrideAppConfig(StrictModel):
         if not stripped:
             raise ValueError("Agent home model overrides must be non-empty")
         return stripped
+
+    @field_validator("base_config_path", mode="before")
+    @classmethod
+    def _coerce_base_config_path(cls, value: Any) -> Path | None:
+        if value is None or isinstance(value, Path):
+            return value
+        return Path(str(value)).expanduser()
+
+    @field_validator("context_window_tokens", "effective_context_window_tokens", "max_output_tokens")
+    @classmethod
+    def _positive_optional_int(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("Agent home context limits must be positive")
+        return value
+
+    @field_validator("required_env", "auth_refs", mode="before")
+    @classmethod
+    def _coerce_string_list(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        values = [value] if isinstance(value, str) else list(value)
+        return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+
+    @field_validator("provider_options")
+    @classmethod
+    def _reject_inline_provider_secrets(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _validate_provider_options_secrets(value)
+        return value
+
+    @field_validator("config_overrides")
+    @classmethod
+    def _reject_inline_config_secrets(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _validate_provider_options_secrets(value, path="config_overrides")
+        return value
 
 
 class LeanAppConfig(StrictModel):
@@ -365,6 +418,31 @@ def _is_loopback_host(host: str) -> bool:
         return ip_address(value).is_loopback
     except ValueError:
         return False
+
+
+def _validate_provider_options_secrets(value: Any, *, path: str = "provider_options") -> None:
+    if isinstance(value, Mapping):
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            normalized = key.lower().replace("-", "_")
+            sensitive = any(
+                marker in normalized
+                for marker in ("api_key", "apikey", "token", "secret", "authorization", "password")
+            )
+            is_reference = (
+                normalized.endswith(("_env", "_env_var", "_path"))
+                or (
+                    isinstance(item, str)
+                    and (item.startswith("$") or item.startswith("{env:") or item.startswith("env:"))
+                )
+            )
+            if sensitive and not is_reference:
+                raise ValueError(f"{path}.{key} must use an environment or file reference")
+            _validate_provider_options_secrets(item, path=f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_provider_options_secrets(item, path=f"{path}[{index}]")
 
 
 def _apply_toolkit_env(data: dict[str, Any], env: Mapping[str, str]) -> None:

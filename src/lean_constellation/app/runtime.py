@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import current_thread
 
 from agent_runtime_kit.agent.report_policy import AgentTraceReportPolicy, TraceReportPersistence
+from agent_runtime_kit.agent.provider_contracts import ProviderRegistry
 from agent_runtime_kit.agent.snapshots import AgentSnapshotService
 from agent_runtime_kit.agent.service import AgentService
 from agent_runtime_kit.flow.models import BaseStep
@@ -21,6 +22,10 @@ from agent_runtime_kit.runtime.mcp_tool_gateway import RuntimeMcpToolGateway
 from agent_runtime_kit.runtime.services import RuntimePauseController
 
 from lean_constellation.app.config import AgentTraceReportAppConfig, AutomaticCheckpointAppConfig, LeanAppConfig
+from lean_constellation.app.agent_provider_config import (
+    apply_agent_home_overrides,
+    build_builtin_provider_registry,
+)
 from lean_constellation.agents.ark import build_ark_agent_type_registry
 from lean_constellation.agents.models import AgentTypeSpec
 from lean_constellation.agents.registry import build_agent_type_specs
@@ -53,6 +58,7 @@ def create_app_runtime_services(
     extra_agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
     agent_providers: dict[str, object] | None = None,
+    provider_registry: ProviderRegistry | None = None,
     native_lake_project_config: object | None = None,
     workspace_config: object | None = None,
     max_concurrent_flow_advances: int = 1,
@@ -124,6 +130,7 @@ def create_app_runtime_services(
         root,
         agent_types=build_ark_agent_type_registry(specs=effective_agent_type_specs),
         providers=agent_providers,
+        provider_registry=provider_registry,
         ark_services=ark,
         app_services=runtime.app,
         start_paused=start_paused,
@@ -180,11 +187,22 @@ def create_app_runtime_from_config(
     extra_agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
     agent_providers: dict[str, object] | None = None,
+    provider_registry: ProviderRegistry | None = None,
     start_paused: bool = False,
     test_control_enabled: bool = False,
 ) -> LeanRuntimeServices:
     runtime_root = config.runtime_root or (config.workspace_root / ".agent_runtime")
     resolved_external_config = external_config or external_client_config_from_app_config(config)
+    if agent_type_specs is not None:
+        configured_specs = list(agent_type_specs)
+    else:
+        configured_specs = build_agent_type_specs(extra_specs=extra_agent_type_specs)
+    configured_specs = apply_agent_home_overrides(configured_specs, config.agent_home_overrides)
+    effective_provider_registry = provider_registry or build_builtin_provider_registry(
+        runtime_root,
+        configured_specs,
+        config.agent_home_overrides,
+    )
     if test_control_enabled and agent_type_specs is None and extra_agent_type_specs is None:
         return create_test_control_runtime_services(
             runtime_root=runtime_root,
@@ -192,6 +210,8 @@ def create_app_runtime_from_config(
             external_overrides=external_overrides,
             providers=providers,
             agent_providers=agent_providers,
+            provider_registry=effective_provider_registry,
+            agent_type_specs=configured_specs,
             max_concurrent_flow_advances=config.max_concurrent_flow_advances,
             max_concurrent_steps=config.max_concurrent_steps,
             start_paused=start_paused,
@@ -205,10 +225,10 @@ def create_app_runtime_from_config(
         external_config=resolved_external_config,
         external_overrides=external_overrides,
         providers=providers,
-        agent_type_specs=agent_type_specs,
-        extra_agent_type_specs=extra_agent_type_specs,
+        agent_type_specs=configured_specs,
         step_type_overrides=step_type_overrides,
         agent_providers=agent_providers,
+        provider_registry=effective_provider_registry,
         native_lake_project_config=config.native_lake_project,
         workspace_config=config.workspace_config,
         max_concurrent_flow_advances=config.max_concurrent_flow_advances,
@@ -247,6 +267,7 @@ def create_test_control_runtime_services(
     controlled_base_agent_types: Sequence[str] | None = None,
     step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
     agent_providers: dict[str, object] | None = None,
+    provider_registry: ProviderRegistry | None = None,
     native_lake_project_config: object | None = None,
     workspace_config: object | None = None,
     external_takeover_cli_type: str = "external_takeover",
@@ -291,6 +312,7 @@ def create_test_control_runtime_services(
         agent_type_specs=effective_agent_type_specs,
         step_type_overrides=effective_step_overrides,
         agent_providers=effective_agent_providers,
+        provider_registry=provider_registry,
         native_lake_project_config=native_lake_project_config,
         workspace_config=workspace_config,
         max_concurrent_flow_advances=max_concurrent_flow_advances,

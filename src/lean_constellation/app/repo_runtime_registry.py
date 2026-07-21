@@ -16,6 +16,12 @@ from lean_constellation.app.bootstrap import (
     initialize_repo_business_truth,
     materialize_production_agent_homes,
 )
+from lean_constellation.agents.registry import build_agent_type_specs
+from lean_constellation.agents.testing import build_controlled_test_agent_type_specs
+from lean_constellation.app.agent_provider_config import (
+    apply_agent_home_overrides,
+    build_builtin_provider_registry,
+)
 from lean_constellation.app.config import LeanAppConfig
 from lean_constellation.app.runtime import create_app_runtime_services, external_client_config_from_app_config
 from lean_constellation.domain.common import StrictModel
@@ -88,6 +94,10 @@ class RepoRuntimeRegistry:
         self.external_config = external_config or external_client_config_from_app_config(config)
         self.external_overrides = external_overrides
         self.agent_providers = agent_providers
+        self.agent_type_specs = apply_agent_home_overrides(
+            build_agent_type_specs(),
+            config.agent_home_overrides,
+        )
         self.result = result or ResultErrorComponent()
         self._records: dict[str, RepoRuntimeRecord] = {}
         self._lock = RLock()
@@ -573,11 +583,23 @@ class RepoRuntimeRegistry:
         record.last_error = None
         try:
             record.runtime_root.mkdir(parents=True, exist_ok=True)
+            runtime_agent_type_specs = list(self.agent_type_specs)
+            if self.config.test_control_enabled:
+                runtime_agent_type_specs.extend(
+                    build_controlled_test_agent_type_specs(specs=self.agent_type_specs)
+                )
+            provider_registry = build_builtin_provider_registry(
+                record.runtime_root,
+                self.agent_type_specs,
+                self.config.agent_home_overrides,
+            )
             runtime = create_app_runtime_services(
                 runtime_root=record.runtime_root,
                 external_config=self.external_config,
                 external_overrides=self.external_overrides,
                 agent_providers=self.agent_providers,
+                provider_registry=provider_registry,
+                agent_type_specs=runtime_agent_type_specs,
                 native_lake_project_config=self.config.native_lake_project,
                 workspace_config=self.config.workspace_config,
                 max_concurrent_flow_advances=self.config.max_concurrent_flow_advances,
@@ -627,6 +649,7 @@ class RepoRuntimeRegistry:
             base_config_path=self.config.codex_base_config_path,
             auth_json_path=self.config.codex_auth_json_path,
             shared_elan_home=self.config.shared_elan_home,
+            agent_type_specs=self.agent_type_specs,
             agent_home_overrides=self.config.agent_home_overrides,
         )
         if result.ok and result.value is not None:

@@ -12,6 +12,7 @@ from lean_constellation.agents import (
     get_agent_type_spec,
 )
 from lean_constellation.agents.surface import build_agent_surface_reports
+from lean_constellation.agents.ark import build_ark_agent_type
 
 
 EXPECTED_AGENT_TYPES = {
@@ -83,6 +84,21 @@ def test_representative_agent_specs_bind_expected_views_and_steps() -> None:
 
     assert statement_worker.agent_step_type == "decl_stage_worker_agent_step"
     assert statement_worker.stage == "statement_nl"
+
+
+def test_ark_agent_type_carries_provider_and_default_home_binding() -> None:
+    specs = build_agent_type_specs()
+    configured = [
+        spec.model_copy(update={"home_type": "claude_code"})
+        if spec.agent_type == "ContentPlanAgent"
+        else spec
+        for spec in specs
+    ]
+
+    agent_type = build_ark_agent_type("ContentPlanAgent", specs=configured)
+
+    assert agent_type.provider_type == "claude_code"
+    assert agent_type.default_home_id == "ContentPlanAgent"
 
 
 def test_decl_stage_reviewer_specs_use_base_runtime_stage_names() -> None:

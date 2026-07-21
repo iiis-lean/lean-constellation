@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent_runtime_kit.agent.homes import HomeCreateSpec
+from agent_runtime_kit.agent.provider_contracts import ModelBackendIdentity, ProviderHomeSpec
 
 from lean_constellation.agents import build_agent_home_bootstrap_spec, build_agent_type_specs, derive_agent_type_spec
 
@@ -74,3 +75,29 @@ def test_home_bootstrap_spec_supports_derived_agent_type_identity() -> None:
     assert spec.fixed_env["LEAN_CONSTELLATION_AGENT_TYPE"] == "CoordinatorControlledTestAgent"
     assert spec.fixed_env["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] == "native_repo_coordinator"
     assert spec.ark_home_create_spec.fixed_env["LEAN_CONSTELLATION_AGENT_TYPE"] == "CoordinatorControlledTestAgent"
+
+
+def test_home_bootstrap_spec_projects_resources_to_provider_home_spec() -> None:
+    identity = ModelBackendIdentity(
+        api_provider="deepseek",
+        api_mode="openai_chat_completions",
+        requested_model="deepseek-chat",
+    )
+
+    spec = build_agent_home_bootstrap_spec(
+        "ContentPlanAgent",
+        provider_type="opencode",
+        mcp_http_base_url="http://127.0.0.1:8765",
+        model_config=identity,
+        required_env={"DEEPSEEK_API_KEY"},
+    )
+
+    ark_spec = spec.ark_home_create_spec
+    assert isinstance(ark_spec, ProviderHomeSpec)
+    assert spec.home_type == "opencode"
+    assert ark_spec.provider_type == "opencode"
+    assert ark_spec.model_config == identity
+    assert "## Content Plan Agent" in str(ark_spec.instructions[0])
+    assert {skill.name for skill in ark_spec.skills} >= {"decl-round-change-planning"}
+    assert {server.name for server in ark_spec.mcp_servers} == {"lc_app", "lc_submit"}
+    assert ark_spec.required_env == ("DEEPSEEK_API_KEY",)

@@ -11,9 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
-from agent_runtime_kit.agent.homes import ModelConfigOverrides
+from agent_runtime_kit.agent.homes import HomeCreateSpec, ModelConfigOverrides
+from agent_runtime_kit.agent.provider_contracts import BaseConfigSource, ModelBackendIdentity
 
 from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec, build_agent_type_specs
+from lean_constellation.app.agent_provider_config import (
+    model_identity_from_override,
+    provider_options_from_override,
+)
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
 from lean_constellation.services.runtime import LeanRuntimeServices
@@ -32,6 +37,7 @@ class RepoBusinessInitView(StrictModel):
 
 class AgentHomeMaterializationView(StrictModel):
     agent_type: str
+    provider_type: str
     home_id: str
     home_root: str
     instruction_path: str
@@ -50,6 +56,7 @@ class ProductionAgentHomesView(StrictModel):
     mcp_http_base_url: str
     codex_base_config_path: str | None = None
     codex_auth_json_path: str | None = None
+    provider_types: dict[str, str] = Field(default_factory=dict)
     summary: str
 
 
@@ -99,6 +106,11 @@ def materialize_agent_home(
     required_env: set[str] | None = None,
     agent_type_specs: Sequence["AgentTypeSpec"] | None = None,
     model_config_overrides: ModelConfigOverrides | None = None,
+    provider_type: str | None = None,
+    model_config: ModelBackendIdentity | None = None,
+    config_overrides: dict[str, object] | None = None,
+    auth_refs: tuple[str, ...] = (),
+    provider_options: object | None = None,
 ) -> ServiceResult[AgentHomeMaterializationView]:
     """Materialize one AgentType home through ARK HomeService."""
 
@@ -112,14 +124,26 @@ def materialize_agent_home(
             mcp_server_env=mcp_server_env,
             fixed_env=fixed_env,
             required_env=required_env,
+            provider_type=provider_type,  # type: ignore[arg-type]
+            base_config=(
+                BaseConfigSource(path=str(Path(base_config_path).expanduser()))
+                if base_config_path is not None
+                else None
+            ),
+            config_overrides=config_overrides,
+            model_config=model_config,
+            auth_refs=auth_refs,
+            provider_options=provider_options,
             specs=agent_type_specs,
         )
-        ark_spec = replace(
-            spec.ark_home_create_spec,
-            base_config_path=Path(base_config_path).expanduser() if base_config_path is not None else None,
-            auth_json_path=Path(auth_json_path).expanduser() if auth_json_path is not None else None,
-            model_config_overrides=model_config_overrides,
-        )
+        ark_spec = spec.ark_home_create_spec
+        if isinstance(ark_spec, HomeCreateSpec):
+            ark_spec = replace(
+                ark_spec,
+                base_config_path=Path(base_config_path).expanduser() if base_config_path is not None else None,
+                auth_json_path=Path(auth_json_path).expanduser() if auth_json_path is not None else None,
+                model_config_overrides=model_config_overrides,
+            )
         home_service = getattr(runtime.ark.agent_service, "home_service", None)
         if home_service is None:
             return runtime.foundation.fail(
@@ -127,11 +151,10 @@ def materialize_agent_home(
             )
         record = home_service.create_home(ark_spec)
         home_root = home_service.resolve_home_root(record.cli_type, record.home_id)
-        _disable_global_codex_features(home_root / ".codex" / "config.toml")
+        if record.cli_type == "codex":
+            _disable_global_codex_features(home_root / ".codex" / "config.toml")
         instruction_path = _write_agent_instruction(home_root, spec)
-        effective_model, effective_reasoning_effort = _read_effective_model_config(
-            home_root / ".codex" / "config.toml"
-        )
+        effective_model, effective_reasoning_effort = _effective_model_values(record, home_root)
         manifest_path = _write_agent_home_manifest(
             home_root,
             spec,
@@ -147,14 +170,12 @@ def materialize_agent_home(
     except Exception as exc:  # noqa: BLE001 - bootstrap boundary.
         return runtime.foundation.fail(runtime.foundation.issue("agent_home_materialization_failed", f"Agent home materialization failed: {exc}"))
 
-    skill_paths = {
-        key: str(home_root / ".agents" / "skills" / key)
-        for key in sorted(spec.skill_specs)
-    }
+    skill_paths = _materialized_skill_paths(home_root, spec)
     codex_config = home_root / ".codex" / "config.toml"
     return runtime.foundation.ok(
         AgentHomeMaterializationView(
             agent_type=spec.agent_type,
+            provider_type=record.cli_type,
             home_id=record.home_id,
             home_root=str(home_root),
             instruction_path=str(instruction_path),
@@ -182,10 +203,12 @@ def materialize_production_agent_homes(
 
     base_config = Path(base_config_path).expanduser() if base_config_path is not None else None
     auth_json = Path(auth_json_path).expanduser() if auth_json_path is not None else None
+    specs = list(agent_type_specs) if agent_type_specs is not None else build_agent_type_specs()
+    codex_required = any(spec.home_type == "codex" for spec in specs)
     missing: list[dict[str, str]] = []
-    if base_config is None or not base_config.exists():
+    if codex_required and (base_config is None or not base_config.exists()):
         missing.append({"field": "codex_base_config_path", "path": str(base_config) if base_config else ""})
-    if auth_json is None or not auth_json.exists():
+    if codex_required and (auth_json is None or not auth_json.exists()):
         missing.append({"field": "codex_auth_json_path", "path": str(auth_json) if auth_json else ""})
     if missing:
         return runtime.foundation.fail(
@@ -205,28 +228,46 @@ def materialize_production_agent_homes(
             )
         )
 
-    specs = list(agent_type_specs) if agent_type_specs is not None else build_agent_type_specs()
     materialized: list[AgentHomeMaterializationView] = []
     failed: list[dict[str, str]] = []
     for spec in specs:
-        configured_override = (agent_home_overrides or {}).get(spec.agent_type)
-        model_override = None
-        if configured_override is not None:
-            model_override = ModelConfigOverrides(
-                model=getattr(configured_override, "model", None),
-                reasoning_effort=getattr(configured_override, "model_reasoning_effort", None),
+        try:
+            configured_override = (agent_home_overrides or {}).get(spec.agent_type)
+            provider_type = spec.home_type
+            model_override = None
+            if configured_override is not None and provider_type == "codex":
+                model_override = ModelConfigOverrides(
+                    model=getattr(configured_override, "model", None),
+                    reasoning_effort=getattr(configured_override, "model_reasoning_effort", None),
+                )
+            result = materialize_agent_home(
+                runtime,
+                spec.agent_type,
+                home_id=spec.agent_type,
+                mcp_http_base_url=mcp_http_base_url,
+                base_config_path=(
+                    getattr(configured_override, "base_config_path", None)
+                    if provider_type != "codex"
+                    else base_config
+                ),
+                auth_json_path=auth_json if provider_type == "codex" else None,
+                fixed_env={"ELAN_HOME": str(elan_home)},
+                required_env=set(getattr(configured_override, "required_env", ()) or ()),
+                agent_type_specs=specs,
+                model_config_overrides=model_override,
+                provider_type=provider_type,
+                model_config=(
+                    None
+                    if provider_type == "codex"
+                    else model_identity_from_override(configured_override)
+                ),
+                config_overrides=dict(getattr(configured_override, "config_overrides", {}) or {}),
+                auth_refs=tuple(getattr(configured_override, "auth_refs", ()) or ()),
+                provider_options=provider_options_from_override(provider_type, configured_override),
             )
-        result = materialize_agent_home(
-            runtime,
-            spec.agent_type,
-            home_id=spec.agent_type,
-            mcp_http_base_url=mcp_http_base_url,
-            base_config_path=base_config,
-            auth_json_path=auth_json,
-            fixed_env={"ELAN_HOME": str(elan_home)},
-            agent_type_specs=specs,
-            model_config_overrides=model_override,
-        )
+        except Exception as exc:  # noqa: BLE001 - one Home must not hide other failures.
+            failed.append({"agent_type": spec.agent_type, "message": str(exc)})
+            continue
         if result.ok and result.value is not None:
             materialized.append(result.value)
             continue
@@ -241,8 +282,9 @@ def materialize_production_agent_homes(
         materialized=materialized,
         failed=failed,
         mcp_http_base_url=mcp_http_base_url.rstrip("/"),
-        codex_base_config_path=str(base_config),
-        codex_auth_json_path=str(auth_json),
+        codex_base_config_path=str(base_config) if base_config is not None else None,
+        codex_auth_json_path=str(auth_json) if auth_json is not None else None,
+        provider_types={spec.agent_type: spec.home_type for spec in specs},
         summary=f"Materialized {len(materialized)}/{len(specs)} production Agent homes.",
     )
     if failed:
@@ -323,6 +365,7 @@ def _write_agent_home_manifest(
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "agent_type": spec.agent_type,
+        "provider_type": spec.home_type,
         "home_id": spec.home_id,
         "tool_view_config": spec.tool_view_config.model_dump(mode="json"),
         "fixed_env": dict(sorted(spec.fixed_env.items())),
@@ -336,6 +379,35 @@ def _write_agent_home_manifest(
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _effective_model_values(record, home_root: Path) -> tuple[str | None, str | None]:  # noqa: ANN001
+    if record.cli_type == "codex":
+        return _read_effective_model_config(home_root / ".codex" / "config.toml")
+    defaults = record.resolved_defaults or {}
+    model = defaults.get("requested_model") or defaults.get("resolved_model")
+    reasoning = defaults.get("reasoning_effort")
+    return (
+        str(model) if isinstance(model, str) else None,
+        str(reasoning) if isinstance(reasoning, str) else None,
+    )
+
+
+def _materialized_skill_paths(home_root: Path, spec: AgentHomeBootstrapSpec) -> dict[str, str]:
+    roots = (
+        home_root / ".agents" / "skills",
+        home_root / ".claude" / "skills",
+        home_root / ".pi" / "skills",
+        home_root / "skills",
+    )
+    paths: dict[str, str] = {}
+    for skill_key in spec.skill_specs:
+        for root in roots:
+            candidate = root / skill_key / "SKILL.md"
+            if candidate.exists():
+                paths[skill_key] = str(candidate.parent)
+                break
+    return paths
 
 
 def _read_effective_model_config(config_path: Path) -> tuple[str | None, str | None]:
