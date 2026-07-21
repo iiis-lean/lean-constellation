@@ -81,6 +81,43 @@ def test_decl_round_callback_uses_authoritative_revision_refs_when_terminal_reas
     assert "$content-plan-proved-full-graph-mode" in prompt
 
 
+def test_blocked_decl_round_callback_preserves_formal_mismatch_without_copying_reason() -> None:
+    round_record = SimpleNamespace(revision_refs=[SimpleNamespace(decl_name="consumer_theorem")])
+    ctx = SimpleNamespace(
+        app=SimpleNamespace(
+            decl_graph=SimpleNamespace(
+                get_round=lambda *_args, **_kwargs: SimpleNamespace(ok=True, value=round_record)
+            )
+        )
+    )
+    result = SimpleNamespace(
+        outcome="blocked",
+        node_path="Main.Core",
+        round_id="round_blocked",
+        terminal_stage="proof_formal",
+        terminal_reason="SENTINEL PRIVATE BLOCKER BODY",
+    )
+    child = SimpleNamespace(
+        flow_type="decl_graph_round",
+        status=None,
+        result=result,
+        input=SimpleNamespace(repo_path="/tmp/Repo", node_path="Main.Core", round_id="round_blocked"),
+    )
+
+    prompt = _content_plan_callback_guidance(
+        ctx,
+        [child],
+        mode_skill="content-plan-proved-full-graph-mode",
+    )
+
+    assert "$decl-round-closeout" in prompt
+    assert "consumer-side formal goal" in prompt
+    assert "checked declarations" in prompt
+    assert "concrete mismatch" in prompt
+    assert "re-read every affected revision" in prompt
+    assert "SENTINEL PRIVATE BLOCKER BODY" not in prompt
+
+
 def _start_content_flow(runtime: FakeLeanFlowRuntime, tmp_path: Path) -> str:
     repo_root = tmp_path / "Repo"
     repo_root.mkdir(exist_ok=True)

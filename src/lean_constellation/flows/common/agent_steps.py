@@ -399,18 +399,7 @@ class CoordinatorAgentStep(AgentStep):
                 "resource truth before choosing exactly one next coordination move."
             )
         else:
-            outcomes = [
-                getattr(getattr(child, "result", None), "outcome", "runtime_failed")
-                if child.status is not FlowStatus.FAILED
-                else "runtime_failed"
-                for child in children
-            ]
-            guidance = (
-                "Required Skill re-entry for this turn: read and apply $coordinator-content-result-closeout "
-                "first, then re-read the current Coordinator mode Skill. Classify all content outcomes "
-                f"({', '.join(str(item) for item in outcomes) or 'none'}); if a task reports scope overflow, "
-                "choose between splitting the node and explicitly revising its contract scope."
-            )
+            guidance = _coordinator_content_callback_guidance(children)
         return f"{base}\n\nCurrent callback routing:\n{guidance}"
 
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
@@ -828,6 +817,13 @@ def _content_plan_callback_guidance(ctx, children: list[object], *, mode_skill: 
     if flow_type == "decl_graph_round":
         terminal_stage = getattr(result, "terminal_stage", None)
         affected = _round_affected_decl_names(ctx, child, result)
+        blocker_guidance = (
+            " Because this round is blocked or failed, preserve the consumer-side formal goal, checked "
+            "declarations, concrete mismatch, and parent retry conditions in closeout; re-read every affected "
+            "revision before any terminal Content blocker."
+            if outcome in {"blocked", "failed", "runtime_failed"}
+            else ""
+        )
         return (
             "Required Skill order for this turn: read and apply $decl-round-closeout first, then "
             f"${mode_skill}, then $decl-strategy-planning. The round outcome is {outcome}; "
@@ -835,6 +831,7 @@ def _content_plan_callback_guidance(ctx, children: list[object], *, mode_skill: 
             f"{', '.join(affected) or 'none'}. Close out the terminal round before any new mutation, "
             "reassess whether the strategy still explains the next round, classify any blocker, verify "
             "known dependency closure before retrying a parent proof, and check graph hygiene and node scope."
+            f"{blocker_guidance}"
         )
     if flow_type == "resource_curation":
         return (
@@ -853,6 +850,37 @@ def _content_plan_callback_guidance(ctx, children: list[object], *, mode_skill: 
         f"Re-read and apply ${mode_skill} and $decl-strategy-planning now. Classify the child outcome "
         f"({outcome}) before choosing exactly one next ContentPlan action."
     )
+
+
+def _coordinator_content_callback_guidance(children: list[object]) -> str:
+    """Derive generic Content callback guidance from child outcomes only."""
+
+    outcomes = [
+        getattr(getattr(child, "result", None), "outcome", "runtime_failed")
+        if getattr(child, "status", None) is not FlowStatus.FAILED
+        else "runtime_failed"
+        for child in children
+    ]
+    guidance = (
+        "Required Skill re-entry for this turn: read and apply $coordinator-content-result-closeout first, "
+        "then re-read the current Coordinator mode Skill. Classify all content outcomes "
+        f"({', '.join(str(item) for item in outcomes) or 'none'}); if a task reports scope overflow, "
+        "choose among current-node continuation, existing-node ownership, a coherent new ordinary Content "
+        "boundary, and interface or route repair."
+    )
+    if any(outcome in {"blocked", "failed", "runtime_failed"} for outcome in outcomes):
+        guidance += (
+            " For boundary-external missing work, treat the result reason as an index and inspect the "
+            "authoritative private consumer revision, accepted proof route, and dependencies before changing "
+            "contracts or node structure."
+        )
+    if "ready" in outcomes:
+        guidance += (
+            " When a ready result is intended to discharge another Content node dependency, compare its actual "
+            "bound public signature with the original private consumer before treating that dependency as "
+            "satisfied."
+        )
+    return guidance
 
 
 def _round_affected_decl_names(ctx, child: object | None, result: object | None) -> list[str]:  # noqa: ANN001

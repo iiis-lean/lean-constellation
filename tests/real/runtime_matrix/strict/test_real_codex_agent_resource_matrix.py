@@ -95,13 +95,16 @@ def test_strict_real_codex_coordinator_resources_tools_and_submit(
     flow = ws.runtime.ark.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result is not None
-    assert flow.result.outcome == "repo_ready"
+    assert flow.result.outcome == "candidate_prepared"
+    assert flow.result.prepared_release is not None
 
     data = _read_artifact(artifact_path)
     assert data["prompt_marker_seen"] == prompt_marker
     assert data["developer_marker_seen"] == developer_marker
     assert data["artifact_home_root"] == str(home_root)
-    assert any(str(key).startswith("coordinator-") for key in data["skill_keys_seen"])
+    assert "coordinator-content-result-closeout" in data["skill_keys_seen"]
+    assert data["private_consumer_guidance_seen"] is True
+    assert data["dependent_ready_guidance_seen"] is True
     tools_called = set(data["application_tools_called"])
     assert {"inspect_workspace_for_coordinator", "get_node_tree"}.issubset(tools_called)
     assert data["submit_tool_called"] == "submit_repo_ready"
@@ -1008,10 +1011,10 @@ You are inside a controlled Coordinator AgentStep. This is a scheduling/resource
 
 Do these exact actions:
 1. Read the developer instructions and find the first token that starts with RTCODEX_DEV_MARKER_COORDINATOR_STRICT_.
-2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report at least one actual skill key whose directory name starts with "coordinator-".
+2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json", then read the actual "$HOME/.agents/skills/coordinator-content-result-closeout/SKILL.md". Report that exact skill key. Set private_consumer_guidance_seen=true only if the Skill makes private consumer inspection mandatory for boundary-external blocked work and names inspect_node_decl. Set dependent_ready_guidance_seen=true only if the Skill requires comparing an actual bound public declaration with the original private consumer before treating another node dependency as satisfied.
 3. Call the application MCP tools "inspect_workspace_for_coordinator" and "get_node_tree".
 4. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
-   prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called.
+   prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, private_consumer_guidance_seen, dependent_ready_guidance_seen, application_tools_called, submit_tool_called.
    Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
 5. Call submit tool "submit_repo_ready" with summary "Strict real Codex Coordinator resource probe marks repo ready."
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 
-from lean_constellation.flows.common.agent_steps import CoordinatorAgentStep
+from lean_constellation.flows.common.agent_steps import CoordinatorAgentStep, _coordinator_content_callback_guidance
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.coordinator.steps import CoordinatorStepResult
@@ -149,3 +150,36 @@ def test_coordinator_agent_step_requirement_ready_and_incomplete_results(tmp_pat
     )
     assert isinstance(incomplete.result, CoordinatorStepResult)
     assert incomplete.result.outcome == "incomplete"
+
+
+def test_coordinator_content_callback_guidance_routes_ready_blocked_mixed_and_failed() -> None:
+    def child(outcome: str):
+        return SimpleNamespace(
+            status=None,
+            result=SimpleNamespace(outcome=outcome, reason="SENTINEL PRIVATE RESULT BODY"),
+        )
+
+    ready = _coordinator_content_callback_guidance([child("ready")])
+    assert "$coordinator-content-result-closeout" in ready
+    assert "actual bound public signature" in ready
+    assert "original private consumer" in ready
+    assert "authoritative private consumer revision" not in ready
+
+    blocked = _coordinator_content_callback_guidance([child("blocked")])
+    assert "authoritative private consumer revision" in blocked
+    assert "accepted proof route" in blocked
+    assert "actual bound public signature" not in blocked
+
+    mixed = _coordinator_content_callback_guidance([child("ready"), child("blocked")])
+    assert "authoritative private consumer revision" in mixed
+    assert "actual bound public signature" in mixed
+
+    failed = _coordinator_content_callback_guidance([child("failed")])
+    assert "authoritative private consumer revision" in failed
+    assert "Classify all content outcomes (failed)" in failed
+
+    for prompt in (ready, blocked, mixed, failed):
+        assert "SENTINEL PRIVATE RESULT BODY" not in prompt
+        assert "new ordinary Content boundary" in prompt
+        assert "support node" not in prompt
+        assert "adapter node" not in prompt

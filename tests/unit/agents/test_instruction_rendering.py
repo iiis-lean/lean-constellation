@@ -66,6 +66,13 @@ def test_coordinator_instruction_routes_closeout_then_repeated_next_actions() ->
     assert "coordinator-repo-requirement-lifecycle" not in text
     assert "resource-request-handling" not in text
     assert "attach_requirement_provider_dependency" not in text
+    assert "authoritative private consumer declaration" in text
+    assert "continue the current Content node" in text
+    assert "reuse an existing Content node" in text
+    assert "create a new ordinary Content node" in text
+    assert "repair an existing interface or proof route" in text
+    assert "consumer anchor" in text
+    assert "without becoming an exact header" in text
 
 
 def test_coordinator_instruction_lists_exact_normal_submit_boundary() -> None:
@@ -178,6 +185,41 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "Interface binding is part of ContentPlan closeout" in text
     assert "submit_content_node_ready" in text
     assert "Do not replace NodeDirDependencyReconFlow, MathlibReconFlow, or ResourceReconFlow" in text
+    assert "consumer-side formal goal" in text
+    assert "existing declarations checked and their mismatches" in text
+    assert "you do not decide or create the repository node tree" in text
+    assert "statement hint" in text
+
+
+def test_decl_worker_instructions_preserve_precise_blocker_evidence() -> None:
+    for agent_type in (
+        "StatementNLWorkerAgent",
+        "StatementFormalWorkerAgent",
+        "ProofNLWorkerAgent",
+        "ProofFormalWorkerAgent",
+    ):
+        text = render_agent_instruction(agent_type)
+        assert "affected declaration" in text, agent_type
+        assert "consumer-side formal goal or shape" in text or "exact local goal or diagnostic shape" in text, agent_type
+        assert "declarations" in text and "concrete mismatch" in text, agent_type
+        assert "final theorem for another Content node" in text, agent_type
+
+
+def test_native_content_guidance_does_not_add_node_use_categories_or_exact_statement_ownership() -> None:
+    text = "\n".join(
+        render_agent_instruction(agent_type)
+        for agent_type in ("CoordinatorAgent", "ContentPlanAgent")
+    )
+
+    for forbidden in (
+        "support node",
+        "adapter node",
+        "support node ready",
+        "expected_statement_lean_code",
+        "NodeKind.SUPPORT",
+        "NodeKind.ADAPTER",
+    ):
+        assert forbidden not in text
 
 
 def test_repo_format_discovery_instruction_spells_out_scoped_remote_workflow() -> None:

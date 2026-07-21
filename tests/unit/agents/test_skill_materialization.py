@@ -322,6 +322,89 @@ def test_decl_dependency_origin_curation_spells_out_stability_rules() -> None:
     assert "statement dependencies and proof dependencies separate" in body
     assert "unfinished same-round declarations" in body
     assert "blocked needs" in body
+    assert "unresolved consumer-side goal or formal shape" in body
+    assert "precise semantic or signature mismatch" in body
+    assert "must not design the final public theorem" in body
+
+
+def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semantics() -> None:
+    specs = build_skill_specs()
+
+    contract_reading = specs["content-contract-reading"].body
+    assert "statement hint as contract guidance" in contract_reading
+    assert "not an exact header" in contract_reading
+    assert "infer a special node category" in contract_reading
+
+    contract_design = specs["node-contract-design"].body
+    assert "consumer declaration or revision" in contract_design
+    assert "expected input/output shape" in contract_design
+    assert "minimal consumer-side Lean snippet" in contract_design
+
+    closeout = specs["decl-round-closeout"].body
+    assert "unresolved consumer-side local goal or formal shape" in closeout
+    assert "conditions that must hold before retrying a parent declaration" in closeout
+    assert '"needs a helper"' in closeout
+
+    completion = specs["content-node-completion-decision"].body
+    assert "## Interface Semantic Fit" in completion
+    assert "structured multiline reason" in completion
+    assert "existing declarations checked and each concrete mismatch" in completion
+    assert "do not create or decide the repository node tree" in completion
+
+    result_closeout = specs["coordinator-content-result-closeout"].body
+    assert "private consumer inspection is mandatory" in result_closeout
+    assert "blocked reason is an index into authoritative truth" in result_closeout
+    assert "actual bound public declaration" in result_closeout
+    assert "does not establish consumer applicability merely by name" in result_closeout
+
+    decomposition = specs["coordinator-node-decomposition"].body
+    for expected in (
+        "continue the current Content node",
+        "reuse an existing Content node",
+        "create a new ordinary Content node",
+        "repair an existing interface",
+    ):
+        assert expected in decomposition
+
+    readiness = specs["coordinator-dependency-readiness"].body
+    assert "prefer bottom-up readiness" in readiness
+    assert "assumptions, parameter and index representation, and conclusion direction" in readiness
+
+    dispatch = specs["coordinator-content-task-dispatch"].body
+    assert "authoritative private consumer" in dispatch
+    assert "A vague request" in dispatch
+
+    strategy = specs["decl-strategy-planning"].body
+    round_planning = specs["decl-round-change-planning"].body
+    assert "consumer-side shape" in strategy
+    assert "consumer-side Lean shape" in round_planning
+    assert "do not grow the round or strategy indefinitely" in round_planning
+
+    native_text = "\n".join(
+        specs[key].body
+        for key in (
+            "content-contract-reading",
+            "node-contract-design",
+            "coordinator-node-decomposition",
+            "coordinator-content-result-closeout",
+            "coordinator-dependency-readiness",
+            "coordinator-content-task-dispatch",
+            "decl-strategy-planning",
+            "decl-round-change-planning",
+            "decl-round-closeout",
+            "content-node-completion-decision",
+            "decl-dependency-origin-curation",
+        )
+    )
+    for forbidden in (
+        "support node",
+        "adapter node",
+        "support node ready",
+        "expected_statement_lean_code",
+        "NodeKind.SUPPORT",
+        "NodeKind.ADAPTER",
+    ):
+        assert forbidden not in native_text
 
 
 def test_coordinator_mode_skills_spell_out_node_tree_policy() -> None:

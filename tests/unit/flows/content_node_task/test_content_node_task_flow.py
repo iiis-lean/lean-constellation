@@ -219,6 +219,14 @@ def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(
     assert callback_step_id is not None
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "callback_plan_agent"
 
+    blocked_reason = """Blocked object
+- Main.Core::consumer@2
+
+Concrete gap
+- Existing public theorem has a different index representation.
+
+Consumer-side formal context
+- ⊢ consumerGoal x"""
     runtime.agent_service.queue_submission(
         ContentNodeBlockedSubmission(
             submission_id=new_submission_id("sub"),
@@ -226,14 +234,15 @@ def test_content_node_task_preparation_dispatch_callback_and_blocked_completion(
             tool_name="submit_content_node_blocked",
             repo_key=repo_root.name,
             node_path="Main.Core",
-            reason="Need Coordinator to add an external provider.",
-            summary="Need Coordinator to add an external provider.",
+            reason=blocked_reason,
+            summary=blocked_reason,
         )
     )
     runtime.run_step(callback_step_id)
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "blocked"
+    assert flow.result.reason == blocked_reason
     assert len(runtime.agent_service.start_records) == 2
     assert runtime.agent_service.start_records[0].agent_id == runtime.agent_service.start_records[1].agent_id
     assert runtime.agent_service.start_records[0].workdir == _expected_node_workdir(repo_root)

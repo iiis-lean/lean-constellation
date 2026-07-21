@@ -400,6 +400,14 @@ def test_coordinator_content_task_result_tools_read_callback_results(tmp_path: P
     flow_id = "flow_native_repo_coordinator"
     step_id = "step_native_repo_coordinator"
     dispatch_step_id = "dispatch_content_tasks"
+    blocked_reason = """Blocked object
+- Main.Blocked::consumer@3
+
+Concrete gap
+- Existing theorem changes the required index.
+
+Consumer-side formal context
+- ⊢ exactConsumerGoal"""
     runtime.ark.flow_service = _FakeCallbackFlowService(
         flow_id=flow_id,
         step_id=step_id,
@@ -417,7 +425,7 @@ def test_coordinator_content_task_result_tools_read_callback_results(tmp_path: P
                 repo_key="Repo",
                 node_path="Main.Blocked",
                 contract_version=1,
-                reason="Need provider.",
+                reason=blocked_reason,
                 summary="Blocked on provider.",
             ),
         ],
@@ -440,6 +448,7 @@ def test_coordinator_content_task_result_tools_read_callback_results(tmp_path: P
 
     assert list_value["count"] == 2
     assert [item["node_path"] for item in list_value["items"]] == ["Main.Blocked", "Main.Core"]
+    assert list_value["items"][0]["reason"] == blocked_reason
     assert inspect_value["result"]["node_path"] == "Main.Core"
     assert inspect_value["result"]["contract_version"] == 2
 

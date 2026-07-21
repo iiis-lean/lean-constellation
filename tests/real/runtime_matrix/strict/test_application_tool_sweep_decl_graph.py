@@ -340,24 +340,24 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
         server,
         "content_plan",
         "mark_decl_round_terminal",
-        {"round_id": round_id, "result_kind": "success"},
+        {"round_id": round_id, "result_kind": "blocked"},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Decl round was marked terminal success.",
+        assertion_summary="Unexecuted ToolSweep changes were closed as a terminal blocked round.",
     )
     assert _field(terminal.value, "status") == "committed"
-    assert _field(terminal.value, "result_kind") == "success"
+    assert _field(terminal.value, "result_kind") == "blocked"
 
     closed_strategy = call_tool_with_evidence(
         server,
         "content_plan",
         "close_decl_strategy",
-        {"strategy_id": strategy_id, "summary": "Strict ToolSweep strategy closed.", "reason": "ToolSweep complete.", "failed": False},
+        {"strategy_id": strategy_id, "summary": "Strict ToolSweep strategy closed.", "reason": "ToolSweep complete.", "failed": True},
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Decl strategy was closed.",
     )
-    assert _field(closed_strategy.value, "status") == "closed"
+    assert _field(closed_strategy.value, "status") == "failed"
 
     restore_with_evidence(
         ws.admin,
