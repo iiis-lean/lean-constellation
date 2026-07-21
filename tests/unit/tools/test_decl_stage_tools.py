@@ -488,6 +488,70 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
     ).ok
     strategy = runtime.decl_graph.ensure_open_strategy(tmp_path, node_path="Main.Topic.Core", objective="Strategy")
     assert strategy.ok and strategy.value is not None
+    definition_round = runtime.decl_graph.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Create a definition used by the later proof round.",
+    )
+    assert definition_round.ok and definition_round.value is not None
+    definition = runtime.decl_graph.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=definition_round.value.round_id,
+        name="declared_definition",
+        kind="definition",
+        objective="Create declared_definition",
+        summary="A definition accepted before the theorem proof round.",
+        target_state=DeclState.DECLARED,
+    )
+    assert definition.ok and definition.value is not None
+    assert runtime.decl_graph.start_round(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=definition_round.value.round_id,
+    ).ok
+    assert runtime.decl_graph.write_statement_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=definition_round.value.round_id,
+        decl_name="declared_definition",
+        nl="declared_definition is a unit-valued definition.",
+    ).ok
+    assert write_statement_formal_for_test(
+        runtime,
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=definition_round.value.round_id,
+        decl_name="declared_definition",
+        lean_code="def declared_definition : Unit := ()",
+        lean_check=lean_check_payload(),
+    ).ok
+    assert runtime.decl_graph.commit_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="declared_definition",
+        state=DeclState.DECLARED,
+    ).ok
+    assert runtime.decl_graph.write_decl_change_summary(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=definition_round.value.round_id,
+        change_id=definition.value.change_id,
+        summary="Created the accepted definition.",
+    ).ok
+    assert runtime.decl_graph.write_round_summary(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=definition_round.value.round_id,
+        summary="The definition is available to later proof rounds.",
+    ).ok
+    assert runtime.decl_graph.mark_round_terminal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=definition_round.value.round_id,
+        result_kind="success",
+    ).ok
     round_record = runtime.decl_graph.create_round_draft(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -577,6 +641,18 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
     assert stored.value.proof.deps[0].kind == "repo_decl"
     assert stored.value.proof.deps[0].reason == "Main proof uses helper."
 
+    definition_dep = _add_proof_decl_dep(
+        runtime,
+        ctx,
+        ProofDeclDepAddArgs(
+            decl_name="main_result",
+            dep_name="declared_definition",
+            reason="Main proof uses the accepted definition.",
+        ),
+    )
+    assert definition_dep.ok, definition_dep.issues
+    assert definition_dep.value.decl.proof_deps == ["declared_definition", "proved_helper"]
+
     missing_mathlib = _add_proof_mathlib_dep(
         runtime,
         ctx,
@@ -604,8 +680,8 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
         ProofMathlibDepAddArgs(decl_name="main_result", mathlib_decl_name="Nat.succ", module="Mathlib.Data.Nat.Basic", reason="Proof uses successor facts."),
     )
     assert mathlib.ok, mathlib.issues
-    assert mathlib.value.decl.proof_deps == ["Nat.succ", "proved_helper"]
-    assert [item.kind for item in mathlib.value.decl.proof_dep_refs] == ["mathlib_decl", "repo_decl"]
+    assert mathlib.value.decl.proof_deps == ["Nat.succ", "declared_definition", "proved_helper"]
+    assert [item.kind for item in mathlib.value.decl.proof_dep_refs] == ["mathlib_decl", "repo_decl", "repo_decl"]
     assert mathlib.value.decl.proof_dep_refs[0].ref.module == "Mathlib.Data.Nat.Basic"
 
 

@@ -5,11 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from lean_constellation.services.decl_graph.availability_policy import is_theorem_like
 from lean_constellation.services.decl_graph.models import DeclState
 from lean_constellation.services.foundation import ServiceResult
-
-
-_THEOREM_LIKE_KINDS = {"theorem", "lemma", "proposition", "corollary"}
 
 
 def validate_proof_nl_candidate(
@@ -29,7 +27,7 @@ def validate_proof_nl_candidate(
         return runtime.foundation.fail(revision.issues)
 
     issues = []
-    if decl.value.kind not in _THEOREM_LIKE_KINDS:
+    if not is_theorem_like(decl.value.kind):
         issues.append(runtime.foundation.issue("proof_nl_target_not_theorem_like", "Proof NL candidates are only valid for theorem-like declarations.", object_ref=decl_name))
     if not revision.value.statement_lean_code:
         issues.append(runtime.foundation.issue("proof_nl_statement_formal_missing", "Accepted statement formal code is required before proof planning.", object_ref=decl_name))
@@ -162,10 +160,20 @@ def _validate_proof_dep(runtime: Any, repo_root: Path, node_path: str, round_ref
     dep_view = runtime.decl_graph.current_decl_revision_view(repo_root, node_path=node_path, name=dep_name)
     if not dep_view.ok or dep_view.value is None:
         return runtime.foundation.issue("proof_dep_not_visible", f"Proof dependency is not a visible current declaration: {dep_name}.", object_ref=dep_name)
+    dep_decl = runtime.decl_graph.get_decl(repo_root, node_path=node_path, name=dep_name)
+    if not dep_decl.ok or dep_decl.value is None:
+        return runtime.foundation.issue("proof_dep_not_visible", f"Proof dependency is not a visible current declaration: {dep_name}.", object_ref=dep_name)
     dep_state = DeclState(dep_view.value.state)
-    if dep_name in round_ref_names and not _state_reaches(dep_state, DeclState.PROVED):
-        return runtime.foundation.issue("proof_dep_same_round_not_proved", f"Proof dependency points to same-round declaration that is not accepted proved state: {dep_name}.", object_ref=dep_name)
-    if dep_name not in round_ref_names and not _state_reaches(dep_state, DeclState.PROOF_PLANNED):
+    theorem_like = is_theorem_like(dep_decl.value.kind)
+    if dep_name in round_ref_names:
+        required_state = DeclState.PROVED if theorem_like else DeclState.DECLARED
+        if not _state_reaches(dep_state, required_state):
+            return runtime.foundation.issue(
+                "proof_dep_same_round_not_proved",
+                f"Proof dependency points to a same-round declaration that has not reached its accepted dependency state: {dep_name}.",
+                object_ref=dep_name,
+            )
+    elif not _state_reaches(dep_state, DeclState.PROOF_PLANNED if theorem_like else DeclState.DECLARED):
         return runtime.foundation.issue("proof_dep_not_ready", f"Proof dependency has no accepted proof route or proof: {dep_name}.", object_ref=dep_name)
     return None
 
