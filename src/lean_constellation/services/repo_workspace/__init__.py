@@ -9,6 +9,9 @@ from lean_constellation.services.repo_workspace.lake_dependency import (
     RepoSkeletonView,
 )
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
+from lean_constellation.services.repo_workspace.native_source_index_recovery import (
+    NativeSourceIndexRecoveryComponent,
+)
 from lean_constellation.services.repo_workspace.repo_preparation import (
     PreparationInterfaceAppendView,
     PreparationStartPreflightView,
@@ -38,6 +41,7 @@ __all__ = [
     "LakeDependencyEntry",
     "LakeDependencyView",
     "NativeRepoCreationView",
+    "NativeSourceIndexRecoveryComponent",
     "RequirementConsumeView",
     "RequirementGroupSummaryView",
     "RequirementResumeCandidateView",

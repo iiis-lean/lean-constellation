@@ -59,6 +59,113 @@ class ValidateSourceIndexRunStepResult(LeanRenderableStepResult):
     error: SourceIndexFlowStepError | None = None
 
 
+class ValidateSourceIndexRecoveryStepResult(LeanRenderableStepResult):
+    result_type: Literal["validate_source_index_recovery"] = "validate_source_index_recovery"
+    outcome: Literal["passed", "blocked"]
+    baseline_digest: str | None = None
+    resolved_file_paths: list[str] = Field(default_factory=list)
+    readable_file_paths: list[str] = Field(default_factory=list)
+    artifact_file_paths: list[str] = Field(default_factory=list)
+    manifest_digest: str | None = None
+    new_file_paths: list[str] = Field(default_factory=list)
+    already_committed_file_paths: list[str] = Field(default_factory=list)
+    uncommitted_file_paths: list[str] = Field(default_factory=list)
+    review_round: int = 0
+    latest_builder_summary: str | None = None
+    reviewer_feedback: str | None = None
+    error: SourceIndexFlowStepError | None = None
+
+
+class ValidateSourceIndexRecoveryStep(BaseStep):
+    """Re-audit a recovery CAS before any new AgentStep is created."""
+
+    step_type: ClassVar[str] = "validate_source_index_recovery_step"
+    State: ClassVar[type[BaseStepState]] = BaseStepState
+    Result: ClassVar[type[BaseStepResult]] = ValidateSourceIndexRecoveryStepResult
+    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
+        "validate_source_index_recovery": ValidateSourceIndexRecoveryStepResult,
+    }
+
+    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
+        flow = _load_source_index_flow(ctx)
+        recovery = flow.input.recovery
+        if recovery is None or flow.parent_flow_id is None:
+            return ctx.complete_step(
+                _blocked_recovery(
+                    "source_index_recovery_contract_missing",
+                    "SourceIndex recovery requires a successor parent and recovery contract.",
+                )
+            )
+        try:
+            successor_parent = ctx.ark.flow_service.get_flow(flow.parent_flow_id)
+        except Exception:  # noqa: BLE001 - deterministic fail-closed validation.
+            return ctx.complete_step(
+                _blocked_recovery(
+                    "source_index_recovery_parent_missing",
+                    "The SourceIndex recovery successor parent cannot be loaded.",
+                )
+            )
+        parent_recovery = getattr(getattr(successor_parent, "input", None), "recovery", None)
+        if parent_recovery != recovery:
+            return ctx.complete_step(
+                _blocked_recovery(
+                    "source_index_recovery_parent_contract_mismatch",
+                    "The SourceIndex child recovery contract differs from its successor parent.",
+                )
+            )
+        preview = ctx.app.repo_workspace.native_source_index_recovery.revalidate_successor(
+            Path(flow.input.repo_root),
+            repo_key=flow.input.repo_key,
+            failed_parent_flow_id=recovery.failed_parent_flow_id,
+            successor_parent_flow_id=successor_parent.flow_id,
+            successor_child_flow_id=flow.flow_id,
+            running_validation_step_id=ctx.step_id,
+        )
+        if not preview.ok or preview.value is None:
+            return ctx.complete_step(
+                ValidateSourceIndexRecoveryStepResult(
+                    outcome="blocked",
+                    error=_service_error("source_index_recovery_revalidation_failed", preview),
+                    summary="SourceIndex recovery invariants changed before execution.",
+                )
+            )
+        if preview.value != recovery:
+            return ctx.complete_step(
+                _blocked_recovery(
+                    "source_index_recovery_token_mismatch",
+                    "SourceIndex recovery preview no longer matches the persisted contract.",
+                )
+            )
+        current = ctx.app.material.source_index.get_source_index_model(Path(flow.input.repo_root))
+        if not current.ok or current.value is None:
+            return ctx.complete_step(
+                ValidateSourceIndexRecoveryStepResult(
+                    outcome="blocked",
+                    error=_service_error("source_index_recovery_draft_missing", current),
+                    summary="SourceIndex recovery draft is unavailable.",
+                )
+            )
+        committed = sorted(path for path, item in current.value.files.items() if item.committed)
+        uncommitted = sorted(path for path in current.value.active_file_scope if path not in committed)
+        return ctx.complete_step(
+            ValidateSourceIndexRecoveryStepResult(
+                outcome="passed",
+                baseline_digest=recovery.baseline_digest,
+                resolved_file_paths=list(recovery.resolved_file_paths),
+                readable_file_paths=list(recovery.readable_file_paths),
+                artifact_file_paths=list(recovery.artifact_file_paths),
+                manifest_digest=recovery.manifest_digest,
+                new_file_paths=list(uncommitted),
+                already_committed_file_paths=list(committed),
+                uncommitted_file_paths=list(uncommitted),
+                review_round=recovery.review_round,
+                latest_builder_summary=recovery.latest_builder_summary,
+                reviewer_feedback=recovery.reviewer_feedback,
+                summary="SourceIndex recovery contract revalidated against the preserved rejected draft.",
+            )
+        )
+
+
 class ResolveSourceScopeStepResult(LeanRenderableStepResult):
     result_type: Literal["resolve_source_scope"] = "resolve_source_scope"
     outcome: Literal["resolved", "invalid_input", "blocked"]
@@ -388,6 +495,14 @@ def _blocked_validate(code: str, message: str) -> ValidateSourceIndexRunStepResu
     )
 
 
+def _blocked_recovery(code: str, message: str) -> ValidateSourceIndexRecoveryStepResult:
+    return ValidateSourceIndexRecoveryStepResult(
+        outcome="blocked",
+        error=SourceIndexFlowStepError(code=code, message=message),
+        summary=message,
+    )
+
+
 def _blocked_commit(code: str, result: ServiceResult[object]) -> ValidateAndCommitSourceIndexUpdateStepResult:
     return ValidateAndCommitSourceIndexUpdateStepResult(
         outcome="blocked",
@@ -397,6 +512,7 @@ def _blocked_commit(code: str, result: ServiceResult[object]) -> ValidateAndComm
 
 
 SOURCE_INDEX_BUILD_STEP_TYPES: tuple[type[BaseStep], ...] = (
+    ValidateSourceIndexRecoveryStep,
     ValidateSourceIndexRunStep,
     ResolveSourceScopeStep,
     PrepareSourceIndexBaselineStep,
@@ -417,6 +533,8 @@ __all__ = [
     "SourceIndexBaselineCheckpointView",
     "ValidateAndCommitSourceIndexUpdateStep",
     "ValidateAndCommitSourceIndexUpdateStepResult",
+    "ValidateSourceIndexRecoveryStep",
+    "ValidateSourceIndexRecoveryStepResult",
     "ValidateSourceIndexRunStep",
     "ValidateSourceIndexRunStepResult",
 ]

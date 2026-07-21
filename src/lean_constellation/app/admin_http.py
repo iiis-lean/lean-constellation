@@ -21,6 +21,8 @@ from lean_constellation.app.admin_api import (
     InitializeMainNativeSkeletonInput,
     LeanAdminApi,
     MainNativeRepoBootstrapView,
+    NativeSourceIndexRecoveryPreviewInput,
+    NativeSourceIndexRecoveryStartInput,
     RepoConfigUpdateInput,
     RepoReleaseIdInput,
     RepoReleaseOrphanCleanupInput,
@@ -563,6 +565,22 @@ def create_workspace_admin_http_routes(
             request, registry, RepoRunStartInput, LeanAdminApi.start_initial_native_repo_run
         )
 
+    async def repo_run_source_index_recovery_preview(request: Request) -> JSONResponse:
+        return await _repo_semantic_model_route(
+            request,
+            registry,
+            NativeSourceIndexRecoveryPreviewInput,
+            LeanAdminApi.preview_native_source_index_recovery,
+        )
+
+    async def repo_run_source_index_recovery(request: Request) -> JSONResponse:
+        return await _repo_semantic_model_route(
+            request,
+            registry,
+            NativeSourceIndexRecoveryStartInput,
+            LeanAdminApi.recover_native_source_index,
+        )
+
     async def repo_continue_native(request: Request) -> JSONResponse:
         return await _repo_lifecycle_model_route(request, registry, RepoRunRequestInput, LeanAdminApi.continue_native_repo)
 
@@ -892,6 +910,16 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/test-control/steps/wait", repo_wait_step, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/preparation/native/start", repo_start_native_preparation, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/runs/initial", repo_run_initial, methods=["POST"]),
+        Route(
+            "/admin/repos/{repo_key:str}/runs/recover-source-index/preview",
+            repo_run_source_index_recovery_preview,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/runs/recover-source-index",
+            repo_run_source_index_recovery,
+            methods=["POST"],
+        ),
         Route("/admin/repos/{repo_key:str}/runs/continue", repo_run_continue, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/runs/source-index", repo_run_source_index, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/runs/root-interfaces", repo_run_root_interfaces, methods=["POST"]),

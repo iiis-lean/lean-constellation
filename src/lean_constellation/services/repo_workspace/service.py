@@ -39,6 +39,9 @@ from lean_constellation.services.repo_workspace.lake_dependency import (
     LakeDependencyComponent,
     RepoSkeletonView,
 )
+from lean_constellation.services.repo_workspace.native_source_index_recovery import (
+    NativeSourceIndexRecoveryComponent,
+)
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
 from lean_constellation.services.repo_workspace.repo_preparation import PreparationStartPreflightView, RepoPreparationComponent
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
@@ -110,6 +113,7 @@ class RepoWorkspaceService:
             workspace_config=self.workspace_config,
         )
         self.run = RepoRunComponent(runtime, self.metadata, self.preparation, self.release)
+        self.native_source_index_recovery = NativeSourceIndexRecoveryComponent(runtime)
         self.lifecycle_lock = RepoLifecycleLockComponent(runtime)
         self.workspace_creation_lock = WorkspaceRepoCreationLockComponent(runtime)
         self.workspace_catalog = workspace_catalog or WorkspaceCatalogComponent(

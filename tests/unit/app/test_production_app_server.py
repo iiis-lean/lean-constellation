@@ -216,6 +216,45 @@ def test_invalid_bounded_resume_fails_before_repo_runtime_load(tmp_path) -> None
     assert registry.try_get_loaded("MainRepo") is None
 
 
+def test_native_source_index_recovery_routes_are_typed_and_route_owned(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(
+        LeanAppConfig(
+            workspace_root=workspace,
+            scheduler_enabled=False,
+            materialize_agent_homes=False,
+        )
+    )
+    assert app_result.ok and app_result.value is not None
+
+    with TestClient(app_result.value) as client:
+        route_owned = client.post(
+            "/admin/repos/MainRepo/runs/recover-source-index/preview",
+            json={
+                "repo_root": str(repo_root),
+                "failed_parent_flow_id": "f_missing",
+            },
+        )
+        missing_parent = client.post(
+            "/admin/repos/MainRepo/runs/recover-source-index/preview",
+            json={"failed_parent_flow_id": "f_missing"},
+        )
+        missing_token = client.post(
+            "/admin/repos/MainRepo/runs/recover-source-index",
+            json={"failed_parent_flow_id": "f_missing"},
+        )
+
+    assert route_owned.status_code == 422
+    assert "route-owned" in route_owned.json()["issues"][0]["message"]
+    assert missing_parent.status_code == 400
+    assert missing_parent.json()["issues"][0]["kind"] == (
+        "native_source_index_recovery_parent_missing"
+    )
+    assert missing_token.status_code == 422
+    assert "expected_recovery_token" in missing_token.json()["issues"][0]["message"]
+
+
 def test_production_semantic_advance_route_is_typed_and_starts_process_local_lease(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     repo_root = _make_repo(workspace, "MainRepo")

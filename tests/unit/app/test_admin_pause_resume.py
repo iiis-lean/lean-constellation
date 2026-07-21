@@ -81,6 +81,36 @@ def test_admin_bounded_resume_is_available_without_test_control_and_reports_auto
     assert status.value.run_control.remaining_step_starts == 1
 
 
+def test_admin_bounded_run_control_reports_completed_flow_advance(tmp_path) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+    started = admin.start_arbitrary_flow(
+        StartFlowInput(
+            flow_type="native_repo_coordinator",
+            scope_id="repo:Repo",
+            params={
+                "repo_key": "Repo",
+                "repo_root": str(tmp_path / "Repo"),
+                "start_mode": "admin_start",
+            },
+        )
+    )
+    assert started.ok
+    assert admin.pause_runtime().ok
+    assert admin.resume_runtime(
+        RuntimeResumeInput(budget=SchedulerRunBudget(flow_advances=1, step_starts=0))
+    ).ok
+
+    tick = runtime.ark.schedule_service.schedule_ready()
+    assert tick.auto_paused is True
+    status = admin.get_runtime_status()
+    assert status.ok and status.value is not None
+    assert status.value.run_control is not None
+    assert status.value.run_control.requested_flow_advances == 1
+    assert status.value.run_control.remaining_flow_advances == 0
+    assert status.value.run_control.completed_flow_advances == 1
+
+
 def test_admin_bounded_resume_requires_global_pause_without_mutation(tmp_path) -> None:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     admin = LeanAdminApi(runtime)

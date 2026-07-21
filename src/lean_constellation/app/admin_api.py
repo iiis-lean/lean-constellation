@@ -48,6 +48,7 @@ from lean_constellation.domain.repo import (
     RepoWorkMode,
 )
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
+from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_release import RepoReleaseListView
 from lean_constellation.flows.repo_lifecycle.source_index import SourceIndexBuildResult
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind
@@ -513,6 +514,22 @@ class RepoRunStartInput(StrictModel):
         return Path(value).expanduser()
 
 
+class NativeSourceIndexRecoveryPreviewInput(StrictModel):
+    repo_root: Path
+    repo_key: str | None = None
+    failed_parent_flow_id: str
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class NativeSourceIndexRecoveryStartInput(NativeSourceIndexRecoveryPreviewInput):
+    expected_recovery_token: str = Field(min_length=64, max_length=64)
+    enqueue: bool = True
+
+
 class StandaloneSourceIndexRunInput(StrictModel):
     repo_root: Path
     repo_key: str | None = None
@@ -813,6 +830,86 @@ class LeanAdminApi:
             enqueue=input_model.enqueue,
             run_request=input_model.request,
         ))
+
+    def preview_native_source_index_recovery(
+        self,
+        input_model: NativeSourceIndexRecoveryPreviewInput,
+    ) -> ServiceResult[NativeSourceIndexRecoveryContract]:
+        repo_key = input_model.repo_key or input_model.repo_root.name
+        return self.runtime.repo_workspace.native_source_index_recovery.preview(
+            input_model.repo_root,
+            repo_key=repo_key,
+            failed_parent_flow_id=input_model.failed_parent_flow_id,
+        )
+
+    def recover_native_source_index(
+        self,
+        input_model: NativeSourceIndexRecoveryStartInput,
+    ) -> ServiceResult[AdminFlowStartView]:
+        try:
+            with self.runtime.repo_workspace.lifecycle_lock.locked(input_model.repo_root):
+                return self._recover_native_source_index_locked(input_model)
+        except RepoLifecycleLockBusyError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "repo_lifecycle_lock_busy",
+                    str(exc),
+                    object_ref=str(input_model.repo_root),
+                )
+            )
+
+    def _recover_native_source_index_locked(
+        self,
+        input_model: NativeSourceIndexRecoveryStartInput,
+    ) -> ServiceResult[AdminFlowStartView]:
+        repo_key = input_model.repo_key or input_model.repo_root.name
+        preview = self.runtime.repo_workspace.native_source_index_recovery.preview(
+            input_model.repo_root,
+            repo_key=repo_key,
+            failed_parent_flow_id=input_model.failed_parent_flow_id,
+        )
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        recovery = preview.value
+        if recovery.recovery_token != input_model.expected_recovery_token:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "native_source_index_recovery_token_mismatch",
+                    "The failed lineage or rejected draft changed after recovery preview.",
+                    object_ref=input_model.failed_parent_flow_id,
+                    current=recovery.recovery_token,
+                    expected=input_model.expected_recovery_token,
+                )
+            )
+        parent = self.runtime.ark.flow_service.get_flow(input_model.failed_parent_flow_id)
+        run_spec = getattr(getattr(parent, "input", None), "run_spec", None)
+        if not isinstance(run_spec, RepoRunSpec):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "native_source_index_recovery_run_spec_missing",
+                    "The failed native preparation parent does not retain its RepoRunSpec.",
+                    object_ref=input_model.failed_parent_flow_id,
+                )
+            )
+        return self.start_arbitrary_flow(
+            StartFlowInput(
+                flow_type="native_repo_preparation",
+                scope_id=f"repo:{repo_key}",
+                enqueue=input_model.enqueue,
+                params={
+                    "repo_key": repo_key,
+                    "repo_root": str(Path(input_model.repo_root).resolve(strict=False)),
+                    "start_reason": "repair_resume",
+                    "admin_notes": (
+                        "Fail-closed SourceIndex successor recovery from "
+                        f"{recovery.failed_parent_flow_id}."
+                    ),
+                    "run_spec": run_spec.model_dump(mode="json"),
+                    "recovery": recovery.model_dump(mode="json"),
+                },
+            ),
+            repo_root=str(input_model.repo_root),
+        )
 
     def start_native_repo_continuation(self, input_model: RepoRunRequestInput) -> ServiceResult[AdminFlowStartView]:
         return self.continue_native_repo(input_model)

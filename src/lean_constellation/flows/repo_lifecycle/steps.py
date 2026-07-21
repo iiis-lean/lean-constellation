@@ -484,6 +484,7 @@ class PrepareNativeLifecycleChildStep(BaseStep):
         repo_root = _native_repo_root(input_model)
         if state.position.phase == "prepare_source_index_child":
             child_kind: Literal["source_index", "root_interface"] = "source_index"
+            recovery = input_model.recovery
             request = FlowRequest(
                 flow_type="source_index_build",
                 scope_id=ctx.scope_id,
@@ -495,8 +496,10 @@ class PrepareNativeLifecycleChildStep(BaseStep):
                     "work_mode": run_spec.work_mode,
                     "source_scope": run_spec.source_scope.model_dump(mode="json"),
                     "index_policy": run_spec.index_policy,
-                    "start_reason": "initial",
+                    "start_reason": "recovery" if recovery is not None else "initial",
+                    "max_review_rounds": recovery.max_review_rounds if recovery is not None else 3,
                     "pre_update_checkpoint_id": checkpoint_id,
+                    "recovery": recovery.model_dump(mode="json") if recovery is not None else None,
                 },
             )
         elif state.position.phase == "prepare_root_interface_child":

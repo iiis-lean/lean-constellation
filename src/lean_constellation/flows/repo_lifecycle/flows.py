@@ -14,8 +14,9 @@ from agent_runtime_kit.flow.standard_steps import (
     DispatchStepResult,
     DispatchStepState,
 )
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_run import RepoRunSpec
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.checkpoint_policy import record_checkpoint_skip_summary, repo_flow_boundary_checkpoints_enabled
@@ -320,6 +321,20 @@ class NativeRepoPreparationParams(LeanFlowParams):
     start_reason: Literal["admin", "bootstrap", "repair_resume"] = "admin"
     admin_notes: str | None = None
     run_spec: RepoRunSpec
+    recovery: NativeSourceIndexRecoveryContract | None = None
+
+    @model_validator(mode="after")
+    def _validate_recovery(self) -> "NativeRepoPreparationParams":
+        if self.recovery is not None and self.start_reason != "repair_resume":
+            raise ValueError("Native preparation recovery requires repair_resume and a recovery contract")
+        if self.recovery is not None:
+            if self.repo_key != self.recovery.repo_key:
+                raise ValueError("Native preparation recovery repo_key mismatch")
+            if Path(self.repo_root or "").resolve(strict=False) != Path(
+                self.recovery.repo_root
+            ).resolve(strict=False):
+                raise ValueError("Native preparation recovery repo_root mismatch")
+        return self
 
 
 class NativeRepoPreparationInput(LeanRenderableFlowInput):
@@ -330,6 +345,7 @@ class NativeRepoPreparationInput(LeanRenderableFlowInput):
     start_reason: Literal["admin", "bootstrap", "repair_resume"] = "admin"
     admin_notes: str | None = None
     run_spec: RepoRunSpec
+    recovery: NativeSourceIndexRecoveryContract | None = None
 
     def agent_title(self) -> str:
         return f"Prepare native repo {self.repo_key}"
@@ -339,6 +355,7 @@ class NativeRepoPreparationInput(LeanRenderableFlowInput):
             "start_reason": self.start_reason,
             "admin_notes": self.admin_notes,
             "run_spec": self.run_spec.model_dump(mode="json"),
+            "recovery": self.recovery.model_dump(mode="json") if self.recovery else None,
         }
 
 
@@ -379,6 +396,27 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
     @classmethod
     def build_from_request(cls, ctx: FlowBuildContext) -> "NativeRepoPreparationFlow":
         params = NativeRepoPreparationParams.model_validate(ctx.params)
+        if params.recovery is None:
+            state = NativeRepoPreparationState()
+        else:
+            preview = ctx.app.repo_workspace.native_source_index_recovery.preview(
+                Path(params.repo_root or ""),
+                repo_key=params.repo_key,
+                failed_parent_flow_id=params.recovery.failed_parent_flow_id,
+            )
+            if not preview.ok or preview.value != params.recovery:
+                issue_kinds = ", ".join(issue.kind for issue in preview.issues) or "contract_mismatch"
+                raise ValueError(
+                    "Native SourceIndex recovery contract is no longer eligible: "
+                    f"{issue_kinds}"
+                )
+            state = NativeRepoPreparationState(
+                position=FlowPosition(phase="prepare_source_index_child"),
+                source_corpus_mode=params.recovery.source_corpus_mode,
+                allow_interface_supplement=params.recovery.allow_interface_supplement,
+                source_corpus_ready=True,
+                pre_run_mutation_checkpoint_id=params.recovery.pre_run_mutation_checkpoint_id,
+            )
         return cls._build(
             ctx,
             input_model=NativeRepoPreparationInput(
@@ -386,7 +424,7 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                 **params.model_dump(exclude={"run_spec"}),
                 run_spec=params.run_spec,
             ),
-            state=NativeRepoPreparationState(),
+            state=state,
         )
 
     def can_exit_waiting(self, ctx: FlowReadContext) -> bool:

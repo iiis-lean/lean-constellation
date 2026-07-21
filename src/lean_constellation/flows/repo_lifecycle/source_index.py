@@ -19,6 +19,7 @@ from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, Age
 from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.repo import ProofAvailability, RepoConfig, RepoWorkMode
+from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
@@ -29,6 +30,8 @@ from lean_constellation.flows.repo_lifecycle.source_index_steps import (
     PrepareSourceIndexBaselineStepResult,
     ResolveSourceScopeStep,
     ResolveSourceScopeStepResult,
+    ValidateSourceIndexRecoveryStep,
+    ValidateSourceIndexRecoveryStepResult,
     ValidateAndCommitSourceIndexUpdateStep,
     ValidateAndCommitSourceIndexUpdateStepResult,
     ValidateSourceIndexRunStep,
@@ -49,9 +52,10 @@ class SourceIndexBuildParams(LeanFlowParams):
     work_mode: RepoWorkMode
     source_scope: SourceScope
     index_policy: Literal["auto", "update", "reuse"] = "auto"
-    start_reason: Literal["initial", "continuation", "admin_preprocess"] = "initial"
+    start_reason: Literal["initial", "continuation", "admin_preprocess", "recovery"] = "initial"
     max_review_rounds: int = Field(default=3, ge=1)
     pre_update_checkpoint_id: str | None = None
+    recovery: NativeSourceIndexRecoveryContract | None = None
 
     @field_validator("repo_key", "repo_root", "run_objective")
     @classmethod
@@ -77,6 +81,13 @@ class SourceIndexBuildParams(LeanFlowParams):
             target_proof_availability=self.target_proof_availability,
             work_mode=self.work_mode,
         )
+        if (self.start_reason == "recovery") != (self.recovery is not None):
+            raise ValueError("SourceIndex recovery requires start_reason=recovery and a recovery contract")
+        if self.recovery is not None:
+            if self.pre_update_checkpoint_id != self.recovery.pre_run_mutation_checkpoint_id:
+                raise ValueError("SourceIndex recovery checkpoint does not match its recovery contract")
+            if self.max_review_rounds != self.recovery.max_review_rounds:
+                raise ValueError("SourceIndex recovery round limit does not match its recovery contract")
         return self
 
 
@@ -89,9 +100,10 @@ class SourceIndexBuildInput(LeanRenderableFlowInput):
     work_mode: RepoWorkMode
     source_scope: SourceScope
     index_policy: Literal["auto", "update", "reuse"]
-    start_reason: Literal["initial", "continuation", "admin_preprocess"]
+    start_reason: Literal["initial", "continuation", "admin_preprocess", "recovery"]
     max_review_rounds: int
     pre_update_checkpoint_id: str | None = None
+    recovery: NativeSourceIndexRecoveryContract | None = None
 
     def agent_title(self) -> str:
         return f"Build scoped SourceIndex for {self.repo_key}"
@@ -162,6 +174,7 @@ class SourceIndexBuildFlow(LeanBusinessFlow):
         params = SourceIndexBuildParams.model_validate(ctx.params)
         suffix = ctx.flow_id.removeprefix("f_")
         checkpoint_id = params.pre_update_checkpoint_id or f"source_index_cp_{suffix}"
+        position = FlowPosition(phase="validate_recovery" if params.recovery is not None else "validate_input")
         return cls._build(
             ctx,
             input_model=SourceIndexBuildInput(
@@ -169,6 +182,7 @@ class SourceIndexBuildFlow(LeanBusinessFlow):
                 **params.model_dump(),
             ),
             state=SourceIndexBuildState(
+                position=position,
                 pre_update_checkpoint_id=checkpoint_id,
             ),
         )
@@ -176,6 +190,8 @@ class SourceIndexBuildFlow(LeanBusinessFlow):
     def create_next_step(self, ctx: FlowContext) -> str | None:
         state = _require_state(self.state)
         input_model = _require_input(self.input)
+        if state.position.phase == "validate_recovery":
+            return ctx.create_step(_step(ValidateSourceIndexRecoveryStep, self, "validate_source_index_recovery"))
         if state.position.phase == "validate_input":
             return ctx.create_step(_step(ValidateSourceIndexRunStep, self, "validate_source_index_run"))
         if state.position.phase == "resolve_scope":
@@ -244,7 +260,24 @@ class SourceIndexBuildFlow(LeanBusinessFlow):
             super().on_step_terminal(ctx)
             return
         result = ctx.step.result
-        if isinstance(result, ValidateSourceIndexRunStepResult):
+        if isinstance(result, ValidateSourceIndexRecoveryStepResult):
+            if result.outcome == "passed":
+                state.resolved_file_paths = list(result.resolved_file_paths)
+                state.readable_file_paths = list(result.readable_file_paths)
+                state.artifact_file_paths = list(result.artifact_file_paths)
+                state.manifest_digest = result.manifest_digest
+                state.baseline_digest = result.baseline_digest
+                state.new_file_paths = list(result.new_file_paths)
+                state.already_committed_file_paths = list(result.already_committed_file_paths)
+                state.uncommitted_file_paths = list(result.uncommitted_file_paths)
+                state.review_round = result.review_round
+                state.latest_builder_summary = result.latest_builder_summary
+                state.latest_reviewer_feedback = result.reviewer_feedback
+                state.review_approved = False
+                state.position = FlowPosition(phase="builder", round_index=result.review_round)
+            else:
+                self._finish_failure(input_model, state, "blocked", _error_reason(result))
+        elif isinstance(result, ValidateSourceIndexRunStepResult):
             if result.outcome == "passed":
                 state.position = FlowPosition(phase="resolve_scope")
             else:
