@@ -209,3 +209,79 @@ def test_record_mathlib_batch_checked_uses_one_lean_probe_and_records_all_entrie
     assert [item.module for item in recorded.value.modules] == ["Mathlib.Data.Nat.Basic"]
     assert [item.name for item in recorded.value.declarations] == ["Nat.add_assoc"]
     assert len(calls) == 1
+
+
+def test_record_mathlib_batch_checked_repairs_stale_import_module_from_exact_navigation(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def dispatch(tool_name: str, payload: dict):
+        calls.append((tool_name, payload))
+        if tool_name == "lean_explore.find":
+            assert payload["query"] == "Finset.card_image_le"
+            return {
+                "results": [
+                    {
+                        "name": "Finset.card_image_le",
+                        "module": "Mathlib.Data.Finset.Card",
+                        "source_text": "theorem Finset.card_image_le : True := by trivial",
+                    }
+                ]
+            }
+        if tool_name == "lsp.run_snippet":
+            assert "import Mathlib.Data.Finset.Card" in payload["code"]
+            assert "import Init" in payload["code"]
+            assert "#check Finset.card_image_le" in payload["code"]
+            assert "#check Nat.add_assoc" in payload["code"]
+            return {"diagnostics": []}
+        raise KeyError(tool_name)
+
+    service = _service(dispatch)
+    old_module = "Mathlib.Algebra.BigOperators.Group.Finset.Basic"
+    assert service.upsert_mathlib_module_entry(tmp_path, module=old_module).ok
+    assert service.add_module_important_decl(tmp_path, module=old_module, decl_name="Finset.card_image_le").ok
+    assert service.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Finset.card_image_le",
+        module=old_module,
+        kind="theorem",
+        signature="theorem card_image_le : True",
+        snippet="theorem card_image_le",
+    ).ok
+
+    recorded = service.record_mathlib_batch_checked(
+        tmp_path,
+        modules=[],
+        declarations=[
+            {
+                "decl_name": "Finset.card_image_le",
+                "module_name": "Mathlib.Data.Finset.Card",
+                "kind": "theorem",
+                "summary": "Image-cardinality bound.",
+            },
+            {
+                "decl_name": "Nat.add_assoc",
+                "module_name": "Init",
+                "kind": "theorem",
+                "signature": "Nat.add_assoc : ...",
+                "snippet": "theorem Nat.add_assoc",
+                "summary": "Associativity.",
+            },
+        ],
+    )
+
+    assert recorded.ok, recorded.issues
+    assert recorded.value is not None
+    assert [item.name for item in recorded.value.declarations] == ["Finset.card_image_le", "Nat.add_assoc"]
+    assert "mathlib_decl_module_repaired" in [issue.kind for issue in recorded.issues]
+    repaired = service.get_mathlib_decl_entry(tmp_path, name="Finset.card_image_le")
+    assert repaired.ok and repaired.value is not None
+    assert repaired.value.module == "Mathlib.Data.Finset.Card"
+    old_entry = service.get_mathlib_module_entry(tmp_path, module=old_module)
+    assert old_entry.ok and old_entry.value is not None
+    assert "Finset.card_image_le" not in old_entry.value.important_decl_names
+    exact_entry = service.get_mathlib_module_entry(tmp_path, module="Mathlib.Data.Finset.Card")
+    assert exact_entry.ok and exact_entry.value is not None
+    assert "Finset.card_image_le" in exact_entry.value.important_decl_names
+    assert [name for name, _ in calls] == ["lean_explore.find", "lsp.run_snippet"]

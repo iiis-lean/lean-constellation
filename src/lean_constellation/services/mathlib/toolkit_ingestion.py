@@ -461,31 +461,22 @@ class ToolkitIngestionComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("mathlib_decl_name_empty", "Mathlib declaration name must be non-empty.", field="decl_name")
             )
-        module = module_name.strip() if module_name else None
-        navigation_issues: list[str] = []
-        replace_missing_metadata = False
-        if module is None or kind is None or signature is None or snippet is None:
-            navigation = self.inspect_mathlib_declaration(repo_root, decl_name=normalized_decl)
-            if navigation.ok and navigation.value is not None:
-                module = module or navigation.value.module
-                kind = kind or navigation.value.kind
-                signature = signature or navigation.value.signature
-                snippet = snippet or navigation.value.code_excerpt
-            else:
-                navigation_issues = [issue.message for issue in navigation.issues]
-                replace_missing_metadata = True
-
-        existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=normalized_decl)
-        if existing.ok and existing.value is not None and existing.value.module and module and existing.value.module != module:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "mathlib_decl_module_conflict",
-                    f"Mathlib declaration is already recorded with a different module: {normalized_decl}",
-                    object_ref=normalized_decl,
-                    current=existing.value.module,
-                    expected=module,
-                )
-            )
+        prepared = self._prepare_mathlib_decl_record(
+            repo_root,
+            decl_name=normalized_decl,
+            module=module_name.strip() if module_name else None,
+            kind=kind,
+            signature=signature,
+            snippet=snippet,
+        )
+        if not prepared.ok or prepared.value is None:
+            return self.runtime.foundation.fail(prepared.issues)
+        module = prepared.value["module"]
+        kind = prepared.value["kind"]
+        signature = prepared.value["signature"]
+        snippet = prepared.value["snippet"]
+        navigation_issues = prepared.value["navigation_issues"]
+        replace_missing_metadata = bool(prepared.value["replace_missing_metadata"])
 
         check = self.check_mathlib_accessible(repo_root, name_or_module=normalized_decl, module=module, target_kind="declaration")
         if not check.ok or check.value is None:
@@ -504,7 +495,7 @@ class ToolkitIngestionComponent:
                 )
             )
 
-        return self._record_mathlib_decl_unchecked(
+        recorded = self._record_mathlib_decl_unchecked(
             repo_root,
             decl_name=normalized_decl,
             module=module,
@@ -515,6 +506,9 @@ class ToolkitIngestionComponent:
             snippet=snippet,
             replace_missing_metadata=replace_missing_metadata,
         )
+        if not recorded.ok or recorded.value is None:
+            return self.runtime.foundation.fail(recorded.issues)
+        return self.runtime.foundation.ok(recorded.value, warnings=[*prepared.issues, *recorded.issues])
 
     def record_mathlib_batch_checked(
         self,
@@ -556,6 +550,7 @@ class ToolkitIngestionComponent:
             prepared_modules.append({**item, "module_name": module_name})
 
         prepared_decls: list[dict[str, Any]] = []
+        preparation_warnings: list[ServiceIssue] = []
         seen_decls: set[str] = set()
         for item in declarations:
             prepared = dict(item)
@@ -571,35 +566,23 @@ class ToolkitIngestionComponent:
             if decl_name in seen_decls:
                 continue
             seen_decls.add(decl_name)
-            module = str(prepared.get("module_name") or "").strip() or None
-            if any(prepared.get(field) is None for field in ("kind", "signature", "snippet")):
-                navigation = self.inspect_mathlib_declaration(repo_root, decl_name=decl_name)
-                if navigation.ok and navigation.value is not None:
-                    module = module or navigation.value.module
-                    prepared["kind"] = prepared.get("kind") or navigation.value.kind
-                    prepared["signature"] = prepared.get("signature") or navigation.value.signature
-                    prepared["snippet"] = prepared.get("snippet") or navigation.value.code_excerpt
-                else:
-                    prepared["_replace_missing_metadata"] = True
-            existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=decl_name)
-            if (
-                existing.ok
-                and existing.value is not None
-                and existing.value.module
-                and module
-                and existing.value.module != module
-            ):
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "mathlib_decl_module_conflict",
-                        f"Mathlib declaration is already recorded with a different module: {decl_name}",
-                        object_ref=decl_name,
-                        current=existing.value.module,
-                        expected=module,
-                    )
-                )
+            resolved = self._prepare_mathlib_decl_record(
+                repo_root,
+                decl_name=decl_name,
+                module=str(prepared.get("module_name") or "").strip() or None,
+                kind=prepared.get("kind"),
+                signature=prepared.get("signature"),
+                snippet=prepared.get("snippet"),
+            )
+            if not resolved.ok or resolved.value is None:
+                return self.runtime.foundation.fail(resolved.issues)
+            preparation_warnings.extend(resolved.issues)
             prepared["decl_name"] = decl_name
-            prepared["module_name"] = module
+            prepared["module_name"] = resolved.value["module"]
+            prepared["kind"] = resolved.value["kind"]
+            prepared["signature"] = resolved.value["signature"]
+            prepared["snippet"] = resolved.value["snippet"]
+            prepared["_replace_missing_metadata"] = resolved.value["replace_missing_metadata"]
             prepared_decls.append(prepared)
 
         imports = [item["module_name"] for item in prepared_modules]
@@ -629,7 +612,7 @@ class ToolkitIngestionComponent:
                 )
             )
 
-        warnings: list[ServiceIssue] = []
+        warnings: list[ServiceIssue] = list(preparation_warnings)
         recorded_modules: list[MathlibModuleEntryView] = []
         for item in prepared_modules:
             recorded = self.mathlib_index.upsert_mathlib_module_entry(
@@ -680,6 +663,90 @@ class ToolkitIngestionComponent:
                     f"{len(recorded_decls)} declarations in one Lean check."
                 ),
             ),
+            warnings=warnings,
+        )
+
+    def _prepare_mathlib_decl_record(
+        self,
+        repo_root: Path,
+        *,
+        decl_name: str,
+        module: str | None,
+        kind: str | None,
+        signature: str | None,
+        snippet: str | None,
+    ) -> ServiceResult[dict[str, Any]]:
+        existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=decl_name)
+        existing_module = existing.value.module if existing.ok and existing.value is not None else None
+        navigation_issues: list[str] = []
+        replace_missing_metadata = False
+        navigation: ServiceResult[MathlibNavigationView] | None = None
+
+        needs_metadata = module is None or kind is None or signature is None or snippet is None
+        has_module_conflict = bool(existing_module and module and existing_module != module)
+        if needs_metadata or has_module_conflict:
+            navigation = self.inspect_mathlib_declaration(repo_root, decl_name=decl_name)
+            if navigation.ok and navigation.value is not None:
+                canonical_module = navigation.value.module
+                if canonical_module and module and canonical_module != module:
+                    requested_module = module
+                    module = canonical_module
+                    navigation_warning = self.runtime.foundation.issue(
+                        "mathlib_decl_module_canonicalized",
+                        "The requested declaration module was replaced with the exact defining module returned by inspected declaration metadata.",
+                        severity=IssueSeverity.WARNING,
+                        object_ref=decl_name,
+                        current=requested_module,
+                        expected=canonical_module,
+                    )
+                else:
+                    module = canonical_module or module
+                    navigation_warning = None
+                kind = kind or navigation.value.kind
+                signature = signature or navigation.value.signature
+                snippet = snippet or navigation.value.code_excerpt
+            else:
+                navigation_issues = [issue.message for issue in navigation.issues]
+                replace_missing_metadata = needs_metadata
+                navigation_warning = None
+        else:
+            navigation_warning = None
+
+        warnings: list[ServiceIssue] = []
+        if navigation_warning is not None:
+            warnings.append(navigation_warning)
+        if existing_module and module and existing_module != module:
+            if navigation is None or not navigation.ok or navigation.value is None or not navigation.value.module:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "mathlib_decl_module_conflict",
+                        f"Mathlib declaration is already recorded with a different module: {decl_name}",
+                        object_ref=decl_name,
+                        current=existing_module,
+                        expected=module,
+                        details={"navigation_issues": "; ".join(navigation_issues)},
+                    )
+                )
+            warnings.append(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_module_repaired",
+                    "Replaced a stale declaration module with the exact defining module returned by inspected declaration metadata.",
+                    severity=IssueSeverity.WARNING,
+                    object_ref=decl_name,
+                    current=existing_module,
+                    expected=module,
+                )
+            )
+
+        return self.runtime.foundation.ok(
+            {
+                "module": module,
+                "kind": kind,
+                "signature": signature,
+                "snippet": snippet,
+                "navigation_issues": navigation_issues,
+                "replace_missing_metadata": replace_missing_metadata,
+            },
             warnings=warnings,
         )
 
