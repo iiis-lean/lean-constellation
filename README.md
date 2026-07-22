@@ -1,42 +1,257 @@
-# Lean Constellation
+<p align="center">
+  <img
+    src="assets/lean-constellation-logo.png"
+    alt="Lean Constellation logo"
+    width="190"
+  >
+</p>
 
-Lean Constellation is a multi-repository coordination runtime for Lean
-formalization workflows.
+<h1 align="center">Lean Constellation</h1>
 
-It is intended to coordinate a graph of Lean repositories, keep their
-dependencies explicit, assign repo-level coordinators, run node-scoped
-formalization tasks, and preserve reproducible snapshots without carrying over
-the heavier workflow machinery from earlier Lean Steward prototypes.
+<p align="center">
+  <strong>Coordinated, recoverable Agent workflows for multi-repository Lean formalization.</strong>
+</p>
 
-## Current Status
+<p align="center">
+  <a href="https://www.python.org/">
+    <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-172554?style=flat-square">
+  </a>
+  <a href="https://lean-lang.org/">
+    <img alt="Lean 4" src="https://img.shields.io/badge/Lean-4-6b4fbb?style=flat-square">
+  </a>
+  <a href="https://github.com/xukp20/agent-runtime-kit">
+    <img alt="ARK 0.3" src="https://img.shields.io/badge/ARK-0.3-0f8f88?style=flat-square">
+  </a>
+  <a href="docs/ark-provider-configuration.md">
+    <img alt="Five Agent providers" src="https://img.shields.io/badge/Agent_Providers-5-2563eb?style=flat-square">
+  </a>
+  <a href="https://github.com/iiis-lean/lean-mcp-toolkit">
+    <img alt="MCP tool runtime" src="https://img.shields.io/badge/MCP-Lean_Toolkit-e45132?style=flat-square">
+  </a>
+  <img alt="Experimental" src="https://img.shields.io/badge/status-experimental-d97706?style=flat-square">
+</p>
 
-The runtime now includes repo-local Flow/Step scheduling, Agent Home
-materialization, checkpoint/restore integration, and ARK 0.3 multi-provider
-bindings. Codex is the default Provider; Claude Code, Pi, OpenAI Agents, and
-OpenCode can be selected globally or per AgentType. See
-[ARK Agent Provider Configuration](docs/ark-provider-configuration.md).
+<p align="center">
+  <a href="#quick-start">Quick Start</a>
+  &middot;
+  <a href="#how-it-fits-together">Architecture</a>
+  &middot;
+  <a href="docs/README.md">Documentation</a>
+  &middot;
+  <a href="docs/ark-provider-configuration.md">Provider Setup</a>
+  &middot;
+  <a href="https://github.com/xukp20/agent-runtime-kit">ARK</a>
+  &middot;
+  <a href="https://github.com/iiis-lean/lean-mcp-toolkit">Lean MCP Toolkit</a>
+</p>
 
-## Repository Structure
+Lean Constellation turns a collection of Lean repositories into one explicit,
+operable formalization workspace. It models repository dependencies, prepares
+source context, assigns repository- and node-scoped work, runs typed Agent
+workflows, and preserves stable recovery points for long-running projects.
+
+It is not a theorem prover or a single coding Agent. It is the coordination
+layer around Lean, reusable Agent runtimes, and proof-engineering tools.
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <strong>Repository Constellations</strong><br><br>
+      Keep dependencies, readiness, requirements, releases, and cross-repo
+      handoffs explicit instead of hiding them inside prompts.
+    </td>
+    <td width="33%" valign="top">
+      <strong>Formalization Workflows</strong><br><br>
+      Coordinate source preparation, planning, implementation, validation,
+      and submission through typed Flow/Step lifecycles.
+    </td>
+    <td width="33%" valign="top">
+      <strong>Recoverable Runtime</strong><br><br>
+      Persist Agent sessions, runtime truth, checkpoints, indexes, and release
+      gates so interrupted work can be inspected and resumed safely.
+    </td>
+  </tr>
+</table>
+
+## Why Lean Constellation?
+
+Large formalization projects have coordination problems that are different
+from completing one proof in one file:
+
+- repositories form a dependency graph, not an isolated queue of prompts;
+- downstream work must wait for stable upstream declarations and releases;
+- Agents need scoped source indexes, root interfaces, tools, and instructions;
+- operator-visible state must survive process restarts and provider sessions;
+- acceptance requires typed submissions and Lean-aware validation, not just a
+  successful model response.
+
+Lean Constellation makes those relationships first-class and leaves the lower
+runtime and tool mechanics to focused companion projects.
+
+## How It Fits Together
 
 ```text
-lean-constellation/
-├── src/
-├── tests/
-├── docs/
-├── dev_docs/
-│   ├── working_on.md
-│   ├── design/
-│   └── dev_records/
-├── data/
-├── configs/
-├── README.md
-├── AGENTS.md
-└── .gitignore
+                         Lean Constellation
+  repository graph ─ Flow/Step policies ─ releases ─ operator/Admin API
+          │                   │                │
+          │                   ▼                │
+          │          Agent Runtime Kit         │
+          │     Homes · providers · scheduler  │
+          │     observation · snapshots        │
+          │                   │                │
+          ▼                   ▼                ▼
+  Lean repositories     Agent providers    stable checkpoints
+          │
+          ▼
+  Lean MCP Toolkit
+  LSP · declarations · search · diagnostics · lint · build
 ```
 
-## Development Notes
+| Project | Role in the stack | Start here |
+| --- | --- | --- |
+| **Lean Constellation** | Lean-specific repository model, AgentTypes, workflows, ToolViews, release policy, and operator surfaces | [Documentation](docs/README.md) |
+| **[Agent Runtime Kit](https://github.com/xukp20/agent-runtime-kit)** | Provider-neutral Agent Homes, lifecycle, Flow/Step runtime, observation, persistence, and snapshots | [Provider adapters](https://github.com/xukp20/agent-runtime-kit/blob/master/docs/provider-adapters.md) |
+| **[Lean MCP Toolkit](https://github.com/iiis-lean/lean-mcp-toolkit)** | Lean LSP, declarations, search, diagnostics, lint, build, HTTP, CLI, and MCP tools | [Tool catalog](https://github.com/iiis-lean/lean-mcp-toolkit/tree/main/docs/tool_catalog) |
 
-- Public, reusable documentation belongs in `docs/`.
-- Local design notes, working plans, and daily records belong in `dev_docs/`.
-- Real local configuration files are ignored; keep only example templates in
-  `configs/`.
+The production entry point is one long-lived `lean-constellation serve`
+process. It hosts Admin HTTP and MCP HTTP together and advances repository-local
+ARK runtimes through a shared scheduler loop. Each managed repository stores
+its runtime below `<repo>/.agent_runtime`.
+
+## What It Provides
+
+- **Repository lifecycle** — dependency-aware repository registration,
+  preparation, continuation, waiting requirements, release previews, restore,
+  audit, and reconciliation.
+- **Scoped formalization** — repository coordinators, node/content tasks,
+  planning and worker flows, typed submissions, and terminal handoff.
+- **Prepared context** — reusable SourceCorpus, SourceIndex, root-interface,
+  repository navigation, and Agent Home materialization.
+- **Production control** — Admin/MCP server, bounded scheduling, pause/resume,
+  semantic leases, flow trees, Agent reports, and external health checks.
+- **Stable recovery** — automatic and operator checkpoints, exact provider
+  artifact manifests, index reconstruction, source recovery, and release gates.
+- **Provider choice** — Codex by default, with Claude Code, Pi, OpenAI Agents,
+  and OpenCode selectable globally or per AgentType through ARK.
+
+## Quick Start
+
+Lean Constellation requires Python 3.11 or newer. For source checkouts with ARK
+next to this repository:
+
+```bash
+python -m pip install -e ../agent-runtime-kit
+python -m pip install -e '.[dev]'
+```
+
+Create a local `lean-constellation.toml`:
+
+```toml
+workspace_root = "/path/to/lean-workspace"
+default_agent_provider_type = "codex"
+codex_config_home = "/root/.codex"
+
+# Inspect the workspace before allowing scheduler advancement.
+server_start_paused = true
+max_concurrent_flow_advances = 1
+max_concurrent_steps = 1
+```
+
+Inspect the redacted configuration and start the unified production server:
+
+```bash
+lean-constellation --config lean-constellation.toml config-view
+lean-constellation --config lean-constellation.toml serve
+```
+
+Operate it from another shell:
+
+```bash
+lean-constellation --config lean-constellation.toml status
+lean-constellation --config lean-constellation.toml external-health
+lean-constellation --config lean-constellation.toml flow-tree --repo-key REPO
+lean-constellation --config lean-constellation.toml resume --repo-key REPO --unbounded
+```
+
+Optional SDK-backed providers use LC extras:
+
+```bash
+python -m pip install -e '.[provider-claude]'
+python -m pip install -e '.[provider-openai-agents]'
+```
+
+Pi and OpenCode use external executables. Lean, Lake, provider credentials,
+and Lean MCP Toolkit services are deployment dependencies. Credentials stay in
+provider-owned auth files or environment variables; LC configuration views
+redact secret-bearing contents.
+
+## Agent Providers
+
+Provider type and model/backend identity are separate choices. Codex is the
+default, while deployments can override the provider and Home configuration
+for individual AgentTypes.
+
+| Provider type | Runtime integration | Deployment requirement |
+| --- | --- | --- |
+| `codex` | Codex SDK and isolated Codex Home | Codex SDK/CLI configuration and auth |
+| `claude_code` | Claude Agent SDK and Claude Code session artifacts | `provider-claude` extra, CLI, and backend credentials |
+| `pi` | Pi JSONL RPC subprocess | Compatible Pi CLI and prepared Node dependencies for MCP projection |
+| `openai_agents` | OpenAI Agents Python SDK with durable sessions | `provider-openai-agents` extra and an application/model endpoint |
+| `opencode` | Isolated OpenCode server and session storage | Compatible OpenCode executable and environment-referenced credentials |
+
+See [ARK Agent Provider Configuration](docs/ark-provider-configuration.md) for
+global selection, AgentType overrides, endpoint modes, model identity, Home
+projection, credentials, and capability boundaries.
+
+## Runtime State and Recovery
+
+New workspaces use ARK's provider-neutral schema v3 records and exact
+provider/session/artifact locators. Old Codex-specific runtime formats are not
+accepted or migrated; use a fresh `.agent_runtime` directory when upgrading an
+older workspace.
+
+```text
+<lean-repository>/
+├── .agent_runtime/       # Agent, Flow, Step, provider, index, snapshot truth
+├── .lean_constellation/  # repository-oriented application truth and indexes
+├── lakefile.*
+└── ... Lean sources
+```
+
+Snapshots preserve application truth together with each provider's declared
+Artifact Manifest. Rebuildable indexes and scheduler queues are reconstructed
+on restore. See [Native Source and Index Recovery](docs/native-source-index-recovery.md)
+for the repository-level recovery contract.
+
+## Documentation
+
+| Area | Entry point |
+| --- | --- |
+| Project documentation | [Lean Constellation documentation](docs/README.md) |
+| Agent providers | [ARK Agent Provider Configuration](docs/ark-provider-configuration.md) |
+| Source recovery | [Native Source and Index Recovery](docs/native-source-index-recovery.md) |
+| ARK runtime | [Agent Runtime Kit documentation](https://github.com/xukp20/agent-runtime-kit/tree/master/docs) |
+| Lean tools | [Lean MCP Toolkit documentation](https://github.com/iiis-lean/lean-mcp-toolkit/tree/main/docs) |
+| Toolkit catalog | [Lean MCP tool reference](https://github.com/iiis-lean/lean-mcp-toolkit/blob/main/docs/tool_catalog/tool_reference.md) |
+
+The CLI can export deterministic Operator, Admin, and Agent Tool/View
+references directly from the current implementation:
+
+```bash
+lean-constellation --config lean-constellation.toml docs-export \
+  --output-dir generated-docs --surface all --format all
+```
+
+## Development Status
+
+Lean Constellation is an experimental research runtime under active
+development. The production server shape, provider-neutral storage, core
+coordination paths, and recovery mechanisms are implemented, while deployment
+still assumes a controlled single-operator environment and explicitly
+configured external services.
+
+<p align="center">
+  <a href="https://github.com/iiis-lean">
+    <img src="assets/iiis-lean-logo.png" alt="IIIS LEAN" width="82">
+  </a>
+</p>
