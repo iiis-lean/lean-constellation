@@ -134,6 +134,19 @@ def _decl_revision_item(runtime, repo_root, view, args: DeclInspectArgs) -> dict
             data["formal_preview"] = _formal_preview(primary.value.code)
             if args.include_formal:
                 data["primary_formal_code"] = primary.value.code
+                if managed and not args.include_formal_docstring:
+                    marker = runtime.lean_projection.annotation.parse_target_marker(formal_code)
+                    if marker.ok and marker.value is not None:
+                        data["formal_code"] = (
+                            formal_code[: marker.value.docstring_start_offset]
+                            + formal_code[marker.value.docstring_end_offset :]
+                        )
+                    else:
+                        data["formal_projection_issues"] = [
+                            issue.model_dump(mode="json") for issue in marker.issues
+                        ]
+                else:
+                    data["formal_code"] = formal_code
         else:
             data["formal_projection_issues"] = [issue.model_dump(mode="json") for issue in primary.issues]
     data.pop("statement_lean_code", None)
@@ -151,7 +164,7 @@ def _effective_formal(view) -> tuple[str, str | None, object | None]:  # noqa: A
     return "none", None, None
 
 
-def _formal_preview(code: str, *, limit: int = 600) -> str:
+def _formal_preview(code: str, *, limit: int = 1500) -> str:
     if len(code) <= limit:
         return code
     return code[:limit].rstrip() + "\n…"
@@ -400,12 +413,7 @@ def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):
         view = runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name, revision=args.revision)
     if not view.ok or view.value is None:
         return runtime.foundation.fail(view.issues)
-    effective_args = (
-        args.model_copy(update={"include_formal": True})
-        if ctx.endpoint_view_key == "proof_formal_reviewer"
-        else args
-    )
-    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, effective_args))
+    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
 
 
 def _inspect_node_decl(runtime, ctx, args: NodeDeclInspectArgs):

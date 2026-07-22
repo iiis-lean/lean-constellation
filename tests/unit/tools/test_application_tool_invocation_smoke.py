@@ -1203,7 +1203,7 @@ def test_current_node_decl_read_tools_invoke_decl_graph(tmp_path: Path) -> None:
     assert legacy[0].kind == "tool_arguments_invalid"
 
 
-def test_proof_formal_reviewer_inspect_includes_complete_current_node_formal_source(tmp_path: Path) -> None:
+def test_current_node_decl_inspect_defaults_to_complete_formal_source_without_docstring(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_content_node(
@@ -1248,8 +1248,10 @@ def test_proof_formal_reviewer_inspect_includes_complete_current_node_formal_sou
         decl_name="long_theorem",
         nl="The long theorem states True.",
     ).ok
-    header_padding = " ".join(f"(h{i} : True)" for i in range(45))
+    header_padding = " ".join(f"(h{i} : True)" for i in range(120))
     statement_code = (
+        "import Mathlib\n\n"
+        "private lemma supporting_fact : True := by trivial\n\n"
         "/--\n# lean-constellation target: `long_theorem`\n-/\n"
         f"theorem long_theorem {header_padding} : True := by\n  sorry\n"
     )
@@ -1270,7 +1272,7 @@ def test_proof_formal_reviewer_inspect_includes_complete_current_node_formal_sou
         nl="Use the final hypothesis.",
     ).ok
     proof_code = statement_code.replace("  sorry", "  exact h44")
-    assert len(proof_code) > 600
+    assert len(proof_code) > 1500
     assert write_proof_formal_for_test(
         runtime,
         tmp_path,
@@ -1302,6 +1304,10 @@ def test_proof_formal_reviewer_inspect_includes_complete_current_node_formal_sou
     assert inspected["formal_preview"].endswith("\n…")
     assert "exact h44" not in inspected["formal_preview"]
     assert inspected["primary_formal_code"].endswith("exact h44")
+    assert inspected["formal_code"].startswith("import Mathlib")
+    assert "supporting_fact" in inspected["formal_code"]
+    assert "# lean-constellation target" not in inspected["formal_code"]
+    assert inspected["formal_code"].endswith("exact h44")
 
     planner = _raw(tmp_path, view="content_plan", agent_type="ContentPlanAgent", role="plan", node_path="Main.Topic")
     planner_inspected = _unwrap_tool_result(
@@ -1311,7 +1317,27 @@ def test_proof_formal_reviewer_inspect_includes_complete_current_node_formal_sou
             flat_args={"decl_name": "long_theorem"},
         )
     )
-    assert "primary_formal_code" not in planner_inspected
+    assert planner_inspected["primary_formal_code"].endswith("exact h44")
+    assert planner_inspected["formal_code"] == inspected["formal_code"]
+
+    with_docstring = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            planner,
+            tool_name="inspect_current_node_decl",
+            flat_args={"decl_name": "long_theorem", "include_formal_docstring": True},
+        )
+    )
+    assert "# lean-constellation target: `long_theorem`" in with_docstring["formal_code"]
+
+    without_formal = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            planner,
+            tool_name="inspect_current_node_decl",
+            flat_args={"decl_name": "long_theorem", "include_formal": False},
+        )
+    )
+    assert "formal_code" not in without_formal
+    assert "primary_formal_code" not in without_formal
 
 
 def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) -> None:

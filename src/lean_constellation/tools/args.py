@@ -668,7 +668,14 @@ class DeclInspectArgs(DeclNameArgs):
     revision: int | None = Field(default=None, ge=1, description="Optional revision number; omit to inspect the current revision.")
     include_statement_nl: bool = Field(default=False, description="Whether to include natural-language statement content.")
     include_proof_nl: bool = Field(default=False, description="Whether to include natural-language proof content.")
-    include_formal: bool = Field(default=False, description="Whether to include the complete primary formal declaration source and check.")
+    include_formal: bool = Field(
+        default=True,
+        description="Whether to include the complete formal file source and primary declaration source.",
+    )
+    include_formal_docstring: bool = Field(
+        default=False,
+        description="Whether complete formal file source should retain its managed declaration docstring.",
+    )
 
 
 class NodePublicDeclListArgs(NodePathArgs):
