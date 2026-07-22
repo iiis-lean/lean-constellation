@@ -435,6 +435,21 @@ def create_workspace_admin_http_routes(
             return _service_result_response(admin_result)
         return _service_result_response(admin_result.value.get_step_monitor(request.path_params["step_id"]))
 
+    async def repo_step_terminal_wait(request: Request) -> JSONResponse:
+        admin_result = repo_admin(request)
+        if not admin_result.ok or admin_result.value is None:
+            return _service_result_response(admin_result)
+        try:
+            timeout_s = _query_float(request.query_params.get("timeout_s"), field="timeout_s")
+        except ValueError as exc:
+            return _request_validation_response(str(exc))
+        result = await asyncio.to_thread(
+            admin_result.value.wait_step_terminal,
+            request.path_params["step_id"],
+            timeout_s=30.0 if timeout_s is None else timeout_s,
+        )
+        return _service_result_response(result)
+
     async def repo_content_task_progress(request: Request) -> JSONResponse:
         admin_result = repo_admin(request)
         if not admin_result.ok or admin_result.value is None:
@@ -534,6 +549,7 @@ def create_workspace_admin_http_routes(
             repo_key=request.path_params["repo_key"],
             after_cursor=query.get("after_cursor"),
             wait_s=0.0 if wait_s is None else wait_s,
+            wake_on=query.get("wake_on", "activity"),
         )
         return _service_result_response(result)
 
@@ -890,6 +906,11 @@ def create_workspace_admin_http_routes(
             methods=["GET"],
         ),
         Route("/admin/repos/{repo_key:str}/steps/{step_id:str}", repo_step_monitor, methods=["GET"]),
+        Route(
+            "/admin/repos/{repo_key:str}/steps/{step_id:str}/wait",
+            repo_step_terminal_wait,
+            methods=["GET"],
+        ),
         Route("/admin/repos/{repo_key:str}/agents", repo_agents_monitor, methods=["GET"]),
         Route(
             "/admin/repos/{repo_key:str}/agents/running-audit",

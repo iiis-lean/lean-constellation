@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from agent_runtime_kit.agent.homes import HomeCreateSpec
 from agent_runtime_kit.flow import AgentStep, StepStatus
+from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import ValidationError
 
 from lean_constellation.app import (
@@ -12,6 +14,7 @@ from lean_constellation.app import (
     StartFlowInput,
     create_app_runtime_services,
 )
+from lean_constellation.flows.common.agent_steps import RepoFormatDiscoveryAgentStep
 
 
 def _start_coordinator(admin: LeanAdminApi, repo_root: Path) -> str:
@@ -89,3 +92,139 @@ def test_semantic_advance_requires_global_pause_and_valid_target(tmp_path: Path)
     assert not invalid.ok
     assert invalid.issues[0].kind == "semantic_advance_failed"
     assert runtime.ark.pause_controller.is_paused(None)
+
+
+def test_runtime_lease_monitor_keeps_its_semantic_content_target(tmp_path: Path) -> None:
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+
+    flow_ids = []
+    for node_path in ("Main.First", "Main.Second"):
+        started = admin.start_arbitrary_flow(
+            StartFlowInput(
+                flow_type="content_node_task",
+                scope_id=f"repo:Repo:node:{node_path}",
+                params={
+                    "repo_key": "Repo",
+                    "repo_path": str(repo_root),
+                    "node_path": node_path,
+                    "contract_version": 1,
+                    "task_mode": "run",
+                },
+            )
+        )
+        assert started.ok and started.value is not None
+        flow_ids.append(started.value.flow_id)
+
+    assert admin.pause_runtime().ok
+    first = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(
+            granularity="content_phase",
+            action="plan",
+            content_task_flow_id=flow_ids[0],
+        )
+    )
+    assert first.ok and first.value is not None and first.value.lease_id is not None
+    runtime.ark.schedule_service.clear_run_budget(reason="test_terminal")
+    runtime.ark.pause_controller.pause(None)
+    second = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(
+            granularity="content_phase",
+            action="plan",
+            content_task_flow_id=flow_ids[1],
+        )
+    )
+    assert second.ok and second.value is not None
+
+    first_lease = admin.get_runtime_lease(first.value.lease_id)
+
+    assert first_lease.ok and first_lease.value is not None
+    assert first_lease.value.current_content_task_flow_id == flow_ids[0]
+    assert first_lease.value.current_content_task_phase == "admission"
+
+
+def test_runtime_lease_monitor_does_not_borrow_running_agent_from_newer_lease(tmp_path: Path) -> None:
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+    flow_ids = []
+    for node_path in ("Main.Old", "Main.New"):
+        started = admin.start_arbitrary_flow(
+            StartFlowInput(
+                flow_type="content_node_task",
+                scope_id=f"repo:Repo:node:{node_path}",
+                params={
+                    "repo_key": "Repo",
+                    "repo_path": str(repo_root),
+                    "node_path": node_path,
+                    "contract_version": 1,
+                    "task_mode": "run",
+                },
+            )
+        )
+        assert started.ok and started.value is not None
+        flow_ids.append(started.value.flow_id)
+
+    agent_service = runtime.ark.agent_service
+    agent_service.home_service.create_home(
+        HomeCreateSpec(cli_type="codex", home_id="RepoFormatDiscoveryAgent")
+    )
+    agents = [
+        agent_service.create_agent(
+            f"repo:Repo:node:{node_path}",
+            "RepoFormatDiscoveryAgent",
+            home_id="RepoFormatDiscoveryAgent",
+        )
+        for node_path in ("Main.Old", "Main.New")
+    ]
+    step_ids = []
+    for index, (flow_id, agent) in enumerate(zip(flow_ids, agents, strict=True)):
+        step = RepoFormatDiscoveryAgentStep(
+            step_id=f"lease-agent-step-{index}",
+            flow_id=flow_id,
+            scope_id=agent.scope_id,
+            state=AgentStepState(
+                agent_role="repo_format_discovery",
+                agent_type="RepoFormatDiscoveryAgent",
+                home_id="RepoFormatDiscoveryAgent",
+                create_agent_if_missing=False,
+            ),
+        )
+        step.agent_bindings.by_role["repo_format_discovery"] = agent.agent_id
+        runtime.ark.step_service.create_step(step, enqueue=False)
+        step_ids.append(step.step_id)
+
+    assert admin.pause_runtime().ok
+    first = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(granularity="step", action="agent", step_id=step_ids[0])
+    )
+    assert first.ok and first.value is not None and first.value.lease_id is not None
+    with runtime.ark.schedule_service.lock:
+        runtime.ark.schedule_service._update_semantic_lease_locked(  # noqa: SLF001 - scheduler lease fixture.
+            started_step_ids=[step_ids[0]]
+        )
+    runtime.ark.schedule_service.clear_run_budget(reason="first_lease_terminal")
+
+    runtime.ark.pause_controller.pause(None)
+    second = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(granularity="step", action="agent", step_id=step_ids[1])
+    )
+    assert second.ok and second.value is not None and second.value.lease_id is not None
+    with runtime.ark.schedule_service.lock:
+        runtime.ark.schedule_service._update_semantic_lease_locked(  # noqa: SLF001 - scheduler lease fixture.
+            started_step_ids=[step_ids[1]]
+        )
+    agent_service.store.patch_agent(agents[1].agent_id, status="running")
+
+    old_view = admin.get_runtime_lease(first.value.lease_id)
+    new_view = admin.get_runtime_lease(second.value.lease_id)
+
+    assert old_view.ok and old_view.value is not None
+    assert old_view.value.current_agent_id is None
+    assert [step.step_id for step in old_view.value.started_steps] == [step_ids[0]]
+    assert new_view.ok and new_view.value is not None
+    assert new_view.value.current_agent_id == agents[1].agent_id
+    assert [step.step_id for step in new_view.value.started_steps] == [step_ids[1]]

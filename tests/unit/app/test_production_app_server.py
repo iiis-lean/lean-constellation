@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 
-from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
+from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from agent_runtime_kit.agent.homes import HomeCreateSpec
 from starlette.testclient import TestClient
@@ -379,6 +379,159 @@ def test_production_progress_and_agent_live_routes_are_repo_prefixed(tmp_path) -
     assert live.json()["value"]["report_index_url"].startswith("/admin/repos/MainRepo/")
     assert waited.status_code == 200
     assert waited.json()["value"]["timed_out"] is True
+
+
+def test_production_step_terminal_wait_is_read_only_and_not_test_control_gated(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(
+        LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    )
+    assert app_result.ok and app_result.value is not None
+    registry = app_result.value.state.lean_constellation_registry
+    loaded = registry.get_or_load("MainRepo")
+    assert loaded.ok and loaded.value is not None
+    started = LeanAdminApi(loaded.value).start_arbitrary_flow(
+        StartFlowInput(
+            flow_type="content_node_task",
+            scope_id="repo:MainRepo:node:Main.Core",
+            params={
+                "repo_key": "MainRepo",
+                "repo_path": str(repo_root),
+                "node_path": "Main.Core",
+                "contract_version": 1,
+                "task_mode": "run",
+            },
+        )
+    )
+    assert started.ok and started.value is not None
+    step = RepoFormatDiscoveryAgentStep(
+        step_id="terminal-step",
+        flow_id=started.value.flow_id,
+        scope_id="repo:MainRepo:node:Main.Core",
+        status=StepStatus.COMPLETED,
+        state=AgentStepState(
+            agent_role="repo_format_discovery",
+            agent_type="RepoFormatDiscoveryAgent",
+            home_id="RepoFormatDiscoveryAgent",
+            create_agent_if_missing=False,
+        ),
+    )
+    loaded.value.ark.step_service.create_step(step, enqueue=False)
+
+    with TestClient(app_result.value) as client:
+        response = client.get(
+            "/admin/repos/MainRepo/steps/terminal-step/wait",
+            params={"timeout_s": 0},
+        )
+        missing = client.get(
+            "/admin/repos/MainRepo/steps/missing/wait",
+            params={"timeout_s": 0},
+        )
+
+    assert loaded.value.test_control_enabled is False
+    assert response.status_code == 200, response.json()
+    assert response.json()["value"]["terminal"] is True
+    assert response.json()["value"]["runner_state"] == "settled"
+    assert response.json()["value"]["step"]["step_id"] == "terminal-step"
+    assert missing.status_code == 400
+    assert missing.json()["issues"][0]["kind"] == "step_not_found"
+
+
+def test_production_step_terminal_wait_does_not_block_status_route(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    repo_root = _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(
+        LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    )
+    assert app_result.ok and app_result.value is not None
+    registry = app_result.value.state.lean_constellation_registry
+    loaded = registry.get_or_load("MainRepo")
+    assert loaded.ok and loaded.value is not None
+    started = LeanAdminApi(loaded.value).start_arbitrary_flow(
+        StartFlowInput(
+            flow_type="content_node_task",
+            scope_id="repo:MainRepo:node:Main.Wait",
+            params={
+                "repo_key": "MainRepo",
+                "repo_path": str(repo_root),
+                "node_path": "Main.Wait",
+                "contract_version": 1,
+                "task_mode": "run",
+            },
+        )
+    )
+    assert started.ok and started.value is not None
+    waiting_step = RepoFormatDiscoveryAgentStep(
+        step_id="created-step",
+        flow_id=started.value.flow_id,
+        scope_id="repo:MainRepo:node:Main.Wait",
+        state=AgentStepState(
+            agent_role="repo_format_discovery",
+            agent_type="RepoFormatDiscoveryAgent",
+            home_id="RepoFormatDiscoveryAgent",
+            create_agent_if_missing=False,
+        ),
+    )
+    loaded.value.ark.step_service.create_step(waiting_step, enqueue=False)
+
+    with TestClient(app_result.value) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        waiting = pool.submit(
+            client.get,
+            "/admin/repos/MainRepo/steps/created-step/wait",
+            params={"timeout_s": 0.5},
+        )
+        time.sleep(0.05)
+        started_at = time.monotonic()
+        status = client.get("/admin/repos/MainRepo/runtime/status")
+        status_elapsed = time.monotonic() - started_at
+        waited = waiting.result(timeout=2)
+
+    assert status.status_code == 200
+    assert status_elapsed < 0.4
+    assert waited.status_code == 200
+    assert waited.json()["value"]["timed_out"] is True
+    assert waited.json()["value"]["runner_state"] == "not_started"
+
+
+def test_agent_live_status_mode_uses_status_notification(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _make_repo(workspace, "MainRepo")
+    app_result = create_production_app_server(
+        LeanAppConfig(workspace_root=workspace, scheduler_enabled=False, materialize_agent_homes=False)
+    )
+    assert app_result.ok and app_result.value is not None
+    registry = app_result.value.state.lean_constellation_registry
+    loaded = registry.get_or_load("MainRepo")
+    assert loaded.ok and loaded.value is not None
+    service = loaded.value.ark.agent_service
+    service.home_service.create_home(HomeCreateSpec(cli_type="codex", home_id="RepoFormatDiscoveryAgent"))
+    agent = service.create_agent(
+        "repo:MainRepo:node:Main.Status",
+        "RepoFormatDiscoveryAgent",
+        home_id="RepoFormatDiscoveryAgent",
+    )
+
+    with TestClient(app_result.value) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        initial = client.get(f"/admin/repos/MainRepo/agents/{agent.agent_id}/live")
+        assert initial.status_code == 200
+        waiting = pool.submit(
+            client.get,
+            f"/admin/repos/MainRepo/agents/{agent.agent_id}/live",
+            params={
+                "after_cursor": initial.json()["value"]["next_cursor"],
+                "wait_s": 1,
+                "wake_on": "status",
+            },
+        )
+        time.sleep(0.05)
+        service.close_agent(agent.agent_id)
+        observed = waiting.result(timeout=2)
+
+    assert observed.status_code == 200
+    assert observed.json()["value"]["wake_on"] == "status"
+    assert observed.json()["value"]["timed_out"] is False
+    assert observed.json()["value"]["agent"]["status"] == "closed"
 
 
 def test_repo_lifecycle_route_rejects_cross_repo_body_identity(tmp_path) -> None:

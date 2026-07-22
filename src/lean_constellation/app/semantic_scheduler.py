@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from threading import RLock
 from typing import Literal
+from weakref import WeakKeyDictionary
 
 from agent_runtime_kit.flow import (
     AgentStep,
@@ -64,6 +67,45 @@ class RuntimeSemanticAdvanceInput(StrictModel):
 
 class SemanticAdvancePolicyError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class SemanticLeaseObservationContext:
+    granularity: str
+    action: str | None
+    scope_id: str | None
+    step_id: str | None
+    content_task_flow_id: str | None
+
+
+_observation_lock = RLock()
+_observations_by_scheduler: WeakKeyDictionary[object, dict[str, SemanticLeaseObservationContext]] = WeakKeyDictionary()
+
+
+def register_semantic_lease_observation(
+    schedule_service: object,
+    lease_id: str,
+    request: RuntimeSemanticAdvanceInput,
+) -> SemanticLeaseObservationContext:
+    context = SemanticLeaseObservationContext(
+        granularity=request.granularity,
+        action=request.action,
+        scope_id=request.scope_id,
+        step_id=request.step_id,
+        content_task_flow_id=request.content_task_flow_id,
+    )
+    with _observation_lock:
+        observations = _observations_by_scheduler.setdefault(schedule_service, {})
+        observations[lease_id] = context
+    return context
+
+
+def get_semantic_lease_observation(
+    schedule_service: object,
+    lease_id: str,
+) -> SemanticLeaseObservationContext | None:
+    with _observation_lock:
+        return _observations_by_scheduler.get(schedule_service, {}).get(lease_id)
 
 
 def build_semantic_run_policy(runtime, request: RuntimeSemanticAdvanceInput) -> SchedulerSemanticRunPolicy:  # noqa: ANN001

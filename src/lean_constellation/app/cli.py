@@ -21,6 +21,7 @@ from lean_constellation.app.external_takeover import (
 )
 from lean_constellation.app.runtime import create_app_runtime_from_config
 from lean_constellation.app.server import run_production_app_server
+from lean_constellation.app.semantic_watch import SemanticWatchOptions, SemanticWatcher
 
 
 _INTERFACE_DOC_SURFACES = ("operator", "admin", "agent-tools")
@@ -86,6 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
     agent_report_index = sub.add_parser("agent-report-index", help="List stored trace reports for an Agent.")
     agent_report_index.add_argument("--repo-key", required=True)
     agent_report_index.add_argument("agent_id")
+    semantic_watch = sub.add_parser("semantic-watch", help="Observe one existing production semantic lease until terminal.")
+    semantic_watch.add_argument("--repo-key", required=True)
+    semantic_watch.add_argument("--lease-id", required=True)
+    semantic_watch.add_argument("--content-task-flow-id", default=None)
+    semantic_watch.add_argument("--output", choices=["ndjson", "summary"], default="ndjson")
+    semantic_watch.add_argument("--activity", choices=["quiet", "heartbeat", "verbose"], default="quiet")
+    semantic_watch.add_argument("--wait-s", type=float, default=30.0)
+    semantic_watch.add_argument("--timeout-s", type=float, default=None)
+    semantic_watch.add_argument("--soft-stall-s", type=float, default=300.0)
     external_health = sub.add_parser("external-health", help="Read external dependency health over Admin HTTP.")
     external_health.add_argument("--required-toolkit-group", action="append", default=[])
     external_health.add_argument("--required-toolkit-tool", action="append", default=[])
@@ -397,6 +407,31 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "agent-report-index":
         return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/report-index"))
+    if args.command == "semantic-watch":
+        try:
+            watcher = SemanticWatcher(
+                SemanticWatchOptions(
+                    admin_base_url=admin_base_url,
+                    repo_key=args.repo_key,
+                    lease_id=args.lease_id,
+                    content_task_flow_id=args.content_task_flow_id,
+                    output=args.output,
+                    activity=args.activity,
+                    wait_s=args.wait_s,
+                    timeout_s=args.timeout_s,
+                    soft_stall_s=args.soft_stall_s,
+                ),
+                request_json=lambda method, url, payload, timeout_s: _request_json(
+                    method,
+                    url,
+                    payload,
+                    timeout_s=timeout_s,
+                ),
+                emit=lambda event: print(json.dumps(event, sort_keys=True), flush=True),
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        return watcher.run()
     if args.command == "external-health":
         return _print_http_result(
             _request_json(
@@ -751,12 +786,12 @@ def _print_result(result) -> int:
     return 0
 
 
-def _request_json(method: str, url: str, payload: dict | None = None) -> dict:
+def _request_json(method: str, url: str, payload: dict | None = None, *, timeout_s: float = 30) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"} if data is not None else {}
     req = request.Request(url, data=data, headers=headers, method=method)
     try:
-        with request.urlopen(req, timeout=30) as response:  # noqa: S310 - local admin endpoint by configuration.
+        with request.urlopen(req, timeout=timeout_s) as response:  # noqa: S310 - local admin endpoint by configuration.
             raw = response.read().decode("utf-8")
     except error.HTTPError as exc:
         raw = exc.read().decode("utf-8")
@@ -768,6 +803,18 @@ def _request_json(method: str, url: str, payload: dict | None = None) -> dict:
                 {
                     "kind": "admin_http_request_failed",
                     "message": f"Failed to reach Admin HTTP server at {url}: {exc.reason}",
+                    "severity": "error",
+                }
+            ],
+        }
+    except TimeoutError as exc:
+        return {
+            "ok": False,
+            "value": None,
+            "issues": [
+                {
+                    "kind": "admin_http_request_timeout",
+                    "message": f"Admin HTTP request timed out at {url}: {exc}",
                     "severity": "error",
                 }
             ],

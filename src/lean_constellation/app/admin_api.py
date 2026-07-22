@@ -30,6 +30,8 @@ from lean_constellation.app.semantic_scheduler import (
     RuntimeSemanticAdvanceInput,
     SemanticAdvancePolicyError,
     build_semantic_run_policy,
+    get_semantic_lease_observation,
+    register_semantic_lease_observation,
 )
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
@@ -159,6 +161,16 @@ class StepMonitorView(StrictModel):
     summary: str
 
 
+class StepTerminalWaitView(StrictModel):
+    step: StepMonitorView
+    terminal: bool
+    timed_out: bool
+    runner_state: Literal["active", "not_started", "lost", "settled"]
+    warning: str | None = None
+    observed_at: str
+    summary: str
+
+
 class FlowMonitorView(StrictModel):
     flow_id: str
     flow_type: str
@@ -274,6 +286,7 @@ class ContentTaskProgressView(StrictModel):
 
 class AgentLiveMonitorView(StrictModel):
     agent: AgentMonitorView
+    wake_on: Literal["activity", "status", "response"] = "activity"
     owning_steps: list[StepMonitorView] = Field(default_factory=list)
     delta_turns: list[dict[str, Any]] = Field(default_factory=list)
     delta_events: list[dict[str, Any]] = Field(default_factory=list)
@@ -1512,7 +1525,9 @@ class LeanAdminApi:
             )
         try:
             policy = build_semantic_run_policy(self.runtime, input_model)
-            schedule_service.configure_semantic_run(policy)
+            run_control = schedule_service.configure_semantic_run(policy)
+            if run_control.lease_id is not None:
+                register_semantic_lease_observation(schedule_service, run_control.lease_id, input_model)
             schedule_service.rebuild_candidate_queues()
             controller.resume(None)
         except Exception as exc:  # noqa: BLE001 - Admin mutation boundary.
@@ -1602,6 +1617,61 @@ class LeanAdminApi:
                 running_step_ids=queues.running_step_ids,
                 created_step_ids=queues.created_step_ids,
                 summary="Loaded runtime status.",
+            )
+        )
+
+    def wait_step_terminal(
+        self,
+        step_id: str,
+        *,
+        timeout_s: float = 30.0,
+    ) -> ServiceResult[StepTerminalWaitView]:
+        if timeout_s < 0 or timeout_s > 300:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "step_terminal_wait_invalid",
+                    "Step terminal wait timeout_s must be between 0 and 300 seconds.",
+                )
+            )
+        step_service = self.runtime.ark.step_service
+        if step_service is None or not hasattr(step_service, "wait_step_terminal"):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "step_terminal_wait_unavailable",
+                    "Production Step terminal waiting is unavailable.",
+                )
+            )
+        try:
+            waited = step_service.wait_step_terminal(step_id, timeout_s=timeout_s)
+        except KeyError:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "step_not_found",
+                    f"Step does not exist in this repo runtime: {step_id}",
+                    object_ref=step_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - Admin observation boundary.
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "step_terminal_wait_failed",
+                    f"Failed to wait for Step terminal state: {exc}",
+                    object_ref=step_id,
+                )
+            )
+        return self.runtime.foundation.ok(
+            StepTerminalWaitView(
+                step=self._step_monitor_view(waited.step),
+                terminal=waited.terminal,
+                timed_out=waited.timed_out,
+                runner_state=waited.runner_state,
+                warning=waited.warning,
+                observed_at=waited.observed_at,
+                summary=(
+                    f"Step {step_id} reached settled terminal state."
+                    if waited.terminal
+                    else f"Step {step_id} observation returned {waited.runner_state}."
+                ),
             )
         )
 
@@ -2052,12 +2122,20 @@ class LeanAdminApi:
         repo_key: str,
         after_cursor: str | None = None,
         wait_s: float = 0.0,
+        wake_on: Literal["activity", "status", "response"] = "activity",
     ) -> ServiceResult[AgentLiveMonitorView]:
         if wait_s < 0 or wait_s > 30:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "agent_live_wait_invalid",
                     "Agent live wait_s must be between 0 and 30 seconds.",
+                )
+            )
+        if wake_on not in {"activity", "status", "response"}:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "agent_live_wake_invalid",
+                    "Agent live wake_on must be activity, status, or response.",
                 )
             )
         try:
@@ -2068,15 +2146,32 @@ class LeanAdminApi:
             )
         deadline = time.monotonic() + wait_s
         try:
-            while True:
-                snapshot = self._agent_live_snapshot(agent_id)
-                changed = baseline is None or any(
-                    snapshot[key] != baseline.get(key)
-                    for key in ("turns", "events", "tool_calls", "responses", "status")
+            if baseline is not None and wait_s > 0 and wake_on == "status":
+                agent_service = self.runtime.ark.agent_service
+                if not hasattr(agent_service, "wait_agent_status_change"):
+                    raise RuntimeError("ARK Agent status observation is unavailable")
+                status_wait = agent_service.wait_agent_status_change(
+                    agent_id,
+                    after_status=str(baseline["status"]),
+                    timeout_s=wait_s,
                 )
-                if changed or wait_s == 0 or time.monotonic() >= deadline:
-                    break
-                time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+                snapshot = self._agent_live_snapshot(agent_id)
+                changed = status_wait.changed
+            else:
+                wake_keys = {
+                    "activity": ("turns", "events", "tool_calls", "responses", "status"),
+                    "status": ("status",),
+                    "response": ("responses", "status"),
+                }[wake_on]
+                while True:
+                    snapshot = self._agent_live_snapshot(agent_id)
+                    changed = baseline is None or any(
+                        snapshot[key] != baseline.get(key)
+                        for key in wake_keys
+                    )
+                    if changed or wait_s == 0 or time.monotonic() >= deadline:
+                        break
+                    time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
 
             timed_out = baseline is not None and not changed
             turn_start = int(baseline.get("turns", 0)) if baseline else 0
@@ -2105,6 +2200,7 @@ class LeanAdminApi:
             return self.runtime.foundation.ok(
                 AgentLiveMonitorView(
                     agent=self._agent_monitor_view(agent),
+                    wake_on=wake_on,
                     owning_steps=owning_steps,
                     delta_turns=[to_jsonable(item) for item in turns[turn_start:]][-50:],
                     delta_events=[to_jsonable(item) for item in delta_events],
@@ -2117,7 +2213,7 @@ class LeanAdminApi:
                     timed_out=timed_out,
                     observed_at=utc_now_iso(),
                     summary=(
-                        f"Agent {agent_id} has "
+                        f"Agent {agent_id} {wake_on} observation has "
                         f"{max(0, int(snapshot['events']) - event_start)} new rollout events."
                     ),
                 )
@@ -3051,16 +3147,35 @@ class LeanAdminApi:
                 )
             except Exception:
                 continue
-        content_tasks = self.runtime.ark.flow_service.store.list_flows(flow_type="content_node_task")
-        current_content = next(
-            (
-                flow
-                for flow in reversed(content_tasks)
-                if flow.status not in {FlowStatus.COMPLETED, FlowStatus.FAILED}
-            ),
-            None,
-        )
-        running_agents = list(self.runtime.ark.agent_service.list_running_agents())
+        observation = get_semantic_lease_observation(self.runtime.ark.schedule_service, lease.lease_id)
+        current_content = None
+        if observation is not None and observation.content_task_flow_id is not None:
+            try:
+                current_content = self.runtime.ark.flow_service.get_flow(observation.content_task_flow_id)
+            except Exception:
+                current_content = None
+        candidate_steps = list(reversed(started_steps))
+        if observation is not None and observation.step_id is not None:
+            try:
+                target_step = self._step_monitor_view(
+                    self.runtime.ark.step_service.store.get_step(observation.step_id)
+                )
+            except Exception:
+                target_step = None
+            if target_step is not None and all(step.step_id != target_step.step_id for step in candidate_steps):
+                candidate_steps.insert(0, target_step)
+        current_agent_id = None
+        for step_view in candidate_steps:
+            agent_id = step_view.bound_agent_id
+            if agent_id is None:
+                continue
+            try:
+                agent = self.runtime.ark.agent_service.get_agent(agent_id)
+            except Exception:
+                continue
+            if str(agent.status) == "running":
+                current_agent_id = agent_id
+                break
         return RuntimeLeaseMonitorView(
             lease=lease,
             runtime=runtime_result.value,
@@ -3072,7 +3187,7 @@ class LeanAdminApi:
                 "phase",
                 None,
             ),
-            current_agent_id=(running_agents[0].agent_id if running_agents else None),
+            current_agent_id=current_agent_id,
             truth_version=lease.version,
             observed_at=utc_now_iso(),
             timed_out=timed_out,

@@ -33,6 +33,7 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "agent-turns" in help_text
     assert "agent-event" in help_text
     assert "agent-trace-report" in help_text
+    assert "semantic-watch" in help_text
     assert "repo-run-initial" in help_text
     assert "repo-run-continue" in help_text
     assert "repo-release-preview" in help_text
@@ -309,6 +310,81 @@ def test_cli_admin_http_connection_failure_prints_structured_error(tmp_path, cap
     assert payload["ok"] is False
     assert payload["issues"][0]["kind"] == "admin_http_request_failed"
     assert "http://127.0.0.1:65534/admin/workspace/status" in payload["issues"][0]["message"]
+
+
+def test_cli_admin_http_timeout_prints_structured_error(tmp_path, capsys, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'workspace_root = "{tmp_path / "workspace"}"\nadmin_http_base_url = "http://admin.test"\n',
+        encoding="utf-8",
+    )
+
+    def fake_urlopen(*args, **kwargs):  # noqa: ANN001
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("lean_constellation.app.cli.request.urlopen", fake_urlopen)
+
+    exit_code = main(["--config", str(config_path), "status"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["issues"][0]["kind"] == "admin_http_request_timeout"
+
+
+def test_cli_semantic_watch_uses_long_poll_timeout_margin(tmp_path, capsys, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'workspace_root = "{tmp_path / "workspace"}"\nadmin_http_base_url = "http://admin.test"\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_request_json(method, url, payload=None, *, timeout_s=30):  # noqa: ANN001
+        calls.append((method, url, payload, timeout_s))
+        terminal = "/runtime/leases/lease-1/wait?" in url
+        return {
+            "ok": True,
+            "value": {
+                "lease": {
+                    "lease_id": "lease-1",
+                    "version": 2 if terminal else 1,
+                    "status": "terminal" if terminal else "active",
+                    "terminal_reason": "semantic_boundary_reached" if terminal else None,
+                },
+                "started_steps": [],
+                "current_content_task_flow_id": None,
+                "current_agent_id": None,
+            },
+            "issues": [],
+        }
+
+    monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
+
+    exit_code = main(
+        [
+            "--config",
+            str(config_path),
+            "semantic-watch",
+            "--repo-key",
+            "Repo",
+            "--lease-id",
+            "lease-1",
+            "--wait-s",
+            "25",
+            "--output",
+            "summary",
+        ]
+    )
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["event"] == "watch_completed"
+    assert calls[0] == ("GET", "http://admin.test/admin/repos/Repo/runtime/leases/lease-1", None, 30)
+    assert calls[1][0] == "GET"
+    assert "/runtime/leases/lease-1/wait?" in calls[1][1]
+    assert "timeout_s=25.0" in calls[1][1]
+    assert calls[1][2:] == (None, 35.0)
 
 
 def test_cli_repo_run_initial_builds_semantic_http_payload(tmp_path, capsys, monkeypatch) -> None:
