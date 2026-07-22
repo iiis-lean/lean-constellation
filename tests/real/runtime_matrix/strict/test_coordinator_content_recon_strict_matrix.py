@@ -77,7 +77,7 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(callback_ws.runtime, callback_provider)
-    callback_ws.create_homes("CoordinatorAgent", "ContentPlanAgent", "ResourceCuratorAgent", cli_type="codex")
+    callback_ws.create_homes("CoordinatorAgent", "ContentPlanAgent", "ResourceCuratorAgent", provider_type="scripted")
     unwrap(callback_ws.admin.resume_runtime())
     callback_flow_id = _start_coordinator(callback_ws)
 
@@ -157,7 +157,7 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(ready_ws.runtime, ready_provider)
-    ready_ws.create_home("CoordinatorAgent", cli_type="codex")
+    ready_ws.create_home("CoordinatorAgent", provider_type="scripted")
     unwrap(ready_ws.admin.resume_runtime())
     ready_flow_id = _start_coordinator(ready_ws)
     schedule_until(ready_ws.runtime, lambda: ready_ws.runtime.ark.flow_service.get_flow(ready_flow_id).status is FlowStatus.COMPLETED, limit=80)
@@ -209,7 +209,7 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(terminal_ws.runtime, terminal_provider)
-    terminal_ws.create_home("ContentPlanAgent", cli_type="codex")
+    terminal_ws.create_home("ContentPlanAgent", provider_type="scripted")
     unwrap(terminal_ws.admin.resume_runtime())
     for node_path, expected in ((ready_path, "ready"), (blocked_path, "blocked"), (failed_path, "failed")):
         flow_id = _start_content_task(terminal_ws, node_path)
@@ -253,7 +253,7 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(prep_ws.runtime, prep_provider)
-    prep_ws.create_homes("ContentPlanAgent", "NodeDirDependencyReconAgent", cli_type="codex")
+    prep_ws.create_homes("ContentPlanAgent", "NodeDirDependencyReconAgent", provider_type="scripted")
     unwrap(prep_ws.admin.resume_runtime())
     prep_flow_id = _start_content_task(prep_ws, CONTENT_NODE_PATH)
     schedule_until(prep_ws.runtime, lambda: prep_ws.runtime.ark.flow_service.get_flow(prep_flow_id).status is FlowStatus.COMPLETED, limit=160)
@@ -289,7 +289,7 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(resource_ws.runtime, resource_provider)
-    resource_ws.create_homes("ContentPlanAgent", "ResourceCuratorAgent", cli_type="codex")
+    resource_ws.create_homes("ContentPlanAgent", "ResourceCuratorAgent", provider_type="scripted")
     unwrap(resource_ws.admin.resume_runtime())
     resource_flow_id = _start_content_task(resource_ws, CONTENT_NODE_PATH)
     schedule_until(resource_ws.runtime, lambda: resource_ws.runtime.ark.flow_service.get_flow(resource_flow_id).status is FlowStatus.COMPLETED, limit=160)
@@ -336,7 +336,7 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
         "ProofNLReviewerAgent",
         "ProofFormalWorkerAgent",
         "ProofFormalReviewerAgent",
-        cli_type="codex",
+        provider_type="scripted",
     )
     unwrap(decl_ws.admin.resume_runtime())
     decl_flow_id = _start_content_task(decl_ws, round_fixture.node_path)
@@ -461,7 +461,7 @@ def test_strict_recon_completed_blocked_and_resource_callback_evidence(
         "MathlibReconAgent",
         "ResourceReconAgent",
         "ResourceCuratorAgent",
-        cli_type="codex",
+        provider_type="scripted",
     )
     unwrap(recon_ws.admin.resume_runtime())
 

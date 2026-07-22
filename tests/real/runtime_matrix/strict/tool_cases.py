@@ -1878,7 +1878,7 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         tool_name="get_current_repo_work_config",
         status="implemented",
         category="content_completion_gate_read",
-        reason="Current repo work config covered by strict declared-interface maturity smoke.",
+        reason="Current repo work config covered by the standard strict application ToolSweep.",
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),

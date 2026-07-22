@@ -15,16 +15,6 @@ from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus, u
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import Field, field_validator, model_validator
 
-from lean_constellation.app.external_takeover import (
-    ExternalTakeoverCompleteInput,
-    ExternalTakeoverHandoffView,
-    ExternalTakeoverToolCallInput,
-    ExternalTakeoverToolListInput,
-    call_external_takeover_tool,
-    complete_external_takeover_handoff,
-    list_external_takeover_handoffs,
-    list_external_takeover_tools,
-)
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.app.semantic_scheduler import (
     RuntimeSemanticAdvanceInput,
@@ -238,12 +228,12 @@ class AgentMonitorView(StrictModel):
     agent_id: str
     scope_id: str
     agent_type: str
-    cli_type: str
+    provider_type: str
     home_id: str
     status: str
-    thread_id: str | None = None
-    rollout_relpath: str | None = None
-    rollout_exists: bool = False
+    session_id: str | None = None
+    artifact_ref: str | None = None
+    artifact_exists: bool = False
     last_completion_status: str | None = None
     last_completion_turn_id: str | None = None
     latest_turn_duration_ms: int | None = None
@@ -305,8 +295,8 @@ class RunningAgentAuditItemView(StrictModel):
     agent_id: str
     scope_id: str
     classification: str
-    thread_id: str | None = None
-    rollout_relpath: str | None = None
+    session_id: str | None = None
+    artifact_ref: str | None = None
     evidence: list[str] = Field(default_factory=list)
 
 
@@ -318,8 +308,8 @@ class RunningAgentAuditView(StrictModel):
 
 class RunningAgentRepairInput(StrictModel):
     expected_scope_id: str
-    expected_thread_id: str | None = None
-    expected_rollout_relpath: str | None = None
+    expected_session_id: str | None = None
+    expected_artifact_ref: str | None = None
     action: Literal["mark_idle"] = "mark_idle"
     dry_run: bool = True
 
@@ -376,7 +366,6 @@ class TestControlRuntimeView(StrictModel):
     test_control_enabled: bool
     paused: bool
     candidate_queues: TestControlCandidateQueueView
-    pending_external_handoffs: list[ExternalTakeoverHandoffView] = Field(default_factory=list)
     summary: str
 
 
@@ -422,7 +411,7 @@ class AgentStepControlView(StrictModel):
     status: str
     agent_role: str
     agent_type: str | None = None
-    cli_type: str
+    provider_type: str
     home_id: str | None = None
     tool_view_key: str | None = None
     step_bound_agent_id: str | None = None
@@ -2013,8 +2002,8 @@ class LeanAdminApi:
                             agent_id=item.agent_id,
                             scope_id=item.scope_id,
                             classification=item.classification,
-                            thread_id=item.thread_id,
-                            rollout_relpath=item.rollout_relpath,
+                            session_id=item.session_id,
+                            artifact_ref=item.artifact_ref,
                             evidence=list(item.evidence),
                         )
                         for item in records
@@ -2054,8 +2043,8 @@ class LeanAdminApi:
             result = self.runtime.ark.agent_service.repair_running_agent(
                 agent_id,
                 expected_scope_id=input_model.expected_scope_id,
-                expected_thread_id=input_model.expected_thread_id,
-                expected_rollout_relpath=input_model.expected_rollout_relpath,
+                expected_session_id=input_model.expected_session_id,
+                expected_artifact_ref=input_model.expected_artifact_ref,
                 action=input_model.action,
                 dry_run=input_model.dry_run,
             )
@@ -2180,10 +2169,7 @@ class LeanAdminApi:
             turns = snapshot["turn_items"]
             tool_calls = snapshot["tool_call_items"]
             event_delta_count = max(0, int(snapshot["events"]) - event_start)
-            delta_events = self.runtime.ark.agent_service.tail_trace_events(
-                agent_id,
-                limit=min(event_delta_count, 100),
-            ) if event_delta_count else []
+            delta_events = snapshot["event_items"][event_start:][-100:] if event_delta_count else []
             latest_response = snapshot["latest_response"]
             agent = snapshot["agent"]
             owning_steps = [
@@ -2214,7 +2200,7 @@ class LeanAdminApi:
                     observed_at=utc_now_iso(),
                     summary=(
                         f"Agent {agent_id} {wake_on} observation has "
-                        f"{max(0, int(snapshot['events']) - event_start)} new rollout events."
+                        f"{max(0, int(snapshot['events']) - event_start)} new provider events."
                     ),
                 )
             )
@@ -2303,23 +2289,16 @@ class LeanAdminApi:
                 self.runtime.foundation.issue("main_repo_status_failed", f"Failed to load main repo status: {exc}")
             )
 
-    def get_test_control_runtime_view(
-        self,
-        *,
-        handoff_dirname: str = "external_turns",
-    ) -> ServiceResult[TestControlRuntimeView]:
+    def get_test_control_runtime_view(self) -> ServiceResult[TestControlRuntimeView]:
         paused = False
         controller = self.runtime.ark.pause_controller
         if controller is not None and hasattr(controller, "is_paused"):
             paused = bool(controller.is_paused())
-        pending = self.list_external_takeovers(handoff_dirname=handoff_dirname, status="pending")
-        handoffs = pending.value if pending.ok and pending.value is not None else []
         return self.runtime.foundation.ok(
             TestControlRuntimeView(
                 test_control_enabled=self.runtime.test_control_enabled,
                 paused=paused,
                 candidate_queues=self._candidate_queue_view(),
-                pending_external_handoffs=handoffs,
                 summary="Loaded test-control runtime view.",
             )
         )
@@ -2738,89 +2717,9 @@ class LeanAdminApi:
             )
         return self.runtime.foundation.ok(agent)
 
-    def complete_external_takeover(
-        self,
-        input_model: ExternalTakeoverCompleteInput,
-    ) -> ServiceResult[ExternalTakeoverHandoffView]:
-        runtime_root = self._agent_runtime_root()
-        if runtime_root is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
-            )
-        try:
-            view = complete_external_takeover_handoff(runtime_root, input_model)
-        except Exception as exc:  # noqa: BLE001 - admin boundary.
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("external_takeover_complete_failed", f"Failed to complete external handoff: {exc}")
-            )
-        return self.runtime.foundation.ok(view)
-
-    def list_external_takeovers(
-        self,
-        *,
-        handoff_dirname: str = "external_turns",
-        status: str | None = None,
-    ) -> ServiceResult[list[ExternalTakeoverHandoffView]]:
-        runtime_root = self._agent_runtime_root()
-        if runtime_root is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
-            )
-        try:
-            return self.runtime.foundation.ok(
-                list_external_takeover_handoffs(runtime_root, handoff_dirname=handoff_dirname, status=status)
-            )
-        except Exception as exc:  # noqa: BLE001 - admin boundary.
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("external_takeover_list_failed", f"Failed to list external handoffs: {exc}")
-            )
-
-    def list_external_takeover_tools(
-        self,
-        input_model: ExternalTakeoverToolListInput,
-    ):
-        runtime_root = self._agent_runtime_root()
-        if runtime_root is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
-            )
-        try:
-            return self.runtime.foundation.ok(
-                list_external_takeover_tools(self.runtime, runtime_root, input_model)
-            )
-        except Exception as exc:  # noqa: BLE001 - admin boundary.
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("external_takeover_tools_failed", f"Failed to list external handoff tools: {exc}")
-            )
-
-    def call_external_takeover_tool(
-        self,
-        input_model: ExternalTakeoverToolCallInput,
-    ):
-        runtime_root = self._agent_runtime_root()
-        if runtime_root is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("agent_service_missing", "ARK agent service is not configured.")
-            )
-        try:
-            return self.runtime.foundation.ok(
-                call_external_takeover_tool(self.runtime, runtime_root, input_model)
-            )
-        except Exception as exc:  # noqa: BLE001 - admin boundary.
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("external_takeover_call_failed", f"Failed to call external handoff tool: {exc}")
-            )
-
-    def get_agent_rollout_info(self, agent_id: str):
-        return self._agent_trace_call(
-            lambda agent_service: agent_service.get_rollout_info(agent_id),
-            failure_kind="agent_rollout_info_failed",
-            failure_message="Failed to read Agent rollout info",
-        )
-
     def list_agent_turns(self, agent_id: str):
         return self._agent_trace_call(
-            lambda agent_service: agent_service.list_trace_turns(agent_id),
+            lambda agent_service: agent_service.query_turns(agent_id, limit=10_000).items,
             failure_kind="agent_turns_failed",
             failure_message="Failed to list Agent turns",
         )
@@ -2833,13 +2732,18 @@ class LeanAdminApi:
         index: int | None = None,
         latest: bool = False,
     ):
+        def read(agent_service):
+            turns = list(agent_service.query_turns(agent_id, limit=10_000).items)
+            if turn_id is not None:
+                return next(item for item in turns if item.locator.turn_id == turn_id)
+            if latest:
+                return turns[-1]
+            if index is None:
+                raise ValueError("turn_id, index, or latest is required")
+            return turns[index]
+
         return self._agent_trace_call(
-            lambda agent_service: agent_service.get_trace_turn(
-                agent_id,
-                turn_id=turn_id,
-                index=index,
-                latest=latest,
-            ),
+            read,
             failure_kind="agent_turn_failed",
             failure_message="Failed to read Agent turn",
         )
@@ -2851,8 +2755,16 @@ class LeanAdminApi:
         index: int | None = None,
         last: bool = False,
     ):
+        def read(agent_service):
+            events = list(agent_service.query_events(agent_id, limit=100_000).items)
+            if last:
+                return events[-1]
+            if index is None:
+                raise ValueError("index or last is required")
+            return events[index]
+
         return self._agent_trace_call(
-            lambda agent_service: agent_service.get_trace_event(agent_id, index=index, last=last),
+            read,
             failure_kind="agent_event_failed",
             failure_message="Failed to read Agent event",
         )
@@ -2865,13 +2777,20 @@ class LeanAdminApi:
         event_type: str | None = None,
         payload_type: str | None = None,
     ):
+        def read(agent_service):
+            events = list(agent_service.query_events(agent_id, limit=100_000).items)
+            if event_type is not None:
+                events = [item for item in events if item.kind == event_type]
+            if payload_type is not None:
+                events = [
+                    item
+                    for item in events
+                    if getattr(item.provider_payload, "payload_type", None) == payload_type
+                ]
+            return events[-limit:]
+
         return self._agent_trace_call(
-            lambda agent_service: agent_service.tail_trace_events(
-                agent_id,
-                limit=limit,
-                event_type=event_type,
-                payload_type=payload_type,
-            ),
+            read,
             failure_kind="agent_events_tail_failed",
             failure_message="Failed to tail Agent events",
         )
@@ -2883,19 +2802,31 @@ class LeanAdminApi:
         turn_id: str | None = None,
         latest: bool = False,
     ):
+        def read(agent_service):
+            turns = list(agent_service.query_turns(agent_id, limit=10_000).items)
+            if turn_id is not None:
+                turns = [item for item in turns if item.locator.turn_id == turn_id]
+            if latest:
+                turns = turns[-1:]
+            return [
+                item.result.final_text
+                for item in turns
+                if item.result is not None and item.result.final_text is not None
+            ]
+
         return self._agent_trace_call(
-            lambda agent_service: agent_service.list_response_texts(
-                agent_id,
-                turn_id=turn_id,
-                latest=latest,
-            ),
+            read,
             failure_kind="agent_response_texts_failed",
             failure_message="Failed to list Agent response texts",
         )
 
     def get_latest_agent_response_text(self, agent_id: str):
+        def read(agent_service):
+            turn = agent_service.query_turn(agent_id, latest=True)
+            return turn.result.final_text if turn is not None and turn.result is not None else None
+
         return self._agent_trace_call(
-            lambda agent_service: agent_service.get_latest_response_text(agent_id),
+            read,
             failure_kind="agent_latest_response_text_failed",
             failure_message="Failed to read latest Agent response text",
         )
@@ -2907,12 +2838,22 @@ class LeanAdminApi:
         turn_id: str | None = None,
         latest: bool = False,
     ):
-        return self._agent_trace_call(
-            lambda agent_service: agent_service.list_tool_calls(
+        def read(agent_service):
+            turn = None
+            if turn_id is not None or latest:
+                turns = list(agent_service.query_turns(agent_id, limit=10_000).items)
+                if turn_id is not None:
+                    turn = next(item.locator for item in turns if item.locator.turn_id == turn_id)
+                elif turns:
+                    turn = turns[-1].locator
+            return agent_service.query_tool_calls(
                 agent_id,
-                turn_id=turn_id,
-                latest=latest,
-            ),
+                turn_id=turn.turn_id if turn is not None else None,
+                limit=100_000,
+            ).items
+
+        return self._agent_trace_call(
+            read,
             failure_kind="agent_tool_calls_failed",
             failure_message="Failed to list Agent tool calls",
         )
@@ -2925,13 +2866,18 @@ class LeanAdminApi:
         index: int | None = None,
         last: bool = False,
     ):
+        def read(agent_service):
+            calls = list(agent_service.query_tool_calls(agent_id, call_id=call_id, limit=100_000).items)
+            if call_id is not None:
+                return calls[0]
+            if last:
+                return calls[-1]
+            if index is None:
+                raise ValueError("call_id, index, or last is required")
+            return calls[index]
+
         return self._agent_trace_call(
-            lambda agent_service: agent_service.get_tool_call(
-                agent_id,
-                call_id=call_id,
-                index=index,
-                last=last,
-            ),
+            read,
             failure_kind="agent_tool_call_failed",
             failure_message="Failed to read Agent tool call",
         )
@@ -3093,15 +3039,23 @@ class LeanAdminApi:
         return roots
 
     def _agent_monitor_view(self, agent: Any) -> AgentMonitorView:
-        rollout_exists = False
+        artifact_exists = False
         latest_turn_duration = None
         tool_call_count = None
         try:
-            rollout = self.runtime.ark.agent_service.store.locate_rollout(agent.agent_id)
-            rollout_exists = bool(rollout is not None and rollout.exists())
-            report = self.runtime.ark.agent_service.build_trace_report(agent.agent_id)
-            latest_turn_duration = report.latest_turn.duration_ms if report.latest_turn is not None else None
-            tool_call_count = len(report.tool_calls)
+            latest = self.runtime.ark.agent_service.query_turn(agent.agent_id, latest=True)
+            latest_turn_duration = (
+                latest.result.duration_ms
+                if latest is not None and latest.result is not None
+                else None
+            )
+            tool_call_count = len(
+                self.runtime.ark.agent_service.query_tool_calls(
+                    agent.agent_id,
+                    turn_id=(latest.locator.turn_id if latest is not None else None),
+                ).items
+            )
+            artifact_exists = agent.artifact_locator is not None
         except Exception:
             pass
         completion = getattr(agent, "last_completion", None)
@@ -3109,12 +3063,16 @@ class LeanAdminApi:
             agent_id=agent.agent_id,
             scope_id=agent.scope_id,
             agent_type=agent.agent_type,
-            cli_type=agent.cli_type,
+            provider_type=agent.provider_type,
             home_id=agent.home_id,
             status=agent.status,
-            thread_id=agent.thread_id,
-            rollout_relpath=agent.rollout_relpath,
-            rollout_exists=rollout_exists,
+            session_id=(agent.session_locator.session_id if agent.session_locator else None),
+            artifact_ref=(
+                agent.artifact_locator.native_primary_ref
+                if agent.artifact_locator is not None
+                else None
+            ),
+            artifact_exists=artifact_exists,
             last_completion_status=getattr(completion, "status", None),
             last_completion_turn_id=getattr(completion, "turn_id", None),
             latest_turn_duration_ms=latest_turn_duration,
@@ -3234,19 +3192,29 @@ class LeanAdminApi:
     def _agent_live_snapshot(self, agent_id: str) -> dict[str, Any]:
         service = self.runtime.ark.agent_service
         agent = service.get_agent(agent_id)
-        rollout = service.get_rollout_info(agent_id)
-        turns = service.list_trace_turns(agent_id)
-        tool_calls = service.list_tool_calls(agent_id)
-        responses = service.list_response_texts(agent_id)
-        latest_response = service.get_latest_response_text(agent_id)
+        if agent.session_locator is None:
+            turns: list[Any] = []
+            events: list[Any] = []
+            tool_calls: list[Any] = []
+        else:
+            turns = list(service.query_turns(agent_id, limit=10_000).items)
+            events = list(service.query_events(agent_id, limit=100_000).items)
+            tool_calls = list(service.query_tool_calls(agent_id, limit=100_000).items)
+        responses = [
+            item.result.final_text
+            for item in turns
+            if item.result is not None and item.result.final_text is not None
+        ]
+        latest_response = responses[-1] if responses else None
         return {
             "agent": agent,
             "status": str(agent.status),
             "turns": len(turns),
-            "events": int(rollout.event_count),
+            "events": len(events),
             "tool_calls": len(tool_calls),
             "responses": len(responses),
             "turn_items": turns,
+            "event_items": events,
             "tool_call_items": tool_calls,
             "latest_response": latest_response,
         }
@@ -3323,7 +3291,7 @@ class LeanAdminApi:
             status=str(step.status),
             agent_role=step.state.agent_role,
             agent_type=agent_type,
-            cli_type=step.state.cli_type,
+            provider_type=step.state.provider_type or "codex",
             home_id=step.state.home_id,
             tool_view_key=tool_view_key,
             step_bound_agent_id=step.agent_bindings.get(step.state.agent_role),
@@ -3343,10 +3311,11 @@ class LeanAdminApi:
             raise RuntimeError("ARK agent service is not configured")
         if override.agent_type_override:
             agent_service.agent_types.get(override.agent_type_override)
-        if override.cli_type_override:
-            providers = getattr(agent_service, "providers", {})
-            if override.cli_type_override not in providers:
-                raise ValueError(f"unknown Agent provider cli_type: {override.cli_type_override}")
+        if override.provider_type_override:
+            if override.provider_type_override not in agent_service.provider_registry:
+                raise ValueError(
+                    f"unknown Agent provider_type: {override.provider_type_override}"
+                )
 
     def _agent_trace_call(self, fn, *, failure_kind: str, failure_message: str):
         agent_service = self.runtime.ark.agent_service

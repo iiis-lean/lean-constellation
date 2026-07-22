@@ -17,7 +17,7 @@
 - `test_application_tool_sweep_live_material_acquisition.py`：显式开启 live material gate 后，通过真实 web 和 arXiv 网络下载覆盖 material acquisition / extraction 工具链。
 - `tool_sweep_partitions.py`：把 implemented ToolCase 分配到 core / DeclGraph / DeclStage formal / scope export 等执行分区。
 - `test_real_codex_agent_resource_matrix.py`：真实 Codex SDK/CLI 覆盖 controlled Coordinator / ResourceCurator / StatementFormalWorker / ProofFormalWorker / AdapterDeclCatalog / MathlibRecon Agent 资源、MCP tool 和 submit 验证。
-- `test_external_takeover_handoff_strict_matrix.py`：覆盖 representative external takeover handoff payload、env、workdir、home_id、application tool list、submit tool list 和 complete lifecycle。
+- `scripted_provider.py`：以标准 Provider bundle 覆盖 deterministic Agent run、MCP action、query 与 artifact snapshot/restore 合同。
 - `test_repo_preparation_strict_matrix.py`：native / adapter preparation Flow、Step、submit 分支 evidence。
 - `test_coordinator_content_recon_strict_matrix.py`：Coordinator、content node task 和 recon child Flow 分支 evidence。
 - `test_decl_graph_strict_branches.py`：DeclGraph review rejected -> worker blocked 分支和 delete/normalize 分支 evidence。
@@ -26,7 +26,7 @@
 
 - 默认 strict suite 当前 registry surface 为 256 个 application tools，其中 195 个 ToolCase 标记 implemented，48 个 pending fixture，13 个 env-gated；implemented 部分审 Flow / LogicStep / AgentStep / submit / checkpointed write evidence。
 - `test_application_tool_sweep_live_env.py` 在 live Toolkit + GitHub 环境中覆盖 8 个 env-gated ToolCase；`search_arxiv_theorems` 会真实到达 live Toolkit provider，并在 LeanSearch theorem endpoint 返回 500 时通过真实 arXiv e-print source fallback 返回 theorem candidate。
-- `test_real_codex_agent_resource_matrix.py` 在真实 Codex SDK/CLI 环境中覆盖六个重点 Agent，并写入 `*_transcript.json` 供人工复查 final response / rollout / artifact path。
+- `test_real_codex_agent_resource_matrix.py` 在真实 Codex SDK/CLI 环境中覆盖六个重点 Agent，并写入 `*_transcript.json` 供人工复查 normalized final response、provider artifact locator 和 trace report。
 
 baseline 测试保留在 sibling 目录 `../baseline/`，不能作为 strict 完成依据。
 

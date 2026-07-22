@@ -21,9 +21,9 @@ class FakeAgent:
     agent_id: str
     scope_id: str
     agent_type: str
-    cli_type: str
+    provider_type: str
     home_id: str | None = None
-    thread_id: str | None = None
+    session_id: str | None = None
     status: str = "idle"
 
 
@@ -61,7 +61,7 @@ class FakeAgentService:
         scope_id: str,
         agent_type: str,
         *,
-        cli_type: str = "codex",
+        provider_type: str = "codex",
         home_id: str | None = None,
     ) -> FakeAgent:
         self._agent_seq += 1
@@ -69,7 +69,7 @@ class FakeAgentService:
             agent_id=f"agent_{self._agent_seq}",
             scope_id=scope_id,
             agent_type=agent_type,
-            cli_type=cli_type,
+            provider_type=provider_type,
             home_id=home_id,
         )
         self.agents[agent.agent_id] = agent
@@ -93,9 +93,9 @@ class FakeAgentService:
             agent_id=f"agent_{self._agent_seq}",
             scope_id=target_scope_id or source.scope_id,
             agent_type=source.agent_type,
-            cli_type=source.cli_type,
+            provider_type=source.provider_type,
             home_id=source.home_id,
-            thread_id=source.thread_id or f"thread_{source.agent_id}",
+            session_id=source.session_id or f"session_{source.agent_id}",
         )
         self.agents[agent.agent_id] = agent
         return agent

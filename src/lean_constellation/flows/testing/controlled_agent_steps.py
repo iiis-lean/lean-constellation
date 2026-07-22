@@ -31,7 +31,7 @@ class ControlledAgentOverrideSpec(StrictModel):
 
     strategy: ControlledAgentStrategy = "reuse_bound_agent"
     agent_type_override: str | None = None
-    cli_type_override: str | None = None
+    provider_type_override: str | None = None
     home_id_override: str | None = None
     bind_to_flow: bool | None = None
     prompt_override: str | None = None
@@ -80,7 +80,7 @@ class ControlledAgentStepMixin:
             agent = latest._agent_service(ctx).create_agent(
                 ctx.scope_id,
                 agent_type,
-                cli_type=spec.cli_type_override or state.cli_type,
+                provider_type=spec.provider_type_override or state.provider_type,
                 home_id=home_id,
             )
             agent_id = str(agent.agent_id)

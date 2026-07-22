@@ -9,9 +9,6 @@ from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import (
     AdminStepStartInput,
-    ExternalTakeoverCompleteInput,
-    ExternalTakeoverToolCallInput,
-    ExternalTakeoverToolListInput,
     SetAgentStepOverrideInput,
 )
 from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
@@ -19,16 +16,14 @@ from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
 from lean_constellation.flows.testing import ControlledAgentOverrideSpec
 from tests.real.runtime_matrix.admin_helpers import (
-    read_handoff_json,
     run_next_created_step,
     run_until_step_created,
-    set_external_takeover_override,
+    set_scripted_provider_override,
     unwrap,
-    wait_for_pending_handoff,
 )
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import DeclRoundFixture, RuntimeMatrixWorkspace, create_runtime_matrix_workspace
-from tests.real.runtime_matrix.strict_helpers import run_external_actions_with_evidence
+from tests.real.runtime_matrix.strict_helpers import run_scripted_actions_with_evidence
 from tests.real.runtime_matrix.strict.real_codex_helpers import (
     materialize_strict_codex_home,
     require_real_codex,
@@ -48,7 +43,7 @@ def test_strict_real_codex_coordinator_resources_tools_and_submit(
     base_config_path = write_noninteractive_codex_base_config(config_home, tmp_path)
     agent_type = "CoordinatorControlledTestAgent"
     agent_specs = strict_controlled_agent_specs("CoordinatorAgent")
-    ws = create_runtime_matrix_workspace(tmp_path, include_codex_provider=True)
+    ws = create_runtime_matrix_workspace(tmp_path)
     ws.prepare_provider_ready_repo()
     home_root = materialize_strict_codex_home(
         ws,
@@ -71,7 +66,7 @@ def test_strict_real_codex_coordinator_resources_tools_and_submit(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="codex",
+                    provider_type_override="codex",
                     prompt_overlay=_coordinator_resource_probe_prompt(prompt_marker),
                     developer_instructions_overlay=(
                         "\n\nRuntime Matrix strict resource probe developer marker:\n"
@@ -156,7 +151,7 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
     base_config_path = write_noninteractive_codex_base_config(config_home, tmp_path)
     agent_type = "ResourceCuratorControlledTestAgent"
     agent_specs = strict_controlled_agent_specs("ResourceCuratorAgent")
-    ws = create_runtime_matrix_workspace(tmp_path, include_codex_provider=True)
+    ws = create_runtime_matrix_workspace(tmp_path)
     ws.prepare_provider_native_repo()
     home_root = materialize_strict_codex_home(
         ws,
@@ -190,7 +185,7 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="codex",
+                    provider_type_override="codex",
                     prompt_overlay=_resource_curator_probe_prompt(prompt_marker, target),
                     developer_instructions_overlay=(
                         "\n\nRuntime Matrix strict resource probe developer marker:\n"
@@ -275,7 +270,7 @@ def test_strict_real_codex_content_plan_work_config_and_completion_gate_smoke(
     base_config_path = write_noninteractive_codex_base_config(config_home, tmp_path)
     agent_type = "ContentPlanControlledTestAgent"
     agent_specs = strict_controlled_agent_specs("ContentPlanAgent")
-    ws = create_runtime_matrix_workspace(tmp_path, include_codex_provider=True)
+    ws = create_runtime_matrix_workspace(tmp_path)
     ws.setup_content_node()
     updated = ws.runtime.repo_workspace.metadata.update_repo_config(
         ws.provider_repo,
@@ -306,7 +301,7 @@ def test_strict_real_codex_content_plan_work_config_and_completion_gate_smoke(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="codex",
+                    provider_type_override="codex",
                     prompt_overlay=_content_plan_maturity_probe_prompt(prompt_marker),
                     developer_instructions_overlay=(
                         "\n\nRuntime Matrix content plan maturity smoke developer marker:\n"
@@ -393,7 +388,6 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
     ws = create_runtime_matrix_workspace(
         tmp_path,
         lake_client=LakeCommandClient(LakeCommandClientConfig(timeout_seconds=120)),
-        include_codex_provider=True,
     )
     initial_build = ws.lake.run_lake_build(ws.provider_repo, timeout_seconds=120)
     assert initial_build.ok, initial_build
@@ -419,7 +413,7 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
     run_next_created_step(ws.admin, flow_id, timeout_s=20)
     statement_nl_worker_id = run_until_step_created(ws.admin, flow_id, "decl_stage_worker_agent_step", max_advances=5)
     _assert_decl_stage_step(ws, statement_nl_worker_id, stage="statement_nl")
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         statement_nl_worker_id,
         agent_type="StatementNLWorkerControlledTestAgent",
@@ -429,7 +423,7 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "decl_stage_worker_submit",
         },
     )
-    run_external_actions_with_evidence(
+    run_scripted_actions_with_evidence(
         ws.admin,
         statement_nl_worker_id,
         [
@@ -455,7 +449,7 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
 
     statement_nl_reviewer_id = run_until_step_created(ws.admin, flow_id, "decl_stage_reviewer_agent_step", max_advances=5)
     _assert_decl_stage_step(ws, statement_nl_reviewer_id, stage="statement_nl")
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         statement_nl_reviewer_id,
         agent_type="StatementNLReviewerControlledTestAgent",
@@ -465,7 +459,7 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "decl_stage_reviewer_submit",
         },
     )
-    run_external_actions_with_evidence(
+    run_scripted_actions_with_evidence(
         ws.admin,
         statement_nl_reviewer_id,
         [
@@ -494,7 +488,7 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="codex",
+                    provider_type_override="codex",
                     prompt_overlay=_statement_formal_probe_prompt(prompt_marker, round_fixture.decl_name),
                     developer_instructions_overlay=(
                         "\n\nRuntime Matrix strict resource probe developer marker:\n"
@@ -598,7 +592,6 @@ def test_strict_real_codex_proof_formal_worker_resources_tools_and_submit(
     ws = create_runtime_matrix_workspace(
         tmp_path,
         lake_client=LakeCommandClient(LakeCommandClientConfig(timeout_seconds=120)),
-        include_codex_provider=True,
     )
     initial_build = ws.lake.run_lake_build(ws.provider_repo, timeout_seconds=120)
     assert initial_build.ok, initial_build
@@ -640,7 +633,7 @@ def test_strict_real_codex_proof_formal_worker_resources_tools_and_submit(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="codex",
+                    provider_type_override="codex",
                     prompt_overlay=_proof_formal_probe_prompt(prompt_marker, round_fixture.decl_name),
                     developer_instructions_overlay=(
                         "\n\nRuntime Matrix strict resource probe developer marker:\n"
@@ -739,7 +732,7 @@ def test_strict_real_codex_adapter_decl_catalog_resources_tools_and_submit(
     base_config_path = write_noninteractive_codex_base_config(config_home, tmp_path)
     agent_type = "AdapterDeclCatalogControlledTestAgent"
     agent_specs = strict_controlled_agent_specs("AdapterDeclCatalogAgent")
-    ws = create_runtime_matrix_workspace(tmp_path, include_codex_provider=True)
+    ws = create_runtime_matrix_workspace(tmp_path)
     ws.prepare_adapter_truth()
     home_root = materialize_strict_codex_home(
         ws,
@@ -770,7 +763,7 @@ def test_strict_real_codex_adapter_decl_catalog_resources_tools_and_submit(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="codex",
+                    provider_type_override="codex",
                     prompt_overlay=_adapter_decl_catalog_probe_prompt(prompt_marker),
                     developer_instructions_overlay=(
                         "\n\nRuntime Matrix strict resource probe developer marker:\n"
@@ -868,7 +861,7 @@ def test_strict_real_codex_mathlib_recon_resources_tools_and_submit(
     base_config_path = write_noninteractive_codex_base_config(config_home, tmp_path)
     agent_type = "MathlibReconControlledTestAgent"
     agent_specs = strict_controlled_agent_specs("MathlibReconAgent")
-    ws = create_runtime_matrix_workspace(tmp_path, include_codex_provider=True)
+    ws = create_runtime_matrix_workspace(tmp_path)
     ws.setup_content_node()
     home_root = materialize_strict_codex_home(
         ws,
@@ -891,7 +884,7 @@ def test_strict_real_codex_mathlib_recon_resources_tools_and_submit(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="codex",
+                    provider_type_override="codex",
                     prompt_overlay=_mathlib_recon_probe_prompt(prompt_marker),
                     developer_instructions_overlay=(
                         "\n\nRuntime Matrix strict resource probe developer marker:\n"
@@ -1264,24 +1257,19 @@ def _write_real_codex_transcript(
     agent = agent_service.get_agent(agent_id) if agent_id is not None else None
     trace_report = None
     trace_report_error = None
-    latest_event = None
     if agent_id is not None:
         try:
             trace_report = agent_service.build_trace_report(agent_id, artifact_path=artifact_path)
         except Exception as exc:  # noqa: BLE001 - transcript evidence should preserve lookup failures.
             trace_report_error = str(exc)
-        try:
-            latest_event = agent_service.get_trace_event(agent_id, last=True)
-        except Exception as exc:  # noqa: BLE001 - transcript evidence should preserve lookup failures.
-            latest_event = {"read_error": str(exc)}
     trace_payload = _jsonable(trace_report) if trace_report is not None else {}
-    latest_turn_payload = trace_payload.get("latest_turn") if isinstance(trace_payload, dict) else None
+    turn_payloads = trace_payload.get("turns", []) if isinstance(trace_payload, dict) else []
+    latest_turn_view = turn_payloads[-1] if turn_payloads else {}
+    latest_turn_payload = latest_turn_view.get("result") if isinstance(latest_turn_view, dict) else None
     latest_turn_payload = latest_turn_payload if isinstance(latest_turn_payload, dict) else {}
-    rollout_payload = trace_payload.get("rollout") if isinstance(trace_payload, dict) else None
-    rollout_payload = rollout_payload if isinstance(rollout_payload, dict) else {}
-    artifact_payload = trace_payload.get("artifact") if isinstance(trace_payload, dict) else None
-    artifact_payload = artifact_payload if isinstance(artifact_payload, dict) else {}
-    final_response = latest_turn_payload.get("final_response")
+    event_payloads = trace_payload.get("events", []) if isinstance(trace_payload, dict) else []
+    latest_event = event_payloads[-1] if event_payloads else None
+    final_response = latest_turn_payload.get("final_text")
     transcript = {
         "agent_type": agent_type,
         "step_id": step_id,
@@ -1301,7 +1289,7 @@ def _write_real_codex_transcript(
         },
         "agent": _jsonable(agent),
         "latest_turn": {
-            "id": latest_turn_payload.get("turn_id"),
+            "id": (latest_turn_view.get("locator") or {}).get("turn_id"),
             "status": latest_turn_payload.get("status"),
             "error": None,
             "started_at": latest_turn_payload.get("started_at"),
@@ -1311,25 +1299,26 @@ def _write_real_codex_transcript(
             "usage": latest_turn_payload.get("usage"),
             "read_error": trace_report_error,
         },
-        "rollout": {
-            "relpath": rollout_payload.get("rollout_relpath"),
-            "path": rollout_payload.get("rollout_path"),
-            "exists": rollout_payload.get("exists"),
-            "event_count": rollout_payload.get("event_count"),
-            "last_event": _jsonable(latest_event),
+        "provider_artifact": {
+            "locator": _jsonable(getattr(agent, "artifact_locator", None)),
+            "event_count": len(event_payloads),
+            "last_event": latest_event,
         },
         "trace_report": trace_payload,
-        "response_texts": trace_payload.get("response_texts", []) if isinstance(trace_payload, dict) else [],
+        "response_texts": [
+            item.get("result", {}).get("final_text")
+            for item in turn_payloads
+            if isinstance(item, dict) and isinstance(item.get("result"), dict) and item["result"].get("final_text")
+        ],
         "tool_calls": trace_payload.get("tool_calls", []) if isinstance(trace_payload, dict) else [],
-        "slow_tool_calls": trace_payload.get("slow_tool_calls", []) if isinstance(trace_payload, dict) else [],
-        "artifact_summary": artifact_payload.get("summary"),
+        "usage": trace_payload.get("usage") if isinstance(trace_payload, dict) else None,
     }
     transcript_path = artifact_path.with_name(f"{artifact_path.stem}_transcript.json")
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
     transcript_path.write_text(json.dumps(transcript, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     assert isinstance(final_response, str) and final_response.strip(), transcript
-    assert transcript["rollout"]["relpath"], transcript
-    assert transcript["rollout"]["exists"] is True, transcript
+    assert transcript["provider_artifact"]["locator"]["session_id"], transcript
+    assert transcript["provider_artifact"]["event_count"] > 0, transcript
     return transcript_path
 
 
@@ -1511,7 +1500,7 @@ def _complete_statement_nl_stage_for_real_codex(
     run_next_created_step(ws.admin, flow_id, timeout_s=20)
     statement_nl_worker_id = run_until_step_created(ws.admin, flow_id, "decl_stage_worker_agent_step", max_advances=5)
     _assert_decl_stage_step(ws, statement_nl_worker_id, stage="statement_nl")
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         statement_nl_worker_id,
         agent_type="StatementNLWorkerControlledTestAgent",
@@ -1521,7 +1510,7 @@ def _complete_statement_nl_stage_for_real_codex(
             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "decl_stage_worker_submit",
         },
     )
-    run_external_actions_with_evidence(
+    run_scripted_actions_with_evidence(
         ws.admin,
         statement_nl_worker_id,
         [
@@ -1569,7 +1558,7 @@ def _complete_statement_formal_stage_for_real_codex(
     run_next_created_step(ws.admin, flow_id, timeout_s=20)
     statement_formal_worker_id = run_until_step_created(ws.admin, flow_id, "decl_stage_worker_agent_step", max_advances=5)
     _assert_decl_stage_step(ws, statement_formal_worker_id, stage="statement_formal")
-    _complete_formal_stage_with_external_file_edit(
+    _complete_formal_stage_with_scripted_file_edit(
         ws,
         statement_formal_worker_id,
         agent_type="StatementFormalWorkerControlledTestAgent",
@@ -1606,7 +1595,7 @@ def _complete_proof_nl_stage_for_real_codex(
     run_next_created_step(ws.admin, flow_id, timeout_s=20)
     proof_nl_worker_id = run_until_step_created(ws.admin, flow_id, "decl_stage_worker_agent_step", max_advances=5)
     _assert_decl_stage_step(ws, proof_nl_worker_id, stage="proof_nl")
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         proof_nl_worker_id,
         agent_type="ProofNLWorkerControlledTestAgent",
@@ -1616,7 +1605,7 @@ def _complete_proof_nl_stage_for_real_codex(
             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "decl_stage_worker_submit",
         },
     )
-    run_external_actions_with_evidence(
+    run_scripted_actions_with_evidence(
         ws.admin,
         proof_nl_worker_id,
         [
@@ -1665,7 +1654,7 @@ def _complete_review_stage(
     summary: str,
     evidence_recorder: EvidenceRecorder,
 ) -> None:
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         step_id,
         agent_type=agent_type,
@@ -1701,7 +1690,7 @@ def _complete_review_stage(
         )
     else:
         raise AssertionError(f"unsupported decl review stage: {stage}")
-    run_external_actions_with_evidence(
+    run_scripted_actions_with_evidence(
         ws.admin,
         step_id,
         [
@@ -1713,7 +1702,7 @@ def _complete_review_stage(
     )
 
 
-def _complete_formal_stage_with_external_file_edit(
+def _complete_formal_stage_with_scripted_file_edit(
     ws: RuntimeMatrixWorkspace,
     step_id: str,
     *,
@@ -1726,7 +1715,7 @@ def _complete_formal_stage_with_external_file_edit(
     summary: str,
     evidence_recorder: EvidenceRecorder,
 ) -> None:
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         step_id,
         agent_type=agent_type,
@@ -1736,113 +1725,27 @@ def _complete_formal_stage_with_external_file_edit(
             "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": "decl_stage_worker_submit",
         },
     )
-    started = unwrap(ws.admin.start_step_once(AdminStepStartInput(step_id=step_id, wait=False)))
-    assert started.status in {"created", "running"}, started
-    handoff = wait_for_pending_handoff(ws.admin)
-    payload = read_handoff_json(handoff.handoff_path)
-
-    prepared = _call_external_tool_with_evidence(
-        ws,
-        handoff.handoff_id,
-        payload,
-        "application",
-        prepare_tool,
-        {"decl_name": decl_name},
-        evidence_recorder,
+    run_scripted_actions_with_evidence(
+        ws.admin,
+        step_id,
+        [
+            ("application", prepare_tool, {"decl_name": decl_name}),
+            (
+                "file_replace_last_result",
+                "replace_formal_placeholder",
+                {"repo_root": str(ws.provider_repo), "old": "  sorry", "new": "  trivial"},
+            ),
+            ("application", capture_tool, {"decl_name": decl_name}),
+            (
+                "application",
+                "check_formal_stage_consistency",
+                {"decl_name": decl_name, "stage": consistency_stage},
+            ),
+            ("submit", "submit_stage_worker_completed", {"summary": summary}),
+        ],
+        recorder=evidence_recorder,
+        timeout_s=20,
     )
-    lean_file = Path(_field(prepared.value, "path"))
-    text = lean_file.read_text(encoding="utf-8")
-    if "  sorry" not in text:
-        text += f"\ntheorem {decl_name} : True := by\n  sorry\n"
-    assert "  sorry" in text
-    lean_file.write_text(text.replace("  sorry", "  trivial", 1), encoding="utf-8")
-
-    _call_external_tool_with_evidence(
-        ws,
-        handoff.handoff_id,
-        payload,
-        "application",
-        capture_tool,
-        {"decl_name": decl_name},
-        evidence_recorder,
-    )
-    consistency = _call_external_tool_with_evidence(
-        ws,
-        handoff.handoff_id,
-        payload,
-        "application",
-        "check_formal_stage_consistency",
-        {"decl_name": decl_name, "stage": consistency_stage},
-        evidence_recorder,
-    )
-    assert _field(consistency.value, "passed") is True
-    _call_external_tool_with_evidence(
-        ws,
-        handoff.handoff_id,
-        payload,
-        "submit",
-        "submit_stage_worker_completed",
-        {"summary": summary},
-        evidence_recorder,
-    )
-    completed = unwrap(
-        ws.admin.complete_external_takeover(
-            ExternalTakeoverCompleteInput(
-                handoff_id=handoff.handoff_id,
-                final_response=f"Runtime Matrix strict external takeover completed {consistency_stage} formal stage.",
-                thread_id=f"runtime-matrix-strict-{handoff.handoff_id}",
-            )
-        )
-    )
-    assert completed.status == "completed"
-    waited = unwrap(ws.admin.wait_step(AdminStepStartInput(step_id=step_id, wait=True, timeout_s=20)))
-    assert waited.status == "completed", waited
-
-
-def _call_external_tool_with_evidence(
-    ws: RuntimeMatrixWorkspace,
-    handoff_id: str,
-    payload: dict[str, object],
-    view_kind: str,
-    tool_name: str,
-    arguments: dict[str, object],
-    evidence_recorder: EvidenceRecorder,
-):
-    listed = unwrap(
-        ws.admin.list_external_takeover_tools(
-            ExternalTakeoverToolListInput(handoff_id=handoff_id, view_kind=view_kind)
-        )
-    )
-    assert tool_name in {tool.name for tool in listed}
-    called = unwrap(
-        ws.admin.call_external_takeover_tool(
-            ExternalTakeoverToolCallInput(
-                handoff_id=handoff_id,
-                view_kind=view_kind,
-                tool_name=tool_name,
-                arguments=arguments,
-            )
-        )
-    )
-    assert called.ok is True, called
-    env = payload["env"]
-    assert isinstance(env, dict)
-    evidence_recorder.record_tool_call(
-        tool_name=tool_name,
-        view_key=_handoff_view_key(env, view_kind),
-        view_kind=view_kind,
-        agent_type=env.get("LEAN_CONSTELLATION_AGENT_TYPE"),
-        step_id=env.get("ARK_STEP_ID"),
-        ok=True,
-        assertion_summary=f"External takeover {view_kind} call through handoff {handoff_id}.",
-    )
-    return called
-
-
-def _handoff_view_key(env: dict[str, object], view_kind: str) -> str:
-    if view_kind == "submit":
-        return str(env["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"])
-    return str(env.get("LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW") or env["LEAN_CONSTELLATION_EXPECTED_TOOL_VIEW"])
 
 
 def _field(value: object, *path: str):

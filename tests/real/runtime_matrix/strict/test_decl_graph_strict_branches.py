@@ -60,7 +60,7 @@ def test_strict_decl_graph_review_rejected_then_worker_blocked_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("StatementNLWorkerAgent", "StatementNLReviewerAgent", cli_type="codex")
+    ws.create_homes("StatementNLWorkerAgent", "StatementNLReviewerAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_decl_round(ws, round_fixture)
 

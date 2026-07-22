@@ -11,9 +11,9 @@ the heavier workflow machinery from earlier Lean Steward prototypes.
 ## Current Status
 
 The runtime now includes repo-local Flow/Step scheduling, Agent Home
-materialization, checkpoint/restore integration, and ARK 0.2 multi-provider
-bindings. Codex remains the compatibility default; Claude Code, Pi, OpenAI
-Agents, and OpenCode can be selected per AgentType. See
+materialization, checkpoint/restore integration, and ARK 0.3 multi-provider
+bindings. Codex is the default Provider; Claude Code, Pi, OpenAI Agents, and
+OpenCode can be selected globally or per AgentType. See
 [ARK Agent Provider Configuration](docs/ark-provider-configuration.md).
 
 ## Repository Structure

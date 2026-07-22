@@ -73,7 +73,7 @@ def test_coordinator_content_resource_requirement_callback_matrix(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("CoordinatorAgent", "ContentPlanAgent", "ResourceCuratorAgent", cli_type="codex")
+    ws.create_homes("CoordinatorAgent", "ContentPlanAgent", "ResourceCuratorAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     flow_id = ws.runtime.ark.flow_service.start_flow(
         FlowRequest(
@@ -177,7 +177,7 @@ def test_coordinator_repo_ready_branch_marks_provider_ready(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_home("CoordinatorAgent", cli_type="codex")
+    ws.create_home("CoordinatorAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     flow_id = ws.runtime.ark.flow_service.start_flow(
         FlowRequest(

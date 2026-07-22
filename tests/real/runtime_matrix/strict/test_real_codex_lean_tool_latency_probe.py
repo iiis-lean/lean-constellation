@@ -55,7 +55,6 @@ def test_strict_real_codex_statement_formal_lean_tool_latency_probe(
     ws = create_runtime_matrix_workspace(
         tmp_path,
         lake_client=LakeCommandClient(LakeCommandClientConfig(timeout_seconds=120)),
-        include_codex_provider=True,
     )
     initial_build = ws.lake.run_lake_build(ws.provider_repo, timeout_seconds=120)
     assert initial_build.ok, initial_build
@@ -89,7 +88,7 @@ def test_strict_real_codex_statement_formal_lean_tool_latency_probe(
                 override=ControlledAgentOverrideSpec(
                     strategy="fresh_test_agent_type",
                     agent_type_override=agent_type,
-                    cli_type_override="codex",
+                    provider_type_override="codex",
                     prompt_overlay=_lean_tool_latency_probe_prompt(prompt_marker, round_fixture.decl_name),
                     developer_instructions_overlay=(
                         "\n\nRuntime Matrix lean latency probe developer marker:\n"

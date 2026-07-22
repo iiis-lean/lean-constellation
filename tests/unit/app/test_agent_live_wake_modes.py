@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_runtime_kit.agent.homes import HomeCreateSpec
+from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
 import pytest
 
 from lean_constellation.app import LeanAdminApi, create_app_runtime_services
@@ -11,7 +11,7 @@ from lean_constellation.app import LeanAdminApi, create_app_runtime_services
 def _make_admin(tmp_path: Path) -> tuple[LeanAdminApi, str]:
     runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
     runtime.ark.agent_service.home_service.create_home(
-        HomeCreateSpec(cli_type="codex", home_id="RepoFormatDiscoveryAgent")
+        ProviderHomeSpec(provider_type="codex", home_id="RepoFormatDiscoveryAgent")
     )
     agent = runtime.ark.agent_service.create_agent(
         "repo:Repo:node:Main",
@@ -31,6 +31,7 @@ def _snapshot(admin: LeanAdminApi, agent_id: str, *, events: int = 0, responses:
         "tool_calls": 0,
         "responses": responses,
         "turn_items": [],
+        "event_items": [{"event": index} for index in range(events)],
         "tool_call_items": [],
         "latest_response": "response" if responses else None,
     }
@@ -117,15 +118,11 @@ def test_agent_live_wake_modes_preserve_cursor_timeout_status_and_accumulated_de
         "tool_calls": 2,
         "responses": 1,
         "turn_items": [{"turn": 1}, {"turn": 2}],
+        "event_items": [{"event": 0}, {"event": 1}],
         "tool_call_items": [{"tool": 1}, {"tool": 2}],
         "latest_response": "finished",
     }
     monkeypatch.setattr(admin, "_agent_live_snapshot", lambda _agent_id: snapshot)
-    monkeypatch.setattr(
-        admin.runtime.ark.agent_service,
-        "tail_trace_events",
-        lambda _agent_id, *, limit: [{"event": index} for index in range(limit)],
-    )
 
     changed = admin.get_agent_live(
         agent_id,

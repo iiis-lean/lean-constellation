@@ -728,12 +728,6 @@ def create_workspace_admin_http_routes(
             LeanAdminApi.restore_snapshot,
         )
 
-    async def repo_agent_rollout(request: Request) -> JSONResponse:
-        admin_result = repo_admin(request)
-        if not admin_result.ok or admin_result.value is None:
-            return _service_result_response(admin_result)
-        return _service_result_response(admin_result.value.get_agent_rollout_info(request.path_params["agent_id"]))
-
     async def repo_agent_turns(request: Request) -> JSONResponse:
         admin_result = repo_admin(request)
         if not admin_result.ok or admin_result.value is None:
@@ -967,7 +961,6 @@ def create_workspace_admin_http_routes(
         Route("/admin/repos/{repo_key:str}/snapshots/create", repo_create_snapshot, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/snapshots/list", repo_list_snapshots, methods=["POST"]),
         Route("/admin/repos/{repo_key:str}/snapshots/restore", repo_restore_snapshot, methods=["POST"]),
-        Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/rollout", repo_agent_rollout, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/turns", repo_agent_turns, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/turn", repo_agent_turn, methods=["GET"]),
         Route("/admin/repos/{repo_key:str}/agents/{agent_id:str}/event", repo_agent_event, methods=["GET"]),

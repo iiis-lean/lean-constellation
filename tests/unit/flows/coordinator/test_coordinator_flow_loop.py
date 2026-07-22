@@ -526,7 +526,7 @@ def test_requirement_resume_reuses_flow_agent_and_automatically_attaches_provide
     waiting_flow = runtime.flow_service.get_flow(flow_id)
     coordinator_agent_id = waiting_flow.agent_bindings.get("coordinator")
     assert coordinator_agent_id is not None
-    runtime.agent_service.agents[coordinator_agent_id].thread_id = "thread-original"
+    runtime.agent_service.agents[coordinator_agent_id].session_id = "thread-original"
     assert waiting_flow.status is FlowStatus.WAITING
     assert runtime.flow_service.can_advance_flow(flow_id) is False
 
@@ -589,7 +589,7 @@ def test_requirement_resume_reuses_flow_agent_and_automatically_attaches_provide
     assert resumed_flow.flow_id == flow_id
     assert resumed_flow.agent_bindings.get("coordinator") == coordinator_agent_id
     assert runtime.agent_service.start_records[-1].agent_id == coordinator_agent_id
-    assert runtime.agent_service.get_agent(coordinator_agent_id).thread_id == "thread-original"
+    assert runtime.agent_service.get_agent(coordinator_agent_id).session_id == "thread-original"
     assert resumed_flow.state.position.phase == "waiting_requirement"
     assert len(runtime.flow_service.list_flows(flow_type="native_repo_coordinator")) == 1
     assert len(ark_snapshot.created) == 2

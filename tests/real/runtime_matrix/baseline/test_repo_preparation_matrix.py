@@ -70,7 +70,7 @@ def test_native_preparation_prepare_source_rejected_review_then_handoff(
         "SourceIndexBuilderAgent",
         "SourceIndexReviewerAgent",
         "RootInterfacePrepareAgent",
-        cli_type="codex",
+        provider_type="scripted",
     )
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_native_preparation(ws)
@@ -113,7 +113,7 @@ def test_native_preparation_source_corpus_blocked_branch(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_home("SourceCorpusPrepareAgent", cli_type="codex")
+    ws.create_home("SourceCorpusPrepareAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_native_preparation(ws)
 
@@ -149,7 +149,7 @@ def test_native_preparation_existing_source_root_interface_direct_ready(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("SourceIndexBuilderAgent", "SourceIndexReviewerAgent", cli_type="codex")
+    ws.create_homes("SourceIndexBuilderAgent", "SourceIndexReviewerAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_native_preparation(ws)
 
@@ -188,7 +188,7 @@ def test_adapter_preparation_ready_and_blocked_branches(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_home("AdapterDeclCatalogAgent", cli_type="codex")
+    ws.create_home("AdapterDeclCatalogAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     blocked_flow_id = _start_adapter_preparation(ws)
 

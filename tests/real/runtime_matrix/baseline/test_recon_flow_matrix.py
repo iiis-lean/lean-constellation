@@ -46,7 +46,7 @@ def test_node_dir_and_mathlib_recon_completed_branches(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("NodeDirDependencyReconAgent", "MathlibReconAgent", cli_type="codex")
+    ws.create_homes("NodeDirDependencyReconAgent", "MathlibReconAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
 
     node_flow_id = _start_recon(ws, "node_dir_dependency_recon")
@@ -92,7 +92,7 @@ def test_resource_recon_completed_and_blocked_branches(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_home("ResourceReconAgent", cli_type="codex")
+    ws.create_home("ResourceReconAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
 
     completed_flow_id = _start_recon(ws, "resource_recon")
@@ -148,7 +148,7 @@ def test_resource_recon_request_resource_callback_branch(
         },
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_homes("ResourceReconAgent", "ResourceCuratorAgent", cli_type="codex")
+    ws.create_homes("ResourceReconAgent", "ResourceCuratorAgent", provider_type="scripted")
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_recon(ws, "resource_recon")
 

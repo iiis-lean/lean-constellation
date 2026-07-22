@@ -14,11 +14,6 @@ import anyio
 
 from lean_constellation.app.admin_api import LeanAdminApi
 from lean_constellation.app.config import load_app_config
-from lean_constellation.app.external_takeover import (
-    ExternalTakeoverCompleteInput,
-    ExternalTakeoverToolCallInput,
-    ExternalTakeoverToolListInput,
-)
 from lean_constellation.app.runtime import create_app_runtime_from_config
 from lean_constellation.app.server import run_production_app_server
 from lean_constellation.app.semantic_watch import SemanticWatchOptions, SemanticWatcher
@@ -174,38 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     release_reconcile.add_argument("--repo-key", required=True)
     release_reconcile.add_argument("release_id")
 
-    external_list = sub.add_parser("external-list", help="Debug/local: list external takeover handoffs from a local runtime root.")
-    external_list.add_argument("--status", default=None, help="Filter by pending/completed/failed/cancelled.")
-    external_list.add_argument("--handoff-dirname", default="external_turns")
-
-    external_complete = sub.add_parser("external-complete", help="Debug/local: complete an external takeover handoff in a local runtime root.")
-    external_complete.add_argument("handoff_id")
-    external_complete.add_argument("--status", choices=["completed", "failed", "cancelled"], default="completed")
-    external_complete.add_argument("--final-response", default=None)
-    external_complete.add_argument("--error", default=None)
-    external_complete.add_argument("--thread-id", default=None)
-    external_complete.add_argument("--turn-id", default=None)
-    external_complete.add_argument("--rollout-relpath", default=None)
-    external_complete.add_argument("--metadata", action="append", default=[], help="Completion metadata as key=value. Can be repeated.")
-    external_complete.add_argument("--handoff-dirname", default="external_turns")
-
-    external_tools = sub.add_parser("external-tools", help="Debug/local: list MCP tools available to an external takeover handoff.")
-    external_tools.add_argument("handoff_id")
-    external_tools.add_argument("--view-kind", choices=["application", "submit"], default="submit")
-    external_tools.add_argument("--handoff-dirname", default="external_turns")
-
-    external_call = sub.add_parser("external-call", help="Debug/local: call an MCP tool for an external takeover handoff.")
-    external_call.add_argument("handoff_id")
-    external_call.add_argument("tool_name")
-    external_call.add_argument("--view-kind", choices=["application", "submit"], default="submit")
-    external_call.add_argument("--arg", action="append", default=[], help="Tool argument as key=value. Can be repeated.")
-    external_call.add_argument("--handoff-dirname", default="external_turns")
-
-    agent_rollout = sub.add_parser("agent-rollout-info", help="Read Agent rollout location and event count.")
-    agent_rollout.add_argument("--repo-key", required=True)
-    agent_rollout.add_argument("agent_id")
-
-    agent_turns = sub.add_parser("agent-turns", help="List parsed Agent turns from rollout.")
+    agent_turns = sub.add_parser("agent-turns", help="List normalized Agent turns.")
     agent_turns.add_argument("--repo-key", required=True)
     agent_turns.add_argument("agent_id")
 
@@ -216,13 +180,13 @@ def build_parser() -> argparse.ArgumentParser:
     agent_turn.add_argument("--turn-id", default=None)
     agent_turn.add_argument("--index", type=int, default=None)
 
-    agent_event = sub.add_parser("agent-event", help="Read one Agent rollout event.")
+    agent_event = sub.add_parser("agent-event", help="Read one normalized Agent event.")
     agent_event.add_argument("--repo-key", required=True)
     agent_event.add_argument("agent_id")
     agent_event.add_argument("--last", action="store_true")
     agent_event.add_argument("--index", type=int, default=None)
 
-    agent_events_tail = sub.add_parser("agent-events-tail", help="Read recent Agent rollout events.")
+    agent_events_tail = sub.add_parser("agent-events-tail", help="Read recent normalized Agent events.")
     agent_events_tail.add_argument("--repo-key", required=True)
     agent_events_tail.add_argument("agent_id")
     agent_events_tail.add_argument("--limit", type=int, default=20)
@@ -552,8 +516,6 @@ def main(argv: list[str] | None = None) -> int:
             f"{admin_base_url}/admin/repos/{args.repo_key}/releases/{args.release_id}/reconcile-requirements",
             {},
         ))
-    if args.command == "agent-rollout-info":
-        return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/rollout"))
     if args.command == "agent-turns":
         return _print_http_result(_request_json("GET", f"{admin_base_url}/admin/repos/{args.repo_key}/agents/{args.agent_id}/turns"))
     if args.command == "agent-turn":
@@ -650,48 +612,6 @@ def main(argv: list[str] | None = None) -> int:
 
     runtime = create_app_runtime_from_config(config)
     admin = LeanAdminApi(runtime)
-    if args.command == "external-list":
-        return _print_result(
-            admin.list_external_takeovers(handoff_dirname=args.handoff_dirname, status=args.status)
-        )
-    if args.command == "external-complete":
-        return _print_result(
-            admin.complete_external_takeover(
-                ExternalTakeoverCompleteInput(
-                    handoff_id=args.handoff_id,
-                    status=args.status,
-                    final_response=args.final_response,
-                    error=args.error,
-                    thread_id=args.thread_id,
-                    turn_id=args.turn_id,
-                    rollout_relpath=args.rollout_relpath,
-                    metadata=_parse_params(args.metadata),
-                    handoff_dirname=args.handoff_dirname,
-                )
-            )
-        )
-    if args.command == "external-tools":
-        return _print_result(
-            admin.list_external_takeover_tools(
-                ExternalTakeoverToolListInput(
-                    handoff_id=args.handoff_id,
-                    view_kind=args.view_kind,
-                    handoff_dirname=args.handoff_dirname,
-                )
-            )
-        )
-    if args.command == "external-call":
-        return _print_result(
-            admin.call_external_takeover_tool(
-                ExternalTakeoverToolCallInput(
-                    handoff_id=args.handoff_id,
-                    view_kind=args.view_kind,
-                    tool_name=args.tool_name,
-                    arguments=_parse_params(args.arg),
-                    handoff_dirname=args.handoff_dirname,
-                )
-            )
-        )
     parser.error(f"unknown command: {args.command}")
     return 2
 

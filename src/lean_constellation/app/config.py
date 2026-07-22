@@ -26,6 +26,7 @@ DEFAULT_ADMIN_HTTP_PORT = 8766
 class LeanAppConfigView(StrictModel):
     workspace_root: str
     runtime_root: str
+    default_agent_provider_type: AgentHomeType
     codex_config_home: str | None = None
     codex_base_config_configured: bool = False
     codex_auth_configured: bool = False
@@ -209,6 +210,7 @@ class AgentHomeOverrideAppConfig(StrictModel):
 
 class LeanAppConfig(StrictModel):
     workspace_root: Path
+    default_agent_provider_type: AgentHomeType = "codex"
     runtime_root: Path | None = Field(
         default=None,
         description="Debug/local single-runtime root. Production serve uses repo-local <repo>/.agent_runtime roots.",
@@ -322,6 +324,7 @@ class LeanAppConfig(StrictModel):
         return LeanAppConfigView(
             workspace_root=str(self.workspace_root),
             runtime_root=str(runtime_root),
+            default_agent_provider_type=self.default_agent_provider_type,
             codex_config_home=str(self.codex_config_home) if self.codex_config_home else None,
             codex_base_config_configured=self.codex_base_config_path is not None,
             codex_auth_configured=self.codex_auth_json_path is not None,
@@ -377,6 +380,7 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         "workspace_root": "LEAN_CONSTELLATION_WORKSPACE_ROOT",
         "runtime_root": "LEAN_CONSTELLATION_RUNTIME_ROOT",
         "codex_config_home": "LEAN_CONSTELLATION_CODEX_CONFIG_HOME",
+        "default_agent_provider_type": "LEAN_CONSTELLATION_DEFAULT_AGENT_PROVIDER_TYPE",
         "codex_base_config_path": "LEAN_CONSTELLATION_CODEX_BASE_CONFIG_PATH",
         "codex_auth_json_path": "LEAN_CONSTELLATION_CODEX_AUTH_JSON_PATH",
         "shared_elan_home": "LEAN_CONSTELLATION_SHARED_ELAN_HOME",

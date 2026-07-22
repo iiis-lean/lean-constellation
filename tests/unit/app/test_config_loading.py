@@ -46,6 +46,7 @@ def test_agent_home_overrides_load_by_known_agent_type(tmp_path) -> None:
     assert override.model == "gpt-5.6-sol"
     assert override.model_reasoning_effort == "high"
     assert config.redacted_view().agent_home_overrides == config.agent_home_overrides
+    assert config.redacted_view().default_agent_provider_type == "codex"
 
 
 def test_agent_home_overrides_load_provider_neutral_home_configuration(tmp_path) -> None:

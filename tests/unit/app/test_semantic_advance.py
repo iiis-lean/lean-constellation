@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from agent_runtime_kit.agent.homes import HomeCreateSpec
+from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
 from agent_runtime_kit.flow import AgentStep, StepStatus
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import ValidationError
@@ -170,7 +170,7 @@ def test_runtime_lease_monitor_does_not_borrow_running_agent_from_newer_lease(tm
 
     agent_service = runtime.ark.agent_service
     agent_service.home_service.create_home(
-        HomeCreateSpec(cli_type="codex", home_id="RepoFormatDiscoveryAgent")
+        ProviderHomeSpec(provider_type="codex", home_id="RepoFormatDiscoveryAgent")
     )
     agents = [
         agent_service.create_agent(

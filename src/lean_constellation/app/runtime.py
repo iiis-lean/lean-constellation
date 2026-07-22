@@ -30,7 +30,6 @@ from lean_constellation.agents.ark import build_ark_agent_type_registry
 from lean_constellation.agents.models import AgentTypeSpec
 from lean_constellation.agents.registry import build_agent_type_specs
 from lean_constellation.agents.testing import build_controlled_test_agent_type_specs
-from lean_constellation.app.external_takeover import build_external_takeover_agent_providers
 from lean_constellation.flows.registry import register_lean_flow_step_types
 from lean_constellation.flows.testing import CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES
 from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
@@ -57,7 +56,6 @@ def create_app_runtime_services(
     agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     extra_agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
-    agent_providers: dict[str, object] | None = None,
     provider_registry: ProviderRegistry | None = None,
     native_lake_project_config: object | None = None,
     workspace_config: object | None = None,
@@ -126,11 +124,15 @@ def create_app_runtime_services(
         include_in_snapshots=trace_config.include_in_snapshots,
     )
 
+    effective_provider_registry = provider_registry or build_builtin_provider_registry(
+        root,
+        effective_agent_type_specs,
+        None,
+    )
     ark.agent_service = AgentService(
         root,
         agent_types=build_ark_agent_type_registry(specs=effective_agent_type_specs),
-        providers=agent_providers,
-        provider_registry=provider_registry,
+        provider_registry=effective_provider_registry,
         ark_services=ark,
         app_services=runtime.app,
         start_paused=start_paused,
@@ -186,7 +188,6 @@ def create_app_runtime_from_config(
     agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     extra_agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
-    agent_providers: dict[str, object] | None = None,
     provider_registry: ProviderRegistry | None = None,
     start_paused: bool = False,
     test_control_enabled: bool = False,
@@ -197,7 +198,11 @@ def create_app_runtime_from_config(
         configured_specs = list(agent_type_specs)
     else:
         configured_specs = build_agent_type_specs(extra_specs=extra_agent_type_specs)
-    configured_specs = apply_agent_home_overrides(configured_specs, config.agent_home_overrides)
+    configured_specs = apply_agent_home_overrides(
+        configured_specs,
+        config.agent_home_overrides,
+        default_provider_type=config.default_agent_provider_type,
+    )
     effective_provider_registry = provider_registry or build_builtin_provider_registry(
         runtime_root,
         configured_specs,
@@ -209,7 +214,6 @@ def create_app_runtime_from_config(
             external_config=resolved_external_config,
             external_overrides=external_overrides,
             providers=providers,
-            agent_providers=agent_providers,
             provider_registry=effective_provider_registry,
             agent_type_specs=configured_specs,
             max_concurrent_flow_advances=config.max_concurrent_flow_advances,
@@ -227,7 +231,6 @@ def create_app_runtime_from_config(
         providers=providers,
         agent_type_specs=configured_specs,
         step_type_overrides=step_type_overrides,
-        agent_providers=agent_providers,
         provider_registry=effective_provider_registry,
         native_lake_project_config=config.native_lake_project,
         workspace_config=config.workspace_config,
@@ -266,12 +269,9 @@ def create_test_control_runtime_services(
     extra_agent_type_specs: Sequence[AgentTypeSpec] | None = None,
     controlled_base_agent_types: Sequence[str] | None = None,
     step_type_overrides: Mapping[str, type[BaseStep]] | None = None,
-    agent_providers: dict[str, object] | None = None,
     provider_registry: ProviderRegistry | None = None,
     native_lake_project_config: object | None = None,
     workspace_config: object | None = None,
-    external_takeover_cli_type: str = "external_takeover",
-    register_external_takeover_provider: bool = True,
     max_concurrent_flow_advances: int = 1,
     max_concurrent_steps: int = 1,
     start_paused: bool = True,
@@ -294,14 +294,6 @@ def create_test_control_runtime_services(
         **CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES,
         **dict(step_type_overrides or {}),
     }
-    effective_agent_providers = dict(agent_providers or {})
-    if register_external_takeover_provider and external_takeover_cli_type not in effective_agent_providers:
-        effective_agent_providers.update(
-            build_external_takeover_agent_providers(
-                runtime_root,
-                cli_type=external_takeover_cli_type,
-            )
-        )
     return create_app_runtime_services(
         runtime_root=runtime_root,
         external_config=external_config,
@@ -311,7 +303,6 @@ def create_test_control_runtime_services(
         register_submit_tools=register_submit_tools,
         agent_type_specs=effective_agent_type_specs,
         step_type_overrides=effective_step_overrides,
-        agent_providers=effective_agent_providers,
         provider_registry=provider_registry,
         native_lake_project_config=native_lake_project_config,
         workspace_config=workspace_config,

@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-from agent_runtime_kit.agent.homes import HomeCreateSpec
+from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
 
 from lean_constellation.app import LeanAdminApi, create_test_control_runtime_services
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -134,14 +134,20 @@ class RuntimeMatrixWorkspace:
     live_toolkit_visible_repo: Path | None
     mathlib_template_root: Path | None
 
-    def create_home(self, agent_type: str, *, cli_type: str = "external_takeover", home_id: str | None = None) -> None:
+    def create_home(
+        self,
+        agent_type: str,
+        *,
+        provider_type: str = "scripted",
+        home_id: str | None = None,
+    ) -> None:
         self.runtime.ark.agent_service.home_service.create_home(
-            HomeCreateSpec(cli_type=cli_type, home_id=home_id or agent_type)
+            ProviderHomeSpec(provider_type=provider_type, home_id=home_id or agent_type)
         )
 
-    def create_homes(self, *agent_types: str, cli_type: str = "external_takeover") -> None:
+    def create_homes(self, *agent_types: str, provider_type: str = "scripted") -> None:
         for agent_type in agent_types:
-            self.create_home(agent_type, cli_type=cli_type)
+            self.create_home(agent_type, provider_type=provider_type)
 
     def write_bootstrap_preparation(self, repo_root: Path | None = None) -> None:
         repo_root = repo_root or self.provider_repo
@@ -475,7 +481,6 @@ def create_runtime_matrix_workspace(
     tmp_path: Path,
     *,
     lake_client: object | None = None,
-    include_codex_provider: bool = False,
     initialize_provider_format: bool = True,
 ) -> RuntimeMatrixWorkspace:
     runtime_root = tmp_path / ".agent_runtime"
@@ -497,19 +502,16 @@ def create_runtime_matrix_workspace(
     _write_upstream_repo(upstream_repo)
     resources = _write_resource_fixture(resource_root)
     lake = lake_client or RuntimeMatrixFakeLakeClient()
-    agent_providers = None
-    if include_codex_provider:
-        from agent_runtime_kit.agent.providers.codex import CodexProvider
-
-        agent_providers = {"codex": CodexProvider(runtime_root=runtime_root)}
     runtime = create_test_control_runtime_services(
         runtime_root=runtime_root,
         external_overrides={"lake": lake},
-        agent_providers=agent_providers,
         max_concurrent_flow_advances=1,
         max_concurrent_steps=1,
         start_paused=True,
     )
+    from tests.real.runtime_matrix.scripted_provider import get_or_install_scripted_provider
+
+    get_or_install_scripted_provider(runtime)
     if initialize_provider_format:
         initialized_provider = runtime.repo_workspace.metadata.set_repo_format(
             provider_repo,

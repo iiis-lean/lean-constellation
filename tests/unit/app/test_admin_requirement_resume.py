@@ -55,7 +55,7 @@ def _create_waiting_coordinator_flow(runtime, consumer, *, requirement_name: str
         agent = runtime.ark.agent_service.store.create_agent_record(
             scope_id=scope_id,
             agent_type="CoordinatorAgent",
-            cli_type="codex",
+            provider_type="codex",
             home_id="CoordinatorAgent",
         )
 

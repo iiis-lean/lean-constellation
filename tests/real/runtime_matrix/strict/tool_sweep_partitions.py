@@ -93,13 +93,6 @@ LOCAL_BOUNDARY_TOOL_SWEEP_NAMES = frozenset(
     }
 )
 
-REPO_MATURITY_SMOKE_TOOL_NAMES = frozenset(
-    {
-        "get_current_repo_work_config",
-    }
-)
-
-
 def core_tool_sweep_names() -> set[str]:
     """Implemented ToolCases covered by the broad non-DeclStage sweep."""
 
@@ -109,7 +102,6 @@ def core_tool_sweep_names() -> set[str]:
         - set(DECL_GRAPH_TOOL_SWEEP_NAMES)
         - set(SCOPE_EXPORT_TOOL_SWEEP_NAMES)
         - set(LOCAL_BOUNDARY_TOOL_SWEEP_NAMES)
-        - set(REPO_MATURITY_SMOKE_TOOL_NAMES)
     )
 
 

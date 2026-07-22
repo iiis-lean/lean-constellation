@@ -63,7 +63,7 @@ def materialize_skill_specs(
     target_root: Path,
     skill_keys: Iterable[StringKey] | None = None,
 ) -> dict[str, Path]:
-    """Write selected skills as Codex-compatible directories."""
+    """Write selected skills as provider-neutral skill directories."""
 
     root = Path(target_root)
     specs = build_skill_specs(skill_keys)

@@ -82,7 +82,7 @@ def registry_fingerprint(snapshot: RegistrySnapshot | None = None) -> str:
 
 # This pin makes registry additions/removals fail until the Runtime Matrix
 # coverage declaration is consciously refreshed.
-EXPECTED_REGISTRY_FINGERPRINT = "cfe782bde6323f6440f09d1b3f52c153888fd4badf82c40867d7d49d4274961c"
+EXPECTED_REGISTRY_FINGERPRINT = "996fd178fde9f47c093db54ebed675e9d1cfb452606eb2d6a4a0485b233f1c34"
 
 
 def required_registry_tags(snapshot: RegistrySnapshot | None = None) -> set[str]:
@@ -135,7 +135,7 @@ RUNTIME_MATRIX_CASES: tuple[RuntimeMatrixCase, ...] = (
     ),
     RuntimeMatrixCase(
         case_id="repo-format-native-adapter-branch-restore",
-        summary="RequirementGroupRepoBootstrap native and adapter choices through Admin external takeover.",
+        summary="RequirementGroupRepoBootstrap native and adapter choices through a standard scripted Provider.",
         tags=frozenset(
             {
                 "flow:requirement_group_repo_bootstrap",
@@ -346,15 +346,14 @@ RUNTIME_MATRIX_CASES: tuple[RuntimeMatrixCase, ...] = (
         notes="Skipped unless LEAN_CONSTELLATION_REAL_TOOLKIT_BASE_URL or visible repo env is configured.",
     ),
     RuntimeMatrixCase(
-        case_id="agent-resource-and-handoff-matrix",
-        summary="Production/controlled AgentType home resources, application/submit ToolView visibility, and external takeover handoff prompt/env/tool lists.",
+        case_id="agent-resource-matrix",
+        summary="Production/controlled AgentType home resources and application/submit ToolView visibility.",
         tags=frozenset(
             {
                 "agent_resource:20_production_agent_types",
                 "agent_resource:controlled_inheritance",
                 "agent_resource:20_application_tool_views",
                 "agent_resource:14_submit_tool_views",
-                "agent_resource:external_takeover_handoff",
             }
         ),
     ),

@@ -70,7 +70,7 @@ def test_test_control_runtime_factory_wires_controlled_profile(tmp_path) -> None
     assert runtime.ark.step_service.step_registry.get("repo_format_discovery_agent_step") is (
         CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES["repo_format_discovery_agent_step"]
     )
-    assert "external_takeover" in runtime.ark.agent_service.providers
+    assert "codex" in runtime.ark.agent_service.provider_registry
 
 
 def test_app_runtime_factory_accepts_controlled_agent_specs_and_step_overrides(tmp_path) -> None:

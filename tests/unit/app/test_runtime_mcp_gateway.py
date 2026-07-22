@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_runtime_kit.agent.homes import HomeCreateSpec
+from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 
@@ -28,7 +28,7 @@ def test_runtime_mcp_gateway_fallback_resolves_repo_context_from_ark_state(tmp_p
         ),
         enqueue=False,
     )
-    runtime.ark.agent_service.home_service.create_home(HomeCreateSpec(cli_type="codex", home_id="RepoFormatDiscoveryAgent"))
+    runtime.ark.agent_service.home_service.create_home(ProviderHomeSpec(provider_type="codex", home_id="RepoFormatDiscoveryAgent"))
     agent = runtime.ark.agent_service.create_agent(
         scope_id,
         "RepoFormatDiscoveryAgent",
@@ -105,7 +105,7 @@ def test_runtime_mcp_gateway_supports_derived_agent_type_tool_view_permissions(t
         enqueue=False,
     )
     runtime.ark.agent_service.home_service.create_home(
-        HomeCreateSpec(cli_type="codex", home_id="RepoFormatDiscoveryControlledTestAgent")
+        ProviderHomeSpec(provider_type="codex", home_id="RepoFormatDiscoveryControlledTestAgent")
     )
     agent = runtime.ark.agent_service.create_agent(
         scope_id,

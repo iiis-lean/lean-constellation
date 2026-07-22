@@ -11,9 +11,9 @@ from tests.real.runtime_matrix.admin_helpers import (
     assert_flow_completed,
     checkpoint_branch,
     restore_branch,
-    run_external_submit,
+    run_scripted_submit,
     run_next_created_step,
-    set_external_takeover_override,
+    set_scripted_provider_override,
     unwrap,
 )
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace, create_runtime_matrix_workspace
@@ -106,13 +106,13 @@ def _run_repo_format_branch(
     expected_outcome: str,
     expected_submission: str,
 ) -> None:
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         agent_step_id,
         agent_type="RepoFormatDiscoveryControlledTestAgent",
         prompt_overlay=f"Call {tool_name} exactly once.",
     )
-    handoff = run_external_submit(ws.admin, agent_step_id, tool_name, arguments)
+    handoff = run_scripted_submit(ws.admin, agent_step_id, tool_name, arguments)
     assert handoff["env"]["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] == "repo_format_discovery"
     assert handoff["env"]["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"] == "repo_format_discovery_submit"
     assert "RepoFormatDiscoveryControlledTestAgent" == handoff["env"]["LEAN_CONSTELLATION_AGENT_TYPE"]
@@ -292,13 +292,13 @@ def _run_resource_branch(
     expected_outcome: str,
     expected_submission: str,
 ) -> None:
-    set_external_takeover_override(
+    set_scripted_provider_override(
         ws.admin,
         agent_step_id,
         agent_type="ResourceCuratorControlledTestAgent",
         prompt_overlay=f"Call {tool_name} exactly once.",
     )
-    handoff = run_external_submit(ws.admin, agent_step_id, tool_name, arguments)
+    handoff = run_scripted_submit(ws.admin, agent_step_id, tool_name, arguments)
     assert handoff["env"]["LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW"] == "resource_curator"
     assert handoff["env"]["LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW"] == "resource_curator_submit"
     flow = assert_flow_completed(ws.runtime, flow_id, outcome=expected_outcome)
