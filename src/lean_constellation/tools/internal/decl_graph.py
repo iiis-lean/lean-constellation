@@ -400,7 +400,12 @@ def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):
         view = runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name, revision=args.revision)
     if not view.ok or view.value is None:
         return runtime.foundation.fail(view.issues)
-    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
+    effective_args = (
+        args.model_copy(update={"include_formal": True})
+        if ctx.endpoint_view_key == "proof_formal_reviewer"
+        else args
+    )
+    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, effective_args))
 
 
 def _inspect_node_decl(runtime, ctx, args: NodeDeclInspectArgs):

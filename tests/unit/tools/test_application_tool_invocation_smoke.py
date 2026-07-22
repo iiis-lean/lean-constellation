@@ -26,7 +26,13 @@ from lean_constellation.services.foundation import FoundationContext, ServiceRes
 from lean_constellation.services.material import ResourceMetadataInput
 from lean_constellation.services.node import ContentTaskResultView, DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
-from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, publish_native_provider_release
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    publish_native_provider_release,
+    write_proof_formal_for_test,
+    write_statement_formal_for_test,
+)
 
 
 def _raw(
@@ -1195,6 +1201,117 @@ def test_current_node_decl_read_tools_invoke_decl_graph(tmp_path: Path) -> None:
         )
     )
     assert legacy[0].kind == "tool_arguments_invalid"
+
+
+def test_proof_formal_reviewer_inspect_includes_complete_current_node_formal_source(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic goal.",
+        boundary="Topic boundary.",
+        objective="Prove the topic theorem.",
+        success_criteria="The theorem is proved.",
+    ).ok
+    initialize_native_test_repo(tmp_path, project_name=tmp_path.name)
+    strategy = runtime.decl_graph.ensure_open_strategy(tmp_path, node_path="Main.Topic", objective="Prove theorem.")
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic",
+        strategy_id=strategy.value.strategy_id,
+        objective="Prove theorem.",
+    )
+    assert round_record.ok and round_record.value is not None
+    created = runtime.decl_graph.create_decl_revision_view(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        name="long_theorem",
+        kind="theorem",
+        objective="Prove theorem.",
+        summary="Long theorem.",
+        public=True,
+        target_state=DeclState.PROVED,
+    )
+    assert created.ok and created.value is not None
+    assert runtime.decl_graph.start_round(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+    ).ok
+    assert runtime.decl_graph.write_statement_nl(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        decl_name="long_theorem",
+        nl="The long theorem states True.",
+    ).ok
+    header_padding = " ".join(f"(h{i} : True)" for i in range(45))
+    statement_code = (
+        "/--\n# lean-constellation target: `long_theorem`\n-/\n"
+        f"theorem long_theorem {header_padding} : True := by\n  sorry\n"
+    )
+    assert write_statement_formal_for_test(
+        runtime,
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        decl_name="long_theorem",
+        lean_code=statement_code,
+        lean_check=lean_check_payload(contains_sorry=True),
+    ).ok
+    assert runtime.decl_graph.write_proof_nl(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        decl_name="long_theorem",
+        nl="Use the final hypothesis.",
+    ).ok
+    proof_code = statement_code.replace("  sorry", "  exact h44")
+    assert len(proof_code) > 600
+    assert write_proof_formal_for_test(
+        runtime,
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        decl_name="long_theorem",
+        lean_code=proof_code,
+        lean_check=lean_check_payload(),
+    ).ok
+
+    reviewer = _raw(
+        tmp_path,
+        view="proof_formal_reviewer",
+        agent_type="ProofFormalReviewerAgent",
+        role="reviewer",
+        node_path="Main.Topic",
+        stage="proof_formal",
+        round_id=round_record.value.round_id,
+        batch_decls=["long_theorem"],
+    )
+    inspected = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            reviewer,
+            tool_name="inspect_current_node_decl",
+            flat_args={"decl_name": "long_theorem"},
+        )
+    )
+
+    assert inspected["formal_preview"].endswith("\n…")
+    assert "exact h44" not in inspected["formal_preview"]
+    assert inspected["primary_formal_code"].endswith("exact h44")
+
+    planner = _raw(tmp_path, view="content_plan", agent_type="ContentPlanAgent", role="plan", node_path="Main.Topic")
+    planner_inspected = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            planner,
+            tool_name="inspect_current_node_decl",
+            flat_args={"decl_name": "long_theorem"},
+        )
+    )
+    assert "primary_formal_code" not in planner_inspected
 
 
 def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) -> None:
