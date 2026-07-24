@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
@@ -13,6 +13,11 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoFormat, RepoPublicationStatus
 from lean_constellation.services.foundation import ServiceIssue, ServiceResult
 from lean_constellation.services.node.dependency import DependencyComponent
+from lean_constellation.services.decl_graph.models import (
+    DeclOriginRef,
+    MathlibDeclDep,
+    RepoDeclDep,
+)
 from lean_constellation.services.node.export import DeclPublicView, ExportComponent
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent
 
@@ -20,9 +25,55 @@ if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
+class PublicDeclListItem(StrictModel):
+    name: str
+    kind: str | None = None
+    module: str | None = None
+    lean_full_name: str | None = None
+    statement_nl: Literal["accepted", "missing"]
+    statement_formal: Literal["accepted", "missing"]
+    proof_nl: Literal["accepted", "missing", "not_required"]
+    proof_formal: Literal["accepted", "missing", "not_required"]
+    summary: str | None = None
+    ready: bool
+    stale: bool
+
+
+class PublicDeclDependencyItem(StrictModel):
+    kind: Literal["repo_decl", "mathlib_decl"]
+    repository: str
+    node_path: str | None = None
+    name: str
+    module: str | None = None
+    reason: str | None = None
+
+
+class PublicDeclOriginItem(StrictModel):
+    kind: str
+    source_path: str | None = None
+    resource_key: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    locator: str | None = None
+    note: str | None = None
+
+
+class PublicDeclDetailView(PublicDeclListItem):
+    repository: str
+    node_path: str | None = None
+    statement_dependencies: list[PublicDeclDependencyItem] = Field(
+        default_factory=list
+    )
+    proof_dependencies: list[PublicDeclDependencyItem] = Field(default_factory=list)
+    statement_origins: list[PublicDeclOriginItem] = Field(default_factory=list)
+    proof_origins: list[PublicDeclOriginItem] = Field(default_factory=list)
+
+
 class VisibleNodeAccessItem(StrictModel):
     node_path: str
     node_kind: str
+    import_module: str
+    public_declarations: list[PublicDeclListItem] = Field(default_factory=list)
     source: str
     summary: str
 
@@ -79,15 +130,29 @@ class PublicDeclAccessResolver:
             tree = self.node_tree.get_node_tree(repo_root)
             if not tree.ok or tree.value is None:
                 return self.runtime.foundation.fail(tree.issues)
-            items = [
-                VisibleNodeAccessItem(
-                    node_path=node.path,
-                    node_kind=node.kind.value,
-                    source="current_repo_node_tree",
-                    summary=f"{node.kind.value} node {node.path}.",
+            items: list[VisibleNodeAccessItem] = []
+            for node in tree.value.nodes:
+                public = self._list_node_public_decls_unchecked(
+                    repo_root, node_path=node.path
                 )
-                for node in tree.value.nodes
-            ]
+                if not public.ok or public.value is None:
+                    return self.runtime.foundation.fail(public.issues)
+                compact = self._compact_public_decls(repo_root, public.value)
+                if not compact.ok or compact.value is None:
+                    return self.runtime.foundation.fail(compact.issues)
+                items.append(
+                    VisibleNodeAccessItem(
+                        node_path=node.path,
+                        node_kind=node.kind.value,
+                        import_module=f"{node.path}.Interfaces",
+                        public_declarations=compact.value,
+                        source="current_repo_node_tree",
+                        summary=(
+                            f"{node.kind.value} node {node.path} exposes "
+                            f"{len(compact.value)} public declarations."
+                        ),
+                    )
+                )
             return self.runtime.foundation.ok(
                 VisibleNodeAccessView(
                     current_node_path=current_node_path,
@@ -101,23 +166,49 @@ class PublicDeclAccessResolver:
         visible = self.dependency.list_visible_node_boundaries(repo_root, node_path=current.value)
         if not visible.ok or visible.value is None:
             return self.runtime.foundation.fail(visible.issues)
+        current_public = self._list_node_public_decls_unchecked(
+            repo_root, node_path=current.value
+        )
+        if not current_public.ok or current_public.value is None:
+            return self.runtime.foundation.fail(current_public.issues)
+        current_compact = self._compact_public_decls(repo_root, current_public.value)
+        if not current_compact.ok or current_compact.value is None:
+            return self.runtime.foundation.fail(current_compact.issues)
         items = [
             VisibleNodeAccessItem(
                 node_path=current.value,
                 node_kind="current",
+                import_module=f"{current.value}.Interfaces",
+                public_declarations=current_compact.value,
                 source="current_node",
-                summary=f"Current node {current.value}.",
+                summary=(
+                    f"Current node {current.value} exposes "
+                    f"{len(current_compact.value)} public declarations."
+                ),
             )
         ]
         for boundary in visible.value.boundaries:
             if boundary.repo is not None:
                 continue
+            public = self._list_node_public_decls_unchecked(
+                repo_root, node_path=boundary.node_path
+            )
+            if not public.ok or public.value is None:
+                return self.runtime.foundation.fail(public.issues)
+            compact = self._compact_public_decls(repo_root, public.value)
+            if not compact.ok or compact.value is None:
+                return self.runtime.foundation.fail(compact.issues)
             items.append(
                 VisibleNodeAccessItem(
                     node_path=boundary.node_path,
                     node_kind=boundary.node_kind,
+                    import_module=boundary.import_module,
+                    public_declarations=compact.value,
                     source="visible_boundary",
-                    summary=boundary.summary,
+                    summary=(
+                        f"Visible {boundary.node_kind} node {boundary.node_path} exposes "
+                        f"{len(compact.value)} public declarations."
+                    ),
                 )
             )
         return self.runtime.foundation.ok(
@@ -196,6 +287,136 @@ class PublicDeclAccessResolver:
         visible = self.assert_node_visible(repo_root, node_path=node_path, actor_role=actor_role, current_node_path=current_node_path)
         if not visible.ok:
             return self.runtime.foundation.fail(visible.issues)
+        return self._list_node_public_decls_unchecked(repo_root, node_path=node_path)
+
+    def list_node_public_decl_items(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        actor_role: str,
+        current_node_path: str | None = None,
+    ) -> ServiceResult[list[PublicDeclListItem]]:
+        public = self.list_node_public_decls(
+            repo_root,
+            node_path=node_path,
+            actor_role=actor_role,
+            current_node_path=current_node_path,
+        )
+        if not public.ok or public.value is None:
+            return self.runtime.foundation.fail(public.issues)
+        compact = self._compact_public_decls(repo_root, public.value)
+        if not compact.ok or compact.value is None:
+            return self.runtime.foundation.fail(compact.issues)
+        return self.runtime.foundation.ok(compact.value, warnings=public.issues)
+
+    def list_repo_public_decl_items(
+        self,
+        repo_root: Path,
+        *,
+        repo_key: str,
+        actor_role: str,
+        current_node_path: str | None = None,
+    ) -> ServiceResult[list[PublicDeclListItem]]:
+        public = self.list_repo_public_decls(
+            repo_root,
+            repo_key=repo_key,
+            actor_role=actor_role,
+            current_node_path=current_node_path,
+        )
+        if not public.ok or public.value is None:
+            return self.runtime.foundation.fail(public.issues)
+        provider_root = (
+            Path(repo_root).parent
+            / self.runtime.foundation.layout.ensure_safe_key(repo_key)
+        )
+        compact = self._compact_public_decls(provider_root, public.value)
+        if not compact.ok or compact.value is None:
+            return self.runtime.foundation.fail(compact.issues)
+        return self.runtime.foundation.ok(compact.value, warnings=public.issues)
+
+    def inspect_public_decl_item(
+        self,
+        repo_root: Path,
+        *,
+        public_decl: DeclPublicView,
+        repository: str,
+        expose_node_path: bool,
+        revision: int | None = None,
+    ) -> ServiceResult[PublicDeclDetailView]:
+        ref = public_decl.ref
+        resolved_revision = (
+            revision or public_decl.resolved_revision or ref.revision
+        )
+        decl = self.runtime.decl_graph.get_decl_view(
+            repo_root, node_path=ref.node, name=ref.name
+        )
+        loaded = self.runtime.decl_graph.get_decl_revision(
+            repo_root,
+            node_path=ref.node,
+            name=ref.name,
+            revision=resolved_revision,
+        )
+        if (
+            not decl.ok
+            or decl.value is None
+            or not loaded.ok
+            or loaded.value is None
+        ):
+            return self.runtime.foundation.fail([*decl.issues, *loaded.issues])
+        compact = self._compact_public_decl(
+            public_decl,
+            decl=decl.value,
+            revision=loaded.value,
+        )
+        return self.runtime.foundation.ok(
+            PublicDeclDetailView(
+                **compact.model_dump(),
+                repository=repository,
+                node_path=ref.node if expose_node_path else None,
+                statement_dependencies=[
+                    self._dependency_item(
+                        dependency,
+                        repository=repository,
+                        expose_node_path=expose_node_path,
+                    )
+                    for dependency in loaded.value.statement.deps
+                ],
+                proof_dependencies=[
+                    self._dependency_item(
+                        dependency,
+                        repository=repository,
+                        expose_node_path=expose_node_path,
+                    )
+                    for dependency in (
+                        loaded.value.proof.deps
+                        if loaded.value.proof is not None
+                        else []
+                    )
+                ],
+                statement_origins=[
+                    self._origin_item(origin)
+                    for origin in (
+                        loaded.value.statement.nl.origin
+                        if loaded.value.statement.nl is not None
+                        else []
+                    )
+                ],
+                proof_origins=[
+                    self._origin_item(origin)
+                    for origin in (
+                        loaded.value.proof.nl.origin
+                        if loaded.value.proof is not None
+                        and loaded.value.proof.nl is not None
+                        else []
+                    )
+                ],
+            )
+        )
+
+    def _list_node_public_decls_unchecked(
+        self, repo_root: Path, *, node_path: str
+    ) -> ServiceResult[list[DeclPublicView]]:
         node = self.node_tree.get_node(repo_root, path=node_path)
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
@@ -226,6 +447,158 @@ class PublicDeclAccessResolver:
                 )
             )
         return self.runtime.foundation.ok(values, warnings=exports.issues)
+
+    def _compact_public_decls(
+        self, repo_root: Path, values: list[DeclPublicView]
+    ) -> ServiceResult[list[PublicDeclListItem]]:
+        compact: list[PublicDeclListItem] = []
+        for public in values:
+            ref = public.ref
+            revision_id = public.resolved_revision or ref.revision
+            decl = self.runtime.decl_graph.get_decl_view(
+                repo_root, node_path=ref.node, name=ref.name
+            )
+            revision = self.runtime.decl_graph.get_decl_revision(
+                repo_root,
+                node_path=ref.node,
+                name=ref.name,
+                revision=revision_id,
+            )
+            if (
+                not decl.ok
+                or decl.value is None
+                or not revision.ok
+                or revision.value is None
+            ):
+                theorem_like = (public.kind or "").lower() in {
+                    "theorem",
+                    "lemma",
+                    "corollary",
+                    "proposition",
+                }
+                compact.append(
+                    PublicDeclListItem(
+                        name=ref.name,
+                        kind=public.kind,
+                        module=public.module,
+                        statement_nl="accepted" if public.ready else "missing",
+                        statement_formal="accepted" if public.ready else "missing",
+                        proof_nl=(
+                            "accepted"
+                            if theorem_like and public.ready
+                            else "missing"
+                            if theorem_like
+                            else "not_required"
+                        ),
+                        proof_formal=(
+                            "accepted"
+                            if theorem_like and public.ready
+                            else "missing"
+                            if theorem_like
+                            else "not_required"
+                        ),
+                        summary=public.summary,
+                        ready=public.ready,
+                        stale=public.stale,
+                    )
+                )
+                continue
+            compact.append(
+                self._compact_public_decl(
+                    public,
+                    decl=decl.value,
+                    revision=revision.value,
+                )
+            )
+        compact.sort(key=lambda item: item.name)
+        return self.runtime.foundation.ok(compact)
+
+    def _compact_public_decl(
+        self,
+        public: DeclPublicView,
+        *,
+        decl,
+        revision,
+    ) -> PublicDeclListItem:
+        state = revision.state.value
+        theorem_like = decl.kind.lower() in {
+            "theorem",
+            "lemma",
+            "corollary",
+            "proposition",
+        }
+        return PublicDeclListItem(
+            name=public.ref.name,
+            kind=decl.kind,
+            module=decl.module,
+            lean_full_name=revision.lean_decl_name,
+            statement_nl="accepted" if state != "planned" else "missing",
+            statement_formal=(
+                "accepted"
+                if state in {"declared", "proof_planned", "proved"}
+                else "missing"
+            ),
+            proof_nl=(
+                "accepted"
+                if theorem_like and state in {"proof_planned", "proved"}
+                else "missing"
+                if theorem_like
+                else "not_required"
+            ),
+            proof_formal=(
+                "accepted"
+                if theorem_like and state == "proved"
+                else "missing"
+                if theorem_like
+                else "not_required"
+            ),
+            summary=decl.summary or public.summary,
+            ready=public.ready,
+            stale=public.stale,
+        )
+
+    def _dependency_item(
+        self,
+        dependency,
+        *,
+        repository: str,
+        expose_node_path: bool,
+    ) -> PublicDeclDependencyItem:
+        if isinstance(dependency, MathlibDeclDep):
+            return PublicDeclDependencyItem(
+                kind="mathlib_decl",
+                repository="Mathlib",
+                name=dependency.ref.name,
+                module=dependency.ref.module,
+                reason=dependency.reason,
+            )
+        assert isinstance(dependency, RepoDeclDep)
+        return PublicDeclDependencyItem(
+            kind="repo_decl",
+            repository=dependency.ref.repo or repository,
+            node_path=dependency.ref.node if expose_node_path else None,
+            name=dependency.ref.name,
+            reason=dependency.reason,
+        )
+
+    @staticmethod
+    def _origin_item(origin: DeclOriginRef) -> PublicDeclOriginItem:
+        locator = None
+        if origin.start_locator or origin.end_locator:
+            locator = (
+                origin.start_locator
+                if origin.start_locator == origin.end_locator
+                else f"{origin.start_locator or ''}–{origin.end_locator or ''}"
+            )
+        return PublicDeclOriginItem(
+            kind=origin.kind,
+            source_path=origin.source_path,
+            resource_key=origin.resource_key,
+            start_line=origin.start_line,
+            end_line=origin.end_line,
+            locator=locator,
+            note=origin.note,
+        )
 
     def list_repo_public_decls(
         self,
@@ -309,10 +682,20 @@ class PublicDeclAccessResolver:
             if not node.ok:
                 return self.runtime.foundation.fail(node.issues)
             return self.runtime.foundation.ok(None)
-        visible = self.list_visible_nodes(repo_root, actor_role=actor_role, current_node_path=current_node_path)
+        current = self._require_current_node(current_node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        if node_path == current.value:
+            return self.runtime.foundation.ok(None)
+        visible = self.dependency.list_visible_node_boundaries(
+            repo_root, node_path=current.value
+        )
         if not visible.ok or visible.value is None:
             return self.runtime.foundation.fail(visible.issues)
-        if any(item.node_path == node_path for item in visible.value.nodes):
+        if any(
+            boundary.repo is None and boundary.node_path == node_path
+            for boundary in visible.value.boundaries
+        ):
             return self.runtime.foundation.ok(None)
         return self.runtime.foundation.fail(
             self.runtime.foundation.issue(

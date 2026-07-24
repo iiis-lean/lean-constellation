@@ -66,6 +66,25 @@ def test_resource_acquisition_schemas_use_resource_draft_language() -> None:
         assert "resource draft" in schema_text.lower() or "Resource target" in schema_text
 
 
+def test_resource_result_views_use_logical_agent_projections() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    assert specs["get_resource"].result_view == "resource_detail"
+    for name in {
+        "allocate_resource_draft",
+        "get_resource_draft",
+        "abandon_resource_draft",
+    }:
+        assert specs[name].result_view == "resource_draft_detail"
+    for name in {"acquire_resource_material", "import_resource_material"}:
+        assert specs[name].result_view == "resource_acquisition_handles"
+    for name in {
+        "extract_resource_artifact",
+        "normalize_resource_text_material",
+    }:
+        assert specs[name].result_view == "resource_extraction_handles"
+
+
 def _resource_raw(repo_root: Path, *, flow_id: str = "flow_resource") -> RawToolCallContext:
     return RawToolCallContext(
         endpoint_view_key="resource_curator",

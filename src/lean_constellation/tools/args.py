@@ -65,6 +65,24 @@ class PreparationRequirementRefArgs(StrictModel):
     requirement_name: str = Field(description="Requirement name from the current preparation input requirement_refs.")
 
 
+class ContentPreparationResultListArgs(StrictModel):
+    kind: Literal["node_dir_dependency", "mathlib", "resource"] | None = Field(
+        default=None,
+        description="Optional preparation kind filter.",
+    )
+
+
+class ContentPreparationResultArgs(StrictModel):
+    kind: Literal["node_dir_dependency", "mathlib", "resource"] = Field(
+        description="Preparation result kind to inspect."
+    )
+    attempt: int | None = Field(
+        default=None,
+        ge=1,
+        description="One-based attempt number. Omit to inspect the latest result of this kind.",
+    )
+
+
 class TargetRepoArgs(StrictModel):
     target_repo: str = Field(description="Target provider repo key inside the current workspace.")
 
@@ -160,10 +178,17 @@ class TextSearchArgs(StrictModel):
 
 class MaterialContextArgs(StrictModel):
     query: str | None = Field(default=None, description="Optional text or regex query for narrowing material context.")
-    include_source: bool = Field(default=True, description="Whether to include source corpus files and SourceIndex blocks.")
-    include_resources: bool = Field(default=True, description="Whether to include resource library entries.")
+    scope: Literal["current_node", "source", "resource", "all"] = Field(
+        default="current_node",
+        description="Evidence scope. current_node returns only evidence assigned to the active node.",
+    )
     regex: bool = Field(default=False, description="Whether query should be treated as a regular expression.")
-    limit: int = Field(default=20, ge=1, le=100, description="Maximum number of search hits to return.")
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        le=200,
+        description="Optional maximum number of compact matches. Omit to return every match in the selected scope.",
+    )
 
 
 class SourceRangeArgs(StrictModel):
@@ -218,6 +243,32 @@ class SummaryArgs(StrictModel):
 
 class SourceIndexOverviewArgs(StrictModel):
     overview: str = Field(description="Natural-language overview for the draft SourceIndex.")
+
+
+class SourceIndexFileListArgs(StrictModel):
+    status: Literal["pending", "surveyed", "indexed", "skipped", "committed"] | None = Field(
+        default=None,
+        description="Optional lifecycle filter. Omit to list every indexed source file.",
+    )
+
+
+class SourceBlockListArgs(StrictModel):
+    query: str | None = Field(
+        default=None,
+        description="Optional case-insensitive filter over block id, kind, subtype, title, and summary.",
+    )
+    kind: str | None = Field(default=None, description="Optional exact semantic block kind.")
+    subtype: str | None = Field(default=None, description="Optional exact semantic block subtype.")
+    path: str | None = Field(
+        default=None,
+        description="Optional source corpus path; only blocks with a ref to this path are returned.",
+    )
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        le=200,
+        description="Optional maximum result count. Omit to return all compact matching entries.",
+    )
 
 
 class SourceBlockCreateArgs(StrictModel):
@@ -478,9 +529,14 @@ class MathlibModuleDeclArgs(StrictModel):
 
 class MathlibCandidateArgs(StrictModel):
     candidate_id: str = Field(description="Candidate id returned by a Mathlib search tool in the current tool session.")
+    include_source_excerpt: bool = Field(
+        default=False,
+        description="Whether to include a bounded source/context excerpt in the candidate detail.",
+    )
 
 
-class MathlibCandidateIngestArgs(MathlibCandidateArgs):
+class MathlibCandidateIngestArgs(StrictModel):
+    candidate_id: str = Field(description="Candidate id returned by a Mathlib search tool in the current tool session.")
     summary: str = Field(description="Concise reusable-purpose summary to store for the ingested Mathlib declaration.")
     note: str | None = Field(default=None, description="Optional usage note or search provenance to store with the ingested declaration.")
 
@@ -551,6 +607,20 @@ class MathlibExternalSearchArgs(StrictModel):
 class MathlibInspectModuleArgs(StrictModel):
     module: str = Field(description="Mathlib module name to inspect through toolkit navigation.")
     pattern: str | None = Field(default=None, description="Optional declaration name or source text pattern to filter module contents.")
+    limit: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum number of compact declaration entries to return.",
+    )
+    include_imports: bool = Field(
+        default=False,
+        description="Whether to include up to 50 direct imports.",
+    )
+    include_source_excerpt: bool = Field(
+        default=False,
+        description="Whether to include a bounded module source/context excerpt.",
+    )
 
 
 class CurrentMathlibModuleUseArgs(StrictModel):

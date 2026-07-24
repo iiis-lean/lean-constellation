@@ -16,7 +16,7 @@ from lean_constellation.services.mathlib.mathlib_index import MathlibDeclEntryVi
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
 
-_MAX_RAW_EXCERPT_CHARS = 1600
+_MAX_RAW_EXCERPT_CHARS = 1500
 _CHECK_TOOL_NAMES = ("check_mathlib_name", "lsp.run_snippet", "run_snippet")
 
 
@@ -65,8 +65,31 @@ class MathlibExternalSearchView(StrictModel):
 
 class MathlibSemanticSearchView(StrictModel):
     query: str
-    limit: int = 20
-    candidates: list[MathlibCandidateView] = Field(default_factory=list)
+    candidates: list["MathlibSearchCandidateView"] = Field(default_factory=list)
+    returned_count: int
+    truncated: bool = False
+    summary: str
+
+
+class MathlibSearchCandidateView(StrictModel):
+    candidate_id: str
+    name: str | None = None
+    module: str | None = None
+    kind: str | None = None
+    signature: str | None = None
+    summary: str | None = None
+
+
+class MathlibCandidateDetailView(StrictModel):
+    candidate_id: str
+    name: str | None = None
+    module: str | None = None
+    kind: str | None = None
+    signature: str | None = None
+    source_summary: str | None = None
+    navigation_verified: bool
+    source_excerpt: str | None = None
+    source_excerpt_truncated: bool | None = None
     summary: str
 
 
@@ -83,10 +106,16 @@ class MathlibNavigationView(StrictModel):
 class MathlibModuleNavigationView(StrictModel):
     module: str
     pattern: str | None = None
-    imports: list[str] = Field(default_factory=list)
-    important_decl_hints: list[str] = Field(default_factory=list)
-    declarations: list[MathlibCandidateView] = Field(default_factory=list)
-    summary_excerpt: str | None = None
+    import_count: int
+    matched_count: int
+    declarations: list[MathlibSearchCandidateView] = Field(default_factory=list)
+    returned_count: int
+    truncated: bool = False
+    imports: list[str] | None = None
+    imports_returned_count: int | None = None
+    imports_truncated: bool | None = None
+    source_excerpt: str | None = None
+    source_excerpt_truncated: bool | None = None
     summary: str
 
 
@@ -189,13 +218,23 @@ class ToolkitIngestionComponent:
         return self.runtime.foundation.ok(
             MathlibSemanticSearchView(
                 query=result.value.query,
-                limit=result.value.limit,
-                candidates=result.value.candidates,
+                candidates=[
+                    self._to_search_candidate(candidate)
+                    for candidate in result.value.candidates
+                ],
+                returned_count=len(result.value.candidates),
+                truncated=False,
                 summary=f"Found {len(result.value.candidates)} semantic Mathlib declaration candidates.",
             )
         )
 
-    def inspect_mathlib_search_candidate(self, repo_root: Path, *, candidate_id: str) -> ServiceResult[MathlibCandidateView]:
+    def inspect_mathlib_search_candidate(
+        self,
+        repo_root: Path,
+        *,
+        candidate_id: str,
+        include_source_excerpt: bool = False,
+    ) -> ServiceResult[MathlibCandidateDetailView]:
         normalized_id = candidate_id.strip()
         if not normalized_id:
             return self.runtime.foundation.fail(
@@ -214,9 +253,15 @@ class ToolkitIngestionComponent:
                 )
             )
         warnings: list[ServiceIssue] = []
+        navigation_verified = False
+        navigation_excerpt: str | None = None
         if candidate.name:
             navigation = self.inspect_mathlib_declaration(repo_root, decl_name=candidate.name)
             if navigation.ok and navigation.value is not None:
+                navigation_verified = True
+                navigation_excerpt = (
+                    navigation.value.code_excerpt or navigation.value.context
+                )
                 candidate = candidate.model_copy(
                     update={
                         "module": candidate.module or navigation.value.module,
@@ -236,7 +281,34 @@ class ToolkitIngestionComponent:
                         details={"navigation_issues": "; ".join(issue.message for issue in navigation.issues)},
                     )
                 )
-        return self.runtime.foundation.ok(candidate, warnings=warnings)
+        excerpt = (
+            self._excerpt(navigation_excerpt or candidate.raw_excerpt or candidate.snippet)
+            if include_source_excerpt
+            else None
+        )
+        raw_excerpt = navigation_excerpt or candidate.raw_excerpt or candidate.snippet
+        return self.runtime.foundation.ok(
+            MathlibCandidateDetailView(
+                candidate_id=candidate.candidate_id,
+                name=candidate.name,
+                module=candidate.module,
+                kind=candidate.kind,
+                signature=candidate.signature,
+                source_summary=candidate.summary,
+                navigation_verified=navigation_verified,
+                source_excerpt=excerpt,
+                source_excerpt_truncated=(
+                    bool(
+                        raw_excerpt
+                        and len(raw_excerpt) > _MAX_RAW_EXCERPT_CHARS
+                    )
+                    if include_source_excerpt
+                    else None
+                ),
+                summary=f"Inspected Mathlib search candidate {candidate.candidate_id}.",
+            ),
+            warnings=warnings,
+        )
 
     def inspect_mathlib_declaration(self, repo_root: Path, *, decl_name: str) -> ServiceResult[MathlibNavigationView]:
         del repo_root
@@ -277,12 +349,29 @@ class ToolkitIngestionComponent:
             )
         )
 
-    def inspect_mathlib_module(self, repo_root: Path, *, module: str, pattern: str | None = None) -> ServiceResult[MathlibModuleNavigationView]:
+    def inspect_mathlib_module(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        pattern: str | None = None,
+        limit: int = 20,
+        include_imports: bool = False,
+        include_source_excerpt: bool = False,
+    ) -> ServiceResult[MathlibModuleNavigationView]:
         del repo_root
         normalized_module = module.strip()
         if not normalized_module:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("mathlib_module_name_empty", "Mathlib module name must be non-empty.", field="module")
+            )
+        if limit < 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_module_limit_invalid",
+                    "Mathlib module declaration limit must be >= 1.",
+                    field="limit",
+                )
             )
         result = self.runtime.external.lean_toolchain.inspect_mathlib_module(normalized_module)
         if not result.ok:
@@ -297,17 +386,44 @@ class ToolkitIngestionComponent:
         normalized_pattern = pattern.strip() if pattern else None
         if normalized_pattern:
             candidates = [candidate for candidate in candidates if self._candidate_matches_pattern(candidate, normalized_pattern)]
-        hints = [candidate.name for candidate in candidates if candidate.name]
+        matched_count = len(candidates)
+        selected = candidates[:limit]
+        imports = list(result.imports)
+        selected_imports = imports[:50] if include_imports else None
+        raw_excerpt = result.raw_excerpt
         return self.runtime.foundation.ok(
             MathlibModuleNavigationView(
                 module=normalized_module,
                 pattern=normalized_pattern,
-                imports=list(result.imports),
-                important_decl_hints=hints,
-                declarations=candidates,
-                summary_excerpt=result.raw_excerpt,
+                import_count=len(imports),
+                matched_count=matched_count,
+                declarations=[
+                    self._to_search_candidate(candidate) for candidate in selected
+                ],
+                returned_count=len(selected),
+                truncated=len(selected) < matched_count,
+                imports=selected_imports,
+                imports_returned_count=(
+                    len(selected_imports) if selected_imports is not None else None
+                ),
+                imports_truncated=(
+                    len(selected_imports) < len(imports)
+                    if selected_imports is not None
+                    else None
+                ),
+                source_excerpt=(
+                    self._excerpt(raw_excerpt)
+                    if include_source_excerpt and raw_excerpt
+                    else None
+                ),
+                source_excerpt_truncated=(
+                    len(raw_excerpt) > _MAX_RAW_EXCERPT_CHARS
+                    if include_source_excerpt and raw_excerpt
+                    else None
+                ),
                 summary=(
-                    f"Inspected Mathlib module {normalized_module} with {len(candidates)} declaration hints"
+                    f"Inspected Mathlib module {normalized_module}; returned "
+                    f"{len(selected)} of {matched_count} matching declarations"
                     + (f" matching {normalized_pattern!r}." if normalized_pattern else ".")
                 ),
             )
@@ -928,6 +1044,19 @@ class ToolkitIngestionComponent:
         if candidate.module is None:
             candidate.module = module
         return candidate
+
+    @staticmethod
+    def _to_search_candidate(
+        candidate: MathlibCandidateView,
+    ) -> MathlibSearchCandidateView:
+        return MathlibSearchCandidateView(
+            candidate_id=candidate.candidate_id,
+            name=candidate.name,
+            module=candidate.module,
+            kind=candidate.kind,
+            signature=candidate.signature,
+            summary=None if candidate.signature else candidate.summary,
+        )
 
     def _candidate_matches_pattern(self, candidate: MathlibCandidateView, pattern: str) -> bool:
         needle = pattern.lower()

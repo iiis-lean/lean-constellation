@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pydantic import Field
+
+from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     ArxivTheoremSearchArgs,
@@ -27,6 +30,102 @@ from lean_constellation.tools.args import (
 )
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import actor_for_write, current_node_path, direct_tool, handler_tool
+
+
+class MathlibEntryMutationReceipt(StrictModel):
+    operation: str
+    changed: bool
+    entry_kind: str
+    module: str | None = None
+    declaration: str | None = None
+    changed_fields: list[str] = Field(default_factory=list)
+    added_important_declaration: str | None = None
+    summary: str
+
+
+def _changed_fields(before, after) -> list[str]:  # noqa: ANN001
+    before_data = before.model_dump(mode="json") if before is not None else {}
+    after_data = after.model_dump(mode="json")
+    return sorted(key for key, value in after_data.items() if before_data.get(key) != value)
+
+
+def _record_mathlib_module(runtime, ctx, args: MathlibModuleRecordArgs):
+    before = runtime.mathlib.get_mathlib_module_entry(ctx.repo_root, module=args.module_name)
+    previous = before.value if before.ok else None
+    recorded = runtime.mathlib.record_mathlib_module_checked(
+        ctx.repo_root,
+        module_name=args.module_name,
+        summary=args.summary,
+        source=args.source,
+    )
+    if not recorded.ok or recorded.value is None:
+        return runtime.foundation.fail(recorded.issues)
+    fields = _changed_fields(previous, recorded.value)
+    return runtime.foundation.ok(
+        MathlibEntryMutationReceipt(
+            operation="record",
+            changed=bool(fields),
+            entry_kind="module",
+            module=recorded.value.module,
+            changed_fields=fields,
+            summary=("Recorded Mathlib module changes." if fields else "Mathlib module entry was already current."),
+        ),
+        warnings=recorded.issues,
+    )
+
+
+def _record_mathlib_decl(runtime, ctx, args: MathlibDeclRecordArgs):
+    before = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=args.decl_name)
+    previous = before.value if before.ok else None
+    recorded = runtime.mathlib.record_mathlib_decl_checked(
+        ctx.repo_root,
+        decl_name=args.decl_name,
+        module_name=args.module_name,
+        summary=args.summary,
+        source=args.source,
+        kind=args.kind,
+        signature=args.signature,
+        snippet=args.snippet,
+    )
+    if not recorded.ok or recorded.value is None:
+        return runtime.foundation.fail(recorded.issues)
+    fields = _changed_fields(previous, recorded.value)
+    return runtime.foundation.ok(
+        MathlibEntryMutationReceipt(
+            operation="record",
+            changed=bool(fields),
+            entry_kind="declaration",
+            module=recorded.value.module,
+            declaration=recorded.value.name,
+            changed_fields=fields,
+            summary=("Recorded Mathlib declaration changes." if fields else "Mathlib declaration entry was already current."),
+        ),
+        warnings=recorded.issues,
+    )
+
+
+def _add_mathlib_module_important_decl(runtime, ctx, args: MathlibModuleDeclArgs):
+    before = runtime.mathlib.get_mathlib_module_entry(ctx.repo_root, module=args.module)
+    previous_names = set(before.value.important_decl_names) if before.ok and before.value is not None else set()
+    updated = runtime.mathlib.add_module_important_decl(ctx.repo_root, module=args.module, decl_name=args.decl_name)
+    if not updated.ok or updated.value is None:
+        return runtime.foundation.fail(updated.issues)
+    changed = args.decl_name not in previous_names
+    return runtime.foundation.ok(
+        MathlibEntryMutationReceipt(
+            operation="add_important_declaration",
+            changed=changed,
+            entry_kind="module",
+            module=updated.value.module,
+            added_important_declaration=args.decl_name,
+            summary=(
+                "Added an important declaration to the Mathlib module entry."
+                if changed
+                else "The important declaration was already recorded for this module."
+            ),
+        ),
+        warnings=updated.issues,
+    )
 
 
 def _current_hint_view(runtime, ctx, args):
@@ -150,27 +249,28 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.MATHLIB_INDEX_READ},
             roles=roles,
         ),
-        direct_tool(
+        handler_tool(
             name="record_mathlib_module",
-            description="Verify that a Mathlib module is importable from the current repo and record its reusable purpose in the repo-level MathlibIndex.",
+            description="Verify and record one Mathlib module, returning only the changed fields receipt.",
             args_model=MathlibModuleRecordArgs,
             capability=ToolCapability.WRITE,
-            backing_service="mathlib",
-            backing_method="record_mathlib_module_checked",
-            result_view="mathlib_module_entry",
+            result_view="mathlib_entry_mutation_receipt",
             groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
+            handler=_record_mathlib_module,
         ),
-        direct_tool(
+        handler_tool(
             name="record_mathlib_decl",
-            description="Verify that a Mathlib declaration is accessible from the current repo and record its statement, kind, module, and reuse notes in the repo-level MathlibIndex.",
+            description=(
+                "Verify that one Mathlib declaration is accessible from the current repo, "
+                "record it, and return only the changed fields receipt."
+            ),
             args_model=MathlibDeclRecordArgs,
             capability=ToolCapability.WRITE,
-            backing_service="mathlib",
-            backing_method="record_mathlib_decl_checked",
-            result_view="mathlib_decl_entry",
+            result_view="mathlib_entry_mutation_receipt",
             groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
+            handler=_record_mathlib_decl,
         ),
         direct_tool(
             name="record_mathlib_batch",
@@ -186,16 +286,15 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="add_mathlib_module_important_decl",
-            description="Attach a recorded Mathlib declaration name as an important reusable declaration for a recorded Mathlib module entry.",
+            description="Attach one important declaration to a Mathlib module and return only the mutation receipt.",
             args_model=MathlibModuleDeclArgs,
             capability=ToolCapability.WRITE,
-            backing_service="mathlib",
-            backing_method="add_module_important_decl",
-            result_view="mathlib_module_entry",
+            result_view="mathlib_entry_mutation_receipt",
             groups={AppGroup.MATHLIB_INDEX_WRITE},
             roles=write_roles,
+            handler=_add_mathlib_module_important_decl,
         ),
         direct_tool(
             name="search_external_mathlib",
@@ -210,7 +309,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="search_mathlib_declarations",
-            description="Run LeanExplore-backed semantic search over Mathlib declarations and return ranked candidate ids for later inspection or ingestion.",
+            description="Use LeanExplore-backed semantic search to return compact ranked Mathlib declaration handles. Inspect only plausible candidates.",
             args_model=MathlibSemanticSearchArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -221,7 +320,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="inspect_mathlib_search_candidate",
-            description="Inspect a cached Mathlib search candidate and enrich it with declaration metadata, module context, and source or type details when available.",
+            description="Inspect one cached Mathlib candidate. Source excerpts are omitted unless explicitly requested.",
             args_model=MathlibCandidateArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -243,7 +342,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="inspect_mathlib_module",
-            description="Inspect one Mathlib module and optionally filter its declarations or source context by a text pattern.",
+            description="Navigate one Mathlib module with bounded compact declarations; imports and source excerpts are opt-in.",
             args_model=MathlibInspectModuleArgs,
             capability=ToolCapability.READ,
             backing_service="mathlib",
@@ -313,7 +412,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove a Mathlib module hint from the current node contract and report any generated Prelude file change.",
             args_model=CurrentMathlibModuleUseArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract_projection_mutation",
+            result_view="node_mathlib_hint_mutation",
             groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
             roles=write_roles,
             handler=_remove_current_module_hint,
@@ -323,7 +422,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove a Mathlib declaration hint from the current node contract and report any generated Prelude file change.",
             args_model=CurrentMathlibDeclUseArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract_projection_mutation",
+            result_view="node_mathlib_hint_mutation",
             groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
             roles=write_roles,
             handler=_remove_current_decl_hint,

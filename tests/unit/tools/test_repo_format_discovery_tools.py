@@ -70,7 +70,8 @@ def test_list_preparation_requirements_returns_only_current_refs(tmp_path: Path)
     value = result.value.value
     assert value is not None
     assert value["target_repo"] == "Provider"
-    assert [item["requirement"]["name"] for item in value["requirements"]] == ["need_provider"]
+    assert [item["name"] for item in value["requirements"]] == ["need_provider"]
+    assert all("requirement" not in item for item in value["requirements"])
     assert value["missing_refs"] == []
 
 
@@ -91,7 +92,8 @@ def test_get_preparation_requirement_rejects_refs_outside_current_input(tmp_path
     assert allowed.ok and allowed.value is not None
     assert allowed.value.ok is True
     assert allowed.value.value is not None
-    assert allowed.value.value["requirement"]["name"] == "need_provider"
+    assert allowed.value.value["name"] == "need_provider"
+    assert "requirement" not in allowed.value.value
     assert denied.ok and denied.value is not None
     assert denied.value.ok is False
     assert denied.value.issues[0].kind == "preparation_requirement_ref_not_allowed"

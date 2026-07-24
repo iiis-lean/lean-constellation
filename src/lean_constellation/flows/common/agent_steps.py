@@ -483,19 +483,27 @@ class ContentPlanAgentStep(AgentStep):
     def build_callback_prompt(self, ctx, agent_id: str) -> str:
         base = super().build_callback_prompt(ctx, agent_id)
         children = _callback_child_flows(self, ctx)
-        state = self._agent_step_state(self._latest_agent_step(ctx))
         guidance = _content_plan_callback_guidance(
             ctx,
             children,
             mode_skill=_current_content_plan_mode_skill(self, ctx),
         )
-        brief = state.variables.get("context_brief")
-        if not isinstance(brief, dict):
+        flow = self._flow_service(ctx).get_flow(ctx.flow_id)
+        from lean_constellation.flows.content_node_task.context_brief import (
+            build_content_plan_context_brief,
+        )
+
+        if flow.input is None or flow.state is None:
             return f"{base}\n\nCurrent callback routing:\n{guidance}"
-        rendered = _render_context_brief_payload(brief)
+        rendered = build_content_plan_context_brief(
+            ctx,
+            flow,
+            flow.input,
+            flow.state,
+        ).render()
         return (
             f"{base}\n\nCurrent callback routing:\n{guidance}"
-            f"\n\nCurrent derived ContentPlan context brief:\n{rendered}"
+            f"\n\n{rendered}"
         )
 
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
@@ -657,14 +665,7 @@ class ResourceReconAgentStep(AgentStep):
             "Consume the returned resource truth and either attach/finish it or report the precise remaining "
             "blocker; do not restart broad discovery."
         )
-        state = self._agent_step_state(self._latest_agent_step(ctx))
-        prior = state.variables.get("prior_preparation_context")
-        if not isinstance(prior, str) or not prior.strip():
-            return f"{base}\n\nCurrent callback routing:\n{guidance}"
-        return (
-            f"{base}\n\nCurrent callback routing:\n{guidance}"
-            f"\n\nPrior preparation context (do not broadly rediscover):\n{prior}"
-        )
+        return f"{base}\n\nCurrent callback routing:\n{guidance}"
 
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission
@@ -784,12 +785,6 @@ class DeclStageReviewerAgentStep(AgentStep):
     def build_incomplete_result(self, ctx, agent_id: str | None, reason: str, turn_result: object | None, attempt_count: int):
         del ctx, agent_id, turn_result, attempt_count
         return DeclStageReviewerStepResult(outcome="incomplete", incomplete_reason=reason, summary=reason)
-
-
-def _render_context_brief_payload(payload: dict[str, object]) -> str:
-    from lean_constellation.flows.content_node_task.context_brief import ContentPlanContextBrief
-
-    return ContentPlanContextBrief.model_validate(payload).render()
 
 
 def _callback_child_flows(step: AgentStep, ctx) -> list[object]:  # noqa: ANN001

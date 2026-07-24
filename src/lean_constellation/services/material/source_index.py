@@ -180,6 +180,74 @@ class SourceIndexCoverageView(StrictModel):
     summary: str
 
 
+class SourceIndexOverviewView(StrictModel):
+    status: SourceIndexStatus
+    overview: str | None = None
+    file_count: int
+    active_file_count: int
+    block_count: int
+    completed_block_count: int
+    ref_count: int
+    link_count: int
+    summary: str
+
+
+class SourceIndexFileListItemView(StrictModel):
+    path: str
+    line_count: int
+    readable_text: bool
+    survey_status: Literal["pending", "surveyed", "skipped"]
+    indexing_status: Literal["pending", "indexed", "skipped"]
+    committed: bool
+    summary: str | None = None
+
+
+class SourceIndexFileListView(StrictModel):
+    files: list[SourceIndexFileListItemView] = Field(default_factory=list)
+    summary: str
+
+
+class SourceBlockListItemView(StrictModel):
+    block_id: str
+    kind: str
+    subtype: str | None = None
+    title: str
+    summary: str
+    lifecycle_status: BlockLifecycleStatus
+    ref_count: int
+    link_count: int
+    child_count: int
+
+
+class SourceBlockListView(StrictModel):
+    blocks: list[SourceBlockListItemView] = Field(default_factory=list)
+    total_matching_count: int
+    truncated: bool = False
+    summary: str
+
+
+class SourceBlockAdjacentLinkView(StrictModel):
+    link_id: str
+    direction: Literal["incoming", "outgoing"]
+    link_kind: str
+    other_block_id: str | None = None
+    target_hint: str | None = None
+    evidence_ref_ids: list[str] = Field(default_factory=list)
+
+
+class SourceBlockDetailView(StrictModel):
+    block: SourceBlockView
+    adjacent_links: list[SourceBlockAdjacentLinkView] = Field(default_factory=list)
+    summary: str
+
+
+class SourceIndexOverviewMutationReceipt(StrictModel):
+    changed: bool
+    previous_overview: str | None = None
+    overview: str
+    summary: str
+
+
 class ResolvedSourceScopeView(StrictModel):
     mode: Literal["none", "selected", "all"]
     selectors: list[str] = Field(default_factory=list)
@@ -510,6 +578,190 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(loaded.issues)
         return self.runtime.foundation.ok(self._to_index_view(repo_root, loaded.value))
 
+    def get_source_index_overview(
+        self,
+        repo_root: Path,
+        *,
+        require_committed: bool = False,
+    ) -> ServiceResult[SourceIndexOverviewView]:
+        loaded = self._load_for_read(repo_root, require_committed=require_committed)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        index = loaded.value
+        blocks = self._active_blocks(index)
+        return self.runtime.foundation.ok(
+            SourceIndexOverviewView(
+                status=index.status,
+                overview=index.overview,
+                file_count=len(index.files),
+                active_file_count=len(index.active_file_scope),
+                block_count=len(blocks),
+                completed_block_count=sum(
+                    block.lifecycle_status == "completed" for block in blocks
+                ),
+                ref_count=sum(len(block.refs) for block in blocks),
+                link_count=len(index.links),
+                summary=(
+                    f"SourceIndex {index.status}: {len(index.files)} files, "
+                    f"{len(blocks)} blocks, {len(index.links)} links."
+                ),
+            )
+        )
+
+    def list_source_index_files(
+        self,
+        repo_root: Path,
+        *,
+        status: Literal["pending", "surveyed", "indexed", "skipped", "committed"] | None = None,
+        require_committed: bool = False,
+    ) -> ServiceResult[SourceIndexFileListView]:
+        loaded = self._load_for_read(repo_root, require_committed=require_committed)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        items = [
+            SourceIndexFileListItemView(
+                path=file.path,
+                line_count=file.line_count,
+                readable_text=file.readable_text,
+                survey_status=file.survey_status,
+                indexing_status=file.indexing_status,
+                committed=file.committed,
+                summary=file.summary,
+            )
+            for file in loaded.value.files.values()
+            if self._source_file_matches_status(file, status)
+        ]
+        items.sort(key=lambda item: item.path)
+        return self.runtime.foundation.ok(
+            SourceIndexFileListView(
+                files=items,
+                summary=f"Listed {len(items)} SourceIndex files.",
+            )
+        )
+
+    def list_source_blocks(
+        self,
+        repo_root: Path,
+        *,
+        query: str | None = None,
+        kind: str | None = None,
+        subtype: str | None = None,
+        path: str | None = None,
+        limit: int | None = None,
+        require_committed: bool = False,
+    ) -> ServiceResult[SourceBlockListView]:
+        if limit is not None and limit < 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_block_limit_invalid",
+                    "Source block list limit must be >= 1 when provided.",
+                    field="limit",
+                )
+            )
+        loaded = self._load_for_read(repo_root, require_committed=require_committed)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        normalized_query = query.strip().lower() if query and query.strip() else None
+        normalized_path = str(PurePosixPath(path)) if path else None
+        blocks = [
+            block
+            for block in self._active_blocks(loaded.value)
+            if (kind is None or block.kind == kind)
+            and (subtype is None or block.subtype == subtype)
+            and (
+                normalized_query is None
+                or normalized_query
+                in " ".join(
+                    filter(None, [block.block_id, block.kind, block.subtype, block.title, block.summary])
+                ).lower()
+            )
+            and (
+                normalized_path is None
+                or any(
+                    ref.material_ref.kind == "source"
+                    and isinstance(ref.material_ref.ref, SourceRef)
+                    and ref.material_ref.ref.path == normalized_path
+                    for ref in block.refs
+                )
+            )
+        ]
+        blocks.sort(key=lambda block: (block.kind, block.title, block.block_id))
+        total = len(blocks)
+        selected = blocks if limit is None else blocks[:limit]
+        items = [
+            SourceBlockListItemView(
+                block_id=block.block_id,
+                kind=block.kind,
+                subtype=block.subtype,
+                title=block.title,
+                summary=block.summary,
+                lifecycle_status=block.lifecycle_status,
+                ref_count=len(block.refs),
+                link_count=len(block.link_ids),
+                child_count=len(block.child_ids),
+            )
+            for block in selected
+        ]
+        return self.runtime.foundation.ok(
+            SourceBlockListView(
+                blocks=items,
+                total_matching_count=total,
+                truncated=len(items) < total,
+                summary=f"Listed {len(items)} of {total} matching SourceIndex blocks.",
+            )
+        )
+
+    def get_source_block(
+        self,
+        repo_root: Path,
+        *,
+        block_id: str,
+        require_committed: bool = False,
+    ) -> ServiceResult[SourceBlockDetailView]:
+        loaded = self._load_for_read(repo_root, require_committed=require_committed)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        block = loaded.value.blocks.get(block_id)
+        if block is None or not block.active or block_id == loaded.value.root_block_id:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_block_missing",
+                    f"SourceIndex block not found: {block_id}",
+                    object_ref=block_id,
+                )
+            )
+        adjacent: list[SourceBlockAdjacentLinkView] = []
+        for link in loaded.value.links.values():
+            if link.source_block_id == block_id:
+                adjacent.append(
+                    SourceBlockAdjacentLinkView(
+                        link_id=link.link_id,
+                        direction="outgoing",
+                        link_kind=link.link_kind,
+                        other_block_id=link.target_block_id,
+                        target_hint=link.target_hint,
+                        evidence_ref_ids=self._evidence_ref_ids(loaded.value, link),
+                    )
+                )
+            elif link.target_block_id == block_id:
+                adjacent.append(
+                    SourceBlockAdjacentLinkView(
+                        link_id=link.link_id,
+                        direction="incoming",
+                        link_kind=link.link_kind,
+                        other_block_id=link.source_block_id,
+                        evidence_ref_ids=self._evidence_ref_ids(loaded.value, link),
+                    )
+                )
+        adjacent.sort(key=lambda item: (item.direction, item.link_kind, item.link_id))
+        return self.runtime.foundation.ok(
+            SourceBlockDetailView(
+                block=self._to_block_view(loaded.value, block),
+                adjacent_links=adjacent,
+                summary=f"SourceIndex block {block_id} with {len(adjacent)} adjacent links.",
+            )
+        )
+
     def get_committed_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         loaded = self._load_effective_index(repo_root)
         if not loaded.ok or loaded.value is None:
@@ -530,7 +782,9 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(loaded.issues)
         return loaded
 
-    def set_source_index_overview(self, repo_root: Path, *, overview: str) -> ServiceResult[SourceIndexView]:
+    def set_source_index_overview(
+        self, repo_root: Path, *, overview: str
+    ) -> ServiceResult[SourceIndexOverviewMutationReceipt]:
         index = self._load_mutable(repo_root)
         if not index.ok or index.value is None:
             return self.runtime.foundation.fail(index.issues)
@@ -539,20 +793,35 @@ class SourceIndexComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_index_overview_empty", "SourceIndex overview must be non-empty."))
         if index.value.status == "updating":
             if index.value.overview == overview:
-                return self.runtime.foundation.ok(self._to_index_view(repo_root, index.value))
+                return self.runtime.foundation.ok(
+                    SourceIndexOverviewMutationReceipt(
+                        changed=False,
+                        previous_overview=overview,
+                        overview=overview,
+                        summary="SourceIndex overview was already set to this value.",
+                    )
+                )
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "source_index_baseline_overview_changed",
                     "A committed SourceIndex overview is immutable during an incremental update.",
                 )
             )
+        previous_overview = index.value.overview
         index.value.overview = overview
         index.value.updated_at = utc_now_iso()
         index.value.summary = "Updated source index overview."
         saved = self._save_model(repo_root, index.value)
         if not saved.ok or saved.value is None:
             return self.runtime.foundation.fail(saved.issues)
-        return self.runtime.foundation.ok(self._to_index_view(repo_root, saved.value))
+        return self.runtime.foundation.ok(
+            SourceIndexOverviewMutationReceipt(
+                changed=previous_overview != overview,
+                previous_overview=previous_overview,
+                overview=overview,
+                summary="Updated SourceIndex overview.",
+            )
+        )
 
     def create_source_block(
         self,
@@ -1934,6 +2203,58 @@ class SourceIndexComponent:
             committed_at=index.committed_at,
             summary=index.summary,
         )
+
+    def _load_for_read(
+        self, repo_root: Path, *, require_committed: bool
+    ) -> ServiceResult[SourceIndex]:
+        loaded = self._load_effective_index(repo_root)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        if require_committed and (
+            loaded.value.status != "committed" or loaded.value.active_file_scope
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "source_index_not_committed",
+                    "Committed SourceIndex read requires a committed SourceIndex.",
+                )
+            )
+        return loaded
+
+    @staticmethod
+    def _active_blocks(index: SourceIndex) -> list[SourceBlock]:
+        return [
+            block
+            for block in index.blocks.values()
+            if block.active and block.block_id != index.root_block_id
+        ]
+
+    @staticmethod
+    def _source_file_matches_status(
+        file: SourceFileIndex,
+        status: Literal["pending", "surveyed", "indexed", "skipped", "committed"] | None,
+    ) -> bool:
+        if status is None:
+            return True
+        if status == "committed":
+            return file.committed
+        if status == "pending":
+            return file.survey_status == "pending" or file.indexing_status == "pending"
+        if status == "surveyed":
+            return file.survey_status == "surveyed"
+        if status == "indexed":
+            return file.indexing_status == "indexed"
+        return file.survey_status == "skipped" or file.indexing_status == "skipped"
+
+    def _evidence_ref_ids(self, index: SourceIndex, link: SourceLink) -> list[str]:
+        return [
+            ref_id
+            for ref_id in (
+                self._ref_id_for_material_ref(index, link.source_block_id, material_ref)
+                for material_ref in link.evidence_refs
+            )
+            if ref_id is not None
+        ]
 
     def _to_block_view(self, index: SourceIndex, block: SourceBlock) -> SourceBlockView:
         return SourceBlockView(

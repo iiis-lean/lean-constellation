@@ -215,7 +215,6 @@ def _resource_recon_agent_step(
                 "contract_version": input_model.contract_version,
                 "objective": input_model.objective,
                 "resource_request_count": state.resource_request_count,
-                "prior_preparation_context": prior_context,
             },
             prompt_mode="callback" if callback else "initial",
             prompt_override=(

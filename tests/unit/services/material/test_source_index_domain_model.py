@@ -40,6 +40,12 @@ def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> 
         resolved_scope=scope.value,
         index_policy="auto",
     ).ok
+    overview_receipt = service.set_source_index_overview(
+        tmp_path, overview="Compact indexed source."
+    )
+    assert overview_receipt.ok and overview_receipt.value is not None
+    assert overview_receipt.value.changed
+    assert overview_receipt.value.previous_overview == "Indexed source corpus."
 
     block = service.create_source_block(
         tmp_path,
@@ -94,3 +100,24 @@ def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> 
     assert view_ref.start_line == 1
     assert view_ref.end_line == 3
     assert view.value.links[link.value.link_id].evidence_ref_ids == [view_ref.ref_id]
+
+    overview = service.get_source_index_overview(tmp_path)
+    files = service.list_source_index_files(tmp_path)
+    blocks = service.list_source_blocks(tmp_path, query="theorem", path="chapter.md")
+    detail = service.get_source_block(tmp_path, block_id=block.value.block_id)
+
+    assert overview.ok and overview.value is not None
+    assert overview.value.overview == "Compact indexed source."
+    assert overview.value.block_count == 1
+    assert files.ok and files.value is not None
+    assert [item.path for item in files.value.files] == ["README.md", "chapter.md"]
+    assert blocks.ok and blocks.value is not None
+    assert [item.block_id for item in blocks.value.blocks] == [block.value.block_id]
+    assert blocks.value.blocks[0].ref_count == 1
+    assert detail.ok and detail.value is not None
+    assert detail.value.block.refs[0].path == "chapter.md"
+    assert detail.value.adjacent_links[0].direction == "outgoing"
+    assert detail.value.adjacent_links[0].evidence_ref_ids == [view_ref.ref_id]
+
+    limited = service.list_source_blocks(tmp_path, limit=0)
+    assert not limited.ok

@@ -19,18 +19,21 @@ from lean_constellation.services.mathlib.service import MathlibService
 from lean_constellation.services.mathlib.toolkit_ingestion import (
     MathlibAccessCheckView,
     MathlibCandidateCache,
+    MathlibCandidateDetailView,
     MathlibCandidateView,
     MathlibCheckView,
     MathlibExternalSearchView,
     MathlibModuleNavigationView,
     MathlibNavigationView,
     MathlibSemanticSearchView,
+    MathlibSearchCandidateView,
     ToolkitIngestionComponent,
 )
 
 __all__ = [
     "MathlibAccessCheckView",
     "MathlibCandidateCache",
+    "MathlibCandidateDetailView",
     "MathlibCandidateView",
     "MathlibCheckView",
     "MathlibDeclEntryView",
@@ -41,6 +44,7 @@ __all__ = [
     "MathlibModuleEntryView",
     "MathlibNavigationView",
     "MathlibSemanticSearchView",
+    "MathlibSearchCandidateView",
     "MathlibSearchHit",
     "MathlibSearchView",
     "MathlibUseActor",

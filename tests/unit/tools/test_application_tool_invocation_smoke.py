@@ -627,9 +627,10 @@ def test_commit_scope_contract_tool_invokes_node_service(tmp_path: Path) -> None
         )
     )
 
-    assert value["node_path"] == "Main.Topic"
-    assert value["version"] == 1
-    assert value["status"] == "committed"
+    assert value["scope_path"] == "Main.Topic"
+    assert value["contract_version"] == 1
+    assert value["contract_status"] == "committed"
+    assert value["changed"] is True
 
 
 class _FakeMathlibToolkit:
@@ -701,6 +702,13 @@ def test_source_corpus_tool_invokes_material_service(tmp_path: Path) -> None:
     assert result.value.ok is True
     assert result.value.value is not None
     assert result.value.value["files"][0]["path"] == "README.md"
+    assert set(result.value.value["files"][0]) == {
+        "path",
+        "readable_text",
+        "line_count",
+    }
+    assert "repo_root" not in result.value.value
+    assert "generated_at" not in result.value.value
 
 
 def test_source_index_reviewer_can_read_source_corpus(tmp_path: Path) -> None:
@@ -1381,11 +1389,17 @@ def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) 
 
     assert {node["node_path"] for node in visible["nodes"]} == {"Main.Consumer", "Main.Provider"}
     assert current_public["items"] == []
-    assert provider_public["items"][0]["ref"]["name"] == "helper"
-    assert "ready" not in provider_public["items"][0]
-    assert "stale" not in provider_public["items"][0]
-    assert provider_public["items"][0]["proof_policy_satisfied"] is False
-    assert inspected["decl_name"] == "helper"
+    public_item = provider_public["items"][0]
+    assert public_item["name"] == "helper"
+    assert public_item["statement_nl"] in {"accepted", "missing"}
+    assert public_item["statement_formal"] in {"accepted", "missing"}
+    assert "ref" not in public_item
+    assert "revision" not in public_item
+    assert inspected["name"] == "helper"
+    assert inspected["repository"] == "current repo"
+    assert inspected["node_path"] == "Main.Provider.Core"
+    assert "revision" not in inspected
+    assert "anchor_ref" not in inspected
 
 
 def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> None:
@@ -1521,26 +1535,25 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     )
 
     assert [repo.repo_key for repo in candidates["items"]] == ["Provider"]
-    assert public["items"][0]["ref"]["repo"] == "Provider"
-    assert public["items"][0]["ref"]["revision"] == 1
-    assert public["items"][0]["anchor_revision"] == 1
-    assert public["items"][0]["resolved_revision"] == 1
-    assert public["items"][0]["compatible"] is True
-    assert public["items"][0]["released_state"] == "proved"
-    assert public["items"][0]["release_protected"] is True
-    assert public["items"][0]["state"] == "proved"
-    assert public["items"][0]["module"] == "Provider.Main.Core.Theorems.provider_result"
-    assert public["items"][0]["lean_decl_name"] == "provider_result"
-    assert public["items"][0]["proof_policy_satisfied"] is True
-    assert "ready" not in public["items"][0]
-    assert "stale" not in public["items"][0]
-    assert inspected["decl_name"] == "provider_result"
-    assert inspected["revision"] == 1
-    assert inspected["anchor_ref"]["revision"] == 1
-    assert inspected["resolved_revision"] == 1
-    assert inspected["state"] == "proved"
-    assert inspected["proof_policy_satisfied"] is True
-    assert inspected["artifacts"]["proof_formal"] == "passed"
+    public_item = public["items"][0]
+    assert public_item["name"] == "provider_result"
+    assert public_item["module"] == "Provider.Main.Core.Theorems.provider_result"
+    assert public_item["lean_full_name"] == "provider_result"
+    assert public_item["statement_nl"] == "accepted"
+    assert public_item["statement_formal"] == "accepted"
+    assert public_item["proof_nl"] == "accepted"
+    assert public_item["proof_formal"] == "accepted"
+    assert public_item["ready"] is True
+    assert public_item["stale"] is False
+    assert "ref" not in public_item
+    assert "revision" not in public_item
+    assert inspected["name"] == "provider_result"
+    assert inspected["repository"] == "Provider"
+    assert "node_path" not in inspected
+    assert inspected["proof_formal"] == "accepted"
+    assert "revision" not in inspected
+    assert "anchor_ref" not in inspected
+    assert "artifacts" not in inspected
     assert "formal_preview" not in inspected
     assert source["revision"] == 1
     assert source["stage"] == "proof"
@@ -1732,10 +1745,17 @@ def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) 
     assert draft.ok and draft.value is not None
 
     raw = _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
-    draft_read = _unwrap_tool_failure(
+    full_read = _unwrap_tool_failure(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="get_source_index",
+            flat_args={},
+        )
+    )
+    overview_read = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_source_index_overview",
             flat_args={},
         )
     )
@@ -1747,7 +1767,8 @@ def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) 
         )
     )
 
-    assert draft_read[0].kind == "source_index_not_committed"
+    assert full_read[0].kind == "source_index_not_committed"
+    assert overview_read[0].kind == "source_index_not_committed"
     assert coverage_read[0].kind == "source_index_not_committed"
 
 
@@ -1796,10 +1817,17 @@ def test_decl_stage_source_index_reads_require_committed_index(
         batch_decls=["target_decl"],
     )
 
-    draft_read = _unwrap_tool_failure(
+    full_read = _unwrap_tool_failure(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="get_source_index",
+            flat_args={},
+        )
+    )
+    overview_read = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="get_source_index_overview",
             flat_args={},
         )
     )
@@ -1811,7 +1839,8 @@ def test_decl_stage_source_index_reads_require_committed_index(
         )
     )
 
-    assert draft_read[0].kind == "source_index_not_committed"
+    assert full_read[0].kind == "tool_not_in_view"
+    assert overview_read[0].kind == "source_index_not_committed"
     assert coverage_read[0].kind == "source_index_not_committed"
 
 
@@ -1884,7 +1913,9 @@ def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: P
             flat_args={"draft_id": allocated.value.draft.draft_id},
         )
     )
-    assert draft["draft"]["target"]["canonical_locator"] == "https://example.com/resource"
+    assert draft["target"]["canonical_locator"] == "https://example.com/resource"
+    assert draft["logical_files"] == ["README.md", "original/", "normalized/"]
+    assert "draft_root" not in draft
 
     module = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
@@ -2164,13 +2195,14 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
         runtime.tool_facade.invoke_agent_tool(raw, tool_name="check_adapter_catalog_ready_preflight", flat_args={})
     )
 
-    assert [item["requirement"]["name"] for item in requirements["requirements"]] == ["need_provider"]
-    assert requirement["requirement"]["name"] == "need_provider"
+    assert [item["name"] for item in requirements["requirements"]] == ["need_provider"]
+    assert requirement["name"] == "need_provider"
     assert denied_requirement[0].kind == "preparation_requirement_ref_not_allowed"
     assert root_interfaces["node_path"] == "Main"
     assert created["name"] == "main_result"
-    assert created["decl"]["name"] == "main_result"
-    assert formal["revision"]["lean_decl_name"] == "upstreamSmoke"
+    assert created["lean_decl_name"] == "upstreamSmoke"
+    assert formal["section"] == "statement_formal"
+    assert formal["resulting_state"] == "draft"
     assert [item["name"] for item in matches["matches"]] == ["main_result"]
     assert preflight["passed"] is False
     inspected = _unwrap_tool_result(
@@ -2181,4 +2213,5 @@ def test_adapter_decl_catalog_tool_invokes_adapter_service(tmp_path: Path) -> No
         )
     )
     assert inspected["module"] == "Upstream.Basic"
-    assert inspected["revision"]["lean_decl_name"] == "upstreamSmoke"
+    assert inspected["lean_decl_name"] == "upstreamSmoke"
+    assert inspected["statement"]["formal"]["code"].startswith("theorem main_result")

@@ -42,7 +42,13 @@ from lean_constellation.services.material.source_corpus import (
 )
 from lean_constellation.services.material.source_index import (
     ResolvedSourceScopeView,
+    SourceBlockDetailView,
+    SourceBlockListItemView,
+    SourceBlockListView,
     SourceBlockView,
+    SourceIndexFileListView,
+    SourceIndexOverviewMutationReceipt,
+    SourceIndexOverviewView,
     SourceFileIndexView,
     SourceIndex,
     SourceIndexCommitView,
@@ -61,7 +67,6 @@ if TYPE_CHECKING:
 
 
 class MaterialContextCitationView(StrictModel):
-    ref_scope: Literal["source_index", "node_owned", "node_context"]
     material_kind: Literal["source", "resource"]
     path: str | None = None
     resource_key: str | None = None
@@ -69,34 +74,23 @@ class MaterialContextCitationView(StrictModel):
     end_line: int | None = None
     role: str | None = None
     reason: str | None = None
-    added_by: str | None = None
-    valid: bool | None = None
-    preview_summary: str | None = None
-    reusable_ref_fields: dict[str, str | int] = Field(default_factory=dict)
-
-
-class MaterialContextSourceBlockView(StrictModel):
-    kind: str
-    subtype: str | None = None
-    title: str
-    summary: str
-    lifecycle_status: str
-    refs: list[MaterialContextCitationView] = Field(default_factory=list)
+    source_block_id: str | None = None
 
 
 class MaterialContextView(StrictModel):
-    repo_root: str
     node_path: str | None = None
     query: str | None = None
-    include_source: bool
-    include_resources: bool
+    scope: Literal["current_node", "source", "resource", "all"]
+    source_index: SourceIndexOverviewView | None = None
     source_files: list[MaterialFileEntry] = Field(default_factory=list)
-    source_index_overview: str | None = None
-    source_blocks: list[MaterialContextSourceBlockView] = Field(default_factory=list)
+    source_blocks: list[SourceBlockListItemView] = Field(default_factory=list)
     resources: list[ResourceSummaryView] = Field(default_factory=list)
-    node_owned_refs: list[MaterialContextCitationView] = Field(default_factory=list)
-    node_context_refs: list[MaterialContextCitationView] = Field(default_factory=list)
-    search_hits: list[MaterialSearchHit] = Field(default_factory=list)
+    owned_refs: list[MaterialContextCitationView] = Field(default_factory=list)
+    context_refs: list[MaterialContextCitationView] = Field(default_factory=list)
+    matches: list[MaterialSearchHit] = Field(default_factory=list)
+    returned_count: int
+    total_matching_count: int
+    truncated: bool = False
     summary: str
 
 
@@ -339,77 +333,68 @@ class MaterialService:
         *,
         node_path: str | None = None,
         query: str | None = None,
-        include_source: bool = True,
-        include_resources: bool = True,
+        scope: Literal["current_node", "source", "resource", "all"] = "current_node",
         require_committed_source_index: bool = False,
         regex: bool = False,
-        limit: int = 20,
+        limit: int | None = None,
     ) -> ServiceResult[MaterialContextView]:
-        if not include_source and not include_resources:
+        if limit is not None and limit < 1:
             return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("material_context_empty_scope", "include_source and include_resources cannot both be false.")
+                self.runtime.foundation.issue(
+                    "invalid_search_limit", "Material context limit must be >= 1."
+                )
             )
-
         source_files: list[MaterialFileEntry] = []
-        source_blocks: list[MaterialContextSourceBlockView] = []
-        source_index_overview: str | None = None
+        source_blocks: list[SourceBlockListItemView] = []
+        source_index_overview: SourceIndexOverviewView | None = None
         resources: list[ResourceSummaryView] = []
         search_hits: list[MaterialSearchHit] = []
         node_owned_refs: list[MaterialContextCitationView] = []
         node_context_refs: list[MaterialContextCitationView] = []
 
-        if include_source:
+        if scope in {"source", "all"} and not (query and query.strip()):
             listed_source = self.material_read.list_material_files(repo_root, material_kind="source")
             if not listed_source.ok or listed_source.value is None:
                 return self.runtime.foundation.fail(listed_source.issues)
             source_files = listed_source.value.files
-            source_index = (
-                self.source_index.get_committed_source_index(repo_root)
-                if require_committed_source_index
-                else self.source_index.get_source_index(repo_root)
+            listed_blocks = self.source_index.list_source_blocks(
+                repo_root,
+                require_committed=require_committed_source_index,
             )
-            if source_index.ok and source_index.value is not None:
-                source_index_overview = source_index.value.overview
-                source_blocks = [
-                    self._source_block_context(block)
-                    for block in source_index.value.blocks.values()
-                    if block.active and block.block_id != source_index.value.root_block_id
-                ]
-                source_blocks.sort(key=lambda item: (item.kind, item.title))
+            if listed_blocks.ok and listed_blocks.value is not None:
+                source_blocks = listed_blocks.value.blocks
             elif not any(
                 issue.kind in {"source_index_missing", "source_index_not_committed"}
-                for issue in source_index.issues
+                for issue in listed_blocks.issues
             ):
-                return self.runtime.foundation.fail(source_index.issues)
+                return self.runtime.foundation.fail(listed_blocks.issues)
 
-        if include_resources:
-            listed_resources = self.resource_library.list_resources(repo_root, query=query if query and query.strip() else None)
+        if scope in {"resource", "all"} and not (query and query.strip()):
+            listed_resources = self.resource_library.list_resources(repo_root)
             if not listed_resources.ok or listed_resources.value is None:
                 return self.runtime.foundation.fail(listed_resources.issues)
             resources = listed_resources.value
 
-        if query and query.strip():
-            if include_source and include_resources:
-                scope = "all"
-            elif include_source:
-                scope = "source"
-            else:
-                scope = "resource"
-            search = self.material_read.search_material_text(repo_root, query=query, scope=scope, regex=regex, limit=limit)
-            if not search.ok or search.value is None:
-                return self.runtime.foundation.fail(search.issues)
-            search_hits = search.value.hits
+        if scope == "current_node" and not node_path:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "material_context_node_required",
+                    "current_node material context requires a node-scoped tool call.",
+                )
+            )
 
-        if node_path:
+        if node_path and scope == "current_node":
             node_service = self.runtime.app.node
             if node_service is None:
                 return self.runtime.foundation.fail(self.runtime.foundation.issue("node_service_unavailable", "NodeService is not initialized."))
             node_refs = node_service.material_ref.list_node_material_refs(repo_root, node_path=node_path)
             if not node_refs.ok or node_refs.value is None:
                 return self.runtime.foundation.fail(node_refs.issues)
-            node_owned_refs = [self._node_ref_context("node_owned", item) for item in node_refs.value.owned_refs]
-            node_context_refs = [self._node_ref_context("node_context", item) for item in node_refs.value.context_refs]
-            invalid_refs = [item for item in [*node_owned_refs, *node_context_refs] if item.valid is False]
+            invalid_refs = [
+                item
+                for item in [*node_refs.value.owned_refs, *node_refs.value.context_refs]
+                if item.valid is False
+            ]
             if invalid_refs:
                 return self.runtime.foundation.fail(
                     [
@@ -422,25 +407,78 @@ class MaterialService:
                         for item in invalid_refs
                     ]
                 )
+            node_owned_refs = [
+                self._node_ref_context(repo_root, item) for item in node_refs.value.owned_refs
+            ]
+            node_context_refs = [
+                self._node_ref_context(repo_root, item) for item in node_refs.value.context_refs
+            ]
+
+        if scope in {"current_node", "source", "all"}:
+            overview = self.source_index.get_source_index_overview(
+                repo_root,
+                require_committed=require_committed_source_index,
+            )
+            if overview.ok and overview.value is not None:
+                source_index_overview = overview.value
+            elif not any(
+                issue.kind in {"source_index_missing", "source_index_not_committed"}
+                for issue in overview.issues
+            ):
+                return self.runtime.foundation.fail(overview.issues)
+
+        total_matching_count = 0
+        truncated = False
+        normalized_query = query.strip() if query and query.strip() else None
+        if normalized_query:
+            search_scope = "all" if scope == "current_node" else scope
+            search = self.material_read.search_material_text(
+                repo_root,
+                query=normalized_query,
+                scope=search_scope,
+                regex=regex,
+                limit=None,
+            )
+            if not search.ok or search.value is None:
+                return self.runtime.foundation.fail(search.issues)
+            search_hits = search.value.hits
+            if scope == "current_node":
+                refs = [*node_owned_refs, *node_context_refs]
+                search_hits = [
+                    hit for hit in search_hits if self._hit_matches_any_ref(hit, refs)
+                ]
+            total_matching_count = len(search_hits)
+            if limit is not None:
+                search_hits = search_hits[:limit]
+            truncated = len(search_hits) < total_matching_count
+
+        if normalized_query:
+            returned_count = len(search_hits)
+        elif scope == "current_node":
+            returned_count = len(node_owned_refs) + len(node_context_refs)
+            total_matching_count = returned_count
+        else:
+            returned_count = len(source_files) + len(source_blocks) + len(resources)
+            total_matching_count = returned_count
 
         return self.runtime.foundation.ok(
             MaterialContextView(
-                repo_root=str(Path(repo_root)),
                 node_path=node_path,
-                query=query.strip() if query and query.strip() else None,
-                include_source=include_source,
-                include_resources=include_resources,
+                query=normalized_query,
+                scope=scope,
+                source_index=source_index_overview,
                 source_files=source_files,
-                source_index_overview=source_index_overview,
                 source_blocks=source_blocks,
                 resources=resources,
-                node_owned_refs=node_owned_refs,
-                node_context_refs=node_context_refs,
-                search_hits=search_hits,
+                owned_refs=node_owned_refs,
+                context_refs=node_context_refs,
+                matches=search_hits,
+                returned_count=returned_count,
+                total_matching_count=total_matching_count,
+                truncated=truncated,
                 summary=(
-                    f"Material context: {len(source_files)} source files, {len(source_blocks)} source blocks, "
-                    f"{len(resources)} resources, {len(node_owned_refs)} owned refs, "
-                    f"{len(node_context_refs)} context refs, {len(search_hits)} search hits."
+                    f"Material context ({scope}): returned {returned_count} of "
+                    f"{total_matching_count} compact entries."
                 ),
             )
         )
@@ -703,7 +741,63 @@ class MaterialService:
     def get_committed_source_index(self, repo_root: Path) -> ServiceResult[SourceIndexView]:
         return self.source_index.get_committed_source_index(repo_root)
 
-    def set_source_index_overview(self, repo_root: Path, *, overview: str) -> ServiceResult[SourceIndexView]:
+    def get_source_index_overview(
+        self, repo_root: Path, *, require_committed: bool = False
+    ) -> ServiceResult[SourceIndexOverviewView]:
+        return self.source_index.get_source_index_overview(
+            repo_root, require_committed=require_committed
+        )
+
+    def list_source_index_files(
+        self,
+        repo_root: Path,
+        *,
+        status: Literal["pending", "surveyed", "indexed", "skipped", "committed"] | None = None,
+        require_committed: bool = False,
+    ) -> ServiceResult[SourceIndexFileListView]:
+        return self.source_index.list_source_index_files(
+            repo_root,
+            status=status,
+            require_committed=require_committed,
+        )
+
+    def list_source_blocks(
+        self,
+        repo_root: Path,
+        *,
+        query: str | None = None,
+        kind: str | None = None,
+        subtype: str | None = None,
+        path: str | None = None,
+        limit: int | None = None,
+        require_committed: bool = False,
+    ) -> ServiceResult[SourceBlockListView]:
+        return self.source_index.list_source_blocks(
+            repo_root,
+            query=query,
+            kind=kind,
+            subtype=subtype,
+            path=path,
+            limit=limit,
+            require_committed=require_committed,
+        )
+
+    def get_source_block(
+        self,
+        repo_root: Path,
+        *,
+        block_id: str,
+        require_committed: bool = False,
+    ) -> ServiceResult[SourceBlockDetailView]:
+        return self.source_index.get_source_block(
+            repo_root,
+            block_id=block_id,
+            require_committed=require_committed,
+        )
+
+    def set_source_index_overview(
+        self, repo_root: Path, *, overview: str
+    ) -> ServiceResult[SourceIndexOverviewMutationReceipt]:
         return self.source_index.set_source_index_overview(repo_root, overview=overview)
 
     def create_source_block(
@@ -744,57 +838,81 @@ class MaterialService:
             subtype=subtype,
         )
 
-    def _source_block_context(self, block: SourceBlockView) -> MaterialContextSourceBlockView:
-        refs = [
-            MaterialContextCitationView(
-                ref_scope="source_index",
-                material_kind="source",
-                path=ref.path,
-                start_line=ref.start_line,
-                end_line=ref.end_line,
-                role=ref.role,
-                reusable_ref_fields={"path": ref.path, "start_line": ref.start_line, "end_line": ref.end_line},
-            )
-            for ref in block.refs
-        ]
-        return MaterialContextSourceBlockView(
-            kind=block.kind,
-            subtype=block.subtype,
-            title=block.title,
-            summary=block.summary,
-            lifecycle_status=block.lifecycle_status,
-            refs=refs,
-        )
-
-    @staticmethod
-    def _node_ref_context(ref_scope: Literal["node_owned", "node_context"], item: object) -> MaterialContextCitationView:
+    def _node_ref_context(
+        self, repo_root: Path, item: object
+    ) -> MaterialContextCitationView:
         path = getattr(item, "path", None)
         resource_key = getattr(item, "resource_key", None)
         start_line = getattr(item, "start_line", None)
         end_line = getattr(item, "end_line", None)
-        reusable: dict[str, str | int] = {}
-        if path:
-            reusable["path"] = path
-        if resource_key:
-            reusable["resource_key"] = resource_key
-        if start_line is not None:
-            reusable["start_line"] = start_line
-        if end_line is not None:
-            reusable["end_line"] = end_line
-        added_by = getattr(getattr(item, "added_by", None), "value", getattr(item, "added_by", None))
+        source_block_id = (
+            self._source_block_id_for_range(
+                repo_root,
+                path=path,
+                start_line=start_line,
+                end_line=end_line,
+            )
+            if path
+            else None
+        )
         return MaterialContextCitationView(
-            ref_scope=ref_scope,
             material_kind=getattr(item, "material_kind"),
             path=path,
             resource_key=resource_key,
             start_line=start_line,
             end_line=end_line,
             reason=getattr(item, "reason", None),
-            added_by=added_by,
-            valid=getattr(item, "valid", None),
-            preview_summary=getattr(item, "preview_summary", None),
-            reusable_ref_fields=reusable,
+            source_block_id=source_block_id,
         )
+
+    def _source_block_id_for_range(
+        self,
+        repo_root: Path,
+        *,
+        path: str,
+        start_line: int | None,
+        end_line: int | None,
+    ) -> str | None:
+        loaded = self.source_index.get_source_index_model(repo_root)
+        if not loaded.ok or loaded.value is None:
+            return None
+        for block in self.source_index._active_blocks(loaded.value):
+            for ref in block.refs:
+                source_ref = ref.material_ref.ref
+                if (
+                    ref.material_ref.kind == "source"
+                    and getattr(source_ref, "path", None) == path
+                    and (
+                        start_line is None
+                        or getattr(source_ref, "start_line", None) is None
+                        or getattr(source_ref, "start_line", None) <= start_line
+                    )
+                    and (
+                        end_line is None
+                        or getattr(source_ref, "end_line", None) is None
+                        or getattr(source_ref, "end_line", None) >= end_line
+                    )
+                ):
+                    return block.block_id
+        return None
+
+    @staticmethod
+    def _hit_matches_any_ref(
+        hit: MaterialSearchHit, refs: list[MaterialContextCitationView]
+    ) -> bool:
+        for ref in refs:
+            if hit.material_kind != ref.material_kind:
+                continue
+            if hit.material_kind == "source" and hit.path != ref.path:
+                continue
+            if hit.material_kind == "resource" and hit.resource_key != ref.resource_key:
+                continue
+            if ref.start_line is not None and hit.line_number < ref.start_line:
+                continue
+            if ref.end_line is not None and hit.line_number > ref.end_line:
+                continue
+            return True
+        return False
 
     def add_source_block_ref(
         self,

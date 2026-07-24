@@ -362,7 +362,8 @@ def test_prepare_agent_can_only_append_and_flow_reports_delta(tmp_path: Path) ->
     assert flow.result.supplement_interface_names_added == ["Supplement"]
     prompt = runtime.agent_service.start_records[-1].prompt
     assert "must remain byte-for-byte equivalent" in prompt
-    assert "source.md" in prompt
+    assert "get_root_interface_run_context" in prompt
+    assert "source.md" not in prompt
 
 
 def test_agent_change_to_existing_supplement_is_blocked_by_delta_gate(tmp_path: Path) -> None:

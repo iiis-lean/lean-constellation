@@ -90,3 +90,31 @@ def test_current_content_interface_binding_is_plan_or_admin_only() -> None:
     specs = {spec.name: spec for spec in build_application_tool_specs()}
 
     assert specs["bind_current_node_interface"].allowed_roles == {"plan", "admin"}
+
+
+def test_node_contract_mutation_result_views_match_receipts() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    for name in {
+        "add_current_node_dep",
+        "remove_current_node_dep",
+        "add_node_dep",
+        "remove_node_dep",
+    }:
+        assert specs[name].result_view == "node_dependency_mutation"
+    for name in {
+        "add_current_material_ref",
+        "remove_current_material_ref",
+        "add_node_material_ref",
+        "remove_node_material_ref",
+    }:
+        assert specs[name].result_view == "current_node_material_mutation"
+    for name in {
+        "add_root_interface",
+        "update_root_interface",
+        "remove_root_interface",
+        "add_node_interface",
+        "update_node_interface",
+        "remove_node_interface",
+    }:
+        assert specs[name].result_view == "interface_mutation"

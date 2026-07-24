@@ -55,6 +55,7 @@ class MaterialSearchView(StrictModel):
     scope: str
     regex: bool
     hits: list[MaterialSearchHit] = Field(default_factory=list)
+    total_matching_count: int = 0
     truncated: bool = False
     summary: str
 
@@ -174,12 +175,12 @@ class MaterialReadComponent:
         query: str,
         scope: str = "all",
         regex: bool = False,
-        limit: int = 20,
+        limit: int | None = 20,
     ) -> ServiceResult[MaterialSearchView]:
         query = query.strip()
         if not query:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("empty_query", "Search query must be non-empty."))
-        if limit < 1:
+        if limit is not None and limit < 1:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("invalid_search_limit", "Search limit must be >= 1."))
         files = self.list_material_files(repo_root, material_kind=scope)
         if not files.ok or files.value is None:
@@ -218,14 +219,20 @@ class MaterialReadComponent:
                                 reusable_ref_fields={**reusable_key, "start_line": line_number, "end_line": line_number},
                             )
                         )
-                        if len(hits) >= limit:
-                            return self.runtime.foundation.ok(
-                                MaterialSearchView(query=query, scope=scope, regex=regex, hits=hits, truncated=True, summary=f"Found at least {len(hits)} hits.")
-                            )
             except (UnicodeDecodeError, OSError):
                 continue
+        total = len(hits)
+        selected = hits if limit is None else hits[:limit]
         return self.runtime.foundation.ok(
-            MaterialSearchView(query=query, scope=scope, regex=regex, hits=hits, summary=f"Found {len(hits)} hits.")
+            MaterialSearchView(
+                query=query,
+                scope=scope,
+                regex=regex,
+                hits=selected,
+                total_matching_count=total,
+                truncated=len(selected) < total,
+                summary=f"Found {total} hits; returned {len(selected)}.",
+            )
         )
 
     def validate_source_range(

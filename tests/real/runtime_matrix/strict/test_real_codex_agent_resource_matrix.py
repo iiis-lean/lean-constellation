@@ -543,7 +543,9 @@ def test_strict_real_codex_statement_formal_worker_resources_tools_and_submit(
         revision=1,
     )
     assert revision.ok and revision.value is not None, revision.issues
-    assert revision.value.statement_lean_check["status"] == "passed"
+    assert revision.value.statement.formal is not None
+    assert revision.value.statement.formal.check is not None
+    assert revision.value.statement.formal.check.status == "passed"
 
     evidence_recorder.record_runtime_state(ws.runtime)
     for tool_name in sorted(tools_called):
@@ -687,7 +689,10 @@ def test_strict_real_codex_proof_formal_worker_resources_tools_and_submit(
         revision=1,
     )
     assert revision.ok and revision.value is not None, revision.issues
-    assert revision.value.proof_lean_check["status"] == "passed"
+    assert revision.value.proof is not None
+    assert revision.value.proof.formal is not None
+    assert revision.value.proof.formal.check is not None
+    assert revision.value.proof.formal.check.status == "passed"
 
     evidence_recorder.record_runtime_state(ws.runtime)
     for tool_name in sorted(tools_called):

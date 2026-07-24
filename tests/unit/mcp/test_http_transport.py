@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import anyio
 import httpx
 import pytest
+from agent_runtime_kit.agent.homes import MCP_RESULT_PROFILE_HTTP_HEADER
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -84,6 +86,7 @@ async def _exercise_resource_curator_http_mcp(app, tmp_path: Path) -> None:  # n
         agent_id="agent_http",
     )
     headers = _runtime_headers(env)
+    headers[MCP_RESULT_PROFILE_HTTP_HEADER] = "content_only"
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
@@ -113,12 +116,11 @@ async def _exercise_resource_curator_http_mcp(app, tmp_path: Path) -> None:  # n
                     )
 
     assert result.isError is False
-    assert result.structuredContent is not None
-    assert result.structuredContent["ok"] is True
-    assert result.structuredContent["value"]["kind"] == "web_url"
+    assert result.structuredContent is None
+    assert json.loads(result.content[0].text)["value"]["kind"] == "web_url"
     assert wrong_view.isError is True
-    assert wrong_view.structuredContent is not None
-    assert wrong_view.structuredContent["ok"] is False
+    assert wrong_view.structuredContent is None
+    assert json.loads(wrong_view.content[0].text)["ok"] is False
 
 
 async def _exercise_submit_http_mcp(app, tmp_path: Path) -> None:  # noqa: ANN001 - ASGI app boundary.

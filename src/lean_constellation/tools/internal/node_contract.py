@@ -40,7 +40,15 @@ from lean_constellation.tools.specs import actor_for_write, current_node_path, d
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.flows.common.flow_requests import node_scope_id
-from lean_constellation.services.node import ContentTaskResultView
+from lean_constellation.services.foundation import GateReport, ServiceIssue
+from lean_constellation.services.node import (
+    ContentTaskResultView,
+    ContractVersionStatus,
+    InterfaceView,
+    NodeKind,
+    NodeLifecycle,
+)
+from pydantic import Field
 
 
 class ContentTaskResultItemView(StrictModel):
@@ -50,8 +58,6 @@ class ContentTaskResultItemView(StrictModel):
     contract_version: int | None = None
     reason: str | None = None
     summary: str | None = None
-    is_committable: bool = True
-    summary_for_agent: str
 
 
 class ContentTaskResultListView(StrictModel):
@@ -65,6 +71,78 @@ class ContentTaskResultInspectView(StrictModel):
     summary: str
 
 
+class ScopeContractCommitReceipt(StrictModel):
+    scope_path: str
+    operation: str = "commit"
+    changed: bool
+    contract_version: int
+    contract_status: ContractVersionStatus
+    gate: GateReport
+    summary: str
+
+
+class ScopeExportDeclView(StrictModel):
+    index: int
+    repository: str | None = None
+    node_path: str
+    declaration_name: str
+    requested_revision: int
+    resolved_revision: int | None = None
+    resolution_reason: str | None = None
+    valid: bool
+    source_node: str | None = None
+    issues: list[ServiceIssue] = Field(default_factory=list)
+
+
+class ScopeExportListView(StrictModel):
+    scope_path: str
+    count: int
+    exports: list[ScopeExportDeclView]
+    summary: str
+
+
+class ScopeExportMutationReceipt(StrictModel):
+    scope_path: str
+    operation: str
+    changed: bool
+    export: ScopeExportDeclView
+    bound_interface_name: str | None = None
+    summary: str
+
+
+class InterfaceListAgentView(StrictModel):
+    node_path: str
+    interfaces: list[InterfaceView]
+    summary: str
+
+
+class NodeAgentView(StrictModel):
+    node_path: str
+    node_kind: NodeKind
+    lifecycle: NodeLifecycle
+    contract_status: str | None = None
+    parent_path: str | None = None
+    child_count: int = 0
+
+
+class NodeTreeAgentView(StrictModel):
+    root_path: str | None = None
+    nodes: list[NodeAgentView]
+    active_count: int
+    summary: str
+
+
+class RootInterfaceRunContextView(StrictModel):
+    start_kind: str
+    run_objective: str
+    root_interface_policy: str
+    source_files_in_run: list[str]
+    source_index_delta_summary: str | None = None
+    explicit_required_additions: list[str]
+    prior_interface_names: list[str]
+    summary: str
+
+
 def _current_contract(runtime, ctx, args):
     del args
     return runtime.node.get_current_contract_view(ctx.repo_root, node_path=current_node_path(ctx))
@@ -72,7 +150,12 @@ def _current_contract(runtime, ctx, args):
 
 def _current_visible_boundaries(runtime, ctx, args):
     del args
-    return runtime.node.dependency.list_visible_node_boundaries(ctx.repo_root, node_path=current_node_path(ctx))
+    role = ctx.actor.role
+    return runtime.node.public_decl_access.list_visible_nodes(
+        ctx.repo_root,
+        actor_role=role.value if hasattr(role, "value") else str(role),
+        current_node_path=current_node_path(ctx),
+    )
 
 
 def _current_node_deps(runtime, ctx, args):
@@ -86,7 +169,37 @@ def _current_material_refs(runtime, ctx, args):
 
 
 def _get_node(runtime, ctx, args: NodePathArgs):
-    return runtime.node.node_tree.get_node(ctx.repo_root, path=args.node_path)
+    found = runtime.node.node_tree.get_node(ctx.repo_root, path=args.node_path)
+    if not found.ok or found.value is None:
+        return runtime.foundation.fail(found.issues)
+    return runtime.foundation.ok(_node_agent_view(found.value), warnings=found.issues)
+
+
+def _node_agent_view(item) -> NodeAgentView:
+    return NodeAgentView(
+        node_path=item.path,
+        node_kind=item.kind,
+        lifecycle=item.lifecycle,
+        contract_status=item.contract_status,
+        parent_path=item.parent_path,
+        child_count=item.child_count,
+    )
+
+
+def _get_node_tree(runtime, ctx, args: NoArgs):
+    del args
+    tree = runtime.node.node_tree.get_node_tree(ctx.repo_root)
+    if not tree.ok or tree.value is None:
+        return runtime.foundation.fail(tree.issues)
+    return runtime.foundation.ok(
+        NodeTreeAgentView(
+            root_path=tree.value.root_path,
+            nodes=[_node_agent_view(item) for item in tree.value.nodes],
+            active_count=tree.value.active_count,
+            summary=tree.value.summary,
+        ),
+        warnings=tree.issues,
+    )
 
 
 def _update_node_contract_text(runtime, ctx, args: ContractCoreUpdateArgs):
@@ -306,7 +419,17 @@ def _remove_interface(runtime, ctx, args: InterfaceNameArgs):
 
 def _list_root_interfaces(runtime, ctx, args: NoArgs):
     del args
-    return runtime.node.interface.list_interfaces(ctx.repo_root, node_path="Main")
+    listed = runtime.node.interface.list_interfaces(ctx.repo_root, node_path="Main")
+    if not listed.ok or listed.value is None:
+        return runtime.foundation.fail(listed.issues)
+    return runtime.foundation.ok(
+        InterfaceListAgentView(
+            node_path=listed.value.node_path,
+            interfaces=listed.value.interfaces,
+            summary=listed.value.summary,
+        ),
+        warnings=listed.issues,
+    )
 
 
 def _get_root_interface_run_context(runtime, ctx, args: NoArgs):
@@ -331,21 +454,20 @@ def _get_root_interface_run_context(runtime, ctx, args: NoArgs):
         return runtime.foundation.fail(listed.issues)
     run_context = flow_input.run_context
     state = getattr(flow, "state", None)
-    protected = set(listed.value.protected_names)
     return runtime.foundation.ok(
-        {
-            "start_kind": run_context.start_kind,
-            "run_objective": run_context.run_spec.run_objective,
-            "root_interface_policy": run_context.run_spec.root_interface_policy,
-            "resolved_source_files": list(run_context.resolved_source_files),
-            "source_index_delta_summary": getattr(flow_input.source_index_delta, "coverage_summary", None),
-            "additional_required_interface_names": [item.name for item in run_context.run_spec.additional_required_interfaces],
-            "previous_interface_names": sorted(getattr(state, "previous_interfaces", {})),
-            "protected_interface_names": sorted(protected),
-            "supplement_interface_names": sorted(item.name for item in listed.value.interfaces if item.name not in protected),
-            "current_candidate_interface_names": sorted(item.name for item in listed.value.interfaces),
-            "summary": "Current incremental root-interface preparation context.",
-        }
+        RootInterfaceRunContextView(
+            start_kind=run_context.start_kind,
+            run_objective=run_context.run_spec.run_objective,
+            root_interface_policy=run_context.run_spec.root_interface_policy,
+            source_files_in_run=list(run_context.resolved_source_files),
+            source_index_delta_summary=getattr(flow_input.source_index_delta, "coverage_summary", None),
+            explicit_required_additions=[
+                item.name for item in run_context.run_spec.additional_required_interfaces
+            ],
+            prior_interface_names=sorted(getattr(state, "previous_interfaces", {})),
+            summary="Current root-interface responsibility.",
+        ),
+        warnings=listed.issues,
     )
 
 
@@ -411,7 +533,146 @@ def _unbind_node_interface(runtime, ctx, args: InterfaceNameArgs):
 
 
 def _commit_scope_contract(runtime, ctx, args: NodeContractCommitArgs):
-    return runtime.node.commit_scope_contract(ctx.repo_root, scope_path=args.node_path, summary=args.summary)
+    committed = runtime.node.commit_scope_contract(ctx.repo_root, scope_path=args.node_path, summary=args.summary)
+    if not committed.ok or committed.value is None:
+        return runtime.foundation.fail(committed.issues)
+    gate = runtime.foundation.gate_passed(
+        "scope_commit",
+        summary="Scope commit guards passed.",
+    )
+    return runtime.foundation.ok(
+        ScopeContractCommitReceipt(
+            scope_path=args.node_path,
+            changed=True,
+            contract_version=committed.value.version,
+            contract_status=committed.value.version_status,
+            gate=gate,
+            summary=f"Committed {args.node_path} contract v{committed.value.version}.",
+        ),
+        warnings=committed.issues,
+    )
+
+
+def _get_scope_close_view(runtime, ctx, args: ScopePathArgs):
+    return runtime.validation_snapshot.get_scope_ready_view(ctx.repo_root, scope_path=args.scope_path)
+
+
+def _scope_export_decl_view(item) -> ScopeExportDeclView:
+    return ScopeExportDeclView(
+        index=item.index,
+        repository=item.repo,
+        node_path=item.node,
+        declaration_name=item.name,
+        requested_revision=item.revision,
+        resolved_revision=item.resolved_revision,
+        resolution_reason=item.resolution_reason,
+        valid=item.valid,
+        source_node=item.source,
+        issues=list(item.issues),
+    )
+
+
+def _list_scope_exports(runtime, ctx, args: ScopePathArgs):
+    listed = runtime.node.export.list_scope_exports(ctx.repo_root, scope_path=args.scope_path)
+    if not listed.ok or listed.value is None:
+        return runtime.foundation.fail(listed.issues)
+    exports = [_scope_export_decl_view(item) for item in listed.value]
+    return runtime.foundation.ok(
+        ScopeExportListView(
+            scope_path=args.scope_path,
+            count=len(exports),
+            exports=exports,
+            summary=f"Loaded {len(exports)} exports for {args.scope_path}.",
+        ),
+        warnings=listed.issues,
+    )
+
+
+def _add_scope_export(runtime, ctx, args: ScopeExportAddArgs):
+    updated = runtime.node.export.add_scope_export(
+        ctx.repo_root,
+        scope_path=args.scope_path,
+        decl_node=args.decl_node,
+        decl_name=args.decl_name,
+        decl_repo=args.decl_repo,
+        revision=args.revision,
+        bind_interface_name=args.bind_interface_name,
+    )
+    if not updated.ok or updated.value is None:
+        return runtime.foundation.fail(updated.issues)
+    exported = next(
+        (
+            item
+            for item in updated.value.exports
+            if item.node == args.decl_node
+            and item.name == args.decl_name
+            and item.revision == args.revision
+            and item.repo == args.decl_repo
+        ),
+        None,
+    )
+    if exported is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "scope_export_receipt_missing",
+                "Updated Scope export was not present in the post-mutation export view.",
+                object_ref=args.scope_path,
+            )
+        )
+    return runtime.foundation.ok(
+        ScopeExportMutationReceipt(
+            scope_path=args.scope_path,
+            operation="add",
+            changed=updated.value.changed,
+            export=_scope_export_decl_view(exported),
+            bound_interface_name=args.bind_interface_name,
+            summary=updated.value.summary,
+        ),
+        warnings=updated.issues,
+    )
+
+
+def _remove_scope_export(runtime, ctx, args: ScopeExportRemoveArgs):
+    before = runtime.node.export.list_scope_exports(ctx.repo_root, scope_path=args.scope_path)
+    if not before.ok or before.value is None:
+        return runtime.foundation.fail(before.issues)
+    if args.index >= len(before.value):
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "scope_export_index_out_of_range",
+                f"Scope export index is out of range: {args.index}",
+                object_ref=args.scope_path,
+                field="index",
+            )
+        )
+    removed = _scope_export_decl_view(before.value[args.index])
+    updated = runtime.node.export.remove_scope_export(ctx.repo_root, scope_path=args.scope_path, index=args.index)
+    if not updated.ok or updated.value is None:
+        return runtime.foundation.fail(updated.issues)
+    return runtime.foundation.ok(
+        ScopeExportMutationReceipt(
+            scope_path=args.scope_path,
+            operation="remove",
+            changed=updated.value.changed,
+            export=removed,
+            summary=updated.value.summary,
+        ),
+        warnings=[*before.issues, *updated.issues],
+    )
+
+
+def _list_node_interfaces(runtime, ctx, args: NodePathArgs):
+    listed = runtime.node.interface.list_interfaces(ctx.repo_root, node_path=args.node_path)
+    if not listed.ok or listed.value is None:
+        return runtime.foundation.fail(listed.issues)
+    return runtime.foundation.ok(
+        InterfaceListAgentView(
+            node_path=listed.value.node_path,
+            interfaces=listed.value.interfaces,
+            summary=listed.value.summary,
+        ),
+        warnings=listed.issues,
+    )
 
 
 def _list_recent_content_task_results(runtime, ctx, args: ContentTaskResultListArgs):
@@ -525,9 +786,9 @@ def _get_repo_ready_node_view(runtime, ctx, args: NoArgs):
     owner = _coordinator_release_context(runtime, ctx)
     if not owner.ok or owner.value is None:
         return runtime.foundation.fail(owner.issues)
-    node_view = runtime.node.get_repo_ready_node_view(ctx.repo_root)
-    if not node_view.ok or node_view.value is None:
-        return runtime.foundation.fail(node_view.issues)
+    ready_view = runtime.validation_snapshot.get_repo_ready_view(ctx.repo_root)
+    if not ready_view.ok or ready_view.value is None:
+        return runtime.foundation.fail(ready_view.issues)
     flow_id, base_release_id = owner.value
     from lean_constellation.flows.coordinator.release_runtime import check_repo_release_runtime_closeout
 
@@ -551,12 +812,13 @@ def _get_repo_ready_node_view(runtime, ctx, args: NoArgs):
         return runtime.foundation.fail(preview.issues)
     return runtime.foundation.ok(
         {
-            "main_scope": node_view.value.model_dump(mode="json"),
+            "repo_readiness": ready_view.value.model_dump(mode="json"),
             "candidate_gate": preview.value.gate.model_dump(mode="json"),
             "blocking_issue_kinds": list(preview.value.blocking_issue_kinds),
             "ready": bool(preview.value.gate.passed),
             "summary": preview.value.summary,
-        }
+        },
+        warnings=ready_view.issues,
     )
 
 
@@ -622,9 +884,6 @@ def _content_task_results_for_callback(runtime, ctx):
 
 
 def _content_task_result_item(result: ContentNodeTaskResult) -> ContentTaskResultItemView:
-    contract = f" contract version {result.contract_version}" if result.contract_version is not None else ""
-    reason = f" Reason: {result.reason}" if result.reason else ""
-    summary = result.summary or f"Content task {result.outcome}."
     return ContentTaskResultItemView(
         node_path=result.node_path,
         repo_key=result.repo_key,
@@ -632,8 +891,6 @@ def _content_task_result_item(result: ContentNodeTaskResult) -> ContentTaskResul
         contract_version=result.contract_version,
         reason=result.reason,
         summary=result.summary,
-        is_committable=True,
-        summary_for_agent=f"{result.node_path}{contract}: {summary}{reason}",
     )
 
 
@@ -663,24 +920,22 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.NODE_CONTRACT_READ_COORDINATOR},
             roles=all_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="get_node_tree",
-            description="Read the active Scope/Content node tree.",
+            description="Read the active node tree without internal node ids or contract-version bookkeeping.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
-            backing_service="node",
-            backing_component="node_tree",
-            backing_method="get_node_tree",
-            result_view="node_tree",
+            result_view="node_tree_overview",
             groups={AppGroup.NODE_TREE_COORDINATOR_READ},
             roles=all_roles,
+            handler=_get_node_tree,
         ),
         handler_tool(
             name="get_node",
             description="Read one Scope or Content node metadata entry.",
             args_model=NodePathArgs,
             capability=ToolCapability.READ,
-            result_view="node",
+            result_view="node_overview",
             groups={AppGroup.NODE_TREE_COORDINATOR_READ},
             roles=all_roles,
             handler=_get_node,
@@ -751,7 +1006,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_current_visible_node_boundaries",
-            description="List ready node boundaries visible to the current node.",
+            description="List ready same-repo nodes visible to the current node with compact public declarations; contract interfaces are not exposed here.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="visible_node_boundaries",
@@ -774,7 +1029,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add a visible ready node boundary as a dependency of the current node and report any generated Prelude file change.",
             args_model=CurrentNodeDependencyAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="current_node_contract_mutation",
+            result_view="node_dependency_mutation",
             groups={AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE},
             roles=write_roles,
             handler=_add_current_node_dep,
@@ -784,7 +1039,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove a current-node dependency by list index and report any generated Prelude file change.",
             args_model=IndexArgs,
             capability=ToolCapability.WRITE,
-            result_view="current_node_contract_mutation",
+            result_view="node_dependency_mutation",
             groups={AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE},
             roles=write_roles,
             handler=_remove_current_node_dep,
@@ -794,7 +1049,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add a visible ready node boundary as a dependency of the target node contract and report any generated Prelude file change.",
             args_model=NodeDependencyAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="current_node_contract_mutation",
+            result_view="node_dependency_mutation",
             groups={AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE},
             roles=coordinator_roles,
             handler=_add_node_dep,
@@ -804,7 +1059,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove a dependency from the target node contract by list index and report any generated Prelude file change.",
             args_model=NodeDependencyRemoveArgs,
             capability=ToolCapability.WRITE,
-            result_view="current_node_contract_mutation",
+            result_view="node_dependency_mutation",
             groups={AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE},
             roles=coordinator_roles,
             handler=_remove_node_dep,
@@ -814,7 +1069,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add a source or resource ref to the current node contract.",
             args_model=CurrentMaterialRefAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="current_node_contract",
+            result_view="current_node_material_mutation",
             groups={AppGroup.NODE_CONTRACT_MATERIAL_CURRENT_WRITE},
             roles=write_roles,
             handler=_add_current_material_ref,
@@ -824,7 +1079,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove a material ref from the current node contract by list index.",
             args_model=CurrentMaterialRefRemoveArgs,
             capability=ToolCapability.WRITE,
-            result_view="current_node_contract",
+            result_view="current_node_material_mutation",
             groups={AppGroup.NODE_CONTRACT_MATERIAL_CURRENT_WRITE},
             roles=write_roles,
             handler=_remove_current_material_ref,
@@ -834,7 +1089,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add a source or resource ref to the target node contract.",
             args_model=NodeMaterialRefAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="current_node_contract",
+            result_view="current_node_material_mutation",
             groups={AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE},
             roles=coordinator_roles,
             handler=_add_node_material_ref,
@@ -844,7 +1099,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove a material ref from the target node contract by list index.",
             args_model=NodeMaterialRefRemoveArgs,
             capability=ToolCapability.WRITE,
-            result_view="current_node_contract",
+            result_view="current_node_material_mutation",
             groups={AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE},
             roles=coordinator_roles,
             handler=_remove_node_material_ref,
@@ -871,17 +1126,15 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.NODE_CONTRACT_READ_COORDINATOR},
             roles=all_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="list_node_interfaces",
             description="List interfaces declared on a node contract.",
             args_model=NodePathArgs,
             capability=ToolCapability.READ,
-            backing_service="node",
-            backing_component="interface",
-            backing_method="list_interfaces",
-            result_view="node_interfaces",
+            result_view="interface_list",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_READ},
             roles=all_roles,
+            handler=_list_node_interfaces,
         ),
         handler_tool(
             name="list_root_interfaces",
@@ -908,7 +1161,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add a supplement interface to root Main.",
             args_model=RootInterfaceAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract",
+            result_view="interface_mutation",
             groups={AppGroup.ROOT_INTERFACE_WRITE},
             roles={"worker", "admin"},
             handler=_add_root_interface,
@@ -918,7 +1171,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Update a supplement root Main interface summary or statement hint.",
             args_model=RootInterfaceUpdateArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract",
+            result_view="interface_mutation",
             groups={AppGroup.ROOT_INTERFACE_WRITE},
             roles={"worker", "admin"},
             handler=_update_root_interface,
@@ -928,7 +1181,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove a supplement root Main interface.",
             args_model=RootInterfaceNameArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract",
+            result_view="interface_mutation",
             groups={AppGroup.ROOT_INTERFACE_WRITE},
             roles={"worker", "admin"},
             handler=_remove_root_interface,
@@ -938,7 +1191,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Add a non-protected interface to a node contract.",
             args_model=InterfaceAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract",
+            result_view="interface_mutation",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
             roles=coordinator_roles,
             handler=_add_interface,
@@ -948,7 +1201,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Update a non-protected interface summary or statement hint.",
             args_model=InterfaceUpdateArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract",
+            result_view="interface_mutation",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
             roles=coordinator_roles,
             handler=_update_interface,
@@ -958,7 +1211,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Remove a non-protected unbound interface from a node contract.",
             args_model=InterfaceNameArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract",
+            result_view="interface_mutation",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
             roles=coordinator_roles,
             handler=_remove_interface,
@@ -1035,69 +1288,62 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_READ},
             roles=all_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="list_scope_exports",
             description="List current exports on a Scope contract.",
             args_model=ScopePathArgs,
             capability=ToolCapability.READ,
-            backing_service="node",
-            backing_component="export",
-            backing_method="list_scope_exports",
-            result_view="scope_exports",
+            result_view="scope_export_list",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_READ},
             roles=all_roles,
+            handler=_list_scope_exports,
         ),
-        direct_tool(
+        handler_tool(
             name="add_scope_export",
-            description="Add a declaration to a Scope export list and optionally bind an interface.",
+            description="Add one declaration to a Scope export list and return only the mutation receipt.",
             args_model=ScopeExportAddArgs,
             capability=ToolCapability.WRITE,
-            backing_service="node",
-            backing_component="export",
-            backing_method="add_scope_export",
-            result_view="scope_exports",
+            result_view="scope_export_mutation_receipt",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
             roles=coordinator_roles,
+            handler=_add_scope_export,
         ),
-        direct_tool(
+        handler_tool(
             name="remove_scope_export",
-            description="Remove a Scope export by list index when no interface still depends on it.",
+            description="Remove one Scope export by list index and return only the mutation receipt.",
             args_model=ScopeExportRemoveArgs,
             capability=ToolCapability.WRITE,
-            backing_service="node",
-            backing_component="export",
-            backing_method="remove_scope_export",
-            result_view="scope_exports",
+            result_view="scope_export_mutation_receipt",
             groups={AppGroup.SCOPE_EXPORT_INTERFACE_WRITE},
             roles=coordinator_roles,
+            handler=_remove_scope_export,
         ),
         handler_tool(
             name="commit_scope_contract",
             description="Run the Scope close gate and commit the current open Scope contract when exports and interface bindings are stable.",
             args_model=NodeContractCommitArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract",
+            result_view="scope_contract_commit_receipt",
             groups={AppGroup.SCOPE_CONTRACT_COORDINATOR_COMMIT},
             roles=coordinator_roles,
             handler=_commit_scope_contract,
         ),
-        direct_tool(
+        handler_tool(
             name="get_scope_close_view",
-            description="Read scope close readiness, child readiness, exports, and interface state.",
+            description="Read compact Scope close readiness counts and blocking gate findings.",
             args_model=ScopePathArgs,
             capability=ToolCapability.READ,
-            backing_service="node",
-            backing_method="get_scope_close_view",
-            result_view="scope_close_view",
+            result_view="scope_ready_gate",
             groups={AppGroup.SCOPE_CLOSE_READ},
             roles=coordinator_roles,
+            handler=_get_scope_close_view,
         ),
         handler_tool(
             name="get_repo_ready_node_view",
             description="Preview whether the current repository state is a valid release candidate and return its blocking findings.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
-            result_view="repo_ready_node_view",
+            result_view="repo_release_candidate_readiness",
             groups={AppGroup.REPO_READY_READ},
             roles=coordinator_roles,
             handler=_get_repo_ready_node_view,

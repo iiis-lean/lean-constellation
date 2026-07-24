@@ -37,7 +37,6 @@ from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceResult
 from lean_constellation.services.material import (
     MaterialContextCitationView,
-    MaterialContextSourceBlockView,
     MaterialContextView,
     MaterialFileEntry,
     MaterialSearchHit,
@@ -48,7 +47,10 @@ from lean_constellation.services.material import (
     SourceCorpusManifestView,
     SourceIndexCommitView,
     SourceIndexOpenUpdateView,
+    SourceIndexOverviewMutationReceipt,
+    SourceIndexOverviewView,
     SourceIndexView,
+    SourceBlockListItemView,
     SourceBlockView,
     SourceFileIndexView,
     SourceLinkView,
@@ -122,11 +124,11 @@ class ResourceGetInput(OperatorInputModel):
 
 class MaterialContextInput(OperatorInputModel):
     query: str | None = None
-    include_source: bool = True
-    include_resources: bool = True
+    scope: Literal["current_node", "source", "resource", "all"] = "current_node"
+    node_path: str | None = None
     require_committed_source_index: bool = False
     regex: bool = False
-    limit: int = Field(default=20, ge=1, le=200)
+    limit: int | None = Field(default=None, ge=1, le=200)
 
 
 class SourceIndexOpenInput(OperatorInputModel):
@@ -340,15 +342,17 @@ class OperatorResourceView(StrictModel):
 class OperatorMaterialContextView(StrictModel):
     node_path: str | None = None
     query: str | None = None
-    include_source: bool
-    include_resources: bool
+    scope: Literal["current_node", "source", "resource", "all"]
+    source_index: SourceIndexOverviewView | None = None
     source_files: list[MaterialFileEntry] = Field(default_factory=list)
-    source_index_overview: str | None = None
-    source_blocks: list[MaterialContextSourceBlockView] = Field(default_factory=list)
+    source_blocks: list[SourceBlockListItemView] = Field(default_factory=list)
     resources: list[OperatorResourceSummaryView] = Field(default_factory=list)
-    node_owned_refs: list[MaterialContextCitationView] = Field(default_factory=list)
-    node_context_refs: list[MaterialContextCitationView] = Field(default_factory=list)
-    search_hits: list[MaterialSearchHit] = Field(default_factory=list)
+    owned_refs: list[MaterialContextCitationView] = Field(default_factory=list)
+    context_refs: list[MaterialContextCitationView] = Field(default_factory=list)
+    matches: list[MaterialSearchHit] = Field(default_factory=list)
+    returned_count: int
+    total_matching_count: int
+    truncated: bool
     summary: str
 
 
@@ -373,6 +377,7 @@ class SourceIndexMutationView(StrictModel):
         | SourceBlockView
         | SourceLinkView
         | SourceFileIndexView
+        | SourceIndexOverviewMutationReceipt
         | OperatorGateView
     )
     current_index_digest: str
@@ -490,15 +495,17 @@ def _material_context_view(value: MaterialContextView) -> OperatorMaterialContex
     return OperatorMaterialContextView(
         node_path=value.node_path,
         query=value.query,
-        include_source=value.include_source,
-        include_resources=value.include_resources,
+        scope=value.scope,
+        source_index=value.source_index,
         source_files=value.source_files,
-        source_index_overview=value.source_index_overview,
         source_blocks=value.source_blocks,
         resources=[_resource_summary_view(resource) for resource in value.resources],
-        node_owned_refs=value.node_owned_refs,
-        node_context_refs=value.node_context_refs,
-        search_hits=value.search_hits,
+        owned_refs=value.owned_refs,
+        context_refs=value.context_refs,
+        matches=value.matches,
+        returned_count=value.returned_count,
+        total_matching_count=value.total_matching_count,
+        truncated=value.truncated,
         summary=value.summary,
     )
 
@@ -710,9 +717,9 @@ class RepoMaterialOperatorApi:
             READ_REPO_MATERIAL,
             lambda ctx: ctx.runtime.material.get_material_context_view(
                 ctx.repo_root,
+                node_path=input_model.node_path,
                 query=input_model.query,
-                include_source=input_model.include_source,
-                include_resources=input_model.include_resources,
+                scope=input_model.scope,
                 require_committed_source_index=input_model.require_committed_source_index,
                 regex=input_model.regex,
                 limit=input_model.limit,

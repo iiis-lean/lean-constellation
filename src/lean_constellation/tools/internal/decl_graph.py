@@ -584,41 +584,49 @@ def _list_imported_repos(runtime, ctx, args: NoArgs):
 
 def _list_current_node_public_decls(runtime, ctx, args: NoArgs):
     del args
-    public = runtime.node.public_decl_access.list_node_public_decls(
+    result = runtime.node.public_decl_access.list_node_public_decl_items(
         ctx.repo_root,
         node_path=_node(ctx),
         actor_role=_actor_role(ctx),
         current_node_path=_maybe_node(ctx),
     )
-    if not public.ok or public.value is None:
-        return runtime.foundation.fail(public.issues)
-    return runtime.foundation.ok([_public_decl_item(runtime, ctx.repo_root, item) for item in public.value], warnings=public.issues)
+    if not result.ok or result.value is None:
+        return runtime.foundation.fail(result.issues)
+    return runtime.foundation.ok(
+        [item.model_dump(mode="json", exclude_none=True) for item in result.value],
+        warnings=result.issues,
+    )
 
 
 def _list_node_public_decls(runtime, ctx, args: NodePublicDeclListArgs):
-    public = runtime.node.public_decl_access.list_node_public_decls(
+    result = runtime.node.public_decl_access.list_node_public_decl_items(
         ctx.repo_root,
         node_path=args.node_path,
         actor_role=_actor_role(ctx),
         current_node_path=_maybe_node(ctx),
     )
-    if not public.ok or public.value is None:
-        return runtime.foundation.fail(public.issues)
-    return runtime.foundation.ok([_public_decl_item(runtime, ctx.repo_root, item) for item in public.value], warnings=public.issues)
+    if not result.ok or result.value is None:
+        return runtime.foundation.fail(result.issues)
+    return runtime.foundation.ok(
+        [item.model_dump(mode="json", exclude_none=True) for item in result.value],
+        warnings=result.issues,
+    )
 
 
 def _list_repo_public_decls(runtime, ctx, args: RepoPublicDeclListArgs):
     repo_key = runtime.foundation.layout.ensure_safe_key(args.repo_key)
-    public = runtime.node.public_decl_access.list_repo_public_decls(
+    result = runtime.node.public_decl_access.list_repo_public_decl_items(
         ctx.repo_root,
         repo_key=repo_key,
         actor_role=_actor_role(ctx),
         current_node_path=_maybe_node(ctx),
     )
-    if not public.ok or public.value is None:
-        return runtime.foundation.fail(public.issues)
-    provider_root = ctx.repo_root.parent / repo_key
-    return runtime.foundation.ok([_public_decl_item(runtime, provider_root, item) for item in public.value], warnings=public.issues)
+    if not result.ok or result.value is None:
+        return runtime.foundation.fail(result.issues)
+    return runtime.foundation.ok(
+        [item.model_dump(mode="json", exclude_none=True) for item in result.value],
+        warnings=result.issues,
+    )
 
 
 def _inspect_current_node_public_decl(runtime, ctx, args: DeclInspectArgs):
@@ -644,29 +652,19 @@ def _inspect_node_public_decl(runtime, ctx, args: NodePublicDeclInspectArgs):
                 object_ref=f"{args.node_path}:{args.decl_name}",
             )
         )
-    ref = public_decl.ref
-    revision = args.revision or public_decl.resolved_revision or ref.revision
-    decl, loaded = _load_decl_revision(
-        runtime,
+    result = runtime.node.public_decl_access.inspect_public_decl_item(
         ctx.repo_root,
-        node_path=ref.node,
-        decl_name=ref.name,
-        revision=revision,
+        public_decl=public_decl,
+        repository="current repo",
+        expose_node_path=True,
+        revision=args.revision,
     )
-    if not decl.ok or decl.value is None:
-        return runtime.foundation.fail(decl.issues)
-    if loaded is None or not loaded.ok or loaded.value is None:
-        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
-    item = _decl_revision_item(runtime, ctx.repo_root, decl=decl.value, revision=loaded.value)
-    item.update(
-        {
-            "anchor_ref": ref.model_dump(mode="json"),
-            "resolved_revision": public_decl.resolved_revision,
-            "resolution_reason": public_decl.resolution_reason,
-            "proof_policy_satisfied": public_decl.ready and not public_decl.stale,
-        }
+    if not result.ok or result.value is None:
+        return runtime.foundation.fail(result.issues)
+    return runtime.foundation.ok(
+        result.value.model_dump(mode="json", exclude_none=True),
+        warnings=result.issues,
     )
-    return runtime.foundation.ok(item)
 
 
 def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
@@ -688,30 +686,20 @@ def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
                 object_ref=f"{repo_key}:{args.decl_name}",
             )
         )
-    ref = public_decl.ref
     provider_root = ctx.repo_root.parent / repo_key
-    revision = args.revision or public_decl.resolved_revision or ref.revision
-    decl, loaded = _load_decl_revision(
-        runtime,
+    result = runtime.node.public_decl_access.inspect_public_decl_item(
         provider_root,
-        node_path=ref.node,
-        decl_name=ref.name,
-        revision=revision,
+        public_decl=public_decl,
+        repository=repo_key,
+        expose_node_path=False,
+        revision=args.revision,
     )
-    if not decl.ok or decl.value is None:
-        return runtime.foundation.fail(decl.issues)
-    if loaded is None or not loaded.ok or loaded.value is None:
-        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
-    item = _decl_revision_item(runtime, provider_root, decl=decl.value, revision=loaded.value)
-    item.update(
-        {
-            "anchor_ref": ref.model_dump(mode="json"),
-            "resolved_revision": public_decl.resolved_revision,
-            "resolution_reason": public_decl.resolution_reason,
-            "proof_policy_satisfied": public_decl.ready and not public_decl.stale,
-        }
+    if not result.ok or result.value is None:
+        return runtime.foundation.fail(result.issues)
+    return runtime.foundation.ok(
+        result.value.model_dump(mode="json", exclude_none=True),
+        warnings=result.issues,
     )
-    return runtime.foundation.ok(item)
 
 
 def _read_visible_decl_lean_file(runtime, ctx, args: VisibleDeclLeanFileArgs):
@@ -1007,7 +995,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Plan creation of a flat-key declaration in the current draft round; native module and Lean full-name identity are derived later.",
             args_model=DeclCreateArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="public_decl_detail",
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
             roles=plan_roles,
             handler=_create_decl,
@@ -1017,7 +1005,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Open a new declaration revision for an update in the current draft round.",
             args_model=DeclUpdateArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="public_decl_detail",
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
             roles=plan_roles,
             handler=_open_decl_update,
@@ -1027,7 +1015,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Plan deletion of a declaration in the current draft round.",
             args_model=DeclDeleteArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_revision",
+            result_view="public_decl_detail",
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
             roles=plan_roles,
             handler=_mark_decl_delete,
@@ -1206,7 +1194,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_visible_nodes",
-            description="List current-repo nodes whose public boundary is visible in the current context.",
+            description="List visible current-repo nodes in the current context with each node's complete compact public declaration list.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="visible_nodes",
@@ -1228,7 +1216,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_current_node_public_decls",
-            description="List public declarations exposed by the current node.",
+            description="List compact public declarations exposed by the current node.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="public_decls",
@@ -1248,7 +1236,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_node_public_decls",
-            description="List public declarations exposed by a visible current-repo node.",
+            description="List compact public declarations exposed by a visible current-repo node.",
             args_model=NodePublicDeclListArgs,
             capability=ToolCapability.READ,
             result_view="public_decls",
@@ -1270,7 +1258,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="list_repo_public_decls",
-            description="List public declarations exposed by a repository boundary visible in the current context.",
+            description="List compact repo-level public declarations from a provider repository visible in the current context; provider node inventory stays private.",
             args_model=RepoPublicDeclListArgs,
             capability=ToolCapability.READ,
             result_view="public_decls",

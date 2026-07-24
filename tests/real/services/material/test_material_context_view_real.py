@@ -104,8 +104,6 @@ def test_material_context_view_real_small_source_resource_node_fixture(tmp_path:
     context = material.get_material_context_view(repo_root, node_path="Main.Topic.Core", query="theorem")
 
     assert context.ok and context.value is not None
-    assert context.value.source_blocks[0].title == "Real theorem"
-    assert context.value.resources[0].resource_key == registered.value.resource.resource_key
-    assert context.value.node_owned_refs[0].path == "chapter.md"
-    assert context.value.node_context_refs[0].resource_key == registered.value.resource.resource_key
-    assert {hit.material_kind for hit in context.value.search_hits} == {"source", "resource"}
+    assert context.value.owned_refs[0].path == "chapter.md"
+    assert context.value.context_refs[0].resource_key == registered.value.resource.resource_key
+    assert {hit.material_kind for hit in context.value.matches} == {"source", "resource"}

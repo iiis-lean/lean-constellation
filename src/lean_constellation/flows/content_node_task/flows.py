@@ -443,7 +443,6 @@ def _content_plan_agent_step(
                 "task_mode": input_model.task_mode,
                 "used_preparation_kinds": list(state.used_preparation_kinds),
                 "decl_round_count": state.decl_round_count,
-                "context_brief": brief.model_dump(mode="json"),
             },
             prompt_mode="callback" if callback else "initial",
             prompt_override=(

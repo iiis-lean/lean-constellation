@@ -12,6 +12,11 @@ import anyio
 from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from agent_runtime_kit.agent.homes import (
+    MCP_RESULT_PROFILE_ENV,
+    MCP_RESULT_PROFILE_HTTP_HEADER,
+    MCP_RESULT_PROFILES,
+)
 
 from lean_constellation.mcp.server import LeanMcpViewEndpoint, create_mcp_server
 from lean_constellation.services.foundation import ServiceResult
@@ -75,16 +80,40 @@ def mcp_protocol_call_tool(
 ) -> types.CallToolResult:
     """Call a Lean MCP endpoint and convert the result to MCP protocol output."""
 
+    try:
+        result_profile = _resolve_result_profile(headers=headers, env=env)
+    except ValueError as exc:
+        return _call_tool_result(
+            {
+                "ok": False,
+                "summary": str(exc),
+                "issues": [
+                    {
+                        "kind": "mcp_result_profile_invalid",
+                        "message": str(exc),
+                    }
+                ],
+            },
+            is_error=True,
+            result_profile="dual",
+        )
     result = endpoint.call_tool(tool_name, arguments, headers=headers, env=env or {})
     if not result.ok or result.value is None:
         summary = _issues_summary(result)
         return _call_tool_result(
             {"ok": False, "summary": summary, "issues": _dump_issues(result)},
             is_error=True,
+            result_profile=result_profile,
         )
     tool_result = result.value
-    structured = tool_result.model_dump(mode="json")
-    return _call_tool_result(structured, is_error=not tool_result.ok)
+    structured = tool_result.model_dump(mode="json", exclude_none=True)
+    if result_profile == "content_only":
+        structured = _compact_agent_tool_result(structured)
+    return _call_tool_result(
+        structured,
+        is_error=not tool_result.ok,
+        result_profile=result_profile,
+    )
 
 
 async def run_mcp_stdio_server(runtime: LeanRuntimeServices, *, view_key: str) -> None:
@@ -124,12 +153,65 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _call_tool_result(structured: dict[str, Any], *, is_error: bool) -> types.CallToolResult:
+def _call_tool_result(
+    structured: dict[str, Any],
+    *,
+    is_error: bool,
+    result_profile: str,
+) -> types.CallToolResult:
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=json.dumps(structured, ensure_ascii=False, sort_keys=True))],
-        structuredContent=structured,
+        structuredContent=structured if result_profile == "dual" else None,
         isError=is_error,
     )
+
+
+def _compact_agent_tool_result(structured: dict[str, Any]) -> dict[str, Any]:
+    """Remove representation-only duplication from Agent Home content-only results."""
+
+    compact = dict(structured)
+    if compact.get("issues") == []:
+        compact.pop("issues", None)
+    value = compact.get("value")
+    if isinstance(value, dict) and value.get("summary") == compact.get("summary"):
+        compact_value = dict(value)
+        compact_value.pop("summary", None)
+        compact["value"] = compact_value
+    return compact
+
+
+def _resolve_result_profile(
+    *,
+    headers: dict[str, str] | None,
+    env: dict[str, str] | None,
+) -> str:
+    header_profile = next(
+        (
+            str(value)
+            for key, value in (headers or {}).items()
+            if str(key).lower() == MCP_RESULT_PROFILE_HTTP_HEADER
+        ),
+        None,
+    )
+    env_profile = (env or {}).get(MCP_RESULT_PROFILE_ENV)
+    normalized_header = _normalize_result_profile(header_profile)
+    normalized_env = _normalize_result_profile(env_profile)
+    if normalized_header and normalized_env and normalized_header != normalized_env:
+        raise ValueError(
+            "MCP result profile header and environment disagree: "
+            f"{normalized_header!r} != {normalized_env!r}"
+        )
+    return normalized_header or normalized_env or "dual"
+
+
+def _normalize_result_profile(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized not in MCP_RESULT_PROFILES:
+        supported = ", ".join(sorted(MCP_RESULT_PROFILES))
+        raise ValueError(f"unsupported MCP result profile: {value!r}; expected one of {supported}")
+    return normalized
 
 
 def _issues_summary(result: ServiceResult[Any]) -> str:
@@ -139,7 +221,7 @@ def _issues_summary(result: ServiceResult[Any]) -> str:
 
 
 def _dump_issues(result: ServiceResult[Any]) -> list[dict[str, Any]]:
-    return [issue.model_dump(mode="json") for issue in result.issues]
+    return [issue.model_dump(mode="json", exclude_none=True) for issue in result.issues]
 
 
 def _current_request_headers(protocol_server: Server) -> dict[str, str]:

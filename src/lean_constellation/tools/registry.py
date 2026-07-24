@@ -8,7 +8,17 @@ from lean_constellation.services.foundation import MutationSummaryView, ServiceR
 from lean_constellation.services.runtime import LeanRuntimeServices
 from lean_constellation.services.tool_facade import SubmitBehavior, ToolGroupSpec, ToolSpec, ToolViewSpec
 from lean_constellation.tools.groups import build_application_tool_groups as _build_groups
-from lean_constellation.tools.internal import adapter, decl_graph, decl_stage, mathlib, node_contract, repo_preparation, resource, source_material
+from lean_constellation.tools.internal import (
+    adapter,
+    content_preparation,
+    decl_graph,
+    decl_stage,
+    mathlib,
+    node_contract,
+    repo_preparation,
+    resource,
+    source_material,
+)
 from lean_constellation.tools.toolkit import formal_diagnostics
 from lean_constellation.tools.views import build_application_tool_views as _build_views
 
@@ -22,6 +32,7 @@ def build_application_tool_specs() -> list[ToolSpec]:
         source_material,
         adapter,
         resource,
+        content_preparation,
         node_contract,
         mathlib,
         decl_graph,

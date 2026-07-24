@@ -7,24 +7,24 @@ from lean_constellation.tools import build_application_tool_specs, build_submit_
 EXPECTED_SURFACE_COUNTS = {
     "RepoFormatDiscoveryAgent": (6, 12, 1, 2, 0),
     "SourceCorpusPrepareAgent": (3, 7, 1, 2, 1),
-    "SourceIndexBuilderAgent": (4, 21, 1, 1, 0),
-    "SourceIndexReviewerAgent": (3, 10, 1, 1, 0),
-    "RootInterfacePrepareAgent": (5, 11, 1, 1, 0),
+    "SourceIndexBuilderAgent": (4, 25, 1, 1, 0),
+    "SourceIndexReviewerAgent": (3, 14, 1, 1, 0),
+    "RootInterfacePrepareAgent": (6, 15, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
-    "ResourceCuratorAgent": (8, 21, 1, 4, 2),
-    "CoordinatorAgent": (35, 85, 2, 4, 19),
-    "ContentPlanAgent": (28, 77, 3, 6, 17),
+    "ResourceCuratorAgent": (8, 24, 1, 4, 2),
+    "CoordinatorAgent": (36, 89, 2, 4, 19),
+    "ContentPlanAgent": (29, 82, 3, 6, 17),
     "NodeDirDependencyReconAgent": (5, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
-    "ResourceReconAgent": (8, 19, 2, 3, 4),
-    "StatementNLWorkerAgent": (14, 50, 1, 2, 4),
-    "StatementNLReviewerAgent": (14, 43, 1, 1, 2),
-    "StatementFormalWorkerAgent": (20, 57, 1, 2, 8),
-    "StatementFormalReviewerAgent": (15, 44, 1, 1, 2),
-    "ProofNLWorkerAgent": (21, 65, 1, 2, 7),
-    "ProofNLReviewerAgent": (18, 48, 1, 1, 2),
-    "ProofFormalWorkerAgent": (23, 66, 1, 2, 8),
-    "ProofFormalReviewerAgent": (17, 47, 1, 1, 2),
+    "ResourceReconAgent": (8, 22, 2, 3, 4),
+    "StatementNLWorkerAgent": (14, 53, 1, 2, 4),
+    "StatementNLReviewerAgent": (14, 46, 1, 1, 2),
+    "StatementFormalWorkerAgent": (20, 60, 1, 2, 8),
+    "StatementFormalReviewerAgent": (15, 47, 1, 1, 2),
+    "ProofNLWorkerAgent": (21, 68, 1, 2, 7),
+    "ProofNLReviewerAgent": (18, 51, 1, 1, 2),
+    "ProofFormalWorkerAgent": (23, 69, 1, 2, 8),
+    "ProofFormalReviewerAgent": (17, 50, 1, 1, 2),
 }
 
 
@@ -156,8 +156,8 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
     assert len(report.skills) == 19
-    assert len(report.application_group_keys) == 35
-    assert len(report.application_tools) == 85
+    assert len(report.application_group_keys) == 36
+    assert len(report.application_tools) == 89
     assert "read_visible_decl_lean_file" in tools
     assert len(report.submit_group_keys) == 2
     assert len(report.submit_tools) == 4
@@ -392,6 +392,14 @@ def test_source_prepare_and_resource_curator_keep_acquisition_boundaries() -> No
     assert resource_write_tools.isdisjoint(source_tools)
     assert resource_write_tools <= curator_tools
     assert source_write_tools.isdisjoint(curator_tools)
-    assert {"scan_source_corpus", "search_source_text", "search_resource_text", "get_source_index"} <= curator_tools
+    assert {
+        "scan_source_corpus",
+        "search_source_text",
+        "search_resource_text",
+        "get_source_index_overview",
+        "list_source_blocks",
+        "get_source_block",
+    } <= curator_tools
+    assert "get_source_index" not in curator_tools
     assert {"get_resource_draft", "check_resource_draft"} <= curator_tools
     assert {"allocate_resource_draft", "abandon_resource_draft"}.isdisjoint(curator_tools)

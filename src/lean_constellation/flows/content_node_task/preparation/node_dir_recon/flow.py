@@ -101,7 +101,6 @@ class NodeDirDependencyReconFlow(LeanBusinessFlow):
                             "node_path": input_model.node_path,
                             "contract_version": input_model.contract_version,
                             "objective": input_model.objective,
-                            "prior_preparation_context": prior_context,
                         },
                         prompt_override=(
                             f"{_recon_prompt('node dependency', input_model)}\n\n"

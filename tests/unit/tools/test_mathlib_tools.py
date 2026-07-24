@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lean_constellation.tools import build_application_tool_specs
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
 
@@ -42,3 +43,23 @@ def test_mathlib_groups_expose_expected_tools() -> None:
     assert_group_contains("node_mathlib_hint_read", {"get_current_node_mathlib_hints", "validate_current_node_mathlib_hints"})
     assert_group_contains("node_mathlib_hint_write", {"add_current_mathlib_hints"})
     assert_group_contains("node_contract_mathlib_coordinator_write", {"add_node_mathlib_module_hint", "add_node_mathlib_decl_hint"})
+
+
+def test_mathlib_mutation_result_views_match_compact_receipts() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    for name in {
+        "record_mathlib_module",
+        "record_mathlib_decl",
+        "add_mathlib_module_important_decl",
+    }:
+        assert specs[name].result_view == "mathlib_entry_mutation_receipt"
+    for name in {
+        "remove_current_mathlib_module_hint",
+        "remove_current_mathlib_decl_hint",
+        "add_node_mathlib_module_hint",
+        "remove_node_mathlib_module_hint",
+        "add_node_mathlib_decl_hint",
+        "remove_node_mathlib_decl_hint",
+    }:
+        assert specs[name].result_view == "node_mathlib_hint_mutation"

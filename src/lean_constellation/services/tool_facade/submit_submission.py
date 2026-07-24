@@ -10,7 +10,6 @@ from agent_runtime_kit.runtime.mcp_tool_gateway import RuntimeToolContextError, 
 from pydantic import Field, SerializeAsAny
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.flows.common.submissions import dump_submission_for_view
 from lean_constellation.services.foundation import ServiceIssue, ServiceResult, ToolResultView
 from lean_constellation.services.tool_facade.context_resolver import ToolExecutionContext
 from lean_constellation.services.tool_facade.tool_view import ToolViewComponent
@@ -29,7 +28,8 @@ class PreparedSubmissionView(StrictModel):
 
 class SubmissionAckView(StrictModel):
     accepted: bool
-    submission: dict[str, Any]
+    submission_id: str
+    submission_type: str
     message: str
     dispatch_request_count: int = 0
 
@@ -153,7 +153,8 @@ class SubmitSubmissionComponent:
         return self.runtime.foundation.ok(
             SubmissionAckView(
                 accepted=True,
-                submission=dump_submission_for_view(submission),
+                submission_id=submission.submission_id,
+                submission_type=submission.submission_type,
                 message=self.STOP_MESSAGE,
                 dispatch_request_count=len(submission.requests) if isinstance(submission, ChildFlowDispatchSubmission) else 0,
             )

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import json
+
+from agent_runtime_kit.agent.homes import MCP_RESULT_PROFILE_ENV, MCP_RESULT_PROFILE_HTTP_HEADER
 from lean_constellation.mcp import create_mcp_server
-from lean_constellation.mcp.stdio import create_mcp_protocol_server, mcp_protocol_call_tool, mcp_protocol_tools
+from lean_constellation.mcp.stdio import (
+    _compact_agent_tool_result,
+    create_mcp_protocol_server,
+    mcp_protocol_call_tool,
+    mcp_protocol_tools,
+)
 from tests.unit.mcp._helpers import FakeSubmissionGateway, make_mcp_runtime, runtime_env
 
 
@@ -53,3 +61,104 @@ def test_stdio_bridge_converts_tool_result_for_success_and_gate_failure(tmp_path
     assert submitted.isError is False
     assert submitted.structuredContent["ok"] is True
     assert len(gateway.accepted) == 1
+
+
+def test_stdio_bridge_content_only_preserves_complete_success_and_error_payloads(tmp_path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = make_mcp_runtime(gateway)
+    server = create_mcp_server(runtime, view_keys=["repo_format_discovery_submit"])
+    endpoint = server.value.endpoint("repo_format_discovery_submit").value
+    env = {
+        **runtime_env(
+            tmp_path,
+            view="repo_format_discovery_submit",
+            agent_type="RepoFormatDiscoveryAgent",
+            role="coordinator",
+            agent_id="agent_content_only",
+        ),
+        MCP_RESULT_PROFILE_ENV: "content_only",
+    }
+
+    rejected = mcp_protocol_call_tool(
+        endpoint,
+        "submit_adapter_repo_choice",
+        {"git_url": "https://example.com/project", "evidence_summary": "Remote probe found a lakefile."},
+        env=env,
+    )
+    submitted = mcp_protocol_call_tool(
+        endpoint,
+        "submit_native_repo_choice",
+        {"summary": "Use native.", "searched_targets": [], "rejected_candidates": []},
+        env=env,
+    )
+
+    assert rejected.isError is True
+    assert rejected.structuredContent is None
+    rejected_payload = json.loads(rejected.content[0].text)
+    assert rejected_payload["ok"] is False
+    assert rejected_payload["issues"][0]["kind"] == "git_url_invalid"
+    assert submitted.isError is False
+    assert submitted.structuredContent is None
+    submitted_payload = json.loads(submitted.content[0].text)
+    assert submitted_payload["ok"] is True
+    assert "issues" not in submitted_payload
+    assert "submission" not in submitted_payload["value"]
+    assert "agent_view" not in submitted_payload["value"]
+    assert submitted_payload["value"]["submission_type"] == "repo_format_native_choice"
+
+
+def test_content_only_compaction_removes_only_representation_duplicates() -> None:
+    compact = _compact_agent_tool_result(
+        {
+            "ok": True,
+            "summary": "Loaded current truth.",
+            "issues": [],
+            "value": {
+                "summary": "Loaded current truth.",
+                "items": [{"name": "main"}],
+            },
+        }
+    )
+    distinct = _compact_agent_tool_result(
+        {
+            "ok": True,
+            "summary": "Mutation completed.",
+            "issues": [{"kind": "warning", "message": "Review the result."}],
+            "value": {
+                "summary": "The managed projection changed.",
+                "changed": True,
+            },
+        }
+    )
+
+    assert compact == {
+        "ok": True,
+        "summary": "Loaded current truth.",
+        "value": {"items": [{"name": "main"}]},
+    }
+    assert distinct["issues"] == [{"kind": "warning", "message": "Review the result."}]
+    assert distinct["value"]["summary"] == "The managed projection changed."
+
+
+def test_stdio_bridge_result_profile_header_and_invalid_configuration() -> None:
+    runtime = make_mcp_runtime()
+    server = create_mcp_server(runtime, view_keys=["repo_format_discovery_submit"])
+    endpoint = server.value.endpoint("repo_format_discovery_submit").value
+
+    content_only = mcp_protocol_call_tool(
+        endpoint,
+        "missing_tool",
+        {},
+        headers={MCP_RESULT_PROFILE_HTTP_HEADER.upper(): "content_only"},
+    )
+    invalid = mcp_protocol_call_tool(
+        endpoint,
+        "missing_tool",
+        {},
+        headers={MCP_RESULT_PROFILE_HTTP_HEADER: "summary"},
+    )
+
+    assert content_only.structuredContent is None
+    assert json.loads(content_only.content[0].text)["ok"] is False
+    assert invalid.structuredContent is not None
+    assert invalid.structuredContent["issues"][0]["kind"] == "mcp_result_profile_invalid"

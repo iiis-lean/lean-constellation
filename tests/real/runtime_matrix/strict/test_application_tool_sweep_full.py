@@ -27,9 +27,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 258
+    assert len(cases) == 264
     assert len(implemented_tool_cases()) == 196
-    assert len(pending_tool_cases()) == 62
+    assert len(pending_tool_cases()) == 68
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -79,8 +79,9 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Preparation input returned the repo goal.",
     )
-    assert prep.value["input"]["goal"]
-    requirement_refs = prep.value["input"].get("requirement_refs") or []
+    assert prep.value["goal"]
+    assert "input" not in prep.value
+    requirement_refs = prep.value.get("requirement_refs") or []
 
     scoped_requirements = call_tool_with_evidence(
         server,
@@ -103,7 +104,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
             recorder=evidence_recorder,
             assertion_summary="Scoped preparation requirement detail returned one current ref.",
         )
-        assert requirement_detail.value["requirement"]["name"] == ref["requirement_name"]
+        assert requirement_detail.value["name"] == ref["requirement_name"]
+        assert "requirement" not in requirement_detail.value
     else:
         call_tool_with_evidence(
             server,
@@ -226,7 +228,10 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Coordinator workspace inspection saw ready provider.",
     )
-    assert any(item["repo_key"] == "ReadyAnalysis" for item in workspace.value["ready_provider_repos"])
+    assert any(
+        item["repo_key"] == "ReadyAnalysis" and item["provider_ready"] is True
+        for item in workspace.value["repositories"]
+    )
 
     ready_providers = call_tool_with_evidence(
         server,
@@ -362,7 +367,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Node tree returned active Topic nodes.",
     )
-    assert any(item["path"] == "Main.Topic.Core" for item in node_tree.value["nodes"])
+    assert any(item["node_path"] == "Main.Topic.Core" for item in node_tree.value["nodes"])
 
     node = call_tool_with_evidence(
         server,
@@ -373,7 +378,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Node metadata lookup returned Main.Topic.Core.",
     )
-    assert node.value["path"] == "Main.Topic.Core"
+    assert node.value["node_path"] == "Main.Topic.Core"
 
     node_contract = call_tool_with_evidence(
         server,
@@ -673,7 +678,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Scope export list returned a structured result.",
     )
-    assert exports.value["items"] == []
+    assert exports.value["exports"] == []
 
     scope_close = call_tool_with_evidence(
         server,
@@ -764,12 +769,14 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         server,
         "resource_curator",
         "get_material_context",
-        {"query": "Runtime Matrix", "include_source": True, "include_resources": True, "regex": False, "limit": 10},
+        {"query": "Runtime Matrix", "scope": "all", "regex": False, "limit": 10},
         runtime_context=_ctx(ws.provider_repo, view="resource_curator", agent_type="ResourceCuratorAgent", node_path="Main.Core"),
         recorder=evidence_recorder,
         assertion_summary="Material context returned resource/source context.",
     )
-    assert material_context.value["repo_root"] == str(ws.provider_repo)
+    assert material_context.value["scope"] == "all"
+    assert material_context.value["query"] == "Runtime Matrix"
+    assert material_context.value["returned_count"] <= 10
 
     duplicate = call_tool_with_evidence(
         server,
@@ -802,7 +809,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Resource library lookup returned active resource.",
     )
-    assert resource.value["resource"]["resource_key"] == active_resource_key
+    assert resource.value["resource_key"] == active_resource_key
+    assert "resource" not in resource.value
 
     resource_range = call_tool_with_evidence(
         server,
@@ -835,7 +843,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Resource draft lookup returned draft.",
     )
-    assert draft_view.value["draft"]["draft_id"] == existing_draft_id
+    assert draft_view.value["draft_id"] == existing_draft_id
+    assert "draft" not in draft_view.value
 
     draft_gate = call_tool_with_evidence(
         server,
@@ -965,7 +974,9 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Source block was updated.",
     )
-    assert updated_block.value["title"] == "Strict theorem updated"
+    assert updated_block.value["operation"] == "update"
+    assert updated_block.value["block_id"] == "b_0001"
+    assert updated_block.value["changed_fields"] == ["summary", "title"]
 
     block_with_ref = call_tool_with_evidence(
         server,
@@ -976,7 +987,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Source block ref was added.",
     )
-    assert block_with_ref.value["refs"][0]["ref_id"] == "ref_0001"
+    assert block_with_ref.value["operation"] == "add"
+    assert block_with_ref.value["ref_id"] == "ref_0001"
 
     link = call_tool_with_evidence(
         server,
@@ -1104,7 +1116,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Source block ref was removed.",
     )
-    assert removed_ref.value["refs"] == []
+    assert removed_ref.value["operation"] == "remove"
+    assert removed_ref.value["ref_id"] == "ref_0001"
 
     restore_with_evidence(
         ws.admin,
@@ -1222,7 +1235,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Checked Mathlib declaration entry was recorded.",
     )
-    assert recorded_decl.value["name"] == "Nat.add_assoc"
+    assert recorded_decl.value["entry_kind"] == "declaration"
+    assert recorded_decl.value["declaration"] == "Nat.add_assoc"
 
     important_decl = call_tool_with_evidence(
         server,
@@ -1233,7 +1247,8 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Important declaration was added to the Mathlib module entry.",
     )
-    assert "Nat.add_comm" in important_decl.value["important_decl_names"]
+    assert important_decl.value["operation"] == "add_important_declaration"
+    assert important_decl.value["added_important_declaration"] == "Nat.add_comm"
 
     ingested = call_tool_with_evidence(
         server,
@@ -1827,7 +1842,8 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter formal statement was written.",
     )
-    assert statement_formal.value["revision"]["statement"]["formal"]["code"]
+    assert statement_formal.value["section"] == "statement_formal"
+    assert statement_formal.value["changed"] is True
     matched_by_upstream = call_tool_with_evidence(
         server,
         "adapter_repo_import",
@@ -1851,7 +1867,8 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter natural-language statement was written.",
     )
-    assert statement_nl.value["revision"]["statement"]["nl"]["text"]
+    assert statement_nl.value["section"] == "statement_nl"
+    assert statement_nl.value["changed"] is True
 
     statement_origin = call_tool_with_evidence(
         server,
@@ -1866,7 +1883,8 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Statement origin text was recorded.",
     )
-    assert statement_origin.value["revision"]["statement"]["nl"]["origin"]
+    assert statement_origin.value["section"] == "statement"
+    assert statement_origin.value["operation"] == "add"
 
     statement_dep = call_tool_with_evidence(
         server,
@@ -1877,7 +1895,9 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Statement dependency was added.",
     )
-    assert "support" in str(statement_dep.value["revision"]["statement"]["deps"])
+    assert statement_dep.value["section"] == "statement"
+    assert statement_dep.value["operation"] == "add"
+    assert statement_dep.value["dependency"]["ref"]["name"] == "support"
 
     removed_statement_dep = call_tool_with_evidence(
         server,
@@ -1888,7 +1908,9 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Statement dependency was removed.",
     )
-    assert "support" not in str(removed_statement_dep.value["revision"]["statement"]["deps"])
+    assert removed_statement_dep.value["section"] == "statement"
+    assert removed_statement_dep.value["operation"] == "remove"
+    assert removed_statement_dep.value["dependency"]["ref"]["name"] == "support"
 
     proof_formal = call_tool_with_evidence(
         server,
@@ -1902,7 +1924,8 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter formal proof was written.",
     )
-    assert proof_formal.value["revision"]["proof"]["formal"]["code"]
+    assert proof_formal.value["section"] == "proof_formal"
+    assert proof_formal.value["changed"] is True
 
     proof_nl = call_tool_with_evidence(
         server,
@@ -1913,7 +1936,8 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Main adapter natural-language proof was written.",
     )
-    assert proof_nl.value["revision"]["proof"]["nl"]["text"]
+    assert proof_nl.value["section"] == "proof_nl"
+    assert proof_nl.value["changed"] is True
 
     proof_origin = call_tool_with_evidence(
         server,
@@ -1924,7 +1948,8 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Proof origin text was recorded.",
     )
-    assert proof_origin.value["revision"]["proof"]["nl"]["origin"]
+    assert proof_origin.value["section"] == "proof"
+    assert proof_origin.value["operation"] == "add"
 
     proof_dep = call_tool_with_evidence(
         server,
@@ -1935,7 +1960,9 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Proof dependency was added.",
     )
-    assert "support" in str(proof_dep.value["revision"]["proof"]["deps"])
+    assert proof_dep.value["section"] == "proof"
+    assert proof_dep.value["operation"] == "add"
+    assert proof_dep.value["dependency"]["ref"]["name"] == "support"
 
     removed_proof_dep = call_tool_with_evidence(
         server,
@@ -1946,7 +1973,9 @@ def _run_adapter_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, recorder: E
         recorder=recorder,
         assertion_summary="Proof dependency was removed.",
     )
-    assert "support" not in str(removed_proof_dep.value["revision"]["proof"]["deps"])
+    assert removed_proof_dep.value["section"] == "proof"
+    assert removed_proof_dep.value["operation"] == "remove"
+    assert removed_proof_dep.value["dependency"]["ref"]["name"] == "support"
 
     decls = call_tool_with_evidence(
         server,

@@ -306,10 +306,7 @@ class MCPWrapperComponent:
                 ToolResultView(
                     ok=True,
                     summary=ack.value.message,
-                    value={
-                        **ack.value.model_dump(mode="json"),
-                        "agent_view": prepared.value.agent_view,
-                    },
+                    value=ack.value.model_dump(mode="json"),
                 )
             )
         tool_view = self.format_tool_result(core_result, view_kind=spec.result_view)

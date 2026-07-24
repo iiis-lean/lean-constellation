@@ -178,12 +178,7 @@ class ResourceCurationFlow(LeanBusinessFlow):
                         bind_created_agent_to="step",
                         variables={
                             "repo_key": input_model.repo_key,
-                            "target_kind": input_model.target.kind,
-                            "target": input_model.target.target,
-                            "caller_kind": input_model.caller_context.caller_kind,
-                            "node_path": input_model.caller_context.node_path,
                             "resource_draft_id": state.active_resource_draft_key,
-                            "resource_draft_root": state.draft_root,
                         },
                         prompt_override=_resource_curator_prompt(input_model, state),
                         env_overrides={
@@ -369,6 +364,9 @@ def _resource_curator_prompt(input_model: ResourceCurationInput, state: Resource
     parts = [
         f"Curate the explicit resource target {input_model.target.kind}: {input_model.target.target}.",
         f"Caller kind: {input_model.caller_context.caller_kind}.",
+        "Current working directory: the active resource draft.",
+        "Allowed write boundary: this directory and its descendants.",
+        "Logical files: README.md, original/, normalized/.",
     ]
     if input_model.caller_context.node_path:
         parts.append(f"Caller node: {input_model.caller_context.node_path}.")

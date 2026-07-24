@@ -35,8 +35,8 @@ def test_reviewer_rejection_retries_worker_until_budget_is_exhausted(tmp_path: P
         assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_reviewer"
         if attempt == 0:
             worker_start = runtime.agent_service.start_records[-1]
-            assert "Target change metadata:" in worker_start.prompt
-            assert "objective=Create main_result." in worker_start.prompt
+            assert "Assigned declarations:" in worker_start.prompt
+            assert "Objective: Create main_result." in worker_start.prompt
             assert "content-contract-reading" in worker_start.prompt
             assert "decl-dependency-origin-curation" in worker_start.prompt
             assert "context_brief" not in worker_start.variables
@@ -47,7 +47,7 @@ def test_reviewer_rejection_retries_worker_until_budget_is_exhausted(tmp_path: P
         if attempt == 0:
             reviewer_start = runtime.agent_service.start_records[-1]
             assert "This is a read-only review role" in reviewer_start.prompt
-            assert "Target change metadata:" in reviewer_start.prompt
+            assert "Assigned declarations:" in reviewer_start.prompt
 
         gate_step_id = advance_and_run(runtime, flow_id)
         gate_step = runtime.flow_service.get_step(gate_step_id)

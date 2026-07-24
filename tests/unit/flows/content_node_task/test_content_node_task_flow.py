@@ -247,13 +247,21 @@ Consumer-side formal context
     assert runtime.agent_service.start_records[0].agent_id == runtime.agent_service.start_records[1].agent_id
     assert runtime.agent_service.start_records[0].workdir == _expected_node_workdir(repo_root)
     assert runtime.agent_service.start_records[1].workdir == _expected_node_workdir(repo_root)
-    assert "content-plan-proved-full-graph-mode" in (runtime.agent_service.start_records[0].prompt or "")
-    assert "content-preparation-orchestration" in (runtime.agent_service.start_records[1].prompt or "")
-    assert "decl-strategy-planning" in (runtime.agent_service.start_records[1].prompt or "")
+    initial_prompt = runtime.agent_service.start_records[0].prompt or ""
+    callback_prompt = runtime.agent_service.start_records[1].prompt or ""
+    assert "content-plan-proved-full-graph-mode" in initial_prompt
+    assert initial_prompt.count("Repository:") == 1
+    assert "Current assignment" not in initial_prompt
+    assert "Current result summary" not in initial_prompt
+    assert "Current node state" in initial_prompt
+    assert "content-preparation-orchestration" in callback_prompt
+    assert "decl-strategy-planning" in callback_prompt
+    assert "Current node state" in callback_prompt
+    assert "- Work mode:" not in callback_prompt
     assert "reuse its verified findings without broad rediscovery" in (
-        runtime.agent_service.start_records[1].prompt or ""
+        callback_prompt
     )
-    assert "Node deps found." in (runtime.agent_service.start_records[1].prompt or "")
+    assert "Node deps found." in callback_prompt
 
 
 def test_content_node_task_plan_agent_uses_native_project_projection_workdir(tmp_path: Path) -> None:

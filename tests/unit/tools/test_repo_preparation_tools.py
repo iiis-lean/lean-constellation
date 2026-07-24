@@ -64,3 +64,27 @@ def test_requirement_control_tools_are_admin_only() -> None:
     assert specs["attach_requirement_provider_dependency"].allowed_roles == {"admin"}
     assert specs["get_current_repo_requirement"].allowed_roles == {"coordinator", "admin"}
     assert specs["get_current_repo_run_context"].allowed_roles == {"coordinator", "admin"}
+
+
+def test_repo_preparation_agent_views_are_compact_and_named_by_shape() -> None:
+    from lean_constellation.tools import build_application_tool_specs
+
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    assert specs["get_preparation_input"].result_view == "repo_preparation_input_detail"
+    assert (
+        specs["list_preparation_requirements"].result_view
+        == "repo_preparation_requirement_list"
+    )
+    assert (
+        specs["get_preparation_requirement"].result_view
+        == "repo_preparation_requirement_detail"
+    )
+    assert (
+        specs["search_github_lean_repositories"].result_view
+        == "github_repo_candidate_list"
+    )
+    assert (
+        specs["inspect_github_lean_repository"].result_view
+        == "github_repo_candidate_detail"
+    )

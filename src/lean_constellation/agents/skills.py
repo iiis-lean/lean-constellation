@@ -653,9 +653,13 @@ Use this Skill when the current Coordinator turn follows one or more terminal Co
 
 ## Read The Complete Callback Batch
 
-Call `list_recent_content_task_results` before acting. Process every result in the callback batch. Use `inspect_content_task_result` when the list view is insufficient for a node.
+The callback prompt is the authoritative receipt for the current batch. Process every child result shown there without
+calling the history tools merely to repeat it. Use `list_recent_content_task_results` only when recovering an older
+callback or when the current callback receipt is unavailable; `inspect_content_task_result` is the same historical
+projection for one selected node, not a source of additional declaration evidence.
 
-For each result, identify the node path, ready/blocked/failed outcome, returned contract version, summary, reason, and any current state that must be inspected before commitment.
+For each current result, identify the node path, ready/blocked/failed outcome, returned contract version, summary,
+reason, and any current state that must be inspected before commitment.
 
 ## Inspect Current State Selectively
 
@@ -945,7 +949,7 @@ Either readiness remains unresolved and the Coordinator returns to its next-acti
             "Use this skill after current node hints and repo-level MathlibIndex are insufficient.",
             (
                 "Use `search_mathlib_declarations` for mathematical concepts before considering any additional toolkit-backed search backend that is visible to your role.",
-                "Inspect candidate declarations and modules with `inspect_mathlib_search_candidate`, `inspect_mathlib_declaration`, and `inspect_mathlib_module` before relying on them.",
+                "Inspect plausible candidates with `inspect_mathlib_search_candidate`; navigate a module with `inspect_mathlib_module` only when module-level declarations are needed, and request imports or source excerpts only when the default compact result is insufficient.",
                 "Confirm namespace, assumptions, typeclasses, imports, and theorem direction.",
                 "When your role has MathlibIndex write permissions, record verified candidates through the dedicated MathlibIndex curation workflow rather than treating search results as committed truth.",
                 "Report unresolved directions when search is inconclusive.",
@@ -1014,7 +1018,7 @@ Use this skill when the current content node task may need preparation before en
 
 Preparation recon is delegated work. Your job is to decide whether a child flow is needed, give it a focused objective, and interpret its callback result. Do not do broad dependency, Mathlib, or resource recon inside the ContentPlanAgent context when a dedicated child flow should do it.
 
-The supplied ContentPlan context brief already summarizes completed preparation children and the latest child delta. Use it as an index, do not manually rebuild or paste a second full summary, and query only the exact current truth needed for the next mutation or decision.
+The callback turn already contains the current child input/result once, followed by short routing and current-state guidance. Do not rebuild or paste a second summary. Use `list_content_preparation_results` only when an older attempt matters, then use `get_content_preparation_result` for the one selected attempt.
 
 ## Recommended Order
 
@@ -1052,11 +1056,13 @@ If a kind has already run, interpret the callback result, perform only targeted 
 After a preparation child flow returns:
 
 1. Re-read current node truth with `get_current_node_contract`.
-2. Re-read relevant DeclGraph, dependency, Mathlib, source, or resource state through available tools.
-3. Decide whether the result is sufficient.
-4. If only a small correction is needed, use current-node scoped mutation tools.
-5. Do not rerun the same preparation kind in the same task.
-6. Continue the preparation checklist, start strategy planning, or complete/block/fail the task.
+2. Treat the current child result in this callback as the primary closeout evidence.
+3. Re-read relevant DeclGraph, dependency, Mathlib, source, or resource state through available tools.
+4. Read historical preparation only when comparing an older attempt or resolving a contradiction.
+5. Decide whether the result is sufficient.
+6. If only a small correction is needed, use current-node scoped mutation tools.
+7. Do not rerun the same preparation kind in the same task.
+8. Continue the preparation checklist, start strategy planning, or complete/block/fail the task.
 
 ## Boundaries
 

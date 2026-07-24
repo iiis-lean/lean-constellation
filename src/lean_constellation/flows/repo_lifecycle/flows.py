@@ -528,7 +528,10 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                         create_agent_if_missing=True,
                         bind_created_agent_to="step",
                         variables={"repo_key": input_model.repo_key},
-                        prompt_override=_source_corpus_prepare_prompt(input_model),
+                        prompt_override=_source_corpus_prepare_prompt(
+                            input_model,
+                            logical_path=source_root.relative_to(repo_root).as_posix(),
+                        ),
                         env_overrides=_agent_env("SourceCorpusPrepareAgent", "source_corpus_prepare", "source_corpus_prepare_submit"),
                         workdir_override=str(source_root),
                     ),
@@ -1347,11 +1350,16 @@ def _source_corpus_workdir(ctx: FlowContext, repo_root: Path) -> Path:
     return path if path.is_absolute() else repo_root / path
 
 
-def _source_corpus_prepare_prompt(input_model: NativeRepoPreparationInput) -> str:
+def _source_corpus_prepare_prompt(
+    input_model: NativeRepoPreparationInput, *, logical_path: str
+) -> str:
     return "\n".join(
         [
             f"Prepare the source corpus for native repo {input_model.repo_key}.",
-            "Read the repository preparation input through tools, work only inside the source corpus directory, and submit prepared or blocked.",
+            "Current working directory: the source corpus root.",
+            "Allowed write boundary: this directory and its descendants.",
+            f"Configured logical corpus path: {logical_path}.",
+            "Read the repository preparation input through tools and submit prepared or blocked.",
         ]
     )
 
@@ -1360,7 +1368,7 @@ def _root_interface_prepare_prompt(input_model: NativeRepoPreparationInput) -> s
     return "\n".join(
         [
             f"Prepare root Main interfaces for native repo {input_model.repo_key}.",
-            "Read the preparation input, committed SourceIndex, and current root interfaces. Add only supplement interfaces, then submit ready.",
+            "Use the root-interface run context, current root interfaces, and compact SourceIndex reads. Add only necessary supplement interfaces, then submit ready.",
         ]
     )
 

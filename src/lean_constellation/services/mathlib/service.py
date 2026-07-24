@@ -21,11 +21,11 @@ from lean_constellation.services.mathlib.node_mathlib_use import (
 from lean_constellation.services.mathlib.toolkit_ingestion import (
     MathlibAccessCheckView,
     MathlibBatchRecordView,
+    MathlibCandidateDetailView,
     MathlibCheckView,
     MathlibExternalSearchView,
     MathlibModuleNavigationView,
     MathlibNavigationView,
-    MathlibCandidateView,
     MathlibSemanticSearchView,
     ToolkitIngestionComponent,
 )
@@ -145,8 +145,18 @@ class MathlibService:
     ) -> ServiceResult[MathlibSemanticSearchView]:
         return self.toolkit_ingestion.search_mathlib_declarations(repo_root, query=query, limit=limit)
 
-    def inspect_mathlib_search_candidate(self, repo_root: Path, *, candidate_id: str) -> ServiceResult[MathlibCandidateView]:
-        return self.toolkit_ingestion.inspect_mathlib_search_candidate(repo_root, candidate_id=candidate_id)
+    def inspect_mathlib_search_candidate(
+        self,
+        repo_root: Path,
+        *,
+        candidate_id: str,
+        include_source_excerpt: bool = False,
+    ) -> ServiceResult[MathlibCandidateDetailView]:
+        return self.toolkit_ingestion.inspect_mathlib_search_candidate(
+            repo_root,
+            candidate_id=candidate_id,
+            include_source_excerpt=include_source_excerpt,
+        )
 
     def inspect_mathlib_declaration(self, repo_root: Path, *, decl_name: str) -> ServiceResult[MathlibNavigationView]:
         return self.toolkit_ingestion.inspect_mathlib_declaration(repo_root, decl_name=decl_name)
@@ -158,8 +168,18 @@ class MathlibService:
         module: str | None = None,
         module_name: str | None = None,
         pattern: str | None = None,
+        limit: int = 20,
+        include_imports: bool = False,
+        include_source_excerpt: bool = False,
     ) -> ServiceResult[MathlibModuleNavigationView]:
-        return self.toolkit_ingestion.inspect_mathlib_module(repo_root, module=module_name or module or "", pattern=pattern)
+        return self.toolkit_ingestion.inspect_mathlib_module(
+            repo_root,
+            module=module_name or module or "",
+            pattern=pattern,
+            limit=limit,
+            include_imports=include_imports,
+            include_source_excerpt=include_source_excerpt,
+        )
 
     def check_mathlib_name(
         self,

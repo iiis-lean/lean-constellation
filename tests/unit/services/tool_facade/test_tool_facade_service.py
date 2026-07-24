@@ -370,6 +370,15 @@ def test_mcp_wrapper_invokes_handlers_and_records_submit(tmp_path: Path) -> None
     assert submitted.value is not None
     assert submitted.value.ok is True
     assert "Stop making further" in submitted.value.summary
+    assert submitted.value.value == {
+        "accepted": True,
+        "submission_id": "sub_test",
+        "submission_type": "child_flow_dispatch",
+        "message": submitted.value.summary,
+        "dispatch_request_count": 1,
+    }
+    assert "submission" not in submitted.value.value
+    assert "agent_view" not in submitted.value.value
     assert len(gateway.accepted) == 1
     assert isinstance(gateway.accepted[0], ChildFlowDispatchSubmission)
     assert gateway.accepted[0].requests[0].flow_type == "unit_child"

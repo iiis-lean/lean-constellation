@@ -93,6 +93,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.REPO_PREPARATION_INPUT_READ,
                 AppGroup.SOURCE_INDEX_COMMITTED_READ,
+                AppGroup.SOURCE_INDEX_COMMITTED_AUDIT_READ,
                 AppGroup.SOURCE_MATERIAL_TEXT_READ,
                 AppGroup.ROOT_INTERFACE_STATE_READ,
                 AppGroup.ROOT_INTERFACE_PREPARE_READ,
@@ -161,6 +162,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
                 AppGroup.CONTENT_TASK_ADMISSION_READ,
                 AppGroup.SOURCE_CORPUS_READ,
                 AppGroup.SOURCE_INDEX_COMMITTED_READ,
+                AppGroup.SOURCE_INDEX_COMMITTED_AUDIT_READ,
                 AppGroup.RESOURCE_LIBRARY_READ,
                 AppGroup.SOURCE_MATERIAL_TEXT_READ,
                 AppGroup.MATERIAL_CONTEXT_READ,
@@ -204,6 +206,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
                 AppGroup.DECL_ROUND_CLOSEOUT_WRITE,
                 AppGroup.CONTENT_INTERFACE_CURRENT_WRITE,
                 AppGroup.CONTENT_COMPLETION_GATE_READ,
+                AppGroup.CONTENT_PREPARATION_HISTORY_READ,
             ],
             _aliases("content_plan", "ContentPlanAgent", "plan"),
         ),

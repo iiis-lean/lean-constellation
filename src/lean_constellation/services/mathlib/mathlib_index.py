@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.mathlib import MathlibDeclEntry, MathlibIndex, MathlibModuleEntry
@@ -46,7 +46,6 @@ class MathlibModuleEntryView(StrictModel):
     summary: str | None = None
     important_decl_names: list[str] = Field(default_factory=list)
     note: str | None = None
-    entry: MathlibModuleEntry
 
 
 class MathlibDeclEntryView(StrictModel):
@@ -57,14 +56,12 @@ class MathlibDeclEntryView(StrictModel):
     snippet: str | None = None
     summary: str | None = None
     note: str | None = None
-    entry: MathlibDeclEntry
 
 
 class MathlibModuleEntryMutationView(StrictModel):
     module: str
     changed: bool
     summary: str
-    entry: MathlibModuleEntry
 
 
 class MathlibIndexComponent:
@@ -366,7 +363,6 @@ class MathlibIndexComponent:
             summary=entry.summary,
             important_decl_names=list(entry.important_decl_names),
             note=entry.note,
-            entry=entry,
         )
 
     def _decl_view(self, entry: MathlibDeclEntry) -> MathlibDeclEntryView:
@@ -378,7 +374,6 @@ class MathlibIndexComponent:
             snippet=entry.snippet,
             summary=entry.summary,
             note=entry.note,
-            entry=entry,
         )
 
     def _normalize_module_or_fail(self, module: str) -> ServiceResult[str]:

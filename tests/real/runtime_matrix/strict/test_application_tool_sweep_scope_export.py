@@ -9,7 +9,7 @@ from lean_constellation.services.tool_facade import RuntimeToolContext
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import CONTENT_NODE_PATH, RuntimeMatrixWorkspace
-from tests.real.runtime_matrix.strict.test_application_tool_sweep_decl_graph import _as_items, _field, _seed_ready_decl
+from tests.real.runtime_matrix.strict.test_application_tool_sweep_decl_graph import _field, _seed_ready_decl
 from tests.real.runtime_matrix.strict.tool_sweep_partitions import scope_export_tool_sweep_names
 from tests.real.runtime_matrix.strict_helpers import call_tool_with_evidence, checkpoint_with_evidence, restore_with_evidence
 
@@ -70,7 +70,8 @@ def test_strict_scope_export_write_tool_cases_execute(
         assertion_summary="Ready public declaration was added to the scope export list.",
     )
     assert _field(added_export.value, "changed") is True
-    assert any(_field(item, "ref", "name") == DECL_NAME for item in _field(added_export.value, "exports"))
+    assert _field(added_export.value, "operation") == "add"
+    assert _field(added_export.value, "export", "declaration_name") == DECL_NAME
 
     bound = call_tool_with_evidence(
         server,
@@ -103,8 +104,12 @@ def test_strict_scope_export_write_tool_cases_execute(
         recorder=evidence_recorder,
         assertion_summary="Scope export list contains the exported declaration before removal.",
     )
-    export_items = _as_items(exports.value)
-    export_index = next(_field(item, "index") for item in export_items if _field(item, "ref", "name") == DECL_NAME)
+    export_items = _field(exports.value, "exports")
+    export_index = next(
+        _field(item, "index")
+        for item in export_items
+        if _field(item, "declaration_name") == DECL_NAME
+    )
 
     removed = call_tool_with_evidence(
         server,
@@ -116,7 +121,8 @@ def test_strict_scope_export_write_tool_cases_execute(
         assertion_summary="Scope export was removed after interface unbind.",
     )
     assert _field(removed.value, "changed") is True
-    assert not any(_field(item, "ref", "name") == DECL_NAME for item in _field(removed.value, "exports"))
+    assert _field(removed.value, "operation") == "remove"
+    assert _field(removed.value, "export", "declaration_name") == DECL_NAME
 
     restore_with_evidence(
         ws.admin,

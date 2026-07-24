@@ -74,9 +74,10 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
     assert statement_capture.ok, statement_capture.issues
     revision = _current_revision(runtime, repo_root)
     assert revision.state == DeclState.PLANNED
-    assert revision.statement_lean_check is not None
-    assert revision.statement_lean_check["policy"] == "statement_formal"
-    assert revision.statement_lean_check["status"] == "passed"
+    assert revision.statement.formal is not None
+    assert revision.statement.formal.check is not None
+    assert revision.statement.formal.check.policy == "statement_formal"
+    assert revision.statement.formal.check.status == "passed"
 
     proof_nl = runtime.decl_graph.write_proof_nl(
         repo_root,
@@ -115,9 +116,11 @@ def test_real_lean_lake_projection_capture_and_policy_matrix(tmp_path: Path) -> 
     assert proof_capture.ok, proof_capture.issues
     revision = _current_revision(runtime, repo_root)
     assert revision.state == DeclState.PLANNED
-    assert revision.proof_lean_check is not None
-    assert revision.proof_lean_check["policy"] == "proof_formal"
-    assert revision.proof_lean_check["status"] == "passed"
+    assert revision.proof is not None
+    assert revision.proof.formal is not None
+    assert revision.proof.formal.check is not None
+    assert revision.proof.formal.check.policy == "proof_formal"
+    assert revision.proof.formal.check.status == "passed"
 
     target_docstring = "/--\n# lean-constellation target"
     decl_path.write_text(

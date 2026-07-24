@@ -161,9 +161,7 @@ class RootInterfacePreparationFlow(LeanBusinessFlow):
                         bind_created_agent_to="step",
                         variables={
                             "repo_key": input_model.repo_key,
-                            "run_context": input_model.run_context.model_dump(mode="json"),
-                            "source_index_delta": input_model.source_index_delta.model_dump(mode="json"),
-                            "previous_interface_names": sorted(state.previous_interfaces),
+                            "start_reason": input_model.start_reason,
                         },
                         prompt_override=_agent_prompt(input_model, state),
                         env_overrides={
@@ -281,19 +279,15 @@ def _agent_prompt(
     input_model: RootInterfacePreparationInput,
     state: RootInterfacePreparationState,
 ) -> str:
-    delta = input_model.source_index_delta
+    del state
     return "\n".join(
         [
             f"Prepare incremental root Main interfaces for native repo {input_model.repo_key}.",
-            f"Run objective: {input_model.run_context.run_spec.run_objective}",
-            f"Start kind: {input_model.run_context.start_kind}; reason: {input_model.start_reason}.",
-            "Read the preparation input, committed SourceIndex, and current root interfaces through tools.",
+            f"Start reason: {input_model.start_reason}.",
+            "Use `get_root_interface_run_context` for this run's exact responsibility and `list_root_interfaces` for the protected baseline.",
+            "Use compact SourceIndex overview/block tools for normal evidence reads; read the full index or preparation input only for an explicit holistic audit.",
             "All interfaces that existed when this step started must remain byte-for-byte equivalent in semantic payload; do not update or remove any of them.",
             "Only add supplement interfaces that are necessary for this run's repository-level public API. Do not bind declarations, select exports, or commit Main.",
-            f"Current source responsibility: {', '.join(input_model.run_context.resolved_source_files) or 'no new files'}.",
-            f"Newly committed files: {', '.join(delta.newly_committed_file_paths) or 'none'}.",
-            f"Appended source blocks: {', '.join(delta.appended_block_ids) or 'none'}.",
-            f"Existing interface names to preserve: {', '.join(sorted(state.previous_interfaces)) or 'none'}.",
             "Call `submit_root_interface_prepare_ready` after checking the protected interface gate. After an accepted submit, stop.",
         ]
     )

@@ -571,7 +571,6 @@ def _agent_variables(
 def _stage_worker_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
     stage = _require_stage(state)
     mode = "retry_after_review" if state.current_retry_count else "initial"
-    targets = ", ".join(state.current_target_decl_names) or "(no explicit targets)"
     metadata = _format_stage_target_metadata(ctx, input_model, state.current_target_decl_names)
     required_skills = _stage_required_skills(stage, role="worker")
     feedback = ""
@@ -581,11 +580,10 @@ def _stage_worker_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, sta
         f"Run decl stage worker for {stage}.\n"
         f"Mode: {mode}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
-        f"Target declarations: {targets}.\n"
         f"Pipeline position: {_stage_pipeline_position(stage)}\n"
         f"Required Skill re-entry: read and apply {', '.join(f'${skill}' for skill in required_skills)} from the current Home before acting.\n"
         "The Flow owns later stages; global target_state does not expand this stage's authority. Missing later-stage artifacts are expected here.\n"
-        f"Target change metadata:\n{metadata}\n"
+        f"Assigned declarations:\n{metadata}\n"
         f"Retry attempt: {state.current_retry_count} of {state.max_retries_per_stage}. "
         f"Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}."
         f"{feedback}\n"
@@ -596,7 +594,6 @@ def _stage_worker_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, sta
 def _stage_reviewer_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, state: DeclGraphRoundState) -> str:
     stage = _require_stage(state)
     mode = "retry_review" if state.current_retry_count else "initial_review"
-    targets = ", ".join(state.current_target_decl_names) or "(no explicit targets)"
     metadata = _format_stage_target_metadata(ctx, input_model, state.current_target_decl_names)
     required_skills = _stage_required_skills(stage, role="reviewer")
     worker_summary = state.latest_worker_result.summary if state.latest_worker_result is not None else ""
@@ -607,12 +604,11 @@ def _stage_reviewer_prompt(ctx: FlowContext, input_model: DeclGraphRoundInput, s
         f"Review decl stage {stage}.\n"
         f"Mode: {mode}.\n"
         f"Repo: {input_model.repo_key}. Node: {input_model.node_path}. Round: {input_model.round_id}.\n"
-        f"Target declarations: {targets}.\n"
         f"Pipeline position: {_stage_pipeline_position(stage)}\n"
         f"Required Skill re-entry: read and apply {', '.join(f'${skill}' for skill in required_skills)} from the current Home before review.\n"
         "This is a read-only review role; do not perform worker mutation.\n"
         "Review only this layer. The deterministic final audit, not this review, decides whether global target_state was reached.\n"
-        f"Target change metadata:\n{metadata}\n"
+        f"Assigned declarations:\n{metadata}\n"
         f"Review attempt: {state.current_retry_count}. Retry remaining: {max(state.max_retries_per_stage - state.current_retry_count, 0)}.\n"
         f"Worker summary: {worker_summary or '(not provided)'}.\n"
         f"{previous_feedback}\n"
@@ -667,25 +663,28 @@ def _format_stage_target_metadata(
             continue
         revision = revision_result.value
         change = revision.change
-        statement_deps = _format_dep_names(revision.statement.deps)
-        proof_deps = _format_dep_names(revision.proof.deps if revision.proof is not None else [])
-        lines.append(
-            "- "
-            f"{decl_name}: "
-            f"kind={decl.kind}, "
-            f"change={change.kind.value if change is not None else 'none'}, "
-            f"objective={change.objective if change is not None else '(not provided)'}, "
-            f"target_state={change.target_state.value if change is not None and change.target_state is not None else 'none'}, "
-            f"state={revision.state.value}, "
-            f"known_statement_deps=[{statement_deps}], "
-            f"known_proof_deps=[{proof_deps}]"
+        lines.extend(
+            [
+                f"- {decl_name}",
+                f"  Kind: {decl.kind}",
+                f"  Change: {change.kind.value if change is not None else 'none'}",
+                f"  Objective: {change.objective if change is not None else '(not provided)'}",
+                f"  Required through: {_target_state_display(change.target_state if change is not None else None)}",
+            ]
         )
     return "\n".join(lines)
 
 
-def _format_dep_names(deps) -> str:  # noqa: ANN001
-    names = sorted({dep.ref.name for dep in deps})
-    return ", ".join(names) or "none"
+def _target_state_display(target_state) -> str:  # noqa: ANN001
+    value = getattr(target_state, "value", target_state)
+    return {
+        "planned": "Planning",
+        "specified": "Statement NL",
+        "declared": "Statement Formal",
+        "proof_planned": "Proof NL",
+        "proved": "Proof Formal",
+        "ready": "Deterministic release gate",
+    }.get(str(value), str(value or "not specified"))
 
 
 def _stage_required_skills(stage: DeclStageName, *, role: Literal["worker", "reviewer"]) -> tuple[str, ...]:

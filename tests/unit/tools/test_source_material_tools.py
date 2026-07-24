@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from lean_constellation.tools import build_application_tool_specs
+from lean_constellation.tools import (
+    build_application_tool_groups,
+    build_application_tool_views,
+)
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
 
 def test_source_material_tools_are_registered() -> None:
     expected = {
         "get_source_index",
+        "get_source_index_overview",
+        "list_source_index_files",
+        "list_source_blocks",
+        "get_source_block",
         "get_source_index_update_context",
         "set_source_index_overview",
         "create_source_block",
@@ -56,9 +64,31 @@ def test_source_material_groups_expose_expected_tools() -> None:
     )
     assert_group_contains(
         "source_index_draft_read",
-        {"get_source_index", "get_source_index_update_context", "validate_source_index", "get_source_index_coverage"},
+        {
+            "get_source_index",
+            "get_source_index_overview",
+            "list_source_index_files",
+            "list_source_blocks",
+            "get_source_block",
+            "get_source_index_update_context",
+            "validate_source_index",
+            "get_source_index_coverage",
+        },
     )
-    assert_group_contains("source_index_committed_read", {"get_source_index", "get_source_index_coverage"})
+    assert_group_contains(
+        "source_index_committed_read",
+        {
+            "get_source_index_overview",
+            "list_source_index_files",
+            "list_source_blocks",
+            "get_source_block",
+            "get_source_index_coverage",
+        },
+    )
+    assert_group_contains(
+        "source_index_committed_audit_read",
+        {"get_source_index"},
+    )
     assert_group_contains("source_material_text_read", {"search_source_text", "read_source_range", "validate_source_range", "preview_source_ref"})
 
 
@@ -66,3 +96,30 @@ def test_source_index_update_context_is_limited_to_build_review_roles() -> None:
     specs = {spec.name: spec for spec in build_application_tool_specs()}
 
     assert specs["get_source_index_update_context"].allowed_roles == {"worker", "reviewer", "admin"}
+
+
+def test_full_committed_source_index_is_only_in_audit_views() -> None:
+    specs = build_application_tool_specs()
+    groups = build_application_tool_groups(specs)
+    views = {
+        view.key: view
+        for view in build_application_tool_views(groups)
+    }
+    group_tools = {
+        group.key: set(group.tool_names)
+        for group in groups
+    }
+
+    def tools(view_key: str) -> set[str]:
+        return {
+            tool
+            for group in views[view_key].group_keys
+            for tool in group_tools[group]
+        }
+
+    assert "get_source_index" in tools("native_repo_coordinator")
+    assert "get_source_index" in tools("root_interface_prepare")
+    assert "get_source_index" not in tools("content_plan")
+    assert "get_source_index" not in tools("proof_nl_worker")
+    assert "get_source_index_overview" in tools("content_plan")
+    assert "get_source_block" in tools("proof_nl_worker")

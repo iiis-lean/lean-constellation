@@ -1,16 +1,14 @@
-"""Derived, bounded context briefs for ContentNodeTask business agents."""
+"""Derived compact context for ContentNodeTask business agents."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 from typing import Any, Literal
 
 from agent_runtime_kit.flow.models import FlowStatus
 from pydantic import Field
 
-from lean_constellation.domain.common import StrictModel, utc_now_iso
+from lean_constellation.domain.common import StrictModel
 
 
 PreparationKind = Literal["node_dir_dependency", "mathlib", "resource"]
@@ -25,42 +23,56 @@ _ALL_PREPARATION_KINDS: tuple[PreparationKind, ...] = (
     "mathlib",
     "resource",
 )
-_MAX_ITEMS = 8
 _MAX_TEXT = 500
 
 
 class PreparationFindingView(StrictModel):
     kind: PreparationKind
-    objective: str | None = None
+    attempt: int
+    outcome: str
     summary: str | None = None
     findings: list[str] = Field(default_factory=list)
     unresolved_items: list[str] = Field(default_factory=list)
-    source_flow_id: str
+
+
+class PreparationResultIndexItem(StrictModel):
+    kind: PreparationKind
+    attempt: int
+    outcome: str
+    summary: str | None = None
+    unresolved_count: int = 0
+
+
+class PreparationResultIndexView(StrictModel):
+    results: list[PreparationResultIndexItem] = Field(default_factory=list)
+    summary: str
+
+
+class PreparationResultDetailView(StrictModel):
+    kind: PreparationKind
+    attempt: int
+    outcome: str
+    objective: str | None = None
+    summary: str | None = None
+    useful_findings: list[str] = Field(default_factory=list)
+    unresolved_items: list[str] = Field(default_factory=list)
 
 
 class PreparationContextBrief(StrictModel):
     available_kinds: list[PreparationKind] = Field(default_factory=list)
     missing_kinds: list[PreparationKind] = Field(default_factory=list)
     findings: list[PreparationFindingView] = Field(default_factory=list)
-    generated_at: str = Field(default_factory=utc_now_iso)
-    digest: str
 
-    def render(self) -> str:
+    def render_index(self) -> str:
         lines = [
-            f"Preparation brief digest: {self.digest}",
-            f"Available kinds: {', '.join(self.available_kinds) or 'none'}.",
-            f"Not run: {', '.join(self.missing_kinds) or 'none'}.",
+            f"- Available: {', '.join(self.available_kinds) or 'none'}",
+            f"- Not run: {', '.join(self.missing_kinds) or 'none'}",
         ]
         for item in self.findings:
-            lines.append(
-                f"- {item.kind} ({item.source_flow_id}): "
-                f"objective={item.objective or '(not provided)'}; "
-                f"summary={item.summary or '(not provided)'}"
-            )
-            if item.findings:
-                lines.append(f"  verified findings: {'; '.join(item.findings)}")
+            suffix = f" attempt {item.attempt}" if item.attempt > 1 else ""
+            lines.append(f"- {item.kind}{suffix}: {item.outcome}; {item.summary or 'no summary'}")
             if item.unresolved_items:
-                lines.append(f"  unresolved: {'; '.join(item.unresolved_items)}")
+                lines.append(f"  Unresolved items: {len(item.unresolved_items)}")
         return "\n".join(lines)
 
 
@@ -88,40 +100,38 @@ class StrategyRoundContextBrief(StrictModel):
 
 
 class ContentPlanContextBrief(StrictModel):
-    repo_key: str
-    node_path: str
-    contract_version: int | None = None
-    task_mode: str
-    contract_summary: str | None = None
     preparation: PreparationContextBrief
     active_strategy_round: StrategyRoundContextBrief | None = None
-    latest_child_delta: str | None = None
-    used_preparation_kinds: list[PreparationKind] = Field(default_factory=list)
     decl_round_count: int = 0
-    generated_at: str = Field(default_factory=utc_now_iso)
-    digest: str
 
     def render(self) -> str:
         lines = [
-            f"ContentPlan context brief digest: {self.digest}",
-            (
-                f"Identity: repo={self.repo_key}; node={self.node_path}; "
-                f"contract_version={self.contract_version}; task_mode={self.task_mode}."
-            ),
-            f"Current contract: {self.contract_summary or '(unavailable)' }",
-            (
-                "Task progress: used preparations="
-                f"{', '.join(self.used_preparation_kinds) or 'none'}; rounds={self.decl_round_count}."
-            ),
-            self.preparation.render(),
+            "Current node state",
+            "",
+            f"- Preparations completed: {', '.join(self.preparation.available_kinds) or 'none'}",
+            f"- Preparations not run: {', '.join(self.preparation.missing_kinds) or 'none'}",
+            f"- Completed declaration rounds: {self.decl_round_count}",
         ]
         if self.active_strategy_round is not None:
-            lines.append(self.active_strategy_round.render())
-        if self.latest_child_delta:
-            lines.append(f"Latest child delta: {self.latest_child_delta}")
+            lines.extend(
+                [
+                    f"- Active declaration strategy: {self.active_strategy_round.strategy_objective or 'open'}",
+                    (
+                        "- Active declaration round: "
+                        f"{self.active_strategy_round.round_status or 'open'}"
+                    ),
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "- Active declaration strategy: none",
+                    "- Active declaration round: none",
+                ]
+            )
         lines.append(
-            "Use this brief to avoid broad rediscovery. Read exact current truth before planning or "
-            "performing a mutation, and resolve explicitly marked unresolved items."
+            "- Next action: choose one declaration round, request a missing preparation, "
+            "or finish the content task"
         )
         return "\n".join(lines)
 
@@ -133,11 +143,18 @@ def build_preparation_context_brief(
     exclude_flow_id: str | None = None,
 ) -> PreparationContextBrief:
     findings: list[PreparationFindingView] = []
+    attempts: dict[PreparationKind, int] = {}
     flow_service = getattr(ctx.ark, "flow_service", None)
     if flow_service is not None and content_flow_id:
+        scope_id = getattr(ctx, "scope_id", None)
+        if scope_id is None and getattr(ctx, "flow", None) is not None:
+            scope_id = ctx.flow.scope_id
+        if scope_id is None:
+            content_flow = flow_service.get_flow(content_flow_id)
+            scope_id = content_flow.scope_id
         children = [
             flow
-            for flow in flow_service.list_flows(scope_id=ctx.flow.scope_id)
+            for flow in flow_service.list_flows(scope_id=scope_id)
             if flow.parent_flow_id == content_flow_id
             and flow.flow_id != exclude_flow_id
             and flow.flow_type in _PREPARATION_FLOW_KINDS
@@ -146,12 +163,17 @@ def build_preparation_context_brief(
         children.sort(key=lambda item: (item.created_at, item.flow_id))
         for child in children:
             kind = _PREPARATION_FLOW_KINDS[child.flow_type]
-            input_fields = _agent_fields(child.input)
             result_fields = _agent_fields(child.result)
+            attempts[kind] = attempts.get(kind, 0) + 1
             findings.append(
                 PreparationFindingView(
                     kind=kind,
-                    objective=_text(input_fields.get("objective")),
+                    attempt=attempts[kind],
+                    outcome=(
+                        "failed"
+                        if child.status is FlowStatus.FAILED
+                        else _text(result_fields.get("outcome")) or "completed"
+                    ),
                     summary=_first_text(
                         result_fields,
                         (
@@ -171,56 +193,120 @@ def build_preparation_context_brief(
                         or result_fields.get("unresolved_material_needs")
                         or result_fields.get("missing_targets")
                     ),
-                    source_flow_id=child.flow_id,
                 )
             )
     available = list(dict.fromkeys(item.kind for item in findings))
-    payload = {
-        "available_kinds": available,
-        "findings": [item.model_dump(mode="json") for item in findings],
-    }
     return PreparationContextBrief(
         available_kinds=available,
         missing_kinds=[kind for kind in _ALL_PREPARATION_KINDS if kind not in available],
         findings=findings,
-        digest=_digest(payload),
+    )
+
+
+def list_preparation_results(
+    ctx,
+    *,
+    content_flow_id: str,
+    kind: PreparationKind | None = None,
+) -> PreparationResultIndexView:
+    brief = build_preparation_context_brief(ctx, content_flow_id=content_flow_id)
+    results = [
+        PreparationResultIndexItem(
+            kind=item.kind,
+            attempt=item.attempt,
+            outcome=item.outcome,
+            summary=item.summary,
+            unresolved_count=len(item.unresolved_items),
+        )
+        for item in brief.findings
+        if kind is None or item.kind == kind
+    ]
+    return PreparationResultIndexView(
+        results=results,
+        summary=f"Loaded {len(results)} terminal content preparation results.",
+    )
+
+
+def get_preparation_result(
+    ctx,
+    *,
+    content_flow_id: str,
+    kind: PreparationKind,
+    attempt: int | None = None,
+) -> PreparationResultDetailView | None:
+    flow_service = getattr(ctx.ark, "flow_service", None)
+    if flow_service is None:
+        return None
+    scope_id = getattr(ctx, "scope_id", None)
+    if scope_id is None and getattr(ctx, "flow", None) is not None:
+        scope_id = ctx.flow.scope_id
+    if scope_id is None:
+        content_flow = flow_service.get_flow(content_flow_id)
+        scope_id = content_flow.scope_id
+    flow_type = next(
+        flow_type
+        for flow_type, preparation_kind in _PREPARATION_FLOW_KINDS.items()
+        if preparation_kind == kind
+    )
+    children = [
+        flow
+        for flow in flow_service.list_flows(scope_id=scope_id)
+        if flow.parent_flow_id == content_flow_id
+        and flow.flow_type == flow_type
+        and flow.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+    ]
+    children.sort(key=lambda item: (item.created_at, item.flow_id))
+    if not children:
+        return None
+    selected_index = len(children) - 1 if attempt is None else attempt - 1
+    if selected_index < 0 or selected_index >= len(children):
+        return None
+    child = children[selected_index]
+    input_fields = _agent_fields(child.input)
+    result_fields = _agent_fields(child.result)
+    unresolved = _bounded_text_list(
+        result_fields.get("unresolved_within_visible_boundaries")
+        or result_fields.get("unresolved_in_mathlib")
+        or result_fields.get("unresolved_material_needs")
+        or result_fields.get("missing_targets")
+    )
+    return PreparationResultDetailView(
+        kind=kind,
+        attempt=selected_index + 1,
+        outcome=(
+            "failed"
+            if child.status is FlowStatus.FAILED
+            else _text(result_fields.get("outcome")) or "completed"
+        ),
+        objective=_first_text(
+            input_fields,
+            ("objective", "recon_objective", "material_objective"),
+        ),
+        summary=_first_text(
+            result_fields,
+            (
+                "dependency_change_summary",
+                "index_update_summary",
+                "material_change_summary",
+                "checked_boundary_summary",
+                "node_mathlib_hint_summary",
+                "checked_material_summary",
+                "reason",
+            ),
+        ),
+        useful_findings=_bounded_text_list(result_fields.get("useful_findings")),
+        unresolved_items=unresolved,
     )
 
 
 def build_content_plan_context_brief(ctx, flow, input_model, state) -> ContentPlanContextBrief:
     preparation = build_preparation_context_brief(ctx, content_flow_id=flow.flow_id)
-    contract_summary = None
     repo_root = Path(input_model.repo_path) if input_model.repo_path else None
-    node_service = getattr(ctx.app, "node", None)
-    if repo_root is not None and node_service is not None:
-        contract = node_service.get_current_contract_view(repo_root, node_path=input_model.node_path)
-        if contract.ok and contract.value is not None:
-            contract_summary = _text(contract.value.summary)
     active = _latest_strategy_round_brief(ctx, flow.flow_id, repo_root, input_model.node_path)
-    payload = {
-        "repo_key": input_model.repo_key,
-        "node_path": input_model.node_path,
-        "contract_version": input_model.contract_version,
-        "task_mode": input_model.task_mode,
-        "contract_summary": contract_summary,
-        "preparation_digest": preparation.digest,
-        "active_strategy_round": active.model_dump(mode="json") if active else None,
-        "latest_child_delta": state.latest_callback_summary,
-        "used_preparation_kinds": list(state.used_preparation_kinds),
-        "decl_round_count": state.decl_round_count,
-    }
     return ContentPlanContextBrief(
-        repo_key=input_model.repo_key,
-        node_path=input_model.node_path,
-        contract_version=input_model.contract_version,
-        task_mode=input_model.task_mode,
-        contract_summary=contract_summary,
         preparation=preparation,
         active_strategy_round=active,
-        latest_child_delta=state.latest_callback_summary,
-        used_preparation_kinds=list(state.used_preparation_kinds),
         decl_round_count=state.decl_round_count,
-        digest=_digest(payload),
     )
 
 
@@ -230,7 +316,27 @@ def build_prior_preparation_prompt_context(ctx, flow) -> str:
         content_flow_id=flow.parent_flow_id,
         exclude_flow_id=flow.flow_id,
     )
-    return brief.render()
+    if not brief.findings:
+        return "No verified prior preparation is available."
+    return "\n".join(
+        [
+            "Verified preparation already available",
+            "",
+            *[
+                (
+                    f"- {item.kind}: {item.summary or item.outcome}"
+                    + (
+                        f" Unresolved items: {len(item.unresolved_items)}."
+                        if item.unresolved_items
+                        else ""
+                    )
+                )
+                for item in brief.findings
+            ],
+            "",
+            "Read current node truth before searching. Independently verify only unresolved claims.",
+        ]
+    )
 
 
 def _latest_strategy_round_brief(
@@ -242,9 +348,12 @@ def _latest_strategy_round_brief(
     flow_service = getattr(ctx.ark, "flow_service", None)
     if flow_service is None:
         return None
+    scope_id = getattr(ctx, "scope_id", None)
+    if scope_id is None:
+        scope_id = ctx.flow.scope_id
     rounds = [
         flow
-        for flow in flow_service.list_flows(scope_id=ctx.flow.scope_id)
+        for flow in flow_service.list_flows(scope_id=scope_id)
         if flow.parent_flow_id == content_flow_id and flow.flow_type == "decl_graph_round"
     ]
     if not rounds:
@@ -326,7 +435,7 @@ def _first_text(fields: dict[str, Any], keys: tuple[str, ...]) -> str | None:
 def _bounded_text_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [text for item in value[:_MAX_ITEMS] if (text := _text(item))]
+    return [text for item in value if (text := _text(item))]
 
 
 def _text(value: object) -> str | None:
@@ -336,11 +445,6 @@ def _text(value: object) -> str | None:
     if not text:
         return None
     return text[:_MAX_TEXT]
-
-
-def _digest(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
 __all__ = [

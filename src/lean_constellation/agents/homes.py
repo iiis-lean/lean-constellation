@@ -121,6 +121,7 @@ def build_agent_home_bootstrap_spec(
                     url=_mcp_view_url(mcp_http_base_url, endpoint_spec.view_key),
                     required=True,
                     env_http_headers=_RUNTIME_HTTP_HEADER_ENV,
+                    result_profile="content_only",
                 )
             )
     elif mcp_server_command is not None:
@@ -135,6 +136,7 @@ def build_agent_home_bootstrap_spec(
                     command=mcp_server_command,
                     args=_stdio_args_for_view(mcp_server_args or (), view_key),
                     required=True,
+                    result_profile="content_only",
                     env={
                         **(mcp_server_env or {}),
                         "LEAN_CONSTELLATION_MCP_VIEW_KEY": view_key,

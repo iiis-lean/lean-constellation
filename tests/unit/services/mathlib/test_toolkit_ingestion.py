@@ -98,8 +98,12 @@ def test_inspect_mathlib_declaration_and_module(tmp_path: Path) -> None:
     module = service.inspect_mathlib_module(tmp_path, module="Mathlib.Data.Finset.Basic")
     assert module.ok
     assert module.value is not None
-    assert module.value.imports == ["Mathlib.Data.Finset.Defs"]
-    assert module.value.important_decl_hints == ["Finset.sum_congr", "Finset.sum_empty"]
+    assert module.value.import_count == 1
+    assert module.value.imports is None
+    assert [item.name for item in module.value.declarations] == [
+        "Finset.sum_congr",
+        "Finset.sum_empty",
+    ]
 
 
 def test_inspect_mathlib_declaration_rejects_toolchain_identity_mismatch(tmp_path: Path) -> None:

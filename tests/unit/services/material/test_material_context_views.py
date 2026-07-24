@@ -94,18 +94,15 @@ def test_material_context_view_source_only_with_source_index(tmp_path: Path) -> 
     )
     assert added_ref.ok and added_ref.value is not None
 
-    context = material.get_material_context_view(tmp_path, include_source=True, include_resources=False)
+    context = material.get_material_context_view(tmp_path, scope="source")
 
     assert context.ok and context.value is not None
     assert {item.locator for item in context.value.source_files} == {"README.md", "chapter.md"}
     assert context.value.resources == []
     assert len(context.value.source_blocks) == 1
     assert context.value.source_blocks[0].title == "Beta theorem"
-    assert context.value.source_blocks[0].refs[0].reusable_ref_fields == {
-        "path": "chapter.md",
-        "start_line": 2,
-        "end_line": 2,
-    }
+    assert context.value.source_blocks[0].ref_count == 1
+    assert context.value.returned_count == 3
 
 
 def test_material_context_committed_source_index_mode_omits_draft_blocks(tmp_path: Path) -> None:
@@ -133,19 +130,19 @@ def test_material_context_committed_source_index_mode_omits_draft_blocks(tmp_pat
         role="statement",
     ).ok
 
-    draft_context = material.get_material_context_view(tmp_path, include_source=True, include_resources=False)
+    draft_context = material.get_material_context_view(tmp_path, scope="source")
     committed_only_draft = material.get_material_context_view(
         tmp_path,
-        include_source=True,
-        include_resources=False,
+        scope="source",
         require_committed_source_index=True,
     )
 
     assert draft_context.ok and draft_context.value is not None
-    assert draft_context.value.source_index_overview == "Draft overview"
+    assert draft_context.value.source_index is not None
+    assert draft_context.value.source_index.overview == "Draft overview"
     assert len(draft_context.value.source_blocks) == 1
     assert committed_only_draft.ok and committed_only_draft.value is not None
-    assert committed_only_draft.value.source_index_overview is None
+    assert committed_only_draft.value.source_index is None
     assert committed_only_draft.value.source_blocks == []
 
     assert material.mark_block_refs_done(tmp_path, block_id=block.value.block_id).ok
@@ -167,32 +164,31 @@ def test_material_context_committed_source_index_mode_omits_draft_blocks(tmp_pat
 
     committed_context = material.get_material_context_view(
         tmp_path,
-        include_source=True,
-        include_resources=False,
+        scope="source",
         require_committed_source_index=True,
     )
 
     assert committed_context.ok and committed_context.value is not None
-    assert committed_context.value.source_index_overview == "Draft overview"
+    assert committed_context.value.source_index is not None
+    assert committed_context.value.source_index.overview == "Draft overview"
     assert [item.title for item in committed_context.value.source_blocks] == ["Draft theorem"]
 
 
 def test_material_context_view_resource_only_and_query_filter(tmp_path: Path) -> None:
     runtime = make_runtime()
     material = runtime.material
-    resource_key = _register_resource(runtime, tmp_path)
+    _register_resource(runtime, tmp_path)
 
     context = material.get_material_context_view(
         tmp_path,
         query="Context",
-        include_source=False,
-        include_resources=True,
+        scope="resource",
     )
 
     assert context.ok and context.value is not None
     assert context.value.source_files == []
-    assert [item.resource_key for item in context.value.resources] == [resource_key]
-    assert len(context.value.search_hits) == 0
+    assert context.value.resources == []
+    assert len(context.value.matches) == 0
 
 
 def test_material_context_view_node_scoped_refs_and_search(tmp_path: Path) -> None:
@@ -224,11 +220,56 @@ def test_material_context_view_node_scoped_refs_and_search(tmp_path: Path) -> No
     context = material.get_material_context_view(tmp_path, node_path="Main.Topic.Core", query="theorem")
 
     assert context.ok and context.value is not None
-    assert context.value.node_owned_refs[0].path == "chapter.md"
-    assert context.value.node_owned_refs[0].reason == "Primary theorem source."
-    assert context.value.node_context_refs[0].resource_key == resource_key
-    assert context.value.node_context_refs[0].added_by == "worker"
-    assert {hit.material_kind for hit in context.value.search_hits} == {"source", "resource"}
+    assert context.value.owned_refs[0].path == "chapter.md"
+    assert context.value.owned_refs[0].reason == "Primary theorem source."
+    assert context.value.context_refs[0].resource_key == resource_key
+    assert {hit.material_kind for hit in context.value.matches} == {"source", "resource"}
+
+
+def test_material_context_defaults_to_all_current_node_refs_without_repo_inventory(
+    tmp_path: Path,
+) -> None:
+    runtime = make_runtime()
+    material = runtime.material
+    _write_source(tmp_path)
+    resource_key = _register_resource(runtime, tmp_path)
+    _create_content_node(runtime, tmp_path)
+    for line in (1, 2, 3):
+        assert runtime.node.material_ref.add_owned_source_ref(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            path="chapter.md",
+            start_line=line,
+            end_line=line,
+            reason=f"Assigned source line {line}.",
+            actor=MaterialRefActor.COORDINATOR,
+        ).ok
+    assert runtime.node.material_ref.add_context_resource_ref(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        resource_key=resource_key,
+        start_line=2,
+        end_line=2,
+        reason="Assigned resource line.",
+        actor=MaterialRefActor.WORKER,
+    ).ok
+
+    context = material.get_material_context_view(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+
+    assert context.ok and context.value is not None
+    assert context.value.scope == "current_node"
+    assert len(context.value.owned_refs) == 3
+    assert len(context.value.context_refs) == 1
+    assert context.value.source_files == []
+    assert context.value.source_blocks == []
+    assert context.value.resources == []
+    assert context.value.matches == []
+    assert context.value.returned_count == 4
+    assert context.value.total_matching_count == 4
+    assert not context.value.truncated
 
 
 def test_material_context_view_failure_gates(tmp_path: Path) -> None:
@@ -246,14 +287,16 @@ def test_material_context_view_failure_gates(tmp_path: Path) -> None:
     )
     assert added.ok
 
-    empty_scope = material.get_material_context_view(tmp_path, include_source=False, include_resources=False)
-    bad_regex = material.get_material_context_view(tmp_path, query="[", regex=True)
+    missing_node = material.get_material_context_view(tmp_path)
+    bad_regex = material.get_material_context_view(
+        tmp_path, node_path="Main.Topic.Core", query="[", regex=True
+    )
     unknown_node = material.get_material_context_view(tmp_path, node_path="Main.Missing")
     (tmp_path / ".lean_constellation" / "source" / "chapter.md").unlink()
     stale_ref = material.get_material_context_view(tmp_path, node_path="Main.Topic.Core")
 
-    assert not empty_scope.ok
-    assert empty_scope.issues[0].kind == "material_context_empty_scope"
+    assert not missing_node.ok
+    assert missing_node.issues[0].kind == "material_context_node_required"
     assert not bad_regex.ok
     assert bad_regex.issues[0].kind == "invalid_search_regex"
     assert not unknown_node.ok

@@ -2,6 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
+from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.interface import DeclKind
+from lean_constellation.domain.refs import DeclRef
+from lean_constellation.services.decl_graph.models import (
+    DeclOriginRef,
+    DeclProof,
+    DeclStatement,
+    RepoDeclDep,
+)
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     AdapterDeclCreateArgs,
@@ -29,7 +40,244 @@ from lean_constellation.tools.args import (
     UpstreamSourceContextArgs,
 )
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
-from lean_constellation.tools.specs import direct_tool
+from lean_constellation.tools.specs import direct_tool, handler_tool
+
+
+class AdapterDeclInspectView(StrictModel):
+    name: str
+    kind: DeclKind
+    module: str
+    lean_decl_name: str
+    state: str
+    status: str
+    finalized: bool
+    public: bool
+    released_state: str | None = None
+    release_protected: bool = False
+    summary: str
+    statement: DeclStatement
+    proof: DeclProof | None = None
+
+
+class AdapterDeclCreateReceipt(StrictModel):
+    name: str
+    kind: DeclKind
+    module: str
+    lean_decl_name: str
+    state: str
+    status: str
+    summary: str
+
+
+class AdapterDeclFieldMutationReceipt(StrictModel):
+    name: str
+    section: Literal["statement_nl", "statement_formal", "proof_nl", "proof_formal"]
+    changed: bool
+    resulting_state: str
+    summary: str
+
+
+class AdapterDeclOriginMutationReceipt(StrictModel):
+    name: str
+    section: Literal["statement", "proof"]
+    operation: Literal["add"]
+    origin: DeclOriginRef
+    summary: str
+
+
+class AdapterDeclDependencyMutationReceipt(StrictModel):
+    name: str
+    section: Literal["statement", "proof"]
+    operation: Literal["add", "remove"]
+    dependency: RepoDeclDep
+    summary: str
+
+
+class AdapterDeclFinalizeReceipt(StrictModel):
+    name: str
+    finalized: bool
+    released_state: str | None = None
+    state: str
+    status: str
+    summary: str
+
+
+def _adapter_decl_inspect_view(value) -> AdapterDeclInspectView:
+    return AdapterDeclInspectView(
+        name=value.name,
+        kind=value.kind,
+        module=value.module,
+        lean_decl_name=value.lean_decl_name,
+        state=value.state,
+        status=value.status,
+        finalized=value.finalized,
+        public=value.public,
+        released_state=value.released_state,
+        release_protected=value.release_protected,
+        summary=value.summary,
+        statement=value.revision.statement,
+        proof=value.revision.proof,
+    )
+
+
+def _create_adapter_decl(runtime, ctx, args: AdapterDeclCreateArgs):
+    created = runtime.adapter.create_adapter_decl(
+        ctx.repo_root, **args.model_dump(exclude_unset=True)
+    )
+    if not created.ok or created.value is None:
+        return runtime.foundation.fail(created.issues)
+    return runtime.foundation.ok(
+        AdapterDeclCreateReceipt(
+            name=created.value.name,
+            kind=created.value.kind,
+            module=created.value.module,
+            lean_decl_name=created.value.lean_decl_name,
+            state=created.value.state,
+            status=created.value.status,
+            summary="Created adapter declaration.",
+        ),
+        warnings=created.issues,
+    )
+
+
+def _adapter_field_mutation(section: str, method_name: str):
+    def handler(runtime, ctx, args):  # noqa: ANN001
+        before = runtime.adapter.inspect_adapter_decl(ctx.repo_root, name=args.name)
+        previous = before.value if before.ok else None
+        updated = getattr(runtime.adapter, method_name)(
+            ctx.repo_root, **args.model_dump(exclude_unset=True)
+        )
+        if not updated.ok or updated.value is None:
+            return runtime.foundation.fail(updated.issues)
+        previous_revision = previous.revision if previous is not None else None
+        changed = previous_revision is None or previous_revision.model_dump(mode="json") != updated.value.revision.model_dump(mode="json")
+        return runtime.foundation.ok(
+            AdapterDeclFieldMutationReceipt(
+                name=updated.value.name,
+                section=section,
+                changed=changed,
+                resulting_state=updated.value.state,
+                summary=f"Updated adapter declaration {section}.",
+            ),
+            warnings=updated.issues,
+        )
+
+    return handler
+
+
+def _adapter_origin_mutation(section: Literal["statement", "proof"], method_name: str):
+    def handler(runtime, ctx, args: AdapterOriginArgs):
+        updated = getattr(runtime.adapter, method_name)(
+            ctx.repo_root, **args.model_dump(exclude_unset=True)
+        )
+        if not updated.ok or updated.value is None:
+            return runtime.foundation.fail(updated.issues)
+        natural = (
+            updated.value.revision.statement.nl
+            if section == "statement"
+            else updated.value.revision.proof.nl
+        )
+        if natural is None or not natural.origin:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "adapter_origin_receipt_missing",
+                    "Updated adapter origin was not present after mutation.",
+                    object_ref=args.name,
+                )
+            )
+        return runtime.foundation.ok(
+            AdapterDeclOriginMutationReceipt(
+                name=args.name,
+                section=section,
+                operation="add",
+                origin=natural.origin[-1],
+                summary=f"Added adapter {section} origin.",
+            ),
+            warnings=updated.issues,
+        )
+
+    return handler
+
+
+def _adapter_dependency_mutation(
+    section: Literal["statement", "proof"],
+    operation: Literal["add", "remove"],
+    method_name: str,
+):
+    def handler(runtime, ctx, args):  # noqa: ANN001
+        updated = getattr(runtime.adapter, method_name)(
+            ctx.repo_root, **args.model_dump(exclude_unset=True)
+        )
+        if not updated.ok or updated.value is None:
+            return runtime.foundation.fail(updated.issues)
+        deps = (
+            updated.value.revision.statement.deps
+            if section == "statement"
+            else (updated.value.revision.proof.deps if updated.value.revision.proof else [])
+        )
+        dep = next(
+            (
+                item
+                for item in deps
+                if isinstance(item, RepoDeclDep) and item.ref.name == args.dep_name
+            ),
+            None,
+        )
+        if operation == "remove":
+            dep = RepoDeclDep(
+                ref=DeclRef(repo=None, node="Main", name=args.dep_name, revision=1),
+            )
+        if dep is None:
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "adapter_dependency_receipt_missing",
+                    "Updated adapter dependency was not present after mutation.",
+                    object_ref=args.name,
+                )
+            )
+        return runtime.foundation.ok(
+            AdapterDeclDependencyMutationReceipt(
+                name=args.name,
+                section=section,
+                operation=operation,
+                dependency=dep,
+                summary=(
+                    f"Added adapter {section} dependency."
+                    if operation == "add"
+                    else f"Removed adapter {section} dependency."
+                ),
+            ),
+            warnings=updated.issues,
+        )
+
+    return handler
+
+
+def _inspect_adapter_decl(runtime, ctx, args: AdapterDeclNameArgs):
+    inspected = runtime.adapter.inspect_adapter_decl(ctx.repo_root, name=args.name)
+    if not inspected.ok or inspected.value is None:
+        return runtime.foundation.fail(inspected.issues)
+    return runtime.foundation.ok(
+        _adapter_decl_inspect_view(inspected.value),
+        warnings=inspected.issues,
+    )
+
+
+def _finalize_adapter_decl(runtime, ctx, args: AdapterDeclNameArgs):
+    finalized = runtime.adapter.finalize_adapter_decl(ctx.repo_root, name=args.name)
+    if not finalized.ok or finalized.value is None:
+        return runtime.foundation.fail(finalized.issues)
+    return runtime.foundation.ok(
+        AdapterDeclFinalizeReceipt(
+            name=finalized.value.name,
+            finalized=finalized.value.finalized,
+            released_state=finalized.value.released_state,
+            state=finalized.value.state,
+            status=finalized.value.status,
+            summary=finalized.value.summary,
+        ),
+        warnings=finalized.issues,
+    )
 
 
 def build_tool_specs() -> list[ToolSpec]:
@@ -190,126 +438,115 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.ADAPTER_DECL_CATALOG_INIT_WRITE},
             roles=write_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="create_adapter_decl",
             description="Create an adapter declaration catalog entry.",
             args_model=AdapterDeclCreateArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="create_adapter_decl",
-            result_view="adapter_decl",
+            result_view="adapter_decl_create_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_create_adapter_decl,
         ),
-        direct_tool(
+        handler_tool(
             name="set_adapter_statement_formal",
             description="Set adapter declaration formal statement code.",
             args_model=AdapterFormalArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="set_adapter_statement_formal",
-            result_view="adapter_decl",
+            result_view="adapter_decl_field_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_field_mutation("statement_formal", "set_adapter_statement_formal"),
         ),
-        direct_tool(
+        handler_tool(
             name="set_adapter_statement_nl",
             description="Set adapter declaration natural-language statement.",
             args_model=AdapterNlArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="set_adapter_statement_nl",
-            result_view="adapter_decl",
+            result_view="adapter_decl_field_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_field_mutation("statement_nl", "set_adapter_statement_nl"),
         ),
-        direct_tool(
+        handler_tool(
             name="add_adapter_statement_origin",
             description="Add statement origin text to an adapter declaration.",
             args_model=AdapterOriginArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="add_adapter_statement_origin",
-            result_view="adapter_decl",
+            result_view="adapter_decl_origin_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_origin_mutation("statement", "add_adapter_statement_origin"),
         ),
-        direct_tool(
+        handler_tool(
             name="add_adapter_statement_dep",
             description="Add a statement dependency to an adapter declaration.",
             args_model=AdapterDepArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="add_adapter_statement_dep",
-            result_view="adapter_decl",
+            result_view="adapter_decl_dependency_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_dependency_mutation("statement", "add", "add_adapter_statement_dep"),
         ),
-        direct_tool(
+        handler_tool(
             name="remove_adapter_statement_dep",
             description="Remove a statement dependency from an adapter declaration.",
             args_model=AdapterDepRemoveArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="remove_adapter_statement_dep",
-            result_view="adapter_decl",
+            result_view="adapter_decl_dependency_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_dependency_mutation("statement", "remove", "remove_adapter_statement_dep"),
         ),
-        direct_tool(
+        handler_tool(
             name="set_adapter_proof_formal",
             description="Set adapter declaration formal proof code.",
             args_model=AdapterFormalArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="set_adapter_proof_formal",
-            result_view="adapter_decl",
+            result_view="adapter_decl_field_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_field_mutation("proof_formal", "set_adapter_proof_formal"),
         ),
-        direct_tool(
+        handler_tool(
             name="set_adapter_proof_nl",
             description="Set adapter declaration natural-language proof.",
             args_model=AdapterNlArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="set_adapter_proof_nl",
-            result_view="adapter_decl",
+            result_view="adapter_decl_field_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_field_mutation("proof_nl", "set_adapter_proof_nl"),
         ),
-        direct_tool(
+        handler_tool(
             name="add_adapter_proof_origin",
             description="Add proof origin text to an adapter declaration.",
             args_model=AdapterOriginArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="add_adapter_proof_origin",
-            result_view="adapter_decl",
+            result_view="adapter_decl_origin_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_origin_mutation("proof", "add_adapter_proof_origin"),
         ),
-        direct_tool(
+        handler_tool(
             name="add_adapter_proof_dep",
             description="Add a proof dependency to an adapter declaration.",
             args_model=AdapterDepArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="add_adapter_proof_dep",
-            result_view="adapter_decl",
+            result_view="adapter_decl_dependency_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_dependency_mutation("proof", "add", "add_adapter_proof_dep"),
         ),
-        direct_tool(
+        handler_tool(
             name="remove_adapter_proof_dep",
             description="Remove a proof dependency from an adapter declaration.",
             args_model=AdapterDepRemoveArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="remove_adapter_proof_dep",
-            result_view="adapter_decl",
+            result_view="adapter_decl_dependency_mutation_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_adapter_dependency_mutation("proof", "remove", "remove_adapter_proof_dep"),
         ),
         direct_tool(
             name="list_adapter_decls",
@@ -322,16 +559,15 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.ADAPTER_DECL_CATALOG_READ},
             roles=roles,
         ),
-        direct_tool(
+        handler_tool(
             name="inspect_adapter_decl",
             description="Inspect one adapter declaration.",
             args_model=AdapterDeclNameArgs,
             capability=ToolCapability.READ,
-            backing_service="adapter",
-            backing_method="inspect_adapter_decl",
-            result_view="adapter_decl",
+            result_view="adapter_decl_inspect",
             groups={AppGroup.ADAPTER_DECL_CATALOG_READ},
             roles=roles,
+            handler=_inspect_adapter_decl,
         ),
         direct_tool(
             name="list_registered_adapter_modules",
@@ -366,16 +602,15 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.ADAPTER_DECL_CATALOG_READ},
             roles=roles,
         ),
-        direct_tool(
+        handler_tool(
             name="finalize_adapter_decl",
             description="Finalize one complete adapter declaration entry.",
             args_model=AdapterDeclNameArgs,
             capability=ToolCapability.WRITE,
-            backing_service="adapter",
-            backing_method="finalize_adapter_decl",
-            result_view="adapter_decl",
+            result_view="adapter_decl_finalize_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
+            handler=_finalize_adapter_decl,
         ),
         direct_tool(
             name="bind_adapter_interface",

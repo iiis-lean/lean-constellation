@@ -360,13 +360,15 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     worker_record = runtime.agent_service.start_records[-1]
     assert "target_metadata" not in worker_record.variables
     assert "context_brief" not in worker_record.variables
-    assert "Target change metadata:" in (worker_record.prompt or "")
+    assert "Assigned declarations:" in (worker_record.prompt or "")
     assert "Pipeline position: planned --Statement NL--> specified" in (worker_record.prompt or "")
     assert "global target_state does not expand this stage's authority" in (worker_record.prompt or "")
-    assert "change=create" in (worker_record.prompt or "")
-    assert "target_state=proved" in (worker_record.prompt or "")
-    assert "state=planned" in (worker_record.prompt or "")
-    assert "known_statement_deps=[none]" in (worker_record.prompt or "")
+    assert "Change: create" in (worker_record.prompt or "")
+    assert "Objective: Create main_result." in (worker_record.prompt or "")
+    assert "Required through: Proof Formal" in (worker_record.prompt or "")
+    assert "known_statement_deps" not in (worker_record.prompt or "")
+    assert "known_proof_deps" not in (worker_record.prompt or "")
+    assert "state=planned" not in (worker_record.prompt or "")
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_reviewer"
 
     queue_review(runtime, repo_root, stage="statement_nl", round_id=round_id, accepted=True)
@@ -377,8 +379,8 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     assert "Review decl stage statement_nl." in (reviewer_record.prompt or "")
     assert "Pipeline position: planned --Statement NL--> specified" in (reviewer_record.prompt or "")
     assert "Review only this layer" in (reviewer_record.prompt or "")
-    assert "Target change metadata:" in (reviewer_record.prompt or "")
-    assert "target_state=proved" in (reviewer_record.prompt or "")
+    assert "Assigned declarations:" in (reviewer_record.prompt or "")
+    assert "Required through: Proof Formal" in (reviewer_record.prompt or "")
 
 
 def test_decl_round_stale_contract_fails_before_mutation(tmp_path: Path) -> None:
