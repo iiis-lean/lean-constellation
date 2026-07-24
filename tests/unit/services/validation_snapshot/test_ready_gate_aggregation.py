@@ -429,7 +429,8 @@ def test_repo_ready_gate_rechecks_exact_root_interface_statement_contract(tmp_pa
         revision=1,
     )
     assert revision.ok and revision.value is not None
-    revision.value.statement_lean_code = "theorem main_result : False := by sorry"
+    assert revision.value.statement.formal is not None
+    revision.value.statement.formal.code = "theorem main_result : False := by sorry"
     revision_path = runtime.decl_graph.graph_store.revision_path(
         tmp_path,
         node_path=MAIN_CONTENT_NODE_PATH,

@@ -4,7 +4,15 @@ from pathlib import Path
 from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, make_runtime
 
 from lean_constellation.services.decl_graph import DeclChangeKind, DeclState
-from lean_constellation.services.decl_graph.models import DeclRevision
+from lean_constellation.services.decl_graph.models import (
+    DeclFormalSection,
+    DeclNaturalLanguageSection,
+    DeclProof,
+    DeclRevision,
+    RepoDeclDep,
+)
+from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.services.foundation import WriteMode
 
 
@@ -76,8 +84,13 @@ def _seed_committed_decl(
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, revision=1)
     assert revision.ok and revision.value is not None
     revision.value.state = state
-    revision.value.statement_deps = []
-    revision.value.proof_deps = deps or []
+    revision.value.statement.deps = []
+    if revision.value.proof is None:
+        revision.value.proof = DeclProof()
+    revision.value.proof.deps = [
+        RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name=dep, revision=1))
+        for dep in deps or []
+    ]
     _write_revision(tmp_path, decl_name=name, revision=revision.value)
     assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=state).ok
 
@@ -142,12 +155,12 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     assert index.value.decl_names == ["main_result"]
 
 
-def test_create_decl_revision_view_records_relaxed_satisfaction_target(tmp_path: Path) -> None:
+def test_create_decl_records_relaxed_satisfaction_target(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)
     service = make_runtime().decl_graph
 
-    view = service.create_decl_revision_view(
+    view = service.create_decl(
         tmp_path,
         node_path="Main.Topic.Core",
         round_id=round_id,
@@ -202,14 +215,21 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     service = make_runtime().decl_graph
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert revision.ok and revision.value is not None
-    revision.value.statement_nl = "A formal statement."
-    revision.value.statement_deps = ["supporting_lemma"]
-    revision.value.statement_lean_code = "theorem main_result : True := by trivial"
-    revision.value.statement_lean_check = lean_check_payload()
-    revision.value.proof_nl = "By triviality."
-    revision.value.proof_deps = ["supporting_lemma"]
-    revision.value.proof_lean_code = "by trivial"
-    revision.value.proof_lean_check = lean_check_payload()
+    dep = RepoDeclDep(ref=DeclRef(node="Main.Topic.Core", name="supporting_lemma", revision=1))
+    revision.value.statement.nl = DeclNaturalLanguageSection(text="A formal statement.")
+    revision.value.statement.deps = [dep]
+    revision.value.statement.formal = DeclFormalSection(
+        code="theorem main_result : True := by trivial",
+        check=LeanCheck.model_validate(lean_check_payload()),
+    )
+    revision.value.proof = DeclProof(
+        nl=DeclNaturalLanguageSection(text="By triviality."),
+        deps=[dep],
+        formal=DeclFormalSection(
+            code="by trivial",
+            check=LeanCheck.model_validate(lean_check_payload()),
+        ),
+    )
     _write_revision(tmp_path, decl_name="main_result", revision=revision.value)
 
     _, update_round_id = _create_round(tmp_path, objective="Update only the proof.")
@@ -232,12 +252,12 @@ def test_open_decl_update_copies_committed_revision_and_resets_stage_fields(tmp_
     opened = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=2)
     assert opened.ok and opened.value is not None
     assert opened.value.state == DeclState.DECLARED
-    assert opened.value.statement_nl == "A formal statement."
-    assert opened.value.statement_lean_code == "theorem main_result : True := by trivial"
-    assert opened.value.proof_nl is None
-    assert opened.value.proof_lean_code is None
-    assert opened.value.statement_deps == ["supporting_lemma"]
-    assert opened.value.proof_deps == []
+    assert opened.value.statement.nl.text == "A formal statement."
+    assert opened.value.statement.formal.code == "theorem main_result : True := by trivial"
+    assert opened.value.proof is None or opened.value.proof.nl is None
+    assert opened.value.proof is None or opened.value.proof.formal is None
+    assert [item.ref.name for item in opened.value.statement.deps] == ["supporting_lemma"]
+    assert opened.value.proof is None or opened.value.proof.deps == []
     assert opened.value.change is not None
     assert opened.value.change.base_revision == 1
 

@@ -16,7 +16,6 @@ from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
     DeclReviewMarkRecord,
-    DeclRevision,
     DeclRoundStatus,
     DeclState,
     DeclStrategyStatus,
@@ -51,20 +50,6 @@ class RoundStageRuntimeSummary(StrictModel):
     target_decl_names: list[str] = Field(default_factory=list)
     retry_count: int = 0
     summary: str
-
-
-class DeclStageTargetMetadata(StrictModel):
-    decl_name: str
-    change_kind: str | None = None
-    objective: str | None = None
-    base_revision: int | None = None
-    reset_to_state: str | None = None
-    target_state: str | None = None
-    require_target_state_satisfied: bool = True
-    current_state: str
-    current_revision: int
-    known_statement_deps: list[str] = Field(default_factory=list)
-    known_proof_deps: list[str] = Field(default_factory=list)
 
 
 class RoundStartValidationStepResult(LeanRenderableStepResult):
@@ -126,7 +111,6 @@ class PrepareStageTargetsStepResult(LeanRenderableStepResult):
     outcome: Literal["targets_ready", "skipped", "blocked", "failed"]
     stage: DeclStageName
     target_decl_names: list[str] = Field(default_factory=list)
-    target_metadata: list[DeclStageTargetMetadata] = Field(default_factory=list)
     skipped_reason: str | None = None
     prepared_file_count: int = 0
     error: RoundTerminalReason | None = None
@@ -136,7 +120,6 @@ class PrepareStageTargetsStepResult(LeanRenderableStepResult):
             "outcome": self.outcome,
             "stage": self.stage,
             "target_decl_names": list(self.target_decl_names),
-            "target_metadata": [item.model_dump(mode="json") for item in self.target_metadata],
             "skipped_reason": self.skipped_reason,
             "prepared_file_count": self.prepared_file_count,
             "error": self.error.message if self.error else None,
@@ -203,6 +186,15 @@ class DeclStageReviewerStepState(AgentStepState):
     expected_decl_names: list[str] = Field(default_factory=list)
     review_attempt_index: int = 0
     review_marks: list[DeclReviewMarkRecord] = Field(default_factory=list)
+
+
+class DeclStageWorkerStepState(AgentStepState):
+    state_type: Literal["decl_stage_worker_agent_step"] = "decl_stage_worker_agent_step"
+    round_id: str | None = None
+    node_path: str | None = None
+    stage: DeclStageName | None = None
+    expected_decl_names: list[str] = Field(default_factory=list)
+    retry_attempt_index: int = 0
 
 
 class StageGateAndAuditStepResult(LeanRenderableStepResult):
@@ -451,7 +443,7 @@ class PrepareStageTargetsStep(BaseStep):
         targets = _stage_targets(ctx, repo_root, input_model.node_path, input_model.round_id, state.stage)
         if not targets.ok or targets.value is None:
             return ctx.complete_step(_prepare_failed(state.stage, _first_issue_message(targets.issues, "Cannot compute stage targets.")))
-        target_names = [target.decl_name for target in targets.value]
+        target_names = targets.value
         if not target_names:
             return ctx.complete_step(
                 PrepareStageTargetsStepResult(
@@ -479,7 +471,6 @@ class PrepareStageTargetsStep(BaseStep):
                 outcome="targets_ready",
                 stage=state.stage,
                 target_decl_names=target_names,
-                target_metadata=targets.value,
                 prepared_file_count=prepared_file_count,
                 summary=f"Prepared {len(target_names)} targets for {state.stage}.",
             )
@@ -582,15 +573,20 @@ class RoundFinalAuditStep(BaseStep):
         if not audit.ok or audit.value is None:
             return ctx.complete_step(_final_audit_failed(_first_issue_message(audit.issues, "Cannot audit round.")))
         if not audit.value.passed:
+            reached_names = [ref.decl_name for ref in audit.value.reached_target_revision_refs]
+            failed_names = [
+                failure.revision_ref.decl_name
+                for failure in [*audit.value.target_state_failures, *audit.value.readiness_failures]
+            ]
             return ctx.complete_step(
                 RoundFinalAuditStepResult(
                     outcome="failed",
-                    reached_target_decl_names=list(audit.value.reached_target_decl_names),
-                    missing_target_decl_names=list(audit.value.missing_target_decl_names),
+                    reached_target_decl_names=reached_names,
+                    missing_target_decl_names=failed_names,
                     error=RoundTerminalReason(
                         code="final_audit_failed",
-                        message=audit.value.issue_message or audit.value.summary,
-                        affected_decl_names=list(audit.value.missing_target_decl_names),
+                        message=audit.value.summary,
+                        affected_decl_names=failed_names,
                     ),
                     summary=audit.value.summary,
                 )
@@ -598,7 +594,9 @@ class RoundFinalAuditStep(BaseStep):
         return ctx.complete_step(
             RoundFinalAuditStepResult(
                 outcome="passed",
-                reached_target_decl_names=list(audit.value.reached_target_decl_names),
+                reached_target_decl_names=[
+                    ref.decl_name for ref in audit.value.reached_target_revision_refs
+                ],
                 readiness_summary="Round target states and required proof-policy satisfaction checks passed.",
                 summary=audit.value.summary,
             )
@@ -793,7 +791,7 @@ def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_i
     revisions = _round_revisions(ctx, repo_root, node_path, round_id)
     if not revisions.ok or revisions.value is None:
         return graph.runtime.foundation.fail(revisions.issues)
-    targets: list[DeclStageTargetMetadata] = []
+    targets: list[str] = []
     for decl_name, revision in revisions.value:
         change = revision.change
         if change is None:
@@ -806,25 +804,8 @@ def _stage_targets(ctx: StepRunContext, repo_root: Path, node_path: str, round_i
         if not decl.ok or decl.value is None:
             return graph.runtime.foundation.fail(decl.issues)
         if _stage_required(stage, decl.value.kind, revision, change.target_state):
-            targets.append(_decl_stage_target_metadata(decl_name, revision))
-    return graph.runtime.foundation.ok(sorted(targets, key=lambda item: item.decl_name))
-
-
-def _decl_stage_target_metadata(decl_name: str, revision: DeclRevision) -> DeclStageTargetMetadata:
-    change = revision.change
-    return DeclStageTargetMetadata(
-        decl_name=decl_name,
-        change_kind=change.kind.value if change is not None else None,
-        objective=change.objective if change is not None else None,
-        base_revision=change.base_revision if change is not None else None,
-        reset_to_state=change.reset_to_state.value if change is not None and change.reset_to_state is not None else None,
-        target_state=change.target_state.value if change is not None and change.target_state is not None else None,
-        require_target_state_satisfied=change.require_target_state_satisfied if change is not None else True,
-        current_state=revision.state.value,
-        current_revision=revision.revision,
-        known_statement_deps=list(revision.statement_deps),
-        known_proof_deps=list(revision.proof_deps),
-    )
+            targets.append(decl_name)
+    return graph.runtime.foundation.ok(sorted(targets))
 
 
 def _stage_required(stage: DeclStageName, kind: str, revision, target_state: DeclState) -> bool:

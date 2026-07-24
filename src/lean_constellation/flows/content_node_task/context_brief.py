@@ -87,55 +87,6 @@ class StrategyRoundContextBrief(StrictModel):
         )
 
 
-class WorkerChangeReceiptView(StrictModel):
-    outcome: str
-    stage: str | None = None
-    completed_decl_names: list[str] = Field(default_factory=list)
-    affected_decl_names: list[str] = Field(default_factory=list)
-    summary: str | None = None
-
-
-class StageContextBrief(StrictModel):
-    repo_key: str
-    node_path: str
-    contract_version: int | None = None
-    stage: str
-    role: Literal["worker", "reviewer"]
-    strategy_round: StrategyRoundContextBrief
-    preparation: PreparationContextBrief
-    target_metadata: list[dict[str, Any]] = Field(default_factory=list)
-    prior_reviewer_feedback: str | None = None
-    worker_receipt: WorkerChangeReceiptView | None = None
-    generated_at: str = Field(default_factory=utc_now_iso)
-    digest: str
-
-    def render(self) -> str:
-        lines = [
-            f"Stage context brief digest: {self.digest}",
-            (
-                f"Identity: repo={self.repo_key}; node={self.node_path}; "
-                f"contract_version={self.contract_version}; stage={self.stage}; role={self.role}."
-            ),
-            self.strategy_round.render(),
-            self.preparation.render(),
-        ]
-        if self.worker_receipt is not None:
-            lines.append(
-                "Worker receipt (navigation only, not review evidence): "
-                f"outcome={self.worker_receipt.outcome}; "
-                f"completed={', '.join(self.worker_receipt.completed_decl_names) or 'none'}; "
-                f"affected={', '.join(self.worker_receipt.affected_decl_names) or 'none'}; "
-                f"summary={self.worker_receipt.summary or '(not provided)'}"
-            )
-        if self.prior_reviewer_feedback:
-            lines.append(f"Prior reviewer feedback: {self.prior_reviewer_feedback}")
-        lines.append(
-            "Treat matching identities as already-read context. Re-query narrowly when an identity "
-            "changed, an item is unresolved, a mutation needs current truth, or independent review is required."
-        )
-        return "\n".join(lines)
-
-
 class ContentPlanContextBrief(StrictModel):
     repo_key: str
     node_path: str
@@ -273,59 +224,6 @@ def build_content_plan_context_brief(ctx, flow, input_model, state) -> ContentPl
     )
 
 
-def build_stage_context_brief(ctx, flow, input_model, state, *, role: Literal["worker", "reviewer"]) -> StageContextBrief:
-    strategy_round = _strategy_round_brief(
-        ctx.app,
-        repo_root=Path(input_model.repo_path) if input_model.repo_path else None,
-        node_path=input_model.node_path,
-        strategy_id=input_model.strategy_id,
-        round_id=input_model.round_id,
-        round_index=input_model.round_index,
-    )
-    preparation = build_preparation_context_brief(
-        ctx,
-        content_flow_id=flow.parent_flow_id,
-    )
-    worker_receipt = None
-    if state.latest_worker_result is not None:
-        worker_receipt = WorkerChangeReceiptView(
-            outcome=state.latest_worker_result.outcome,
-            stage=state.latest_worker_result.stage,
-            completed_decl_names=list(state.latest_worker_result.completed_decl_names),
-            affected_decl_names=list(state.latest_worker_result.affected_decl_names),
-            summary=state.latest_worker_result.summary,
-        )
-    prior_feedback = None
-    if state.latest_reviewer_result is not None:
-        prior_feedback = state.latest_reviewer_result.summary
-    target_metadata = [item.model_dump(mode="json") for item in state.current_target_metadata]
-    payload = {
-        "repo_key": input_model.repo_key,
-        "node_path": input_model.node_path,
-        "contract_version": input_model.contract_version,
-        "stage": state.current_stage,
-        "role": role,
-        "strategy_round": strategy_round.model_dump(mode="json"),
-        "preparation_digest": preparation.digest,
-        "target_metadata": target_metadata,
-        "prior_reviewer_feedback": prior_feedback,
-        "worker_receipt": worker_receipt.model_dump(mode="json") if worker_receipt else None,
-    }
-    return StageContextBrief(
-        repo_key=input_model.repo_key,
-        node_path=input_model.node_path,
-        contract_version=input_model.contract_version,
-        stage=str(state.current_stage),
-        role=role,
-        strategy_round=strategy_round,
-        preparation=preparation,
-        target_metadata=target_metadata,
-        prior_reviewer_feedback=prior_feedback,
-        worker_receipt=worker_receipt,
-        digest=_digest(payload),
-    )
-
-
 def build_prior_preparation_prompt_context(ctx, flow) -> str:
     brief = build_preparation_context_brief(
         ctx,
@@ -449,11 +347,8 @@ __all__ = [
     "ContentPlanContextBrief",
     "PreparationContextBrief",
     "PreparationFindingView",
-    "StageContextBrief",
     "StrategyRoundContextBrief",
-    "WorkerChangeReceiptView",
     "build_content_plan_context_brief",
     "build_preparation_context_brief",
     "build_prior_preparation_prompt_context",
-    "build_stage_context_brief",
 ]

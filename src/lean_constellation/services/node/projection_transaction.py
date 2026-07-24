@@ -5,52 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import Field
-
-from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
 from lean_constellation.services.foundation.module_layout import local_projection_path
-from lean_constellation.services.node.contract import NodeContractView
 from lean_constellation.services.node.node_tree import NodeContract, NodeMetadata
-
-
-class NodeContractProjectionMutationView(NodeContractView):
-    """Node contract mutation plus its generated projection side effects."""
-
-    projection_kind: Literal["prelude", "interfaces"]
-    projection_path: str | None = None
-    managed_projection_changed: bool = False
-    changed_files: list[str] = Field(default_factory=list)
-    reread_required: bool = False
-    projection_summary: str
-
-
-def node_contract_projection_mutation_view(
-    contract: NodeContractView,
-    *,
-    projection_kind: Literal["prelude", "interfaces"],
-    projection: Any | None,
-) -> NodeContractProjectionMutationView:
-    """Combine the current contract with one generated-file refresh result."""
-
-    path = getattr(projection, "path", None)
-    changed = bool(getattr(projection, "changed", False))
-    summary = getattr(projection, "summary", None) or (
-        f"Generated {projection_kind} projection was not available in this runtime."
-    )
-    return NodeContractProjectionMutationView.model_validate(
-        {
-            **contract.model_dump(mode="python"),
-            "projection_kind": projection_kind,
-            "projection_path": path,
-            "managed_projection_changed": changed,
-            "changed_files": [path] if changed and path else [],
-            "reread_required": changed,
-            "projection_summary": summary,
-        }
-    )
 
 
 def persist_contract_with_projection(
@@ -189,7 +148,5 @@ def _restore_projection(
 
 
 __all__ = [
-    "NodeContractProjectionMutationView",
-    "node_contract_projection_mutation_view",
     "persist_contract_with_projection",
 ]

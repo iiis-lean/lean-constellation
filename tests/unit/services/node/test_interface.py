@@ -114,7 +114,9 @@ def test_add_update_remove_supplement_interface(tmp_path: Path) -> None:
     )
     assert added.ok
     assert added.value is not None
-    assert [item.name for item in added.value.contract.interfaces] == ["main_result", "core_definition"]
+    assert added.value.operation == "add"
+    assert added.value.interface is not None
+    assert added.value.interface.name == "core_definition"
 
     duplicate = component.add_interface(
         tmp_path,
@@ -136,12 +138,15 @@ def test_add_update_remove_supplement_interface(tmp_path: Path) -> None:
     )
     assert updated.ok
     assert updated.value is not None
-    assert updated.value.contract.interfaces[1].summary == "Updated definition interface."
+    assert updated.value.interface is not None
+    assert updated.value.interface.summary == "Updated definition interface."
 
     removed = component.remove_interface(tmp_path, node_path="Main", name="core_definition", actor="coordinator")
     assert removed.ok
     assert removed.value is not None
-    assert [item.name for item in removed.value.contract.interfaces] == ["main_result"]
+    assert removed.value.operation == "remove"
+    assert removed.value.previous is not None
+    assert removed.value.previous.name == "core_definition"
 
 
 def test_add_interface_rejects_invalid_inputs(tmp_path: Path) -> None:
@@ -255,7 +260,8 @@ def test_update_interface_reports_missing_empty_summary_and_statement_hint_chang
     )
     assert updated.ok
     assert updated.value is not None
-    assert updated.value.contract.interfaces[0].note == "Refined statement hint."
+    assert updated.value.interface is not None
+    assert updated.value.interface.note == "Refined statement hint."
 
     cleared = component.update_interface(
         tmp_path,
@@ -266,7 +272,8 @@ def test_update_interface_reports_missing_empty_summary_and_statement_hint_chang
     )
     assert cleared.ok
     assert cleared.value is not None
-    assert cleared.value.contract.interfaces[0].note is None
+    assert cleared.value.interface is not None
+    assert cleared.value.interface.note is None
 
 
 def test_sync_and_check_protected_root_interfaces(tmp_path: Path) -> None:

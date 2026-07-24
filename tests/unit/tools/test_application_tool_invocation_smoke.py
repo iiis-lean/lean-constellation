@@ -205,7 +205,7 @@ def _create_public_decl(
         objective=f"Create {name}.",
     )
     assert round_record.ok and round_record.value is not None
-    created = runtime.decl_graph.create_decl_revision_view(
+    created = runtime.decl_graph.create_decl(
         repo_root,
         node_path=node_path,
         round_id=round_record.value.round_id,
@@ -1039,7 +1039,7 @@ def test_mark_decl_round_terminal_commits_open_revisions_after_runtime_failure(t
         objective="Create the definition.",
     )
     assert round_record.ok and round_record.value is not None
-    created = runtime.decl_graph.create_decl_revision_view(
+    created = runtime.decl_graph.create_decl(
         tmp_path,
         node_path="Main.Topic",
         round_id=round_record.value.round_id,
@@ -1178,32 +1178,21 @@ def test_current_node_decl_read_tools_invoke_decl_graph(tmp_path: Path) -> None:
     assert listed["items"][0]["state"] == "planned"
     assert listed["items"][0]["proof_policy_satisfied"] is False
     assert inspected["decl_name"] == "topic_def"
-    assert inspected["public"] is True
-    assert inspected["proof_policy_satisfied"] is False
-    assert "statement_nl" not in inspected
-    assert "statement_lean_code" not in inspected
-    included = _unwrap_tool_result(
-        runtime.tool_facade.invoke_agent_tool(
-            raw,
-            tool_name="inspect_current_node_decl",
-            flat_args={"decl_name": "topic_def", "include_statement_nl": True, "include_formal": True},
-        )
-    )
-    assert "statement_nl" in included
-    assert included["formal_stage"] == "none"
-    assert included["formal_preview"] is None
-    assert "statement_lean_code" not in included
+    assert inspected["visibility"] == "public"
+    assert inspected["artifacts"]["statement_nl"] == "absent"
+    assert inspected["artifacts"]["statement_formal"] == "absent"
+    assert "proof_policy_satisfied" not in inspected
     legacy = _unwrap_tool_failure(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="inspect_current_node_decl",
-            flat_args={"decl_name": "topic_def", "include_statement_formal": True},
+            flat_args={"decl_name": "topic_def", "include_formal": True},
         )
     )
     assert legacy[0].kind == "tool_arguments_invalid"
 
 
-def test_current_node_decl_inspect_defaults_to_complete_formal_source_without_docstring(tmp_path: Path) -> None:
+def test_read_formal_defaults_to_complete_source_without_docstring(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_content_node(
@@ -1224,7 +1213,7 @@ def test_current_node_decl_inspect_defaults_to_complete_formal_source_without_do
         objective="Prove theorem.",
     )
     assert round_record.ok and round_record.value is not None
-    created = runtime.decl_graph.create_decl_revision_view(
+    created = runtime.decl_graph.create_decl(
         tmp_path,
         node_path="Main.Topic",
         round_id=round_record.value.round_id,
@@ -1301,43 +1290,30 @@ def test_current_node_decl_inspect_defaults_to_complete_formal_source_without_do
         )
     )
 
-    assert inspected["formal_preview"].endswith("\n…")
-    assert "exact h44" not in inspected["formal_preview"]
-    assert inspected["primary_formal_code"].endswith("exact h44")
-    assert inspected["formal_code"].startswith("import Mathlib")
-    assert "supporting_fact" in inspected["formal_code"]
-    assert "# lean-constellation target" not in inspected["formal_code"]
-    assert inspected["formal_code"].endswith("exact h44")
-
-    planner = _raw(tmp_path, view="content_plan", agent_type="ContentPlanAgent", role="plan", node_path="Main.Topic")
-    planner_inspected = _unwrap_tool_result(
+    assert inspected["decl_name"] == "long_theorem"
+    assert "formal_code" not in inspected
+    assert "formal_preview" not in inspected
+    formal = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
-            planner,
-            tool_name="inspect_current_node_decl",
+            reviewer,
+            tool_name="read_formal",
             flat_args={"decl_name": "long_theorem"},
         )
     )
-    assert planner_inspected["primary_formal_code"].endswith("exact h44")
-    assert planner_inspected["formal_code"] == inspected["formal_code"]
+    assert formal["stage"] == "proof"
+    assert formal["code"].startswith("import Mathlib")
+    assert "supporting_fact" in formal["code"]
+    assert "# lean-constellation target" not in formal["code"]
+    assert formal["code"].endswith("exact h44")
 
     with_docstring = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
-            planner,
-            tool_name="inspect_current_node_decl",
-            flat_args={"decl_name": "long_theorem", "include_formal_docstring": True},
+            reviewer,
+            tool_name="read_formal",
+            flat_args={"decl_name": "long_theorem", "include_docstring": True},
         )
     )
-    assert "# lean-constellation target: `long_theorem`" in with_docstring["formal_code"]
-
-    without_formal = _unwrap_tool_result(
-        runtime.tool_facade.invoke_agent_tool(
-            planner,
-            tool_name="inspect_current_node_decl",
-            flat_args={"decl_name": "long_theorem", "include_formal": False},
-        )
-    )
-    assert "formal_code" not in without_formal
-    assert "primary_formal_code" not in without_formal
+    assert "# lean-constellation target: `long_theorem`" in with_docstring["code"]
 
 
 def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) -> None:
@@ -1455,7 +1431,7 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
         provider,
         node_path="Main.Core",
         name="provider_result",
-        revision=created_decl.revision,
+        revision=created_decl.target_revision,
     )
     assert revision.ok and revision.value is not None
     revision.value.state = DeclState.PROVED
@@ -1486,7 +1462,7 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
             provider,
             node_path="Main.Core",
             decl_name="provider_result",
-            revision=created_decl.revision,
+            revision=created_decl.target_revision,
         ),
         revision.value,
         mode=WriteMode.OVERWRITE,
@@ -1564,8 +1540,8 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     assert inspected["resolved_revision"] == 1
     assert inspected["state"] == "proved"
     assert inspected["proof_policy_satisfied"] is True
-    assert inspected["formal_stage"] == "proof"
-    assert inspected["formal_preview"].startswith("theorem provider_result")
+    assert inspected["artifacts"]["proof_formal"] == "passed"
+    assert "formal_preview" not in inspected
     assert source["revision"] == 1
     assert source["stage"] == "proof"
     assert source["source"] == "captured_revision"
@@ -1598,7 +1574,7 @@ def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp
         )
     )
 
-    assert added_dep["deps"]["deps"][0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
+    assert added_dep["added"][0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
     assert added_dep["managed_projection_changed"] is True
     assert added_dep["changed_files"]
     assert added_dep["reread_required"] is True
@@ -1618,7 +1594,7 @@ def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp
         )
     )
 
-    assert material["material_refs"]["owned_refs"][0]["path"] == "notes.md"
+    assert material["added"][0]["ref"]["ref"]["path"] == "notes.md"
 
 
 def test_coordinator_node_contract_write_tools_invoke_path_based_mutation_wrappers(tmp_path: Path) -> None:
@@ -1687,17 +1663,18 @@ def test_coordinator_node_contract_write_tools_invoke_path_based_mutation_wrappe
         )
     )
 
-    assert added_dep["deps"]["deps"][0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
+    assert added_dep["added"][0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
     assert added_dep["managed_projection_changed"] is True
     assert added_dep["changed_files"]
     assert added_dep["reread_required"] is True
-    assert added_material["material_refs"]["context_refs"][0]["path"] == "notes.md"
-    assert added_hint["hints"]["modules"][0]["module"] == "Mathlib.Data.Nat.Basic"
+    assert added_material["added"][0]["ref"]["ref"]["path"] == "notes.md"
+    assert added_hint["added_modules"][0]["module"] == "Mathlib.Data.Nat.Basic"
     assert added_hint["managed_projection_changed"] is True
     assert added_hint["changed_files"]
     assert added_hint["reread_required"] is True
-    assert added_decl_hint["hints"]["declarations"][0]["name"] == "Nat.succ_eq_add_one"
-    assert "changed_files" in added_decl_hint
+    assert added_decl_hint["added_declarations"][0]["name"] == "Nat.succ_eq_add_one"
+    assert added_decl_hint["managed_projection_changed"] is False
+    assert "changed_files" not in added_decl_hint
     assert "reread_required" in added_decl_hint
 
     removed_material = _unwrap_tool_result(
@@ -1729,10 +1706,10 @@ def test_coordinator_node_contract_write_tools_invoke_path_based_mutation_wrappe
         )
     )
 
-    assert removed_material["material_refs"]["context_refs"] == []
-    assert removed_dep["deps"]["deps"] == []
-    assert removed_module_hint["hints"]["modules"] == []
-    assert removed_decl_hint["hints"]["declarations"] == []
+    assert removed_material["removed"][0]["ref"]["ref"]["path"] == "notes.md"
+    assert removed_dep["removed"][0]["expected_decl_refs"] == [ref.model_dump(mode="json")]
+    assert removed_module_hint["removed_modules"][0]["module"] == "Mathlib.Data.Nat.Basic"
+    assert removed_decl_hint["removed_declarations"][0]["name"] == "Nat.succ_eq_add_one"
 
 
 def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) -> None:
@@ -1998,14 +1975,12 @@ def test_decl_stage_nl_tool_invokes_stage_mutation_with_context(tmp_path: Path) 
         )
     )
 
-    assert view["decl"]["state"] == "planned"
-    assert view["decl"]["statement_origin"][0]["kind"] == "source"
-    assert view["decl"]["statement_origin"][0]["source_path"] == "notes.md"
-    assert view["decl"]["statement_deps"] == []
-    assert view["changed_files"] == []
-    assert view["reread_required"] is False
-    assert "statement" not in view["decl"]
-    assert "decl_deps" not in view["decl"]
+    assert view["target"] == "current node / main_result / Statement origins"
+    assert view["operation"] == "add"
+    assert view["added"][0]["kind"] == "source"
+    assert view["added"][0]["source_path"] == "notes.md"
+    assert "managed_projection" not in view
+    assert "decl" not in view
 
 
 def test_decl_stage_review_mark_tool_invokes_review_gate_with_context(tmp_path: Path) -> None:

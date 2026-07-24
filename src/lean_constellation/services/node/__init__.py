@@ -5,6 +5,7 @@ from lean_constellation.services.node.contract import (
     ContractComponent,
     ContractVersionStatus,
     NodeContractSummaryView,
+    NodeContractTextMutationReceipt,
     NodeContractView,
     OpenContractView,
     ScopeNodeContract,
@@ -20,6 +21,7 @@ from lean_constellation.services.node.contract_fields import (
 )
 from lean_constellation.services.node.dependency import (
     DependencyComponent,
+    NodeDependencyMutationReceipt,
     NodeDepsView,
     NodeDepView,
     VisibleBoundaryView,
@@ -36,6 +38,7 @@ from lean_constellation.services.node.export import (
 )
 from lean_constellation.services.node.interface import (
     InterfaceBindingView,
+    InterfaceMutationReceipt,
     InterfaceActor,
     InterfaceComponent,
     InterfaceListView,
@@ -68,7 +71,6 @@ from lean_constellation.services.node.public_decl_access import (
     VisibleNodeAccessItem,
     VisibleNodeAccessView,
 )
-from lean_constellation.services.node.projection_transaction import NodeContractProjectionMutationView
 from lean_constellation.services.node.service import (
     ContentTaskFinalizeInput,
     ContentTaskFinalizeView,
@@ -76,7 +78,7 @@ from lean_constellation.services.node.service import (
     ContentTaskReadyGateProvider,
     ContentTaskResultView,
     CurrentNodeContractView,
-    CurrentNodeContractMutationView,
+    CurrentNodeMaterialMutationReceipt,
     NodeBoundaryView,
     NodeService,
     RepoReadyNodeView,
@@ -92,7 +94,8 @@ __all__ = [
     "ContentTaskReadyGateProvider",
     "ContentTaskResultView",
     "CurrentNodeContractView",
-    "CurrentNodeContractMutationView",
+    "NodeDependencyMutationReceipt",
+    "CurrentNodeMaterialMutationReceipt",
     "ContractComponent",
     "ContractVersionStatus",
     "ContractMaterialRef",
@@ -104,6 +107,7 @@ __all__ = [
     "ExportComponent",
     "InterfaceActor",
     "InterfaceBindingView",
+    "InterfaceMutationReceipt",
     "InterfaceComponent",
     "InterfaceListView",
     "ImportedRepoAccessItem",
@@ -122,6 +126,7 @@ __all__ = [
     "NodeContractSnapshot",
     "NodeContractStatus",
     "NodeContractSummaryView",
+    "NodeContractTextMutationReceipt",
     "NodeContractView",
     "NodeBoundaryView",
     "NodeKind",
@@ -129,7 +134,6 @@ __all__ = [
     "NodeMaterialRefView",
     "NodeMaterialRefsView",
     "NodeMetadata",
-    "NodeContractProjectionMutationView",
     "NodeIndex",
     "NodeIndexEntry",
     "NodeStore",

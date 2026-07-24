@@ -523,7 +523,7 @@ def test_release_external_statement_dep_accepts_adapter_public_interface(tmp_pat
         decl_name="PublicResult",
     )
     assert readiness.ok and readiness.value is not None
-    assert readiness.value.proof_policy_satisfied is True
+    assert readiness.value.ready is True
     assert runtime.repo_workspace.release.create_release(
         consumer_root, release=_release("consumer_r1", versions)
     ).ok

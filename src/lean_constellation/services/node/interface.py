@@ -56,6 +56,17 @@ class InterfaceBindingView(StrictModel):
     summary: str
 
 
+class InterfaceMutationReceipt(StrictModel):
+    """Compact add/update/remove result for one interface."""
+
+    node_path: str
+    operation: str
+    changed: bool
+    interface: InterfaceView | None = None
+    previous: InterfaceView | None = None
+    summary: str
+
+
 class RootInterfaceReadyGateView(StrictModel):
     summary: str
     protected_interface_count: int
@@ -90,7 +101,7 @@ class InterfaceComponent:
         summary: str,
         statement_hint: str | None = None,
         actor: str | InterfaceActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[InterfaceMutationReceipt]:
         normalized = self._build_interface(name=name, kind=kind, summary=summary, statement_hint=statement_hint)
         if not normalized.ok or normalized.value is None:
             return self.runtime.foundation.fail(normalized.issues)
@@ -118,7 +129,16 @@ class InterfaceComponent:
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        return self.runtime.foundation.ok(
+            InterfaceMutationReceipt(
+                node_path=node_path,
+                operation="add",
+                changed=True,
+                interface=self._interface_view(normalized.value, protected=False),
+                summary=f"Added interface {normalized.value.name}.",
+            ),
+            warnings=saved.issues,
+        )
 
     def update_interface(
         self,
@@ -129,7 +149,7 @@ class InterfaceComponent:
         summary: str | None = None,
         statement_hint: str | None = None,
         actor: str | InterfaceActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[InterfaceMutationReceipt]:
         if summary is None and statement_hint is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -152,6 +172,7 @@ class InterfaceComponent:
         target = self._find_interface(opened.value.contract.interfaces, name)
         if target is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("interface_missing", f"Interface not found: {name}", object_ref=node_path))
+        previous = self._interface_view(target.model_copy(deep=True), protected=False)
         if summary is not None:
             if not summary.strip():
                 return self.runtime.foundation.fail(self.runtime.foundation.issue("interface_summary_required", "Interface summary cannot be empty.", field="summary"))
@@ -161,7 +182,18 @@ class InterfaceComponent:
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        current = self._interface_view(target, protected=False)
+        return self.runtime.foundation.ok(
+            InterfaceMutationReceipt(
+                node_path=node_path,
+                operation="update",
+                changed=previous != current,
+                interface=current,
+                previous=previous,
+                summary=f"Updated interface {name}.",
+            ),
+            warnings=saved.issues,
+        )
 
     def remove_interface(
         self,
@@ -170,7 +202,7 @@ class InterfaceComponent:
         node_path: str,
         name: str,
         actor: str | InterfaceActor,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[InterfaceMutationReceipt]:
         protected = self._protected_names(repo_root, node_path)
         if not protected.ok or protected.value is None:
             return self.runtime.foundation.fail(protected.issues)
@@ -188,11 +220,21 @@ class InterfaceComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("interface_bound", "Bound interface must be unbound before removal.", object_ref=node_path, field=name)
             )
+        removed = self._interface_view(target, protected=False)
         opened.value.contract.interfaces = [interface for interface in opened.value.contract.interfaces if interface.name != name]
         saved = self._save_contract(repo_root, node_path, opened.value.contract)
         if not saved.ok:
             return self.runtime.foundation.fail(saved.issues)
-        return self.contract.get_current_contract(repo_root, node_path=node_path)
+        return self.runtime.foundation.ok(
+            InterfaceMutationReceipt(
+                node_path=node_path,
+                operation="remove",
+                changed=True,
+                previous=removed,
+                summary=f"Removed interface {name}.",
+            ),
+            warnings=saved.issues,
+        )
 
     def bind_interface_to_decl(
         self,
@@ -745,7 +787,11 @@ class InterfaceComponent:
                     object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
                 )
             )
-        statement_code = revision.value.statement_lean_code
+        statement_code = (
+            revision.value.statement.formal.code
+            if revision.value.statement.formal is not None
+            else None
+        )
         if statement_code is None or not statement_code.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -764,8 +810,13 @@ class InterfaceComponent:
                 )
             )
         actual_codes = [("statement", statement_code)]
-        if revision.value.proof_lean_code is not None and revision.value.proof_lean_code.strip():
-            actual_codes.append(("proof", revision.value.proof_lean_code))
+        proof_code = (
+            revision.value.proof.formal.code
+            if revision.value.proof is not None and revision.value.proof.formal is not None
+            else None
+        )
+        if proof_code is not None and proof_code.strip():
+            actual_codes.append(("proof", proof_code))
         for stage, actual in actual_codes:
             compared = self.runtime.lean_projection.annotation.compare_expected_theorem_header(
                 expected,
@@ -847,6 +898,18 @@ class InterfaceComponent:
             if interface.name == name:
                 return interface
         return None
+
+    @staticmethod
+    def _interface_view(interface: DeclInterface, *, protected: bool) -> InterfaceView:
+        return InterfaceView(
+            name=interface.name,
+            kind=interface.kind,
+            summary=interface.summary,
+            protected=protected,
+            expected_statement_lean_code=interface.expected_statement_lean_code,
+            bound_decl=interface.bound_decl,
+            note=interface.note,
+        )
 
     @staticmethod
     def _interface_requirement_dump(interface: DeclInterface) -> dict[str, object]:

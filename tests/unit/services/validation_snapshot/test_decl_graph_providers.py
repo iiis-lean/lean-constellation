@@ -141,6 +141,7 @@ def _create_decl(
     name: str,
     public: bool = True,
     target_state: DeclState = DeclState.PROVED,
+    anticipated_statement_dep_names: list[str] | None = None,
 ) -> Any:
     created = runtime.decl_graph.create_decl(
         repo_root,
@@ -152,6 +153,7 @@ def _create_decl(
         summary=f"{name} summary.",
         public=public,
         target_state=target_state,
+        anticipated_statement_dep_names=anticipated_statement_dep_names,
     )
     assert created.ok and created.value is not None, created.issues
     return created.value
@@ -538,8 +540,8 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     completion = gate.check_content_node_completion(consumer, node_path=NODE_PATH)
 
     assert proof_policy.ok and proof_policy.value is not None
-    assert proof_policy.value.proof_policy_satisfied is True
-    assert proof_policy.value.dependencies_checked == ["Provider:Main.Topic.Core:main_result"]
+    assert proof_policy.value.ready is True
+    assert proof_policy.value.blocker is None
     assert completion.ok and completion.value is not None
     assert completion.value.ready_to_submit is True
     assert completion.value.target_proof_availability == ProofAvailability.PROVED
@@ -686,7 +688,7 @@ def test_strict_proved_audit_does_not_downgrade_declared_provider_policy(tmp_pat
     audit = runtime.decl_graph.run_strict_proved_audit(consumer, node_path=NODE_PATH)
 
     assert normal.ok and normal.value is not None
-    assert normal.value.proof_policy_satisfied is True
+    assert normal.value.ready is True
     assert audit.ok and audit.value is not None
     assert audit.value.passed is False
     assert audit.value.findings[0].kind == "strict_proved_decl_not_satisfied"
@@ -727,7 +729,14 @@ def test_round_local_audit_uses_default_decl_graph_provider(tmp_path: Path) -> N
     _create_content_node(runtime, tmp_path)
     round_id = _create_round(runtime, tmp_path)
     _create_decl(runtime, tmp_path, round_id=round_id, name="supporting_lemma", public=False)
-    _create_decl(runtime, tmp_path, round_id=round_id, name="main_result", public=False)
+    _create_decl(
+        runtime,
+        tmp_path,
+        round_id=round_id,
+        name="main_result",
+        public=False,
+        anticipated_statement_dep_names=["supporting_lemma"],
+    )
     assert runtime.decl_graph.start_round(tmp_path, node_path=NODE_PATH, round_id=round_id).ok
     statement = runtime.decl_graph.write_statement_nl(
         tmp_path,

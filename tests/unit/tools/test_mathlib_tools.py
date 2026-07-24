@@ -20,9 +20,8 @@ def test_mathlib_tools_are_registered() -> None:
         "ingest_mathlib_candidate",
         "search_arxiv_theorems",
         "get_current_node_mathlib_hints",
-        "add_current_mathlib_module_hint",
+        "add_current_mathlib_hints",
         "remove_current_mathlib_module_hint",
-        "add_current_mathlib_decl_hint",
         "remove_current_mathlib_decl_hint",
         "validate_current_node_mathlib_hints",
         "add_node_mathlib_module_hint",
@@ -41,5 +40,5 @@ def test_mathlib_groups_expose_expected_tools() -> None:
     assert_group_contains("mathlib_navigation", {"inspect_mathlib_declaration", "inspect_mathlib_module", "check_mathlib_name"})
     assert_group_contains("external_resource_discovery", {"search_arxiv_theorems"})
     assert_group_contains("node_mathlib_hint_read", {"get_current_node_mathlib_hints", "validate_current_node_mathlib_hints"})
-    assert_group_contains("node_mathlib_hint_write", {"add_current_mathlib_module_hint", "add_current_mathlib_decl_hint"})
+    assert_group_contains("node_mathlib_hint_write", {"add_current_mathlib_hints"})
     assert_group_contains("node_contract_mathlib_coordinator_write", {"add_node_mathlib_module_hint", "add_node_mathlib_decl_hint"})

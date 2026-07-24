@@ -75,9 +75,20 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         deps=["supporting_lemma"],
     )
     assert statement_nl.ok and statement_nl.value is not None
-    assert statement_nl.value.revision.state == DeclState.PLANNED
-    assert statement_nl.value.revision.statement_origin == [{"kind": "source", "ref": "source:main"}]
-    assert statement_nl.value.revision.statement_deps == ["supporting_lemma"]
+    statement_revision = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=statement_nl.value.revision,
+    )
+    assert statement_revision.ok and statement_revision.value is not None
+    assert statement_revision.value.state == DeclState.PLANNED
+    assert statement_revision.value.statement.nl is not None
+    assert statement_revision.value.statement.nl.origin[0].model_dump(exclude_none=True) == {
+        "kind": "source",
+        "ref": "source:main",
+    }
+    assert [item.ref.name for item in statement_revision.value.statement.deps] == ["supporting_lemma"]
 
     statement_formal = write_statement_formal_for_test(runtime,
         tmp_path,
@@ -93,9 +104,8 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
     assert statement_formal.value.statement.formal is not None
     assert statement_formal.value.statement.formal.check is not None
     assert statement_formal.value.statement.formal.check.contains_sorry is True
-    assert statement_formal.value.statement_lean_check is not None
-    assert statement_formal.value.statement_lean_check["status"] == "passed"
-    assert statement_formal.value.statement_lean_check["contains_sorry"] == "True"
+    assert statement_formal.value.statement.formal.check.status == "passed"
+    assert statement_formal.value.statement.formal.check.contains_sorry is True
 
     proof_nl = service.write_proof_nl(
         tmp_path,
@@ -106,9 +116,17 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
         deps=["supporting_lemma", "proof_helper"],
     )
     assert proof_nl.ok and proof_nl.value is not None
-    assert proof_nl.value.revision.state == DeclState.PLANNED
-    assert proof_nl.value.revision.statement_deps == ["supporting_lemma"]
-    assert proof_nl.value.revision.proof_deps == ["proof_helper", "supporting_lemma"]
+    proof_revision = service.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=proof_nl.value.revision,
+    )
+    assert proof_revision.ok and proof_revision.value is not None
+    assert proof_revision.value.state == DeclState.PLANNED
+    assert [item.ref.name for item in proof_revision.value.statement.deps] == ["supporting_lemma"]
+    assert proof_revision.value.proof is not None
+    assert [item.ref.name for item in proof_revision.value.proof.deps] == ["proof_helper", "supporting_lemma"]
 
     proof_formal = write_proof_formal_for_test(runtime,
         tmp_path,
@@ -121,9 +139,11 @@ def test_statement_and_proof_stage_mutations_write_candidates_without_advancing_
     )
     assert proof_formal.ok and proof_formal.value is not None
     assert proof_formal.value.state == DeclState.PLANNED
-    assert proof_formal.value.proof_lean_code == "by trivial"
-    assert proof_formal.value.statement_deps == ["supporting_lemma"]
-    assert proof_formal.value.proof_deps == ["proof_helper"]
+    assert proof_formal.value.proof is not None
+    assert proof_formal.value.proof.formal is not None
+    assert proof_formal.value.proof.formal.code == "by trivial"
+    assert [item.ref.name for item in proof_formal.value.statement.deps] == ["supporting_lemma"]
+    assert [item.ref.name for item in proof_formal.value.proof.deps] == ["proof_helper"]
 
     revision_path = service.graph_store.revision_path(
         tmp_path,
@@ -174,7 +194,6 @@ def test_statement_formal_requires_statement_nl(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_running_round_with_decl(tmp_path)
     runtime = make_runtime()
-    service = runtime.decl_graph
 
     result = write_statement_formal_for_test(runtime,
         tmp_path,
@@ -221,7 +240,8 @@ def test_add_statement_dependency_is_idempotent_and_reports_metadata_conflict(tm
     assert added.ok and added.value is not None
     assert duplicate.ok and duplicate.value is not None
     assert [issue.kind for issue in duplicate.issues] == ["statement_dep_already_present"]
-    assert len(duplicate.value.revision.statement.deps) == 1
+    assert duplicate.value.changed is False
+    assert duplicate.value.already_present == [dep]
     assert not conflict.ok
     assert conflict.issues[0].kind == "statement_dep_conflict"
 
@@ -258,8 +278,8 @@ def test_add_proof_dependency_is_idempotent_and_reports_metadata_conflict(tmp_pa
     assert added.ok and added.value is not None
     assert duplicate.ok and duplicate.value is not None
     assert [issue.kind for issue in duplicate.issues] == ["proof_dep_already_present"]
-    assert duplicate.value.revision.proof is not None
-    assert len(duplicate.value.revision.proof.deps) == 1
+    assert duplicate.value.changed is False
+    assert duplicate.value.already_present == [dep]
     assert not conflict.ok
     assert conflict.issues[0].kind == "proof_dep_conflict"
 
@@ -278,7 +298,7 @@ def test_advance_stage_state_is_explicit_after_candidate_write(tmp_path: Path) -
         nl="The main result states True.",
     )
     assert candidate.ok and candidate.value is not None
-    assert candidate.value.revision.state == DeclState.PLANNED
+    assert candidate.value.changed is True
 
     advanced = service.advance_stage_state(
         tmp_path,

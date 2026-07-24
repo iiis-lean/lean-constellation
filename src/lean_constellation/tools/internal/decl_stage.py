@@ -4,19 +4,23 @@ from __future__ import annotations
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.domain.refs import DeclRef, MathlibRef
-from lean_constellation.services.decl_graph.models import DeclOriginRef, DeclStageMutationToolView, DeclState, MathlibDeclDep, RepoDeclDep
+from lean_constellation.services.decl_graph.models import (
+    DeclOriginRef,
+    DeclState,
+    MathlibDeclDep,
+    RepoDeclDep,
+)
 from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_origin_ref
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     DeclNameArgs,
     DeclStageFileCheckArgs,
     NoArgs,
-    ProofDeclDepAddArgs,
+    ProofDependenciesAddArgs,
     ProofDepRemoveArgs,
     ProofDepsClearArgs,
     ProofFormalReviewPassedArgs,
     ProofFormalReviewRejectedArgs,
-    ProofMathlibDepAddArgs,
     ProofNlReviewPassedArgs,
     ProofNlReviewRejectedArgs,
     ProofNlSetArgs,
@@ -24,12 +28,11 @@ from lean_constellation.tools.args import (
     ProofOriginsClearArgs,
     ProofResourceOriginAddArgs,
     ProofSourceOriginAddArgs,
-    StatementDeclDepAddArgs,
+    StatementDependenciesAddArgs,
     StatementDepRemoveArgs,
     StatementDepsClearArgs,
     StatementFormalReviewPassedArgs,
     StatementFormalReviewRejectedArgs,
-    StatementMathlibDepAddArgs,
     StatementNlReviewPassedArgs,
     StatementNlReviewRejectedArgs,
     StatementNlSetArgs,
@@ -143,27 +146,6 @@ def _assert_formal_read_stage(runtime, ctx, *, requested_stage: str, decl_name: 
     return runtime.foundation.ok(normalized_requested)
 
 
-def _current_decl_view(runtime, ctx, decl_name: str):
-    return runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=decl_name)
-
-
-def _current_decl_mutation_view(runtime, ctx, decl_name: str, mutation):
-    current = _current_decl_view(runtime, ctx, decl_name)
-    if not current.ok or current.value is None:
-        return current
-    return runtime.foundation.ok(
-        DeclStageMutationToolView(
-            decl=current.value,
-            projection_stage=mutation.value.projection_stage,
-            managed_projection_changed=mutation.value.managed_projection_changed,
-            changed_files=list(mutation.value.changed_files),
-            reread_required=mutation.value.reread_required,
-            summary=mutation.value.summary,
-        ),
-        warnings=[*mutation.issues, *current.issues],
-    )
-
-
 def _set_statement_nl(runtime, ctx, args: StatementNlSetArgs):
     allowed = _assert_stage(runtime, ctx, expected_stage="statement_nl", decl_name=args.decl_name)
     if not allowed.ok:
@@ -175,9 +157,7 @@ def _set_statement_nl(runtime, ctx, args: StatementNlSetArgs):
         decl_name=args.decl_name,
         nl=args.text,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _add_statement_source_origin(runtime, ctx, args: StatementSourceOriginAddArgs):
@@ -196,9 +176,7 @@ def _add_statement_source_origin(runtime, ctx, args: StatementSourceOriginAddArg
         decl_name=args.decl_name,
         origin=origin,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _add_statement_resource_origin(runtime, ctx, args: StatementResourceOriginAddArgs):
@@ -213,9 +191,7 @@ def _add_statement_resource_origin(runtime, ctx, args: StatementResourceOriginAd
         decl_name=args.decl_name,
         origin=origin,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _remove_statement_origin(runtime, ctx, args: StatementOriginRemoveArgs):
@@ -229,9 +205,7 @@ def _remove_statement_origin(runtime, ctx, args: StatementOriginRemoveArgs):
         decl_name=args.decl_name,
         index=args.index,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _clear_statement_origins(runtime, ctx, args: StatementOriginsClearArgs):
@@ -244,9 +218,7 @@ def _clear_statement_origins(runtime, ctx, args: StatementOriginsClearArgs):
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _actor_role(ctx) -> str:
@@ -282,10 +254,19 @@ def _resolved_mathlib_dep_module(runtime, entry, *, requested_module: str | None
     return runtime.foundation.ok(module)
 
 
-def _assert_statement_decl_dep_visible(runtime, ctx, *, decl_name: str, args: StatementDeclDepAddArgs):
+def _assert_statement_decl_dep_visible(
+    runtime,
+    ctx,
+    *,
+    decl_name: str,
+    dep_name: str,
+    dep_node: str | None,
+    dep_repo: str | None,
+    revision: int | None,
+):
     current_node = _node(ctx)
-    if args.dep_repo:
-        repo_key = runtime.foundation.layout.ensure_safe_key(args.dep_repo)
+    if dep_repo:
+        repo_key = runtime.foundation.layout.ensure_safe_key(dep_repo)
         public = runtime.node.public_decl_access.list_repo_public_decls(
             ctx.repo_root,
             repo_key=repo_key,
@@ -294,93 +275,90 @@ def _assert_statement_decl_dep_visible(runtime, ctx, *, decl_name: str, args: St
         )
         if not public.ok or public.value is None:
             return runtime.foundation.fail(public.issues)
-        ref = next((item.ref for item in public.value if item.ref.name == args.dep_name), None)
+        ref = next((item.ref for item in public.value if item.ref.name == dep_name), None)
         if ref is None:
             return runtime.foundation.fail(
                 runtime.foundation.issue(
                     "statement_dep_not_visible",
                     "Statement dependency is not visible on the requested provider repo public interface.",
-                    object_ref=args.dep_name,
+                    object_ref=dep_name,
                     current=repo_key,
                 )
             )
-        if args.revision is not None:
-            ref = ref.model_copy(update={"revision": args.revision})
+        if revision is not None:
+            ref = ref.model_copy(update={"revision": revision})
         return runtime.foundation.ok(ref)
 
-    if args.dep_node and args.dep_node != current_node:
+    if dep_node and dep_node != current_node:
         public = runtime.node.public_decl_access.list_node_public_decls(
             ctx.repo_root,
-            node_path=args.dep_node,
+            node_path=dep_node,
             actor_role=_actor_role(ctx),
             current_node_path=current_node,
         )
         if not public.ok or public.value is None:
             return runtime.foundation.fail(public.issues)
-        ref = next((item.ref for item in public.value if item.ref.name == args.dep_name), None)
+        ref = next((item.ref for item in public.value if item.ref.name == dep_name), None)
         if ref is None:
             return runtime.foundation.fail(
                 runtime.foundation.issue(
                     "statement_dep_not_visible",
                     "Statement dependency is not visible on the requested provider node public interface.",
-                    object_ref=args.dep_name,
-                    current=args.dep_node,
+                    object_ref=dep_name,
+                    current=dep_node,
                 )
             )
-        if args.revision is not None:
-            ref = ref.model_copy(update={"revision": args.revision})
+        if revision is not None:
+            ref = ref.model_copy(update={"revision": revision})
         return runtime.foundation.ok(ref)
 
-    deps_allowed = _assert_statement_deps_visible(runtime, ctx, decl_name=decl_name, deps=[args.dep_name])
+    deps_allowed = _assert_statement_deps_visible(runtime, ctx, decl_name=decl_name, deps=[dep_name])
     if not deps_allowed.ok:
         return deps_allowed
-    revision = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=current_node, name=args.dep_name)
-    if not revision.ok or revision.value is None:
-        return runtime.foundation.fail(revision.issues)
-    return runtime.foundation.ok(DeclRef(node=current_node, name=args.dep_name, revision=revision.value.revision))
+    current = _current_raw_decl_revision(runtime, ctx.repo_root, node_path=current_node, decl_name=dep_name)
+    if not current.ok or current.value is None:
+        return runtime.foundation.fail(current.issues)
+    return runtime.foundation.ok(DeclRef(node=current_node, name=dep_name, revision=current.value.revision))
 
 
-def _add_statement_decl_dep(runtime, ctx, args: StatementDeclDepAddArgs):
-    allowed = _assert_any_stage(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
+def _add_statement_dependencies(runtime, ctx, args: StatementDependenciesAddArgs):
+    allowed = _assert_any_stage(
+        runtime,
+        ctx,
+        expected_stages={"statement_nl", "statement_formal"},
+        decl_name=args.decl_name,
+    )
     if not allowed.ok:
         return allowed
-    deps_allowed = _assert_statement_decl_dep_visible(runtime, ctx, decl_name=args.decl_name, args=args)
-    if not deps_allowed.ok:
-        return deps_allowed
-    dep = RepoDeclDep(ref=deps_allowed.value, reason=args.reason)
-    written = runtime.decl_graph.add_statement_dep(
-        ctx.repo_root,
-        node_path=_node(ctx),
-        round_id=_round_id(ctx),
-        decl_name=args.decl_name,
-        dep=dep,
-    )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
-
-
-def _add_statement_mathlib_dep(runtime, ctx, args: StatementMathlibDepAddArgs):
-    allowed = _assert_any_stage(runtime, ctx, expected_stages={"statement_nl", "statement_formal"}, decl_name=args.decl_name)
-    if not allowed.ok:
-        return allowed
-    entry = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=args.mathlib_decl_name)
-    if not entry.ok or entry.value is None:
-        return runtime.foundation.fail(entry.issues)
-    module = _resolved_mathlib_dep_module(runtime, entry.value, requested_module=args.module, dep_name=args.mathlib_decl_name, field_prefix="statement")
-    if not module.ok:
-        return module
-    dep = MathlibDeclDep(ref=MathlibRef(name=args.mathlib_decl_name, module=module.value), reason=args.reason)
-    written = runtime.decl_graph.add_statement_dep(
-        ctx.repo_root,
-        node_path=_node(ctx),
-        round_id=_round_id(ctx),
-        decl_name=args.decl_name,
-        dep=dep,
-    )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    resolved = []
+    for item in args.repo_declarations:
+        visible = _assert_statement_decl_dep_visible(
+            runtime,
+            ctx,
+            decl_name=args.decl_name,
+            dep_name=item.name,
+            dep_node=item.node,
+            dep_repo=item.repository,
+            revision=item.revision,
+        )
+        if not visible.ok or visible.value is None:
+            return runtime.foundation.fail(visible.issues)
+        resolved.append(RepoDeclDep(ref=visible.value, reason=item.reason))
+    for item in args.mathlib_declarations:
+        entry = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=item.name)
+        if not entry.ok or entry.value is None:
+            return runtime.foundation.fail(entry.issues)
+        module = _resolved_mathlib_dep_module(
+            runtime,
+            entry.value,
+            requested_module=item.module,
+            dep_name=item.name,
+            field_prefix="statement",
+        )
+        if not module.ok or module.value is None:
+            return runtime.foundation.fail(module.issues)
+        resolved.append(MathlibDeclDep(ref=MathlibRef(name=item.name, module=module.value), reason=item.reason))
+    return _add_dependency_batch(runtime, ctx, decl_name=args.decl_name, stage="statement", dependencies=resolved)
 
 
 def _remove_statement_dep(runtime, ctx, args: StatementDepRemoveArgs):
@@ -394,9 +372,7 @@ def _remove_statement_dep(runtime, ctx, args: StatementDepRemoveArgs):
         decl_name=args.decl_name,
         index=args.index,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _clear_statement_deps(runtime, ctx, args: StatementDepsClearArgs):
@@ -409,9 +385,7 @@ def _clear_statement_deps(runtime, ctx, args: StatementDepsClearArgs):
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _set_proof_nl(runtime, ctx, args: ProofNlSetArgs):
@@ -425,9 +399,7 @@ def _set_proof_nl(runtime, ctx, args: ProofNlSetArgs):
         decl_name=args.decl_name,
         nl=args.text,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _add_proof_source_origin(runtime, ctx, args: ProofSourceOriginAddArgs):
@@ -449,9 +421,7 @@ def _add_proof_source_origin(runtime, ctx, args: ProofSourceOriginAddArgs):
         decl_name=args.decl_name,
         origin=origin,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _add_proof_resource_origin(runtime, ctx, args: ProofResourceOriginAddArgs):
@@ -469,9 +439,7 @@ def _add_proof_resource_origin(runtime, ctx, args: ProofResourceOriginAddArgs):
         decl_name=args.decl_name,
         origin=origin,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _remove_proof_origin(runtime, ctx, args: ProofOriginRemoveArgs):
@@ -485,9 +453,7 @@ def _remove_proof_origin(runtime, ctx, args: ProofOriginRemoveArgs):
         decl_name=args.decl_name,
         index=args.index,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _clear_proof_origins(runtime, ctx, args: ProofOriginsClearArgs):
@@ -500,15 +466,22 @@ def _clear_proof_origins(runtime, ctx, args: ProofOriginsClearArgs):
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
-def _assert_proof_decl_dep_visible(runtime, ctx, *, decl_name: str, args: ProofDeclDepAddArgs):
+def _assert_proof_decl_dep_visible(
+    runtime,
+    ctx,
+    *,
+    decl_name: str,
+    dep_name: str,
+    dep_node: str | None,
+    dep_repo: str | None,
+    revision: int | None,
+):
     current_node = _node(ctx)
-    if args.dep_repo:
-        repo_key = runtime.foundation.layout.ensure_safe_key(args.dep_repo)
+    if dep_repo:
+        repo_key = runtime.foundation.layout.ensure_safe_key(dep_repo)
         public = runtime.node.public_decl_access.list_repo_public_decls(
             ctx.repo_root,
             repo_key=repo_key,
@@ -517,90 +490,108 @@ def _assert_proof_decl_dep_visible(runtime, ctx, *, decl_name: str, args: ProofD
         )
         if not public.ok or public.value is None:
             return runtime.foundation.fail(public.issues)
-        ref = next((item.ref for item in public.value if item.ref.name == args.dep_name), None)
+        ref = next((item.ref for item in public.value if item.ref.name == dep_name), None)
         if ref is None:
             return runtime.foundation.fail(
-                runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not visible on the requested provider repo public interface.", object_ref=args.dep_name, current=repo_key)
+                runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not visible on the requested provider repo public interface.", object_ref=dep_name, current=repo_key)
             )
-        if args.revision is not None:
-            ref = ref.model_copy(update={"revision": args.revision})
+        if revision is not None:
+            ref = ref.model_copy(update={"revision": revision})
         return runtime.foundation.ok(ref)
 
-    if args.dep_node and args.dep_node != current_node:
+    if dep_node and dep_node != current_node:
         public = runtime.node.public_decl_access.list_node_public_decls(
             ctx.repo_root,
-            node_path=args.dep_node,
+            node_path=dep_node,
             actor_role=_actor_role(ctx),
             current_node_path=current_node,
         )
         if not public.ok or public.value is None:
             return runtime.foundation.fail(public.issues)
-        ref = next((item.ref for item in public.value if item.ref.name == args.dep_name), None)
+        ref = next((item.ref for item in public.value if item.ref.name == dep_name), None)
         if ref is None:
             return runtime.foundation.fail(
-                runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not visible on the requested provider node public interface.", object_ref=args.dep_name, current=args.dep_node)
+                runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not visible on the requested provider node public interface.", object_ref=dep_name, current=dep_node)
             )
-        if args.revision is not None:
-            ref = ref.model_copy(update={"revision": args.revision})
+        if revision is not None:
+            ref = ref.model_copy(update={"revision": revision})
         return runtime.foundation.ok(ref)
 
-    dep = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=current_node, name=args.dep_name)
+    dep = _current_raw_decl_revision(runtime, ctx.repo_root, node_path=current_node, decl_name=dep_name)
     if not dep.ok or dep.value is None:
-        return runtime.foundation.fail(runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not a visible current declaration.", object_ref=args.dep_name))
-    return runtime.foundation.ok(DeclRef(node=current_node, name=args.dep_name, revision=args.revision or dep.value.revision))
+        return runtime.foundation.fail(runtime.foundation.issue("proof_dep_not_visible", "Proof dependency is not a visible current declaration.", object_ref=dep_name))
+    return runtime.foundation.ok(DeclRef(node=current_node, name=dep_name, revision=revision or dep.value.revision))
 
 
-def _add_proof_decl_dep(runtime, ctx, args: ProofDeclDepAddArgs):
-    allowed = _assert_any_stage(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
+def _add_proof_dependencies(runtime, ctx, args: ProofDependenciesAddArgs):
+    allowed = _assert_any_stage(
+        runtime,
+        ctx,
+        expected_stages={"proof_nl", "proof_formal"},
+        decl_name=args.decl_name,
+    )
     if not allowed.ok:
         return allowed
-    deps_allowed = _assert_proof_decl_dep_visible(runtime, ctx, decl_name=args.decl_name, args=args)
-    if not deps_allowed.ok:
-        return deps_allowed
-    dep = RepoDeclDep(ref=deps_allowed.value, reason=args.reason)
+    resolved = []
+    for item in args.repo_declarations:
+        visible = _assert_proof_decl_dep_visible(
+            runtime,
+            ctx,
+            decl_name=args.decl_name,
+            dep_name=item.name,
+            dep_node=item.node,
+            dep_repo=item.repository,
+            revision=item.revision,
+        )
+        if not visible.ok or visible.value is None:
+            return runtime.foundation.fail(visible.issues)
+        resolved.append(RepoDeclDep(ref=visible.value, reason=item.reason))
+    for item in args.mathlib_declarations:
+        entry = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=item.name)
+        if not entry.ok or entry.value is None:
+            return runtime.foundation.fail(entry.issues)
+        module = _resolved_mathlib_dep_module(
+            runtime,
+            entry.value,
+            requested_module=item.module,
+            dep_name=item.name,
+            field_prefix="proof",
+        )
+        if not module.ok or module.value is None:
+            return runtime.foundation.fail(module.issues)
+        resolved.append(MathlibDeclDep(ref=MathlibRef(name=item.name, module=module.value), reason=item.reason))
     validation = validate_proof_deps(
         runtime,
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
-        deps=[dep],
+        deps=resolved,
     )
     if not validation.ok:
         return validation
-    written = runtime.decl_graph.add_proof_dep(
-        ctx.repo_root,
-        node_path=_node(ctx),
-        round_id=_round_id(ctx),
-        decl_name=args.decl_name,
-        dep=dep,
-    )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return _add_dependency_batch(runtime, ctx, decl_name=args.decl_name, stage="proof", dependencies=resolved)
 
 
-def _add_proof_mathlib_dep(runtime, ctx, args: ProofMathlibDepAddArgs):
-    allowed = _assert_any_stage(runtime, ctx, expected_stages={"proof_nl", "proof_formal"}, decl_name=args.decl_name)
-    if not allowed.ok:
-        return allowed
-    entry = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=args.mathlib_decl_name)
-    if not entry.ok or entry.value is None:
-        return runtime.foundation.fail(entry.issues)
-    module = _resolved_mathlib_dep_module(runtime, entry.value, requested_module=args.module, dep_name=args.mathlib_decl_name, field_prefix="proof")
-    if not module.ok:
-        return module
-    dep = MathlibDeclDep(ref=MathlibRef(name=args.mathlib_decl_name, module=module.value), reason=args.reason)
-    written = runtime.decl_graph.add_proof_dep(
-        ctx.repo_root,
-        node_path=_node(ctx),
-        round_id=_round_id(ctx),
-        decl_name=args.decl_name,
-        dep=dep,
+def _add_dependency_batch(runtime, ctx, *, decl_name: str, stage: str, dependencies: list[object]):
+    mutation = (
+        runtime.decl_graph.add_statement_dependencies(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            round_id=_round_id(ctx),
+            decl_name=decl_name,
+            deps=dependencies,
+        )
+        if stage == "statement"
+        else runtime.decl_graph.add_proof_dependencies(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            round_id=_round_id(ctx),
+            decl_name=decl_name,
+            deps=dependencies,
+        )
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return mutation
 
 
 def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):
@@ -614,9 +605,7 @@ def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):
         decl_name=args.decl_name,
         index=args.index,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _clear_proof_deps(runtime, ctx, args: ProofDepsClearArgs):
@@ -629,9 +618,7 @@ def _clear_proof_deps(runtime, ctx, args: ProofDepsClearArgs):
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
     )
-    if not written.ok:
-        return written
-    return _current_decl_mutation_view(runtime, ctx, args.decl_name, written)
+    return written
 
 
 def _assert_statement_deps_visible(runtime, ctx, *, decl_name: str, deps: list[str]):
@@ -642,7 +629,25 @@ def _assert_statement_deps_visible(runtime, ctx, *, decl_name: str, deps: list[s
     round_ref_names = {ref.decl_name for ref in round_record.value.revision_refs}
     issues = []
     for dep_name in sorted({dep.strip() for dep in deps if dep and dep.strip()}):
-        dep = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=dep_name)
+        revision_number = next(
+            (ref.revision for ref in round_record.value.revision_refs if ref.decl_name == dep_name),
+            None,
+        )
+        dep = (
+            runtime.decl_graph.get_decl_revision(
+                ctx.repo_root,
+                node_path=_node(ctx),
+                name=dep_name,
+                revision=revision_number,
+            )
+            if revision_number is not None
+            else _current_raw_decl_revision(
+                runtime,
+                ctx.repo_root,
+                node_path=_node(ctx),
+                decl_name=dep_name,
+            )
+        )
         if not dep.ok or dep.value is None:
             issues.append(runtime.foundation.issue("statement_dep_not_visible", "Statement dependency is not a visible current declaration.", object_ref=dep_name))
             continue
@@ -660,6 +665,18 @@ def _assert_statement_deps_visible(runtime, ctx, *, decl_name: str, deps: list[s
     if issues:
         return runtime.foundation.fail(issues)
     return runtime.foundation.ok(None)
+
+
+def _current_raw_decl_revision(runtime, repo_root, *, node_path: str, decl_name: str):
+    decl = runtime.decl_graph.get_decl(repo_root, node_path=node_path, name=decl_name)
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    return runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path=node_path,
+        name=decl_name,
+        revision=decl.value.current_revision,
+    )
 
 
 def _decl_state_rank(state: DeclState) -> int:
@@ -1252,24 +1269,14 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_clear_statement_origins,
         ),
         handler_tool(
-            name="add_statement_decl_dep",
-            description="Add one typed project declaration dependency needed to express the statement candidate.",
-            args_model=StatementDeclDepAddArgs,
+            name="add_statement_dependencies",
+            description="Add one batch of typed project and Mathlib dependencies needed by the statement candidate, then reread once if necessary.",
+            args_model=StatementDependenciesAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_stage_mutation",
+            result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
             roles=worker_roles,
-            handler=_add_statement_decl_dep,
-        ),
-        handler_tool(
-            name="add_statement_mathlib_dep",
-            description="Add one typed Mathlib declaration dependency needed to express the statement candidate.",
-            args_model=StatementMathlibDepAddArgs,
-            capability=ToolCapability.WRITE,
-            result_view="decl_stage_mutation",
-            groups={AppGroup.DECL_STAGE_STATEMENT_NL_WRITE, AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE},
-            roles=worker_roles,
-            handler=_add_statement_mathlib_dep,
+            handler=_add_statement_dependencies,
         ),
         handler_tool(
             name="remove_statement_dep",
@@ -1342,24 +1349,14 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_clear_proof_origins,
         ),
         handler_tool(
-            name="add_proof_decl_dep",
-            description="Add one typed project declaration dependency used by the proof route or formal proof.",
-            args_model=ProofDeclDepAddArgs,
+            name="add_proof_dependencies",
+            description="Add one batch of typed project and Mathlib dependencies used by the proof route or formal proof, then reread once if necessary.",
+            args_model=ProofDependenciesAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_stage_mutation",
+            result_view="decl_stage_dependency_delta",
             groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
             roles=worker_roles,
-            handler=_add_proof_decl_dep,
-        ),
-        handler_tool(
-            name="add_proof_mathlib_dep",
-            description="Add one typed Mathlib declaration dependency used by the proof route or formal proof.",
-            args_model=ProofMathlibDepAddArgs,
-            capability=ToolCapability.WRITE,
-            result_view="decl_stage_mutation",
-            groups={AppGroup.DECL_STAGE_PROOF_NL_WRITE, AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE},
-            roles=worker_roles,
-            handler=_add_proof_mathlib_dep,
+            handler=_add_proof_dependencies,
         ),
         handler_tool(
             name="remove_proof_dep",

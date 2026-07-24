@@ -19,6 +19,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclRevisionStatus,
     DeclGraphRound,
     DeclRoundStatus,
+    RepoDeclDep,
     DeclStatement,
     DeclState,
 )
@@ -61,6 +62,8 @@ class DeclCatalogComponent:
         public: bool = False,
         target_state: DeclState | str = DeclState.DECLARED,
         require_target_state_satisfied: bool = True,
+        anticipated_statement_dep_names: list[str] | None = None,
+        anticipated_proof_dep_names: list[str] | None = None,
     ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(target_state)
         if end_state is None:
@@ -107,6 +110,8 @@ class DeclCatalogComponent:
                 target_state=end_state,
                 require_target_state_satisfied=require_target_state_satisfied,
                 objective=objective,
+                anticipated_statement_dep_names=anticipated_statement_dep_names or [],
+                anticipated_proof_dep_names=anticipated_proof_dep_names or [],
             ),
         )
         ensured = self.runtime.foundation.store.ensure_dir(
@@ -156,6 +161,8 @@ class DeclCatalogComponent:
         base_revision: int | None = None,
         reset_to_state: DeclState | str | None = None,
         require_target_state_satisfied: bool = True,
+        anticipated_statement_dep_names: list[str] | None = None,
+        anticipated_proof_dep_names: list[str] | None = None,
     ) -> ServiceResult[DeclChangeView]:
         end_state = self._coerce_end_state(target_state)
         if end_state is None:
@@ -265,6 +272,8 @@ class DeclCatalogComponent:
             target_state=end_state,
             require_target_state_satisfied=require_target_state_satisfied,
             objective=objective,
+            anticipated_statement_dep_names=anticipated_statement_dep_names or [],
+            anticipated_proof_dep_names=anticipated_proof_dep_names or [],
         )
         next_revision.updated_at = utc_now_iso()
         self._reset_revision_to_state(next_revision, start_state)
@@ -711,6 +720,7 @@ class DeclCatalogComponent:
                         )
                     )
         change_kind_by_decl = {change.decl_name: change.kind for change in changes_value}
+        revision_by_decl: dict[str, DeclRevision] = {}
         for decl_name in sorted(changed_names):
             decl = self.get_decl(repo_root, node_path=node_path, name=decl_name)
             if not decl.ok or decl.value is None:
@@ -723,24 +733,122 @@ class DeclCatalogComponent:
             )
             if not revision.ok or revision.value is None:
                 continue
-            internal_deps = []
-            revision_deps = set(revision.value.statement_deps) | set(revision.value.proof_deps)
-            for dep_name in sorted(revision_deps & changed_names):
-                if (
-                    change_kind_by_decl.get(decl_name) == DeclChangeKind.DELETE
-                    and change_kind_by_decl.get(dep_name) == DeclChangeKind.DELETE
-                ):
-                    continue
-                internal_deps.append(dep_name)
-            if internal_deps:
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "round_internal_dependency",
-                        "Round changes must not depend on each other.",
-                        object_ref=decl_name,
-                        current=", ".join(internal_deps),
-                    )
-                )
+            revision_by_decl[decl_name] = revision.value
+            actual_statement = {
+                dep.ref.name
+                for dep in revision.value.statement.deps
+                if isinstance(dep, RepoDeclDep) and dep.ref.repo is None and dep.ref.node == node_path
+            }
+            actual_proof = {
+                dep.ref.name
+                for dep in (revision.value.proof.deps if revision.value.proof is not None else [])
+                if isinstance(dep, RepoDeclDep) and dep.ref.repo is None and dep.ref.node == node_path
+            }
+            change = revision.value.change
+            anticipated_statement = set(change.anticipated_statement_dep_names if change is not None else [])
+            anticipated_proof = set(change.anticipated_proof_dep_names if change is not None else [])
+            for dependency_stage, required_state, dependency_names in (
+                ("statement", DeclState.DECLARED, actual_statement | anticipated_statement),
+                ("proof", DeclState.PROVED, actual_proof | anticipated_proof),
+            ):
+                for dep_name in sorted(dependency_names):
+                    if dep_name == decl_name:
+                        issues.append(
+                            self.runtime.foundation.issue(
+                                "round_dependency_cycle",
+                                "A declaration cannot depend on itself.",
+                                object_ref=decl_name,
+                                details={
+                                    "consumer": decl_name,
+                                    "provider": dep_name,
+                                    "dependency_stage": dependency_stage,
+                                    "required_state": required_state.value,
+                                },
+                                suggested_action="Remove the self dependency or plan the missing prerequisite as a separate declaration.",
+                            )
+                        )
+                        continue
+                    if dep_name not in changed_names:
+                        provider = self.get_decl(repo_root, node_path=node_path, name=dep_name)
+                        if not provider.ok or provider.value is None:
+                            issues.append(
+                                self.runtime.foundation.issue(
+                                    "round_dependency_provider_missing",
+                                    "A planned dependency provider does not exist in the current node.",
+                                    object_ref=decl_name,
+                                    details={
+                                        "consumer": decl_name,
+                                        "provider": dep_name,
+                                        "dependency_stage": dependency_stage,
+                                        "required_state": required_state.value,
+                                    },
+                                )
+                            )
+                            continue
+                        provider_revision = self.get_decl_revision(
+                            repo_root,
+                            node_path=node_path,
+                            name=dep_name,
+                            revision=provider.value.current_revision,
+                        )
+                        if (
+                            not provider_revision.ok
+                            or provider_revision.value is None
+                            or not self._state_reaches(provider_revision.value.state, required_state)
+                        ):
+                            issues.append(
+                                self.runtime.foundation.issue(
+                                    "round_dependency_provider_not_ready",
+                                    "A planned dependency provider has not reached the required state.",
+                                    object_ref=decl_name,
+                                    current=provider_revision.value.state.value if provider_revision.ok and provider_revision.value is not None else "missing",
+                                    expected=required_state.value,
+                                    details={
+                                        "consumer": decl_name,
+                                        "provider": dep_name,
+                                        "dependency_stage": dependency_stage,
+                                        "required_state": required_state.value,
+                                    },
+                                    suggested_action=f"Complete {dep_name} through {required_state.value} before this round.",
+                                )
+                            )
+                        continue
+                    if (
+                        change_kind_by_decl.get(decl_name) == DeclChangeKind.DELETE
+                        and change_kind_by_decl.get(dep_name) == DeclChangeKind.DELETE
+                    ):
+                        continue
+                    provider_revision = revision_by_decl.get(dep_name)
+                    if provider_revision is None:
+                        provider_decl = self.get_decl(repo_root, node_path=node_path, name=dep_name)
+                        if provider_decl.ok and provider_decl.value is not None:
+                            loaded = self.get_decl_revision(
+                                repo_root,
+                                node_path=node_path,
+                                name=dep_name,
+                                revision=provider_decl.value.current_revision,
+                            )
+                            provider_revision = loaded.value if loaded.ok else None
+                    provider_state = provider_revision.state if provider_revision is not None else DeclState.PLANNED
+                    if not self._state_reaches(provider_state, required_state):
+                        issues.append(
+                            self.runtime.foundation.issue(
+                                "round_internal_dependency",
+                                "The consumer requires a provider that will only be produced by the same round.",
+                                object_ref=decl_name,
+                                current=provider_state.value,
+                                expected=required_state.value,
+                                details={
+                                    "consumer": decl_name,
+                                    "provider": dep_name,
+                                    "dependency_stage": dependency_stage,
+                                    "required_state": required_state.value,
+                                    "provider_state_at_round_start": provider_state.value,
+                                    "provider_change_kind": change_kind_by_decl[dep_name].value,
+                                },
+                                suggested_action=f"Split the round: complete {dep_name} first, then run {decl_name}.",
+                            )
+                        )
         if issues:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed("decl_round_draft", issues, summary=f"{len(issues)} round draft checks failed.")
@@ -863,6 +971,8 @@ class DeclCatalogComponent:
             require_target_state_satisfied=revision.change.require_target_state_satisfied,
             objective=revision.change.objective or "",
             summary=revision.change.summary,
+            anticipated_statement_dep_names=list(revision.change.anticipated_statement_dep_names),
+            anticipated_proof_dep_names=list(revision.change.anticipated_proof_dep_names),
             target_revision=revision.revision,
             created_at=revision.updated_at,
             updated_at=revision.updated_at,
@@ -935,7 +1045,8 @@ class DeclCatalogComponent:
             )
             if not revision.ok or revision.value is None:
                 continue
-            for dep_name in sorted(set(revision.value.statement_deps) | set(revision.value.proof_deps)):
+            proof_deps = revision.value.proof.deps if revision.value.proof is not None else []
+            for dep_name in sorted({dep.ref.name for dep in [*revision.value.statement.deps, *proof_deps]}):
                 reverse.setdefault(dep_name, set()).add(decl_name)
         return reverse
 

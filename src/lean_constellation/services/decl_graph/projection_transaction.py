@@ -6,13 +6,15 @@ import os
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
-from lean_constellation.services.decl_graph.models import DeclRevision, DeclStageMutationView
+from lean_constellation.services.decl_graph.models import DeclRevision
 from lean_constellation.services.foundation import ServiceIssue, ServiceResult, WriteMode
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
+
+T = TypeVar("T")
 
 
 def mutate_decl_with_projection(
@@ -22,7 +24,11 @@ def mutate_decl_with_projection(
     node_path: str,
     decl_name: str,
     mutate: Callable[[], ServiceResult[DeclRevision]],
-) -> ServiceResult[DeclStageMutationView]:
+    finalize: Callable[
+        [DeclRevision, DeclRevision, str | None, bool, list[str], bool],
+        T,
+    ],
+) -> ServiceResult[T]:
     """Persist one stage mutation and roll truth/file back if refresh fails."""
 
     decl = runtime.decl_graph.decl_catalog.get_decl(repo_root, node_path=node_path, name=decl_name)
@@ -78,13 +84,13 @@ def mutate_decl_with_projection(
     )
     if refreshed.ok and refreshed.value is not None:
         return runtime.foundation.ok(
-            DeclStageMutationView(
-                revision=mutated.value,
-                projection_stage=refreshed.value.effective_stage,
-                managed_projection_changed=refreshed.value.changed,
-                changed_files=list(refreshed.value.changed_files),
-                reread_required=refreshed.value.reread_required,
-                summary=refreshed.value.summary,
+            finalize(
+                before_revision.value,
+                mutated.value,
+                refreshed.value.effective_stage,
+                refreshed.value.changed,
+                list(refreshed.value.changed_files),
+                refreshed.value.reread_required,
             ),
             warnings=[*mutated.issues, *refreshed.issues],
         )

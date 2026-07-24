@@ -303,7 +303,7 @@ class DeclProjectionOperator:
         return self.executor.execute(
             repo_key,
             MUTATE_DECL,
-            lambda ctx: ctx.runtime.decl_graph.create_decl_revision_view(ctx.repo_root, **request.model_dump()),
+            lambda ctx: ctx.runtime.decl_graph.create_decl(ctx.repo_root, **request.model_dump()),
         )
 
     def get_decl(self, repo_key: str, request: DeclIdentityInput) -> ServiceResult:
@@ -450,7 +450,7 @@ class DeclProjectionOperator:
         checked = self._require_revision(ctx, request)
         if not checked.ok:
             return checked
-        return ctx.runtime.decl_graph.open_decl_update_revision_view(
+        return ctx.runtime.decl_graph.open_decl_update(
             ctx.repo_root,
             node_path=request.node_path,
             round_id=request.round_id,
@@ -466,7 +466,7 @@ class DeclProjectionOperator:
         checked = self._require_revision(ctx, request)
         if not checked.ok:
             return checked
-        return ctx.runtime.decl_graph.mark_decl_delete_revision_view(
+        return ctx.runtime.decl_graph.mark_decl_delete(
             ctx.repo_root,
             node_path=request.node_path,
             round_id=request.round_id,

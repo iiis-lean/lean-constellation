@@ -10,17 +10,15 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
+    DeclReadinessBlocker,
+    DeclRevisionRef,
     DeclRoundResultKind,
+    DeclStage,
     DeclState,
-    DeclGraphRoundView,
-    DeclRevisionToolView,
 )
-from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_nl_candidate
-from lean_constellation.services.decl_graph.statement_nl_validation import validate_statement_nl_candidate
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
 from lean_constellation.services.foundation.module_layout import local_projection_path
 
@@ -60,17 +58,29 @@ class RoundStageGateView(StrictModel):
     summary: str
 
 
-class RoundFinalAuditView(StrictModel):
+class RoundTargetStateFailure(StrictModel):
+    revision_ref: DeclRevisionRef
+    current_state: DeclState
+    required_state: DeclState
+
+
+class RoundReadinessFailure(StrictModel):
+    revision_ref: DeclRevisionRef
+    blocker: DeclReadinessBlocker
+
+
+class RoundFinalAuditResult(StrictModel):
     passed: bool
-    reached_target_decl_names: list[str] = Field(default_factory=list)
-    missing_target_decl_names: list[str] = Field(default_factory=list)
-    issue_message: str | None = None
+    reached_target_revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
+    target_state_failures: list[RoundTargetStateFailure] = Field(default_factory=list)
+    readiness_failures: list[RoundReadinessFailure] = Field(default_factory=list)
     summary: str
 
 
-class RoundCloseoutView(StrictModel):
+class RoundCloseoutResult(StrictModel):
     outcome: RoundFlowOutcome
-    committed_decl_names: list[str] = Field(default_factory=list)
+    committed_revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
+    projection_outcome: Literal["refreshed", "deferred", "not_requested"]
     projection_summary: str | None = None
     round_id: str
     summary: str
@@ -84,11 +94,17 @@ class DeclDraftSpec(StrictModel):
     public: bool = False
     target_state: DeclState = DeclState.DECLARED
     require_target_state_satisfied: bool = True
+    anticipated_statement_dep_names: list[str] = Field(default_factory=list)
+    anticipated_proof_dep_names: list[str] = Field(default_factory=list)
 
 
-class RoundDraftBatchView(StrictModel):
-    round: DeclGraphRoundView
-    declarations: list[DeclRevisionToolView]
+class RoundDraftCreatedResult(StrictModel):
+    round_id: str
+    node_path: str
+    strategy_id: str
+    round_index: int
+    status: Literal["draft"] = "draft"
+    revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
     summary: str
 
 
@@ -107,7 +123,7 @@ class DeclRoundExecutionComponent:
         strategy_id: str,
         objective: str,
         declarations: list[DeclDraftSpec],
-    ) -> ServiceResult[RoundDraftBatchView]:
+    ) -> ServiceResult[RoundDraftCreatedResult]:
         if not declarations:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("decl_draft_batch_empty", "At least one declaration draft is required.", field="declarations")
@@ -115,7 +131,7 @@ class DeclRoundExecutionComponent:
         graph_root = self.graph.graph_store.graph_root(repo_root, node_path=node_path)
         snapshot = _RoundTreesSnapshot([graph_root])
         try:
-            round_record = self.graph.create_round_draft_view(
+            round_record = self.graph.create_round_draft(
                 repo_root,
                 node_path=node_path,
                 strategy_id=strategy_id,
@@ -123,21 +139,30 @@ class DeclRoundExecutionComponent:
             )
             if not round_record.ok or round_record.value is None:
                 raise _CloseoutFailure(list(round_record.issues))
-            created: list[DeclRevisionToolView] = []
+            created: list[DeclRevisionRef] = []
             for declaration in declarations:
-                result = self.graph.create_decl_revision_view(
+                result = self.graph.create_decl(
                     repo_root,
                     node_path=node_path,
                     round_id=round_record.value.round_id,
                     **declaration.model_dump(),
                 )
-                if not result.ok or result.value is None:
+                if not result.ok or result.value is None or result.value.target_revision is None:
                     raise _CloseoutFailure(list(result.issues))
-                created.append(result.value)
+                created.append(
+                    DeclRevisionRef(
+                        change_id=result.value.change_id,
+                        decl_name=result.value.decl_name,
+                        revision=result.value.target_revision,
+                    )
+                )
             return self.runtime.foundation.ok(
-                RoundDraftBatchView(
-                    round=round_record.value,
-                    declarations=created,
+                RoundDraftCreatedResult(
+                    round_id=round_record.value.round_id,
+                    node_path=node_path,
+                    strategy_id=strategy_id,
+                    round_index=round_record.value.round_index,
+                    revision_refs=created,
                     summary=f"Created round {round_record.value.round_id} with {len(created)} declaration drafts.",
                 )
             )
@@ -224,9 +249,17 @@ class DeclRoundExecutionComponent:
             stage=stage,
             targets=target_decl_names,
         )
-        if not validation.ok:
+        if not validation.ok or validation.value is None:
             return self.runtime.foundation.ok(
                 self._failed(stage, self._issue_message(validation.issues, "Stage validation failed."), target_decl_names)
+            )
+        if not validation.value.passed:
+            return self.runtime.foundation.ok(
+                self._failed(
+                    stage,
+                    self._issue_message(validation.value.issues, validation.value.summary),
+                    target_decl_names,
+                )
             )
         audit = self.runtime.validation_snapshot.run_round_local_audit(
             repo_root,
@@ -272,52 +305,82 @@ class DeclRoundExecutionComponent:
             )
         )
 
-    def final_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[RoundFinalAuditView]:
-        revisions = self.graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
-        if not revisions.ok or revisions.value is None:
-            return self.runtime.foundation.fail(revisions.issues)
-        reached: list[str] = []
-        missing: list[str] = []
-        unsatisfied: list[str] = []
-        round_revisions = dict(revisions.value)
-        for decl_name, revision in revisions.value:
+    def final_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[RoundFinalAuditResult]:
+        round_record = self.graph.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        reached: list[DeclRevisionRef] = []
+        state_failures: list[RoundTargetStateFailure] = []
+        readiness_failures: list[RoundReadinessFailure] = []
+        for revision_ref in round_record.value.revision_refs:
+            revision_result = self.graph.get_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=revision_ref.decl_name,
+                revision=revision_ref.revision,
+            )
+            if not revision_result.ok or revision_result.value is None:
+                return self.runtime.foundation.fail(revision_result.issues)
+            revision = revision_result.value
             change = revision.change
-            if change is None:
-                missing.append(decl_name)
+            if change is None or change.target_state is None:
+                state_failures.append(
+                    RoundTargetStateFailure(
+                        revision_ref=revision_ref,
+                        current_state=revision.state,
+                        required_state=DeclState.DECLARED,
+                    )
+                )
                 continue
             if change.kind == DeclChangeKind.DELETE:
-                reached.append(decl_name)
+                reached.append(revision_ref)
                 continue
-            if change.target_state is None or not self._state_reaches(revision.state, change.target_state):
-                missing.append(decl_name)
+            if not self._state_reaches(revision.state, change.target_state):
+                state_failures.append(
+                    RoundTargetStateFailure(
+                        revision_ref=revision_ref,
+                        current_state=revision.state,
+                        required_state=change.target_state,
+                    )
+                )
                 continue
-            reached.append(decl_name)
             if change.require_target_state_satisfied:
                 target = ProofAvailability.PROVED if change.target_state == DeclState.PROVED else ProofAvailability.DECLARED
-                satisfied, _reason = self.round_revision_satisfies_proof_policy(
+                readiness = self.graph.check_round_decl_ready(
                     repo_root,
                     node_path=node_path,
-                    round_revisions=round_revisions,
-                    decl_name=decl_name,
-                    revision=revision,
-                    target_proof_availability=target,
+                    round_id=round_id,
+                    decl_name=revision_ref.decl_name,
+                    required_availability=target,
                 )
-                if not satisfied:
-                    unsatisfied.append(decl_name)
-        failed = missing or unsatisfied
-        affected = missing or unsatisfied
-        message = None
-        if missing:
-            message = f"{len(missing)} declarations did not reach their target state."
-        elif unsatisfied:
-            message = f"{len(unsatisfied)} declarations reached target state but did not satisfy proof policy."
+                if not readiness.ok or readiness.value is None:
+                    return self.runtime.foundation.fail(readiness.issues)
+                if not readiness.value.ready:
+                    assert readiness.value.blocker is not None
+                    readiness_failures.append(
+                        RoundReadinessFailure(
+                            revision_ref=revision_ref,
+                            blocker=readiness.value.blocker,
+                        )
+                    )
+                    continue
+            reached.append(revision_ref)
+        failed = bool(state_failures or readiness_failures)
         return self.runtime.foundation.ok(
-            RoundFinalAuditView(
+            RoundFinalAuditResult(
                 passed=not failed,
-                reached_target_decl_names=sorted(reached),
-                missing_target_decl_names=sorted(affected),
-                issue_message=message,
-                summary="Decl round final audit passed." if not failed else f"Round final audit failed: {message}",
+                reached_target_revision_refs=reached,
+                target_state_failures=state_failures,
+                readiness_failures=readiness_failures,
+                summary=(
+                    "Decl round final audit passed."
+                    if not failed
+                    else (
+                        "Round final audit failed: "
+                        f"{len(state_failures)} target-state failures and "
+                        f"{len(readiness_failures)} readiness failures."
+                    )
+                ),
             )
         )
 
@@ -329,7 +392,7 @@ class DeclRoundExecutionComponent:
         round_id: str,
         outcome: RoundFlowOutcome,
         reason: str | None = None,
-    ) -> ServiceResult[RoundCloseoutView]:
+    ) -> ServiceResult[RoundCloseoutResult]:
         graph_root = self.graph.graph_store.graph_root(repo_root, node_path=node_path)
         projection_root = local_projection_path(
             repo_root,
@@ -367,11 +430,14 @@ class DeclRoundExecutionComponent:
         round_id: str,
         outcome: RoundFlowOutcome,
         reason: str | None = None,
-    ) -> ServiceResult[RoundCloseoutView]:
+    ) -> ServiceResult[RoundCloseoutResult]:
         round_record = self.graph.get_round(repo_root, node_path=node_path, round_id=round_id)
         self._require(round_record)
-        committed_names: list[str] = []
+        assert round_record.value is not None
+        round_refs = {ref.decl_name: ref for ref in round_record.value.revision_refs}
+        committed_refs: list[DeclRevisionRef] = []
         projection_summary: str | None = None
+        projection_outcome: Literal["refreshed", "deferred", "not_requested"] = "not_requested"
         revisions = self.graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
         self._require(revisions)
         if outcome == "completed":
@@ -396,7 +462,7 @@ class DeclRoundExecutionComponent:
                 apply_delete_lifecycle=outcome == "completed",
             )
             self._require(committed)
-            committed_names.append(decl_name)
+            committed_refs.append(round_refs[decl_name])
         if outcome == "completed":
             public_decls = self.graph.list_content_public_decls(repo_root, node_path=node_path)
             self._require(public_decls)
@@ -406,6 +472,7 @@ class DeclRoundExecutionComponent:
                 if not decl.ready and not decl.stale
             )
             if deferred_public_names:
+                projection_outcome = "deferred"
                 projection_summary = (
                     "Deferred node interface projection until public declarations satisfy the repo proof policy: "
                     + ", ".join(deferred_public_names)
@@ -414,6 +481,7 @@ class DeclRoundExecutionComponent:
             else:
                 projection = self.runtime.lean_projection.refresh_node_projection(repo_root, node_path=node_path)
                 self._require(projection)
+                projection_outcome = "refreshed"
                 projection_summary = projection.value.summary if projection.value is not None else None
         current_round = self.graph.get_round(repo_root, node_path=node_path, round_id=round_id)
         self._require(current_round)
@@ -457,9 +525,10 @@ class DeclRoundExecutionComponent:
             )
         )
         return self.runtime.foundation.ok(
-            RoundCloseoutView(
+            RoundCloseoutResult(
                 outcome=outcome,
-                committed_decl_names=sorted(committed_names),
+                committed_revision_refs=committed_refs,
+                projection_outcome=projection_outcome,
                 projection_summary=projection_summary,
                 round_id=round_id,
                 summary=f"Built DeclGraph round result: {outcome}.",
@@ -474,238 +543,14 @@ class DeclRoundExecutionComponent:
         round_id: str,
         stage: DeclStageName,
         targets: list[str],
-    ) -> ServiceResult[None]:
-        for decl_name in targets:
-            if stage == "statement_nl":
-                checked = validate_statement_nl_candidate(
-                    self.runtime,
-                    repo_root,
-                    node_path=node_path,
-                    round_id=round_id,
-                    decl_name=decl_name,
-                )
-            elif stage == "proof_nl":
-                checked = validate_proof_nl_candidate(
-                    self.runtime,
-                    repo_root,
-                    node_path=node_path,
-                    round_id=round_id,
-                    decl_name=decl_name,
-                )
-            else:
-                formal_stage = "statement" if stage == "statement_formal" else "proof"
-                checked = self.runtime.validation_snapshot.check_formal_stage_consistency(
-                    repo_root,
-                    node_path=node_path,
-                    decl_name=decl_name,
-                    stage=formal_stage,
-                )
-                if checked.ok and checked.value is not None and not checked.value.passed:
-                    return self.runtime.foundation.fail(checked.value.issues)
-                if checked.ok and stage == "proof_formal":
-                    decl = self.graph.get_decl(repo_root, node_path=node_path, name=decl_name)
-                    if not decl.ok or decl.value is None:
-                        return self.runtime.foundation.fail(decl.issues)
-                    revision = self.graph.get_decl_revision(
-                        repo_root,
-                        node_path=node_path,
-                        name=decl_name,
-                        revision=decl.value.current_revision,
-                    )
-                    if not revision.ok or revision.value is None:
-                        return self.runtime.foundation.fail(revision.issues)
-                    deps = list(revision.value.proof.deps) if revision.value.proof is not None else []
-                    checked = validate_proof_deps(
-                        self.runtime,
-                        repo_root,
-                        node_path=node_path,
-                        round_id=round_id,
-                        decl_name=decl_name,
-                        deps=deps,
-                    )
-            if not checked.ok:
-                return self.runtime.foundation.fail(checked.issues)
-        return self.runtime.foundation.ok(None)
-
-    def round_revision_satisfies_proof_policy(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        round_revisions: dict[str, object],
-        decl_name: str,
-        revision,
-        target_proof_availability: ProofAvailability,
-        stack: list[str] | None = None,
-    ) -> tuple[bool, str | None]:
-        stack = stack or []
-        stack_key = f"{Path(repo_root).name}:{node_path}:{decl_name}"
-        if stack_key in stack:
-            return False, f"Dependency cycle detected: {' -> '.join([*stack, stack_key])}."
-        decl_result = self.graph.get_decl(repo_root, node_path=node_path, name=decl_name)
-        if not decl_result.ok or decl_result.value is None:
-            return False, self._issue_message(decl_result.issues, f"Declaration {decl_name} is missing.")
-        decl = decl_result.value
-        required_state = self._required_state(decl.kind, target_proof_availability)
-        if not self._state_reaches(revision.state, required_state):
-            return False, f"{decl_name} is {revision.state.value}, expected at least {required_state.value}."
-        formal_stage = "proof" if target_proof_availability == ProofAvailability.PROVED and self._theorem_like(decl.kind) else "statement"
-        check = revision.proof_lean_check if formal_stage == "proof" else revision.statement_lean_check
-        if not self._lean_check_passed(check):
-            return False, f"{decl_name} does not have an acceptable {formal_stage} Lean check."
-        requirements = self.graph.dependency_ref_requirements_for_proof_policy(
-            decl,
-            revision,
-            target_proof_availability=target_proof_availability,
-        )
-        for dep_ref, dep_target in requirements:
-            dep_label = self._decl_ref_label(dep_ref, fallback_node_path=node_path)
-            dep_node = dep_ref.node
-            if dep_ref.repo is None and dep_node == "Main" and node_path != "Main":
-                dep_node = node_path
-            round_dep = round_revisions.get(dep_ref.name) if dep_ref.repo is None and dep_node == node_path else None
-            if round_dep is not None and getattr(round_dep, "revision", None) == dep_ref.revision:
-                satisfied, reason = self.round_revision_satisfies_proof_policy(
-                    repo_root,
-                    node_path=node_path,
-                    round_revisions=round_revisions,
-                    decl_name=dep_ref.name,
-                    revision=round_dep,
-                    target_proof_availability=dep_target,
-                    stack=[*stack, stack_key],
-                )
-                if not satisfied:
-                    return False, reason
-                continue
-            if (
-                dep_ref.repo is None
-                and dep_node == node_path
-                and dep_ref.name not in round_revisions
-            ):
-                local_dep = self.graph.get_decl_revision(
-                    repo_root,
-                    node_path=node_path,
-                    name=dep_ref.name,
-                    revision=dep_ref.revision,
-                )
-                if (
-                    local_dep.ok
-                    and local_dep.value is not None
-                    and local_dep.value.status == "committed"
-                ):
-                    satisfied, reason = self.round_revision_satisfies_proof_policy(
-                        repo_root,
-                        node_path=node_path,
-                        round_revisions=round_revisions,
-                        decl_name=dep_ref.name,
-                        revision=local_dep.value,
-                        target_proof_availability=dep_target,
-                        stack=[*stack, stack_key],
-                    )
-                    if not satisfied:
-                        return False, reason
-                    continue
-            resolved = self._resolve_dependency_ref(
-                repo_root,
-                ref=dep_ref,
-                fallback_node_path=node_path,
-                local_target=dep_target,
-            )
-            if not resolved.ok:
-                return False, self._issue_message(resolved.issues, f"Dependency {dep_label} provider resolution failed.")
-            if resolved.value is None:
-                return False, f"Dependency {dep_label} could not be resolved or its provider is not stable."
-            dep_root, dep_node, effective_target = resolved.value
-            report = self.graph.check_decl_proof_policy_satisfied(
-                dep_root,
-                node_path=dep_node,
-                decl_name=dep_ref.name,
-                target_proof_availability=effective_target,
-            )
-            if not report.ok or report.value is None:
-                return False, self._issue_message(report.issues, f"Dependency {dep_label} proof policy check failed.")
-            if not report.value.proof_policy_satisfied:
-                return False, report.value.summary
-        return True, None
-
-    def _resolve_dependency_ref(
-        self,
-        repo_root: Path,
-        *,
-        ref: DeclRef,
-        fallback_node_path: str,
-        local_target: ProofAvailability,
-    ) -> ServiceResult[tuple[Path, str, ProofAvailability] | None]:
-        if ref.repo:
-            provider_key = self.runtime.foundation.layout.ensure_safe_key(ref.repo)
-            provider_root = Path(repo_root).parent / provider_key
-            config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
-            if not config.ok or config.value is None:
-                return self.runtime.foundation.fail(config.issues)
-            effective_target = config.value.config.target_proof_availability
-            compatible = self.graph.ref_compatibility.resolve_public_decl_ref(
-                repo_root,
-                ref=ref,
-                required_availability=effective_target,
-            )
-            if not compatible.ok:
-                return self.runtime.foundation.fail(compatible.issues)
-            if compatible.value is None or not compatible.value.compatible:
-                return self.runtime.foundation.ok(None)
-            return self.runtime.foundation.ok((provider_root, ref.node, effective_target))
-        dep_node = ref.node
-        if dep_node == "Main" and fallback_node_path != "Main":
-            dep_node = fallback_node_path
-        local_ref = ref.model_copy(update={"node": dep_node})
-        compatible = self.graph.ref_compatibility.resolve_decl_ref(
+    ):
+        return self.graph.validate_round_stage_candidates(
             repo_root,
-            ref=local_ref,
-            required_availability=local_target,
+            node_path=node_path,
+            round_id=round_id,
+            stage=DeclStage(stage),
+            target_decl_names=targets,
         )
-        if not compatible.ok or compatible.value is None or not compatible.value.compatible:
-            return self.runtime.foundation.ok(None)
-        return self.runtime.foundation.ok((Path(repo_root), dep_node, local_target))
-
-    @staticmethod
-    def _decl_ref_label(ref: DeclRef, *, fallback_node_path: str) -> str:
-        node = ref.node
-        if ref.repo is None and node == "Main" and fallback_node_path != "Main":
-            node = fallback_node_path
-        if ref.repo:
-            return f"{ref.repo}:{node}:{ref.name}"
-        return ref.name if node == fallback_node_path else f"{node}:{ref.name}"
-
-    @staticmethod
-    def _required_state(kind: str, target: ProofAvailability) -> DeclState:
-        if target == ProofAvailability.DECLARED:
-            return DeclState.DECLARED
-        return DeclState.PROVED if DeclRoundExecutionComponent._theorem_like(kind) else DeclState.DECLARED
-
-    @staticmethod
-    def _theorem_like(kind: str) -> bool:
-        return kind.strip().lower() in {"theorem", "lemma", "proposition", "corollary"}
-
-    @staticmethod
-    def _lean_check_passed(check: object) -> bool:
-        if check is None:
-            return False
-        if hasattr(check, "model_dump"):
-            check = check.model_dump(mode="json")
-        if not isinstance(check, dict):
-            return False
-        for key in ("contains_axiom", "contains_admit", "contains_opaque", "contains_unsafe"):
-            if DeclRoundExecutionComponent._truthy(check.get(key)):
-                return False
-        if DeclRoundExecutionComponent._truthy(check.get("contains_sorry")) and not DeclRoundExecutionComponent._truthy(check.get("allow_sorry")):
-            return False
-        status = str(check.get("status") or "").strip().lower()
-        return status == "passed" if status else DeclRoundExecutionComponent._truthy(check.get("passed"))
-
-    @staticmethod
-    def _truthy(value: object) -> bool:
-        if isinstance(value, bool):
-            return value
-        return str(value or "").strip().lower() in {"1", "true", "yes", "passed"}
 
     @staticmethod
     def _review_context_issue(
@@ -811,10 +656,12 @@ class _RoundTreesSnapshot:
 __all__ = [
     "DeclRoundExecutionComponent",
     "DeclStageName",
-    "RoundCloseoutView",
     "DeclDraftSpec",
-    "RoundDraftBatchView",
-    "RoundFinalAuditView",
+    "RoundCloseoutResult",
+    "RoundDraftCreatedResult",
+    "RoundFinalAuditResult",
+    "RoundReadinessFailure",
     "RoundStageGateView",
     "RoundStageReview",
+    "RoundTargetStateFailure",
 ]

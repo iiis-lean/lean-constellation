@@ -72,7 +72,7 @@ def test_node_operator_create_read_stale_version_and_fixed_mathlib_actor(tmp_pat
         ),
     )
     assert added.ok and added.value is not None
-    module = added.value.hints.modules[0]
+    module = added.value.added_modules[0]
     assert module.added_by == MathlibUseActor.OPERATOR
 
     loaded = api.get_node("MainRepo", NodePathInput(node_path="Main.Core"))

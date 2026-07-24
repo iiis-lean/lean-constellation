@@ -572,7 +572,7 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
             ),
         )
     )
-    assert sorted(closeout.committed_decl_names) == sorted(names)
+    assert sorted(item.decl_name for item in closeout.committed_revision_refs) == sorted(names)
     _require(
         api.decl_projection.close_strategy(
             REPO_KEY,

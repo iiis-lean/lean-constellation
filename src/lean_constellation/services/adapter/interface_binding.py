@@ -261,7 +261,11 @@ class InterfaceBindingComponent:
                     expected="theorem | lemma",
                 )
             )
-        statement_code = decl.revision.statement_lean_code
+        statement_code = (
+            decl.revision.statement.formal.code
+            if decl.revision.statement.formal is not None
+            else None
+        )
         if statement_code is None or not statement_code.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -280,8 +284,13 @@ class InterfaceBindingComponent:
                 )
             )
         actual_codes = [("statement", statement_code)]
-        if decl.revision.proof_lean_code is not None and decl.revision.proof_lean_code.strip():
-            actual_codes.append(("proof", decl.revision.proof_lean_code))
+        proof_code = (
+            decl.revision.proof.formal.code
+            if decl.revision.proof is not None and decl.revision.proof.formal is not None
+            else None
+        )
+        if proof_code is not None and proof_code.strip():
+            actual_codes.append(("proof", proof_code))
         for stage, actual in actual_codes:
             compared = self.runtime.lean_projection.annotation.compare_external_theorem_header(
                 expected,

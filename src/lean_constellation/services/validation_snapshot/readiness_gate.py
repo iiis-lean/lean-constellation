@@ -306,7 +306,7 @@ class ReadinessGateComponent:
             checked = self._check_decl_ref_proof_policy(repo_root, ref=ref, fallback_node_path=node_path)
             if not checked.ok or checked.value is None:
                 return self.runtime.foundation.fail(checked.issues)
-            if not checked.value.proof_policy_satisfied:
+            if not checked.value.ready:
                 decl_issues.append(
                     self.runtime.foundation.issue(
                         "content_decl_proof_policy_unsatisfied",
@@ -354,7 +354,7 @@ class ReadinessGateComponent:
             )
             if not policy.ok or policy.value is None:
                 local_policy_issues.extend(policy.issues)
-            elif not policy.value.proof_policy_satisfied:
+            elif not policy.value.ready:
                 local_policy_issues.append(
                     self.runtime.foundation.issue(
                         "content_decl_proof_policy_unsatisfied",
@@ -760,7 +760,7 @@ class ReadinessGateComponent:
             checked = self._check_decl_ref_proof_policy(repo_root, ref=export.ref, fallback_node_path="Main")
             if not checked.ok or checked.value is None:
                 return self.runtime.foundation.fail(checked.issues)
-            if checked.value.proof_policy_satisfied:
+            if checked.value.ready:
                 continue
             issues.append(
                 self.runtime.foundation.issue(

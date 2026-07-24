@@ -135,7 +135,12 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
     unwrap(ws.admin.resume_runtime())
     flow_id = _start_decl_round(ws, round_fixture)
 
-    schedule_until(ws.runtime, lambda: ws.runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED, limit=260)
+    schedule_until(
+        ws.runtime,
+        lambda: ws.runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.COMPLETED,
+        limit=260,
+        step_timeout_s=120,
+    )
 
     flow = ws.runtime.ark.flow_service.get_flow(flow_id)
     assert flow.result.outcome == "completed"
@@ -147,8 +152,13 @@ def test_decl_graph_round_real_lake_formal_capture_embedded_in_flow(
     )
     assert revision.ok and revision.value is not None, revision.issues
     assert revision.value.state is DeclState.PROVED
-    assert revision.value.statement_lean_check["status"] == "passed"
-    assert revision.value.proof_lean_check["status"] == "passed"
+    assert revision.value.statement.formal is not None
+    assert revision.value.statement.formal.check is not None
+    assert revision.value.statement.formal.check.status == "passed"
+    assert revision.value.proof is not None
+    assert revision.value.proof.formal is not None
+    assert revision.value.proof.formal.check is not None
+    assert revision.value.proof.formal.check.status == "passed"
     assert ws.runtime.external.lean_toolchain.run_lake_build(ws.provider_repo, timeout_seconds=120).ok
 
     evidence_recorder.record_runtime_state(ws.runtime)

@@ -42,7 +42,7 @@ def test_node_dep_operator_ownership_is_isolated_from_agents(tmp_path) -> None:
     )
     assert added.ok
     assert added.value is not None
-    assert added.value.contract.deps[0].added_by == NodeDepActor.OPERATOR
+    assert added.value.added[0].added_by == NodeDepActor.OPERATOR
 
     for actor in (NodeDepActor.WORKER, NodeDepActor.COORDINATOR):
         denied = deps.remove_node_dep(tmp_path, node_path="Main.Consumer", index=0, actor=actor)

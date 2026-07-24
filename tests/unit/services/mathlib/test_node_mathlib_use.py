@@ -52,7 +52,7 @@ def test_add_mathlib_module_use_refreshes_prelude_and_dedupes(tmp_path: Path) ->
 
     assert added.ok
     assert added.value is not None
-    assert added.value.contract.mathlib_modules == [
+    assert added.value.added_modules == [
         NodeMathlibModuleUse(
             module="Mathlib.Data.Finset.Basic",
             reason="Finite sums.",
@@ -76,7 +76,9 @@ def test_add_mathlib_module_use_refreshes_prelude_and_dedupes(tmp_path: Path) ->
     assert duplicate.ok
     assert duplicate.value is not None
     assert [issue.kind for issue in duplicate.issues] == ["mathlib_module_use_duplicate"]
-    assert len(duplicate.value.contract.mathlib_modules) == 1
+    assert [item.module for item in duplicate.value.already_present_modules] == [
+        "Mathlib.Data.Finset.Basic"
+    ]
     assert "import Mathlib.Data.Finset.Basic" in prelude_path.read_text(encoding="utf-8")
 
 
@@ -117,7 +119,9 @@ def test_worker_can_only_remove_worker_added_mathlib_module_use(tmp_path: Path) 
     )
     assert removed.ok
     assert removed.value is not None
-    assert all(item.module != "Mathlib.Algebra.Group.Basic" for item in removed.value.contract.mathlib_modules)
+    assert [item.module for item in removed.value.removed_modules] == [
+        "Mathlib.Algebra.Group.Basic"
+    ]
 
 
 def test_module_use_missing_invalid_and_coordinator_remove_branches(tmp_path: Path) -> None:
@@ -150,7 +154,9 @@ def test_module_use_missing_invalid_and_coordinator_remove_branches(tmp_path: Pa
         module="Mathlib.Data.Finset.Basic",
         actor="coordinator",
     )
-    assert not missing.ok
+    assert missing.ok
+    assert missing.value is not None
+    assert missing.value.changed is False
     assert missing.issues[0].kind == "mathlib_module_use_missing"
 
     added = service.add_mathlib_module_use(
@@ -169,7 +175,9 @@ def test_module_use_missing_invalid_and_coordinator_remove_branches(tmp_path: Pa
     )
     assert removed.ok
     assert removed.value is not None
-    assert removed.value.contract.mathlib_modules == []
+    assert [item.module for item in removed.value.removed_modules] == [
+        "Mathlib.Data.Finset.Basic"
+    ]
 
 
 def test_module_use_reports_prelude_refresh_failure(tmp_path: Path) -> None:
@@ -232,7 +240,7 @@ def test_add_mathlib_decl_use_records_hint_and_refreshes_prelude_import(tmp_path
 
     assert added.ok
     assert added.value is not None
-    assert added.value.contract.mathlib_decls == [
+    assert added.value.added_declarations == [
         NodeMathlibDeclUse(
             name="Finset.sum_congr",
             module="Mathlib.Data.Finset.Basic",
@@ -258,7 +266,9 @@ def test_add_mathlib_decl_use_records_hint_and_refreshes_prelude_import(tmp_path
     assert duplicate.ok
     assert duplicate.value is not None
     assert [issue.kind for issue in duplicate.issues] == ["mathlib_decl_use_duplicate"]
-    assert len(duplicate.value.contract.mathlib_decls) == 1
+    assert [item.name for item in duplicate.value.already_present_declarations] == [
+        "Finset.sum_congr"
+    ]
     assert "import Mathlib.Data.Finset.Basic" in prelude_path.read_text(encoding="utf-8")
 
     removed = service.remove_mathlib_decl_use(
@@ -269,7 +279,9 @@ def test_add_mathlib_decl_use_records_hint_and_refreshes_prelude_import(tmp_path
     )
     assert removed.ok
     assert removed.value is not None
-    assert removed.value.contract.mathlib_decls == []
+    assert [item.name for item in removed.value.removed_declarations] == [
+        "Finset.sum_congr"
+    ]
     assert "import Mathlib.Data.Finset.Basic" not in prelude_path.read_text(encoding="utf-8")
 
 
@@ -304,7 +316,9 @@ def test_add_mathlib_decl_use_missing_index_warning_and_remove_permission(tmp_pa
     )
     assert removed.ok
     assert removed.value is not None
-    assert removed.value.contract.mathlib_decls == []
+    assert [item.name for item in removed.value.removed_declarations] == [
+        "Missing.decl"
+    ]
 
 
 def test_decl_use_invalid_input_and_missing_remove(tmp_path: Path) -> None:
@@ -327,7 +341,9 @@ def test_decl_use_invalid_input_and_missing_remove(tmp_path: Path) -> None:
         decl_name="Missing.decl",
         actor="coordinator",
     )
-    assert not missing.ok
+    assert missing.ok
+    assert missing.value is not None
+    assert missing.value.changed is False
     assert missing.issues[0].kind == "mathlib_decl_use_missing"
 
 

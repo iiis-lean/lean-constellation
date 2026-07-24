@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from lean_constellation.services.decl_graph.models import (
     Decl,
-    DeclDep,
     DeclGraphRound,
     DeclGraphRoundView,
     DeclGraphStrategy,
@@ -12,7 +11,6 @@ from lean_constellation.services.decl_graph.models import (
     DeclReviewMarkRecord,
     DeclReviewMarkView,
     DeclRevision,
-    DeclRevisionToolView,
     DeclView,
 )
 
@@ -72,55 +70,6 @@ class DeclGraphViewMapper:
             committed_at=round_record.committed_at,
         )
 
-    def revision_tool_view(
-        self,
-        *,
-        decl: Decl,
-        revision: DeclRevision,
-    ) -> DeclRevisionToolView:
-        change = revision.change
-        statement_origin = list(revision.statement.nl.origin) if revision.statement.nl is not None else []
-        proof_origin = list(revision.proof.nl.origin) if revision.proof is not None and revision.proof.nl is not None else []
-        statement_dep_refs = list(revision.statement.deps)
-        proof_dep_refs = list(revision.proof.deps) if revision.proof is not None else []
-        return DeclRevisionToolView(
-            decl_name=decl.name,
-            node_path=decl.node_path,
-            revision=revision.revision,
-            kind=decl.kind,
-            lifecycle=decl.lifecycle,
-            public=decl.public,
-            visibility="public" if decl.public else "private",
-            state=revision.state,
-            status=revision.status,
-            module=decl.module,
-            lean_decl_name=revision.lean_decl_name,
-            change_id=self.change_id_for_revision(decl_name=decl.name, revision=revision),
-            change_kind=change.kind if change is not None else None,
-            change_objective=change.objective if change is not None else None,
-            change_summary=change.summary if change is not None else None,
-            base_revision=change.base_revision if change is not None else None,
-            reset_to_state=change.reset_to_state if change is not None else None,
-            target_state=change.target_state if change is not None else None,
-            require_target_state_satisfied=change.require_target_state_satisfied if change is not None else True,
-            statement_nl=revision.statement_nl,
-            statement_origin=statement_origin,
-            statement_deps=revision.statement_deps,
-            statement_dep_refs=statement_dep_refs,
-            statement_lean_code=revision.statement_lean_code,
-            statement_lean_check=revision.statement_lean_check,
-            proof_nl=revision.proof_nl,
-            proof_origin=proof_origin,
-            proof_deps=revision.proof_deps,
-            proof_dep_refs=proof_dep_refs,
-            proof_lean_code=revision.proof_lean_code,
-            proof_lean_check=revision.proof_lean_check,
-            effective_deps=sorted(set(revision.statement_deps) | set(revision.proof_deps)),
-            effective_dep_refs=_unique_dep_refs([*statement_dep_refs, *proof_dep_refs]),
-            summary=decl.summary,
-            updated_at=revision.updated_at,
-        )
-
     def review_mark_view(self, mark: DeclReviewMarkRecord) -> DeclReviewMarkView:
         return DeclReviewMarkView(
             round_id=mark.round_id,
@@ -136,21 +85,3 @@ class DeclGraphViewMapper:
             recommended_next_action=mark.recommended_next_action,
             created_at=mark.created_at,
         )
-
-    def change_id_for_revision(self, *, decl_name: str, revision: DeclRevision) -> str | None:
-        if revision.change is None:
-            return None
-        return f"{decl_name}@rev:{revision.revision}"
-
-
-def _dep_key(dep: DeclDep) -> str:
-    if dep.kind == "repo_decl":
-        repo = dep.ref.repo or ""
-        node = dep.ref.node or ""
-        return f"repo_decl:{repo}:{node}:{dep.ref.name}:{dep.ref.revision}"
-    return f"mathlib_decl:{dep.ref.module or ''}:{dep.ref.name}"
-
-
-def _unique_dep_refs(deps: list[DeclDep]) -> list[DeclDep]:
-    by_key = {_dep_key(dep): dep for dep in deps}
-    return [by_key[key] for key in sorted(by_key)]

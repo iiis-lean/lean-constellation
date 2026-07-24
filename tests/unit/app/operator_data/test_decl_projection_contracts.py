@@ -82,4 +82,4 @@ def test_round_batch_preserves_typed_decl_drafts_at_service_boundary(tmp_path) -
     )
 
     assert created.ok and created.value is not None, created.issues
-    assert [item.decl_name for item in created.value.declarations] == ["coreValue"]
+    assert [item.decl_name for item in created.value.revision_refs] == ["coreValue"]

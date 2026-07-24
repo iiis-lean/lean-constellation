@@ -9,11 +9,15 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.refs import DeclRef, SourceRef
 from lean_constellation.services.foundation import FoundationContext, GateReport, MutationSummaryView, ServiceResult
 from lean_constellation.services.foundation.module_layout import local_projection_path
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
-from lean_constellation.services.node.contract_fields import NodeMathlibDeclUse, NodeMathlibModuleUse
-from lean_constellation.services.node.dependency import DependencyComponent, NodeDepsView
+from lean_constellation.services.node.contract_fields import ContractMaterialRef
+from lean_constellation.services.node.dependency import (
+    DependencyComponent,
+    NodeDependencyMutationReceipt,
+)
 from lean_constellation.services.node.export import (
     ContentPublicDeclProvider,
     DeclPublicView,
@@ -22,11 +26,10 @@ from lean_constellation.services.node.export import (
     ScopeExportCandidateView,
 )
 from lean_constellation.services.node.interface import InterfaceComponent, InterfaceListView
-from lean_constellation.services.node.material_ref import MaterialRefComponent, NodeMaterialRefsView
+from lean_constellation.services.node.material_ref import MaterialRefComponent
 from lean_constellation.services.node.node_tree import DeleteImpactView, NodeKind, NodeTreeComponent, NodeView
 from lean_constellation.services.node.public_decl_access import PublicDeclAccessResolver
 from lean_constellation.services.node.release_guard import NodeReleaseGuard
-from lean_constellation.services.node.projection_transaction import NodeContractProjectionMutationView
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -76,27 +79,77 @@ class ContentTaskFinalizeView(StrictModel):
     summary: str
 
 
+class CurrentNodeInterfaceOverview(StrictModel):
+    name: str
+    kind: str
+    summary: str
+    bound_decl: DeclRef | None = None
+
+
+class CurrentNodeDependencyOverview(StrictModel):
+    repository: str | None = None
+    node_path: str
+    expected_declarations: list[str] = Field(default_factory=list)
+
+
+class CurrentNodeMaterialOverview(StrictModel):
+    scope: Literal["owned", "context"]
+    kind: str
+    locator: str
+    start_line: int | None = None
+    end_line: int | None = None
+
+
 class CurrentNodeContractView(StrictModel):
-    """Coordinator / worker oriented current NodeContract view."""
+    """Compact Agent-facing overview derived directly from NodeContract truth."""
 
     node_path: str
-    contract: NodeContractView
-    deps: NodeDepsView
-    material_refs: NodeMaterialRefsView
-    mathlib_modules: list[NodeMathlibModuleUse] = Field(default_factory=list)
-    mathlib_decls: list[NodeMathlibDeclUse] = Field(default_factory=list)
+    node_kind: NodeKind
+    contract_status: ContractVersionStatus
+    goal: str
+    boundary: str
+    objective: str | None = None
+    success_criteria: str | None = None
+    constraints: str | None = None
+    result_summary: str | None = None
+    interfaces: list[CurrentNodeInterfaceOverview] = Field(default_factory=list)
+    dependencies: list[CurrentNodeDependencyOverview] = Field(default_factory=list)
+    materials: list[CurrentNodeMaterialOverview] = Field(default_factory=list)
+    mathlib_modules: list[str] = Field(default_factory=list)
+    mathlib_declarations: list[str] = Field(default_factory=list)
+    exports: list[DeclRef] = Field(default_factory=list)
     summary: str
 
 
-class CurrentNodeContractMutationView(CurrentNodeContractView):
-    """Current contract view plus generated-file effects of a node mutation."""
+class CurrentNodeMaterialMutationReceipt(StrictModel):
+    """Compact result of one current-node material mutation."""
 
-    projection_kind: Literal["prelude", "interfaces"]
-    projection_path: str | None = None
-    managed_projection_changed: bool = False
-    changed_files: list[str] = Field(default_factory=list)
-    reread_required: bool = False
-    projection_summary: str
+    node_path: str
+    ref_scope: Literal["owned", "context"]
+    operation: Literal["add", "remove"]
+    changed: bool
+    added: list[ContractMaterialRef] = Field(default_factory=list)
+    removed: list[ContractMaterialRef] = Field(default_factory=list)
+    summary: str
+
+
+def _current_material_overview(item, *, scope: Literal["owned", "context"]) -> CurrentNodeMaterialOverview:  # noqa: ANN001
+    ref = item.ref.ref
+    if isinstance(ref, SourceRef):
+        return CurrentNodeMaterialOverview(
+            scope=scope,
+            kind=item.ref.kind,
+            locator=ref.path,
+            start_line=ref.start_line,
+            end_line=ref.end_line,
+        )
+    return CurrentNodeMaterialOverview(
+        scope=scope,
+        kind=item.ref.kind,
+        locator=ref.locator or ref.resource_key,
+        start_line=ref.start_line,
+        end_line=ref.end_line,
+    )
 
 
 class ScopeChildCloseView(StrictModel):
@@ -351,28 +404,53 @@ class NodeService:
         contract = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
-        deps = self.dependency.list_node_deps(repo_root, node_path=node_path)
-        if not deps.ok or deps.value is None:
-            return self.runtime.foundation.fail(deps.issues)
-        material_refs = self.material_ref.list_node_material_refs(repo_root, node_path=node_path)
-        if not material_refs.ok or material_refs.value is None:
-            return self.runtime.foundation.fail(material_refs.issues)
+        truth = contract.value.contract
         return self.runtime.foundation.ok(
             CurrentNodeContractView(
                 node_path=node_path,
-                contract=contract.value,
-                deps=deps.value,
-                material_refs=material_refs.value,
-                mathlib_modules=list(contract.value.contract.mathlib_modules),
-                mathlib_decls=list(contract.value.contract.mathlib_decls),
+                node_kind=contract.value.node_kind,
+                contract_status=contract.value.status,
+                goal=truth.goal,
+                boundary=truth.boundary,
+                objective=truth.objective,
+                success_criteria=truth.success_criteria,
+                constraints=truth.constraints,
+                result_summary=truth.summary,
+                interfaces=[
+                    CurrentNodeInterfaceOverview(
+                        name=item.name,
+                        kind=item.kind.value,
+                        summary=item.summary,
+                        bound_decl=item.bound_decl,
+                    )
+                    for item in truth.interfaces
+                ],
+                dependencies=[
+                    CurrentNodeDependencyOverview(
+                        repository=item.target.repo,
+                        node_path=item.target.node,
+                        expected_declarations=sorted({ref.name for ref in item.expected_decl_refs}),
+                    )
+                    for item in truth.deps
+                ],
+                materials=[
+                    _current_material_overview(item, scope="owned")
+                    for item in truth.owned_refs
+                ]
+                + [
+                    _current_material_overview(item, scope="context")
+                    for item in truth.context_refs
+                ],
+                mathlib_modules=sorted({item.module for item in truth.mathlib_modules}),
+                mathlib_declarations=sorted({item.name for item in truth.mathlib_decls}),
+                exports=list(truth.exports),
                 summary=(
-                    f"Loaded current contract view for {node_path}: "
-                    f"{len(deps.value.deps)} deps, "
-                    f"{len(material_refs.value.owned_refs)} owned refs, "
-                    f"{len(material_refs.value.context_refs)} context refs."
+                    f"{node_path} contract is {contract.value.status.value}: "
+                    f"{len(truth.deps)} dependencies, {len(truth.interfaces)} interfaces, "
+                    f"{len(truth.owned_refs) + len(truth.context_refs)} material references."
                 ),
             ),
-            warnings=[*contract.issues, *deps.issues, *material_refs.issues],
+            warnings=contract.issues,
         )
 
     def add_current_node_dep(
@@ -385,8 +463,8 @@ class NodeService:
         actor: str,
         expected_public_decl_names: list[str] | None = None,
         target_repo: str | None = None,
-    ) -> ServiceResult[CurrentNodeContractMutationView]:
-        mutation = self.dependency.add_node_dep(
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
+        return self.dependency.add_node_dep(
             repo_root,
             node_path=node_path,
             target_node=target_node,
@@ -395,7 +473,6 @@ class NodeService:
             expected_decl_names=expected_public_decl_names,
             target_repo=target_repo,
         )
-        return self._current_contract_projection_view_after_mutation(repo_root, node_path=node_path, mutation=mutation)
 
     def remove_current_node_dep(
         self,
@@ -404,9 +481,13 @@ class NodeService:
         node_path: str,
         index: int,
         actor: str,
-    ) -> ServiceResult[CurrentNodeContractMutationView]:
-        mutation = self.dependency.remove_node_dep(repo_root, node_path=node_path, index=index, actor=actor)
-        return self._current_contract_projection_view_after_mutation(repo_root, node_path=node_path, mutation=mutation)
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
+        return self.dependency.remove_node_dep(
+            repo_root,
+            node_path=node_path,
+            index=index,
+            actor=actor,
+        )
 
     def add_current_material_ref(
         self,
@@ -420,7 +501,15 @@ class NodeService:
         end_line: int | None = None,
         reason: str | None = None,
         actor: str,
-    ) -> ServiceResult[CurrentNodeContractView]:
+    ) -> ServiceResult[CurrentNodeMaterialMutationReceipt]:
+        before = self.contract.get_edit_contract(repo_root, node_path=node_path)
+        if not before.ok or before.value is None:
+            return self.runtime.foundation.fail(before.issues)
+        previous = list(
+            before.value.contract.owned_refs
+            if ref_scope == "owned"
+            else before.value.contract.context_refs
+        )
         if ref_scope == "owned" and material_kind == "source":
             mutation = self.material_ref.add_owned_source_ref(
                 repo_root,
@@ -469,7 +558,13 @@ class NodeService:
                     object_ref=node_path,
                 )
             )
-        return self._current_contract_view_after_mutation(repo_root, node_path=node_path, mutation=mutation)
+        return self._current_node_material_receipt(
+            node_path=node_path,
+            ref_scope=ref_scope,
+            operation="add",
+            previous=previous,
+            mutation=mutation,
+        )
 
     def remove_current_material_ref(
         self,
@@ -479,7 +574,15 @@ class NodeService:
         ref_scope: Literal["owned", "context"],
         index: int,
         actor: str,
-    ) -> ServiceResult[CurrentNodeContractView]:
+    ) -> ServiceResult[CurrentNodeMaterialMutationReceipt]:
+        before = self.contract.get_edit_contract(repo_root, node_path=node_path)
+        if not before.ok or before.value is None:
+            return self.runtime.foundation.fail(before.issues)
+        previous = list(
+            before.value.contract.owned_refs
+            if ref_scope == "owned"
+            else before.value.contract.context_refs
+        )
         if ref_scope == "owned":
             mutation = self.material_ref.remove_owned_ref(repo_root, node_path=node_path, index=index, actor=actor)
         elif ref_scope == "context":
@@ -494,7 +597,13 @@ class NodeService:
                     current=str(ref_scope),
                 )
             )
-        return self._current_contract_view_after_mutation(repo_root, node_path=node_path, mutation=mutation)
+        return self._current_node_material_receipt(
+            node_path=node_path,
+            ref_scope=ref_scope,
+            operation="remove",
+            previous=previous,
+            mutation=mutation,
+        )
 
     def finalize_content_task_result(
         self,
@@ -860,45 +969,35 @@ class NodeService:
             )
         return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports("scope_commit", reports))
 
-    def _current_contract_view_after_mutation(
+    def _current_node_material_receipt(
         self,
-        repo_root: Path,
         *,
         node_path: str,
+        ref_scope: Literal["owned", "context"],
+        operation: Literal["add", "remove"],
+        previous: list[ContractMaterialRef],
         mutation: ServiceResult[NodeContractView],
-    ) -> ServiceResult[CurrentNodeContractView]:
+    ) -> ServiceResult[CurrentNodeMaterialMutationReceipt]:
         if not mutation.ok or mutation.value is None:
             return self.runtime.foundation.fail(mutation.issues)
-        view = self.get_current_contract_view(repo_root, node_path=node_path)
-        if not view.ok or view.value is None:
-            return self.runtime.foundation.fail(view.issues)
-        return self.runtime.foundation.ok(view.value, warnings=[*mutation.issues, *view.issues])
-
-    def _current_contract_projection_view_after_mutation(
-        self,
-        repo_root: Path,
-        *,
-        node_path: str,
-        mutation: ServiceResult[NodeContractProjectionMutationView],
-    ) -> ServiceResult[CurrentNodeContractMutationView]:
-        if not mutation.ok or mutation.value is None:
-            return self.runtime.foundation.fail(mutation.issues)
-        view = self.get_current_contract_view(repo_root, node_path=node_path)
-        if not view.ok or view.value is None:
-            return self.runtime.foundation.fail(view.issues)
+        current = list(
+            mutation.value.contract.owned_refs
+            if ref_scope == "owned"
+            else mutation.value.contract.context_refs
+        )
+        added = [item for item in current if item not in previous]
+        removed = [item for item in previous if item not in current]
         return self.runtime.foundation.ok(
-            CurrentNodeContractMutationView.model_validate(
-                {
-                    **view.value.model_dump(mode="python"),
-                    "projection_kind": mutation.value.projection_kind,
-                    "projection_path": mutation.value.projection_path,
-                    "managed_projection_changed": mutation.value.managed_projection_changed,
-                    "changed_files": list(mutation.value.changed_files),
-                    "reread_required": mutation.value.reread_required,
-                    "projection_summary": mutation.value.projection_summary,
-                }
+            CurrentNodeMaterialMutationReceipt(
+                node_path=node_path,
+                ref_scope=ref_scope,
+                operation=operation,
+                changed=previous != current,
+                added=added,
+                removed=removed,
+                summary=f"{operation.capitalize()} current-node {ref_scope} material reference.",
             ),
-            warnings=[*mutation.issues, *view.issues],
+            warnings=mutation.issues,
         )
 
     def _content_task_finalize_view(

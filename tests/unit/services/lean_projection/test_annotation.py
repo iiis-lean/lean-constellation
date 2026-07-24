@@ -23,8 +23,7 @@ def _revision() -> DeclFileRevisionView:
                     {"kind": "resource", "resource_key": "paper", "start_locator": "§2", "end_locator": "Theorem 1"},
                 ],
             },
-            "deps": ["Nat.Coprime", "helper"],
-            "dep_refs": [
+            "deps": [
                 {"kind": "mathlib_decl", "ref": {"name": "Nat.Coprime", "module": "Mathlib.Data.Nat.GCD.Basic"}},
                 {"kind": "repo_decl", "ref": {"node": "Main.Topic", "name": "helper", "revision": 1}},
             ],

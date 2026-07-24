@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.services.decl_graph.models import DeclFileRevisionView
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult
 
 if TYPE_CHECKING:
@@ -236,22 +237,9 @@ class ConsistencyCheckComponent:
             stage=stage,
         )
 
-    def _proof_formal_code(self, revision: object) -> str | None:
-        proof_lean_code = getattr(revision, "proof_lean_code", None)
-        if proof_lean_code:
-            return str(proof_lean_code)
-        proof = getattr(revision, "proof", None)
-        formal = getattr(proof, "formal", None)
-        code = getattr(formal, "code", None)
-        if code:
-            return str(code)
-        if isinstance(proof, dict):
-            formal = proof.get("formal")
-            if isinstance(formal, dict):
-                code = formal.get("code")
-                if code:
-                    return str(code)
-        return None
+    def _proof_formal_code(self, revision: DeclFileRevisionView) -> str | None:
+        proof = revision.proof
+        return proof.formal.code if proof is not None and proof.formal is not None else None
 
     def check_adapter_decl_consistency(self, repo_root: Path, *, decl_name: str) -> ServiceResult[GateReport]:
         completeness = self.adapter.check_adapter_decl_completeness(Path(repo_root), name=decl_name)

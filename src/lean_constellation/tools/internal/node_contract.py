@@ -89,6 +89,18 @@ def _get_node(runtime, ctx, args: NodePathArgs):
     return runtime.node.node_tree.get_node(ctx.repo_root, path=args.node_path)
 
 
+def _update_node_contract_text(runtime, ctx, args: ContractCoreUpdateArgs):
+    return runtime.node.contract.update_contract_text_fields_receipt(
+        ctx.repo_root,
+        node_path=args.node_path,
+        goal=args.goal,
+        boundary=args.boundary,
+        objective=args.objective,
+        success_criteria=args.success_criteria,
+        constraints=args.constraints,
+    )
+
+
 def _node_delete_runtime_blockers(runtime, ctx, *, node_path: str):
     node = runtime.node.node_tree.get_node(ctx.repo_root, path=node_path)
     if not node.ok or node.value is None:
@@ -707,17 +719,15 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.NODE_TREE_COORDINATOR_WRITE},
             roles=coordinator_roles,
         ),
-        direct_tool(
+        handler_tool(
             name="update_node_contract_text",
             description="Update goal, boundary, objective, success criteria, or constraints for a node contract.",
             args_model=ContractCoreUpdateArgs,
             capability=ToolCapability.WRITE,
-            backing_service="node",
-            backing_component="contract",
-            backing_method="update_contract_text_fields",
-            result_view="node_contract",
+            result_view="mutation",
             groups={AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE},
             roles=coordinator_roles,
+            handler=_update_node_contract_text,
         ),
         handler_tool(
             name="preview_delete_node",

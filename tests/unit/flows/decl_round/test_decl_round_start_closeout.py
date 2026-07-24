@@ -157,7 +157,7 @@ def test_decl_round_final_audit_rejects_unsatisfied_target_by_default(tmp_path: 
     final_audit_step = runtime.flow_service.get_step(final_audit_step_id)
     assert final_audit_step.result.outcome == "failed"
     assert final_audit_step.result.error.affected_decl_names == ["main_result"]
-    assert "did not satisfy proof policy" in final_audit_step.result.error.message
+    assert "1 readiness failures" in final_audit_step.result.error.message
 
 
 def test_statement_nl_stage_gate_rejects_missing_statement_dependency(tmp_path: Path) -> None:
@@ -313,8 +313,10 @@ def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path
         decl_name="main_result",
     )
     assert before_helper.ok and before_helper.value is not None
-    assert before_helper.value.proof_policy_satisfied is False
-    assert before_helper.value.failed_dependencies == ["missing_helper"]
+    assert before_helper.value.ready is False
+    assert before_helper.value.blocker is not None
+    assert before_helper.value.blocker.blocking_decl is not None
+    assert before_helper.value.blocker.blocking_decl.name == "missing_helper"
 
     _prove_committed_helper_theorem(lean_runtime, repo_root, decl_name="missing_helper")
     commit_content_contract_head(lean_runtime, repo_root, decl_graph_head={"missing_helper": 2})
@@ -325,8 +327,8 @@ def test_top_down_proved_round_becomes_satisfied_after_helper_is_proved(tmp_path
     )
 
     assert after_helper.ok and after_helper.value is not None
-    assert after_helper.value.proof_policy_satisfied is True
-    assert after_helper.value.dependencies_checked == ["missing_helper"]
+    assert after_helper.value.ready is True
+    assert after_helper.value.blocker is None
 
 
 def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> None:
@@ -350,36 +352,33 @@ def test_decl_stage_agent_prompts_include_change_metadata(tmp_path: Path) -> Non
     prepare_step_id = advance_and_run(runtime, flow_id)
     prepare_step = runtime.flow_service.get_step(prepare_step_id)
     assert prepare_step.result.outcome == "targets_ready"
-    assert prepare_step.result.target_metadata[0].decl_name == "main_result"
-    assert prepare_step.result.target_metadata[0].target_state == "proved"
-    assert prepare_step.result.target_metadata[0].require_target_state_satisfied is False
+    assert prepare_step.result.target_decl_names == ["main_result"]
+    assert "target_metadata" not in prepare_step.result.model_dump(mode="json")
 
     queue_worker_completed(runtime, repo_root, stage="statement_nl", round_id=round_id)
     advance_and_run(runtime, flow_id)
     worker_record = runtime.agent_service.start_records[-1]
-    assert worker_record.variables["target_metadata"][0]["decl_name"] == "main_result"
-    assert worker_record.variables["target_metadata"][0]["target_state"] == "proved"
-    assert worker_record.variables["target_metadata"][0]["require_target_state_satisfied"] is False
+    assert "target_metadata" not in worker_record.variables
+    assert "context_brief" not in worker_record.variables
     assert "Target change metadata:" in (worker_record.prompt or "")
     assert "Pipeline position: planned --Statement NL--> specified" in (worker_record.prompt or "")
     assert "global target_state does not expand this stage's authority" in (worker_record.prompt or "")
-    assert "change_kind=create" in (worker_record.prompt or "")
-    assert "base_revision=none" in (worker_record.prompt or "")
+    assert "change=create" in (worker_record.prompt or "")
     assert "target_state=proved" in (worker_record.prompt or "")
-    assert "require_target_state_satisfied=False" in (worker_record.prompt or "")
-    assert "current_state=planned" in (worker_record.prompt or "")
+    assert "state=planned" in (worker_record.prompt or "")
     assert "known_statement_deps=[none]" in (worker_record.prompt or "")
     assert runtime.flow_service.get_flow(flow_id).state.position.phase == "stage_reviewer"
 
     queue_review(runtime, repo_root, stage="statement_nl", round_id=round_id, accepted=True)
     advance_and_run(runtime, flow_id)
     reviewer_record = runtime.agent_service.start_records[-1]
-    assert reviewer_record.variables["target_metadata"][0]["decl_name"] == "main_result"
+    assert "target_metadata" not in reviewer_record.variables
+    assert "context_brief" not in reviewer_record.variables
     assert "Review decl stage statement_nl." in (reviewer_record.prompt or "")
     assert "Pipeline position: planned --Statement NL--> specified" in (reviewer_record.prompt or "")
     assert "Review only this layer" in (reviewer_record.prompt or "")
     assert "Target change metadata:" in (reviewer_record.prompt or "")
-    assert "require_target_state_satisfied=False" in (reviewer_record.prompt or "")
+    assert "target_state=proved" in (reviewer_record.prompt or "")
 
 
 def test_decl_round_stale_contract_fails_before_mutation(tmp_path: Path) -> None:

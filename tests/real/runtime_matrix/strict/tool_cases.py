@@ -902,11 +902,11 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),
-    "add_current_mathlib_module_hint": ToolCase(
-        tool_name="add_current_mathlib_module_hint",
+    "add_current_mathlib_hints": ToolCase(
+        tool_name="add_current_mathlib_hints",
         status="implemented",
         category="node_mathlib_hint_write",
-        reason="Checkpointed current node Mathlib module hint addition covered by strict ToolSweep runner.",
+        reason="Checkpointed atomic current-node Mathlib hint addition covered by strict ToolSweep runner.",
         view_key="content_plan",
         agent_type="ContentPlanAgent",
         restore_policy="checkpoint",
@@ -916,15 +916,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         status="implemented",
         category="node_mathlib_hint_write",
         reason="Checkpointed current node Mathlib module hint removal covered by strict ToolSweep runner.",
-        view_key="content_plan",
-        agent_type="ContentPlanAgent",
-        restore_policy="checkpoint",
-    ),
-    "add_current_mathlib_decl_hint": ToolCase(
-        tool_name="add_current_mathlib_decl_hint",
-        status="implemented",
-        category="node_mathlib_hint_write",
-        reason="Checkpointed current node Mathlib declaration hint addition covered by strict ToolSweep runner.",
         view_key="content_plan",
         agent_type="ContentPlanAgent",
         restore_policy="checkpoint",
@@ -1257,6 +1248,14 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="StatementNLWorkerAgent",
         restore_policy="checkpoint",
     ),
+    "read_statement_nl": ToolCase(
+        tool_name="read_statement_nl",
+        status="implemented",
+        category="decl_stage_statement_nl_read",
+        reason="Complete nested Statement NL truth read covered by strict real Lake DeclStage ToolSweep.",
+        view_key="statement_nl_worker",
+        agent_type="StatementNLWorkerAgent",
+    ),
     "add_statement_source_origin": ToolCase(
         tool_name="add_statement_source_origin",
         status="implemented",
@@ -1293,20 +1292,11 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="StatementNLWorkerAgent",
         restore_policy="checkpoint",
     ),
-    "add_statement_decl_dep": ToolCase(
-        tool_name="add_statement_decl_dep",
+    "add_statement_dependencies": ToolCase(
+        tool_name="add_statement_dependencies",
         status="implemented",
         category="decl_stage_statement_formal_dep_write",
-        reason="Typed statement declaration dependency write covered through Statement Formal worker in strict real Lake DeclStage ToolSweep.",
-        view_key="statement_formal_worker",
-        agent_type="StatementFormalWorkerAgent",
-        restore_policy="checkpoint",
-    ),
-    "add_statement_mathlib_dep": ToolCase(
-        tool_name="add_statement_mathlib_dep",
-        status="implemented",
-        category="decl_stage_statement_formal_dep_write",
-        reason="Typed statement Mathlib dependency write covered through Statement Formal worker in strict real Lake DeclStage ToolSweep.",
+        reason="Atomic typed project/Mathlib statement dependency write covered through Statement Formal worker in strict real Lake DeclStage ToolSweep.",
         view_key="statement_formal_worker",
         agent_type="StatementFormalWorkerAgent",
         restore_policy="checkpoint",
@@ -1356,6 +1346,24 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="ProofNLWorkerAgent",
         restore_policy="checkpoint",
     ),
+    "read_proof_nl": ToolCase(
+        tool_name="read_proof_nl",
+        status="implemented",
+        category="decl_stage_proof_nl_read",
+        reason="Complete nested Proof NL truth read covered by strict real Lake DeclStage ToolSweep.",
+        view_key="proof_nl_worker",
+        agent_type="ProofNLWorkerAgent",
+    ),
+    "read_formal": ToolCase(
+        tool_name="read_formal",
+        status="implemented",
+        category="decl_stage_formal_read",
+        reason="Stage-aware formal Lean source read with managed docstrings omitted by default covered by strict real Lake DeclStage ToolSweep.",
+        view_key="statement_formal_worker",
+        agent_type="StatementFormalWorkerAgent",
+        covered_view_keys=("statement_formal_worker", "proof_formal_worker"),
+        covered_agent_types=("StatementFormalWorkerAgent", "ProofFormalWorkerAgent"),
+    ),
     "add_proof_source_origin": ToolCase(
         tool_name="add_proof_source_origin",
         status="implemented",
@@ -1392,22 +1400,11 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="ProofNLWorkerAgent",
         restore_policy="checkpoint",
     ),
-    "add_proof_decl_dep": ToolCase(
-        tool_name="add_proof_decl_dep",
+    "add_proof_dependencies": ToolCase(
+        tool_name="add_proof_dependencies",
         status="implemented",
         category="decl_stage_proof_dep_write",
-        reason="Typed project proof dependency write covered for Proof NL and Proof Formal worker surfaces by strict real Lake DeclStage ToolSweep.",
-        view_key="proof_nl_worker",
-        agent_type="ProofNLWorkerAgent",
-        covered_view_keys=("proof_nl_worker", "proof_formal_worker"),
-        covered_agent_types=("ProofNLWorkerAgent", "ProofFormalWorkerAgent"),
-        restore_policy="checkpoint",
-    ),
-    "add_proof_mathlib_dep": ToolCase(
-        tool_name="add_proof_mathlib_dep",
-        status="implemented",
-        category="decl_stage_proof_dep_write",
-        reason="Typed Mathlib proof dependency write covered for Proof NL and Proof Formal worker surfaces by strict real Lake DeclStage ToolSweep.",
+        reason="Atomic typed project/Mathlib proof dependency write covered for Proof NL and Proof Formal worker surfaces by strict real Lake DeclStage ToolSweep.",
         view_key="proof_nl_worker",
         agent_type="ProofNLWorkerAgent",
         covered_view_keys=("proof_nl_worker", "proof_formal_worker"),
@@ -1770,15 +1767,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         reason=(
             "Legacy decl-detail read remains registered for compatibility, but production Agent views use "
             "inspect_current_node_decl instead and do not expose this legacy tool."
-        ),
-    ),
-    "get_decl_revision": ToolCase(
-        tool_name="get_decl_revision",
-        status="pending_fixture",
-        category="decl_history_read_legacy",
-        reason=(
-            "Decl revision history read remains registered for compatibility, but production Agent views use "
-            "inspect_current_node_decl with revision instead and do not expose this legacy tool."
         ),
     ),
     "get_decl_change": ToolCase(

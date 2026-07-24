@@ -142,7 +142,7 @@ class AnnotationComponent:
         *,
         dependencies: Sequence[ResolvedDependencyProjection] | None = None,
     ) -> ServiceResult[str]:
-        resolved = self._require_resolved_dependencies(revision.statement.dep_refs, dependencies)
+        resolved = self._require_resolved_dependencies(revision.statement.deps, dependencies)
         if not resolved.ok or resolved.value is None:
             return self.runtime.foundation.fail(resolved.issues)
         return self.runtime.foundation.ok(
@@ -161,10 +161,10 @@ class AnnotationComponent:
         statement_dependencies: Sequence[ResolvedDependencyProjection] | None = None,
         proof_dependencies: Sequence[ResolvedDependencyProjection] | None = None,
     ) -> ServiceResult[str]:
-        statement = self._require_resolved_dependencies(revision.statement.dep_refs, statement_dependencies)
+        statement = self._require_resolved_dependencies(revision.statement.deps, statement_dependencies)
         if not statement.ok or statement.value is None:
             return self.runtime.foundation.fail(statement.issues)
-        proof_refs = revision.proof.dep_refs if revision.proof is not None else []
+        proof_refs = revision.proof.deps if revision.proof is not None else []
         proof = self._require_resolved_dependencies(proof_refs, proof_dependencies)
         if not proof.ok or proof.value is None:
             return self.runtime.foundation.fail(proof.issues)

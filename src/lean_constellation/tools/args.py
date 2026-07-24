@@ -563,6 +563,35 @@ class CurrentMathlibDeclUseArgs(StrictModel):
     reason: str | None = Field(default=None, description="Why this declaration is useful for the current node objective.")
 
 
+class CurrentMathlibModuleHintInput(StrictModel):
+    name: str = Field(description="Mathlib module name.")
+    reason: str | None = Field(default=None, description="Why this module is useful for the current node objective.")
+
+
+class CurrentMathlibDeclHintInput(StrictModel):
+    name: str = Field(description="Mathlib declaration name.")
+    reason: str | None = Field(default=None, description="Why this declaration is useful for the current node objective.")
+
+
+class CurrentMathlibHintsAddArgs(StrictModel):
+    modules: list[CurrentMathlibModuleHintInput] = Field(
+        default_factory=list,
+        max_length=25,
+        description="Mathlib module hints to add atomically to the current node contract.",
+    )
+    declarations: list[CurrentMathlibDeclHintInput] = Field(
+        default_factory=list,
+        max_length=25,
+        description="Mathlib declaration hints to add atomically to the current node contract.",
+    )
+
+    @model_validator(mode="after")
+    def _require_hint(self) -> "CurrentMathlibHintsAddArgs":
+        if not self.modules and not self.declarations:
+            raise ValueError("At least one Mathlib module or declaration hint is required.")
+        return self
+
+
 class NodeMathlibModuleHintArgs(NodePathArgs):
     module: str = Field(description="Recorded Mathlib module name to add to or remove from the target node contract hints.")
     reason: str | None = Field(default=None, description="Why this module is useful for the target node objective.")
@@ -628,6 +657,14 @@ class DeclCreateArgs(StrictModel):
         default=True,
         description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
     )
+    anticipated_statement_dep_names: list[str] = Field(
+        default_factory=list,
+        description="Current-node declarations already known at planning time to be needed by this statement.",
+    )
+    anticipated_proof_dep_names: list[str] = Field(
+        default_factory=list,
+        description="Current-node declarations already known at planning time to be needed by this proof.",
+    )
 
 
 class DeclUpdateArgs(StrictModel):
@@ -648,6 +685,14 @@ class DeclUpdateArgs(StrictModel):
         default=True,
         description="Whether round final audit must verify that the target state also satisfies the current proof policy.",
     )
+    anticipated_statement_dep_names: list[str] = Field(
+        default_factory=list,
+        description="Current-node declarations already known at planning time to be needed by this statement.",
+    )
+    anticipated_proof_dep_names: list[str] = Field(
+        default_factory=list,
+        description="Current-node declarations already known at planning time to be needed by this proof.",
+    )
 
 
 class DeclDeleteArgs(StrictModel):
@@ -666,15 +711,12 @@ class DeclRevisionArgs(DeclNameArgs):
 
 class DeclInspectArgs(DeclNameArgs):
     revision: int | None = Field(default=None, ge=1, description="Optional revision number; omit to inspect the current revision.")
-    include_statement_nl: bool = Field(default=False, description="Whether to include natural-language statement content.")
-    include_proof_nl: bool = Field(default=False, description="Whether to include natural-language proof content.")
-    include_formal: bool = Field(
-        default=True,
-        description="Whether to include the complete formal file source and primary declaration source.",
-    )
-    include_formal_docstring: bool = Field(
+
+
+class DeclFormalReadArgs(DeclNameArgs):
+    include_docstring: bool = Field(
         default=False,
-        description="Whether complete formal file source should retain its managed declaration docstring.",
+        description="Whether the returned formal Lean source should retain its managed declaration docstring.",
     )
 
 
@@ -746,20 +788,38 @@ class StatementOriginsClearArgs(StrictModel):
     reason: str | None = Field(default=None, description="Optional reason for clearing statement origins.")
 
 
-class StatementDeclDepAddArgs(StrictModel):
-    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
-    dep_name: str = Field(description="Project declaration name needed to express this statement.")
-    dep_node: str | None = Field(default=None, description="Provider node path; omit for the current node.")
-    dep_repo: str | None = Field(default=None, description="Provider repo key; omit for the current repo.")
+class RepoDeclDependencyInput(StrictModel):
+    name: str = Field(description="Project declaration name.")
+    node: str | None = Field(default=None, description="Provider node path; omit for the current node.")
+    repository: str | None = Field(default=None, description="Provider repo key; omit for the current repo.")
     revision: int | None = Field(default=None, ge=1, description="Optional provider declaration revision.")
-    reason: str | None = Field(default=None, description="Why this declaration is needed to express the statement.")
+    reason: str | None = Field(default=None, description="Why this declaration is required.")
 
 
-class StatementMathlibDepAddArgs(StrictModel):
-    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
-    mathlib_decl_name: str = Field(description="Mathlib declaration name needed to express this statement.")
+class MathlibDeclDependencyInput(StrictModel):
+    name: str = Field(description="Mathlib declaration name.")
     module: str | None = Field(default=None, description="Mathlib module containing the declaration, when known.")
-    reason: str | None = Field(default=None, description="Why this Mathlib declaration is needed to express the statement.")
+    reason: str | None = Field(default=None, description="Why this Mathlib declaration is required.")
+
+
+class StatementDependenciesAddArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
+    repo_declarations: list[RepoDeclDependencyInput] = Field(
+        default_factory=list,
+        max_length=25,
+        description="Project declaration dependencies to add atomically to the statement dependency set.",
+    )
+    mathlib_declarations: list[MathlibDeclDependencyInput] = Field(
+        default_factory=list,
+        max_length=25,
+        description="Mathlib declaration dependencies to add atomically to the statement dependency set.",
+    )
+
+    @model_validator(mode="after")
+    def _require_dependency(self) -> "StatementDependenciesAddArgs":
+        if not self.repo_declarations and not self.mathlib_declarations:
+            raise ValueError("At least one project or Mathlib dependency is required.")
+        return self
 
 
 class StatementDepRemoveArgs(StrictModel):
@@ -803,20 +863,24 @@ class ProofOriginsClearArgs(StrictModel):
     reason: str | None = Field(default=None, description="Optional reason for clearing proof origins.")
 
 
-class ProofDeclDepAddArgs(StrictModel):
+class ProofDependenciesAddArgs(StrictModel):
     decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
-    dep_name: str = Field(description="Project declaration name used by this proof route or formal proof.")
-    dep_node: str | None = Field(default=None, description="Provider node path; omit for the current node.")
-    dep_repo: str | None = Field(default=None, description="Provider repo key; omit for the current repo.")
-    revision: int | None = Field(default=None, ge=1, description="Optional provider declaration revision.")
-    reason: str | None = Field(default=None, description="Why this declaration is needed by the proof.")
+    repo_declarations: list[RepoDeclDependencyInput] = Field(
+        default_factory=list,
+        max_length=25,
+        description="Project declaration dependencies to add atomically to the proof dependency set.",
+    )
+    mathlib_declarations: list[MathlibDeclDependencyInput] = Field(
+        default_factory=list,
+        max_length=25,
+        description="Mathlib declaration dependencies to add atomically to the proof dependency set.",
+    )
 
-
-class ProofMathlibDepAddArgs(StrictModel):
-    decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
-    mathlib_decl_name: str = Field(description="Mathlib declaration name used by this proof.")
-    module: str | None = Field(default=None, description="Mathlib module containing the declaration, when known.")
-    reason: str | None = Field(default=None, description="Why this Mathlib declaration is needed by the proof.")
+    @model_validator(mode="after")
+    def _require_dependency(self) -> "ProofDependenciesAddArgs":
+        if not self.repo_declarations and not self.mathlib_declarations:
+            raise ValueError("At least one project or Mathlib dependency is required.")
+        return self
 
 
 class ProofDepRemoveArgs(StrictModel):

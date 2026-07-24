@@ -27,9 +27,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 259
+    assert len(cases) == 258
     assert len(implemented_tool_cases()) == 196
-    assert len(pending_tool_cases()) == 63
+    assert len(pending_tool_cases()) == 62
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -170,7 +170,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Root supplement interface was added.",
     )
-    assert any(item["name"] == "strict_supplement" for item in added_root_interface.value["contract"]["interfaces"])
+    assert added_root_interface.value["interface"]["name"] == "strict_supplement"
 
     call_tool_with_evidence(
         server,
@@ -456,7 +456,19 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Temporary content node contract text changed.",
     )
-    assert updated_contract.value["contract"]["goal"] == "Strict ToolSweep updated content goal."
+    assert updated_contract.value == {
+        "node_path": "Main.ToolSweep.Item",
+        "operation": "set",
+        "changed": True,
+        "changed_fields": ["goal"],
+        "summary": "Updated 1 node contract text field(s).",
+    }
+    current_contract = ws.runtime.node.contract.get_current_contract(
+        ws.provider_repo,
+        node_path="Main.ToolSweep.Item",
+    )
+    assert current_contract.ok and current_contract.value is not None
+    assert current_contract.value.contract.goal == "Strict ToolSweep updated content goal."
     committed_temporary = ws.runtime.node.commit_content_contract(
         ws.provider_repo,
         node_path="Main.ToolSweep.Item",
@@ -511,7 +523,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Current node dependency was added.",
     )
-    assert len(added_dep.value["deps"]["deps"]) == 1
+    assert added_dep.value["added"][0]["target"]["node"] == "Main.Topic.Helper"
 
     deps_after_add = call_tool_with_evidence(
         server,
@@ -533,7 +545,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Current node dependency was removed.",
     )
-    assert removed_dep.value["deps"]["deps"] == []
+    assert removed_dep.value["removed"][0]["target"]["node"] == "Main.Topic.Helper"
 
     added_material = call_tool_with_evidence(
         server,
@@ -551,7 +563,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Current node material ref was added.",
     )
-    assert len(added_material.value["material_refs"]["owned_refs"]) == 1
+    assert added_material.value["added"][0]["ref"]["ref"]["resource_key"] == active_resource_key
 
     material_refs = call_tool_with_evidence(
         server,
@@ -584,7 +596,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Current node material ref was removed.",
     )
-    assert removed_material.value["material_refs"]["owned_refs"] == []
+    assert removed_material.value["removed"][0]["ref"]["ref"]["resource_key"] == active_resource_key
 
     interfaces_before = call_tool_with_evidence(
         server,
@@ -612,7 +624,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Node interface was added.",
     )
-    assert added_interface.value["contract"]["interfaces"][0]["name"] == "tool_sweep_iface"
+    assert added_interface.value["interface"]["name"] == "tool_sweep_iface"
 
     updated_interface = call_tool_with_evidence(
         server,
@@ -628,7 +640,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Node interface was updated.",
     )
-    assert updated_interface.value["contract"]["interfaces"][0]["summary"] == "Strict ToolSweep interface updated."
+    assert updated_interface.value["interface"]["summary"] == "Strict ToolSweep interface updated."
 
     removed_interface = call_tool_with_evidence(
         server,
@@ -639,7 +651,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Node interface was removed.",
     )
-    assert removed_interface.value["contract"]["interfaces"] == []
+    assert removed_interface.value["previous"]["name"] == "tool_sweep_iface"
 
     export_candidates = call_tool_with_evidence(
         server,
@@ -1284,27 +1296,30 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     assert hints_before.value["modules"] == []
     assert hints_before.value["declarations"] == []
 
-    module_hint = call_tool_with_evidence(
+    added_hints = call_tool_with_evidence(
         server,
         "content_plan",
-        "add_current_mathlib_module_hint",
-        {"module": "Mathlib.Data.Nat.Basic", "reason": "Strict ToolSweep module hint."},
+        "add_current_mathlib_hints",
+        {
+            "modules": [
+                {
+                    "name": "Mathlib.Data.Nat.Basic",
+                    "reason": "Strict ToolSweep module hint.",
+                }
+            ],
+            "declarations": [
+                {
+                    "name": "Nat.add_assoc",
+                    "reason": "Strict ToolSweep declaration hint.",
+                }
+            ],
+        },
         runtime_context=mathlib_plan_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Current node Mathlib module hint was added.",
+        assertion_summary="Current node Mathlib module and declaration hints were added atomically.",
     )
-    assert module_hint.value["contract"]["mathlib_modules"][0]["module"] == "Mathlib.Data.Nat.Basic"
-
-    decl_hint = call_tool_with_evidence(
-        server,
-        "content_plan",
-        "add_current_mathlib_decl_hint",
-        {"decl_name": "Nat.add_assoc", "reason": "Strict ToolSweep declaration hint."},
-        runtime_context=mathlib_plan_ctx,
-        recorder=evidence_recorder,
-        assertion_summary="Current node Mathlib declaration hint was added.",
-    )
-    assert decl_hint.value["contract"]["mathlib_decls"][0]["name"] == "Nat.add_assoc"
+    assert added_hints.value["added_modules"][0]["module"] == "Mathlib.Data.Nat.Basic"
+    assert added_hints.value["added_declarations"][0]["name"] == "Nat.add_assoc"
 
     validated_hints = call_tool_with_evidence(
         server,
@@ -1327,7 +1342,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Current node Mathlib module hint was removed.",
     )
-    assert removed_module_hint.value["contract"]["mathlib_modules"] == []
+    assert removed_module_hint.value["removed_modules"][0]["module"] == "Mathlib.Data.Nat.Basic"
 
     removed_decl_hint = call_tool_with_evidence(
         server,
@@ -1338,7 +1353,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Current node Mathlib declaration hint was removed.",
     )
-    assert removed_decl_hint.value["contract"]["mathlib_decls"] == []
+    assert removed_decl_hint.value["removed_declarations"][0]["name"] == "Nat.add_assoc"
 
     # The candidate cache is setup-only data for ingest_mathlib_candidate and
     # uses a different schema than repo-level IndexBundle files under indexes/.

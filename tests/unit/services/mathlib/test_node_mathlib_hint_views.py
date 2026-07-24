@@ -46,11 +46,12 @@ def test_node_mathlib_hint_view_and_module_mutation(tmp_path: Path) -> None:
     assert added.ok, added.issues
     assert added.value is not None
     assert added.value.changed is True
-    assert added.value.changed_items == ["Mathlib.Data.Finset.Basic"]
+    assert [item.module for item in added.value.added_modules] == [
+        "Mathlib.Data.Finset.Basic"
+    ]
     assert added.value.managed_projection_changed is True
     assert added.value.changed_files == [str(_prelude_path(tmp_path, service))]
     assert added.value.reread_required is True
-    assert added.value.hints.modules[0].module == "Mathlib.Data.Finset.Basic"
     assert "import Mathlib.Data.Finset.Basic" in _prelude_path(tmp_path, service).read_text(encoding="utf-8")
 
     duplicate = service.add_node_mathlib_module_hint(
@@ -63,7 +64,9 @@ def test_node_mathlib_hint_view_and_module_mutation(tmp_path: Path) -> None:
     assert duplicate.ok
     assert duplicate.value is not None
     assert duplicate.value.changed is False
-    assert duplicate.value.changed_items == []
+    assert [item.module for item in duplicate.value.already_present_modules] == [
+        "Mathlib.Data.Finset.Basic"
+    ]
     assert [issue.kind for issue in duplicate.issues] == ["mathlib_module_use_duplicate"]
 
 
@@ -94,7 +97,7 @@ def test_node_mathlib_decl_hint_mutation_and_missing_remove_noop(tmp_path: Path)
     assert added.value.managed_projection_changed is True
     assert added.value.changed_files == [str(_prelude_path(tmp_path, service))]
     assert added.value.reread_required is True
-    assert added.value.hints.declarations[0].module == "Mathlib.Data.Finset.Basic"
+    assert added.value.added_declarations[0].module == "Mathlib.Data.Finset.Basic"
     assert "import Mathlib.Data.Finset.Basic" in _prelude_path(tmp_path, service).read_text(encoding="utf-8")
 
     removed = service.remove_node_mathlib_decl_hint(
@@ -106,7 +109,9 @@ def test_node_mathlib_decl_hint_mutation_and_missing_remove_noop(tmp_path: Path)
     assert removed.ok, removed.issues
     assert removed.value is not None
     assert removed.value.changed is True
-    assert removed.value.hints.declarations == []
+    assert [item.name for item in removed.value.removed_declarations] == [
+        "Finset.sum_congr"
+    ]
 
     missing = service.remove_node_mathlib_decl_hint(
         tmp_path,
@@ -133,9 +138,13 @@ def test_node_mathlib_hint_view_surfaces_missing_index_warning(tmp_path: Path) -
     )
     assert added.ok
     assert added.value is not None
-    assert added.value.hints.validation_gate.passed is True
     assert [issue.kind for issue in added.issues] == ["mathlib_module_not_indexed"]
-    assert [issue.kind for issue in added.value.hints.validation_gate.issues] == ["mathlib_module_not_indexed"]
+    inspected = service.get_node_mathlib_hint_view(tmp_path, node_path="Main.Topic.Core")
+    assert inspected.ok and inspected.value is not None
+    assert inspected.value.validation_gate.passed is True
+    assert [issue.kind for issue in inspected.value.validation_gate.issues] == [
+        "mathlib_module_not_indexed"
+    ]
 
 
 def test_node_mathlib_hint_wrapper_preserves_remove_permission_gate(tmp_path: Path) -> None:

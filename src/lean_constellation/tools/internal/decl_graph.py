@@ -9,11 +9,11 @@ from lean_constellation.tools.args import (
     ChangeSummaryArgs,
     DeclCreateArgs,
     DeclDeleteArgs,
+    DeclFormalReadArgs,
     DeclInspectArgs,
     DeclNameArgs,
     DeclNamesArgs,
     DeclReadyArgs,
-    DeclRevisionArgs,
     NodeDeclInspectArgs,
     NodeDeclListArgs,
     DeclUpdateArgs,
@@ -60,7 +60,7 @@ def _decl_list_item(runtime, repo_root, view) -> dict[str, object]:
     if not report.ok or report.value is None:
         proof_policy_satisfied = False
     else:
-        proof_policy_satisfied = bool(report.value.proof_policy_satisfied)
+        proof_policy_satisfied = report.value.ready
     release = runtime.repo_workspace.release.get_decl_release_status(
         repo_root, node_path=view.node_path, decl_name=view.name
     )
@@ -87,87 +87,187 @@ def _decl_list_item(runtime, repo_root, view) -> dict[str, object]:
     }
 
 
-def _decl_revision_item(runtime, repo_root, view, args: DeclInspectArgs) -> dict[str, object]:
-    report = _decl_satisfaction(runtime, repo_root, node_path=view.node_path, decl_name=view.decl_name)
-    proof_policy_satisfied = bool(report.value.proof_policy_satisfied) if report.ok and report.value is not None else False
-    data = view.model_dump(mode="json")
-    data["proof_policy_satisfied"] = proof_policy_satisfied
+def _decl_revision_item(runtime, repo_root, *, decl, revision) -> dict[str, object]:
     release = runtime.repo_workspace.release.get_decl_release_status(
-        repo_root, node_path=view.node_path, decl_name=view.decl_name
+        repo_root, node_path=decl.node_path, decl_name=decl.name
     )
-    data["released_state"] = release.value.released_state if release.ok and release.value is not None else None
-    data["release_protected"] = bool(release.value.release_protected) if release.ok and release.value is not None else False
-    data["statement_dependency_display"] = _dependency_display_lines(
-        runtime,
+    change = revision.change
+    statement_formal = revision.statement.formal
+    proof_formal = revision.proof.formal if revision.proof is not None else None
+    return {
+        "decl_name": decl.name,
+        "node_path": decl.node_path,
+        "revision": revision.revision,
+        "current_revision": decl.current_revision,
+        "kind": decl.kind,
+        "lifecycle": decl.lifecycle.value,
+        "visibility": "public" if decl.public else "private",
+        "state": revision.state.value,
+        "status": revision.status.value,
+        "module": decl.module,
+        "lean_decl_name": revision.lean_decl_name,
+        "change": None
+        if change is None
+        else {
+            "kind": change.kind.value,
+            "base_revision": change.base_revision,
+            "reset_to_state": change.reset_to_state.value if change.reset_to_state is not None else None,
+            "target_state": change.target_state.value if change.target_state is not None else None,
+            "require_target_state_satisfied": change.require_target_state_satisfied,
+            "objective": change.objective,
+            "summary": change.summary,
+        },
+        "artifacts": {
+            "statement_nl": "present" if revision.statement.nl is not None else "absent",
+            "statement_formal": _formal_artifact_status(statement_formal),
+            "proof_nl": "present" if revision.proof is not None and revision.proof.nl is not None else "absent",
+            "proof_formal": _formal_artifact_status(proof_formal),
+        },
+        "released_state": release.value.released_state if release.ok and release.value is not None else None,
+        "release_protected": bool(release.value.release_protected) if release.ok and release.value is not None else False,
+    }
+
+
+def _formal_artifact_status(formal) -> str:  # noqa: ANN001
+    if formal is None or formal.code is None:
+        return "absent"
+    if formal.check is None:
+        return "unchecked"
+    return formal.check.status
+
+
+def _load_decl_revision(runtime, repo_root, *, node_path: str, decl_name: str, revision: int | None):
+    decl = runtime.decl_graph.get_decl(repo_root, node_path=node_path, name=decl_name)
+    if not decl.ok or decl.value is None:
+        return decl, None
+    resolved_revision = revision or decl.value.current_revision
+    loaded = runtime.decl_graph.get_decl_revision(
         repo_root,
-        node_path=view.node_path,
-        dependencies=view.statement_dep_refs,
+        node_path=node_path,
+        name=decl_name,
+        revision=resolved_revision,
     )
-    data["proof_dependency_display"] = _dependency_display_lines(
+    return decl, loaded
+
+
+def _read_statement_nl(runtime, ctx, args: DeclNameArgs):
+    decl, loaded = _load_decl_revision(
         runtime,
-        repo_root,
-        node_path=view.node_path,
-        dependencies=view.proof_dep_refs,
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+        revision=None,
     )
-    if not args.include_statement_nl:
-        data.pop("statement_nl", None)
-    if not args.include_proof_nl:
-        data.pop("proof_nl", None)
-    formal_stage, formal_code, formal_check = _effective_formal(view)
-    data["formal_stage"] = formal_stage
-    data["formal_check"] = formal_check
-    data["formal_preview"] = None
-    if formal_code is not None:
-        repo_format = runtime.repo_workspace.metadata.get_repo_format(repo_root)
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if loaded is None or not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
+    nl = loaded.value.statement.nl
+    if nl is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_statement_nl_missing",
+                "The current declaration revision has no Statement NL content.",
+                object_ref=f"{_node(ctx)}:{args.decl_name}",
+            )
+        )
+    return runtime.foundation.ok(
+        {
+            "decl_name": args.decl_name,
+            "node_path": _node(ctx),
+            "revision": loaded.value.revision,
+            "text": nl.text,
+            "origins": [item.model_dump(mode="json", exclude_none=True) for item in nl.origin],
+            "dependencies": [item.model_dump(mode="json", exclude_none=True) for item in loaded.value.statement.deps],
+        }
+    )
+
+
+def _read_proof_nl(runtime, ctx, args: DeclNameArgs):
+    decl, loaded = _load_decl_revision(
+        runtime,
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+        revision=None,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if loaded is None or not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
+    proof = loaded.value.proof
+    if proof is None or proof.nl is None:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_proof_nl_missing",
+                "The current declaration revision has no Proof NL content.",
+                object_ref=f"{_node(ctx)}:{args.decl_name}",
+            )
+        )
+    return runtime.foundation.ok(
+        {
+            "decl_name": args.decl_name,
+            "node_path": _node(ctx),
+            "revision": loaded.value.revision,
+            "text": proof.nl.text,
+            "origins": [item.model_dump(mode="json", exclude_none=True) for item in proof.nl.origin],
+            "dependencies": [item.model_dump(mode="json", exclude_none=True) for item in proof.deps],
+        }
+    )
+
+
+def _read_formal(runtime, ctx, args: DeclFormalReadArgs):
+    read = runtime.lean_projection.decl_file.read_decl_owned_lean_file(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+    )
+    if not read.ok or read.value is None:
+        return runtime.foundation.fail(read.issues)
+    content = read.value.content
+    if not args.include_docstring:
+        repo_format = runtime.repo_workspace.metadata.get_repo_format(ctx.repo_root)
         managed = not (
             repo_format.ok
             and repo_format.value is not None
             and repo_format.value.repo_format == RepoFormat.ADAPTER
         )
-        primary = runtime.lean_projection.annotation.extract_primary_declaration_source(
-            formal_code,
-            decl_name=view.decl_name,
-            lean_decl_name=view.lean_decl_name,
-            managed=managed,
-        )
-        if primary.ok and primary.value is not None:
-            data["formal_preview"] = _formal_preview(primary.value.code)
-            if args.include_formal:
-                data["primary_formal_code"] = primary.value.code
-                if managed and not args.include_formal_docstring:
-                    marker = runtime.lean_projection.annotation.parse_target_marker(formal_code)
-                    if marker.ok and marker.value is not None:
-                        data["formal_code"] = (
-                            formal_code[: marker.value.docstring_start_offset]
-                            + formal_code[marker.value.docstring_end_offset :]
-                        )
-                    else:
-                        data["formal_projection_issues"] = [
-                            issue.model_dump(mode="json") for issue in marker.issues
-                        ]
-                else:
-                    data["formal_code"] = formal_code
-        else:
-            data["formal_projection_issues"] = [issue.model_dump(mode="json") for issue in primary.issues]
-    data.pop("statement_lean_code", None)
-    data.pop("statement_lean_check", None)
-    data.pop("proof_lean_code", None)
-    data.pop("proof_lean_check", None)
-    return data
-
-
-def _effective_formal(view) -> tuple[str, str | None, object | None]:  # noqa: ANN001
-    if view.proof_lean_code:
-        return "proof", view.proof_lean_code, view.proof_lean_check
-    if view.statement_lean_code:
-        return "statement", view.statement_lean_code, view.statement_lean_check
-    return "none", None, None
-
-
-def _formal_preview(code: str, *, limit: int = 1500) -> str:
-    if len(code) <= limit:
-        return code
-    return code[:limit].rstrip() + "\n…"
+        if managed:
+            marker = runtime.lean_projection.annotation.parse_target_marker(content)
+            if marker.ok and marker.value is not None:
+                content = (
+                    content[: marker.value.docstring_start_offset]
+                    + content[marker.value.docstring_end_offset :]
+                )
+    decl, loaded = _load_decl_revision(
+        runtime,
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+        revision=read.value.revision,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if loaded is None or not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
+    formal = (
+        loaded.value.proof.formal
+        if read.value.stage == "proof" and loaded.value.proof is not None
+        else loaded.value.statement.formal
+    )
+    return runtime.foundation.ok(
+        {
+            "decl_name": args.decl_name,
+            "node_path": _node(ctx),
+            "revision": read.value.revision,
+            "stage": read.value.stage,
+            "module": read.value.module,
+            "path": read.value.path,
+            "lean_decl_name": read.value.lean_decl_name,
+            "code": content,
+            "check": formal.check.model_dump(mode="json", exclude_none=True) if formal is not None and formal.check is not None else None,
+        }
+    )
 
 
 def _dependency_display_lines(runtime, repo_root, *, node_path: str, dependencies: list[object]) -> list[str]:
@@ -186,7 +286,7 @@ def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
     ref = public_decl.ref
     resolved_revision = public_decl.resolved_revision or ref.revision
     decl = runtime.decl_graph.get_decl_view(repo_root, node_path=ref.node, name=ref.name)
-    revision = runtime.decl_graph.get_decl_revision_view(
+    revision = runtime.decl_graph.get_decl_revision(
         repo_root,
         node_path=ref.node,
         name=ref.name,
@@ -220,7 +320,7 @@ def _public_decl_item(runtime, repo_root, public_decl) -> dict[str, object]:
         "resolved_revision": public_decl.resolved_revision,
         "compatible": bool(public_decl.ready and not public_decl.stale),
         "resolution_reason": public_decl.resolution_reason,
-        "kind": revision.value.kind,
+        "kind": decl.value.kind,
         "name": ref.name,
         "node_path": ref.node,
         "module": decl.value.module,
@@ -362,15 +462,15 @@ def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
 
 
 def _create_decl(runtime, ctx, args: DeclCreateArgs):
-    return runtime.decl_graph.create_decl_revision_view(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+    return runtime.decl_graph.create_decl(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
 
 
 def _open_decl_update(runtime, ctx, args: DeclUpdateArgs):
-    return runtime.decl_graph.open_decl_update_revision_view(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+    return runtime.decl_graph.open_decl_update(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
 
 
 def _mark_decl_delete(runtime, ctx, args: DeclDeleteArgs):
-    return runtime.decl_graph.mark_decl_delete_revision_view(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
+    return runtime.decl_graph.mark_decl_delete(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
 
 
 def _list_decls(runtime, ctx, args: NoArgs):
@@ -397,42 +497,38 @@ def _get_decl(runtime, ctx, args: DeclNameArgs):
     return runtime.decl_graph.get_decl_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
 
 
-def _get_decl_revision(runtime, ctx, args: DeclRevisionArgs):
-    return runtime.decl_graph.get_decl_revision_view(
+def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):
+    decl, revision = _load_decl_revision(
+        runtime,
         ctx.repo_root,
         node_path=_node(ctx),
-        name=args.decl_name,
+        decl_name=args.decl_name,
         revision=args.revision,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if revision is None or not revision.ok or revision.value is None:
+        return runtime.foundation.fail(revision.issues if revision is not None else [])
+    return runtime.foundation.ok(
+        _decl_revision_item(runtime, ctx.repo_root, decl=decl.value, revision=revision.value)
     )
 
 
-def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):
-    if args.revision is None:
-        view = runtime.decl_graph.current_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
-    else:
-        view = runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name, revision=args.revision)
-    if not view.ok or view.value is None:
-        return runtime.foundation.fail(view.issues)
-    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
-
-
 def _inspect_node_decl(runtime, ctx, args: NodeDeclInspectArgs):
-    if args.revision is None:
-        view = runtime.decl_graph.current_decl_revision_view(
-            ctx.repo_root,
-            node_path=args.node_path,
-            name=args.decl_name,
-        )
-    else:
-        view = runtime.decl_graph.get_decl_revision_view(
-            ctx.repo_root,
-            node_path=args.node_path,
-            name=args.decl_name,
-            revision=args.revision,
-        )
-    if not view.ok or view.value is None:
-        return runtime.foundation.fail(view.issues)
-    return runtime.foundation.ok(_decl_revision_item(runtime, ctx.repo_root, view.value, args))
+    decl, revision = _load_decl_revision(
+        runtime,
+        ctx.repo_root,
+        node_path=args.node_path,
+        decl_name=args.decl_name,
+        revision=args.revision,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if revision is None or not revision.ok or revision.value is None:
+        return runtime.foundation.fail(revision.issues if revision is not None else [])
+    return runtime.foundation.ok(
+        _decl_revision_item(runtime, ctx.repo_root, decl=decl.value, revision=revision.value)
+    )
 
 
 def _get_decl_change(runtime, ctx, args: ChangeIdArgs):
@@ -550,10 +646,18 @@ def _inspect_node_public_decl(runtime, ctx, args: NodePublicDeclInspectArgs):
         )
     ref = public_decl.ref
     revision = args.revision or public_decl.resolved_revision or ref.revision
-    view = runtime.decl_graph.get_decl_revision_view(ctx.repo_root, node_path=ref.node, name=ref.name, revision=revision)
-    if not view.ok or view.value is None:
-        return runtime.foundation.fail(view.issues)
-    item = _decl_revision_item(runtime, ctx.repo_root, view.value, args)
+    decl, loaded = _load_decl_revision(
+        runtime,
+        ctx.repo_root,
+        node_path=ref.node,
+        decl_name=ref.name,
+        revision=revision,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if loaded is None or not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
+    item = _decl_revision_item(runtime, ctx.repo_root, decl=decl.value, revision=loaded.value)
     item.update(
         {
             "anchor_ref": ref.model_dump(mode="json"),
@@ -587,10 +691,18 @@ def _inspect_repo_public_decl(runtime, ctx, args: RepoPublicDeclInspectArgs):
     ref = public_decl.ref
     provider_root = ctx.repo_root.parent / repo_key
     revision = args.revision or public_decl.resolved_revision or ref.revision
-    view = runtime.decl_graph.get_decl_revision_view(provider_root, node_path=ref.node, name=ref.name, revision=revision)
-    if not view.ok or view.value is None:
-        return runtime.foundation.fail(view.issues)
-    item = _decl_revision_item(runtime, provider_root, view.value, args)
+    decl, loaded = _load_decl_revision(
+        runtime,
+        provider_root,
+        node_path=ref.node,
+        decl_name=ref.name,
+        revision=revision,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if loaded is None or not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
+    item = _decl_revision_item(runtime, provider_root, decl=decl.value, revision=loaded.value)
     item.update(
         {
             "anchor_ref": ref.model_dump(mode="json"),
@@ -963,13 +1075,43 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="inspect_current_node_decl",
-            description="Inspect a declaration revision in the current content node.",
+            description="Inspect compact catalog, lifecycle, change, and artifact-presence state for one current-node declaration revision.",
             args_model=DeclInspectArgs,
             capability=ToolCapability.READ,
-            result_view="decl_revision",
+            result_view="decl_inspection",
             groups={AppGroup.CURRENT_NODE_DECL_READ},
             roles=roles,
             handler=_inspect_current_node_decl,
+        ),
+        handler_tool(
+            name="read_statement_nl",
+            description="Read the complete Statement NL text, origins, and typed Statement dependencies for one current-node declaration.",
+            args_model=DeclNameArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_statement_nl",
+            groups={AppGroup.DECL_STAGE_STATEMENT_NL_READ},
+            roles=roles,
+            handler=_read_statement_nl,
+        ),
+        handler_tool(
+            name="read_proof_nl",
+            description="Read the complete Proof NL text, origins, and typed Proof dependencies for one current-node declaration.",
+            args_model=DeclNameArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_proof_nl",
+            groups={AppGroup.DECL_STAGE_PROOF_NL_READ},
+            roles=roles,
+            handler=_read_proof_nl,
+        ),
+        handler_tool(
+            name="read_formal",
+            description="Read the latest available Statement or Proof Formal Lean source for one current-node declaration; managed docstrings are omitted by default.",
+            args_model=DeclFormalReadArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_formal",
+            groups={AppGroup.DECL_STAGE_FORMAL_READ},
+            roles=roles,
+            handler=_read_formal,
         ),
         handler_tool(
             name="inspect_node_decl",
@@ -981,16 +1123,6 @@ def build_tool_specs() -> list[ToolSpec]:
             roles={"coordinator", "admin"},
             handler=_inspect_node_decl,
             required_context={"repo"},
-        ),
-        handler_tool(
-            name="get_decl_revision",
-            description="Inspect a specific declaration revision.",
-            args_model=DeclRevisionArgs,
-            capability=ToolCapability.READ,
-            result_view="decl_revision",
-            groups={AppGroup.DECL_HISTORY_READ},
-            roles=roles,
-            handler=_get_decl_revision,
         ),
         handler_tool(
             name="get_decl_change",

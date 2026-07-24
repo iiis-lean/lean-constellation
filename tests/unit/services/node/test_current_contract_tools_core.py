@@ -64,10 +64,9 @@ def test_current_contract_view_aggregates_deps_material_and_mathlib(tmp_path: Pa
     assert view.ok
     assert view.value is not None
     assert view.value.node_path == "Main.Topic.Consumer"
-    assert view.value.contract.node_path == "Main.Topic.Consumer"
-    assert view.value.deps.deps == []
-    assert view.value.material_refs.owned_refs == []
-    assert view.value.mathlib_modules[0].module == "Mathlib.Data.Nat.Basic"
+    assert view.value.dependencies == []
+    assert view.value.materials == []
+    assert view.value.mathlib_modules == ["Mathlib.Data.Nat.Basic"]
 
 
 def test_current_node_dep_wrapper_resolves_expected_public_decl_and_removes(tmp_path: Path) -> None:
@@ -86,9 +85,9 @@ def test_current_node_dep_wrapper_resolves_expected_public_decl_and_removes(tmp_
 
     assert added.ok
     assert added.value is not None
-    assert len(added.value.deps.deps) == 1
-    assert added.value.deps.deps[0].expected_decl_refs == [ref]
-    assert added.value.contract.contract.deps[0].expected_decl_refs == [ref]
+    assert added.value.changed is True
+    assert len(added.value.added) == 1
+    assert added.value.added[0].expected_decl_refs == [ref]
     assert added.value.managed_projection_changed is True
     assert added.value.changed_files
     assert added.value.reread_required is True
@@ -96,8 +95,8 @@ def test_current_node_dep_wrapper_resolves_expected_public_decl_and_removes(tmp_
     removed = service.remove_current_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=0, actor="coordinator")
     assert removed.ok
     assert removed.value is not None
-    assert removed.value.deps.deps == []
-    assert removed.value.contract.contract.deps == []
+    assert removed.value.changed is True
+    assert removed.value.removed[0].expected_decl_refs == [ref]
 
 
 def test_current_node_dep_wrapper_preserves_worker_delete_policy(tmp_path: Path) -> None:
@@ -140,9 +139,10 @@ def test_current_material_ref_wrapper_adds_and_removes_refs(tmp_path: Path) -> N
 
     assert added.ok
     assert added.value is not None
-    assert len(added.value.material_refs.owned_refs) == 1
-    assert added.value.material_refs.owned_refs[0].path == "notes.md"
-    assert added.value.contract.contract.owned_refs[0].reason == "Primary source lines."
+    assert added.value.changed is True
+    assert len(added.value.added) == 1
+    assert added.value.added[0].ref.ref.path == "notes.md"
+    assert added.value.added[0].reason == "Primary source lines."
 
     removed = service.remove_current_material_ref(
         tmp_path,
@@ -154,8 +154,8 @@ def test_current_material_ref_wrapper_adds_and_removes_refs(tmp_path: Path) -> N
 
     assert removed.ok
     assert removed.value is not None
-    assert removed.value.material_refs.owned_refs == []
-    assert removed.value.contract.contract.owned_refs == []
+    assert removed.value.changed is True
+    assert removed.value.removed[0].ref.ref.path == "notes.md"
 
 
 def test_current_material_ref_wrapper_reports_invalid_material_ref(tmp_path: Path) -> None:

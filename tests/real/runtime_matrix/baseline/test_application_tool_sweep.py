@@ -37,7 +37,7 @@ CALLED_CHECKPOINTED_WRITE_TOOLS = {
 
 def test_application_tool_sweep_classifies_every_registered_tool() -> None:
     specs = build_application_tool_specs()
-    assert len(specs) == 259
+    assert len(specs) == 258
     classified = {item.tool_name: item for item in (_classify_tool(spec) for spec in specs)}
     assert set(classified) == {spec.name for spec in specs}
     assert {classified[name].mode for name in CALLED_READ_ONLY_TOOLS} == {"called_success"}
@@ -154,7 +154,19 @@ def test_checkpointed_write_application_tool_sweep_restore(
         )
     )
     assert added.ok is True, added.issues
-    assert any(item["name"] == "baseline_tool_sweep_iface" for item in added.value["contract"]["interfaces"])
+    assert added.value["operation"] == "add"
+    assert added.value["changed"] is True
+    assert added.value["interface"]["name"] == "baseline_tool_sweep_iface"
+    current = unwrap(
+        server.call_tool(
+            "root_interface_prepare",
+            "list_root_interfaces",
+            {},
+            runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
+        )
+    )
+    assert current.ok is True, current.issues
+    assert any(item["name"] == "baseline_tool_sweep_iface" for item in current.value["interfaces"])
 
     restore_branch(ws.admin, ws.provider_repo, checkpoint.snapshot_id)
     restored = unwrap(

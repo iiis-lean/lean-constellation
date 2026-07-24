@@ -247,7 +247,7 @@ def test_theorem_ready_recurses_through_ready_dependencies(tmp_path: Path) -> No
 
     assert report.ok and report.value is not None
     assert report.value.ready is True
-    assert report.value.dependencies_checked == ["supporting_lemma"]
+    assert report.value.blocker is None
 
 
 def test_definition_declared_with_statement_check_is_ready(tmp_path: Path) -> None:
@@ -296,12 +296,12 @@ def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(
 
     assert declared.ok and declared.value is not None
     assert declared.value.ready is True
-    assert declared.value.proof_policy_satisfied is True
-    assert declared.value.target_proof_availability == ProofAvailability.DECLARED
-    assert declared.value.dependencies_checked == ["supporting_def"]
+    assert declared.value.required_availability == ProofAvailability.DECLARED
+    assert declared.value.blocker is None
     assert legacy_ready.ok and legacy_ready.value is not None
     assert legacy_ready.value.ready is False
-    assert legacy_ready.value.reason == DeclReadinessReason.STATE_TOO_LOW
+    assert legacy_ready.value.blocker is not None
+    assert legacy_ready.value.blocker.reason == DeclReadinessReason.STATE_TOO_LOW
 
 
 def test_proved_policy_checks_proof_deps_but_declared_policy_ignores_them(tmp_path: Path) -> None:
@@ -329,11 +329,13 @@ def test_proved_policy_checks_proof_deps_but_declared_policy_ignores_them(tmp_pa
 
     assert declared.ok and declared.value is not None
     assert declared.value.ready is True
-    assert declared.value.dependencies_checked == []
+    assert declared.value.blocker is None
     assert proved.ok and proved.value is not None
     assert proved.value.ready is False
-    assert proved.value.reason == DeclReadinessReason.DEPENDENCY_NOT_READY
-    assert proved.value.failed_dependencies == ["supporting_lemma"]
+    assert proved.value.blocker is not None
+    assert proved.value.blocker.reason == DeclReadinessReason.DEPENDENCY_NOT_READY
+    assert proved.value.blocker.blocking_decl is not None
+    assert proved.value.blocker.blocking_decl.name == "supporting_lemma"
 
 
 def test_strict_proved_audit_rejects_declared_only_public_theorem(tmp_path: Path) -> None:
@@ -374,8 +376,10 @@ def test_dependency_not_ready_blocks_recursive_readiness(tmp_path: Path) -> None
 
     assert report.ok and report.value is not None
     assert report.value.ready is False
-    assert report.value.reason == DeclReadinessReason.DEPENDENCY_NOT_READY
-    assert report.value.failed_dependencies == ["supporting_lemma"]
+    assert report.value.blocker is not None
+    assert report.value.blocker.reason == DeclReadinessReason.DEPENDENCY_NOT_READY
+    assert report.value.blocker.blocking_decl is not None
+    assert report.value.blocker.blocking_decl.name == "supporting_lemma"
 
 
 def test_cycle_is_reported_as_not_ready(tmp_path: Path) -> None:
@@ -392,8 +396,10 @@ def test_cycle_is_reported_as_not_ready(tmp_path: Path) -> None:
 
     assert report.ok and report.value is not None
     assert report.value.ready is False
-    assert report.value.reason == DeclReadinessReason.CYCLE_DETECTED
-    assert report.value.failed_dependencies == ["b"]
+    assert report.value.blocker is not None
+    assert report.value.blocker.reason == DeclReadinessReason.CYCLE_DETECTED
+    assert report.value.blocker.blocking_decl is not None
+    assert report.value.blocker.blocking_decl.name == "a"
 
 
 def test_default_public_decl_provider_uses_decl_graph(tmp_path: Path) -> None:

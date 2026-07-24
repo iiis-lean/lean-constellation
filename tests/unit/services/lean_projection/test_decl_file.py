@@ -179,8 +179,9 @@ def test_same_node_dependency_import_and_docstring_use_module_and_full_name(tmp_
     helper["version_status"] = "committed"
     helper["lean_decl_name"] = "Example.helper"
     result = _revision()
-    result["statement"]["deps"] = ["helper"]
-    result["statement"]["dep_refs"] = [{"kind": "repo_decl", "ref": {"node": "Main.Topic.Core", "name": "helper", "revision": 1}}]
+    result["statement"]["deps"] = [
+        {"kind": "repo_decl", "ref": {"node": "Main.Topic.Core", "name": "helper", "revision": 1}}
+    ]
     component = _component({("Main.Topic.Core", "helper"): helper, ("Main.Topic.Core", "main_result"): result})
     prepared = component.prepare_statement_formal_file(tmp_path, node_path="Main.Topic.Core", decl_name="main_result")
     assert prepared.ok and prepared.value is not None

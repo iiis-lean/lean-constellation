@@ -16,7 +16,7 @@ def test_round_with_decl_drafts_rolls_back_complete_graph_on_mid_batch_failure(t
     _flow_runtime, runtime, repo_root = make_decl_round_runtime(tmp_path)
     strategy = runtime.decl_graph.ensure_open_strategy(repo_root, node_path=NODE_PATH, objective="Transactional strategy.")
     assert strategy.ok and strategy.value is not None
-    real_create = runtime.decl_graph.create_decl_revision_view
+    real_create = runtime.decl_graph.create_decl
     calls = 0
 
     def injected_create(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -26,7 +26,7 @@ def test_round_with_decl_drafts_rolls_back_complete_graph_on_mid_batch_failure(t
             return runtime.foundation.fail(runtime.foundation.issue("injected_decl_failure", "injected"))
         return real_create(*args, **kwargs)
 
-    monkeypatch.setattr(runtime.decl_graph, "create_decl_revision_view", injected_create)
+    monkeypatch.setattr(runtime.decl_graph, "create_decl", injected_create)
     result = runtime.decl_graph.create_round_with_decl_drafts(
         repo_root,
         node_path=NODE_PATH,
@@ -61,7 +61,7 @@ def test_round_with_decl_drafts_returns_structured_batch(tmp_path: Path) -> None
 
     assert result.ok, result.issues
     assert result.value is not None
-    assert [item.decl_name for item in result.value.declarations] == ["main_def"]
+    assert [item.decl_name for item in result.value.revision_refs] == ["main_def"]
 
 
 def test_blocked_business_terminal_commits_partial_revision_and_allows_follow_up_update(tmp_path: Path) -> None:
@@ -83,7 +83,7 @@ def test_blocked_business_terminal_commits_partial_revision_and_allows_follow_up
 
     assert closed.ok, closed.issues
     assert closed.value is not None
-    assert closed.value.committed_decl_names == ["main_result"]
+    assert [item.decl_name for item in closed.value.committed_revision_refs] == ["main_result"]
     revision = runtime.decl_graph.get_decl_revision(repo_root, node_path=NODE_PATH, name="main_result", revision=1)
     assert revision.ok and revision.value is not None
     assert revision.value.status == "committed"
@@ -130,7 +130,7 @@ def test_failed_business_terminal_commits_partial_revision(tmp_path: Path) -> No
 
     assert closed.ok, closed.issues
     assert closed.value is not None
-    assert closed.value.committed_decl_names == ["main_result"]
+    assert [item.decl_name for item in closed.value.committed_revision_refs] == ["main_result"]
     revision = runtime.decl_graph.get_decl_revision(
         repo_root,
         node_path=NODE_PATH,

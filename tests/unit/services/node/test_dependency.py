@@ -215,7 +215,8 @@ def test_external_node_dep_requires_attached_stable_boundary_and_reports_prelude
     assert added.value is not None
     assert added.value.managed_projection_changed is True
     assert added.value.reread_required is True
-    assert added.value.changed_files == [added.value.projection_path]
+    assert len(added.value.changed_files) == 1
+    assert added.value.changed_files[0].endswith("Main/Topic/Consumer/Prelude.lean")
     valid = runtime.node.dependency.validate_node_deps(tmp_path, node_path="Main.Topic.Consumer")
     assert valid.ok and valid.value is not None
     assert valid.value.passed is True
@@ -243,8 +244,9 @@ def test_add_node_dep_resolves_expected_decl_and_refreshes_prelude(tmp_path: Pat
 
     assert added.ok
     assert added.value is not None
-    assert len(added.value.contract.deps) == 1
-    dep = added.value.contract.deps[0]
+    assert added.value.changed is True
+    assert len(added.value.added) == 1
+    dep = added.value.added[0]
     assert dep.target == NodeRef(repo=None, node="Main.Topic.Provider")
     assert dep.expected_decl_refs == [ref]
     assert dep.added_by == NodeDepActor.COORDINATOR
@@ -253,7 +255,7 @@ def test_add_node_dep_resolves_expected_decl_and_refreshes_prelude(tmp_path: Pat
     assert listed.value is not None
     assert listed.value.deps[0].index == 0
     assert listed.value.deps[0].target_node == "Main.Topic.Provider"
-    assert listed.value.deps[0].expected_decl_names == ["helper"]
+    assert [ref.name for ref in listed.value.deps[0].expected_decl_refs] == ["helper"]
     assert "import Main.Topic.Provider.Interfaces" in _prelude_text(tmp_path, "Main.Topic.Consumer")
 
 
@@ -349,7 +351,7 @@ def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator
         actor="coordinator",
     )
     assert first.ok and first.value is not None
-    dep_id = first.value.contract.deps[0].dep_id
+    dep_id = first.value.added[0].dep_id
 
     duplicate = component.add_node_dep(
         tmp_path,
@@ -362,7 +364,16 @@ def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator
     assert duplicate.ok
     assert duplicate.issues[0].kind == "node_dep_duplicate"
     assert duplicate.value is not None
-    assert duplicate.value.contract.deps[0].dep_id == dep_id
+    assert duplicate.value.changed is False
+    listed = component.list_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert listed.ok and listed.value is not None
+    assert listed.value.deps[0].expected_decl_refs[0].name == "helper"
+    current = component.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+    assert current.ok and current.value is not None
+    assert current.value.contract.deps[0].dep_id == dep_id
 
     updated = component.add_node_dep(
         tmp_path,
@@ -373,7 +384,8 @@ def test_add_node_dep_merges_duplicates_and_rejects_worker_modifying_coordinator
         actor="coordinator",
     )
     assert updated.ok and updated.value is not None
-    assert updated.value.contract.deps[0].reason == "Updated reason."
+    assert updated.value.changed is True
+    assert updated.value.updated[0].reason == "Updated reason."
 
     denied = component.add_node_dep(
         tmp_path,
@@ -427,7 +439,10 @@ def test_worker_can_only_remove_worker_added_node_dep(tmp_path: Path) -> None:
     removed = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=worker_index, actor="worker")
     assert removed.ok
     assert removed.value is not None
-    assert all(dep.target.node != "Main.Topic.B" for dep in removed.value.contract.deps)
+    assert [dep.target.node for dep in removed.value.removed] == ["Main.Topic.B"]
+    remaining = component.list_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert remaining.ok and remaining.value is not None
+    assert all(dep.target_node != "Main.Topic.B" for dep in remaining.value.deps)
 
 
 def test_remove_node_dep_reports_missing_dep_and_allows_coordinator_remove(tmp_path: Path) -> None:
@@ -454,7 +469,10 @@ def test_remove_node_dep_reports_missing_dep_and_allows_coordinator_remove(tmp_p
     removed = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=listed.value.deps[0].index, actor="coordinator")
     assert removed.ok
     assert removed.value is not None
-    assert removed.value.contract.deps == []
+    assert len(removed.value.removed) == 1
+    remaining = component.list_node_deps(tmp_path, node_path="Main.Topic.Consumer")
+    assert remaining.ok and remaining.value is not None
+    assert remaining.value.deps == []
 
     negative = component.remove_node_dep(tmp_path, node_path="Main.Topic.Consumer", index=-1, actor="coordinator")
     assert not negative.ok
@@ -463,7 +481,6 @@ def test_remove_node_dep_reports_missing_dep_and_allows_coordinator_remove(tmp_p
 
 def test_validate_node_deps_reports_cycle_and_batch_dependency(tmp_path: Path) -> None:
     _create_base_tree(tmp_path)
-    contract = make_runtime().node.contract
     assert make_runtime().node.commit_content_contract(
         tmp_path, node_path="Main.Topic.B", summary="B ready."
     ).ok
@@ -597,7 +614,6 @@ def test_check_content_batch_independent_reports_pass_duplicates_missing_noncont
         objective="Build C.",
         success_criteria="C ready.",
     ).ok
-    contract = make_runtime().node.contract
     assert make_runtime().node.commit_content_contract(
         tmp_path, node_path="Main.Topic.B", summary="B ready."
     ).ok

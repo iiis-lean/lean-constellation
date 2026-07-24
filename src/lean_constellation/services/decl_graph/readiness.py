@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.lean_check import compact_lean_check
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
 from lean_constellation.services.decl_graph.availability_policy import (
@@ -16,10 +17,12 @@ from lean_constellation.services.decl_graph.availability_policy import (
 )
 from lean_constellation.services.decl_graph.models import (
     DeclLifecycle,
+    DeclFormalSection,
     DeclFileFormalView,
     DeclFileNaturalLanguageView,
     DeclFileRevisionView,
     DeclFileStageView,
+    DeclReadinessBlocker,
     DeclReadinessReason,
     DeclReadinessReport,
     Decl,
@@ -89,6 +92,50 @@ class DeclReadinessComponent:
             stack=[],
         )
 
+    def check_round_decl_ready(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        required_availability: ProofAvailability | str,
+    ) -> ServiceResult[DeclReadinessReport]:
+        """Check an exact open round revision with same-round dependency overlay."""
+
+        target = self._coerce_policy_target(str(required_availability), default=ProofAvailability.PROVED)
+        if not target.ok or target.value is None:
+            return self.runtime.foundation.fail(target.issues)
+        round_record = self.runtime.decl_graph.get_round(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+        )
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        overlay: dict[str, tuple[Decl, DeclRevision]] = {}
+        for ref in round_record.value.revision_refs:
+            decl = self.decl_catalog.get_decl(repo_root, node_path=node_path, name=ref.decl_name)
+            revision = self.decl_catalog.get_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=ref.decl_name,
+                revision=ref.revision,
+            )
+            if not decl.ok or decl.value is None:
+                return self.runtime.foundation.fail(decl.issues)
+            if not revision.ok or revision.value is None:
+                return self.runtime.foundation.fail(revision.issues)
+            overlay[ref.decl_name] = (decl.value, revision.value)
+        return self._check_decl_proof_policy_satisfied(
+            Path(repo_root),
+            node_path=node_path,
+            decl_name=decl_name,
+            target_proof_availability=target.value,
+            stack=[],
+            round_overlay=overlay,
+        )
+
     def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
         decls = self.decl_catalog.list_decls(Path(repo_root), node_path=node_path)
         if not decls.ok or decls.value is None:
@@ -101,17 +148,14 @@ class DeclReadinessComponent:
             satisfied = self.check_decl_proof_policy_satisfied(Path(repo_root), node_path=node_path, decl_name=decl.name)
             if not satisfied.ok or satisfied.value is None:
                 return self.runtime.foundation.fail(satisfied.issues)
-            if not satisfied.value.proof_policy_satisfied:
+            if not satisfied.value.ready:
                 warnings.append(
                     self.runtime.foundation.issue(
                         "public_decl_proof_policy_unsatisfied",
                         f"Public declaration does not satisfy current proof availability policy: {decl.name}",
                         severity=IssueSeverity.WARNING,
                         object_ref=f"{node_path}:{decl.name}",
-                        details={
-                            "reason": satisfied.value.reason.value if satisfied.value.reason is not None else "unknown",
-                            **satisfied.value.details,
-                        },
+                        details={"reason": satisfied.value.blocker.reason.value if satisfied.value.blocker is not None else "unknown"},
                     )
                 )
             release_status = self.runtime.repo_workspace.release.get_decl_release_status(
@@ -130,8 +174,10 @@ class DeclReadinessComponent:
                     module=decl.module,
                     summary=decl.summary,
                     public=True,
-                    ready=satisfied.value.proof_policy_satisfied,
-                    stale=self._is_stale_reason(satisfied.value.reason),
+                    ready=satisfied.value.ready,
+                    stale=self._is_stale_reason(
+                        satisfied.value.blocker.reason if satisfied.value.blocker is not None else None
+                    ),
                     source="decl_graph",
                     released_state=release_status.value.released_state,
                     release_protected=release_status.value.release_protected,
@@ -173,8 +219,7 @@ class DeclReadinessComponent:
                     expected="open",
                 )
             )
-        revision.statement_lean_code = code
-        revision.statement_lean_check = check
+        revision.statement.formal = DeclFormalSection(code=code, check=check)
         revision.lean_decl_name = lean_decl_name
         written = self._write_revision(Path(repo_root), node_path=node_path, decl_name=decl_name, revision=revision)
         if not written.ok or written.value is None:
@@ -215,8 +260,8 @@ class DeclReadinessComponent:
                     expected="open",
                 )
             )
-        revision.proof_lean_code = code
-        revision.proof_lean_check = check
+        proof = revision._ensure_proof()
+        proof.formal = DeclFormalSection(code=code, check=check)
         revision.lean_decl_name = lean_decl_name
         written = self._write_revision(Path(repo_root), node_path=node_path, decl_name=decl_name, revision=revision)
         if not written.ok or written.value is None:
@@ -288,8 +333,15 @@ class DeclReadinessComponent:
                     summary=f"Proof formal consistency is skipped for non-theorem-like declaration {decl_name}.",
                 )
             )
-        code = revision.statement_lean_code if normalized_stage == "statement" else revision.proof_lean_code
-        check = revision.statement_lean_check if normalized_stage == "statement" else revision.proof_lean_check
+        formal = (
+            revision.statement.formal
+            if normalized_stage == "statement"
+            else revision.proof.formal
+            if revision.proof is not None
+            else None
+        )
+        code = formal.code if formal is not None else None
+        check = compact_lean_check(formal.check) if formal is not None else None
         issues = []
         if not code:
             issues.append(
@@ -438,34 +490,49 @@ class DeclReadinessComponent:
         node_path: str,
         decl_name: str,
         target_proof_availability: ProofAvailability,
-        stack: list[str],
+        stack: list[DeclRef],
         provider_target_override: ProofAvailability | None = None,
+        round_overlay: dict[str, tuple[Decl, DeclRevision]] | None = None,
     ) -> ServiceResult[DeclReadinessReport]:
-        stack_key = f"{Path(repo_root).name}:{node_path}:{decl_name}"
-        if stack_key in stack:
-            cycle = [*stack, stack_key]
+        overlay_pair = round_overlay.get(decl_name) if round_overlay is not None else None
+        current = (
+            self.runtime.foundation.ok(overlay_pair)
+            if overlay_pair is not None
+            else self._current_decl_and_revision(repo_root, node_path=node_path, decl_name=decl_name)
+        )
+        revision_number = overlay_pair[1].revision if overlay_pair is not None else None
+        current_ref = DeclRef(node=node_path, name=decl_name, revision=revision_number or 1)
+        if any(
+            ref.repo == current_ref.repo
+            and ref.node == current_ref.node
+            and ref.name == current_ref.name
+            and (revision_number is None or ref.revision == current_ref.revision)
+            for ref in stack
+        ):
             return self.runtime.foundation.ok(
                 self._not_ready(
                     node_path=node_path,
                     decl_name=decl_name,
                     reason=DeclReadinessReason.CYCLE_DETECTED,
-                    target_proof_availability=target_proof_availability,
-                    details={"cycle": " -> ".join(cycle)},
+                    required_availability=target_proof_availability,
+                    revision=revision_number,
+                    blocking_decl=current_ref,
+                    dependency_chain=[*stack, current_ref],
+                    message=f"Dependency cycle detected at {node_path}:{decl_name}.",
                 )
             )
-
-        current = self._current_decl_and_revision(repo_root, node_path=node_path, decl_name=decl_name)
         if not current.ok or current.value is None:
             return self.runtime.foundation.ok(
                 self._not_ready(
                     node_path=node_path,
                     decl_name=decl_name,
                     reason=DeclReadinessReason.MISSING_DECL,
-                    target_proof_availability=target_proof_availability,
-                    details={"issues": "; ".join(issue.kind for issue in current.issues) or "missing"},
+                    required_availability=target_proof_availability,
+                    message=f"Declaration {node_path}:{decl_name} does not exist.",
                 )
             )
         decl, revision = current.value
+        current_ref = DeclRef(node=node_path, name=decl_name, revision=revision.revision)
         if decl.lifecycle != DeclLifecycle.ACTIVE:
             return self.runtime.foundation.ok(
                 self._not_ready(
@@ -473,19 +540,21 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=DeclReadinessReason.MISSING_DECL,
-                    target_proof_availability=target_proof_availability,
-                    details={"lifecycle": decl.lifecycle.value},
+                    required_availability=target_proof_availability,
+                    blocking_decl=current_ref,
+                    message=f"Declaration {node_path}:{decl_name} is not active.",
                 )
             )
-        if revision.status != "committed":
+        if overlay_pair is None and revision.status != "committed":
             return self.runtime.foundation.ok(
                 self._not_ready(
                     node_path=node_path,
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=DeclReadinessReason.NO_ACTIVE_REVISION,
-                    target_proof_availability=target_proof_availability,
-                    details={"version_status": revision.status.value},
+                    required_availability=target_proof_availability,
+                    blocking_decl=current_ref,
+                    message=f"Declaration {node_path}:{decl_name}@{revision.revision} is not committed.",
                 )
             )
         required_state = self._required_state_for_target(decl.kind, target_proof_availability)
@@ -496,16 +565,21 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=DeclReadinessReason.STATE_TOO_LOW,
-                    target_proof_availability=target_proof_availability,
-                    details={
-                        "current_state": revision.state.value,
-                        "required_state": required_state.value,
-                        "target_proof_availability": target_proof_availability.value,
-                    },
+                    required_availability=target_proof_availability,
+                    blocking_decl=current_ref,
+                    current_state=revision.state,
+                    required_state=required_state,
+                    message=f"{decl_name} is {revision.state.value}; {required_state.value} is required.",
                 )
             )
         stage = self._required_check_stage(decl.kind, target_proof_availability)
-        check = revision.proof_lean_check if stage == "proof" else revision.statement_lean_check
+        check = (
+            revision.proof.formal.check
+            if stage == "proof" and revision.proof is not None and revision.proof.formal is not None
+            else revision.statement.formal.check
+            if stage == "statement" and revision.statement.formal is not None
+            else None
+        )
         if check is None:
             return self.runtime.foundation.ok(
                 self._not_ready(
@@ -513,11 +587,13 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=DeclReadinessReason.LEAN_CHECK_FAILED,
-                    target_proof_availability=target_proof_availability,
-                    details={"stage": stage, "check": "missing", "target_proof_availability": target_proof_availability.value},
+                    required_availability=target_proof_availability,
+                    blocking_decl=current_ref,
+                    check_stage=stage,
+                    message=f"{decl_name} has no accepted {stage} Lean check.",
                 )
             )
-        check_reason = self._lean_check_failure_reason(check)
+        check_reason = self._lean_check_failure_reason(compact_lean_check(check) or {})
         if check_reason is not None:
             return self.runtime.foundation.ok(
                 self._not_ready(
@@ -525,21 +601,54 @@ class DeclReadinessComponent:
                     decl_name=decl_name,
                     revision=revision.revision,
                     reason=check_reason,
-                    target_proof_availability=target_proof_availability,
-                    details=check,
+                    required_availability=target_proof_availability,
+                    blocking_decl=current_ref,
+                    check_stage=stage,
+                    message=f"{decl_name} has an unacceptable {stage} Lean check.",
                 )
             )
-
-        checked: list[str] = []
-        failed: list[str] = []
         dep_requirements = self.dependency.dependency_ref_requirements_for_proof_policy(
             decl,
             revision,
             target_proof_availability=target_proof_availability,
         )
         for dep_ref, dep_target in dep_requirements:
-            dep_label = self._decl_ref_label(dep_ref, fallback_node_path=node_path)
-            checked.append(dep_label)
+            dep_node = dep_ref.node
+            if dep_ref.repo is None and dep_node == "Main" and node_path != "Main":
+                dep_node = node_path
+            effective_ref = dep_ref.model_copy(update={"node": dep_node})
+            if (
+                dep_ref.repo is None
+                and dep_node == node_path
+                and round_overlay is not None
+                and dep_ref.name in round_overlay
+                and round_overlay[dep_ref.name][1].revision == dep_ref.revision
+            ):
+                dep = self._check_decl_proof_policy_satisfied(
+                    repo_root,
+                    node_path=node_path,
+                    decl_name=dep_ref.name,
+                    target_proof_availability=dep_target,
+                    provider_target_override=provider_target_override,
+                    stack=[*stack, current_ref],
+                    round_overlay=round_overlay,
+                )
+                if not dep.ok or dep.value is None:
+                    return self.runtime.foundation.fail(dep.issues)
+                if dep.value.ready:
+                    continue
+                return self.runtime.foundation.ok(
+                    self._dependency_blocked(
+                        node_path=node_path,
+                        decl_name=decl_name,
+                        revision=revision.revision,
+                        required_availability=target_proof_availability,
+                        dependency_ref=effective_ref,
+                        dependency_required=dep_target,
+                        dependency_report=dep.value,
+                        chain=[*stack, current_ref],
+                    )
+                )
             resolved_dep = self._resolve_dependency_ref(
                 repo_root,
                 ref=dep_ref,
@@ -548,21 +657,24 @@ class DeclReadinessComponent:
                 provider_target_override=provider_target_override,
             )
             if not resolved_dep.ok or resolved_dep.value is None:
-                failed.append(dep_label)
+                label = self._decl_ref_label(dep_ref, fallback_node_path=node_path)
+                issue = resolved_dep.issues[0] if resolved_dep.issues else None
+                message = (
+                    issue.message
+                    if issue is not None and issue.kind != "dependency_decl_ref_incompatible"
+                    else f"Dependency {label} could not be resolved or its provider is not stable."
+                )
                 return self.runtime.foundation.ok(
                     self._not_ready(
                         node_path=node_path,
                         decl_name=decl_name,
                         revision=revision.revision,
                         reason=DeclReadinessReason.DEPENDENCY_NOT_READY,
-                        target_proof_availability=target_proof_availability,
-                        details={
-                            "dependency": dep_label,
-                            "dependency_reason": "; ".join(issue.kind for issue in resolved_dep.issues) or "dependency resolution failed",
-                            "dependency_required_proof_availability": dep_target.value,
-                        },
-                        dependencies_checked=checked,
-                        failed_dependencies=failed,
+                        required_availability=target_proof_availability,
+                        blocking_decl=effective_ref,
+                        dependency_required=dep_target,
+                        dependency_chain=[*stack, current_ref],
+                        message=message,
                     )
                 )
             dep_root, dep_node, effective_target = resolved_dep.value
@@ -572,33 +684,21 @@ class DeclReadinessComponent:
                 decl_name=dep_ref.name,
                 target_proof_availability=effective_target,
                 provider_target_override=provider_target_override,
-                stack=[*stack, stack_key],
+                stack=[*stack, current_ref],
             )
             if not dep.ok or dep.value is None:
                 return self.runtime.foundation.fail(dep.issues)
             if not dep.value.ready:
-                failed.append(dep_label)
-                reason = (
-                    DeclReadinessReason.CYCLE_DETECTED
-                    if dep.value.reason == DeclReadinessReason.CYCLE_DETECTED
-                    else DeclReadinessReason.DEPENDENCY_MISSING
-                    if dep.value.reason == DeclReadinessReason.MISSING_DECL
-                    else DeclReadinessReason.DEPENDENCY_NOT_READY
-                )
                 return self.runtime.foundation.ok(
-                    self._not_ready(
+                    self._dependency_blocked(
                         node_path=node_path,
                         decl_name=decl_name,
                         revision=revision.revision,
-                        reason=reason,
-                        target_proof_availability=target_proof_availability,
-                        details={
-                            "dependency": dep_label,
-                            "dependency_reason": dep.value.reason.value if dep.value.reason else "unknown",
-                            "dependency_required_proof_availability": effective_target.value,
-                        },
-                        dependencies_checked=checked,
-                        failed_dependencies=failed,
+                        required_availability=target_proof_availability,
+                        dependency_ref=effective_ref,
+                        dependency_required=effective_target,
+                        dependency_report=dep.value,
+                        chain=[*stack, current_ref],
                     )
                 )
         return self.runtime.foundation.ok(
@@ -606,14 +706,11 @@ class DeclReadinessComponent:
                 node_path=node_path,
                 decl_name=decl_name,
                 revision=revision.revision,
+                required_availability=target_proof_availability,
                 ready=True,
-                proof_policy_satisfied=True,
-                target_proof_availability=target_proof_availability,
-                dependencies_checked=checked,
-                failed_dependencies=[],
                 summary=(
-                    f"Declaration {node_path}:{decl_name}@{revision.revision} satisfies "
-                    f"{target_proof_availability.value} proof availability."
+                    f"{node_path}:{decl_name}@{revision.revision} is available as "
+                    f"{target_proof_availability.value}."
                 ),
             )
         )
@@ -784,31 +881,29 @@ class DeclReadinessComponent:
     def _decl_file_revision_view(self, decl: Decl, revision: DeclRevision) -> DeclFileRevisionView:
         statement = DeclFileStageView(
             nl=DeclFileNaturalLanguageView(
-                text=revision.statement_nl,
+                text=revision.statement.nl.text if revision.statement.nl is not None else None,
                 origin=list(revision.statement.nl.origin) if revision.statement.nl is not None else [],
             ),
             formal=(
-                DeclFileFormalView(code=revision.statement_lean_code, check=revision.statement.formal.check)
+                DeclFileFormalView(code=revision.statement.formal.code, check=revision.statement.formal.check)
                 if revision.statement.formal is not None
                 else None
             ),
-            deps=revision.statement_deps,
-            dep_refs=list(revision.statement.deps),
+            deps=list(revision.statement.deps),
         )
         proof = None
         if revision.proof is not None:
             proof = DeclFileStageView(
                 nl=DeclFileNaturalLanguageView(
-                    text=revision.proof_nl,
+                    text=revision.proof.nl.text if revision.proof.nl is not None else None,
                     origin=list(revision.proof.nl.origin) if revision.proof.nl is not None else [],
                 ),
                 formal=(
-                    DeclFileFormalView(code=revision.proof_lean_code, check=revision.proof.formal.check)
+                    DeclFileFormalView(code=revision.proof.formal.code, check=revision.proof.formal.check)
                     if revision.proof.formal is not None
                     else None
                 ),
-                deps=revision.proof_deps,
-                dep_refs=list(revision.proof.deps),
+                deps=list(revision.proof.deps),
             )
         return DeclFileRevisionView(
             decl_name=decl.name,
@@ -828,34 +923,89 @@ class DeclReadinessComponent:
         node_path: str,
         decl_name: str,
         reason: DeclReadinessReason,
+        required_availability: ProofAvailability,
         revision: int | None = None,
-        target_proof_availability: ProofAvailability | None = None,
-        details: dict[str, str] | None = None,
-        dependencies_checked: list[str] | None = None,
-        failed_dependencies: list[str] | None = None,
+        blocking_decl: DeclRef | None = None,
+        current_state: DeclState | None = None,
+        required_state: DeclState | None = None,
+        check_stage: str | None = None,
+        dependency_required: ProofAvailability | None = None,
+        dependency_chain: list[DeclRef] | None = None,
+        message: str,
     ) -> DeclReadinessReport:
         return DeclReadinessReport(
             node_path=node_path,
             decl_name=decl_name,
             revision=revision,
+            required_availability=required_availability,
             ready=False,
-            proof_policy_satisfied=False,
-            target_proof_availability=target_proof_availability,
+            blocker=DeclReadinessBlocker(
+                reason=reason,
+                blocking_decl=blocking_decl,
+                required_availability=dependency_required,
+                current_state=current_state,
+                required_state=required_state,
+                check_stage=check_stage,  # type: ignore[arg-type]
+                dependency_chain=dependency_chain or [],
+                message=message,
+            ),
+            summary=f"{node_path}:{decl_name} is not ready: {message}",
+        )
+
+    def _dependency_blocked(
+        self,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+        required_availability: ProofAvailability,
+        dependency_ref: DeclRef,
+        dependency_required: ProofAvailability,
+        dependency_report: DeclReadinessReport,
+        chain: list[DeclRef],
+    ) -> DeclReadinessReport:
+        nested = dependency_report.blocker
+        nested_reason = nested.reason if nested is not None else DeclReadinessReason.DEPENDENCY_NOT_READY
+        reason = (
+            DeclReadinessReason.CYCLE_DETECTED
+            if nested_reason == DeclReadinessReason.CYCLE_DETECTED
+            else DeclReadinessReason.DEPENDENCY_MISSING
+            if nested_reason == DeclReadinessReason.MISSING_DECL
+            else DeclReadinessReason.DEPENDENCY_NOT_READY
+        )
+        return self._not_ready(
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=revision,
             reason=reason,
-            details={str(key): str(value) for key, value in (details or {}).items()},
-            dependencies_checked=dependencies_checked or [],
-            failed_dependencies=failed_dependencies or [],
-            summary=f"Declaration {node_path}:{decl_name} is not ready: {reason.value}.",
+            required_availability=required_availability,
+            blocking_decl=nested.blocking_decl if nested is not None and nested.blocking_decl is not None else dependency_ref,
+            current_state=nested.current_state if nested is not None else None,
+            required_state=nested.required_state if nested is not None else None,
+            check_stage=nested.check_stage if nested is not None else None,
+            dependency_required=dependency_required,
+            dependency_chain=nested.dependency_chain if nested is not None and nested.dependency_chain else chain,
+            message=(
+                nested.message
+                if nested is not None
+                else f"Dependency {dependency_ref.name} is not available as {dependency_required.value}."
+            ),
         )
 
     def _readiness_issue(self, report: DeclReadinessReport, *, kind: str) -> ServiceIssue:
+        blocker = report.blocker
         return self.runtime.foundation.issue(
             kind,
             report.summary,
             object_ref=f"{report.node_path}:{report.decl_name}",
-            current=report.reason.value if report.reason is not None else "not_ready",
+            current=blocker.reason.value if blocker is not None else "not_ready",
             expected="ready",
-            details=report.details,
+            details={
+                "blocking_decl": blocker.blocking_decl.model_dump_json(exclude_none=True)
+                if blocker is not None and blocker.blocking_decl is not None
+                else "",
+                "message": blocker.message if blocker is not None else report.summary,
+            },
         )
 
     def _lean_check_failure_reason(self, check: dict[str, str]) -> DeclReadinessReason | None:

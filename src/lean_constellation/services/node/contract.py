@@ -81,6 +81,18 @@ class OpenContractView(StrictModel):
     summary: str
 
 
+class NodeContractTextMutationReceipt(StrictModel):
+    """Compact receipt for one node-contract text update."""
+
+    node_path: str
+    operation: Literal["set"] = "set"
+    changed: bool
+    changed_fields: list[
+        Literal["goal", "boundary", "objective", "success_criteria", "constraints"]
+    ] = Field(default_factory=list)
+    summary: str
+
+
 class ContractComponent:
     """Maintain versioned Scope / Content node contracts."""
 
@@ -356,6 +368,59 @@ class ContractComponent:
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
         return self.runtime.foundation.ok(self._contract_view(node.value, contract))
+
+    def update_contract_text_fields_receipt(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        goal: str | None = None,
+        boundary: str | None = None,
+        objective: str | None = None,
+        success_criteria: str | None = None,
+        constraints: str | None = None,
+    ) -> ServiceResult[NodeContractTextMutationReceipt]:
+        """Update contract text and report only the fields changed by this call."""
+
+        before = self.get_edit_contract(repo_root, node_path=node_path)
+        if not before.ok or before.value is None:
+            return self.runtime.foundation.fail(before.issues)
+        requested = {
+            "goal": goal,
+            "boundary": boundary,
+            "objective": objective,
+            "success_criteria": success_criteria,
+            "constraints": constraints,
+        }
+        updated = self.update_contract_text_fields(
+            repo_root,
+            node_path=node_path,
+            **requested,
+        )
+        if not updated.ok or updated.value is None:
+            return self.runtime.foundation.fail(updated.issues)
+        changed_fields = [
+            field_name
+            for field_name, value in requested.items()
+            if value is not None
+            and getattr(before.value.contract, field_name) != getattr(
+                updated.value.contract,
+                field_name,
+            )
+        ]
+        return self.runtime.foundation.ok(
+            NodeContractTextMutationReceipt(
+                node_path=node_path,
+                changed=bool(changed_fields),
+                changed_fields=changed_fields,
+                summary=(
+                    f"Updated {len(changed_fields)} node contract text field(s)."
+                    if changed_fields
+                    else "Node contract text already matched the requested values."
+                ),
+            ),
+            warnings=updated.issues,
+        )
 
     def _commit_content_contract_with_head(
         self,

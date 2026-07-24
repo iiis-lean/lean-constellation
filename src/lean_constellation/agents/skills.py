@@ -990,8 +990,7 @@ Either readiness remains unresolved and the Coordinator returns to its next-acti
             "Use this skill after relevant Mathlib entries are known or recorded in MathlibIndex.",
             (
                 "Understand whether a module hint or declaration hint is appropriate.",
-                "Add module hints for imports that are broadly useful to the node with `add_current_mathlib_module_hint`.",
-                "Add declaration hints for specific facts or definitions that support planned work with `add_current_mathlib_decl_hint`.",
+                "Add already-verified module and declaration hints in one `add_current_mathlib_hints` batch, then reread current hints once.",
                 "Remove stale hints conservatively with `remove_current_mathlib_module_hint` or `remove_current_mathlib_decl_hint`.",
                 "Validate current hints with `validate_current_node_mathlib_hints`.",
             ),
@@ -1500,7 +1499,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Capture with `capture_statement_formal_file`, require `check_formal_stage_consistency` to pass, and then call `submit_stage_worker_completed`.",
                 "Read current node Mathlib hints first, then the repo MathlibIndex; only use broader search/navigation when those are insufficient.",
                 "For a Mathlib candidate you intend to use, inspect or check it first, then record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`.",
-                "Record current-node relevance with `add_current_mathlib_decl_hint` or `add_current_mathlib_module_hint` only for confirmed current statement needs.",
+                "Record confirmed current-node module and declaration relevance in one `add_current_mathlib_hints` batch.",
                 "Use `add_current_node_dep` only when the current formal statement actually needs a provider node dependency that is not already available.",
             ),
             (
@@ -1538,7 +1537,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` while iterating; proof formal completed work must satisfy strict proof policy.",
                 "Capture at the durable boundary with `capture_proof_formal_file`; if any edit happens after capture, capture again.",
                 "Before submit, require `check_formal_stage_consistency` to pass.",
-                "Refine typed proof dependencies with `add_proof_decl_dep`, `add_proof_mathlib_dep`, `remove_proof_dep`, or `clear_proof_deps`; these are proof deps, not statement deps. A successful mutation with `managed_projection_changed=true` or `reread_required=true` is not a blocker: re-read the declaration-owned file in the same AgentStep and continue. Add several known dependencies one at a time and re-read after each changed projection.",
+                "Refine typed proof dependencies with one `add_proof_dependencies` batch, or use `remove_proof_dep` / `clear_proof_deps` for repair; these are proof deps, not statement deps. A successful mutation with `managed_projection_changed=true` or `reread_required=true` is not a blocker: re-read the declaration-owned file once after the batch in the same AgentStep and continue.",
                 "Read current node Mathlib hints first, then repo MathlibIndex; search or navigate only when those are insufficient.",
                 "For a Mathlib candidate you intend to use in the current proof, inspect or check it first, record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`, record current-node relevance with hint tools, and add the typed proof Mathlib dep.",
                 "Use `add_current_node_dep` only when the final proof actually needs a verified provider public declaration that is not already available.",

@@ -10,9 +10,9 @@ from lean_constellation.tools import build_application_tool_specs
 from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, write_statement_formal_for_test
 from lean_constellation.tools.args import (
     DeclStageFileCheckArgs,
+    MathlibDeclDependencyInput,
     NoArgs,
-    ProofDeclDepAddArgs,
-    ProofMathlibDepAddArgs,
+    ProofDependenciesAddArgs,
     ProofFormalReviewPassedArgs,
     ProofFormalReviewRejectedArgs,
     ProofNlReviewPassedArgs,
@@ -20,9 +20,9 @@ from lean_constellation.tools.args import (
     ProofNlSetArgs,
     ProofResourceOriginAddArgs,
     ProofSourceOriginAddArgs,
-    StatementDeclDepAddArgs,
+    RepoDeclDependencyInput,
+    StatementDependenciesAddArgs,
     StatementDepsClearArgs,
-    StatementMathlibDepAddArgs,
     StatementFormalReviewPassedArgs,
     StatementFormalReviewRejectedArgs,
     StatementNlReviewPassedArgs,
@@ -42,12 +42,10 @@ from lean_constellation.tools.internal.decl_stage import (
     _record_proof_nl_review_rejected,
     _record_statement_nl_review_passed,
     _record_statement_nl_review_rejected,
-    _add_proof_decl_dep,
-    _add_proof_mathlib_dep,
+    _add_proof_dependencies,
     _add_proof_resource_origin,
     _add_proof_source_origin,
-    _add_statement_decl_dep,
-    _add_statement_mathlib_dep,
+    _add_statement_dependencies,
     _add_statement_source_origin,
     _set_proof_nl,
     _clear_statement_deps,
@@ -63,8 +61,7 @@ def test_decl_stage_tools_are_registered() -> None:
         "add_statement_resource_origin",
         "remove_statement_origin",
         "clear_statement_origins",
-        "add_statement_decl_dep",
-        "add_statement_mathlib_dep",
+        "add_statement_dependencies",
         "remove_statement_dep",
         "clear_statement_deps",
         "set_proof_nl",
@@ -72,8 +69,7 @@ def test_decl_stage_tools_are_registered() -> None:
         "add_proof_resource_origin",
         "remove_proof_origin",
         "clear_proof_origins",
-        "add_proof_decl_dep",
-        "add_proof_mathlib_dep",
+        "add_proof_dependencies",
         "remove_proof_dep",
         "clear_proof_deps",
         "prepare_statement_formal_file",
@@ -128,8 +124,7 @@ def test_decl_stage_groups_expose_expected_tools() -> None:
             "add_statement_resource_origin",
             "remove_statement_origin",
             "clear_statement_origins",
-            "add_statement_decl_dep",
-            "add_statement_mathlib_dep",
+            "add_statement_dependencies",
             "remove_statement_dep",
             "clear_statement_deps",
         },
@@ -142,8 +137,7 @@ def test_decl_stage_groups_expose_expected_tools() -> None:
             "add_proof_resource_origin",
             "remove_proof_origin",
             "clear_proof_origins",
-            "add_proof_decl_dep",
-            "add_proof_mathlib_dep",
+            "add_proof_dependencies",
             "remove_proof_dep",
             "clear_proof_deps",
         },
@@ -152,13 +146,13 @@ def test_decl_stage_groups_expose_expected_tools() -> None:
     assert_group_contains("decl_stage_statement_formal_file_write", {"prepare_statement_formal_file", "capture_statement_formal_file"})
     assert_group_contains(
         "decl_stage_statement_formal_dep_write",
-        {"add_statement_decl_dep", "add_statement_mathlib_dep", "remove_statement_dep", "clear_statement_deps"},
+        {"add_statement_dependencies", "remove_statement_dep", "clear_statement_deps"},
     )
     assert_group_contains("decl_stage_proof_formal_file", {"check_decl_file_snapshot_sync", "check_formal_stage_consistency"})
     assert_group_contains("decl_stage_proof_formal_file_write", {"prepare_proof_formal_file", "capture_proof_formal_file"})
     assert_group_contains(
         "decl_stage_proof_formal_dep_write",
-        {"add_proof_decl_dep", "add_proof_mathlib_dep", "remove_proof_dep", "clear_proof_deps"},
+        {"add_proof_dependencies", "remove_proof_dep", "clear_proof_deps"},
     )
     assert_group_contains("decl_stage_review_status_read", {"inspect_current_stage_review_status"})
     assert_group_contains(
@@ -408,10 +402,12 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
         StatementNlSetArgs(decl_name="main_result", text="The main result states True."),
     )
     assert statement.ok, statement.issues
-    assert statement.value.decl.statement_nl == "The main result states True."
-    assert statement.value.decl.state == DeclState.PLANNED
-    assert statement.value.changed_files == []
-    assert statement.value.reread_required is False
+    assert statement.value is not None
+    assert statement.value.model_dump(mode="json") == {
+        "target": "current node / main_result / Statement NL",
+        "operation": "set",
+        "changed": True,
+    }
     prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -425,31 +421,45 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
         StatementSourceOriginAddArgs(decl_name="main_result", source_path="notes.md", start_line=2, end_line=4, note="Definition range."),
     )
     assert origin.ok, origin.issues
-    assert len(origin.value.decl.statement_origin) == 1
-    assert origin.value.decl.statement_origin[0].kind == "source"
-    assert origin.value.decl.statement_origin[0].source_path == "notes.md"
-    assert origin.value.decl.statement_origin[0].start_line == 2
-    assert origin.value.decl.statement_origin[0].end_line == 4
-    assert origin.value.decl.statement_origin[0].note == "Definition range."
-    assert origin.value.managed_projection_changed is True
-    assert origin.value.changed_files == [prepared.value.path]
-    assert origin.value.reread_required is True
+    assert origin.value is not None
+    assert origin.value.changed is True
+    assert origin.value.added[0].kind == "source"
+    assert origin.value.managed_projection is not None
+    assert origin.value.managed_projection.model_dump(mode="json") == {
+        "stage": "statement",
+        "changed_files": [prepared.value.path],
+        "reread_required": True,
+    }
 
-    dep = _add_statement_decl_dep(
+    dep = _add_statement_dependencies(
         runtime,
         ctx,
-        StatementDeclDepAddArgs(decl_name="main_result", dep_name="supporting_statement", reason="Statement uses supporting notation."),
+        StatementDependenciesAddArgs(
+            decl_name="main_result",
+            repo_declarations=[
+                RepoDeclDependencyInput(
+                    name="supporting_statement",
+                    reason="Statement uses supporting notation.",
+                )
+            ],
+        ),
     )
     assert dep.ok, dep.issues
-    assert dep.value.decl.statement_deps == ["supporting_statement"]
+    assert dep.value is not None
+    assert dep.value.added[0].ref.name == "supporting_statement"
     stored = runtime.decl_graph.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert stored.ok and stored.value is not None
     assert stored.value.statement.deps[0].kind == "repo_decl"
     assert stored.value.statement.deps[0].reason == "Statement uses supporting notation."
-    missing_mathlib = _add_statement_mathlib_dep(
+    missing_mathlib = _add_statement_dependencies(
         runtime,
         ctx,
-        StatementMathlibDepAddArgs(decl_name="main_result", mathlib_decl_name="Nat.missingName", module="Mathlib.Data.Nat.Basic"),
+        StatementDependenciesAddArgs(
+            decl_name="main_result",
+            mathlib_declarations=[
+                MathlibDeclDependencyInput(name="Nat.missingName", module="Mathlib.Data.Nat.Basic")
+            ],
+        ),
     )
     assert not missing_mathlib.ok
     assert missing_mathlib.issues[0].kind == "mathlib_decl_entry_missing"
@@ -461,13 +471,23 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
         summary="Successor function.",
     ).ok
 
-    mathlib = _add_statement_mathlib_dep(
+    mathlib = _add_statement_dependencies(
         runtime,
         ctx,
-        StatementMathlibDepAddArgs(decl_name="main_result", mathlib_decl_name="Nat.succ", module="Mathlib.Data.Nat.Basic", reason="Statement uses successor."),
+        StatementDependenciesAddArgs(
+            decl_name="main_result",
+            mathlib_declarations=[
+                MathlibDeclDependencyInput(
+                    name="Nat.succ",
+                    module="Mathlib.Data.Nat.Basic",
+                    reason="Statement uses successor.",
+                )
+            ],
+        ),
     )
     assert mathlib.ok, mathlib.issues
-    assert mathlib.value.decl.statement_deps == ["Nat.succ", "supporting_statement"]
+    assert mathlib.value is not None
+    assert mathlib.value.added[0].ref.name == "Nat.succ"
     stored = runtime.decl_graph.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert stored.ok and stored.value is not None
     assert {item.kind for item in stored.value.statement.deps} == {"repo_decl", "mathlib_decl"}
@@ -604,10 +624,12 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
         ProofNlSetArgs(decl_name="main_result", text="Use proved_helper and finish by trivial."),
     )
     assert proof.ok, proof.issues
-    assert proof.value.decl.proof_nl == "Use proved_helper and finish by trivial."
-    assert proof.value.decl.state == DeclState.PLANNED
-    assert proof.value.changed_files == []
-    assert proof.value.reread_required is False
+    assert proof.value is not None
+    assert proof.value.model_dump(mode="json") == {
+        "target": "current node / main_result / Proof NL",
+        "operation": "set",
+        "changed": True,
+    }
 
     missing_source = _add_proof_source_origin(
         runtime,
@@ -623,40 +645,55 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
         ProofResourceOriginAddArgs(decl_name="main_result", resource_key=resource_key, start_locator="main.md:1", note="Proof resource."),
     )
     assert origin.ok, origin.issues
-    assert len(origin.value.decl.proof_origin) == 1
-    assert origin.value.decl.proof_origin[0].kind == "resource"
-    assert origin.value.decl.proof_origin[0].resource_key == resource_key
+    assert origin.value is not None
+    assert origin.value.added[0].kind == "resource"
+    assert origin.value.added[0].resource_key == resource_key
 
-    dep = _add_proof_decl_dep(
+    dep = _add_proof_dependencies(
         runtime,
         ctx,
-        ProofDeclDepAddArgs(decl_name="main_result", dep_name="proved_helper", reason="Main proof uses helper."),
+        ProofDependenciesAddArgs(
+            decl_name="main_result",
+            repo_declarations=[
+                RepoDeclDependencyInput(name="proved_helper", reason="Main proof uses helper.")
+            ],
+        ),
     )
     assert dep.ok, dep.issues
-    assert dep.value.decl.proof_deps == ["proved_helper"]
-    assert dep.value.decl.proof_dep_refs[0].kind == "repo_decl"
-    assert dep.value.decl.proof_dep_refs[0].reason == "Main proof uses helper."
+    assert dep.value is not None
+    assert dep.value.added[0].kind == "repo_decl"
+    assert dep.value.added[0].reason == "Main proof uses helper."
     stored = runtime.decl_graph.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert stored.ok and stored.value is not None
     assert stored.value.proof.deps[0].kind == "repo_decl"
     assert stored.value.proof.deps[0].reason == "Main proof uses helper."
 
-    definition_dep = _add_proof_decl_dep(
+    definition_dep = _add_proof_dependencies(
         runtime,
         ctx,
-        ProofDeclDepAddArgs(
+        ProofDependenciesAddArgs(
             decl_name="main_result",
-            dep_name="declared_definition",
-            reason="Main proof uses the accepted definition.",
+            repo_declarations=[
+                RepoDeclDependencyInput(
+                    name="declared_definition",
+                    reason="Main proof uses the accepted definition.",
+                )
+            ],
         ),
     )
     assert definition_dep.ok, definition_dep.issues
-    assert definition_dep.value.decl.proof_deps == ["declared_definition", "proved_helper"]
+    assert definition_dep.value is not None
+    assert definition_dep.value.added[0].ref.name == "declared_definition"
 
-    missing_mathlib = _add_proof_mathlib_dep(
+    missing_mathlib = _add_proof_dependencies(
         runtime,
         ctx,
-        ProofMathlibDepAddArgs(decl_name="main_result", mathlib_decl_name="Nat.missingLemma", module="Mathlib.Data.Nat.Basic"),
+        ProofDependenciesAddArgs(
+            decl_name="main_result",
+            mathlib_declarations=[
+                MathlibDeclDependencyInput(name="Nat.missingLemma", module="Mathlib.Data.Nat.Basic")
+            ],
+        ),
     )
     assert not missing_mathlib.ok
     assert missing_mathlib.issues[0].kind == "mathlib_decl_entry_missing"
@@ -667,22 +704,40 @@ def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> Non
         kind="def",
         summary="Successor function.",
     ).ok
-    wrong_module = _add_proof_mathlib_dep(
+    wrong_module = _add_proof_dependencies(
         runtime,
         ctx,
-        ProofMathlibDepAddArgs(decl_name="main_result", mathlib_decl_name="Nat.succ", module="Mathlib.Init", reason="Wrong module."),
+        ProofDependenciesAddArgs(
+            decl_name="main_result",
+            mathlib_declarations=[
+                MathlibDeclDependencyInput(
+                    name="Nat.succ",
+                    module="Mathlib.Init",
+                    reason="Wrong module.",
+                )
+            ],
+        ),
     )
     assert not wrong_module.ok
     assert wrong_module.issues[0].kind == "proof_mathlib_dep_module_mismatch"
-    mathlib = _add_proof_mathlib_dep(
+    mathlib = _add_proof_dependencies(
         runtime,
         ctx,
-        ProofMathlibDepAddArgs(decl_name="main_result", mathlib_decl_name="Nat.succ", module="Mathlib.Data.Nat.Basic", reason="Proof uses successor facts."),
+        ProofDependenciesAddArgs(
+            decl_name="main_result",
+            mathlib_declarations=[
+                MathlibDeclDependencyInput(
+                    name="Nat.succ",
+                    module="Mathlib.Data.Nat.Basic",
+                    reason="Proof uses successor facts.",
+                )
+            ],
+        ),
     )
     assert mathlib.ok, mathlib.issues
-    assert mathlib.value.decl.proof_deps == ["Nat.succ", "declared_definition", "proved_helper"]
-    assert [item.kind for item in mathlib.value.decl.proof_dep_refs] == ["mathlib_decl", "repo_decl", "repo_decl"]
-    assert mathlib.value.decl.proof_dep_refs[0].ref.module == "Mathlib.Data.Nat.Basic"
+    assert mathlib.value is not None
+    assert mathlib.value.added[0].kind == "mathlib_decl"
+    assert mathlib.value.added[0].ref.module == "Mathlib.Data.Nat.Basic"
 
 
 def test_proof_formal_dep_tool_rejects_unproved_same_round_dep(tmp_path: Path) -> None:
@@ -744,10 +799,18 @@ def test_proof_formal_dep_tool_rejects_unproved_same_round_dep(tmp_path: Path) -
             nl=f"Proof route for {decl_name}.",
         ).ok
 
-    result = _add_proof_decl_dep(
+    result = _add_proof_dependencies(
         runtime,
         _formal_ctx(tmp_path, stage="proof_formal", round_id=round_record.value.round_id, batch_decls=["main_result"]),
-        ProofDeclDepAddArgs(decl_name="main_result", dep_name="unfinished_helper", reason="Unfinished same-round helper."),
+        ProofDependenciesAddArgs(
+            decl_name="main_result",
+            repo_declarations=[
+                RepoDeclDependencyInput(
+                    name="unfinished_helper",
+                    reason="Unfinished same-round helper.",
+                )
+            ],
+        ),
     )
 
     assert not result.ok
@@ -1158,22 +1221,31 @@ def test_statement_formal_deps_tool_updates_only_current_batch_statement_deps(tm
     assert advanced.ok, advanced.issues
     ctx = _formal_ctx(tmp_path, stage="statement_formal", round_id=round_record.value.round_id)
 
-    updated = _add_statement_decl_dep(
+    updated = _add_statement_dependencies(
         runtime,
         ctx,
-        StatementDeclDepAddArgs(decl_name="main_result", dep_name="supporting_statement", reason="Needed by formal statement."),
+        StatementDependenciesAddArgs(
+            decl_name="main_result",
+            repo_declarations=[
+                RepoDeclDependencyInput(
+                    name="supporting_statement",
+                    reason="Needed by formal statement.",
+                )
+            ],
+        ),
     )
 
     assert updated.ok, updated.issues
     assert updated.value is not None
-    assert updated.value.decl.statement_deps == ["supporting_statement"]
+    assert updated.value.added[0].ref.name == "supporting_statement"
     cleared = _clear_statement_deps(
         runtime,
         ctx,
         StatementDepsClearArgs(decl_name="main_result", reason="No expression deps needed."),
     )
     assert cleared.ok, cleared.issues
-    assert cleared.value.decl.statement_deps == []
+    assert cleared.value is not None
+    assert cleared.value.removed[0].ref.name == "supporting_statement"
 
     out_of_batch = _clear_statement_deps(
         runtime,

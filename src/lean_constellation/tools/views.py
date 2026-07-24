@@ -250,6 +250,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.DECL_GRAPH_READ_CURRENT,
                 AppGroup.CURRENT_NODE_DECL_READ,
+                AppGroup.DECL_STAGE_STATEMENT_NL_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
@@ -270,6 +271,8 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.DECL_GRAPH_READ_CURRENT,
                 AppGroup.CURRENT_NODE_DECL_READ,
+                AppGroup.DECL_STAGE_STATEMENT_NL_READ,
+                AppGroup.DECL_STAGE_FORMAL_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
@@ -295,6 +298,9 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.DECL_GRAPH_READ_CURRENT,
                 AppGroup.CURRENT_NODE_DECL_READ,
+                AppGroup.DECL_STAGE_STATEMENT_NL_READ,
+                AppGroup.DECL_STAGE_PROOF_NL_READ,
+                AppGroup.DECL_STAGE_FORMAL_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
@@ -320,6 +326,9 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.DECL_GRAPH_READ_CURRENT,
                 AppGroup.CURRENT_NODE_DECL_READ,
+                AppGroup.DECL_STAGE_STATEMENT_NL_READ,
+                AppGroup.DECL_STAGE_PROOF_NL_READ,
+                AppGroup.DECL_STAGE_FORMAL_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
@@ -347,6 +356,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.DECL_GRAPH_READ_CURRENT,
                 AppGroup.CURRENT_NODE_DECL_READ,
+                AppGroup.DECL_STAGE_STATEMENT_NL_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
@@ -367,6 +377,8 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.DECL_GRAPH_READ_CURRENT,
                 AppGroup.CURRENT_NODE_DECL_READ,
+                AppGroup.DECL_STAGE_STATEMENT_NL_READ,
+                AppGroup.DECL_STAGE_FORMAL_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
@@ -387,6 +399,9 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.DECL_GRAPH_READ_CURRENT,
                 AppGroup.CURRENT_NODE_DECL_READ,
+                AppGroup.DECL_STAGE_STATEMENT_NL_READ,
+                AppGroup.DECL_STAGE_PROOF_NL_READ,
+                AppGroup.DECL_STAGE_FORMAL_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
@@ -409,6 +424,9 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             [
                 AppGroup.DECL_GRAPH_READ_CURRENT,
                 AppGroup.CURRENT_NODE_DECL_READ,
+                AppGroup.DECL_STAGE_STATEMENT_NL_READ,
+                AppGroup.DECL_STAGE_PROOF_NL_READ,
+                AppGroup.DECL_STAGE_FORMAL_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_DECL_LEAN_FILE_READ,

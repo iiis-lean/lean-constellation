@@ -188,7 +188,7 @@ def test_same_round_dependency_wrong_stage_is_rejected(tmp_path: Path) -> None:
     satisfied, reason = _check_round_decl(lean_runtime, repo_root, round_id=round_id, decl_name="A")
 
     assert satisfied is False
-    assert reason == "B is declared, expected at least proved."
+    assert reason == "B is declared; proved is required."
 
 
 def test_ready_adapter_bound_decl_is_accepted_as_external_dependency(tmp_path: Path) -> None:
@@ -409,14 +409,12 @@ def _write_proved_round_theorem(
 
 
 def _check_round_decl(lean_runtime, repo_root: Path, *, round_id: str, decl_name: str) -> tuple[bool, str | None]:
-    revisions = lean_runtime.decl_graph.list_round_revisions(repo_root, node_path=NODE_PATH, round_id=round_id)
-    assert revisions.ok and revisions.value is not None, revisions.issues
-    round_revisions = dict(revisions.value)
-    return lean_runtime.decl_graph.round_revision_satisfies_proof_policy(
+    report = lean_runtime.decl_graph.check_round_decl_ready(
         repo_root,
         node_path=NODE_PATH,
-        round_revisions=round_revisions,
+        round_id=round_id,
         decl_name=decl_name,
-        revision=round_revisions[decl_name],
-        target_proof_availability=ProofAvailability.PROVED,
+        required_availability=ProofAvailability.PROVED,
     )
+    assert report.ok and report.value is not None, report.issues
+    return report.value.ready, report.value.blocker.message if report.value.blocker else None

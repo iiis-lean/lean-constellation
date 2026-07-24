@@ -6,6 +6,7 @@ from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     ArxivTheoremSearchArgs,
     CurrentMathlibDeclUseArgs,
+    CurrentMathlibHintsAddArgs,
     CurrentMathlibModuleUseArgs,
     MathlibCandidateArgs,
     MathlibCandidateIngestArgs,
@@ -33,16 +34,6 @@ def _current_hint_view(runtime, ctx, args):
     return runtime.mathlib.get_node_mathlib_hint_view(ctx.repo_root, node_path=current_node_path(ctx))
 
 
-def _add_current_module_hint(runtime, ctx, args: CurrentMathlibModuleUseArgs):
-    return runtime.mathlib.add_mathlib_module_use(
-        ctx.repo_root,
-        node_path=current_node_path(ctx),
-        module=args.module,
-        reason=args.reason,
-        actor=actor_for_write(ctx),
-    )
-
-
 def _remove_current_module_hint(runtime, ctx, args: CurrentMathlibModuleUseArgs):
     return runtime.mathlib.remove_mathlib_module_use(
         ctx.repo_root,
@@ -52,12 +43,12 @@ def _remove_current_module_hint(runtime, ctx, args: CurrentMathlibModuleUseArgs)
     )
 
 
-def _add_current_decl_hint(runtime, ctx, args: CurrentMathlibDeclUseArgs):
-    return runtime.mathlib.add_mathlib_decl_use(
+def _add_current_mathlib_hints(runtime, ctx, args: CurrentMathlibHintsAddArgs):
+    return runtime.mathlib.add_mathlib_hints(
         ctx.repo_root,
         node_path=current_node_path(ctx),
-        decl_name=args.decl_name,
-        reason=args.reason,
+        modules=[(item.name, item.reason) for item in args.modules],
+        declarations=[(item.name, item.reason) for item in args.declarations],
         actor=actor_for_write(ctx),
     )
 
@@ -308,14 +299,14 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_current_hint_view,
         ),
         handler_tool(
-            name="add_current_mathlib_module_hint",
-            description="Add a recorded Mathlib module as a current-node hint and report any generated Prelude file change.",
-            args_model=CurrentMathlibModuleUseArgs,
+            name="add_current_mathlib_hints",
+            description="Add one batch of current-node Mathlib module and declaration hints and return only the delta.",
+            args_model=CurrentMathlibHintsAddArgs,
             capability=ToolCapability.WRITE,
-            result_view="node_contract_projection_mutation",
+            result_view="node_mathlib_hint_delta",
             groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
             roles=write_roles,
-            handler=_add_current_module_hint,
+            handler=_add_current_mathlib_hints,
         ),
         handler_tool(
             name="remove_current_mathlib_module_hint",
@@ -326,16 +317,6 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
             roles=write_roles,
             handler=_remove_current_module_hint,
-        ),
-        handler_tool(
-            name="add_current_mathlib_decl_hint",
-            description="Add a recorded Mathlib declaration as a current-node hint and report any generated Prelude file change.",
-            args_model=CurrentMathlibDeclUseArgs,
-            capability=ToolCapability.WRITE,
-            result_view="node_contract_projection_mutation",
-            groups={AppGroup.NODE_MATHLIB_HINT_WRITE},
-            roles=write_roles,
-            handler=_add_current_decl_hint,
         ),
         handler_tool(
             name="remove_current_mathlib_decl_hint",

@@ -193,8 +193,9 @@ def test_restore_projection_to_active_graph_uses_decl_graph_reset_revision(tmp_p
     _open_update_round(runtime, tmp_path, start_state=DeclState.DECLARED)
     revision = _current_revision(runtime, tmp_path)
     assert revision.revision == 2
-    assert revision.statement_lean_code is not None
-    assert revision.proof_lean_code is None
+    assert revision.statement.formal is not None
+    assert revision.statement.formal.code is not None
+    assert revision.proof is None or revision.proof.formal is None
 
     proof_path.write_text("broken working projection\n", encoding="utf-8")
     restored = runtime.lean_projection.restore_projection_to_active_graph(tmp_path, node_path=NODE_PATH)
@@ -202,7 +203,7 @@ def test_restore_projection_to_active_graph_uses_decl_graph_reset_revision(tmp_p
     assert restored.ok, restored.issues
     assert restored.value is not None
     assert any(action.action == "sync_decl_file" for action in restored.value.actions)
-    assert proof_path.read_text(encoding="utf-8") == revision.statement_lean_code
+    assert proof_path.read_text(encoding="utf-8") == revision.statement.formal.code
     assert "# lean-constellation target: `main_result`" in proof_path.read_text(encoding="utf-8")
     assert "trivial" not in proof_path.read_text(encoding="utf-8")
 
@@ -213,8 +214,8 @@ def test_sync_decl_file_after_reset_to_specified_deletes_working_file(tmp_path: 
     assert proof_path.exists()
     _open_update_round(runtime, tmp_path, start_state=DeclState.SPECIFIED)
     revision = _current_revision(runtime, tmp_path)
-    assert revision.statement_nl is not None
-    assert revision.statement_lean_code is None
+    assert revision.statement.nl.text is not None
+    assert revision.statement.formal is None
 
     synced = runtime.lean_projection.sync_decl_file_after_revision_reset(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
 

@@ -13,18 +13,18 @@ EXPECTED_SURFACE_COUNTS = {
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 21, 1, 4, 2),
     "CoordinatorAgent": (35, 85, 2, 4, 19),
-    "ContentPlanAgent": (28, 78, 3, 6, 17),
+    "ContentPlanAgent": (28, 77, 3, 6, 17),
     "NodeDirDependencyReconAgent": (5, 14, 1, 1, 2),
-    "MathlibReconAgent": (7, 23, 1, 1, 5),
+    "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 19, 2, 3, 4),
-    "StatementNLWorkerAgent": (13, 50, 1, 2, 4),
-    "StatementNLReviewerAgent": (13, 42, 1, 1, 2),
-    "StatementFormalWorkerAgent": (18, 57, 1, 2, 8),
-    "StatementFormalReviewerAgent": (13, 42, 1, 1, 2),
-    "ProofNLWorkerAgent": (18, 64, 1, 2, 7),
-    "ProofNLReviewerAgent": (15, 45, 1, 1, 2),
-    "ProofFormalWorkerAgent": (20, 65, 1, 2, 8),
-    "ProofFormalReviewerAgent": (14, 44, 1, 1, 2),
+    "StatementNLWorkerAgent": (14, 50, 1, 2, 4),
+    "StatementNLReviewerAgent": (14, 43, 1, 1, 2),
+    "StatementFormalWorkerAgent": (20, 57, 1, 2, 8),
+    "StatementFormalReviewerAgent": (15, 44, 1, 1, 2),
+    "ProofNLWorkerAgent": (21, 65, 1, 2, 7),
+    "ProofNLReviewerAgent": (18, 48, 1, 1, 2),
+    "ProofFormalWorkerAgent": (23, 66, 1, 2, 8),
+    "ProofFormalReviewerAgent": (17, 47, 1, 1, 2),
 }
 
 
@@ -67,7 +67,7 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
 
     assert "capture_statement_formal_file" in statement_worker_tools
     assert "capture_statement_formal_file" not in statement_reviewer_tools
-    assert {"add_statement_decl_dep", "add_statement_mathlib_dep", "remove_statement_dep", "clear_statement_deps"} <= statement_worker_tools
+    assert {"add_statement_dependencies", "remove_statement_dep", "clear_statement_deps"} <= statement_worker_tools
     assert "write_statement_formal_deps" not in statement_worker_tools
     assert "write_statement_formal_deps" not in statement_reviewer_tools
     assert "add_current_node_dep" in statement_worker_tools
@@ -93,8 +93,7 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
         "set_proof_nl",
         "add_proof_source_origin",
         "add_proof_resource_origin",
-        "add_proof_decl_dep",
-        "add_proof_mathlib_dep",
+        "add_proof_dependencies",
         "remove_proof_dep",
         "clear_proof_deps",
     } <= proof_nl_worker_tools
@@ -103,7 +102,7 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
     assert "record_proof_nl_review_rejected" in proof_nl_reviewer_tools
     assert "record_decl_review" not in proof_nl_reviewer_tools
     assert "inspect_current_stage_review_status" in proof_nl_reviewer_tools
-    assert {"add_proof_decl_dep", "add_proof_mathlib_dep", "remove_proof_dep", "clear_proof_deps"} <= proof_worker_tools
+    assert {"add_proof_dependencies", "remove_proof_dep", "clear_proof_deps"} <= proof_worker_tools
     assert "add_current_node_dep" in proof_worker_tools
     assert "search_arxiv_theorems" not in proof_worker_tools
     assert "record_proof_formal_review_passed" in proof_reviewer_tools

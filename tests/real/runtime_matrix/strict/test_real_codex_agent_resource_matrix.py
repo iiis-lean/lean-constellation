@@ -925,8 +925,7 @@ def test_strict_real_codex_mathlib_recon_resources_tools_and_submit(
         "search_mathlib_index",
         "get_mathlib_module_entry",
         "get_mathlib_decl_entry",
-        "add_current_mathlib_module_hint",
-        "add_current_mathlib_decl_hint",
+        "add_current_mathlib_hints",
         "validate_current_node_mathlib_hints",
     }.issubset(tools_called)
     # The step submission is the source of truth for submit-tool execution. The
@@ -941,8 +940,7 @@ def test_strict_real_codex_mathlib_recon_resources_tools_and_submit(
         "search_mathlib_index",
         "get_mathlib_module_entry",
         "get_mathlib_decl_entry",
-        "add_current_mathlib_module_hint",
-        "add_current_mathlib_decl_hint",
+        "add_current_mathlib_hints",
         "validate_current_node_mathlib_hints",
     ):
         assert tool_results[tool_name]["ok"] is True, (tool_name, tool_results[tool_name])
@@ -1172,14 +1170,13 @@ Do these exact actions:
 7. Call application MCP tool "search_mathlib_index" with query "True" and limit 5.
 8. Call application MCP tool "get_mathlib_module_entry" with module "Init".
 9. Call application MCP tool "get_mathlib_decl_entry" with name "True.intro".
-10. Call application MCP tool "add_current_mathlib_module_hint" with module "Init" and reason "Strict real Codex MathlibRecon probe module hint."
-11. Call application MCP tool "add_current_mathlib_decl_hint" with decl_name "True.intro" and reason "Strict real Codex MathlibRecon probe declaration hint."
-12. Call application MCP tool "validate_current_node_mathlib_hints". Treat this as failed unless the returned top-level ok is true and value.passed is true.
-13. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
+10. Call application MCP tool "add_current_mathlib_hints" once with modules [{{"name":"Init","reason":"Strict real Codex MathlibRecon probe module hint."}}] and declarations [{{"name":"True.intro","reason":"Strict real Codex MathlibRecon probe declaration hint."}}].
+11. Call application MCP tool "validate_current_node_mathlib_hints". Treat this as failed unless the returned top-level ok is true and value.passed is true.
+12. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
     prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, tool_results.
     Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
     tool_results must include every application tool listed above with at least ok and summary. For validate_current_node_mathlib_hints also include passed.
-14. If every application tool listed above has ok true and validate_current_node_mathlib_hints passed is true, set submit_tool_called in the JSON artifact to "submit_mathlib_recon_completed", then call submit tool "submit_mathlib_recon_completed" with summary "Strict real Codex MathlibRecon probe completed local index and hint wiring.", index_update_summary "Recorded Init and True.intro in the local Mathlib index.", node_mathlib_hint_summary "Recorded Init and True.intro as current-node Mathlib hints.", useful_findings ["Init", "True.intro"], and unresolved_in_mathlib []. If any application tool fails, do not call submit_mathlib_recon_completed; instead write the artifact with submit_tool_called false and the failed tool result, then stop.
+13. If every application tool listed above has ok true and validate_current_node_mathlib_hints passed is true, set submit_tool_called in the JSON artifact to "submit_mathlib_recon_completed", then call submit tool "submit_mathlib_recon_completed" with summary "Strict real Codex MathlibRecon probe completed local index and hint wiring.", index_update_summary "Recorded Init and True.intro in the local Mathlib index.", node_mathlib_hint_summary "Recorded Init and True.intro as current-node Mathlib hints.", useful_findings ["Init", "True.intro"], and unresolved_in_mathlib []. If any application tool fails, do not call submit_mathlib_recon_completed; instead write the artifact with submit_tool_called false and the failed tool result, then stop.
 
 Keep the final response short and mention the artifact path.
 """.strip()

@@ -64,9 +64,10 @@ def test_safe_statement_apply_generates_check_and_refreshes_projection(tmp_path:
 
     assert applied.ok, applied.issues
     revision = _current_revision(runtime, tmp_path)
-    assert revision.statement_lean_check is not None
-    assert revision.statement_lean_check["status"] == "passed"
-    assert Path(applied.value.file_path).read_text(encoding="utf-8") == revision.statement_lean_code
+    assert revision.statement.formal is not None
+    assert revision.statement.formal.check is not None
+    assert revision.statement.formal.check.status == "passed"
+    assert Path(applied.value.file_path).read_text(encoding="utf-8") == revision.statement.formal.code
 
 
 def test_safe_statement_apply_rolls_back_file_truth_and_projection_on_refresh_failure(tmp_path: Path, monkeypatch) -> None:

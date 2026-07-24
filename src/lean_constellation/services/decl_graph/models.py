@@ -5,10 +5,10 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_serializer
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
-from lean_constellation.domain.lean_check import LeanCheck, compact_lean_check
+from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.domain.refs import DeclRef, MathlibRef
 from lean_constellation.domain.repo import ProofAvailability
 
@@ -214,6 +214,8 @@ class DeclRevisionChange(StrictModel):
     require_target_state_satisfied: bool = True
     objective: str | None = None
     summary: str | None = None
+    anticipated_statement_dep_names: list[str] = Field(default_factory=list)
+    anticipated_proof_dep_names: list[str] = Field(default_factory=list)
 
     @field_validator("base_revision")
     @classmethod
@@ -229,6 +231,11 @@ class DeclRevisionChange(StrictModel):
             return None
         text = value.strip()
         return text or None
+
+    @field_validator("anticipated_statement_dep_names", "anticipated_proof_dep_names")
+    @classmethod
+    def _anticipated_names(cls, value: list[str]) -> list[str]:
+        return _sorted_deduped_text(value)
 
 
 class DeclRevisionRef(StrictModel):
@@ -454,132 +461,10 @@ class DeclRevision(StrictModel):
         else:
             self.change = self.change.model_copy(update={"kind": kind})
 
-    @property
-    def statement_nl(self) -> str | None:
-        return self.statement.nl.text if self.statement.nl is not None else None
-
-    @statement_nl.setter
-    def statement_nl(self, value: str | None) -> None:
-        if value is None:
-            self.statement.nl = None
-            return
-        origin = self.statement.nl.origin if self.statement.nl is not None else []
-        self.statement.nl = DeclNaturalLanguageSection(text=value, origin=origin)
-
-    @property
-    def statement_origin(self) -> list[dict[str, object]]:
-        return [item.model_dump(mode="json", exclude_none=True) for item in self.statement.nl.origin] if self.statement.nl is not None else []
-
-    @statement_origin.setter
-    def statement_origin(self, value: list[dict[str, object]]) -> None:
-        text = self.statement.nl.text if self.statement.nl is not None else None
-        self.statement.nl = DeclNaturalLanguageSection(text=text, origin=[DeclOriginRef.model_validate(item) for item in value])
-
-    @property
-    def statement_deps(self) -> list[str]:
-        return [_decl_dep_display_name(dep) for dep in self.statement.deps]
-
-    @statement_deps.setter
-    def statement_deps(self, value: list[str]) -> None:
-        self.statement.deps = _repo_decl_deps_from_names(value, "statement deps")
-
-    @property
-    def statement_lean_code(self) -> str | None:
-        return self.statement.formal.code if self.statement.formal is not None else None
-
-    @statement_lean_code.setter
-    def statement_lean_code(self, value: str | None) -> None:
-        if value is None:
-            if self.statement.formal is not None:
-                self.statement.formal = self.statement.formal.model_copy(update={"code": None})
-            return
-        check = self.statement.formal.check if self.statement.formal is not None else None
-        self.statement.formal = DeclFormalSection(code=value, check=check)
-
-    @property
-    def statement_lean_check(self) -> dict[str, str] | None:
-        return compact_lean_check(self.statement.formal.check) if self.statement.formal is not None else None
-
-    @statement_lean_check.setter
-    def statement_lean_check(self, value: LeanCheck | dict[str, object] | None) -> None:
-        code = self.statement.formal.code if self.statement.formal is not None else None
-        if value is None and code is None:
-            self.statement.formal = None
-            return
-        check = None if value is None else value if isinstance(value, LeanCheck) else LeanCheck.model_validate(value)
-        self.statement.formal = DeclFormalSection(code=code, check=check)
-
     def _ensure_proof(self) -> DeclProof:
         if self.proof is None:
             self.proof = DeclProof()
         return self.proof
-
-    @property
-    def proof_nl(self) -> str | None:
-        return self.proof.nl.text if self.proof is not None and self.proof.nl is not None else None
-
-    @proof_nl.setter
-    def proof_nl(self, value: str | None) -> None:
-        if value is None:
-            if self.proof is not None:
-                self.proof.nl = None
-                if self.proof.formal is None and not self.proof.deps:
-                    self.proof = None
-            return
-        proof = self._ensure_proof()
-        origin = proof.nl.origin if proof.nl is not None else []
-        proof.nl = DeclNaturalLanguageSection(text=value, origin=origin)
-
-    @property
-    def proof_origin(self) -> list[dict[str, object]]:
-        return [item.model_dump(mode="json", exclude_none=True) for item in self.proof.nl.origin] if self.proof is not None and self.proof.nl is not None else []
-
-    @proof_origin.setter
-    def proof_origin(self, value: list[dict[str, object]]) -> None:
-        proof = self._ensure_proof()
-        text = proof.nl.text if proof.nl is not None else None
-        proof.nl = DeclNaturalLanguageSection(text=text, origin=[DeclOriginRef.model_validate(item) for item in value])
-
-    @property
-    def proof_deps(self) -> list[str]:
-        return [_decl_dep_display_name(dep) for dep in self.proof.deps] if self.proof is not None else []
-
-    @proof_deps.setter
-    def proof_deps(self, value: list[str]) -> None:
-        proof = self._ensure_proof()
-        proof.deps = _repo_decl_deps_from_names(value, "proof deps")
-        if proof.nl is None and proof.formal is None and not proof.deps:
-            self.proof = None
-
-    @property
-    def proof_lean_code(self) -> str | None:
-        return self.proof.formal.code if self.proof is not None and self.proof.formal is not None else None
-
-    @proof_lean_code.setter
-    def proof_lean_code(self, value: str | None) -> None:
-        if value is None:
-            if self.proof is not None and self.proof.formal is not None:
-                self.proof.formal = self.proof.formal.model_copy(update={"code": None})
-            return
-        proof = self._ensure_proof()
-        check = proof.formal.check if proof.formal is not None else None
-        proof.formal = DeclFormalSection(code=value, check=check)
-
-    @property
-    def proof_lean_check(self) -> dict[str, str] | None:
-        return compact_lean_check(self.proof.formal.check) if self.proof is not None and self.proof.formal is not None else None
-
-    @proof_lean_check.setter
-    def proof_lean_check(self, value: LeanCheck | dict[str, object] | None) -> None:
-        proof = self._ensure_proof()
-        code = proof.formal.code if proof.formal is not None else None
-        if value is None and code is None:
-            proof.formal = None
-            if proof.nl is None and not proof.deps:
-                self.proof = None
-            return
-        check = None if value is None else value if isinstance(value, LeanCheck) else LeanCheck.model_validate(value)
-        proof.formal = DeclFormalSection(code=code, check=check)
 
 class DeclFileNaturalLanguageView(StrictModel):
     """Provider-facing natural language section for Decl-owned Lean file projection."""
@@ -600,13 +485,7 @@ class DeclFileStageView(StrictModel):
 
     nl: DeclFileNaturalLanguageView = Field(default_factory=DeclFileNaturalLanguageView)
     formal: DeclFileFormalView | None = None
-    deps: list[str] = Field(default_factory=list)
-    dep_refs: list[DeclDep] = Field(default_factory=list)
-
-    @field_validator("deps")
-    @classmethod
-    def _unique_deps(cls, value: list[str]) -> list[str]:
-        return _sorted_unique_text(value, "decl file stage deps")
+    deps: list[DeclDep] = Field(default_factory=list)
 
 
 class DeclFileRevisionView(StrictModel):
@@ -635,15 +514,67 @@ class DeclFileRevisionView(StrictModel):
         return value
 
 
-class DeclStageMutationView(StrictModel):
-    """Truth mutation result with its managed Lean projection effects."""
+class _CompactMutationReceipt(StrictModel):
+    """Serialize optional receipt details only when they carry information."""
 
-    revision: DeclRevision
-    projection_stage: Literal["statement", "proof"] | None = None
-    managed_projection_changed: bool = False
+    @model_serializer(mode="wrap")
+    def _serialize_compact(self, handler):
+        data = handler(self)
+        return {
+            key: value
+            for key, value in data.items()
+            if value is not None and value != []
+        }
+
+
+class DeclManagedProjectionEffect(StrictModel):
+    """Managed Lean projection effects exposed by a compact mutation receipt."""
+
+    stage: Literal["statement", "proof"] | None = None
     changed_files: list[str] = Field(default_factory=list)
     reread_required: bool = False
-    summary: str
+
+
+class DeclStageWriteReceipt(_CompactMutationReceipt):
+    """Narrow result for internal/operator compound stage writes."""
+
+    decl_name: str
+    revision: int
+    changed: bool
+    managed_projection: DeclManagedProjectionEffect | None = None
+
+
+class DeclTextMutationReceipt(_CompactMutationReceipt):
+    """Compact receipt for one Statement NL or Proof NL text update."""
+
+    target: str
+    operation: Literal["set"] = "set"
+    changed: bool
+    managed_projection: DeclManagedProjectionEffect | None = None
+
+
+class DeclOriginMutationReceipt(_CompactMutationReceipt):
+    """Compact receipt for one origin-reference collection update."""
+
+    target: str
+    operation: Literal["add", "remove", "clear"]
+    changed: bool
+    added: list[DeclOriginRef] = Field(default_factory=list)
+    removed: list[DeclOriginRef] = Field(default_factory=list)
+    already_present: list[DeclOriginRef] = Field(default_factory=list)
+    managed_projection: DeclManagedProjectionEffect | None = None
+
+
+class DeclDependencyMutationReceipt(_CompactMutationReceipt):
+    """Compact receipt for one typed dependency collection update."""
+
+    target: str
+    operation: Literal["add", "remove", "clear"]
+    changed: bool
+    added: list[DeclDep] = Field(default_factory=list)
+    removed: list[DeclDep] = Field(default_factory=list)
+    already_present: list[DeclDep] = Field(default_factory=list)
+    managed_projection: DeclManagedProjectionEffect | None = None
 
 
 class DeclView(StrictModel):
@@ -718,69 +649,6 @@ class DeclGraphRoundView(StrictModel):
         return _required_text(value)
 
 
-class DeclRevisionToolView(StrictModel):
-    """Agent-facing flat view derived from structured DeclRevision truth."""
-
-    decl_name: str
-    node_path: str
-    revision: int
-    kind: str
-    lifecycle: DeclLifecycle
-    public: bool = False
-    visibility: str
-    state: DeclState
-    status: DeclRevisionStatus
-    released_state: DeclState | None = None
-    release_protected: bool = False
-    module: str | None = None
-    lean_decl_name: str | None = None
-    change_id: str | None = None
-    change_kind: DeclChangeKind | None = None
-    change_objective: str | None = None
-    change_summary: str | None = None
-    base_revision: int | None = None
-    reset_to_state: DeclState | None = None
-    target_state: DeclState | None = None
-    require_target_state_satisfied: bool = True
-    statement_nl: str | None = None
-    statement_origin: list[DeclOriginRef] = Field(default_factory=list)
-    statement_deps: list[str] = Field(default_factory=list)
-    statement_dep_refs: list[DeclDep] = Field(default_factory=list)
-    statement_lean_code: str | None = None
-    statement_lean_check: dict[str, str] | None = None
-    proof_nl: str | None = None
-    proof_origin: list[DeclOriginRef] = Field(default_factory=list)
-    proof_deps: list[str] = Field(default_factory=list)
-    proof_dep_refs: list[DeclDep] = Field(default_factory=list)
-    proof_lean_code: str | None = None
-    proof_lean_check: dict[str, str] | None = None
-    effective_deps: list[str] = Field(default_factory=list)
-    effective_dep_refs: list[DeclDep] = Field(default_factory=list)
-    summary: str | None = None
-    updated_at: str | None = None
-
-    @field_validator("decl_name", "node_path", "kind", "visibility")
-    @classmethod
-    def _required_text(cls, value: str) -> str:
-        return _required_text(value)
-
-    @field_validator("statement_deps", "proof_deps", "effective_deps")
-    @classmethod
-    def _unique_deps(cls, value: list[str]) -> list[str]:
-        return _sorted_deduped_text(value)
-
-
-class DeclStageMutationToolView(StrictModel):
-    """Agent-facing Decl mutation result including managed-file side effects."""
-
-    decl: DeclRevisionToolView
-    projection_stage: Literal["statement", "proof"] | None = None
-    managed_projection_changed: bool = False
-    changed_files: list[str] = Field(default_factory=list)
-    reread_required: bool = False
-    summary: str
-
-
 class DeclChangeView(StrictModel):
     """Round-level declaration change view derived from DeclRevision.change."""
 
@@ -795,6 +663,8 @@ class DeclChangeView(StrictModel):
     require_target_state_satisfied: bool = True
     objective: str
     summary: str | None = None
+    anticipated_statement_dep_names: list[str] = Field(default_factory=list)
+    anticipated_proof_dep_names: list[str] = Field(default_factory=list)
     status: DeclChangeStatus = DeclChangeStatus.PLANNED
     target_revision: int | None = None
     created_at: str = Field(default_factory=utc_now_iso)
@@ -938,33 +808,39 @@ class StageReviewResultView(StrictModel):
         return sorted(stripped)
 
 
+class DeclReadinessBlocker(StrictModel):
+    """The first typed blocker that prevents one declaration from being available."""
+
+    reason: DeclReadinessReason
+    blocking_decl: DeclRef | None = None
+    required_availability: ProofAvailability | None = None
+    current_state: DeclState | None = None
+    required_state: DeclState | None = None
+    check_stage: Literal["statement", "proof"] | None = None
+    dependency_chain: list[DeclRef] = Field(default_factory=list)
+    message: str
+
+    @field_validator("message")
+    @classmethod
+    def _required_message(cls, value: str) -> str:
+        return _required_text(value)
+
+
 class DeclReadinessReport(StrictModel):
-    """Dynamic readiness report for one declaration revision."""
+    """Dynamic readiness report for one exact declaration revision."""
 
     node_path: str
     decl_name: str
     revision: int | None = None
+    required_availability: ProofAvailability
     ready: bool
-    proof_policy_satisfied: bool | None = None
-    target_proof_availability: ProofAvailability | None = None
-    reason: DeclReadinessReason | None = None
-    details: dict[str, str] = Field(default_factory=dict)
-    dependencies_checked: list[str] = Field(default_factory=list)
-    failed_dependencies: list[str] = Field(default_factory=list)
+    blocker: DeclReadinessBlocker | None = None
     summary: str
 
     @field_validator("node_path", "decl_name", "summary")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _required_text(value)
-
-    @field_validator("dependencies_checked", "failed_dependencies")
-    @classmethod
-    def _sorted_unique_names(cls, value: list[str]) -> list[str]:
-        stripped = [_required_text(item) for item in value]
-        if len(set(stripped)) != len(stripped):
-            raise ValueError("dependency lists must be unique")
-        return sorted(stripped)
 
 
 def _required_text(value: str) -> str:
@@ -984,22 +860,12 @@ def _sorted_deduped_text(value: list[str]) -> list[str]:
     return sorted({_required_text(item) for item in value})
 
 
-def _repo_decl_deps_from_names(value: list[str], label: str) -> list[DeclDep]:
-    return [RepoDeclDep(ref=DeclRef(name=name)) for name in _sorted_unique_text(value, label)]
-
-
 def _decl_dep_key(dep: DeclDep) -> str:
     if dep.kind == "repo_decl":
         repo = dep.ref.repo or ""
         node = dep.ref.node or ""
         return f"repo_decl:{repo}:{node}:{dep.ref.name}:{dep.ref.revision}"
     return f"mathlib_decl:{dep.ref.module or ''}:{dep.ref.name}"
-
-
-def _decl_dep_display_name(dep: DeclDep) -> str:
-    if dep.kind == "repo_decl":
-        return dep.ref.name
-    return dep.ref.name
 
 
 def _unique_decl_deps(value: list[DeclDep], label: str) -> list[DeclDep]:

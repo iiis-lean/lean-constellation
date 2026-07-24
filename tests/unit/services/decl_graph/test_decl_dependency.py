@@ -5,7 +5,7 @@ from tests.unit_services_helpers import initialize_native_test_repo, make_runtim
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.services.decl_graph import DeclState
-from lean_constellation.services.decl_graph.models import DeclRevision, RepoDeclDep
+from lean_constellation.services.decl_graph.models import DeclProof, DeclRevision, RepoDeclDep
 from lean_constellation.services.foundation import WriteMode
 
 
@@ -69,7 +69,12 @@ def _seed_committed_decl(tmp_path: Path, *, round_id: str, name: str, deps: list
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, revision=1)
     assert revision.ok and revision.value is not None
     revision.value.state = DeclState.PROVED
-    revision.value.proof_deps = deps or []
+    if revision.value.proof is None:
+        revision.value.proof = DeclProof()
+    revision.value.proof.deps = [
+        RepoDeclDep(ref=DeclRef(node="Main", name=dep, revision=1))
+        for dep in deps or []
+    ]
     _write_revision(tmp_path, decl_name=name, revision=revision.value)
     assert service.commit_decl_revision(tmp_path, node_path="Main.Topic.Core", name=name, state=DeclState.PROVED).ok
 
@@ -112,8 +117,15 @@ def test_dependency_helpers_split_statement_and_proof_policy_requirements(tmp_pa
     revision = service.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="MainResult", revision=1)
     assert decl.ok and decl.value is not None
     assert revision.ok and revision.value is not None
-    revision.value.statement_deps = ["StatementDep"]
-    revision.value.proof_deps = ["ProofDep", "StatementDep"]
+    revision.value.statement.deps = [
+        RepoDeclDep(ref=DeclRef(node="Main", name="StatementDep", revision=1))
+    ]
+    revision.value.proof = DeclProof(
+        deps=[
+            RepoDeclDep(ref=DeclRef(node="Main", name="ProofDep", revision=1)),
+            RepoDeclDep(ref=DeclRef(node="Main", name="StatementDep", revision=1)),
+        ]
+    )
     revision.value.proof.deps.append(
         RepoDeclDep(ref=DeclRef(repo="Provider", node="Main.Core", name="ExternalDep", revision=1))
     )
@@ -184,6 +196,7 @@ def test_audit_round_dependencies_delegates_round_draft_gate(tmp_path: Path) -> 
         objective="Update B.",
         reset_to_state=DeclState.PROOF_PLANNED,
         target_state=DeclState.PROVED,
+        anticipated_proof_dep_names=["A"],
     ).ok
 
     audit = service.audit_round_dependencies(tmp_path, node_path="Main.Topic.Core", round_id=update_round_id)

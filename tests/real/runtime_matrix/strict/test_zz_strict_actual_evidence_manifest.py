@@ -46,7 +46,7 @@ def test_strict_session_evidence_covers_registered_runtime_surface(
     assert pending_env_tools, "strict audit expected explicit env-gated tools instead of silently declaring full completion"
     assert pending_fixture_tools, "strict audit expected explicit pending fixture tools instead of schema-only completion"
     assert len(pending_env_tools) == 13
-    assert len(pending_fixture_tools) == 50
+    assert len(pending_fixture_tools) == 49
     assert any(item.event == "checkpoint" for item in evidence.snapshots)
     assert any(item.event == "restore" for item in evidence.snapshots)
     _assert_checkpointed_write_tools_have_assertion_evidence(recorder, implemented_tools)

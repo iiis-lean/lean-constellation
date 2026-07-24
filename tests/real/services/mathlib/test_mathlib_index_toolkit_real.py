@@ -14,7 +14,6 @@ from lean_constellation.services.external_clients import (
 )
 from lean_constellation.services.foundation import FoundationContext
 from lean_constellation.services.mathlib import MathlibCandidateCache, MathlibService
-from lean_constellation.services.node import NodeTreeComponent
 
 
 def _create_content_node(repo_root: Path, service: MathlibService) -> None:
@@ -176,7 +175,7 @@ def test_mathlib_index_toolkit_use_real_service_lifecycle(tmp_path: Path) -> Non
     )
     assert module_use.ok
     assert module_use.value is not None
-    assert [item.model_dump(mode="json") for item in module_use.value.contract.mathlib_modules] == [
+    assert [item.model_dump(mode="json") for item in module_use.value.added_modules] == [
         {
             "module": "Mathlib.Data.Nat.Basic",
             "reason": "Required for natural number addition lemmas.",
@@ -198,7 +197,7 @@ def test_mathlib_index_toolkit_use_real_service_lifecycle(tmp_path: Path) -> Non
     )
     assert decl_use.ok
     assert decl_use.value is not None
-    assert [item.model_dump(mode="json") for item in decl_use.value.contract.mathlib_decls] == [
+    assert [item.model_dump(mode="json") for item in decl_use.value.added_declarations] == [
         {
             "name": "Nat.add_assoc",
             "module": "Mathlib.Data.Nat.Basic",

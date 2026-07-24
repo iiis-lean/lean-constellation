@@ -9,7 +9,8 @@ from lean_constellation.services.mathlib.mathlib_index import (
     MathlibSearchView,
 )
 from lean_constellation.services.mathlib.node_mathlib_use import (
-    NodeMathlibHintMutationView,
+    NodeMathlibHintMutationReceipt,
+    NodeMathlibHintsBatchReceipt,
     NodeMathlibHintView,
     NodeMathlibUseComponent,
 )
@@ -44,7 +45,8 @@ __all__ = [
     "MathlibSearchView",
     "MathlibUseActor",
     "MathlibService",
-    "NodeMathlibHintMutationView",
+    "NodeMathlibHintMutationReceipt",
+    "NodeMathlibHintsBatchReceipt",
     "NodeMathlibHintView",
     "NodeMathlibDeclUse",
     "NodeMathlibModuleUse",

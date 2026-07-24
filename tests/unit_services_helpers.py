@@ -17,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_test_runtime_services  # noqa: E402
 from lean_constellation.domain.common import utc_now_iso  # noqa: E402
 from lean_constellation.domain.lean_check import LeanCheck  # noqa: E402
+from lean_constellation.services.decl_graph.models import DeclFormalSection  # noqa: E402
 
 if TYPE_CHECKING:
     from lean_constellation.domain.repo_release import RepoRelease
@@ -102,13 +103,16 @@ def write_statement_formal_for_test(
     revision = component._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
     if not revision.ok or revision.value is None:
         return runtime.foundation.fail(revision.issues)
-    if not revision.value.statement_nl:
+    if revision.value.statement is None or revision.value.statement.nl is None:
         return runtime.foundation.fail(
             runtime.foundation.issue("statement_nl_missing", "Statement NL must be written before statement formalization.", object_ref=decl_name)
         )
-    revision.value.statement_lean_code = lean_code.strip()
-    revision.value.statement_lean_check = LeanCheck.model_validate(lean_check)
-    revision.value.statement_deps = component._normalize_deps(deps if deps is not None else revision.value.statement_deps)
+    revision.value.statement.formal = DeclFormalSection(
+        code=lean_code.strip(),
+        check=LeanCheck.model_validate(lean_check),
+    )
+    if deps is not None:
+        revision.value.statement.deps = component._normalize_deps(deps)
     revision.value.updated_at = utc_now_iso()
     return component._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -137,13 +141,16 @@ def write_proof_formal_for_test(
     revision = component._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
     if not revision.ok or revision.value is None:
         return runtime.foundation.fail(revision.issues)
-    if not revision.value.proof_nl:
+    if revision.value.proof is None or revision.value.proof.nl is None:
         return runtime.foundation.fail(
             runtime.foundation.issue("proof_nl_missing", "Proof NL must be written before proof formalization.", object_ref=decl_name)
         )
-    revision.value.proof_lean_code = lean_code.strip()
-    revision.value.proof_lean_check = LeanCheck.model_validate(lean_check)
-    revision.value.proof_deps = component._normalize_deps(deps if deps is not None else revision.value.proof_deps)
+    revision.value.proof.formal = DeclFormalSection(
+        code=lean_code.strip(),
+        check=LeanCheck.model_validate(lean_check),
+    )
+    if deps is not None:
+        revision.value.proof.deps = component._normalize_deps(deps)
     revision.value.updated_at = utc_now_iso()
     return component._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 

@@ -15,6 +15,7 @@ from lean_constellation.flows.content_node_task.decl_round.submissions import (
 )
 from lean_constellation.flows.content_node_task.decl_round.steps import (
     DeclStageReviewerStepState,
+    DeclStageWorkerStepState,
     DeclStageReviewerStepResult,
     DeclStageWorkerStepResult,
 )
@@ -710,6 +711,7 @@ class ResourceReconAgentStep(AgentStep):
 
 class DeclStageWorkerAgentStep(AgentStep):
     step_type: ClassVar[str] = "decl_stage_worker_agent_step"
+    State: ClassVar[type] = DeclStageWorkerStepState
     Results: ClassVar[dict[str, type]] = {
         **AgentStep.Results,
         "decl_stage_worker": DeclStageWorkerStepResult,

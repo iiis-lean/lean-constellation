@@ -495,7 +495,8 @@ class RepoRequirementComponent:
             )
             if not satisfied.ok or satisfied.value is None:
                 return self.runtime.foundation.fail(satisfied.issues)
-            if not satisfied.value.proof_policy_satisfied:
+            if not satisfied.value.ready:
+                blocker = satisfied.value.blocker
                 issues.append(
                     self.runtime.foundation.issue(
                         "provider_interface_proof_policy_unsatisfied",
@@ -503,8 +504,8 @@ class RepoRequirementComponent:
                         object_ref=f"{provider_key}:{valid_match[0].node}:{valid_match[0].name}",
                         field=interface.name,
                         details={
-                            "reason": satisfied.value.reason.value if satisfied.value.reason is not None else "unknown",
-                            **satisfied.value.details,
+                            "reason": blocker.reason.value if blocker is not None else "unknown",
+                            "message": blocker.message if blocker is not None else satisfied.value.summary,
                         },
                     )
                 )
@@ -549,7 +550,11 @@ class RepoRequirementComponent:
                     object_ref=f"{provider_key}:{node_path}:{decl_name}@{revision}",
                 )
             )
-        statement_code = loaded.value.statement_lean_code
+        statement_code = (
+            loaded.value.statement.formal.code
+            if loaded.value.statement.formal is not None
+            else None
+        )
         if statement_code is None or not statement_code.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -568,8 +573,13 @@ class RepoRequirementComponent:
                 )
             )
         actual_codes = [("statement", statement_code)]
-        if loaded.value.proof_lean_code is not None and loaded.value.proof_lean_code.strip():
-            actual_codes.append(("proof", loaded.value.proof_lean_code))
+        proof_code = (
+            loaded.value.proof.formal.code
+            if loaded.value.proof is not None and loaded.value.proof.formal is not None
+            else None
+        )
+        if proof_code is not None and proof_code.strip():
+            actual_codes.append(("proof", proof_code))
         for stage, actual in actual_codes:
             compared = self.runtime.lean_projection.annotation.compare_expected_theorem_header(
                 expected,

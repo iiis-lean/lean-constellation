@@ -304,6 +304,36 @@ def test_update_contract_text_fields_rejects_empty_required_fields_and_preserves
     assert no_op.value.version == 1
 
 
+def test_update_contract_text_fields_receipt_reports_only_changed_fields(
+    tmp_path: Path,
+) -> None:
+    _create_topic_content(tmp_path)
+    component = make_runtime().node.contract
+
+    changed = component.update_contract_text_fields_receipt(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Build the revised core.",
+        success_criteria="The revised core is ready.",
+    )
+
+    assert changed.ok and changed.value is not None
+    assert changed.value.changed is True
+    assert changed.value.changed_fields == ["objective", "success_criteria"]
+    dumped = changed.value.model_dump(mode="json")
+    assert "contract" not in dumped
+    assert "objective" not in dumped
+
+    unchanged = component.update_contract_text_fields_receipt(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Build the revised core.",
+    )
+    assert unchanged.ok and unchanged.value is not None
+    assert unchanged.value.changed is False
+    assert unchanged.value.changed_fields == []
+
+
 def test_initialize_main_contract_from_preparation_input_syncs_goal_boundary_objective_and_interfaces(tmp_path: Path) -> None:
     interface = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the main theorem.")
     _write_preparation_input(tmp_path, interfaces=[interface])

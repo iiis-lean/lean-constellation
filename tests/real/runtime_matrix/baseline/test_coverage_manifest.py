@@ -20,8 +20,8 @@ def test_runtime_matrix_registry_fingerprint_is_pinned() -> None:
     assert len(snapshot.logic_steps) == 41
     assert len(snapshot.agent_steps) == 14
     assert len(snapshot.agent_types) == 20
-    assert len(snapshot.application_tools) == 259
-    assert len(snapshot.application_tool_groups) == 102
+    assert len(snapshot.application_tools) == 258
+    assert len(snapshot.application_tool_groups) == 105
     assert len(snapshot.application_tool_views) == 20
     assert len(snapshot.submit_tools) == 29
     assert len(snapshot.submit_tool_groups) == 16

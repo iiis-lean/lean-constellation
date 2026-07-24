@@ -134,7 +134,12 @@ def test_mathlib_checked_writes_and_node_hints_with_real_lake_gate(tmp_path: Pat
     assert decl_hint.ok, decl_hint.issues
     assert decl_hint.value is not None
     assert decl_hint.value.changed is True
-    assert decl_hint.value.hints.validation_gate.passed is True
+    inspected_hints = service.get_node_mathlib_hint_view(
+        repo_root,
+        node_path="Main.Topic.Core",
+    )
+    assert inspected_hints.ok and inspected_hints.value is not None
+    assert inspected_hints.value.validation_gate.passed is True
 
     reloaded = make_runtime(external_overrides={"lean_mcp_toolkit": _lake_backed_toolkit(repo_root)}).mathlib
     hints = reloaded.get_node_mathlib_hint_view(repo_root, node_path="Main.Topic.Core")

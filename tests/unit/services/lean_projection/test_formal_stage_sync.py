@@ -141,12 +141,13 @@ def test_statement_capture_writes_decl_graph_snapshot_and_sync_gate(tmp_path: Pa
     assert captured.ok, captured.issues
     revision = _current_revision(runtime, tmp_path)
     assert revision.state == DeclState.PLANNED
-    assert revision.statement_lean_code is not None
-    assert "theorem actualResult : True := by" in revision.statement_lean_code
+    assert revision.statement.formal is not None
+    assert revision.statement.formal.code is not None
+    assert "theorem actualResult : True := by" in revision.statement.formal.code
     assert revision.lean_decl_name == "actualResult"
-    assert revision.statement_lean_check is not None
-    assert revision.statement_lean_check["status"] == "passed"
-    assert revision.statement_lean_check["policy"] == "statement_formal"
+    assert revision.statement.formal.check is not None
+    assert revision.statement.formal.check.status == "passed"
+    assert revision.statement.formal.check.policy == "statement_formal"
 
     synced = runtime.lean_projection.check_decl_file_snapshot_sync(
         tmp_path,
@@ -200,7 +201,9 @@ def test_proof_restore_capture_and_strict_sync_use_decl_graph_snapshot(tmp_path:
     strict_failure = runtime.lean_projection.capture_proof_formal(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert not strict_failure.ok
     assert strict_failure.issues[0].kind == "proof_lean_check_failed"
-    assert _current_revision(runtime, tmp_path).proof_lean_code is None
+    failed_revision = _current_revision(runtime, tmp_path)
+    assert failed_revision.proof is not None
+    assert failed_revision.proof.formal is None
 
     path.write_text(text.replace("sorry", "trivial"), encoding="utf-8")
     captured = runtime.lean_projection.capture_proof_formal(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
@@ -208,11 +211,13 @@ def test_proof_restore_capture_and_strict_sync_use_decl_graph_snapshot(tmp_path:
     assert captured.ok, captured.issues
     revision = _current_revision(runtime, tmp_path)
     assert revision.state == DeclState.PLANNED
-    assert revision.proof_lean_code is not None
-    assert "trivial" in revision.proof_lean_code
-    assert revision.proof_lean_check is not None
-    assert revision.proof_lean_check["status"] == "passed"
-    assert revision.proof_lean_check["policy"] == "proof_formal"
+    assert revision.proof is not None
+    assert revision.proof.formal is not None
+    assert revision.proof.formal.code is not None
+    assert "trivial" in revision.proof.formal.code
+    assert revision.proof.formal.check is not None
+    assert revision.proof.formal.check.status == "passed"
+    assert revision.proof.formal.check.policy == "proof_formal"
 
     synced = runtime.lean_projection.check_decl_file_snapshot_sync(
         tmp_path,

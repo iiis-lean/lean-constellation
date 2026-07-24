@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, TypeAdapter
 
@@ -18,15 +18,11 @@ from lean_constellation.services.foundation import (
     ServiceIssue,
     ServiceResult,
 )
-from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
+from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
 from lean_constellation.services.node.export import ContentPublicDeclProvider
 from lean_constellation.services.node.node_tree import NodeKind, NodeTreeComponent
-from lean_constellation.services.node.projection_transaction import (
-    NodeContractProjectionMutationView,
-    node_contract_projection_mutation_view,
-    persist_contract_with_projection,
-)
+from lean_constellation.services.node.projection_transaction import persist_contract_with_projection
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
@@ -38,7 +34,6 @@ class NodeDepView(StrictModel):
     target_repo: str | None = None
     target_node: str
     expected_decl_refs: list[DeclRef] = Field(default_factory=list)
-    expected_decl_names: list[str] = Field(default_factory=list)
     reason: str | None = None
     added_by: NodeDepActor = NodeDepActor.COORDINATOR
     summary: str
@@ -47,6 +42,21 @@ class NodeDepView(StrictModel):
 class NodeDepsView(StrictModel):
     node_path: str
     deps: list[NodeDepView] = Field(default_factory=list)
+    summary: str
+
+
+class NodeDependencyMutationReceipt(StrictModel):
+    """Exact delta from one node-dependency mutation."""
+
+    node_path: str
+    operation: Literal["add", "remove"]
+    changed: bool
+    added: list[NodeDep] = Field(default_factory=list)
+    updated: list[NodeDep] = Field(default_factory=list)
+    removed: list[NodeDep] = Field(default_factory=list)
+    managed_projection_changed: bool = False
+    changed_files: list[str] = Field(default_factory=list)
+    reread_required: bool = False
     summary: str
 
 
@@ -163,7 +173,7 @@ class DependencyComponent:
         actor: str | NodeDepActor,
         expected_decl_names: list[str] | None = None,
         target_repo: str | None = None,
-    ) -> ServiceResult[NodeContractProjectionMutationView]:
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -209,7 +219,7 @@ class DependencyComponent:
         expected_decl_names: list[str],
         reason: str,
         actor: NodeDepActor,
-    ) -> ServiceResult[NodeContractProjectionMutationView]:
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
         expected_refs = self._resolve_expected_decl_names(boundary, expected_decl_names)
         if not expected_refs.ok or expected_refs.value is None:
             return self.runtime.foundation.fail(expected_refs.issues)
@@ -236,22 +246,22 @@ class DependencyComponent:
                 actor=actor,
             )
 
-        current.value.append(
-            NodeDep(
-                dep_id=dep_id,
-                target=target_ref,
-                expected_decl_refs=expected_refs.value,
-                reason=reason.strip(),
-                added_by=actor,
-            )
+        added_dep = NodeDep(
+            dep_id=dep_id,
+            target=target_ref,
+            expected_decl_refs=expected_refs.value,
+            reason=reason.strip(),
+            added_by=actor,
         )
+        current.value.append(added_dep)
         opened.value.contract.deps = list(current.value)
         persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
         if not persisted.ok:
             return self.runtime.foundation.fail(persisted.issues)
-        return self._projection_mutation_result(
-            repo_root,
+        return self._dependency_mutation_receipt(
             node_path=node_path,
+            operation="add",
+            added=[added_dep],
             projection=persisted.value,
             warnings=persisted.issues,
         )
@@ -263,7 +273,7 @@ class DependencyComponent:
         node_path: str,
         index: int,
         actor: str | NodeDepActor,
-    ) -> ServiceResult[NodeContractProjectionMutationView]:
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
         normalized_actor = self._normalize_actor(actor)
         if not normalized_actor.ok or normalized_actor.value is None:
             return self.runtime.foundation.fail(normalized_actor.issues)
@@ -290,9 +300,10 @@ class DependencyComponent:
         persisted = self._save_and_refresh_prelude(repo_root, node_path, opened.value.contract)
         if not persisted.ok:
             return self.runtime.foundation.fail(persisted.issues)
-        return self._projection_mutation_result(
-            repo_root,
+        return self._dependency_mutation_receipt(
             node_path=node_path,
+            operation="remove",
+            removed=[target],
             projection=persisted.value,
             warnings=persisted.issues,
         )
@@ -504,7 +515,7 @@ class DependencyComponent:
         expected_refs: list[DeclRef],
         reason: str,
         actor: NodeDepActor,
-    ) -> ServiceResult[NodeContractProjectionMutationView]:
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
         existing.added_by = NodeDepActor(existing.added_by)
         existing.dep_id = existing.dep_id or self._stable_dep_id(existing.target)
         existing_keys = {self._decl_ref_key(ref) for ref in existing.expected_decl_refs}
@@ -534,9 +545,9 @@ class DependencyComponent:
             refreshed = self._refresh_prelude(repo_root, node_path=node_path)
             if not refreshed.ok:
                 return self.runtime.foundation.fail(refreshed.issues)
-            return self._projection_mutation_result(
-                repo_root,
+            return self._dependency_mutation_receipt(
                 node_path=node_path,
+                operation="add",
                 projection=refreshed.value,
                 warnings=[*warnings, *refreshed.issues],
             )
@@ -544,9 +555,10 @@ class DependencyComponent:
         persisted = self._save_and_refresh_prelude(repo_root, node_path, contract)
         if not persisted.ok:
             return self.runtime.foundation.fail(persisted.issues)
-        return self._projection_mutation_result(
-            repo_root,
+        return self._dependency_mutation_receipt(
             node_path=node_path,
+            operation="add",
+            updated=[existing],
             projection=persisted.value,
             warnings=persisted.issues,
         )
@@ -626,7 +638,6 @@ class DependencyComponent:
             target_repo=dep.target.repo,
             target_node=dep.target.node,
             expected_decl_refs=dep.expected_decl_refs,
-            expected_decl_names=expected_names,
             reason=dep.reason,
             added_by=dep.added_by,
             summary=f"{index}: {target_label}"
@@ -735,24 +746,36 @@ class DependencyComponent:
             refresh=lambda: self._refresh_prelude(repo_root, node_path=node_path),
         )
 
-    def _projection_mutation_result(
+    def _dependency_mutation_receipt(
         self,
-        repo_root: Path,
         *,
         node_path: str,
+        operation: Literal["add", "remove"],
+        added: list[NodeDep] | None = None,
+        updated: list[NodeDep] | None = None,
+        removed: list[NodeDep] | None = None,
         projection: object | None,
         warnings: list[ServiceIssue] | None = None,
-    ) -> ServiceResult[NodeContractProjectionMutationView]:
-        current = self.contract.get_current_contract(repo_root, node_path=node_path)
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
+    ) -> ServiceResult[NodeDependencyMutationReceipt]:
+        path = getattr(projection, "path", None)
+        projection_changed = bool(getattr(projection, "changed", False))
+        added_items = list(added or [])
+        updated_items = list(updated or [])
+        removed_items = list(removed or [])
         return self.runtime.foundation.ok(
-            node_contract_projection_mutation_view(
-                current.value,
-                projection_kind="prelude",
-                projection=projection,
+            NodeDependencyMutationReceipt(
+                node_path=node_path,
+                operation=operation,
+                changed=bool(added_items or updated_items or removed_items),
+                added=added_items,
+                updated=updated_items,
+                removed=removed_items,
+                managed_projection_changed=projection_changed,
+                changed_files=[path] if projection_changed and path else [],
+                reread_required=projection_changed,
+                summary=f"{operation.capitalize()} node dependency.",
             ),
-            warnings=[*(warnings or []), *current.issues],
+            warnings=warnings or [],
         )
 
     def _has_local_dep_path(self, repo_root: Path, *, start: str, target: str) -> bool:

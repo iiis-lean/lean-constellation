@@ -36,7 +36,9 @@ def test_decl_graph_tools_are_registered() -> None:
         "inspect_current_node_decl",
         "list_node_decls",
         "inspect_node_decl",
-        "get_decl_revision",
+        "read_statement_nl",
+        "read_proof_nl",
+        "read_formal",
         "get_decl_change",
         "preview_decl_delete_closure",
         "validate_decl_round_draft",
@@ -107,7 +109,10 @@ def test_decl_graph_groups_expose_expected_tools() -> None:
     assert_group_contains("decl_round_closeout_write", {"write_decl_change_summary", "write_decl_round_summary", "mark_decl_round_terminal"})
     assert_group_contains("decl_catalog_plan_write", {"plan_create_decl", "plan_update_decl", "plan_delete_decl"})
     assert_group_contains("decl_detail_read", {"list_current_decls", "get_decl"})
-    assert_group_contains("decl_history_read", {"get_decl_revision", "get_decl_change"})
+    assert_group_contains("decl_history_read", {"get_decl_change"})
+    assert_group_contains("decl_stage_statement_nl_read", {"read_statement_nl"})
+    assert_group_contains("decl_stage_proof_nl_read", {"read_proof_nl"})
+    assert_group_contains("decl_stage_formal_read", {"read_formal"})
     assert_group_contains("decl_readiness_read", {"compute_decl_dependency_closure", "check_decl_ready", "check_content_node_ready"})
     assert_group_contains("current_node_decl_read", {"list_current_node_decls", "inspect_current_node_decl"})
     assert_group_contains(

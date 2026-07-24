@@ -296,8 +296,8 @@ class DeclFileComponent:
         if not revision_result.ok or revision_result.value is None:
             return self.runtime.foundation.fail(revision_result.issues)
         value = revision_result.value
-        proof_code = value.proof_lean_code
-        statement_code = value.statement_lean_code
+        proof_code = value.proof.formal.code if value.proof is not None and value.proof.formal is not None else None
+        statement_code = value.statement.formal.code if value.statement.formal is not None else None
         if proof_code:
             stage: DeclFileStage = "proof"
             content = proof_code
@@ -399,7 +399,7 @@ class DeclFileComponent:
         dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
-            dependencies=revision.value.statement.dep_refs,
+            dependencies=revision.value.statement.deps,
             require_complete=False,
         )
         if not dependencies.ok or dependencies.value is None:
@@ -463,7 +463,7 @@ class DeclFileComponent:
         statement_dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
-            dependencies=revision.value.statement.dep_refs,
+            dependencies=revision.value.statement.deps,
             require_complete=False,
         )
         if not statement_dependencies.ok or statement_dependencies.value is None:
@@ -471,7 +471,7 @@ class DeclFileComponent:
         proof_dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
-            dependencies=revision.value.proof.dep_refs if revision.value.proof is not None else [],
+            dependencies=revision.value.proof.deps if revision.value.proof is not None else [],
             require_complete=False,
         )
         if not proof_dependencies.ok or proof_dependencies.value is None:
@@ -538,7 +538,7 @@ class DeclFileComponent:
         statement_dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
-            dependencies=revision.value.statement.dep_refs,
+            dependencies=revision.value.statement.deps,
             require_complete=False,
         )
         if not statement_dependencies.ok or statement_dependencies.value is None:
@@ -548,7 +548,7 @@ class DeclFileComponent:
             proof_dependencies = self._resolve_dependencies(
                 repo_root,
                 consumer_node_path=node_path,
-                dependencies=revision.value.proof.dep_refs if revision.value.proof is not None else [],
+                dependencies=revision.value.proof.deps if revision.value.proof is not None else [],
                 require_complete=False,
             )
             if not proof_dependencies.ok or proof_dependencies.value is None:
@@ -622,7 +622,7 @@ class DeclFileComponent:
         dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
-            dependencies=revision.value.statement.dep_refs,
+            dependencies=revision.value.statement.deps,
             require_complete=True,
         )
         if not dependencies.ok or dependencies.value is None:
@@ -730,7 +730,7 @@ class DeclFileComponent:
         statement_dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
-            dependencies=revision.value.statement.dep_refs,
+            dependencies=revision.value.statement.deps,
             require_complete=True,
         )
         if not statement_dependencies.ok or statement_dependencies.value is None:
@@ -738,7 +738,7 @@ class DeclFileComponent:
         proof_dependencies = self._resolve_dependencies(
             repo_root,
             consumer_node_path=node_path,
-            dependencies=revision.value.proof.dep_refs if revision.value.proof is not None else [],
+            dependencies=revision.value.proof.deps if revision.value.proof is not None else [],
             require_complete=True,
         )
         if not proof_dependencies.ok or proof_dependencies.value is None:
@@ -943,9 +943,9 @@ class DeclFileComponent:
                     field="lean_decl_name",
                 )
             )
-        stages = [revision.value.statement.dep_refs]
+        stages = [revision.value.statement.deps]
         if normalized_stage == "proof":
-            stages.append(revision.value.proof.dep_refs if revision.value.proof is not None else [])
+            stages.append(revision.value.proof.deps if revision.value.proof is not None else [])
         for dependencies in stages:
             resolved = self._resolve_dependencies(
                 repo_root,

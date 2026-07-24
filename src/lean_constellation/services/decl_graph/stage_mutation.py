@@ -5,10 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
-from lean_constellation.services.decl_graph.models import DeclChangeKind, DeclDep, DeclOriginRef, DeclRevision, DeclRoundStatus, DeclState
+from lean_constellation.services.decl_graph.models import (
+    DeclChangeKind,
+    DeclDep,
+    DeclNaturalLanguageSection,
+    DeclOriginRef,
+    DeclRevision,
+    DeclRoundStatus,
+    DeclState,
+    RepoDeclDep,
+)
 from lean_constellation.services.decl_graph.strategy_round import StrategyRoundComponent
 from lean_constellation.services.foundation import ServiceResult, WriteMode
 
@@ -51,9 +61,11 @@ class StageMutationComponent:
         revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        revision.value.statement_nl = nl.strip()
-        revision.value.statement_origin = self._normalize_origin(origin)
-        revision.value.statement_deps = self._normalize_deps(deps)
+        revision.value.statement.nl = DeclNaturalLanguageSection(
+            text=nl.strip(),
+            origin=self._normalize_origin(origin),
+        )
+        revision.value.statement.deps = self._normalize_deps(deps)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -75,8 +87,7 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("statement_nl_required", "Statement NL text is required.", field="nl"))
         revision.value.statement.nl = revision.value.statement.nl.model_copy(update={"text": nl.strip(), "origin": origin}) if revision.value.statement.nl is not None else None
         if revision.value.statement.nl is None:
-            revision.value.statement_nl = nl.strip()
-            revision.value.statement.nl.origin = origin
+            revision.value.statement.nl = DeclNaturalLanguageSection(text=nl.strip(), origin=origin)
         revision.value.statement.deps = deps
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
@@ -97,7 +108,8 @@ class StageMutationComponent:
         revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        revision.value.statement_nl = nl.strip()
+        origins = revision.value.statement.nl.origin if revision.value.statement.nl is not None else []
+        revision.value.statement.nl = DeclNaturalLanguageSection(text=nl.strip(), origin=origins)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -114,7 +126,8 @@ class StageMutationComponent:
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
         current = revision.value.statement.nl.origin if revision.value.statement.nl is not None else []
-        revision.value.statement_origin = [item.model_dump(mode="json", exclude_none=True) for item in [*current, origin]]
+        text = revision.value.statement.nl.text if revision.value.statement.nl is not None else None
+        revision.value.statement.nl = DeclNaturalLanguageSection(text=text, origin=[*current, origin])
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -136,7 +149,8 @@ class StageMutationComponent:
                 self.runtime.foundation.issue("statement_origin_index_invalid", "Statement origin index is out of range.", object_ref=decl_name, field="index")
             )
         del origins[index]
-        revision.value.statement_origin = [item.model_dump(mode="json", exclude_none=True) for item in origins]
+        text = revision.value.statement.nl.text if revision.value.statement.nl is not None else None
+        revision.value.statement.nl = DeclNaturalLanguageSection(text=text, origin=origins)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -151,7 +165,8 @@ class StageMutationComponent:
         revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        revision.value.statement_origin = []
+        text = revision.value.statement.nl.text if revision.value.statement.nl is not None else None
+        revision.value.statement.nl = DeclNaturalLanguageSection(text=text, origin=[]) if text is not None else None
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -198,6 +213,92 @@ class StageMutationComponent:
             )
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
+
+    def add_statement_dependencies(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        deps: list[DeclDep],
+    ) -> ServiceResult[DeclRevision]:
+        """Atomically add a validated batch to the statement dependency truth."""
+
+        revision = self._revision_for_stage(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
+        )
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        merged = self._merge_dependency_batch(
+            revision.value.statement.deps,
+            deps,
+            decl_name=decl_name,
+            stage="statement",
+        )
+        if not merged.ok or merged.value is None:
+            return self.runtime.foundation.fail(merged.issues)
+        revision.value.statement.deps = merged.value
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=revision.value,
+        )
+
+    def _merge_dependency_batch(
+        self,
+        existing: list[DeclDep],
+        requested: list[DeclDep],
+        *,
+        decl_name: str,
+        stage: str,
+    ) -> ServiceResult[list[DeclDep]]:
+        requested_by_identity: dict[tuple[object, ...], DeclDep] = {}
+        for dep in requested:
+            identity = self._dep_identity(dep)
+            if identity in requested_by_identity:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "duplicate_batch_item",
+                        f"The {stage} dependency batch contains the same identity more than once.",
+                        object_ref=decl_name,
+                        current=dep.model_dump_json(exclude_none=True),
+                    )
+                )
+            requested_by_identity[identity] = dep
+
+        existing_by_identity = {self._dep_identity(dep): dep for dep in existing}
+        added: list[DeclDep] = []
+        for identity, dep in requested_by_identity.items():
+            current = existing_by_identity.get(identity)
+            if current is None:
+                added.append(dep)
+                continue
+            if current != dep:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "batch_identity_conflict",
+                        f"An existing {stage} dependency has the same identity with different metadata.",
+                        object_ref=decl_name,
+                        current=current.model_dump_json(exclude_none=True),
+                        expected=dep.model_dump_json(exclude_none=True),
+                    )
+                )
+        try:
+            return self.runtime.foundation.ok([*existing, *added])
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    f"{stage}_dep_invalid",
+                    str(exc),
+                    object_ref=decl_name,
+                )
+            )
 
     def remove_statement_dep(
         self,
@@ -248,11 +349,11 @@ class StageMutationComponent:
         revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        if not revision.value.statement_nl:
+        if revision.value.statement.nl is None or not (revision.value.statement.nl.text or "").strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("statement_nl_missing", "Statement NL must be accepted before statement dependency refinement.", object_ref=decl_name)
             )
-        revision.value.statement_deps = self._normalize_deps(deps)
+        revision.value.statement.deps = self._normalize_deps(deps)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -277,13 +378,13 @@ class StageMutationComponent:
         revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        if not revision.value.statement_lean_code:
+        if revision.value.statement.formal is None or not (revision.value.statement.formal.code or "").strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("statement_formal_missing", "Statement formal code must be written before proof planning.", object_ref=decl_name)
             )
-        revision.value.proof_nl = nl.strip()
-        revision.value.proof_origin = self._normalize_origin(origin)
-        revision.value.proof_deps = self._normalize_deps(deps)
+        proof = revision.value._ensure_proof()
+        proof.nl = DeclNaturalLanguageSection(text=nl.strip(), origin=self._normalize_origin(origin))
+        proof.deps = self._normalize_deps(deps)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -306,12 +407,10 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(revision.issues)
         if not nl.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("proof_nl_required", "Proof NL text is required.", field="nl"))
-        if not revision.value.statement_lean_code:
+        if revision.value.statement.formal is None or not (revision.value.statement.formal.code or "").strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("statement_formal_missing", "Statement formal code must be written before proof planning.", object_ref=decl_name))
-        revision.value.proof_nl = nl.strip()
         proof = revision.value._ensure_proof()
-        assert proof.nl is not None
-        proof.nl.origin = origin
+        proof.nl = DeclNaturalLanguageSection(text=nl.strip(), origin=origin)
         proof.deps = deps
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
@@ -335,11 +434,13 @@ class StageMutationComponent:
         revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        if not revision.value.statement_lean_code:
+        if revision.value.statement.formal is None or not (revision.value.statement.formal.code or "").strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("statement_formal_missing", "Accepted statement formal code must exist before proof planning.", object_ref=decl_name)
             )
-        revision.value.proof_nl = nl.strip()
+        proof = revision.value._ensure_proof()
+        origins = proof.nl.origin if proof.nl is not None else []
+        proof.nl = DeclNaturalLanguageSection(text=nl.strip(), origin=origins)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -360,7 +461,8 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(revision.issues)
         proof = revision.value._ensure_proof()
         current = proof.nl.origin if proof.nl is not None else []
-        revision.value.proof_origin = [item.model_dump(mode="json", exclude_none=True) for item in [*current, origin]]
+        text = proof.nl.text if proof.nl is not None else None
+        proof.nl = DeclNaturalLanguageSection(text=text, origin=[*current, origin])
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -382,7 +484,9 @@ class StageMutationComponent:
                 self.runtime.foundation.issue("proof_origin_index_invalid", "Proof origin index is out of range.", object_ref=decl_name, field="index")
             )
         del origins[index]
-        revision.value.proof_origin = [item.model_dump(mode="json", exclude_none=True) for item in origins]
+        proof = revision.value._ensure_proof()
+        text = proof.nl.text if proof.nl is not None else None
+        proof.nl = DeclNaturalLanguageSection(text=text, origin=origins)
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -397,7 +501,9 @@ class StageMutationComponent:
         revision = self._revision_for_stage(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name)
         if not revision.ok or revision.value is None:
             return self.runtime.foundation.fail(revision.issues)
-        revision.value.proof_origin = []
+        proof = revision.value._ensure_proof()
+        text = proof.nl.text if proof.nl is not None else None
+        proof.nl = DeclNaturalLanguageSection(text=text, origin=[]) if text is not None else None
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
 
@@ -448,6 +554,50 @@ class StageMutationComponent:
             )
         revision.value.updated_at = utc_now_iso()
         return self._write_revision(repo_root, node_path=node_path, decl_name=decl_name, revision=revision.value)
+
+    def add_proof_dependencies(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        deps: list[DeclDep],
+    ) -> ServiceResult[DeclRevision]:
+        """Atomically add a validated batch to the proof dependency truth."""
+
+        theorem_like = self._require_theorem_like(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+        if not theorem_like.ok:
+            return self.runtime.foundation.fail(theorem_like.issues)
+        revision = self._revision_for_stage(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            decl_name=decl_name,
+        )
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(revision.issues)
+        proof = revision.value._ensure_proof()
+        merged = self._merge_dependency_batch(
+            proof.deps,
+            deps,
+            decl_name=decl_name,
+            stage="proof",
+        )
+        if not merged.ok or merged.value is None:
+            return self.runtime.foundation.fail(merged.issues)
+        proof.deps = merged.value
+        revision.value.updated_at = utc_now_iso()
+        return self._write_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=revision.value,
+        )
 
     @staticmethod
     def _matching_dep(deps: list[DeclDep], candidate: DeclDep) -> DeclDep | None:
@@ -637,17 +787,14 @@ class StageMutationComponent:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(revision)
 
-    def _normalize_origin(self, origin: list[dict[str, Any]] | None) -> list[dict[str, str]]:
-        normalized = []
-        for item in origin or []:
-            normalized.append({str(key): str(value) for key, value in item.items()})
-        return normalized
+    def _normalize_origin(self, origin: list[dict[str, Any]] | None) -> list[DeclOriginRef]:
+        return [DeclOriginRef.model_validate(item) for item in origin or []]
 
-    def _normalize_deps(self, deps: list[str] | None) -> list[str]:
+    def _normalize_deps(self, deps: list[str] | None) -> list[DeclDep]:
         if deps is None:
             return []
         stripped = [dep.strip() for dep in deps]
-        return sorted({dep for dep in stripped if dep})
+        return [RepoDeclDep(ref=DeclRef(name=dep)) for dep in sorted({dep for dep in stripped if dep})]
 
     @staticmethod
     def _target_state_for_stage(stage: str) -> DeclState | None:

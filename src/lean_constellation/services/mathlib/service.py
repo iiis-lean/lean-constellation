@@ -13,8 +13,11 @@ from lean_constellation.services.mathlib.mathlib_index import (
     MathlibSearchView,
 )
 from lean_constellation.services.mathlib.node_mathlib_use import NodeMathlibUseComponent
-from lean_constellation.services.mathlib.node_mathlib_use import NodeMathlibHintMutationView, NodeMathlibHintView
-from lean_constellation.services.node import NodeContractView
+from lean_constellation.services.mathlib.node_mathlib_use import (
+    NodeMathlibHintMutationReceipt,
+    NodeMathlibHintsBatchReceipt,
+    NodeMathlibHintView,
+)
 from lean_constellation.services.mathlib.toolkit_ingestion import (
     MathlibAccessCheckView,
     MathlibBatchRecordView,
@@ -251,7 +254,7 @@ class MathlibService:
         module: str,
         reason: str | None,
         actor: str,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeMathlibHintMutationReceipt]:
         return self.node_mathlib_use.add_mathlib_module_use(
             repo_root,
             node_path=node_path,
@@ -267,7 +270,7 @@ class MathlibService:
         node_path: str,
         module: str,
         actor: str,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeMathlibHintMutationReceipt]:
         return self.node_mathlib_use.remove_mathlib_module_use(
             repo_root,
             node_path=node_path,
@@ -283,7 +286,7 @@ class MathlibService:
         decl_name: str,
         reason: str | None,
         actor: str,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeMathlibHintMutationReceipt]:
         return self.node_mathlib_use.add_mathlib_decl_use(
             repo_root,
             node_path=node_path,
@@ -299,7 +302,7 @@ class MathlibService:
         node_path: str,
         decl_name: str,
         actor: str,
-    ) -> ServiceResult[NodeContractView]:
+    ) -> ServiceResult[NodeMathlibHintMutationReceipt]:
         return self.node_mathlib_use.remove_mathlib_decl_use(
             repo_root,
             node_path=node_path,
@@ -313,6 +316,23 @@ class MathlibService:
     def get_node_mathlib_hint_view(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeMathlibHintView]:
         return self.node_mathlib_use.get_node_mathlib_hint_view(repo_root, node_path=node_path)
 
+    def add_mathlib_hints(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        modules: list[tuple[str, str | None]],
+        declarations: list[tuple[str, str | None]],
+        actor: str,
+    ) -> ServiceResult[NodeMathlibHintsBatchReceipt]:
+        return self.node_mathlib_use.add_mathlib_hints(
+            repo_root,
+            node_path=node_path,
+            modules=modules,
+            declarations=declarations,
+            actor=actor,
+        )
+
     def add_node_mathlib_module_hint(
         self,
         repo_root: Path,
@@ -321,7 +341,7 @@ class MathlibService:
         module: str,
         reason: str | None,
         actor: str,
-    ) -> ServiceResult[NodeMathlibHintMutationView]:
+    ) -> ServiceResult[NodeMathlibHintMutationReceipt]:
         return self.node_mathlib_use.add_node_mathlib_module_hint(
             repo_root,
             node_path=node_path,
@@ -337,7 +357,7 @@ class MathlibService:
         node_path: str,
         module: str,
         actor: str,
-    ) -> ServiceResult[NodeMathlibHintMutationView]:
+    ) -> ServiceResult[NodeMathlibHintMutationReceipt]:
         return self.node_mathlib_use.remove_node_mathlib_module_hint(
             repo_root,
             node_path=node_path,
@@ -353,7 +373,7 @@ class MathlibService:
         decl_name: str,
         reason: str | None,
         actor: str,
-    ) -> ServiceResult[NodeMathlibHintMutationView]:
+    ) -> ServiceResult[NodeMathlibHintMutationReceipt]:
         return self.node_mathlib_use.add_node_mathlib_decl_hint(
             repo_root,
             node_path=node_path,
@@ -369,7 +389,7 @@ class MathlibService:
         node_path: str,
         decl_name: str,
         actor: str,
-    ) -> ServiceResult[NodeMathlibHintMutationView]:
+    ) -> ServiceResult[NodeMathlibHintMutationReceipt]:
         return self.node_mathlib_use.remove_node_mathlib_decl_hint(
             repo_root,
             node_path=node_path,
