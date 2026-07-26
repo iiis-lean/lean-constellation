@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.real.lean_test_config import write_test_lean_toolchain
+
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import RepoFormat
@@ -219,6 +221,7 @@ def _adapter_upstream_repo(tmp_path: Path) -> Path:
 
 def _write_toolkit_visible_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "ToolkitVisible"\n'
         'version = "0.1.0"\n'
@@ -239,6 +242,7 @@ def _write_toolkit_visible_repo(repo_root: Path) -> None:
 
 def _write_upstream_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "Upstream"\n'
         'version = "0.1.0"\n'

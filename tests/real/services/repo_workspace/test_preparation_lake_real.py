@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from tests.real.lean_test_config import configured_test_native_lake_project, write_test_lean_toolchain
 from tests.unit_services_helpers import make_runtime
 
-from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.domain.preparation import UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
@@ -38,6 +38,7 @@ def _make_buildable_without_mathlib(repo_root: Path, project_name: str) -> None:
 
 def _create_local_upstream_git_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True)
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "UpstreamPkg"\n'
         'version = "0.1.0"\n'
@@ -67,7 +68,7 @@ def _create_local_upstream_git_repo(repo_root: Path) -> None:
         text=True,
     )
     subprocess.run(
-        ["git", "add", ".gitignore", "lakefile.toml", "lake-manifest.json", "Upstream.lean"],
+        ["git", "add", ".gitignore", "lean-toolchain", "lakefile.toml", "lake-manifest.json", "Upstream.lean"],
         cwd=repo_root,
         check=True,
         stdout=subprocess.PIPE,
@@ -96,11 +97,10 @@ def test_repo_workspace_real_lake_native_adapter_and_workspace_dependency(tmp_pa
 
     service = make_runtime(
         external_overrides={"lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout))},
-        native_lake_project_config=NativeLakeProjectConfig(
-            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template)
-        )
-        if template is not None
-        else None,
+        native_lake_project_config=configured_test_native_lake_project(
+            template_root=template,
+            mathlib_enabled=template is not None,
+        ),
     ).repo_workspace
 
     consumer_init = service.initialize_repo_as_native(consumer, project_name="Consumer")

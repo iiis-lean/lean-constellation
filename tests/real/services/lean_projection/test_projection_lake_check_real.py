@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from tests.real.lean_test_config import write_test_lean_toolchain
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.domain.refs import DeclRef
@@ -17,7 +18,7 @@ from lean_constellation.services.external_clients import (
 from lean_constellation.services.foundation import FoundationService, ServiceResult
 from lean_constellation.services.lean_projection import LeanCheckView, LeanProjectionService
 from lean_constellation.services.decl_graph import DeclFileRevisionView
-from lean_constellation.services.node import DeclPublicView, ExportComponent, NodeTreeComponent
+from lean_constellation.services.node import DeclPublicView, ExportComponent
 
 
 class MutablePublicDeclProvider:
@@ -94,7 +95,7 @@ def _require_lake_and_lean() -> int:
 
 def _write_minimal_lake_repo(repo_root: Path) -> None:
     initialize_native_test_repo(repo_root, project_name="ProjectionReal")
-    (repo_root / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n", encoding="utf-8")
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "ProjectionReal"\n'
         'version = "0.1.0"\n'

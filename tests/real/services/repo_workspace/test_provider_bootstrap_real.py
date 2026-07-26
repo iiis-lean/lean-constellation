@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from tests.real.lean_test_config import configured_test_native_lake_project, write_test_lean_toolchain
 from tests.unit_services_helpers import make_runtime
 
-from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
@@ -31,9 +31,7 @@ def _runtime(timeout: int):
         pytest.skip(f"Local Lake package cache template is missing: {template}")
     return make_runtime(
         external_overrides={"lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout))},
-        native_lake_project_config=NativeLakeProjectConfig(
-            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template)
-        ),
+        native_lake_project_config=configured_test_native_lake_project(template_root=template),
     )
 
 
@@ -50,17 +48,17 @@ def _provider_input(*, source_corpus_mode: SourceCorpusMode) -> RepoPreparationI
     )
 
 
-def _assert_runtime_shell_created_without_flows(repo_root: Path) -> None:
-    runtime_root = repo_root / ".agent_runtime"
-    assert runtime_root.is_dir()
-    for name in ("homes", "scopes", "index", "snapshots"):
-        assert (runtime_root / name).is_dir()
-    assert list((runtime_root / "homes").iterdir()) == []
-    assert list((runtime_root / "scopes").iterdir()) == []
+def _assert_provider_shell_created_without_runtime_truth(repo_root: Path) -> None:
+    truth_root = repo_root / ".lean_constellation"
+    assert truth_root.is_dir()
+    for name in ("preparation_input.json", "repo.json", "repo_config.json"):
+        assert (truth_root / name).is_file()
+    assert not (repo_root / ".agent_runtime").exists()
 
 
 def _create_local_upstream_git_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True)
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "UpstreamPkg"\n'
         'version = "0.1.0"\n'
@@ -90,7 +88,7 @@ def _create_local_upstream_git_repo(repo_root: Path) -> None:
         text=True,
     )
     subprocess.run(
-        ["git", "add", ".gitignore", "lakefile.toml", "lake-manifest.json", "Upstream.lean"],
+        ["git", "add", ".gitignore", "lean-toolchain", "lakefile.toml", "lake-manifest.json", "Upstream.lean"],
         cwd=repo_root,
         check=True,
         stdout=subprocess.PIPE,
@@ -122,7 +120,7 @@ def test_provider_runtime_shell_can_be_initialized_as_native_without_starting_fl
     assert created.ok, created.issues
     assert created.value is not None
     provider = workspace / "ProviderNative"
-    _assert_runtime_shell_created_without_flows(provider)
+    _assert_provider_shell_created_without_runtime_truth(provider)
 
     initialized = runtime.repo_workspace.initialize_repo_as_native(provider, project_name="ProviderNative")
     preflight = runtime.repo_workspace.get_preparation_start_preflight(
@@ -158,7 +156,7 @@ def test_provider_runtime_shell_can_be_initialized_as_adapter_without_network(tm
     assert created.ok, created.issues
     assert created.value is not None
     provider = workspace / "ProviderAdapter"
-    _assert_runtime_shell_created_without_flows(provider)
+    _assert_provider_shell_created_without_runtime_truth(provider)
 
     initialized = runtime.repo_workspace.initialize_repo_as_adapter(
         provider,

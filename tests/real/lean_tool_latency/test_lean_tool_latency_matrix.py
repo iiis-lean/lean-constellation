@@ -6,6 +6,8 @@ import shutil
 
 import pytest
 
+from tests.real.lean_test_config import write_test_lean_toolchain
+
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import (
     LakeCommandClient,
@@ -584,6 +586,7 @@ def _toolkit_iterations(*, default: int) -> int:
 
 def _write_tiny_lake_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "TinyLake"\n'
         'version = "0.1.0"\n'

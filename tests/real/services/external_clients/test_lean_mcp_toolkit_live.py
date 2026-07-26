@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.real.lean_test_config import write_test_lean_toolchain
 from lean_constellation.services.external_clients import LeanMcpToolkitClient, LeanMcpToolkitClientConfig
 
 
@@ -35,6 +36,7 @@ def _toolkit_client() -> LeanMcpToolkitClient:
 
 def _write_minimal_toolkit_project(repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "ToolkitReal"\n'
         'version = "0.1.0"\n'

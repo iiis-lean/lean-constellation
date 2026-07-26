@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit_services_helpers import make_runtime
+from tests.real.lean_test_config import write_test_lean_toolchain
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import (
@@ -37,18 +38,19 @@ def _runtime(timeout: int) -> LeanRuntimeServices:
 
 
 def _write_minimal_lake_repo(repo_root: Path) -> None:
-    repo_root.mkdir(parents=True, exist_ok=True)
+    initialize_native_test_repo(repo_root, project_name="DeclFileCaptureReal")
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "DeclFileCaptureReal"\n'
         'version = "0.1.0"\n'
-        'defaultTargets = ["Main"]\n\n'
+        'defaultTargets = ["DeclFileCaptureReal"]\n\n'
         '[[lean_lib]]\n'
-        'name = "Main"\n',
+        'name = "DeclFileCaptureReal"\n',
         encoding="utf-8",
     )
-    (repo_root / "Main.lean").write_text(
-        "import Main.Topic.Core.Prelude\n"
-        "import Main.Topic.Core.Interfaces\n",
+    (repo_root / "DeclFileCaptureReal.lean").write_text(
+        "import DeclFileCaptureReal.Main.Topic.Core.Prelude\n"
+        "import DeclFileCaptureReal.Main.Topic.Core.Interfaces\n",
         encoding="utf-8",
     )
 
@@ -121,14 +123,20 @@ def test_decl_file_capture_with_real_lake_and_decl_graph_provider(tmp_path: Path
     assert initial_build.ok, initial_build.summary
 
     prepared_statement = runtime.lean_projection.prepare_statement_formal_stage_file(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
-    assert prepared_statement.ok, prepared_statement.issues
+    assert prepared_statement.ok and prepared_statement.value is not None, prepared_statement.issues
+    statement_path = Path(prepared_statement.value.path)
+    statement_path.write_text(
+        statement_path.read_text(encoding="utf-8") + "\ntheorem main_result : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
     statement_capture = runtime.lean_projection.capture_statement_formal(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert statement_capture.ok, statement_capture.issues
     revision = _current_revision(runtime, repo_root)
     assert revision.state == DeclState.PLANNED
-    assert revision.statement_lean_check is not None
-    assert revision.statement_lean_check["status"] == "passed"
-    assert revision.statement_lean_check["policy"] == "statement_formal"
+    assert revision.statement is not None and revision.statement.formal is not None
+    assert revision.statement.formal.check is not None
+    assert revision.statement.formal.check.status == "passed"
+    assert revision.statement.formal.check.policy == "statement_formal"
 
     proof_nl = runtime.decl_graph.write_proof_nl(
         repo_root,
@@ -154,20 +162,30 @@ def test_decl_file_capture_with_real_lake_and_decl_graph_provider(tmp_path: Path
     assert proof_capture.ok, proof_capture.issues
     revision = _current_revision(runtime, repo_root)
     assert revision.state == DeclState.PLANNED
-    assert revision.proof_lean_check is not None
-    assert revision.proof_lean_check["status"] == "passed"
-    assert revision.proof_lean_check["policy"] == "proof_formal"
-    assert "trivial" in (revision.proof_lean_code or "")
+    assert revision.proof is not None and revision.proof.formal is not None
+    assert revision.proof.formal.check is not None
+    assert revision.proof.formal.check.status == "passed"
+    assert revision.proof.formal.check.policy == "proof_formal"
+    assert "trivial" in (revision.proof.formal.code or "")
 
-    decl_path.write_text(decl_path.read_text(encoding="utf-8") + "\naxiom forbidden_axiom : False\n", encoding="utf-8")
+    decl_path.write_text(
+        decl_path.read_text(encoding="utf-8") + "\naxiom forbidden_axiom : False\n",
+        encoding="utf-8",
+    )
     axiom_failure = runtime.lean_projection.capture_proof_formal(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert not axiom_failure.ok
-    assert axiom_failure.issues[0].kind == "proof_lean_check_failed"
-    assert "contains_axiom" in axiom_failure.issues[0].message
+    assert axiom_failure.issues[0].kind == "target_declaration_not_last"
 
     restored = runtime.lean_projection.sync_decl_file_after_revision_reset(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert restored.ok, restored.issues
-    decl_path.write_text(decl_path.read_text(encoding="utf-8") + "\ndef forbidden_admit : True := by admit\n", encoding="utf-8")
+    decl_path.write_text(
+        decl_path.read_text(encoding="utf-8").replace(
+            "  trivial\n",
+            "  admit\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
     admit_failure = runtime.lean_projection.capture_proof_formal(repo_root, node_path=NODE_PATH, decl_name=DECL_NAME)
     assert not admit_failure.ok
     assert admit_failure.issues[0].kind == "proof_lean_check_failed"

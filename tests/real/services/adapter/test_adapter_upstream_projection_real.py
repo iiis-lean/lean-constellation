@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.real.lean_test_config import write_test_lean_toolchain
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -26,7 +27,7 @@ def _env(name: str) -> str | None:
 
 def _write_minimal_upstream_repo(repo_root: Path) -> tuple[Path, str, str, DeclKind]:
     repo_root.mkdir(parents=True, exist_ok=True)
-    (repo_root / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n", encoding="utf-8")
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "upstream"\n'
         'version = "0.1.0"\n'
@@ -64,7 +65,7 @@ def test_adapter_finalize_compiler_confirms_registered_upstream_identity(tmp_pat
     upstream_path, module, lean_decl_name, decl_kind = _write_minimal_upstream_repo(tmp_path / "upstream")
     repo_root = tmp_path / "adapter"
     repo_root.mkdir()
-    (repo_root / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n", encoding="utf-8")
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "Adapter"\n\n'
         '[[lean_lib]]\n'

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.real.lean_test_config import write_test_lean_toolchain
 from lean_constellation.domain.repo import RepoCompletionMode, RepoPublicationStatus
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.external_clients import ToolchainCommandView
@@ -36,6 +37,7 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
     runtime.ark.flow_service = SimpleNamespace(list_flows=lambda **_filters: [])
     runtime.ark.step_service = SimpleNamespace(list_steps=lambda **_filters: [])
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    write_test_lean_toolchain(repo_root)
     (repo_root / "lakefile.toml").write_text(
         'name = "ReleaseRestoreReal"\nversion = "0.1.0"\ndefaultTargets = ["Main"]\n\n'
         '[[lean_lib]]\nname = "Main"\n',

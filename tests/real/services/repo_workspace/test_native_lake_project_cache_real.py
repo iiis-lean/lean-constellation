@@ -10,8 +10,12 @@ import pytest
 from agent_runtime_kit.runtime import ARKServices
 from starlette.testclient import TestClient
 
+from tests.real.lean_test_config import (
+    configured_test_lean_toolchain,
+    configured_test_lean_version,
+    configured_test_native_lake_project,
+)
 from lean_constellation.app import LeanAppConfig, create_production_app_server
-from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
 
@@ -40,9 +44,7 @@ def test_native_lake_project_uses_local_package_cache_and_builds(tmp_path: Path)
     runtime = create_test_runtime_services(
         ark_services=ARKServices(),
         external_overrides={"lake": LakeCommandClient(LakeCommandClientConfig(timeout_seconds=timeout))},
-        native_lake_project_config=NativeLakeProjectConfig(
-            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template)
-        ),
+        native_lake_project_config=configured_test_native_lake_project(template_root=template),
     )
     repo_root = tmp_path / "MainNative"
 
@@ -52,10 +54,10 @@ def test_native_lake_project_uses_local_package_cache_and_builds(tmp_path: Path)
     assert initialized.value is not None
     assert "mathlib" in initialized.value.linked_packages
     assert initialized.value.lake_manifest_path == str(repo_root / "lake-manifest.json")
-    assert (repo_root / "lean-toolchain").read_text(encoding="utf-8").strip() == "leanprover/lean4:v4.28.0"
+    assert (repo_root / "lean-toolchain").read_text(encoding="utf-8").strip() == configured_test_lean_toolchain()
     lakefile_text = (repo_root / "lakefile.toml").read_text(encoding="utf-8")
     assert 'name = "mathlib"' in lakefile_text
-    assert 'rev = "v4.28.0"' in lakefile_text
+    assert f'rev = "v{configured_test_lean_version()}"' in lakefile_text
 
     template_manifest = json.loads((template / "lake-manifest.json").read_text(encoding="utf-8"))
     repo_manifest = json.loads((repo_root / "lake-manifest.json").read_text(encoding="utf-8"))
@@ -88,9 +90,7 @@ def test_production_server_bootstraps_main_native_repo_and_starts_preparation_dr
         workspace_root=workspace,
         scheduler_enabled=False,
         materialize_agent_homes=False,
-        native_lake_project=NativeLakeProjectConfig(
-            local_package_cache=LocalLakePackageCacheConfig(cache_project_root=template)
-        ),
+        native_lake_project=configured_test_native_lake_project(template_root=template),
     )
     app_result = create_production_app_server(
         config,
@@ -143,7 +143,7 @@ For every natural number n, n = n.
         validated = client.post("/admin/main-repo/source-corpus/validate", json={"repo_root": str(repo_root)})
         skeleton = client.post("/admin/main-repo/native-skeleton/init", json={"repo_root": str(repo_root), "project_name": "MainRepo"})
         preparation = client.post(
-            "/admin/preparation/native/start",
+            "/admin/repos/MainRepo/preparation/native/start",
             json={
                 "repo_root": str(repo_root),
                 "repo_key": "MainRepo",
@@ -152,7 +152,7 @@ For every natural number n, n = n.
                 "enqueue": False,
             },
         )
-        status = client.get("/admin/runtime/status")
+        status = client.get("/admin/repos/MainRepo/runtime/status")
 
     assert written.status_code == 200, written.text
     assert validated.status_code == 200, validated.text

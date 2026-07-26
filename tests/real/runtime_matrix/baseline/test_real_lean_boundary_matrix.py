@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.real.lean_test_config import write_test_lean_toolchain
+
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig, LeanMcpToolkitClient
 from tests.unit_services_helpers import make_runtime
@@ -188,6 +190,7 @@ def _require_lake_and_lean() -> None:
 
 def _write_real_lake_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
+    write_test_lean_toolchain(repo_root)
     truth_root = repo_root / ".lean_constellation"
     truth_root.mkdir(parents=True, exist_ok=True)
     (truth_root / "repo_format.json").write_text(
