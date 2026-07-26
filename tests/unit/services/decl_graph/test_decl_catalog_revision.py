@@ -66,6 +66,7 @@ def _seed_committed_decl(
     *,
     round_id: str,
     name: str,
+    kind: str = "theorem",
     deps: list[str] | None = None,
     state: DeclState = DeclState.PROVED,
 ) -> None:
@@ -75,7 +76,7 @@ def _seed_committed_decl(
         node_path="Main.Topic.Core",
         round_id=round_id,
         name=name,
-        kind="theorem",
+        kind=kind,
         objective=f"Create {name}.",
         summary=f"{name} summary.",
         target_state=DeclState.PROVED if state == DeclState.PROVED else DeclState.DECLARED,
@@ -460,6 +461,80 @@ def test_round_draft_validation_rejects_internal_update_dependency(tmp_path: Pat
     assert gate.ok and gate.value is not None
     assert gate.value.passed is False
     assert any(issue.kind == "round_internal_dependency" for issue in gate.value.issues)
+
+
+def test_round_draft_validation_accepts_declared_definition_proof_dependency(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="DefinitionProvider",
+        kind="definition",
+        state=DeclState.DECLARED,
+    )
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="ConsumerTheorem",
+        deps=["DefinitionProvider"],
+    )
+    service = make_runtime().decl_graph
+
+    _, update_round_id = _create_round(tmp_path, objective="Retry the consumer proof.")
+    assert service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=update_round_id,
+        name="ConsumerTheorem",
+        objective="Retry the proof without rebuilding its definition dependency.",
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
+    ).ok
+
+    gate = service.validate_round_draft(tmp_path, node_path="Main.Topic.Core", round_id=update_round_id)
+
+    assert gate.ok and gate.value is not None
+    assert gate.value.passed is True
+    assert gate.value.issues == []
+
+
+def test_round_draft_validation_still_requires_theorem_proof_dependency_proved(tmp_path: Path) -> None:
+    _create_content_node(tmp_path)
+    _, round_id = _create_round(tmp_path)
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="TheoremProvider",
+        state=DeclState.DECLARED,
+    )
+    _seed_committed_decl(
+        tmp_path,
+        round_id=round_id,
+        name="ConsumerTheorem",
+        deps=["TheoremProvider"],
+    )
+    service = make_runtime().decl_graph
+
+    _, update_round_id = _create_round(tmp_path, objective="Retry the consumer proof.")
+    assert service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=update_round_id,
+        name="ConsumerTheorem",
+        objective="Retry the proof while retaining its theorem dependency.",
+        reset_to_state=DeclState.PROOF_PLANNED,
+        target_state=DeclState.PROVED,
+    ).ok
+
+    gate = service.validate_round_draft(tmp_path, node_path="Main.Topic.Core", round_id=update_round_id)
+
+    assert gate.ok and gate.value is not None
+    assert gate.value.passed is False
+    issue = next(issue for issue in gate.value.issues if issue.kind == "round_dependency_provider_not_ready")
+    assert issue.object_ref == "ConsumerTheorem"
+    assert issue.current == DeclState.DECLARED.value
+    assert issue.expected == DeclState.PROVED.value
 
 
 def test_decl_planning_rejects_non_draft_round(tmp_path: Path) -> None:

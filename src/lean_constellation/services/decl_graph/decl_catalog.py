@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lean_constellation.domain.common import utc_now_iso
+from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.services.decl_graph.availability_policy import required_state_for_availability
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
 from lean_constellation.services.decl_graph.models import (
     DeclChangeKind,
@@ -720,11 +722,13 @@ class DeclCatalogComponent:
                         )
                     )
         change_kind_by_decl = {change.decl_name: change.kind for change in changes_value}
+        decl_by_name: dict[str, Decl] = {}
         revision_by_decl: dict[str, DeclRevision] = {}
         for decl_name in sorted(changed_names):
             decl = self.get_decl(repo_root, node_path=node_path, name=decl_name)
             if not decl.ok or decl.value is None:
                 continue
+            decl_by_name[decl_name] = decl.value
             revision = self.get_decl_revision(
                 repo_root,
                 node_path=node_path,
@@ -747,11 +751,12 @@ class DeclCatalogComponent:
             change = revision.value.change
             anticipated_statement = set(change.anticipated_statement_dep_names if change is not None else [])
             anticipated_proof = set(change.anticipated_proof_dep_names if change is not None else [])
-            for dependency_stage, required_state, dependency_names in (
-                ("statement", DeclState.DECLARED, actual_statement | anticipated_statement),
-                ("proof", DeclState.PROVED, actual_proof | anticipated_proof),
+            for dependency_stage, required_availability, dependency_names in (
+                ("statement", ProofAvailability.DECLARED, actual_statement | anticipated_statement),
+                ("proof", ProofAvailability.PROVED, actual_proof | anticipated_proof),
             ):
                 for dep_name in sorted(dependency_names):
+                    required_state = required_state_for_availability("theorem", required_availability)
                     if dep_name == decl_name:
                         issues.append(
                             self.runtime.foundation.issue(
@@ -785,6 +790,10 @@ class DeclCatalogComponent:
                                 )
                             )
                             continue
+                        required_state = required_state_for_availability(
+                            provider.value.kind,
+                            required_availability,
+                        )
                         provider_revision = self.get_decl_revision(
                             repo_root,
                             node_path=node_path,
@@ -818,17 +827,23 @@ class DeclCatalogComponent:
                         and change_kind_by_decl.get(dep_name) == DeclChangeKind.DELETE
                     ):
                         continue
+                    provider_record = decl_by_name.get(dep_name)
+                    if provider_record is None:
+                        loaded_decl = self.get_decl(repo_root, node_path=node_path, name=dep_name)
+                        provider_record = loaded_decl.value if loaded_decl.ok else None
+                    required_state = required_state_for_availability(
+                        provider_record.kind if provider_record is not None else "theorem",
+                        required_availability,
+                    )
                     provider_revision = revision_by_decl.get(dep_name)
-                    if provider_revision is None:
-                        provider_decl = self.get_decl(repo_root, node_path=node_path, name=dep_name)
-                        if provider_decl.ok and provider_decl.value is not None:
-                            loaded = self.get_decl_revision(
-                                repo_root,
-                                node_path=node_path,
-                                name=dep_name,
-                                revision=provider_decl.value.current_revision,
-                            )
-                            provider_revision = loaded.value if loaded.ok else None
+                    if provider_revision is None and provider_record is not None:
+                        loaded = self.get_decl_revision(
+                            repo_root,
+                            node_path=node_path,
+                            name=dep_name,
+                            revision=provider_record.current_revision,
+                        )
+                        provider_revision = loaded.value if loaded.ok else None
                     provider_state = provider_revision.state if provider_revision is not None else DeclState.PLANNED
                     if not self._state_reaches(provider_state, required_state):
                         issues.append(
