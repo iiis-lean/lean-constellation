@@ -325,8 +325,6 @@ def _get_source_index_update_context(runtime, ctx: ToolExecutionContext, _args: 
     return runtime.foundation.ok(
         {
             "run_objective": getattr(flow_input, "run_objective", None),
-            "target_proof_availability": getattr(getattr(flow_input, "target_proof_availability", None), "value", getattr(flow_input, "target_proof_availability", None)),
-            "work_mode": getattr(getattr(flow_input, "work_mode", None), "value", getattr(flow_input, "work_mode", None)),
             "source_scope": (
                 flow_input.source_scope.model_dump(mode="json")
                 if getattr(flow_input, "source_scope", None) is not None

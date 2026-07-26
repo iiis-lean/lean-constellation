@@ -727,12 +727,6 @@ def _coordinator_agent_step(
 
 
 def _coordinator_initial_prompt(input_model: NativeRepoCoordinatorInput) -> str:
-    work_mode = (
-        input_model.run_context.run_spec.work_mode.value
-        if input_model.run_context is not None
-        else "proved_full_graph"
-    )
-    mode_skill = f"coordinator-{work_mode.replace('_', '-').lower()}-mode"
     parts = [
         f"Coordinate native repo {input_model.repo_key or 'current repo'}.",
         f"Start mode: {input_model.start_mode}.",
@@ -744,7 +738,8 @@ def _coordinator_initial_prompt(input_model: NativeRepoCoordinatorInput) -> str:
     if input_model.admin_note:
         parts.append(f"Admin note: {input_model.admin_note}.")
     parts.append(
-        f"Required Skill re-entry for this turn: read and apply ${mode_skill} from the current Home. "
+        "Required Skill re-entry for this turn: read and apply "
+        "$coordinator-completion-policy from the current Home. "
         "After choosing a branch, read its branch Skill before mutation or dispatch."
     )
     parts.append(
@@ -765,12 +760,6 @@ def _repo_ready_rejection_callback_prompt(ctx: FlowContext, flow: NativeRepoCoor
         raise TypeError("repo-ready callback predecessor has no MarkCoordinatorRepoReadyStepResult")
     if result.outcome not in {"blocked", "candidate_blocked"}:
         raise TypeError(f"repo-ready callback predecessor has non-rejection outcome: {result.outcome}")
-    work_mode = (
-        flow.input.run_context.run_spec.work_mode.value
-        if isinstance(flow.input, NativeRepoCoordinatorInput) and flow.input.run_context is not None
-        else "proved_full_graph"
-    )
-    mode_skill = f"coordinator-{work_mode.replace('_', '-').lower()}-mode"
     issue = result.error_code or "repo_ready_gate_rejected"
     detail = result.error_message or result.summary or "The deterministic repo-ready gate rejected the candidate."
     return "\n".join(
@@ -779,7 +768,7 @@ def _repo_ready_rejection_callback_prompt(ctx: FlowContext, flow: NativeRepoCoor
             f"Gate issue: {issue}.",
             f"Gate summary: {detail}",
             "Required Skill order for this turn: read and apply $coordinator-repo-ready-lifecycle first, "
-            f"then ${mode_skill}.",
+            "then $coordinator-completion-policy.",
             "Repair only Coordinator-owned truth identified by the gate, re-read current runtime/repo truth, "
             "and submit exactly one normal coordination move. Do not reuse a stale child-dispatch result.",
         ]

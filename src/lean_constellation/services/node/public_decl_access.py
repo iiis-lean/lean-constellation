@@ -10,7 +10,11 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import RepoFormat, RepoPublicationStatus
+from lean_constellation.domain.repo import (
+    RepoFormat,
+    RepoPublicationStatus,
+    proof_availability_for_completion_mode,
+)
 from lean_constellation.services.foundation import ServiceIssue, ServiceResult
 from lean_constellation.services.node.dependency import DependencyComponent
 from lean_constellation.services.decl_graph.models import (
@@ -240,7 +244,7 @@ class PublicDeclAccessResolver:
                     source="workspace_stable_provider",
                     summary=(
                         f"Stable provider repo {repo.repo_key} publishes "
-                        f"{repo.target_proof_availability.value}/{repo.work_mode.value}."
+                        f"{repo.completion_mode.value}."
                     ),
                 )
                 for repo in workspace.value
@@ -617,7 +621,9 @@ class PublicDeclAccessResolver:
             return self.runtime.foundation.fail(config.issues)
         cache_key = self._stable_native_cache_key(
             provider_root,
-            required_availability=config.value.config.target_proof_availability.value,
+            required_availability=proof_availability_for_completion_mode(
+                config.value.config.completion_mode
+            ).value,
         )
         if cache_key is not None and cache_key in self._stable_public_decl_cache:
             values, warnings = self._stable_public_decl_cache.pop(cache_key)
@@ -625,7 +631,9 @@ class PublicDeclAccessResolver:
             return self.runtime.foundation.ok(list(values), warnings=list(warnings))
         public_refs = self.runtime.decl_graph.ref_compatibility.list_public_decl_refs(
             provider_root,
-            required_availability=config.value.config.target_proof_availability,
+            required_availability=proof_availability_for_completion_mode(
+                config.value.config.completion_mode
+            ),
         )
         if not public_refs.ok or public_refs.value is None:
             return self.runtime.foundation.fail(public_refs.issues)

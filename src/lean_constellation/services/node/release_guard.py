@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    proof_availability_for_completion_mode,
+)
 from lean_constellation.services.decl_graph.availability_policy import required_state_for_availability
 from lean_constellation.services.decl_graph.models import (
     DeclLifecycle,
@@ -48,7 +51,9 @@ class NodeReleaseGuard:
         proof_availability = ProofAvailability.PROVED
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
         if config.ok and config.value is not None:
-            proof_availability = config.value.config.target_proof_availability
+            proof_availability = proof_availability_for_completion_mode(
+                config.value.config.completion_mode
+            )
         head: dict[str, int] = {}
         for decl in decls.value:
             if decl.lifecycle != DeclLifecycle.ACTIVE:

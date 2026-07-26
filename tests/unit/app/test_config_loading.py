@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from lean_constellation.app import LeanAppConfig, load_app_config
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 
 
 def test_checkpoint_and_trace_report_config_defaults(tmp_path) -> None:
@@ -233,22 +233,20 @@ def test_load_app_config_reads_workspace_repo_defaults_from_env(tmp_path) -> Non
         None,
         env={
             "LEAN_CONSTELLATION_WORKSPACE_ROOT": str(tmp_path / "workspace"),
-            "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_PROOF_AVAILABILITY": "declared",
-            "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_WORK_MODE": "declared_full_graph",
+            "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_COMPLETION_MODE": "graph_declared",
             "LEAN_CONSTELLATION_DEFAULT_REQUIREMENT_PROOF_AVAILABILITY": "proved",
-            "LEAN_CONSTELLATION_REQUIREMENT_DECLARED_PROVIDER_WORK_MODE": "declared_full_graph",
-            "LEAN_CONSTELLATION_REQUIREMENT_PROVED_PROVIDER_WORK_MODE": "proved_full_graph",
+            "LEAN_CONSTELLATION_REQUIREMENT_DECLARED_PROVIDER_COMPLETION_MODE": "graph_declared",
+            "LEAN_CONSTELLATION_REQUIREMENT_PROVED_PROVIDER_COMPLETION_MODE": "graph_proved",
         },
     )
 
-    assert config.workspace_config.default_direct_repo_proof_availability == ProofAvailability.DECLARED
-    assert config.workspace_config.default_direct_repo_work_mode == RepoWorkMode.DECLARED_FULL_GRAPH
+    assert config.workspace_config.default_direct_repo_completion_mode == RepoCompletionMode.GRAPH_DECLARED
     assert config.workspace_config.default_requirement_proof_availability == ProofAvailability.PROVED
-    assert config.workspace_config.requirement_provider_work_mode_by_proof_availability[ProofAvailability.DECLARED] == (
-        RepoWorkMode.DECLARED_FULL_GRAPH
+    assert config.workspace_config.requirement_provider_completion_mode_by_proof_availability[ProofAvailability.DECLARED] == (
+        RepoCompletionMode.GRAPH_DECLARED
     )
-    assert config.workspace_config.requirement_provider_work_mode_by_proof_availability[ProofAvailability.PROVED] == (
-        RepoWorkMode.PROVED_FULL_GRAPH
+    assert config.workspace_config.requirement_provider_completion_mode_by_proof_availability[ProofAvailability.PROVED] == (
+        RepoCompletionMode.GRAPH_PROVED
     )
 
 

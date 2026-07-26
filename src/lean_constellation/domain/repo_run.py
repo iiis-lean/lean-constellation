@@ -8,7 +8,7 @@ from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
-from lean_constellation.domain.repo import ProofAvailability, RepoConfig, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode
 
 
 class SourceScope(StrictModel):
@@ -35,8 +35,7 @@ class SourceScope(StrictModel):
 
 class RepoRunSpec(StrictModel):
     run_objective: str
-    target_proof_availability: ProofAvailability
-    work_mode: RepoWorkMode
+    completion_mode: RepoCompletionMode
     source_scope: SourceScope
     index_policy: Literal["auto", "update", "reuse"]
     root_interface_policy: Literal["auto", "prepare", "reuse"]
@@ -59,11 +58,7 @@ class RepoRunSpec(StrictModel):
         return value
 
     @model_validator(mode="after")
-    def _validate_config_and_interfaces(self) -> "RepoRunSpec":
-        RepoConfig(
-            target_proof_availability=self.target_proof_availability,
-            work_mode=self.work_mode,
-        )
+    def _validate_interfaces(self) -> "RepoRunSpec":
         names = [interface.name for interface in self.additional_required_interfaces]
         if len(names) != len(set(names)):
             raise ValueError("additional_required_interfaces must have unique names")

@@ -15,7 +15,7 @@ from lean_constellation.app.operator_data.release import (
     ReleaseRestoreInput,
 )
 from lean_constellation.domain.repo import (
-    ProofAvailability,
+    RepoCompletionMode,
     RepoPublicationState,
     RepoPublicationStatus,
     RepoPublicationView,
@@ -148,7 +148,7 @@ def test_release_restore_rejects_composite_checkpoint_before_project_mutation(tm
     release = RepoRelease(
         release_id="composite_release",
         node_contract_versions={root.node_id: root.active_contract_version},
-        target_proof_availability=ProofAvailability.PROVED,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
         repo_checkpoint_id="composite-release-checkpoint",
         summary="Composite checkpoint must be rejected.",
     )
@@ -173,7 +173,7 @@ def test_publish_is_one_call_self_managed_and_never_exposes_prepared_payload(
     release = RepoRelease(
         release_id="release_one",
         node_contract_versions={"node_main": 1},
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id="checkpoint_one",
         summary="First release.",
     )
@@ -262,7 +262,7 @@ def test_publish_propagates_stale_candidate_failure_without_private_payload(
     release = RepoRelease(
         release_id="release_stale",
         node_contract_versions={"node_main": 1},
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id="checkpoint_stale",
         summary="Stale release.",
     )

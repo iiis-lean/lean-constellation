@@ -55,8 +55,7 @@ def test_requirement_provider_initial_run_cannot_bypass_aggregated_config(tmp_pa
         StartPreparationInput(
             repo_root=repo_root,
             run_request=RepoRunOptions(
-                target_proof_availability="declared",
-                work_mode="declared_interface",
+                completion_mode="interface_declared",
             ),
             enqueue=False,
         )

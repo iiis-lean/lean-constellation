@@ -4,7 +4,7 @@ import pytest
 
 from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 from lean_constellation.app import RepoRunRequestInput
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.domain.repo_run import SourceScope
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
@@ -57,8 +57,7 @@ def test_strict_native_repo_continuation_reuses_stable_release_and_hands_off(
                 repo_root=ws.provider_repo,
                 repo_key="Provider",
                 run_objective="Continue from the stable strict Runtime Matrix release.",
-                target_proof_availability=ProofAvailability.PROVED,
-                work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+                completion_mode=RepoCompletionMode.GRAPH_PROVED,
                 source_scope=SourceScope(mode="none"),
                 index_policy="reuse",
                 root_interface_policy="reuse",

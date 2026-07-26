@@ -14,9 +14,9 @@ from lean_constellation.domain.preparation import (
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
+    RepoCompletionMode,
     RepoFormat,
     RepoPublicationStatus,
-    RepoWorkMode,
 )
 from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
@@ -43,8 +43,7 @@ class WorkspaceRepoAgentView(StrictModel):
     repo_summary: str | None = None
     repo_format: RepoFormat
     publication_status: RepoPublicationStatus
-    target_proof_availability: ProofAvailability
-    work_mode: RepoWorkMode
+    completion_mode: RepoCompletionMode
     provider_ready: bool
     open_requirement_count: int
 
@@ -78,7 +77,7 @@ class WorkspaceCoordinatorAgentView(StrictModel):
 class RequirementGroupSummaryAgentView(StrictModel):
     target_repo: str
     required_proof_availability: ProofAvailability
-    provider_work_mode: RepoWorkMode
+    provider_completion_mode: RepoCompletionMode
     requirement_count: int
     consumer_repos: list[str] = Field(default_factory=list)
     interface_names: list[str] = Field(default_factory=list)
@@ -130,7 +129,7 @@ class RequirementDetailAgentView(StrictModel):
 class RequirementGroupAgentView(StrictModel):
     target_repo: str
     required_proof_availability: ProofAvailability
-    provider_work_mode: RepoWorkMode
+    provider_completion_mode: RepoCompletionMode
     requirements: list[RequirementGroupItemAgentView] = Field(default_factory=list)
     summary: str
 
@@ -228,7 +227,7 @@ def _list_open_requirement_groups(runtime, ctx, args: NoArgs):
             RequirementGroupSummaryAgentView(
                 target_repo=item.target_repo,
                 required_proof_availability=item.required_proof_availability,
-                provider_work_mode=item.provider_work_mode,
+                provider_completion_mode=item.provider_completion_mode,
                 requirement_count=item.requirement_count,
                 consumer_repos=item.consumer_repos,
                 interface_names=item.interface_names,
@@ -247,7 +246,7 @@ def _get_requirement_group(runtime, ctx, args: TargetRepoArgs):
         RequirementGroupAgentView(
             target_repo=group.value.target_repo,
             required_proof_availability=group.value.required_proof_availability,
-            provider_work_mode=group.value.provider_work_mode,
+            provider_completion_mode=group.value.provider_completion_mode,
             requirements=[
                 RequirementGroupItemAgentView(
                     consumer_repo=item.consumer_repo,
@@ -289,8 +288,7 @@ def _list_ready_provider_repos(runtime, ctx, args: NoArgs):
                 repo_summary=item.repo_summary,
                 repo_format=item.repo_format,
                 publication_status=item.publication_status,
-                target_proof_availability=item.target_proof_availability,
-                work_mode=item.work_mode,
+                completion_mode=item.completion_mode,
                 provider_ready=True,
                 open_requirement_count=item.open_requirement_count,
             )
@@ -312,8 +310,7 @@ def _inspect_workspace_for_coordinator(runtime, ctx, args: NoArgs):
             repo_summary=item.repo_summary,
             repo_format=item.repo_format,
             publication_status=item.publication_status,
-            target_proof_availability=item.target_proof_availability,
-            work_mode=item.work_mode,
+            completion_mode=item.completion_mode,
             provider_ready=item.repo_key in ready_keys,
             open_requirement_count=item.open_requirement_count,
         )
@@ -440,29 +437,21 @@ def _get_current_repo_run_context(runtime, ctx: ToolExecutionContext, args: NoAr
     if not publication.ok or publication.value is None:
         return runtime.foundation.fail(publication.issues)
     latest_release_id = publication.value.publication.latest_release_id
-    work_config = runtime.repo_workspace.metadata.get_repo_work_config(ctx.repo_root)
-    if not work_config.ok or work_config.value is None:
-        return runtime.foundation.fail(work_config.issues)
-    requested_proof = run_context.run_spec.target_proof_availability
-    requested_work_mode = run_context.run_spec.work_mode
-    current_proof = work_config.value.target_proof_availability
-    current_work_mode = work_config.value.work_mode
+    completion_policy = runtime.repo_workspace.metadata.get_repo_completion_policy(
+        ctx.repo_root
+    )
+    if not completion_policy.ok or completion_policy.value is None:
+        return runtime.foundation.fail(completion_policy.issues)
+    requested_mode = run_context.run_spec.completion_mode
+    current_mode = completion_policy.value.completion_mode
     return runtime.foundation.ok(
         {
             "start_mode": getattr(flow_input, "start_mode", None),
             "start_kind": run_context.start_kind,
             "run_objective": run_context.run_spec.run_objective,
-            "requested": {
-                "target_proof_availability": requested_proof.value,
-                "work_mode": requested_work_mode.value,
-            },
-            "current_repository": {
-                "target_proof_availability": current_proof.value,
-                "work_mode": current_work_mode.value,
-            },
-            "configuration_matches_run": (
-                requested_proof == current_proof and requested_work_mode == current_work_mode
-            ),
+            "requested_completion_mode": requested_mode.value,
+            "current_completion_mode": current_mode.value,
+            "configuration_matches_run": requested_mode == current_mode,
             "source_scope": run_context.run_spec.source_scope.model_dump(mode="json"),
             "resolved_source_files": list(run_context.resolved_source_files),
             "source_index_delta_summary": run_context.source_index_delta_summary,
@@ -473,7 +462,7 @@ def _get_current_repo_run_context(runtime, ctx: ToolExecutionContext, args: NoAr
             "publication_status": publication.value.publication.status.value,
             "summary": "Current structured repository run context.",
         },
-        warnings=[*publication.issues, *work_config.issues],
+        warnings=[*publication.issues, *completion_policy.issues],
     )
 
 
@@ -491,20 +480,20 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_get_preparation_input,
         ),
         direct_tool(
-            name="get_current_repo_work_config",
-            description="Read the current repo proof availability target and work mode.",
+            name="get_current_repo_completion_policy",
+            description="Read the current repository completion mode and dependency default.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             backing_service="repo_workspace",
             backing_component="metadata",
-            backing_method="get_repo_work_config",
-            result_view="repo_work_config",
-            groups={AppGroup.REPO_WORK_CONFIG_READ},
+            backing_method="get_repo_completion_policy",
+            result_view="repo_completion_policy",
+            groups={AppGroup.REPO_COMPLETION_POLICY_READ},
             roles={"coordinator", "plan", "admin"},
         ),
         handler_tool(
             name="get_current_repo_run_context",
-            description="Read the objective, target, work mode, source responsibility, preparation deltas, and release baseline for the current repository run.",
+            description="Read the objective, completion mode, source responsibility, preparation deltas, and release baseline for the current repository run.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="repo_run_context",

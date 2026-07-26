@@ -4,7 +4,7 @@ from pathlib import Path
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.interface import DeclKind
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 
@@ -152,8 +152,7 @@ def test_requirement_resume_candidates_require_sufficient_provider_proof_availab
     )
     configured_provider = runtime.repo_workspace.metadata.update_repo_config(
         provider,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert configured_provider.ok
     publish_native_provider_release(runtime, provider, summary="Provider exposes declared interfaces.")
@@ -279,8 +278,7 @@ def test_mark_provider_ready_rejects_insufficient_provider_proof_availability(tm
     )
     configured_provider = runtime.repo_workspace.metadata.update_repo_config(
         provider,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
 
     result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider declared only.")

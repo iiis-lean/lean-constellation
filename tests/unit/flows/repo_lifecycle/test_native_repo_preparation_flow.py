@@ -196,8 +196,7 @@ def _start_native_with_children(runtime: FakeLeanFlowRuntime, repo_root: Path) -
 def _initial_run_spec(repo_root: Path) -> dict[str, object]:
     return {
         "run_objective": f"Prepare {repo_root.name}.",
-        "target_proof_availability": "proved",
-        "work_mode": "proved_full_graph",
+        "completion_mode": "graph_proved",
         "source_scope": {"mode": "all", "selectors": []},
         "index_policy": "auto",
         "root_interface_policy": "auto",

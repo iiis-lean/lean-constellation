@@ -184,7 +184,6 @@ class ContentProgressCheckpointStepResult(LeanRenderableStepResult):
         "after_content_decl_round_terminal",
     ]
     node_path: str
-    task_mode: str
     child_kind: str
     child_flow_id: str
     child_outcome: Literal["completed", "failed"]
@@ -287,7 +286,6 @@ class ContentProgressCheckpointStep(BaseStep):
         "after_content_decl_round_terminal",
     ]
     node_path: str
-    task_mode: str
     child_kind: str
     child_flow_id: str
     child_outcome: Literal["completed", "failed"]
@@ -300,7 +298,6 @@ class ContentProgressCheckpointStep(BaseStep):
                 outcome="checkpoint_ready",
                 checkpoint_kind=self.checkpoint_kind,
                 node_path=self.node_path,
-                task_mode=self.task_mode,
                 child_kind=self.child_kind,
                 child_flow_id=self.child_flow_id,
                 child_outcome=self.child_outcome,

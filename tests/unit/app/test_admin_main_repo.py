@@ -14,7 +14,7 @@ from lean_constellation.app import (
     create_app_runtime_services,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoPublicationStatus
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 
 
@@ -184,18 +184,16 @@ def test_admin_can_read_update_repo_config_and_publication(tmp_path: Path) -> No
     updated_config = admin.update_repo_config(
         RepoConfigUpdateInput(
             repo_root=repo_root,
-            target_proof_availability=ProofAvailability.DECLARED,
-            work_mode=RepoWorkMode.DECLARED_INTERFACE,
+            completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
             default_requirement_proof_availability=ProofAvailability.PROVED,
         )
     )
     publication = admin.get_repo_publication(repo_root)
 
     assert default_config.ok and default_config.value is not None
-    assert default_config.value.config.target_proof_availability == ProofAvailability.PROVED
+    assert default_config.value.config.completion_mode == RepoCompletionMode.GRAPH_PROVED
     assert updated_config.ok and updated_config.value is not None
-    assert updated_config.value.config.target_proof_availability == ProofAvailability.DECLARED
-    assert updated_config.value.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
+    assert updated_config.value.config.completion_mode == RepoCompletionMode.INTERFACE_DECLARED
     assert updated_config.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.DEVELOPING

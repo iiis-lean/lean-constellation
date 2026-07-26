@@ -34,8 +34,8 @@ def test_instruction_renderer_combines_public_and_agent_specific_fragments() -> 
 
     assert "## Operating Contract" in text
     assert "## Native Repository Coordinator" in text
-    assert "get_current_repo_work_config" in text
-    assert "Coordinator mode skill matching" in text
+    assert "get_current_repo_completion_policy" in text
+    assert "coordinator-completion-policy" in text
     assert "coordinator-node-decomposition" in text
     assert "write DeclGraph artifacts" in text
 
@@ -173,8 +173,8 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     text = render_agent_instruction("ContentPlanAgent")
 
     assert "After every callback, re-read current truth" in text
-    assert "get_current_repo_work_config" in text
-    assert "matching the current work_mode" in text
+    assert "get_current_repo_completion_policy" in text
+    assert "content-plan-completion-policy" in text
     assert "submit_content_preparation_recon" in text
     assert "write_decl_change_summary" in text
     assert "mark_decl_round_terminal" in text

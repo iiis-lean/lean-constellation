@@ -37,7 +37,6 @@ class ContentNodeTaskParams(LeanFlowParams):
     node_path: str
     repo_path: str | None = None
     contract_version: int | None = None
-    task_mode: str = "run"
     max_parallel_content_node_tasks: int = Field(default=1, ge=1)
 
 
@@ -47,7 +46,6 @@ class ContentNodeTaskInput(LeanRenderableFlowInput):
     repo_path: str | None = None
     node_path: str
     contract_version: int | None = None
-    task_mode: str = "run"
     max_parallel_content_node_tasks: int = Field(default=1, ge=1)
 
     def agent_title(self) -> str:
@@ -58,7 +56,6 @@ class ContentNodeTaskInput(LeanRenderableFlowInput):
             "repo_key": self.repo_key,
             "node_path": self.node_path,
             "contract_version": self.contract_version,
-            "task_mode": self.task_mode,
             "max_parallel_content_node_tasks": self.max_parallel_content_node_tasks,
         }
 
@@ -241,7 +238,6 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
         label_parts = [
             result.checkpoint_kind,
             f"node={result.node_path}",
-            f"task_mode={result.task_mode}",
             f"kind={result.child_kind}",
             f"child={result.child_flow_id}",
             f"outcome={result.child_outcome}",
@@ -440,7 +436,6 @@ def _content_plan_agent_step(
                 "repo_key": input_model.repo_key,
                 "node_path": input_model.node_path,
                 "contract_version": input_model.contract_version,
-                "task_mode": input_model.task_mode,
                 "used_preparation_kinds": list(state.used_preparation_kinds),
                 "decl_round_count": state.decl_round_count,
             },
@@ -463,16 +458,15 @@ def _content_plan_agent_step(
 
 
 def _content_plan_initial_prompt(ctx: FlowContext, input_model: ContentNodeTaskInput) -> str:
-    mode_skill = _content_plan_mode_skill(ctx, input_model)
     parts = [
         f"Run the content node task for {input_model.node_path}.",
         f"Repository: {input_model.repo_key}.",
-        f"Task mode: {input_model.task_mode}.",
     ]
     if input_model.contract_version is not None:
         parts.append(f"Contract version: {input_model.contract_version}.")
     parts.append(
-        f"Required Skill re-entry for this turn: read and apply ${mode_skill} and "
+        "Required Skill re-entry for this turn: read and apply "
+        "$content-plan-completion-policy and "
         "$content-preparation-orchestration from the current Home before deciding. "
         "Do not rely on remembered Skill text from an earlier turn."
     )
@@ -481,16 +475,6 @@ def _content_plan_initial_prompt(ctx: FlowContext, input_model: ContentNodeTaskI
         "preparation recon, resource request, decl round, ready, blocked, or failed."
     )
     return "\n".join(parts)
-
-
-def _content_plan_mode_skill(ctx: FlowContext, input_model: ContentNodeTaskInput) -> str:
-    work_mode = "proved_full_graph"
-    repo_root = _content_repo_root(input_model)
-    if repo_root is not None:
-        loaded = ctx.app.repo_workspace.metadata.get_repo_config(repo_root)
-        if loaded.ok and loaded.value is not None:
-            work_mode = loaded.value.config.work_mode.value
-    return f"content-plan-{work_mode.replace('_', '-').lower()}-mode"
 
 
 def _inherit_content_plan_binding_from_prior_task(ctx: FlowContext, flow: ContentNodeTaskFlow) -> None:
@@ -595,7 +579,6 @@ def _content_progress_checkpoint_step(
         scope_id=flow.scope_id,
         checkpoint_kind=checkpoint_kind,
         node_path=input_model.node_path,
-        task_mode=input_model.task_mode,
         child_kind=str(state.waiting_child_kind),
         child_flow_id=state.completed_child_flow_id,
         child_outcome=state.completed_child_outcome,

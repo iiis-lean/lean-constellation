@@ -6,7 +6,7 @@ import pytest
 
 from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.services.external_clients import ExternalCommandResult
 from lean_constellation.services.repo_workspace.repo_lifecycle_lock import (
     RepoLifecycleLockBusyError,
@@ -50,15 +50,13 @@ def test_create_native_repo_uses_explicit_config_and_no_runtime_truth(tmp_path: 
         repo_key="ProviderRepo",
         project_name="ProviderProject",
         preparation_input=_input(),
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
         default_requirement_proof_availability=ProofAvailability.DECLARED,
         native_config=NativeLakeProjectConfig(mathlib_enabled=False),
     )
 
     assert created.ok and created.value is not None, created.issues
-    assert created.value.config.config.target_proof_availability == ProofAvailability.DECLARED
-    assert created.value.config.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
+    assert created.value.config.config.completion_mode == RepoCompletionMode.INTERFACE_DECLARED
     repo_root = tmp_path / "ProviderRepo"
     assert (repo_root / "lakefile.toml").is_file()
     assert not (repo_root / ".agent_runtime").exists()
@@ -79,8 +77,7 @@ def test_create_native_repo_rolls_back_on_skeleton_failure(tmp_path: Path, monke
         repo_key="ProviderRepo",
         project_name="ProviderProject",
         preparation_input=_input(),
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
         default_requirement_proof_availability=ProofAvailability.DECLARED,
         native_config=NativeLakeProjectConfig(mathlib_enabled=False),
     )
@@ -113,8 +110,7 @@ def test_create_native_repo_rolls_back_unexpected_service_exception(
         repo_key="ProviderRepo",
         project_name="ProviderProject",
         preparation_input=_input(),
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
         default_requirement_proof_availability=ProofAvailability.DECLARED,
         native_config=NativeLakeProjectConfig(mathlib_enabled=False),
     )

@@ -111,7 +111,6 @@ def test_runtime_lease_monitor_keeps_its_semantic_content_target(tmp_path: Path)
                     "repo_path": str(repo_root),
                     "node_path": node_path,
                     "contract_version": 1,
-                    "task_mode": "run",
                 },
             )
         )
@@ -161,7 +160,6 @@ def test_runtime_lease_monitor_does_not_borrow_running_agent_from_newer_lease(tm
                     "repo_path": str(repo_root),
                     "node_path": node_path,
                     "contract_version": 1,
-                    "task_mode": "run",
                 },
             )
         )

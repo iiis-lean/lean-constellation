@@ -11,7 +11,10 @@ from pydantic import Field, TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef, NodeRef
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    proof_availability_for_completion_mode,
+)
 from lean_constellation.services.foundation import (
     GateReport,
     IssueSeverity,
@@ -698,7 +701,9 @@ class DependencyComponent:
                 return self.runtime.foundation.fail(config.issues)
             public_refs = self.runtime.decl_graph.ref_compatibility.list_public_decl_refs(
                 provider_root,
-                required_availability=config.value.config.target_proof_availability,
+                required_availability=proof_availability_for_completion_mode(
+                    config.value.config.completion_mode
+                ),
             )
             if not public_refs.ok or public_refs.value is None:
                 return self.runtime.foundation.fail(public_refs.issues)

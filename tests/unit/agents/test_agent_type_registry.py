@@ -40,9 +40,7 @@ EXPECTED_AGENT_TYPES = {
 
 
 EXPECTED_COORDINATOR_SKILLS = [
-    "coordinator-proved-full-graph-mode",
-    "coordinator-declared-full-graph-mode",
-    "coordinator-declared-interface-mode",
+    "coordinator-completion-policy",
     "coordinator-content-result-closeout",
     "resource-result-closeout",
     "coordinator-requirement-result-closeout",

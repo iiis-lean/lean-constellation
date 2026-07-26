@@ -14,8 +14,8 @@ EXPECTED_SURFACE_COUNTS = {
     "RootInterfacePrepareAgent": (7, 15, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 24, 1, 4, 2),
-    "CoordinatorAgent": (38, 89, 2, 4, 19),
-    "ContentPlanAgent": (32, 82, 3, 6, 17),
+    "CoordinatorAgent": (38, 89, 2, 4, 17),
+    "ContentPlanAgent": (32, 82, 3, 6, 15),
     "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 22, 2, 3, 4),
@@ -37,8 +37,8 @@ EXPECTED_APPLICATION_SURFACE_HASHES = {
     "RootInterfacePrepareAgent": "744c85a080bb7ec6ecf1e2923beee4fb683ce68347599ab76c2eee9b3e905cd9",
     "AdapterDeclCatalogAgent": "832d605c4fca89e0bace44a54ab04487dbf11c268c50629a606b8e6519006fb5",
     "ResourceCuratorAgent": "6b8d4e4823e83c81b3a971103810bcb4fb934d156f9fabed276d2245efd1e069",
-    "CoordinatorAgent": "b6ba7567ce2fb8c4fd287f6bcd99484dc2489fc526a2faa80475d982f0e4ce11",
-    "ContentPlanAgent": "058df71bb6fe177102c865552a98390507343023bee00ddb3853ef179aaae6a8",
+    "CoordinatorAgent": "9c37af24edb14574de83c3d8152334d64e521d76131bdbd7064bfed5606f25f8",
+    "ContentPlanAgent": "bf10268f6fe7b7e29b55c41abfbd066d1d2f0958e3a9a0648142b5b0ee3fa4dc",
     "NodeDirDependencyReconAgent": "78424e9c83a6d31e464f5bcfaa583279a967ed718f7783ed820bd5ea5419709c",
     "MathlibReconAgent": "2106d09b06fa7140322909262cdb5a533b4ba881b13bb74ee1932e714a000220",
     "ResourceReconAgent": "02a24ca89792c62f0048e410363e3cbe50f3adb1e07c1ba853dbdacb50ed97b8",
@@ -182,7 +182,7 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
 
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
-    assert len(report.skills) == 19
+    assert len(report.skills) == 17
     assert len(report.application_group_keys) == 38
     assert len(report.application_tools) == 89
     assert "read_visible_decl_lean_file" in tools

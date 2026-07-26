@@ -94,7 +94,6 @@ def _start_content_task_for_node(runtime: FakeLeanFlowRuntime, repo_root: Path, 
             "repo_path": str(repo_root),
             "node_path": node_path,
             "contract_version": 1,
-            "task_mode": "run",
         },
         scope_id=f"repo:{repo_root.name}:node:{node_path}",
     )
@@ -249,7 +248,7 @@ Consumer-side formal context
     assert runtime.agent_service.start_records[1].workdir == _expected_node_workdir(repo_root)
     initial_prompt = runtime.agent_service.start_records[0].prompt or ""
     callback_prompt = runtime.agent_service.start_records[1].prompt or ""
-    assert "content-plan-proved-full-graph-mode" in initial_prompt
+    assert "content-plan-completion-policy" in initial_prompt
     assert initial_prompt.count("Repository:") == 1
     assert "Current assignment" not in initial_prompt
     assert "Current result summary" not in initial_prompt
@@ -593,7 +592,7 @@ def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Pa
     assert flow.result.outcome == "ready"
     callback_prompt = runtime.agent_service.start_records[-1].prompt or ""
     assert callback_prompt.index("decl-round-closeout") < callback_prompt.index(
-        "content-plan-proved-full-graph-mode"
+        "content-plan-completion-policy"
     )
     assert "decl-strategy-planning" in callback_prompt
     assert "reassess whether the strategy still explains the next round" in callback_prompt
@@ -838,7 +837,6 @@ def test_content_progress_enabled_skips_when_task_parallelism_is_not_one(tmp_pat
             "repo_path": str(repo_root),
             "node_path": "Main.Core",
             "contract_version": 1,
-            "task_mode": "run",
             "max_parallel_content_node_tasks": 2,
         },
         scope_id="repo:Repo:node:Main.Core",

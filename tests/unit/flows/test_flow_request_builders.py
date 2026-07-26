@@ -28,7 +28,6 @@ class ContentNodeTaskParams(_StrictParams):
     repo_key: str
     node_path: str
     contract_version: int | None = None
-    task_mode: str
     max_parallel_content_node_tasks: int
 
 
@@ -91,7 +90,6 @@ def test_flow_request_builder_params_validate_against_child_flow_input_models() 
         node_path="Main.Core",
         scope_id="scope_node",
         contract_version=2,
-        task_mode="rerun",
     )
     assert ContentNodeTaskParams.model_validate(content.params).contract_version == 2
 

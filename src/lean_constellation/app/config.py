@@ -541,8 +541,7 @@ def _apply_native_lake_env(data: dict[str, Any], env: Mapping[str, str]) -> None
 
 def _apply_workspace_config_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
     aliases = {
-        "default_direct_repo_proof_availability": "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_PROOF_AVAILABILITY",
-        "default_direct_repo_work_mode": "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_WORK_MODE",
+        "default_direct_repo_completion_mode": "LEAN_CONSTELLATION_DEFAULT_DIRECT_REPO_COMPLETION_MODE",
         "default_requirement_proof_availability": "LEAN_CONSTELLATION_DEFAULT_REQUIREMENT_PROOF_AVAILABILITY",
     }
     workspace_config: dict[str, Any] = dict(data.get("workspace_config") or {})
@@ -550,14 +549,25 @@ def _apply_workspace_config_env(data: dict[str, Any], env: Mapping[str, str]) ->
         value = env.get(env_key)
         if value is not None and str(value).strip():
             workspace_config[field] = value
-    declared_provider_mode = env.get("LEAN_CONSTELLATION_REQUIREMENT_DECLARED_PROVIDER_WORK_MODE")
-    proved_provider_mode = env.get("LEAN_CONSTELLATION_REQUIREMENT_PROVED_PROVIDER_WORK_MODE")
+    declared_provider_mode = env.get(
+        "LEAN_CONSTELLATION_REQUIREMENT_DECLARED_PROVIDER_COMPLETION_MODE"
+    )
+    proved_provider_mode = env.get(
+        "LEAN_CONSTELLATION_REQUIREMENT_PROVED_PROVIDER_COMPLETION_MODE"
+    )
     if declared_provider_mode is not None or proved_provider_mode is not None:
-        mapping = dict(workspace_config.get("requirement_provider_work_mode_by_proof_availability") or {})
+        mapping = dict(
+            workspace_config.get(
+                "requirement_provider_completion_mode_by_proof_availability"
+            )
+            or {}
+        )
         if declared_provider_mode is not None and declared_provider_mode.strip():
             mapping["declared"] = declared_provider_mode
         if proved_provider_mode is not None and proved_provider_mode.strip():
             mapping["proved"] = proved_provider_mode
-        workspace_config["requirement_provider_work_mode_by_proof_availability"] = mapping
+        workspace_config[
+            "requirement_provider_completion_mode_by_proof_availability"
+        ] = mapping
     if workspace_config:
         data["workspace_config"] = workspace_config

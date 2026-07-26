@@ -216,7 +216,6 @@ def _start_content_task(ws: RuntimeMatrixWorkspace, node_path: str) -> str:
                 "repo_path": str(ws.provider_repo),
                 "node_path": node_path,
                 "contract_version": 1,
-                "task_mode": "run",
             },
         )
     )

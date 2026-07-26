@@ -73,12 +73,12 @@ def test_decl_round_callback_uses_authoritative_revision_refs_when_terminal_reas
     prompt = _content_plan_callback_guidance(
         ctx,
         [child],
-        mode_skill="content-plan-proved-full-graph-mode",
+        completion_policy_skill="content-plan-completion-policy",
     )
 
     assert "affected declarations are first_decl, second_decl" in prompt
     assert "$decl-round-closeout" in prompt
-    assert "$content-plan-proved-full-graph-mode" in prompt
+    assert "$content-plan-completion-policy" in prompt
 
 
 def test_blocked_decl_round_callback_preserves_formal_mismatch_without_copying_reason() -> None:
@@ -107,7 +107,7 @@ def test_blocked_decl_round_callback_preserves_formal_mismatch_without_copying_r
     prompt = _content_plan_callback_guidance(
         ctx,
         [child],
-        mode_skill="content-plan-proved-full-graph-mode",
+        completion_policy_skill="content-plan-completion-policy",
     )
 
     assert "$decl-round-closeout" in prompt
@@ -128,7 +128,6 @@ def _start_content_flow(runtime: FakeLeanFlowRuntime, tmp_path: Path) -> str:
             "repo_path": str(repo_root),
             "node_path": "Main.Core",
             "contract_version": 1,
-            "task_mode": "run",
         },
         scope_id="repo:Repo:node:Main.Core",
     )

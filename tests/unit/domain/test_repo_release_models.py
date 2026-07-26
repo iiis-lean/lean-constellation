@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import ProofAvailability, RepoPublicationState, RepoPublicationStatus
+from lean_constellation.domain.repo import RepoCompletionMode, RepoPublicationState, RepoPublicationStatus
 from lean_constellation.domain.repo_release import (
     DeclReleaseStatusView,
     ReleasedDeclProtectionView,
@@ -20,7 +20,7 @@ def _release() -> RepoRelease:
     return RepoRelease(
         release_id="release_1",
         node_contract_versions={"node_main": 2, "node_content": 3},
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id="checkpoint_1",
         summary="First declared release.",
     )

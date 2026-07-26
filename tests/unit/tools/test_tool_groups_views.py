@@ -187,9 +187,9 @@ def test_repo_work_config_tool_visible_to_coordinator_and_content_plan_only() ->
     assert coordinator.ok and coordinator.value is not None
     assert content_plan.ok and content_plan.value is not None
     assert statement_worker.ok and statement_worker.value is not None
-    assert "get_current_repo_work_config" in coordinator.value
-    assert "get_current_repo_work_config" in content_plan.value
-    assert "get_current_repo_work_config" not in statement_worker.value
+    assert "get_current_repo_completion_policy" in coordinator.value
+    assert "get_current_repo_completion_policy" in content_plan.value
+    assert "get_current_repo_completion_policy" not in statement_worker.value
 
 
 def test_current_requirement_read_replaces_requirement_attach_on_coordinator_surface() -> None:

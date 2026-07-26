@@ -57,7 +57,6 @@ def test_content_phase_semantic_advance_runs_initial_admission_plan_and_child(
                 "repo_path": str(ws.provider_repo),
                 "node_path": CONTENT_NODE_PATH,
                 "contract_version": 1,
-                "task_mode": "run",
                 "max_parallel_content_node_tasks": 1,
             },
         ),
@@ -139,7 +138,6 @@ def test_content_task_semantic_advance_includes_coordinator_checkpoint_closeout(
                     {
                         "summary": "Dispatch one semantic content task.",
                         "node_paths": [CONTENT_NODE_PATH],
-                        "task_mode": "run",
                     },
                 )
             ],

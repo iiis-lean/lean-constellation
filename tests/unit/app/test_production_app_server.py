@@ -19,7 +19,7 @@ from lean_constellation.app import (
     initialize_repo_business_truth,
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.flows.common.agent_steps import RepoFormatDiscoveryAgentStep
 from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from tests.unit_services_helpers import publish_native_provider_release
@@ -332,7 +332,6 @@ def test_production_progress_and_agent_live_routes_are_repo_prefixed(tmp_path) -
                 "repo_path": str(repo_root),
                 "node_path": "Main.Core",
                 "contract_version": 1,
-                "task_mode": "run",
             },
         )
     )
@@ -400,7 +399,6 @@ def test_production_step_terminal_wait_is_read_only_and_not_test_control_gated(t
                 "repo_path": str(repo_root),
                 "node_path": "Main.Core",
                 "contract_version": 1,
-                "task_mode": "run",
             },
         )
     )
@@ -457,7 +455,6 @@ def test_production_step_terminal_wait_does_not_block_status_route(tmp_path) -> 
                 "repo_path": str(repo_root),
                 "node_path": "Main.Wait",
                 "contract_version": 1,
-                "task_mode": "run",
             },
         )
     )
@@ -712,17 +709,15 @@ def test_production_app_server_exposes_repo_config_routes(tmp_path) -> None:
         updated = client.patch(
             "/admin/repos/MainRepo/config",
             json={
-                "target_proof_availability": ProofAvailability.DECLARED.value,
-                "work_mode": RepoWorkMode.DECLARED_INTERFACE.value,
+                "completion_mode": RepoCompletionMode.INTERFACE_DECLARED.value,
             },
         )
         publication = client.get("/admin/repos/MainRepo/publication")
 
     assert default_config.status_code == 200
-    assert default_config.json()["value"]["config"]["target_proof_availability"] == "proved"
+    assert default_config.json()["value"]["config"]["completion_mode"] == "graph_proved"
     assert updated.status_code == 200
-    assert updated.json()["value"]["config"]["target_proof_availability"] == "declared"
-    assert updated.json()["value"]["config"]["work_mode"] == "declared_interface"
+    assert updated.json()["value"]["config"]["completion_mode"] == "interface_declared"
     assert publication.status_code == 200
     assert publication.json()["value"]["publication"]["status"] == "developing"
 

@@ -934,7 +934,6 @@ def _attach_reviewer_step(
                 "repo_path": str(ws.provider_repo),
                 "node_path": round_fixture.node_path,
                 "contract_version": 1,
-                "task_mode": "run",
             },
         ),
         enqueue=False,

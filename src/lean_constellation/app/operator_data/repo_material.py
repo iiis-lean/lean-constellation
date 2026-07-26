@@ -22,6 +22,7 @@ from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.preparation import RepoPreparationInput, RepoPreparationInputView
 from lean_constellation.domain.repo import (
     ProofAvailability,
+    RepoCompletionMode,
     RepoConfig,
     RepoConfigView,
     RepoFormat,
@@ -29,7 +30,6 @@ from lean_constellation.domain.repo import (
     RepoPublicationView,
     RepoPublicationStatus,
     RepoStateView,
-    RepoWorkMode,
     WorkspaceCatalogView,
     WorkspaceRepoSummary,
 )
@@ -85,15 +85,13 @@ MUTATE_REPO_MATERIAL = OperatorOperationSpec(
 class NativeRepoCreateInput(OperatorInputModel):
     project_name: str
     preparation_input: RepoPreparationInput
-    target_proof_availability: ProofAvailability
-    work_mode: RepoWorkMode
+    completion_mode: RepoCompletionMode
     default_requirement_proof_availability: ProofAvailability = ProofAvailability.DECLARED
     native_config: NativeLakeProjectConfig
 
 
 class RepoConfigUpdateInput(OperatorInputModel):
-    target_proof_availability: ProofAvailability | None = None
-    work_mode: RepoWorkMode | None = None
+    completion_mode: RepoCompletionMode | None = None
     default_requirement_proof_availability: ProofAvailability | None = None
 
 
@@ -226,8 +224,7 @@ class OperatorRepoStateView(StrictModel):
     repo_format: RepoFormat
     publication_status: RepoPublicationStatus
     latest_release_id: str | None = None
-    target_proof_availability: ProofAvailability
-    work_mode: RepoWorkMode
+    completion_mode: RepoCompletionMode
     default_requirement_proof_availability: ProofAvailability
     provider_ready: bool
     readiness_policy: str
@@ -273,8 +270,7 @@ class OperatorWorkspaceRepoView(StrictModel):
     repo_format: RepoFormat
     publication_status: RepoPublicationStatus
     latest_release_id: str | None = None
-    target_proof_availability: ProofAvailability
-    work_mode: RepoWorkMode
+    completion_mode: RepoCompletionMode
     provider_ready: bool
     open_requirement_count: int
 
@@ -551,8 +547,7 @@ class RepoMaterialOperatorApi:
                 repo_key=repo_key,
                 project_name=input_model.project_name,
                 preparation_input=input_model.preparation_input,
-                target_proof_availability=input_model.target_proof_availability,
-                work_mode=input_model.work_mode,
+                completion_mode=input_model.completion_mode,
                 default_requirement_proof_availability=input_model.default_requirement_proof_availability,
                 native_config=input_model.native_config,
             ),
@@ -625,8 +620,7 @@ class RepoMaterialOperatorApi:
             MUTATE_REPO_MATERIAL,
             lambda ctx: ctx.runtime.repo_workspace.metadata.update_repo_config(
                 ctx.repo_root,
-                target_proof_availability=input_model.target_proof_availability,
-                work_mode=input_model.work_mode,
+                completion_mode=input_model.completion_mode,
                 default_requirement_proof_availability=input_model.default_requirement_proof_availability,
             ),
         ), _repo_config_view)

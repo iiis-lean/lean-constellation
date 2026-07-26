@@ -10,7 +10,7 @@ from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import create_fake_lean_flow_runtime
@@ -216,8 +216,7 @@ def _params(
 ) -> dict[str, object]:
     run_spec = RepoRunSpec(
         run_objective="Prepare the public API required in this run.",
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
         source_scope=SourceScope(mode="selected", selectors=["source.md"]),
         index_policy="reuse",
         root_interface_policy=policy,

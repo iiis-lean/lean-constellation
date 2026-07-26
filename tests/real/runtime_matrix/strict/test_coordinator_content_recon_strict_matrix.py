@@ -41,7 +41,7 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
             "CoordinatorAgent": [
                 (
                     "submit_content_node_tasks",
-                    {"summary": "Dispatch Main.Core content task.", "node_paths": ["Main.Core"], "task_mode": "run"},
+                    {"summary": "Dispatch Main.Core content task.", "node_paths": ["Main.Core"]},
                 ),
                 (
                     "submit_resource_request",

@@ -35,7 +35,7 @@ def test_coordinator_content_resource_requirement_callback_matrix(
             "CoordinatorAgent": [
                 (
                     "submit_content_node_tasks",
-                    {"summary": "Dispatch Main.Core content task.", "node_paths": ["Main.Core"], "task_mode": "run"},
+                    {"summary": "Dispatch Main.Core content task.", "node_paths": ["Main.Core"]},
                 ),
                 (
                     "submit_resource_request",

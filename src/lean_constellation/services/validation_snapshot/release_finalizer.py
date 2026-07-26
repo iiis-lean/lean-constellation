@@ -13,12 +13,14 @@ from pydantic import Field
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import (
-    ProofAvailability,
+    RepoCompletionMode,
     RepoFormat,
     RepoModel,
     RepoPublicationState,
     RepoPublicationStatus,
     RepoPublicationView,
+    completion_mode_satisfies,
+    proof_availability_for_completion_mode,
     proof_availability_satisfies,
 )
 from lean_constellation.domain.repo_release import RepoRelease, RepoReleaseView
@@ -40,7 +42,7 @@ if TYPE_CHECKING:
 class CandidateReleaseGateView(StrictModel):
     base_release_id: str | None = None
     candidate_node_contract_versions: dict[str, int] = Field(default_factory=dict)
-    target_proof_availability: ProofAvailability
+    completion_mode: RepoCompletionMode
     gate: GateReport
     blocking_issue_kinds: list[str] = Field(default_factory=list)
     summary: str
@@ -397,7 +399,7 @@ class RepoReleaseFinalizerComponent:
         return self.runtime.foundation.ok(CandidateReleaseGateView(
             base_release_id=base_release_id,
             candidate_node_contract_versions=dict(sorted(node_versions.items())),
-            target_proof_availability=config.value.config.target_proof_availability,
+            completion_mode=config.value.config.completion_mode,
             gate=gate,
             blocking_issue_kinds=blocking,
             summary="Candidate release gate passed." if gate.passed else "Candidate release has blocking findings.",
@@ -453,7 +455,7 @@ class RepoReleaseFinalizerComponent:
             release_id=release_id_result.value,
             parent_release_id=base_release_id,
             node_contract_versions=preview.value.candidate_node_contract_versions,
-            target_proof_availability=preview.value.target_proof_availability,
+            completion_mode=preview.value.completion_mode,
             repo_checkpoint_id=checkpoint_id_result.value,
             summary=summary,
         )
@@ -872,7 +874,10 @@ class RepoReleaseFinalizerComponent:
                 conflicts.append(key)
                 continue
             if not proof_availability_satisfies(
-                config.value.config.target_proof_availability, requirement.required_proof_availability
+                proof_availability_for_completion_mode(
+                    config.value.config.completion_mode
+                ),
+                requirement.required_proof_availability,
             ):
                 conflicts.append(key)
                 continue
@@ -1289,12 +1294,13 @@ class RepoReleaseFinalizerComponent:
                     object_ref=base_release.value.release.repo_checkpoint_id,
                     details={"issues": "; ".join(issue.kind for issue in checkpoint.issues)},
                 ))
-            if not proof_availability_satisfies(
-                current_config.value.config.target_proof_availability,
-                base_release.value.release.target_proof_availability,
+            if not completion_mode_satisfies(
+                current_config.value.config.completion_mode,
+                base_release.value.release.completion_mode,
             ):
                 issues.append(self.runtime.foundation.issue(
-                    "release_target_regression", "Candidate target is below the base release target."
+                    "release_completion_regression",
+                    "Candidate completion requirement is below the base release.",
                 ))
         return self.runtime.foundation.ok(
             self.runtime.foundation.gate_failed("release_base", issues)

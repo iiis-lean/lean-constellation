@@ -34,14 +34,14 @@ FLOW_PARAMS = {
     },
     "native_repo_preparation": {
         "repo_key": "Provider", "start_reason": "bootstrap",
-        "run_spec": {"run_objective": "Prepare Provider.", "target_proof_availability": "proved",
-                     "work_mode": "proved_full_graph", "source_scope": {"mode": "all"},
+        "run_spec": {"run_objective": "Prepare Provider.", "completion_mode": "graph_proved",
+                     "source_scope": {"mode": "all"},
                      "index_policy": "auto", "root_interface_policy": "auto"},
     },
     "native_repo_continuation": {
         "repo_key": "Provider", "repo_root": "/workspace/Provider", "base_release_id": "release-r1",
-        "run_spec": {"run_objective": "Continue Provider.", "target_proof_availability": "proved",
-                     "work_mode": "proved_full_graph", "source_scope": {"mode": "none"},
+        "run_spec": {"run_objective": "Continue Provider.", "completion_mode": "graph_proved",
+                     "source_scope": {"mode": "none"},
                      "index_policy": "reuse", "root_interface_policy": "reuse"},
     },
     "adapter_repo_preparation": {"repo_key": "Adapter", "start_reason": "bootstrap"},
@@ -59,7 +59,6 @@ FLOW_PARAMS = {
         "repo_key": "Repo",
         "node_path": "Main.Core",
         "contract_version": 1,
-        "task_mode": "first",
     },
     "node_dir_dependency_recon": {
         "repo_key": "Repo",

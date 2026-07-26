@@ -492,8 +492,6 @@ class PrepareNativeLifecycleChildStep(BaseStep):
                     "repo_key": input_model.repo_key,
                     "repo_root": str(repo_root),
                     "run_objective": run_spec.run_objective,
-                    "target_proof_availability": run_spec.target_proof_availability,
-                    "work_mode": run_spec.work_mode,
                     "source_scope": run_spec.source_scope.model_dump(mode="json"),
                     "index_policy": run_spec.index_policy,
                     "start_reason": "recovery" if recovery is not None else "initial",
@@ -867,8 +865,7 @@ class PrepareCoordinatorDispatchStep(BaseStep):
             source_index_delta_summary=source_result.summary if source_result is not None else None,
             root_interface_delta_summary=root_result.summary if root_result is not None else None,
             config_change_summary=(
-                f"target={input_model.run_spec.target_proof_availability.value}; "
-                f"work_mode={input_model.run_spec.work_mode.value}"
+                f"completion_mode={input_model.run_spec.completion_mode.value}"
             ),
         )
         request = FlowRequest(

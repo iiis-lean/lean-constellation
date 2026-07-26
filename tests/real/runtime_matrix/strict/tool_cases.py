@@ -1736,8 +1736,8 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="ContentPlanAgent",
         restore_policy="checkpoint",
     ),
-    "get_current_repo_work_config": ToolCase(
-        tool_name="get_current_repo_work_config",
+    "get_current_repo_completion_policy": ToolCase(
+        tool_name="get_current_repo_completion_policy",
         status="implemented",
         category="content_completion_gate_read",
         reason="Current repo work config covered by the standard strict application ToolSweep.",

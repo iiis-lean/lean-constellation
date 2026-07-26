@@ -18,7 +18,6 @@ from agent_runtime_kit.flow.models import (
 from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, AgentStepState
 from pydantic import Field, field_validator, model_validator
 
-from lean_constellation.domain.repo import ProofAvailability, RepoConfig, RepoWorkMode
 from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
@@ -48,8 +47,6 @@ class SourceIndexBuildParams(LeanFlowParams):
     repo_key: str
     repo_root: str
     run_objective: str
-    target_proof_availability: ProofAvailability
-    work_mode: RepoWorkMode
     source_scope: SourceScope
     index_policy: Literal["auto", "update", "reuse"] = "auto"
     start_reason: Literal["initial", "continuation", "admin_preprocess", "recovery"] = "initial"
@@ -76,11 +73,7 @@ class SourceIndexBuildParams(LeanFlowParams):
         return normalized
 
     @model_validator(mode="after")
-    def _validate_run_target(self) -> "SourceIndexBuildParams":
-        RepoConfig(
-            target_proof_availability=self.target_proof_availability,
-            work_mode=self.work_mode,
-        )
+    def _validate_recovery(self) -> "SourceIndexBuildParams":
         if (self.start_reason == "recovery") != (self.recovery is not None):
             raise ValueError("SourceIndex recovery requires start_reason=recovery and a recovery contract")
         if self.recovery is not None:
@@ -96,8 +89,6 @@ class SourceIndexBuildInput(LeanRenderableFlowInput):
     repo_key: str
     repo_root: str
     run_objective: str
-    target_proof_availability: ProofAvailability
-    work_mode: RepoWorkMode
     source_scope: SourceScope
     index_policy: Literal["auto", "update", "reuse"]
     start_reason: Literal["initial", "continuation", "admin_preprocess", "recovery"]
@@ -111,8 +102,6 @@ class SourceIndexBuildInput(LeanRenderableFlowInput):
     def agent_fields(self) -> dict[str, object]:
         return {
             "run_objective": self.run_objective,
-            "target_proof_availability": self.target_proof_availability.value,
-            "work_mode": self.work_mode.value,
             "source_scope": self.source_scope.model_dump(mode="json"),
             "index_policy": self.index_policy,
             "start_reason": self.start_reason,
@@ -468,8 +457,6 @@ def _agent_context(input_model: SourceIndexBuildInput, state: SourceIndexBuildSt
     return {
         "repo_key": input_model.repo_key,
         "run_objective": input_model.run_objective,
-        "target_proof_availability": input_model.target_proof_availability.value,
-        "work_mode": input_model.work_mode.value,
         "start_reason": input_model.start_reason,
         "round_index": state.review_round,
         "active_file_scope": list(state.resolved_file_paths),

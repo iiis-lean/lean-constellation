@@ -20,7 +20,6 @@ from lean_constellation.services.validation_snapshot.release_finalizer import Pr
 
 class CoordinatorContentTasksResultView(StrictModel):
     node_paths: list[str] = Field(default_factory=list)
-    task_mode: str = "run"
     request_count: int = 0
 
 

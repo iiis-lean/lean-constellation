@@ -52,7 +52,7 @@ from lean_constellation.app.operator_data.repo_material import (
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services.decl_graph import DeclState, RoundStageReview
 from lean_constellation.services.external_clients import (
@@ -336,8 +336,7 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
                     source_corpus_mode=SourceCorpusMode.PREPARE,
                     interface_inputs=[interface],
                 ),
-                target_proof_availability=ProofAvailability.DECLARED,
-                work_mode=RepoWorkMode.DECLARED_INTERFACE,
+                completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
                 native_config=NativeLakeProjectConfig(mathlib_enabled=False),
             ),
         )

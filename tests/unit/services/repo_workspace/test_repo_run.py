@@ -3,7 +3,7 @@ from __future__ import annotations
 from lean_constellation.app import create_app_runtime_services
 from lean_constellation.app.bootstrap import initialize_repo_business_truth
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.foundation import FoundationContext
@@ -57,8 +57,7 @@ def test_apply_run_config_preserves_unrelated_fields_and_checks_base(tmp_path) -
     spec = runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
         root,
         run_objective="Declare the selected interface.",
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
         max_parallel_content_node_tasks=7,
     ).value
     applied = runtime.repo_workspace.run.apply_repo_run_config(root, run_spec=spec, expected_base_release_id=None)
@@ -75,7 +74,7 @@ def test_transition_allows_target_upgrade_and_rejects_downgrade(tmp_path) -> Non
     runtime, root = _repo(tmp_path)
     release = RepoRelease(
         release_id="release-r1", node_contract_versions={"main": 1},
-        target_proof_availability=ProofAvailability.PROVED,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
         repo_checkpoint_id="repo-r1", summary="R1",
     )
     ctx = FoundationContext(repo_root=root)
@@ -99,14 +98,15 @@ def test_transition_allows_target_upgrade_and_rejects_downgrade(tmp_path) -> Non
         RepoPublicationState(status=RepoPublicationStatus.STABLE, latest_release_id="release-r1"),
     ).ok
     downgrade = runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
-        root, run_objective="Downgrade.", target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        root,
+        run_objective="Downgrade.",
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     ).value
     report = runtime.repo_workspace.run.validate_repo_run_transition(
         root, run_spec=downgrade, start_kind="continuation", base_release_id="release-r1"
     )
     assert report.ok and report.value is not None and not report.value.passed
-    assert {issue.kind for issue in report.value.issues} == {"repo_run_target_downgrade"}
+    assert {issue.kind for issue in report.value.issues} == {"repo_run_completion_downgrade"}
     assert runtime.repo_workspace.metadata.mark_repo_developing(root).ok
     resume = runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
         root, run_objective="Resume after standalone preprocessing."

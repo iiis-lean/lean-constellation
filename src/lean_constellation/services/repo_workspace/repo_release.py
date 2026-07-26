@@ -12,7 +12,7 @@ from lean_constellation.domain.repo_release import (
     RepoReleaseBaselineView,
     RepoReleaseView,
 )
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import ProofAvailability, completion_mode_satisfies
 from lean_constellation.services.decl_graph.models import (
     DeclLifecycle,
     DeclRevisionStatus,
@@ -68,16 +68,17 @@ class RepoReleaseComponent:
             parent_lineage = self.resolve_release_lineage(repo_root, release_id=release.parent_release_id)
             if not parent_lineage.ok:
                 return self.runtime.foundation.fail(parent_lineage.issues)
-            if self._availability_rank(release.target_proof_availability) < self._availability_rank(
-                parent.value.release.target_proof_availability
+            if not completion_mode_satisfies(
+                release.completion_mode,
+                parent.value.release.completion_mode,
             ):
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
-                        "release_parent_target_regression",
-                        "A child release cannot lower its parent's proof availability target.",
+                        "release_parent_completion_regression",
+                        "A child release cannot lower its parent's completion requirement.",
                         object_ref=release.release_id,
-                        current=release.target_proof_availability.value,
-                        expected=parent.value.release.target_proof_availability.value,
+                        current=release.completion_mode.value,
+                        expected=parent.value.release.completion_mode.value,
                     )
                 )
         validated = self._validate_release_heads(repo_root, release)
@@ -168,16 +169,17 @@ class RepoReleaseComponent:
             current_id = loaded.value.release.parent_release_id
         lineage.reverse()
         for parent, child in zip(lineage, lineage[1:], strict=False):
-            if self._availability_rank(child.target_proof_availability) < self._availability_rank(
-                parent.target_proof_availability
+            if not completion_mode_satisfies(
+                child.completion_mode,
+                parent.completion_mode,
             ):
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
-                        "release_parent_target_regression",
-                        "Repo release lineage lowers an earlier proof availability target.",
+                        "release_parent_completion_regression",
+                        "Repo release lineage lowers an earlier completion requirement.",
                         object_ref=child.release_id,
-                        current=child.target_proof_availability.value,
-                        expected=parent.target_proof_availability.value,
+                        current=child.completion_mode.value,
+                        expected=parent.completion_mode.value,
                     )
                 )
         return self.runtime.foundation.ok(lineage)
@@ -531,9 +533,6 @@ class RepoReleaseComponent:
     def _ancestor_scopes(self, node_path: str) -> list[str]:
         parts = node_path.split(".")
         return [".".join(parts[:index]) for index in range(1, len(parts))]
-
-    def _availability_rank(self, availability: ProofAvailability) -> int:
-        return {ProofAvailability.DECLARED: 0, ProofAvailability.PROVED: 1}[availability]
 
     def _view(self, repo_root: Path, release: RepoRelease) -> RepoReleaseView:
         return RepoReleaseView(repo_root=str(repo_root), release=release, summary=f"Loaded repo release {release.release_id}.")

@@ -14,7 +14,11 @@ from lean_constellation.domain.preparation import (
     RequirementWaitingView,
     RequirementView,
 )
-from lean_constellation.domain.repo import ProofAvailability, proof_availability_satisfies
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    proof_availability_for_completion_mode,
+    proof_availability_satisfies,
+)
 from lean_constellation.services.foundation import FoundationContext, ServiceResult, WriteMode
 
 if TYPE_CHECKING:
@@ -374,7 +378,9 @@ class RepoRequirementComponent:
         provider_config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
         if not provider_config.ok or provider_config.value is None:
             return self.runtime.foundation.fail(provider_config.issues)
-        target = provider_config.value.config.target_proof_availability
+        target = proof_availability_for_completion_mode(
+            provider_config.value.config.completion_mode
+        )
         if not proof_availability_satisfies(target, requirement.required_proof_availability):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(

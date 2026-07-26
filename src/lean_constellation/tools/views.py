@@ -142,7 +142,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             AppView.NATIVE_REPO_COORDINATOR,
             [
                 AppGroup.REPO_PREPARATION_INPUT_READ,
-                AppGroup.REPO_WORK_CONFIG_READ,
+                AppGroup.REPO_COMPLETION_POLICY_READ,
                 AppGroup.REPO_RUN_CONTEXT_READ,
                 AppGroup.WORKSPACE_OVERVIEW_READ,
                 AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
@@ -186,7 +186,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
             AppView.CONTENT_PLAN,
             [
                 AppGroup.NODE_CONTRACT_READ_CURRENT,
-                AppGroup.REPO_WORK_CONFIG_READ,
+                AppGroup.REPO_COMPLETION_POLICY_READ,
                 AppGroup.NODE_VISIBILITY_READ_CURRENT,
                 AppGroup.CURRENT_NODE_PUBLIC_DECL_READ,
                 AppGroup.VISIBLE_NODE_PUBLIC_DECL_READ,

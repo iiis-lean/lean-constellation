@@ -12,9 +12,7 @@ from urllib.parse import urlencode
 
 import anyio
 
-from lean_constellation.app.admin_api import LeanAdminApi
 from lean_constellation.app.config import load_app_config
-from lean_constellation.app.runtime import create_app_runtime_from_config
 from lean_constellation.app.server import run_production_app_server
 from lean_constellation.app.semantic_watch import SemanticWatchOptions, SemanticWatcher
 
@@ -56,6 +54,21 @@ def build_parser() -> argparse.ArgumentParser:
     decl_transition_migration.add_argument("repo_root", type=Path)
     decl_transition_migration.add_argument("--manifest-dir", type=Path, default=None)
     decl_transition_migration.add_argument("--rebuild-runtime-indexes", action="store_true")
+    repo_completion_migration = sub.add_parser(
+        "migrate-repo-completion-checkpoint",
+        help=(
+            "Offline immutable-clone migration of one legacy repo/runtime checkpoint "
+            "to the current completion and Agent resource schema."
+        ),
+    )
+    repo_completion_migration.add_argument(
+        "mode",
+        choices=["preview", "apply", "validate"],
+    )
+    repo_completion_migration.add_argument("repo_root", type=Path)
+    repo_completion_migration.add_argument("--checkpoint-id", required=True)
+    repo_completion_migration.add_argument("--expected-token", default=None)
+    repo_completion_migration.add_argument("--report-dir", type=Path, default=None)
     sub.add_parser("status", help="Read production server runtime status over Admin HTTP.")
     flow_tree = sub.add_parser("flow-tree", help="Read production flow/step tree over Admin HTTP.")
     flow_tree.add_argument("--repo-key", required=True)
@@ -267,6 +280,41 @@ def main(argv: list[str] | None = None) -> int:
                 rebuild_runtime_indexes=args.rebuild_runtime_indexes,
             )
         except DeclTransitionMigrationError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            return 1
+        print(json.dumps({"ok": True, "value": report.to_dict()}, indent=2, sort_keys=True))
+        return 0
+    if args.command == "migrate-repo-completion-checkpoint":
+        from lean_constellation.app.repo_completion_mode_migration import (
+            RepoCompletionModeMigrationError,
+            apply_repo_completion_checkpoint,
+            preview_repo_completion_checkpoint,
+            validate_repo_completion_checkpoint,
+        )
+
+        try:
+            if args.mode == "preview":
+                report = preview_repo_completion_checkpoint(
+                    args.repo_root,
+                    checkpoint_id=args.checkpoint_id,
+                )
+            elif args.mode == "apply":
+                if not args.expected_token:
+                    parser.error("--expected-token is required for apply")
+                if args.report_dir is None:
+                    parser.error("--report-dir is required for apply")
+                report = apply_repo_completion_checkpoint(
+                    args.repo_root,
+                    checkpoint_id=args.checkpoint_id,
+                    expected_token=args.expected_token,
+                    report_dir=args.report_dir,
+                )
+            else:
+                report = validate_repo_completion_checkpoint(
+                    args.repo_root,
+                    checkpoint_id=args.checkpoint_id,
+                )
+        except RepoCompletionModeMigrationError as exc:
             print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
             return 1
         print(json.dumps({"ok": True, "value": report.to_dict()}, indent=2, sort_keys=True))
@@ -610,8 +658,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-    runtime = create_app_runtime_from_config(config)
-    admin = LeanAdminApi(runtime)
     parser.error(f"unknown command: {args.command}")
     return 2
 
@@ -663,9 +709,10 @@ def _add_source_scope_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_repo_run_arguments(parser: argparse.ArgumentParser, *, objective_required: bool) -> None:
     parser.add_argument("--repo-key", required=True)
     parser.add_argument("--run-objective", required=objective_required)
-    parser.add_argument("--target-proof-availability", choices=["declared", "proved"], default=None)
     parser.add_argument(
-        "--work-mode", choices=["declared_interface", "declared_full_graph", "proved_full_graph"], default=None
+        "--completion-mode",
+        choices=["interface_declared", "graph_declared", "graph_proved"],
+        default=None,
     )
     _add_source_scope_arguments(parser)
     parser.add_argument("--index-policy", choices=["auto", "update", "reuse"], default=None)
@@ -685,8 +732,7 @@ def _source_scope_payload(args) -> dict | None:  # noqa: ANN001
 def _repo_run_payload(args) -> dict:  # noqa: ANN001
     values = {
         "run_objective": args.run_objective,
-        "target_proof_availability": args.target_proof_availability,
-        "work_mode": args.work_mode,
+        "completion_mode": args.completion_mode,
         "source_scope": _source_scope_payload(args),
         "index_policy": args.index_policy,
         "root_interface_policy": args.root_interface_policy,

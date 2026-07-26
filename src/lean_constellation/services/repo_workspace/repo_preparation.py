@@ -24,7 +24,12 @@ from lean_constellation.domain.preparation import (
     ProviderRepoShellView,
     RepoShellView,
 )
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode, WorkspaceConfig
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoCompletionMode,
+    RepoFormat,
+    WorkspaceConfig,
+)
 from lean_constellation.services.foundation import (
     FoundationContext,
     GateReport,
@@ -259,16 +264,16 @@ class RepoPreparationComponent:
                     )
         items.sort(key=lambda item: (item.consumer_repo, item.requirement.name))
         required = self._required_proof_availability(items)
-        work_mode = self._provider_work_mode(required)
+        completion_mode = self._provider_completion_mode(required)
         return self.runtime.foundation.ok(
             RequirementGroupView(
                 target_repo=target_repo,
                 required_proof_availability=required,
-                provider_work_mode=work_mode,
+                provider_completion_mode=completion_mode,
                 requirements=items,
                 summary=(
                     f"Found {len(items)} open requirements for {target_repo}; "
-                    f"provider target is {required.value}/{work_mode.value}."
+                    f"provider requirement is {required.value}/{completion_mode.value}."
                 ),
             )
         )
@@ -427,17 +432,18 @@ class RepoPreparationComponent:
         if not config.ok or config.value is None:
             if any(issue.kind == "requirement_group_empty" for issue in config.issues) and not preparation_input.requirement_refs:
                 required_proof_availability = self.workspace_config.default_requirement_proof_availability
-                provider_work_mode = self._provider_work_mode(required_proof_availability)
+                provider_completion_mode = self._provider_completion_mode(
+                    required_proof_availability
+                )
             else:
                 self.rollback_created_repo(created_repo_root)
                 return self.runtime.foundation.fail(config.issues)
         else:
             required_proof_availability = config.value.required_proof_availability
-            provider_work_mode = config.value.provider_work_mode
+            provider_completion_mode = config.value.provider_completion_mode
         configured = self.metadata.update_repo_config(
             created_repo_root,
-            target_proof_availability=required_proof_availability,
-            work_mode=provider_work_mode,
+            completion_mode=provider_completion_mode,
         )
         if not configured.ok or configured.value is None:
             self.rollback_created_repo(created_repo_root)
@@ -478,8 +484,7 @@ class RepoPreparationComponent:
             return self.runtime.foundation.fail(input_view.issues)
         configured = self.metadata.update_repo_config(
             Path(shell.value.repo_root),
-            target_proof_availability=draft.value.requirement_group.required_proof_availability,
-            work_mode=draft.value.requirement_group.provider_work_mode,
+            completion_mode=draft.value.requirement_group.provider_completion_mode,
         )
         if not configured.ok:
             return self.runtime.foundation.fail(configured.issues)
@@ -541,8 +546,7 @@ class RepoPreparationComponent:
             return self.runtime.foundation.fail(ensure.issues)
         configured = self.metadata.update_repo_config(
             repo_root,
-            target_proof_availability=self.workspace_config.default_direct_repo_proof_availability,
-            work_mode=self.workspace_config.default_direct_repo_work_mode,
+            completion_mode=self.workspace_config.default_direct_repo_completion_mode,
             default_requirement_proof_availability=self.workspace_config.default_requirement_proof_availability,
         )
         if not configured.ok:
@@ -586,8 +590,13 @@ class RepoPreparationComponent:
             return ProofAvailability.PROVED
         return ProofAvailability.DECLARED
 
-    def _provider_work_mode(self, required: ProofAvailability) -> RepoWorkMode:
-        return self.workspace_config.requirement_provider_work_mode_by_proof_availability[required]
+    def _provider_completion_mode(
+        self, required: ProofAvailability
+    ) -> RepoCompletionMode:
+        return (
+            self.workspace_config
+            .requirement_provider_completion_mode_by_proof_availability[required]
+        )
 
     def validate_requirement_bootstrap_input(
         self,

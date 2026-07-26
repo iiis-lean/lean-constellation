@@ -30,10 +30,30 @@ def proof_availability_satisfies(
     return order[ProofAvailability(available)] >= order[ProofAvailability(required)]
 
 
-class RepoWorkMode(StrEnum):
-    DECLARED_INTERFACE = "declared_interface"
-    DECLARED_FULL_GRAPH = "declared_full_graph"
-    PROVED_FULL_GRAPH = "proved_full_graph"
+class RepoCompletionMode(StrEnum):
+    INTERFACE_DECLARED = "interface_declared"
+    GRAPH_DECLARED = "graph_declared"
+    GRAPH_PROVED = "graph_proved"
+
+
+def completion_mode_satisfies(
+    available: RepoCompletionMode | str,
+    required: RepoCompletionMode | str,
+) -> bool:
+    order = {
+        RepoCompletionMode.INTERFACE_DECLARED: 0,
+        RepoCompletionMode.GRAPH_DECLARED: 1,
+        RepoCompletionMode.GRAPH_PROVED: 2,
+    }
+    return order[RepoCompletionMode(available)] >= order[RepoCompletionMode(required)]
+
+
+def proof_availability_for_completion_mode(
+    mode: RepoCompletionMode | str,
+) -> ProofAvailability:
+    if RepoCompletionMode(mode) == RepoCompletionMode.GRAPH_PROVED:
+        return ProofAvailability.PROVED
+    return ProofAvailability.DECLARED
 
 
 class RepoPublicationStatus(StrEnum):
@@ -52,24 +72,8 @@ class RepoFormatState(StrictModel):
 
 
 class RepoConfig(StrictModel):
-    target_proof_availability: ProofAvailability = ProofAvailability.PROVED
-    work_mode: RepoWorkMode = RepoWorkMode.PROVED_FULL_GRAPH
+    completion_mode: RepoCompletionMode = RepoCompletionMode.GRAPH_PROVED
     default_requirement_proof_availability: ProofAvailability = ProofAvailability.DECLARED
-    @model_validator(mode="after")
-    def _legal_work_mode_for_target(self) -> "RepoConfig":
-        legal = {
-            ProofAvailability.DECLARED: {
-                RepoWorkMode.DECLARED_INTERFACE,
-                RepoWorkMode.DECLARED_FULL_GRAPH,
-            },
-            ProofAvailability.PROVED: {RepoWorkMode.PROVED_FULL_GRAPH},
-        }
-        if self.work_mode not in legal[self.target_proof_availability]:
-            raise ValueError(
-                "work_mode is not compatible with target_proof_availability: "
-                f"{self.work_mode.value} for {self.target_proof_availability.value}"
-            )
-        return self
 
 
 class RepoPublicationState(StrictModel):
@@ -87,31 +91,23 @@ class RepoPublicationState(StrictModel):
 
 
 class WorkspaceConfig(StrictModel):
-    default_direct_repo_proof_availability: ProofAvailability = ProofAvailability.PROVED
-    default_direct_repo_work_mode: RepoWorkMode = RepoWorkMode.PROVED_FULL_GRAPH
+    default_direct_repo_completion_mode: RepoCompletionMode = RepoCompletionMode.GRAPH_PROVED
     default_requirement_proof_availability: ProofAvailability = ProofAvailability.DECLARED
-    requirement_provider_work_mode_by_proof_availability: dict[ProofAvailability, RepoWorkMode] = Field(
+    requirement_provider_completion_mode_by_proof_availability: dict[
+        ProofAvailability, RepoCompletionMode
+    ] = Field(
         default_factory=lambda: {
-            ProofAvailability.DECLARED: RepoWorkMode.DECLARED_INTERFACE,
-            ProofAvailability.PROVED: RepoWorkMode.PROVED_FULL_GRAPH,
+            ProofAvailability.DECLARED: RepoCompletionMode.INTERFACE_DECLARED,
+            ProofAvailability.PROVED: RepoCompletionMode.GRAPH_PROVED,
         }
     )
 
     @model_validator(mode="after")
     def _legal_defaults(self) -> "WorkspaceConfig":
-        RepoConfig(
-            target_proof_availability=self.default_direct_repo_proof_availability,
-            work_mode=self.default_direct_repo_work_mode,
-            default_requirement_proof_availability=self.default_requirement_proof_availability,
-        )
         required_keys = {ProofAvailability.DECLARED, ProofAvailability.PROVED}
-        if set(self.requirement_provider_work_mode_by_proof_availability) != required_keys:
-            raise ValueError("requirement_provider_work_mode_by_proof_availability must define declared and proved")
-        for availability, mode in self.requirement_provider_work_mode_by_proof_availability.items():
-            RepoConfig(
-                target_proof_availability=availability,
-                work_mode=mode,
-                default_requirement_proof_availability=self.default_requirement_proof_availability,
+        if set(self.requirement_provider_completion_mode_by_proof_availability) != required_keys:
+            raise ValueError(
+                "requirement_provider_completion_mode_by_proof_availability must define declared and proved"
             )
         return self
 
@@ -139,11 +135,11 @@ class RepoPublicationView(StrictModel):
     publication: RepoPublicationState
 
 
-class RepoWorkConfigView(StrictModel):
+class RepoCompletionPolicyView(StrictModel):
     repo_root: str
     repo_key: str
-    target_proof_availability: ProofAvailability
-    work_mode: RepoWorkMode
+    completion_mode: RepoCompletionMode
+    default_requirement_proof_availability: ProofAvailability
     summary: str
 
 
@@ -154,8 +150,7 @@ class RepoStateView(StrictModel):
     repo_format: RepoFormat = RepoFormat.UNKNOWN
     publication_status: RepoPublicationStatus = RepoPublicationStatus.DEVELOPING
     latest_release_id: str | None = None
-    target_proof_availability: ProofAvailability = ProofAvailability.PROVED
-    work_mode: RepoWorkMode = RepoWorkMode.PROVED_FULL_GRAPH
+    completion_mode: RepoCompletionMode = RepoCompletionMode.GRAPH_PROVED
     default_requirement_proof_availability: ProofAvailability = ProofAvailability.DECLARED
     provider_ready: bool = False
     readiness_policy: str = "proved_closure"
@@ -171,8 +166,7 @@ class WorkspaceRepoSummary(StrictModel):
     repo_format: RepoFormat = RepoFormat.UNKNOWN
     publication_status: RepoPublicationStatus = RepoPublicationStatus.DEVELOPING
     latest_release_id: str | None = None
-    target_proof_availability: ProofAvailability = ProofAvailability.PROVED
-    work_mode: RepoWorkMode = RepoWorkMode.PROVED_FULL_GRAPH
+    completion_mode: RepoCompletionMode = RepoCompletionMode.GRAPH_PROVED
     provider_ready: bool = False
     open_requirement_count: int = 0
 

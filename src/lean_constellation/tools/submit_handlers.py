@@ -724,7 +724,6 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
             scope_id=node_scope_id(ctx.repo.repo_key, node.value.node_id),
             repo_path=str(ctx.repo_root),
             contract_version=contract.value.version,
-            task_mode=args.task_mode,
             max_parallel_content_node_tasks=max_parallel,
         ))
     return _prepared(
@@ -732,7 +731,6 @@ def submit_content_node_tasks(runtime: Any, ctx: ToolExecutionContext, args: Sub
         CoordinatorContentTasksSubmission(
             **_dispatch_kwargs(ctx, tool_name="submit_content_node_tasks", requests=requests, summary=args.summary),
             node_paths=args.node_paths,
-            task_mode=args.task_mode,
         ),
         agent_view={
             "gate": gate_result.value.model_dump(mode="json"),

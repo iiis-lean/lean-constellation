@@ -8,7 +8,7 @@ from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.app.config import AutomaticCheckpointAppConfig
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoFormat, RepoPublicationStatus
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
@@ -150,8 +150,7 @@ def _start_coordinator(
             start_kind="initial",
             run_spec=RepoRunSpec(
                 run_objective="Run coordinator concurrency test.",
-                target_proof_availability=ProofAvailability.PROVED,
-                work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+                completion_mode=RepoCompletionMode.GRAPH_PROVED,
                 source_scope=SourceScope(mode="none"),
                 index_policy="reuse",
                 root_interface_policy="reuse",

@@ -127,7 +127,7 @@ def test_coordinator_skill_inventory_and_workflow_boundaries() -> None:
     coordinator = get_agent_type_spec("CoordinatorAgent")
     specs = build_skill_specs()
 
-    assert len(coordinator.skill_keys) == 19
+    assert len(coordinator.skill_keys) == 17
     for removed in (
         "coordinator-content-task-lifecycle",
         "coordinator-repo-requirement-lifecycle",
@@ -260,18 +260,12 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "submit_content_node_blocked" in completion
     assert "submit_content_node_failed" in completion
 
-    proved_mode = specs["content-plan-proved-full-graph-mode"].body
-    assert "Bottom-up strategy" in proved_mode
-    assert "Top-down strategy" in proved_mode
-    assert "require_target_state_satisfied=false" in proved_mode
-
-    declared_full_mode = specs["content-plan-declared-full-graph-mode"].body
-    assert "Bottom-up skeleton strategy" in declared_full_mode
-    assert "Top-down skeleton strategy" in declared_full_mode
-
-    declared_interface_mode = specs["content-plan-declared-interface-mode"].body
-    assert "smallest useful declared interface" in declared_interface_mode
-    assert "Do not create proof-only hidden helper lemmas" in declared_interface_mode
+    completion_policy = specs["content-plan-completion-policy"].body
+    assert "interface_declared:" in completion_policy
+    assert "graph_declared:" in completion_policy
+    assert "graph_proved:" in completion_policy
+    assert "Do not plan proof-only" in completion_policy
+    assert "build bottom-up by default" in completion_policy
 
 
 def test_decl_stage_common_skills_keep_stage_specific_tools_out_of_shared_skill() -> None:
@@ -405,18 +399,13 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
         assert forbidden not in native_text
 
 
-def test_coordinator_mode_skills_spell_out_node_tree_policy() -> None:
+def test_coordinator_completion_policy_spells_out_node_tree_policy() -> None:
     specs = build_skill_specs()
 
-    proved_mode = specs["coordinator-proved-full-graph-mode"].body
-    assert "complete proof-oriented native repository" in proved_mode
-    assert "intermediate lemmas" in proved_mode
-    assert "expected proof completion" in proved_mode
-
-    declared_full_mode = specs["coordinator-declared-full-graph-mode"].body
-    assert "full declaration skeleton" in declared_full_mode
-    assert "future proved work" in declared_full_mode
-
-    declared_interface_mode = specs["coordinator-declared-interface-mode"].body
-    assert "smallest stable provider boundary" in declared_interface_mode
-    assert "Avoid creating proof-only internal lemma nodes" in declared_interface_mode
+    completion_policy = specs["coordinator-completion-policy"].body
+    assert "interface_declared:" in completion_policy
+    assert "graph_declared:" in completion_policy
+    assert "graph_proved:" in completion_policy
+    assert "smallest stable node subtree" in completion_policy
+    assert "complete\n  declaration graph" in completion_policy
+    assert "complete proof graph" in completion_policy

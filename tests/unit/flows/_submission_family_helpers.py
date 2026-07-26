@@ -43,7 +43,6 @@ def instantiate_submission(cls, **overrides):
         "resource_key": "res_1",
         "source_description": "Source",
         "node_paths": ["Main.Core"],
-        "task_mode": "run",
         "requirement_name": "req",
         "target_repo": "Provider",
         "interfaces": [],

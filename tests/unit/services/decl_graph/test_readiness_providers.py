@@ -8,7 +8,7 @@ from tests.unit_services_helpers import (
     write_statement_formal_for_test,
 )
 
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.services.decl_graph import DeclReadinessReason, DeclState
 from lean_constellation.services.lean_projection.lean_check import (
     LeanCheckView,
@@ -283,8 +283,7 @@ def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(
     runtime = make_runtime()
     configured = runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert configured.ok
     declared = runtime.decl_graph.check_decl_proof_policy_satisfied(
@@ -348,8 +347,7 @@ def test_strict_proved_audit_rejects_declared_only_public_theorem(tmp_path: Path
     runtime = make_runtime()
     configured = runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert configured.ok
     policy = runtime.decl_graph.check_decl_proof_policy_satisfied(tmp_path, node_path=NODE_PATH, decl_name="public_result")

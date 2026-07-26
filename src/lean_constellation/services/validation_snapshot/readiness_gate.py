@@ -9,7 +9,11 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
-from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoPublicationStatus,
+    proof_availability_for_completion_mode,
+)
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph.availability_policy import is_theorem_like
 from lean_constellation.services.foundation.module_layout import local_module_name, native_project_name
@@ -263,7 +267,9 @@ class ReadinessGateComponent:
         config = self.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
-        target = config.value.config.target_proof_availability
+        target = proof_availability_for_completion_mode(
+            config.value.config.completion_mode
+        )
 
         reports: list[GateReport] = []
         refreshed_boundary, interfaces_ready = self._refresh_node_boundary(repo_root, node_path=node_path)
@@ -735,7 +741,9 @@ class ReadinessGateComponent:
             return self.runtime.foundation.fail(gate.issues)
         return self.runtime.foundation.ok(
             RepoReadyGateView(
-                target_proof_availability=config.value.config.target_proof_availability,
+                target_proof_availability=proof_availability_for_completion_mode(
+                    config.value.config.completion_mode
+                ),
                 publication_status=publication.value.publication.status,
                 main_contract_version=main.value.version,
                 main_contract_version_status=main.value.version_status,
@@ -751,7 +759,9 @@ class ReadinessGateComponent:
         config = self.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
-        target = config.value.config.target_proof_availability
+        target = proof_availability_for_completion_mode(
+            config.value.config.completion_mode
+        )
         exports = self.node.export.list_scope_exports(repo_root, scope_path="Main")
         if not exports.ok or exports.value is None:
             return self.runtime.foundation.fail(exports.issues)

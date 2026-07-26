@@ -180,7 +180,7 @@ class OperatorAuditReportView(StrictModel):
 class OperatorCandidateReleaseView(StrictModel):
     base_release_id: str | None = None
     candidate_node_contract_versions: dict[str, int] = Field(default_factory=dict)
-    target_proof_availability: str
+    completion_mode: str
     gate: OperatorGateView
     blocking_issue_kinds: list[str] = Field(default_factory=list)
     summary: str
@@ -241,7 +241,7 @@ def _candidate_release_view(value: CandidateReleaseGateView) -> OperatorCandidat
     return OperatorCandidateReleaseView(
         base_release_id=value.base_release_id,
         candidate_node_contract_versions=value.candidate_node_contract_versions,
-        target_proof_availability=value.target_proof_availability.value,
+        completion_mode=value.completion_mode.value,
         gate=operator_gate_view(value.gate),
         blocking_issue_kinds=value.blocking_issue_kinds,
         summary=value.summary,

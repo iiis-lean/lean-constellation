@@ -126,7 +126,6 @@ class SubmitResourceRejectedArgs(ReasonSubmitArgs):
 
 class SubmitContentNodeTasksArgs(SummarySubmitArgs):
     node_paths: list[str] = Field(description="Runnable content node paths to dispatch.")
-    task_mode: str = Field(default="run", description="Task mode for each content node child flow.")
 
 
 class RequirementInterfaceArg(StrictModel):

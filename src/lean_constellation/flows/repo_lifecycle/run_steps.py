@@ -19,8 +19,7 @@ class PrepareNativeRunMutationResult(LeanRenderableStepResult):
     outcome: Literal["prepared", "blocked"]
     checkpoint_id: str | None = None
     started_stable: bool = False
-    previous_target: str | None = None
-    previous_work_mode: str | None = None
+    previous_completion_mode: str | None = None
     reason: str | None = None
 
 
@@ -62,8 +61,7 @@ class PrepareNativeRunMutationStep(BaseStep):
         return ctx.complete_step(PrepareNativeRunMutationResult(
             outcome="prepared", checkpoint_id=f"repo-{uuid.uuid4().hex}",
             started_stable=ctx.app.repo_workspace.metadata.get_repo_publication(Path(input_model.repo_root)).value.publication.status.value == "stable",
-            previous_target=config.value.config.target_proof_availability.value,
-            previous_work_mode=config.value.config.work_mode.value,
+            previous_completion_mode=config.value.config.completion_mode.value,
             summary="Prepared native continuation mutation checkpoint.",
         ))
 
@@ -131,8 +129,7 @@ class ApplyNativeRunStep(BaseStep):
             outcome="applied", transitioned=transitioned,
             resolved_source_files=list(resolved.value.resolved_file_paths),
             config_change_summary=(
-                f"target={input_model.run_spec.target_proof_availability.value}; "
-                f"work_mode={input_model.run_spec.work_mode.value}"
+                f"completion_mode={input_model.run_spec.completion_mode.value}"
             ),
             summary="Applied native continuation config and scope."
         ))

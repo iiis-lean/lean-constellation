@@ -106,138 +106,51 @@ def _body(title: str, purpose: str, steps: tuple[str, ...], boundaries: tuple[st
     return "\n".join(lines) + "\n"
 
 
-_COORDINATOR_PROVED_FULL_GRAPH_MODE_BODY = """# coordinator-proved-full-graph-mode
+_COORDINATOR_COMPLETION_POLICY_BODY = """# coordinator-completion-policy
 
-Use this skill when the current repo work mode is proved_full_graph.
+Read `get_current_repo_completion_policy` and apply its completion mode to the
+source and interface scope named by the current run:
 
-The current mode may advance released declarations but never lowers a declaration's released state floor or changes a release-protected statement.
+- interface_declared: build the smallest stable node subtree needed to expose
+  the required public interfaces and their declaration prerequisites. Do not
+  create proof-only helper nodes.
+- graph_declared: represent the selected source scope as a complete
+  declaration graph, including important definitions, theorem statements, and
+  intermediate lemma statements. Proof completion is not required.
+- graph_proved: represent the selected source scope as a complete proof graph.
+  Theorem-like outputs and proof-relevant helpers must eventually be proved;
+  non-theorem foundations must be declared.
 
-The goal is a complete proof-oriented native repository. Design the node tree so theorem-like public outputs and proof-relevant internal lemmas can eventually become proved-level proof-policy satisfied.
-
-Coordinator responsibilities:
-
-1. Build a node tree that covers definitions, statements, intermediate lemmas, proof helper areas, and final public theorems.
-2. Use scope nodes for broad mathematical regions and content nodes for coherent declaration/proof work.
-3. Assign content node contracts with explicit public interfaces, required declarations, source/material references, visible dependencies, and expected proof completion.
-4. Plan exports for lemmas or theorems that must be reused across sibling nodes.
-5. Dispatch content node tasks only when their boundaries and visible dependencies are clear enough for node-local work.
-6. Evaluate every structural and dispatch candidate against current proof-policy satisfaction and completion gates.
-
-Non-theorem-like foundations such as definitions, structures, predicates, namespaces, notation, and theorem statement prerequisites must be declared/formalized when they are needed by public interfaces or theorem statements. Do not hide proof work inside scope nodes or oversized content nodes.
+The run objective and source/interface contracts define *what* is in scope;
+completion mode defines *how far* that scope must be completed. Preserve every
+released state floor and release-protected statement. Use scope nodes for broad
+mathematical regions, content nodes for coherent declaration work, explicit
+exports for sibling reuse, and contracts that state the completion expected for
+their declarations.
 """
 
 
-_COORDINATOR_DECLARED_FULL_GRAPH_MODE_BODY = """# coordinator-declared-full-graph-mode
+_CONTENT_PLAN_COMPLETION_POLICY_BODY = """# content-plan-completion-policy
 
-Use this skill when the current repo work mode is declared_full_graph.
+Read `get_current_repo_completion_policy`, then plan rounds for the current
+contract and source ownership:
 
-The current mode does not downgrade any released state floor or reopen a release-protected statement.
+- interface_declared: declare the contract-required public interfaces and
+  only the foundations needed to state and compile them. Do not plan proof-only
+  hidden helpers.
+- graph_declared: declare every important definition, theorem statement, and
+  intermediate lemma statement in the node's selected source scope. Stop
+  theorem-like declarations at declared state unless existing release truth is
+  already stronger.
+- graph_proved: build bottom-up by default. Declare foundations, prove
+  reusable helpers once their dependencies are ready, and then prove public or
+  contract-required theorem-like outputs.
 
-The goal is a full declaration skeleton for the mathematical source, not a completed proof graph. The node tree should be close to the future proved_full_graph structure, but theorem-like declarations may stop at declared statements.
-
-Coordinator responsibilities:
-
-1. Design the scope/content node tree at roughly the same structural granularity expected for a later proved repo.
-2. Include important definitions, theorem statements, lemma statements, and intermediate mathematical interfaces that appear in the source material.
-3. If the source material omits intermediate lemmas but the future proof structure strongly suggests them, plan plausible declaration skeletons when they are useful for future proved work.
-4. Assign content node contracts that ask for statement-level declaration work and public interfaces, not formal proof completion unless the repo config changes.
-5. Keep public/export boundaries compatible with a future upgrade to proved_full_graph.
-
-This mode is not a minimal provider shortcut. It should preserve the mathematical structure needed for later proof-oriented work.
-"""
-
-
-_COORDINATOR_DECLARED_INTERFACE_MODE_BODY = """# coordinator-declared-interface-mode
-
-Use this skill when the current repo work mode is declared_interface.
-
-The minimal interface target still preserves every previously released public statement and its protected statement closure.
-
-The goal is the smallest stable provider boundary that can satisfy external consumers. Create only the node tree needed to expose the required public interface, while keeping the structure compatible with future expansion into a full proved graph.
-
-Coordinator responsibilities:
-
-1. Identify the public definitions and theorem-like statements that the provider must expose to consumers.
-2. Create content nodes for foundational non-theorem-like definitions required by those public statements.
-3. Create content nodes for the required public theorem statements.
-4. Create only the auxiliary definition nodes needed to make the public statements meaningful and compilable.
-5. Avoid creating proof-only internal lemma nodes in the initial declared-interface pass.
-6. Use source proof structure to choose scope boundaries that leave room for later proof expansion.
-
-The resulting tree should be a stable subtree or skeleton of the future proved_full_graph, not a dead-end shortcut.
-"""
-
-
-_CONTENT_PLAN_PROVED_FULL_GRAPH_MODE_BODY = """# content-plan-proved-full-graph-mode
-
-Use this skill when the current repo work mode is proved_full_graph.
-
-For declarations carried from an earlier release, add or repair proof work without resetting a release-protected statement layer.
-
-The goal is a complete proof-oriented content node. Public or contract-required theorem-like declarations should eventually become proved-level proof-policy satisfied. Non-theorem-like foundations should become declared-level satisfied.
-
-Use source-driven bottom-up construction by default. Read the committed SourceIndex and relevant SourceCorpus ranges before selecting declarations. Strategy prose may describe the top-level goal early, but formal rounds should normally establish dependencies before asking a parent theorem to reach proved.
-
-Bottom-up strategy:
-
-1. Create or update needed foundations with `target_state=declared` and `require_target_state_satisfied=true`.
-2. Prove low-level helper lemmas with `target_state=proved` and `require_target_state_satisfied=true` when they can be proved from already satisfied dependencies.
-3. Continue upward through intermediate lemmas and final theorem-like outputs.
-
-Top-down strategy:
-
-1. Use top-down only when the source or contract gives a particularly stable parent statement and declaring it first materially clarifies the boundary.
-2. Create that parent with `target_state=declared`; do not request proved while known major source stages or accepted dependencies are missing.
-3. Record the expected lower stages in strategy rationale, then prove those dependencies bottom-up.
-4. Return to the parent only after the known blocker closure is available.
-
-Before any direct `target_state=proved` change, perform a readiness preflight: locate the source proof stages, inspect current visible/accepted dependencies, and confirm every concrete blocker from the previous parent attempt has become an available declaration. Keep `require_target_state_satisfied=true` by default. Use `require_target_state_satisfied=false` only for an explicit state-only intermediate route whose closure plan is written in strategy, round objective, or summary. Do not turn recursive helper discovery into repeated unbounded parent retries.
-"""
-
-
-_CONTENT_PLAN_DECLARED_FULL_GRAPH_MODE_BODY = """# content-plan-declared-full-graph-mode
-
-Use this skill when the current repo work mode is declared_full_graph.
-
-Do not lower a released state floor or rewrite a release-protected statement while expanding the declaration skeleton.
-
-The goal is a full declaration skeleton for the content node, not completed formal proofs. Include important definitions, theorem statements, lemma statements, and intermediate mathematical declarations from the source material, while theorem-like declarations may stop at declared-level satisfaction.
-
-Bottom-up skeleton strategy:
-
-1. Create foundations first: definitions, structures, predicates, notation, and statement prerequisites.
-2. Then create low-level lemma statements.
-3. Then create intermediate theorem or lemma statements.
-4. Finally create the public or contract-required theorem statements.
-5. Each change should normally target declared-level satisfaction.
-
-Top-down skeleton strategy:
-
-1. Create the top theorem statements first with `target_state=declared` and `require_target_state_satisfied=true`.
-2. Then create helper lemma statements expected to support future proofs, also with `target_state=declared` and `require_target_state_satisfied=true`.
-3. Recursively add lower-level helper statements when they clarify the future proof structure.
-
-Do not add proof formal stages merely to link these statements. Future proof relationships belong in strategy rationale, round objective, or summary text unless a real proof artifact is created.
-"""
-
-
-_CONTENT_PLAN_DECLARED_INTERFACE_MODE_BODY = """# content-plan-declared-interface-mode
-
-Use this skill when the current repo work mode is declared_interface.
-
-Do not lower a released state floor or rewrite a release-protected statement while adding the smallest new interface delta.
-
-The goal is the smallest useful declared interface for this content node. Expose the public declarations required by its contract and external consumers while avoiding proof-only internal lemma work in the initial pass.
-
-Typical round order:
-
-1. Create or update foundational non-theorem-like declarations with `target_state=declared` and `require_target_state_satisfied=true`.
-2. Create public theorem-like statements with `target_state=declared` and `require_target_state_satisfied=true`.
-3. Add only extra declarations required for those public statements to compile and be semantically meaningful.
-
-Do not create proof-only hidden helper lemmas unless they are necessary to state the public interface. Do not enter proof NL or proof formal stages for theorem-like declarations under this mode.
-
-The node can complete when contract-required public declarations reach declared-level satisfaction. A future proved pass may expand this node or neighboring nodes with internal helper lemmas and proofs.
+The contract and source references determine which mathematical material this
+node owns. Completion mode determines the required state of that material.
+Never lower a released state floor or rewrite a release-protected statement.
+Before targeting `proved`, verify source proof stages and accepted dependency
+closure; do not turn missing helpers into repeated unbounded parent retries.
 """
 
 
@@ -539,7 +452,7 @@ Then stop using this Skill and return to the caller's next-action loop in the sa
         group="coordinator",
         required_tool_groups=_groups(
             AppGroup.REPO_PREPARATION_INPUT_READ,
-            AppGroup.REPO_WORK_CONFIG_READ,
+            AppGroup.REPO_COMPLETION_POLICY_READ,
             AppGroup.NODE_TREE_READ,
             AppGroup.NODE_TREE_WRITE,
             AppGroup.NODE_CONTRACT_READ_BY_NODE,
@@ -554,7 +467,7 @@ Use this Skill when the current repository needs a new mathematical boundary, an
 
 ## Establish The Boundary
 
-1. Read `get_current_repo_work_config`, `get_preparation_input`, and the current tree with `get_node_tree`.
+1. Read `get_current_repo_completion_policy`, `get_preparation_input`, and the current tree with `get_node_tree`.
 2. Read the relevant node contracts and source/index regions rather than decomposing from filenames alone.
 3. Estimate likely Lean scale from important source definitions, lemmas, proof stages, and expected Lean-specific helpers. As a soft default, prefer a focused Content node around roughly 5--15 important declarations; treat substantially larger independent packages as split candidates rather than a hard rejection.
 4. Use the current mode policy to choose the required graph granularity.
@@ -885,26 +798,13 @@ Call `submit_repo_ready` only when the preview passes. This submit expresses can
 Either readiness remains unresolved and the Coordinator returns to its next-action loop with a concrete gate issue, or one repository-ready submit is accepted and the AgentStep stops.
 """,
     ),
-    SkillKey.COORDINATOR_PROVED_FULL_GRAPH_MODE.value: LeanSkillDefinition(
-        name="coordinator-proved-full-graph-mode",
-        description="Use when current repo work mode is proved_full_graph to apply its Coordinator planning and completion policy.",
+    SkillKey.COORDINATOR_COMPLETION_POLICY.value: LeanSkillDefinition(
+        name="coordinator-completion-policy",
+        description="Use when applying the current repository completion mode to Coordinator node and dispatch planning.",
         group="coordinator",
-        source_design_doc="dev_docs/design/repo_maturity_modes/04_Coordinator工作模式设计.md",
-        body=_COORDINATOR_PROVED_FULL_GRAPH_MODE_BODY,
-    ),
-    SkillKey.COORDINATOR_DECLARED_FULL_GRAPH_MODE.value: LeanSkillDefinition(
-        name="coordinator-declared-full-graph-mode",
-        description="Use when current repo work mode is declared_full_graph to apply its Coordinator planning and completion policy.",
-        group="coordinator",
-        source_design_doc="dev_docs/design/repo_maturity_modes/04_Coordinator工作模式设计.md",
-        body=_COORDINATOR_DECLARED_FULL_GRAPH_MODE_BODY,
-    ),
-    SkillKey.COORDINATOR_DECLARED_INTERFACE_MODE.value: LeanSkillDefinition(
-        name="coordinator-declared-interface-mode",
-        description="Use when current repo work mode is declared_interface to apply its minimal provider-interface policy.",
-        group="coordinator",
-        source_design_doc="dev_docs/design/repo_maturity_modes/04_Coordinator工作模式设计.md",
-        body=_COORDINATOR_DECLARED_INTERFACE_MODE_BODY,
+        required_tool_groups=_groups(AppGroup.REPO_COMPLETION_POLICY_READ),
+        source_design_doc="dev_docs/implementation/repo_completion_mode_and_checkpoint_migration/03_Agent输入与自然语言说明设计.md",
+        body=_COORDINATOR_COMPLETION_POLICY_BODY,
     ),
     SkillKey.MATHLIB_INDEX_FIRST_RECON.value: LeanSkillDefinition(
         name="mathlib-index-first-recon",
@@ -1062,26 +962,13 @@ After a preparation child flow returns:
 - Do not use current-node correction tools as a substitute for broad child-flow recon.
 """,
     ),
-    SkillKey.CONTENT_PLAN_PROVED_FULL_GRAPH_MODE.value: LeanSkillDefinition(
-        name="content-plan-proved-full-graph-mode",
-        description="Guides ContentPlan round strategy for proved full graph content nodes.",
+    SkillKey.CONTENT_PLAN_COMPLETION_POLICY.value: LeanSkillDefinition(
+        name="content-plan-completion-policy",
+        description="Use when applying the current repository completion mode to ContentPlan round strategy.",
         group="content_plan",
-        source_design_doc="dev_docs/design/repo_maturity_modes/05_ContentPlanStrategy与Round模式设计.md",
-        body=_CONTENT_PLAN_PROVED_FULL_GRAPH_MODE_BODY,
-    ),
-    SkillKey.CONTENT_PLAN_DECLARED_FULL_GRAPH_MODE.value: LeanSkillDefinition(
-        name="content-plan-declared-full-graph-mode",
-        description="Guides ContentPlan round strategy for declared full graph content nodes.",
-        group="content_plan",
-        source_design_doc="dev_docs/design/repo_maturity_modes/05_ContentPlanStrategy与Round模式设计.md",
-        body=_CONTENT_PLAN_DECLARED_FULL_GRAPH_MODE_BODY,
-    ),
-    SkillKey.CONTENT_PLAN_DECLARED_INTERFACE_MODE.value: LeanSkillDefinition(
-        name="content-plan-declared-interface-mode",
-        description="Guides ContentPlan round strategy for declared interface content nodes.",
-        group="content_plan",
-        source_design_doc="dev_docs/design/repo_maturity_modes/05_ContentPlanStrategy与Round模式设计.md",
-        body=_CONTENT_PLAN_DECLARED_INTERFACE_MODE_BODY,
+        required_tool_groups=_groups(AppGroup.REPO_COMPLETION_POLICY_READ),
+        source_design_doc="dev_docs/implementation/repo_completion_mode_and_checkpoint_migration/03_Agent输入与自然语言说明设计.md",
+        body=_CONTENT_PLAN_COMPLETION_POLICY_BODY,
     ),
     SkillKey.DECL_STRATEGY_PLANNING.value: LeanSkillDefinition(
         name="decl-strategy-planning",
@@ -1106,11 +993,11 @@ A strategy is a high-level route for making progress inside the current content 
 Before creating or changing a strategy, read current state with:
 
 - `get_current_node_contract` for the current task boundary and objective;
-- `get_current_repo_work_config` for target_proof_availability and work_mode;
+- `get_current_repo_completion_policy` for the current completion mode;
 - DeclGraph read tools for graph state, active declarations, and round history;
 - strategy read tools for existing strategy state.
 
-Select and follow the ContentPlan mode skill matching the current work_mode. The strategy should say whether it is bottom-up, top-down, mixed, declared-skeleton, or declared-interface oriented.
+Follow `content-plan-completion-policy`. The strategy should explain how its route satisfies the current completion mode inside the current contract and source scope.
 
 Do not rely on conversation memory when tools can show current truth.
 

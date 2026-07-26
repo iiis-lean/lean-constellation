@@ -9,7 +9,7 @@ from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import RepoCompletionMode
 
 
 _SAFE_RELEASE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -21,7 +21,7 @@ class RepoRelease(StrictModel):
     release_id: str
     parent_release_id: str | None = None
     node_contract_versions: dict[str, int]
-    target_proof_availability: ProofAvailability
+    completion_mode: RepoCompletionMode
     repo_checkpoint_id: str
     summary: str
     created_at: str = Field(default_factory=utc_now_iso)

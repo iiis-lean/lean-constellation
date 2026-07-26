@@ -16,7 +16,7 @@ from lean_constellation.domain.preparation import (
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
-    RepoWorkMode,
+    RepoCompletionMode,
     WorkspaceCatalogView,
     WorkspaceCoordinatorView,
     WorkspaceRepoSummary,
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 class RequirementGroupSummaryView(StrictModel):
     target_repo: str
     required_proof_availability: ProofAvailability = ProofAvailability.DECLARED
-    provider_work_mode: RepoWorkMode = RepoWorkMode.DECLARED_INTERFACE
+    provider_completion_mode: RepoCompletionMode = RepoCompletionMode.INTERFACE_DECLARED
     requirement_count: int
     consumer_repos: list[str] = Field(default_factory=list)
     interface_names: list[str] = Field(default_factory=list)
@@ -79,8 +79,7 @@ class WorkspaceCatalogComponent:
                     repo_format=state.value.repo_format,
                     publication_status=state.value.publication_status,
                     latest_release_id=state.value.latest_release_id,
-                    target_proof_availability=state.value.target_proof_availability,
-                    work_mode=state.value.work_mode,
+                    completion_mode=state.value.completion_mode,
                     provider_ready=state.value.provider_ready,
                     open_requirement_count=state.value.open_requirement_count,
                 )
@@ -158,7 +157,7 @@ class WorkspaceCatalogComponent:
                 RequirementGroupSummaryView(
                     target_repo=target,
                     required_proof_availability=required,
-                    provider_work_mode=self._provider_work_mode(required),
+                    provider_completion_mode=self._provider_completion_mode(required),
                     requirement_count=len(items),
                     consumer_repos=consumer_repos,
                     interface_names=interfaces,
@@ -195,11 +194,12 @@ class WorkspaceCatalogComponent:
             RequirementGroupView(
                 target_repo=target_repo,
                 required_proof_availability=required,
-                provider_work_mode=self._provider_work_mode(required),
+                provider_completion_mode=self._provider_completion_mode(required),
                 requirements=items,
                 summary=(
                     f"Found {len(items)} open requirements for {target_repo}; "
-                    f"provider target is {required.value}/{self._provider_work_mode(required).value}."
+                    "provider requirement is "
+                    f"{required.value}/{self._provider_completion_mode(required).value}."
                 ),
             )
         )
@@ -209,8 +209,13 @@ class WorkspaceCatalogComponent:
             return ProofAvailability.PROVED
         return ProofAvailability.DECLARED
 
-    def _provider_work_mode(self, required: ProofAvailability) -> RepoWorkMode:
-        return self.runtime.repo_workspace.workspace_config.requirement_provider_work_mode_by_proof_availability[required]
+    def _provider_completion_mode(
+        self, required: ProofAvailability
+    ) -> RepoCompletionMode:
+        return (
+            self.runtime.repo_workspace.workspace_config
+            .requirement_provider_completion_mode_by_proof_availability[required]
+        )
 
     def list_current_lake_dependency_repos(self, repo_root: Path) -> ServiceResult[list[LakeDependencyEntry]]:
         deps = self.lake_dependency.parse_lake_dependencies(repo_root)

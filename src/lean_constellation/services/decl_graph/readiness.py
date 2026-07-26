@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    proof_availability_for_completion_mode,
+)
 from lean_constellation.domain.lean_check import compact_lean_check
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
@@ -735,7 +738,9 @@ class DeclReadinessComponent:
             config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
             if not config.ok or config.value is None:
                 return self.runtime.foundation.fail(config.issues)
-            effective_target = provider_target_override or config.value.config.target_proof_availability
+            effective_target = provider_target_override or proof_availability_for_completion_mode(
+                config.value.config.completion_mode
+            )
             compatible = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
                 repo_root,
                 ref=ref,
@@ -811,7 +816,11 @@ class DeclReadinessComponent:
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
-        return self.runtime.foundation.ok(config.value.config.target_proof_availability)
+        return self.runtime.foundation.ok(
+            proof_availability_for_completion_mode(
+                config.value.config.completion_mode
+            )
+        )
 
     def _coerce_policy_target(self, policy: str | None, *, default: ProofAvailability) -> ServiceResult[ProofAvailability]:
         if policy is None:

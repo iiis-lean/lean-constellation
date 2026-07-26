@@ -17,7 +17,6 @@ def test_flow_input_rendering_hides_runtime_ids_and_paths() -> None:
         repo_path="/tmp/Repo",
         node_path="Main.Core",
         contract_version=2,
-        task_mode="first",
         summary="Run the current contract.",
     ).render_for_agent(_ctx())
 

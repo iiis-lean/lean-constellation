@@ -35,9 +35,9 @@ from lean_constellation.domain.preparation import (
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
+    RepoCompletionMode,
     RepoConfigView,
     RepoPublicationView,
-    RepoWorkMode,
 )
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
@@ -482,8 +482,7 @@ class StartPreparationInput(StrictModel):
 
 class RepoRunOptions(StrictModel):
     run_objective: str | None = None
-    target_proof_availability: ProofAvailability | None = None
-    work_mode: RepoWorkMode | None = None
+    completion_mode: RepoCompletionMode | None = None
     source_scope: SourceScope | None = None
     index_policy: Literal["auto", "update", "reuse"] | None = None
     root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None
@@ -666,8 +665,7 @@ class MainNativeRepoBootstrapView(StrictModel):
 
 class RepoConfigUpdateInput(StrictModel):
     repo_root: Path
-    target_proof_availability: ProofAvailability | None = None
-    work_mode: RepoWorkMode | None = None
+    completion_mode: RepoCompletionMode | None = None
     default_requirement_proof_availability: ProofAvailability | None = None
 
     @field_validator("repo_root", mode="before")
@@ -940,8 +938,8 @@ class LeanAdminApi:
         resolved = self.runtime.repo_workspace.run.resolve_initial_repo_run_spec(
             input_model.repo_root, origin=origin,
             run_objective=request.run_objective,
-            target_proof_availability=request.target_proof_availability,
-            work_mode=request.work_mode, source_scope=request.source_scope,
+            completion_mode=request.completion_mode,
+            source_scope=request.source_scope,
             index_policy=request.index_policy, root_interface_policy=request.root_interface_policy,
             max_parallel_content_node_tasks=request.max_parallel_content_node_tasks,
             additional_required_interfaces=request.additional_required_interfaces,
@@ -976,8 +974,8 @@ class LeanAdminApi:
             ))
         resolved = self.runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
             input_model.repo_root, run_objective=input_model.run_objective,
-            target_proof_availability=input_model.target_proof_availability,
-            work_mode=input_model.work_mode, source_scope=input_model.source_scope,
+            completion_mode=input_model.completion_mode,
+            source_scope=input_model.source_scope,
             index_policy=input_model.index_policy, root_interface_policy=input_model.root_interface_policy,
             max_parallel_content_node_tasks=input_model.max_parallel_content_node_tasks,
             additional_required_interfaces=input_model.additional_required_interfaces,
@@ -1032,8 +1030,7 @@ class LeanAdminApi:
             params_factory=lambda _base, checkpoint_id: {
                 "repo_key": repo_key, "repo_root": str(input_model.repo_root),
                 "run_objective": spec.value.run_objective,
-                "target_proof_availability": spec.value.target_proof_availability,
-                "work_mode": spec.value.work_mode, "source_scope": spec.value.source_scope.model_dump(mode="json"),
+                "source_scope": spec.value.source_scope.model_dump(mode="json"),
                 "index_policy": spec.value.index_policy, "start_reason": "admin_preprocess",
                 "pre_update_checkpoint_id": checkpoint_id,
             },
@@ -1324,8 +1321,7 @@ class LeanAdminApi:
     def update_repo_config(self, input_model: RepoConfigUpdateInput) -> ServiceResult[RepoConfigView]:
         return self.runtime.repo_workspace.metadata.update_repo_config(
             input_model.repo_root,
-            target_proof_availability=input_model.target_proof_availability,
-            work_mode=input_model.work_mode,
+            completion_mode=input_model.completion_mode,
             default_requirement_proof_availability=input_model.default_requirement_proof_availability,
         )
 

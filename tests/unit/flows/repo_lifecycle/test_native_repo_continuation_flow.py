@@ -39,8 +39,7 @@ def test_continuation_flow_persists_complete_run_spec(tmp_path) -> None:
                 "base_release_id": "release-r1",
                 "run_spec": {
                     "run_objective": "Prove the existing public theorem.",
-                    "target_proof_availability": "proved",
-                    "work_mode": "proved_full_graph",
+                    "completion_mode": "graph_proved",
                     "source_scope": {"mode": "none", "selectors": []},
                     "index_policy": "reuse",
                     "root_interface_policy": "reuse",
@@ -66,7 +65,7 @@ def _released_runtime(tmp_path):
     )
     assert checkpoint.ok and checkpoint.value is not None
     release = RepoRelease(release_id="release-r1", node_contract_versions={"main": 1},
-                          target_proof_availability="proved", repo_checkpoint_id=checkpoint.value.snapshot_id,
+                          completion_mode="graph_proved", repo_checkpoint_id=checkpoint.value.snapshot_id,
                           summary="R1")
     ctx = FoundationContext(repo_root=root)
     assert lean_runtime.foundation.store.write_json_atomic(lean_runtime.foundation.layout.release_path(ctx, "release-r1"), release).ok
@@ -81,8 +80,8 @@ def _run_to_source_waiting(tmp_path):
     runtime, lean_runtime, root = _released_runtime(tmp_path)
     flow_id = runtime.start_flow("native_repo_continuation", {
         "repo_key": "Provider", "repo_root": str(root), "base_release_id": "release-r1",
-        "run_spec": {"run_objective": "Continue.", "target_proof_availability": "proved",
-                     "work_mode": "proved_full_graph", "source_scope": {"mode": "none"},
+        "run_spec": {"run_objective": "Continue.", "completion_mode": "graph_proved",
+                     "source_scope": {"mode": "none"},
                      "index_policy": "reuse", "root_interface_policy": "reuse"},
     }, scope_id="repo:Provider")
     for _ in range(4):
@@ -101,8 +100,8 @@ def _run_to_source_waiting(tmp_path):
 def _start_continuation(runtime, root) -> str:  # noqa: ANN001
     return runtime.start_flow("native_repo_continuation", {
         "repo_key": "Provider", "repo_root": str(root), "base_release_id": "release-r1",
-        "run_spec": {"run_objective": "Continue.", "target_proof_availability": "proved",
-                     "work_mode": "proved_full_graph", "source_scope": {"mode": "none"},
+        "run_spec": {"run_objective": "Continue.", "completion_mode": "graph_proved",
+                     "source_scope": {"mode": "none"},
                      "index_policy": "reuse", "root_interface_policy": "reuse"},
     }, scope_id="repo:Provider")
 
@@ -270,7 +269,7 @@ def test_successful_continuation_dispatches_new_coordinator_with_full_run_contex
     assert context.run_spec.index_policy == "reuse"
     assert context.source_index_delta_summary == "index reused"
     assert context.root_interface_delta_summary == "root delta ready"
-    assert context.config_change_summary == "target=proved; work_mode=proved_full_graph"
+    assert context.config_change_summary == "completion_mode=graph_proved"
 
 
 def test_stable_standalone_preprocess_then_developing_continue(tmp_path) -> None:

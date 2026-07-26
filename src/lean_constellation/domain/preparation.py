@@ -7,7 +7,7 @@ from pydantic import Field, field_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoFormat
 
 
 class SourceCorpusMode(StrEnum):
@@ -102,7 +102,7 @@ class RequirementGroupItem(StrictModel):
 class RequirementGroupView(StrictModel):
     target_repo: str
     required_proof_availability: ProofAvailability = ProofAvailability.DECLARED
-    provider_work_mode: RepoWorkMode = RepoWorkMode.DECLARED_INTERFACE
+    provider_completion_mode: RepoCompletionMode = RepoCompletionMode.INTERFACE_DECLARED
     requirements: list[RequirementGroupItem] = Field(default_factory=list)
     summary: str
 

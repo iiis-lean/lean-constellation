@@ -13,7 +13,6 @@ from lean_constellation.flows.common.submissions import LeanBaseSubmission, Lean
 class CoordinatorContentTasksSubmission(LeanDispatchSubmission):
     submission_type: Literal["coordinator_content_tasks"] = "coordinator_content_tasks"
     node_paths: list[str]
-    task_mode: str = "run"
 
 
 class CoordinatorResourceRequestSubmission(LeanDispatchSubmission):

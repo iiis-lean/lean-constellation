@@ -874,8 +874,6 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
                 "repo_key": "Provider",
                 "repo_root": str(ws.provider_repo),
                 "run_objective": "Exercise strict SourceIndex builder tools.",
-                "target_proof_availability": "declared",
-                "work_mode": "declared_interface",
                 "source_scope": {"mode": "all"},
                 "index_policy": "auto",
                 "start_reason": "admin_preprocess",
@@ -1389,10 +1387,10 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert deps.value["node_path"] == "Main.Core"
 
-    work_config = call_tool_with_evidence(
+    completion_policy = call_tool_with_evidence(
         server,
         "content_plan",
-        "get_current_repo_work_config",
+        "get_current_repo_completion_policy",
         {},
         runtime_context=_ctx(
             ws.provider_repo,
@@ -1404,7 +1402,7 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         recorder=evidence_recorder,
         assertion_summary="Provider-neutral current repository work configuration returned.",
     )
-    assert work_config.value["work_mode"]
+    assert completion_policy.value["completion_mode"]
 
     evidence_recorder.record_runtime_state(ws.runtime)
     assert core_tool_sweep_names() <= evidence_recorder.evidence.application_tool_names

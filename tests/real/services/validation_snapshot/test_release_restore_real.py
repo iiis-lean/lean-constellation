@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode, RepoPublicationStatus
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.external_clients import ToolchainCommandView
 from lean_constellation.services.validation_snapshot import PreparedRepoReleaseView
@@ -47,7 +47,7 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
     r1 = RepoRelease(
         release_id="release_r1",
         node_contract_versions=versions,
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id="checkpoint_r1",
         summary="Declared R1.",
     )
@@ -59,8 +59,7 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
     assert runtime.repo_workspace.metadata.mark_repo_developing(repo_root).ok
     assert runtime.repo_workspace.metadata.update_repo_config(
         repo_root,
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
     ).ok
     (repo_root / "Main.lean").write_text(
         "theorem releasedValue : 1 + 1 = 2 := by decide\n"
@@ -72,7 +71,7 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
         release_id="release_r2",
         parent_release_id="release_r1",
         node_contract_versions=versions,
-        target_proof_availability=ProofAvailability.PROVED,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
         repo_checkpoint_id="checkpoint_r2",
         summary="Proved R2.",
     )

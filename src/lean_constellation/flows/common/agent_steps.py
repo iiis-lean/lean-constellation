@@ -411,7 +411,6 @@ class CoordinatorAgentStep(AgentStep):
                 repo_key=submission.repo_key,
                 content_tasks=CoordinatorContentTasksResultView(
                     node_paths=list(submission.node_paths),
-                    task_mode=submission.task_mode,
                     request_count=len(submission.requests),
                 ),
                 summary=submission.summary or f"Coordinator requested {len(submission.node_paths)} content node tasks.",
@@ -486,7 +485,7 @@ class ContentPlanAgentStep(AgentStep):
         guidance = _content_plan_callback_guidance(
             ctx,
             children,
-            mode_skill=_current_content_plan_mode_skill(self, ctx),
+            completion_policy_skill="content-plan-completion-policy",
         )
         flow = self._flow_service(ctx).get_flow(ctx.flow_id)
         from lean_constellation.flows.content_node_task.context_brief import (
@@ -802,7 +801,12 @@ def _callback_child_flows(step: AgentStep, ctx) -> list[object]:  # noqa: ANN001
     ]
 
 
-def _content_plan_callback_guidance(ctx, children: list[object], *, mode_skill: str) -> str:  # noqa: ANN001
+def _content_plan_callback_guidance(
+    ctx,
+    children: list[object],
+    *,
+    completion_policy_skill: str,
+) -> str:  # noqa: ANN001
     child = children[0] if children else None
     flow_type = getattr(child, "flow_type", None)
     result = getattr(child, "result", None)
@@ -823,7 +827,7 @@ def _content_plan_callback_guidance(ctx, children: list[object], *, mode_skill: 
         )
         return (
             "Required Skill order for this turn: read and apply $decl-round-closeout first, then "
-            f"${mode_skill}, then $decl-strategy-planning. The round outcome is {outcome}; "
+            f"${completion_policy_skill}, then $decl-strategy-planning. The round outcome is {outcome}; "
             f"terminal stage is {terminal_stage or 'none'}; affected declarations are "
             f"{', '.join(affected) or 'none'}. Close out the terminal round before any new mutation, "
             "reassess whether the strategy still explains the next round, classify any blocker, verify "
@@ -833,18 +837,18 @@ def _content_plan_callback_guidance(ctx, children: list[object], *, mode_skill: 
     if flow_type == "resource_curation":
         return (
             "Required Skill order for this turn: read and apply $resource-result-closeout first, then "
-            f"${mode_skill}, then $decl-strategy-planning. The resource outcome is {outcome}; consume its "
+            f"${completion_policy_skill}, then $decl-strategy-planning. The resource outcome is {outcome}; consume its "
             "duplicate/local/external/rejected truth before choosing a round, completion, or task blocker."
         )
     if flow_type in {"node_dir_dependency_recon", "mathlib_recon", "resource_recon"}:
         return (
             "Required Skill order for this turn: read and apply $content-preparation-orchestration, then "
-            f"${mode_skill}, then $decl-strategy-planning. The preparation outcome is {outcome}; reuse its "
+            f"${completion_policy_skill}, then $decl-strategy-planning. The preparation outcome is {outcome}; reuse its "
             "verified findings without broad rediscovery unless evidence is stale, unresolved, or this role "
             "must independently verify it."
         )
     return (
-        f"Re-read and apply ${mode_skill} and $decl-strategy-planning now. Classify the child outcome "
+        f"Re-read and apply ${completion_policy_skill} and $decl-strategy-planning now. Classify the child outcome "
         f"({outcome}) before choosing exactly one next ContentPlan action."
     )
 
@@ -899,19 +903,6 @@ def _round_affected_decl_names(ctx, child: object | None, result: object | None)
             return list(dict.fromkeys(ref.decl_name for ref in round_record.value.revision_refs))
     terminal_affected = getattr(getattr(result, "terminal_reason", None), "affected_decl_names", []) or []
     return list(dict.fromkeys(terminal_affected))
-
-
-def _current_content_plan_mode_skill(step: AgentStep, ctx) -> str:  # noqa: ANN001
-    from pathlib import Path
-
-    work_mode = "proved_full_graph"
-    flow = step._flow_service(ctx).get_flow(ctx.flow_id)
-    repo_path = getattr(flow.input, "repo_path", None)
-    if repo_path:
-        loaded = ctx.app.repo_workspace.metadata.get_repo_config(Path(repo_path))
-        if loaded.ok and loaded.value is not None:
-            work_mode = loaded.value.config.work_mode.value
-    return f"content-plan-{work_mode.replace('_', '-').lower()}-mode"
 
 
 BUSINESS_AGENT_STEP_TYPES: tuple[type[AgentStep], ...] = (

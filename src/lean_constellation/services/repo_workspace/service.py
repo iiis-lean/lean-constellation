@@ -25,11 +25,12 @@ from lean_constellation.domain.preparation import (
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
+    RepoCompletionMode,
     RepoFormat,
-    RepoWorkMode,
     RepoConfigView,
     WorkspaceConfig,
     WorkspaceCoordinatorView,
+    proof_availability_for_completion_mode,
     proof_availability_satisfies,
 )
 from lean_constellation.services.foundation import ServiceResult
@@ -245,8 +246,7 @@ class RepoWorkspaceService:
         repo_key: str,
         project_name: str,
         preparation_input: RepoPreparationInput,
-        target_proof_availability: ProofAvailability | str,
-        work_mode: RepoWorkMode | str,
+        completion_mode: RepoCompletionMode | str,
         default_requirement_proof_availability: ProofAvailability | str,
         native_config: NativeLakeProjectConfig,
     ) -> ServiceResult[NativeRepoCreationView]:
@@ -255,8 +255,7 @@ class RepoWorkspaceService:
         workspace_root = Path(workspace_root).resolve(strict=False)
         try:
             repo_key = self.runtime.foundation.layout.ensure_safe_key(repo_key)
-            target = ProofAvailability(target_proof_availability)
-            mode = RepoWorkMode(work_mode)
+            mode = RepoCompletionMode(completion_mode)
             default_requirement = ProofAvailability(default_requirement_proof_availability)
         except ValueError as exc:
             return self.runtime.foundation.fail(
@@ -300,8 +299,7 @@ class RepoWorkspaceService:
                     return self.runtime.foundation.fail(shell.issues)
                 configured = self.metadata.update_repo_config(
                     repo_root,
-                    target_proof_availability=target,
-                    work_mode=mode,
+                    completion_mode=mode,
                     default_requirement_proof_availability=default_requirement,
                 )
                 if not configured.ok or configured.value is None:
@@ -560,8 +558,7 @@ class RepoWorkspaceService:
             return self.runtime.foundation.fail(initialized.issues)
         configured = self.metadata.update_repo_config(
             repo_root,
-            target_proof_availability=ProofAvailability.PROVED,
-            work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+            completion_mode=RepoCompletionMode.GRAPH_PROVED,
         )
         if not configured.ok:
             return self.runtime.foundation.fail(configured.issues)
@@ -660,7 +657,9 @@ class RepoWorkspaceService:
                         )
                     )
             if not proof_availability_satisfies(
-                provider_config.value.config.target_proof_availability,
+                proof_availability_for_completion_mode(
+                    provider_config.value.config.completion_mode
+                ),
                 requirement.required_proof_availability,
             ):
                 return self.runtime.foundation.fail(
@@ -668,7 +667,9 @@ class RepoWorkspaceService:
                         "provider_proof_availability_insufficient",
                         "Provider repo proof availability does not satisfy the consumer requirement.",
                         object_ref=requirement.name,
-                        current=provider_config.value.config.target_proof_availability.value,
+                        current=proof_availability_for_completion_mode(
+                            provider_config.value.config.completion_mode
+                        ).value,
                         expected=requirement.required_proof_availability.value,
                     )
                 )

@@ -11,7 +11,7 @@ from lean_constellation.app import (
     AdminStepStartInput,
     SetAgentStepOverrideInput,
 )
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import LakeCommandClient, LakeCommandClientConfig
 from lean_constellation.flows.testing import ControlledAgentOverrideSpec
@@ -274,8 +274,7 @@ def test_strict_real_codex_content_plan_work_config_and_completion_gate_smoke(
     ws.setup_content_node()
     updated = ws.runtime.repo_workspace.metadata.update_repo_config(
         ws.provider_repo,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert updated.ok, updated.issues
     home_root = materialize_strict_codex_home(
@@ -329,15 +328,14 @@ def test_strict_real_codex_content_plan_work_config_and_completion_gate_smoke(
     assert data["prompt_marker_seen"] == prompt_marker
     assert data["developer_marker_seen"] == developer_marker
     assert data["artifact_home_root"] == str(home_root)
-    assert "content-plan-declared-interface-mode" in data["skill_keys_seen"]
+    assert "content-plan-completion-policy" in data["skill_keys_seen"]
     tools_called = set(data["application_tools_called"])
-    assert {"get_current_repo_work_config", "check_current_content_node_completion"}.issubset(tools_called)
+    assert {"get_current_repo_completion_policy", "check_current_content_node_completion"}.issubset(tools_called)
     assert data["submit_tool_called"] == "submit_content_node_blocked"
     tool_results = data["tool_results"]
     assert isinstance(tool_results, dict)
-    work_config = tool_results["get_current_repo_work_config"]
-    assert work_config["target_proof_availability"] == "declared"
-    assert work_config["work_mode"] == "declared_interface"
+    completion_policy = tool_results["get_current_repo_completion_policy"]
+    assert completion_policy["completion_mode"] == "interface_declared"
     completion = tool_results["check_current_content_node_completion"]
     assert completion["target_proof_availability"] == "declared"
 
@@ -1085,13 +1083,13 @@ You are inside a controlled ContentPlan AgentStep. This is a repo maturity/resou
 
 Do these exact actions:
 1. Read the developer instructions and find the first token that starts with RTCODEX_DEV_MARKER_CONTENT_PLAN_MATURITY_SMOKE_.
-2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report the actual skill key "content-plan-declared-interface-mode" only if it exists on disk.
-3. Call application MCP tool "get_current_repo_work_config".
+2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report the actual skill key "content-plan-completion-policy" only if it exists on disk.
+3. Call application MCP tool "get_current_repo_completion_policy".
 4. Call application MCP tool "check_current_content_node_completion".
 5. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
    prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, tool_results.
    Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
-   tool_results must be an object with entries for get_current_repo_work_config and check_current_content_node_completion. For get_current_repo_work_config include target_proof_availability and work_mode. For check_current_content_node_completion include at least ok, ready_to_submit, target_proof_availability, and summary.
+   tool_results must be an object with entries for get_current_repo_completion_policy and check_current_content_node_completion. For get_current_repo_completion_policy include completion_mode. For check_current_content_node_completion include at least ok, ready_to_submit, target_proof_availability, and summary.
 6. Call submit tool "submit_content_node_blocked" with reason "Strict real Codex ContentPlan maturity smoke stops after config and completion gate probe."
 
 Keep the final response short and mention the artifact path.
@@ -1424,7 +1422,6 @@ def _start_content_task(ws: RuntimeMatrixWorkspace) -> str:
                 "repo_path": str(ws.provider_repo),
                 "node_path": "Main.Topic.Core",
                 "contract_version": 1,
-                "task_mode": "run",
             },
         )
     )

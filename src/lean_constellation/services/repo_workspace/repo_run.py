@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from lean_constellation.domain.interface import DeclInterface
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus, RepoWorkMode
+from lean_constellation.domain.repo import (
+    RepoCompletionMode,
+    RepoFormat,
+    RepoPublicationStatus,
+    completion_mode_satisfies,
+)
 from lean_constellation.domain.repo_run import RepoRunSpec, SourceScope
 from lean_constellation.services.foundation import GateReport, ServiceResult
 
@@ -31,8 +36,8 @@ class RepoRunComponent:
     def resolve_initial_repo_run_spec(
         self, repo_root: Path, *, origin: Literal["main", "requirement_provider"] = "main",
         run_objective: str | None = None,
-        target_proof_availability: ProofAvailability | None = None,
-        work_mode: RepoWorkMode | None = None, source_scope: SourceScope | None = None,
+        completion_mode: RepoCompletionMode | None = None,
+        source_scope: SourceScope | None = None,
         index_policy: Literal["auto", "update", "reuse"] | None = None,
         root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None,
         max_parallel_content_node_tasks: int = 1,
@@ -47,8 +52,7 @@ class RepoRunComponent:
         try:
             spec = RepoRunSpec(
                 run_objective=run_objective or prepared.value.input.goal,
-                target_proof_availability=target_proof_availability or config.value.config.target_proof_availability,
-                work_mode=work_mode or config.value.config.work_mode,
+                completion_mode=completion_mode or config.value.config.completion_mode,
                 source_scope=source_scope or SourceScope(mode="all"),
                 index_policy=index_policy or "auto",
                 root_interface_policy=root_interface_policy or "auto",
@@ -57,9 +61,9 @@ class RepoRunComponent:
             )
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("repo_run_config_invalid", str(exc)))
-        if origin == "requirement_provider" and (
-            spec.target_proof_availability != config.value.config.target_proof_availability
-            or spec.work_mode != config.value.config.work_mode
+        if (
+            origin == "requirement_provider"
+            and spec.completion_mode != config.value.config.completion_mode
         ):
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
                 "provider_run_config_mismatch", "Provider initial run must use its aggregated requirement config."
@@ -68,8 +72,8 @@ class RepoRunComponent:
 
     def resolve_continuation_repo_run_spec(
         self, repo_root: Path, *, run_objective: str | None = None,
-        target_proof_availability: ProofAvailability | None = None,
-        work_mode: RepoWorkMode | None = None, source_scope: SourceScope | None = None,
+        completion_mode: RepoCompletionMode | None = None,
+        source_scope: SourceScope | None = None,
         index_policy: Literal["auto", "update", "reuse"] | None = None,
         root_interface_policy: Literal["auto", "prepare", "reuse"] | None = None,
         max_parallel_content_node_tasks: int = 1,
@@ -85,8 +89,7 @@ class RepoRunComponent:
         try:
             spec = RepoRunSpec(
                 run_objective=run_objective,
-                target_proof_availability=target_proof_availability or config.value.config.target_proof_availability,
-                work_mode=work_mode or config.value.config.work_mode,
+                completion_mode=completion_mode or config.value.config.completion_mode,
                 source_scope=source_scope or SourceScope(mode="none"),
                 index_policy=index_policy or "auto",
                 root_interface_policy=root_interface_policy or "auto",
@@ -134,8 +137,16 @@ class RepoRunComponent:
                 )
                 if not checkpoint.ok or checkpoint.value is None:
                     findings.append(self.runtime.foundation.issue("release_baseline_corrupt", "The bound release checkpoint evidence cannot be read."))
-                if _availability_rank(run_spec.target_proof_availability) < _availability_rank(base.value.release.target_proof_availability):
-                    findings.append(self.runtime.foundation.issue("repo_run_target_downgrade", "Continuation cannot lower the released proof target."))
+                if not completion_mode_satisfies(
+                    run_spec.completion_mode,
+                    base.value.release.completion_mode,
+                ):
+                    findings.append(
+                        self.runtime.foundation.issue(
+                            "repo_run_completion_downgrade",
+                            "Continuation cannot lower the released completion requirement.",
+                        )
+                    )
         source_index = self.runtime.material.source_index.get_source_index_model(Path(repo_root))
         if (
             source_index.ok
@@ -164,12 +175,9 @@ class RepoRunComponent:
         if current.latest_release_id != expected_base_release_id:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("base_release_changed", "Latest release changed before config application."))
         return self.metadata.update_repo_config(
-            repo_root, target_proof_availability=run_spec.target_proof_availability, work_mode=run_spec.work_mode
+            repo_root,
+            completion_mode=run_spec.completion_mode,
         )
-
-
-def _availability_rank(value: ProofAvailability) -> int:
-    return {ProofAvailability.DECLARED: 0, ProofAvailability.PROVED: 1}[value]
 
 
 __all__ = ["RepoRunComponent"]

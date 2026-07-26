@@ -29,10 +29,49 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "agent-event" in help_text
     assert "agent-trace-report" in help_text
     assert "semantic-watch" in help_text
+    assert "migrate-repo-completion-checkpoint" in help_text
     assert "repo-run-initial" in help_text
     assert "repo-run-continue" in help_text
     assert "repo-release-preview" in help_text
     assert "repo-release-restore" in help_text
+
+
+def test_cli_repo_completion_migration_preview_is_offline(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    calls = []
+
+    class _Report:
+        def to_dict(self):  # noqa: ANN201
+            return {"mode": "preview", "recovery_token": "token"}
+
+    def fake_preview(repo_root, *, checkpoint_id):  # noqa: ANN001
+        calls.append((repo_root, checkpoint_id))
+        return _Report()
+
+    monkeypatch.setattr(
+        "lean_constellation.app.repo_completion_mode_migration.preview_repo_completion_checkpoint",
+        fake_preview,
+    )
+
+    exit_code = main(
+        [
+            "migrate-repo-completion-checkpoint",
+            "preview",
+            str(tmp_path / "Repo"),
+            "--checkpoint-id",
+            "repo_cp_source",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "value": {"mode": "preview", "recovery_token": "token"},
+    }
+    assert calls == [(tmp_path / "Repo", "repo_cp_source")]
 
 
 def test_cli_config_view_prints_redacted_config(tmp_path, capsys) -> None:
@@ -398,7 +437,7 @@ def test_cli_repo_run_initial_builds_semantic_http_payload(tmp_path, capsys, mon
     exit_code = main([
         "--config", str(config_path), "repo-run-initial", "--repo-key", "Provider",
         "--run-objective", "Declare chapter ten interfaces.", "--source-scope", "selected",
-        "--source-selector", "book/chapter10.tex", "--work-mode", "declared_interface",
+        "--source-selector", "book/chapter10.tex", "--completion-mode", "interface_declared",
     ])
 
     assert exit_code == 0
@@ -408,7 +447,7 @@ def test_cli_repo_run_initial_builds_semantic_http_payload(tmp_path, capsys, mon
         {
             "request": {
                 "run_objective": "Declare chapter ten interfaces.",
-                "work_mode": "declared_interface",
+                "completion_mode": "interface_declared",
                 "source_scope": {"mode": "selected", "selectors": ["book/chapter10.tex"]},
             },
             "admin_notes": None,

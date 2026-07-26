@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 
 
@@ -30,8 +30,7 @@ def test_source_scope_validates_and_normalizes_mode_specific_selectors() -> None
 def test_repo_run_spec_reuses_repo_config_validation_and_rejects_duplicate_interfaces() -> None:
     value = RepoRunSpec(
         run_objective=" Build the declared provider interface. ",
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
         source_scope=SourceScope(mode="selected", selectors=["chapter_10.tex"]),
         index_policy="auto",
         root_interface_policy="prepare",
@@ -45,18 +44,8 @@ def test_repo_run_spec_reuses_repo_config_validation_and_rejects_duplicate_inter
 
     with pytest.raises(ValidationError):
         RepoRunSpec(
-            run_objective="Invalid target and work mode.",
-            target_proof_availability=ProofAvailability.PROVED,
-            work_mode=RepoWorkMode.DECLARED_INTERFACE,
-            source_scope=SourceScope(mode="none"),
-            index_policy="reuse",
-            root_interface_policy="reuse",
-        )
-    with pytest.raises(ValidationError):
-        RepoRunSpec(
             run_objective="Duplicate interface names.",
-            target_proof_availability=ProofAvailability.DECLARED,
-            work_mode=RepoWorkMode.DECLARED_INTERFACE,
+            completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
             source_scope=SourceScope(mode="none"),
             index_policy="reuse",
             root_interface_policy="reuse",
@@ -65,8 +54,7 @@ def test_repo_run_spec_reuses_repo_config_validation_and_rejects_duplicate_inter
     with pytest.raises(ValidationError):
         RepoRunSpec(
             run_objective="Invalid parallelism.",
-            target_proof_availability=ProofAvailability.DECLARED,
-            work_mode=RepoWorkMode.DECLARED_INTERFACE,
+            completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
             source_scope=SourceScope(mode="none"),
             index_policy="reuse",
             root_interface_policy="reuse",
@@ -77,8 +65,7 @@ def test_repo_run_spec_reuses_repo_config_validation_and_rejects_duplicate_inter
 def test_repo_run_context_roundtrips_without_becoming_repo_truth() -> None:
     run_spec = RepoRunSpec(
         run_objective="Continue the existing proof graph.",
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
         source_scope=SourceScope(mode="none"),
         index_policy="reuse",
         root_interface_policy="auto",
@@ -99,8 +86,7 @@ def test_repo_run_context_roundtrips_without_becoming_repo_truth() -> None:
 def test_source_none_with_explicit_update_is_a_valid_flow_level_no_op_request() -> None:
     value = RepoRunSpec(
         run_objective="Do not expand the source responsibility in this run.",
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         source_scope=SourceScope(mode="none"),
         index_policy="update",
         root_interface_policy="reuse",

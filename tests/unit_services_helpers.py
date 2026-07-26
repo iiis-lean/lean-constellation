@@ -202,7 +202,7 @@ def publish_native_provider_release(
     """
 
     from lean_constellation.domain.repo import (
-        ProofAvailability,
+        RepoCompletionMode,
         RepoFormat,
         RepoPublicationState,
         RepoPublicationStatus,
@@ -281,7 +281,7 @@ def publish_native_provider_release(
     release = RepoRelease(
         release_id=release_id,
         node_contract_versions=versions,
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id=checkpoint_id,
         summary=summary,
     )

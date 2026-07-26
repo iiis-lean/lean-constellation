@@ -50,7 +50,6 @@ def _sample_payload(cls):
         "resource_key": "res_1",
         "source_description": "External source",
         "node_paths": ["Main.Core"],
-        "task_mode": "run",
         "requirement_name": "req",
         "target_repo": "Provider",
         "interfaces": [],

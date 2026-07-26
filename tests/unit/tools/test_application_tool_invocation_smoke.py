@@ -9,7 +9,7 @@ from lean_constellation.flows.content_node_task.decl_round.steps import DeclStag
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.services import create_test_runtime_services
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode, RepoFormat
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.domain.preparation import RepoPreparationInput, RepoRequirementRef, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef
@@ -273,29 +273,27 @@ class _FakeNonCallbackFlowService:
         return []
 
 
-def test_get_current_repo_work_config_tool_reads_repo_config(tmp_path: Path) -> None:
+def test_get_current_repo_completion_policy_tool_reads_repo_config(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     repo_root = tmp_path / "Repo"
     repo_root.mkdir()
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
     updated = runtime.repo_workspace.metadata.update_repo_config(
         repo_root,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert updated.ok
 
     value = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             _raw(repo_root, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
-            tool_name="get_current_repo_work_config",
+            tool_name="get_current_repo_completion_policy",
             flat_args={},
         )
     )
 
     assert value["repo_key"] == "Repo"
-    assert value["target_proof_availability"] == "declared"
-    assert value["work_mode"] == "declared_interface"
+    assert value["completion_mode"] == "interface_declared"
 
 
 def test_get_current_repo_requirement_is_read_only_for_coordinator(tmp_path: Path) -> None:
@@ -825,8 +823,6 @@ def test_source_index_write_tools_authorize_flow_context_and_reject_nonowner_ste
             input=SimpleNamespace(
                 repo_root=str(tmp_path),
                 run_objective="Index the selected source.",
-                target_proof_availability=ProofAvailability.DECLARED,
-                work_mode=RepoWorkMode.DECLARED_INTERFACE,
                 source_scope=SourceScope(mode="all"),
                 start_reason="initial",
             ),
@@ -836,8 +832,6 @@ def test_source_index_write_tools_authorize_flow_context_and_reject_nonowner_ste
             input=SimpleNamespace(
                 repo_root=str(tmp_path),
                 run_objective="Index the selected source.",
-                target_proof_availability=ProofAvailability.DECLARED,
-                work_mode=RepoWorkMode.DECLARED_INTERFACE,
                 source_scope=SourceScope(mode="all"),
                 start_reason="initial",
             ),
@@ -883,7 +877,6 @@ def test_source_index_write_tools_authorize_flow_context_and_reject_nonowner_ste
     )
     assert review_context["active_file_scope"] == ["README.md"]
     assert review_context["run_objective"] == "Index the selected source."
-    assert review_context["work_mode"] == "declared_interface"
     assert review_context["reviewer_feedback"] == "Tighten the theorem range."
     assert "active_update_id" not in review_context
     assert "baseline_digest" not in review_context

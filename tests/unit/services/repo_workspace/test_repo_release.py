@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import ProofAvailability, RepoPublicationState, RepoPublicationStatus
+from lean_constellation.domain.repo import RepoCompletionMode, RepoPublicationState, RepoPublicationStatus
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.decl_graph.models import (
     Decl,
@@ -137,13 +137,13 @@ def _release(
     versions: dict[str, int],
     *,
     parent: str | None = None,
-    target: ProofAvailability = ProofAvailability.DECLARED,
+    completion_mode: RepoCompletionMode = RepoCompletionMode.GRAPH_DECLARED,
 ) -> RepoRelease:
     return RepoRelease(
         release_id=release_id,
         parent_release_id=parent,
         node_contract_versions=versions,
-        target_proof_availability=target,
+        completion_mode=completion_mode,
         repo_checkpoint_id=f"checkpoint_{release_id}",
         summary=f"Release {release_id}.",
     )
@@ -226,11 +226,11 @@ def test_release_creation_rejects_missing_exact_contract(tmp_path: Path) -> None
     assert not result.ok and result.issues[0].kind == "release_contract_missing"
 
 
-def test_release_target_cannot_regress_from_proved_to_declared(tmp_path: Path) -> None:
+def test_release_completion_cannot_regress_from_proved_graph_to_declared_graph(tmp_path: Path) -> None:
     runtime, versions = _prepare_release_repo(tmp_path)
     assert runtime.repo_workspace.release.create_release(
         tmp_path,
-        release=_release("r1", versions, target=ProofAvailability.PROVED),
+        release=_release("r1", versions, completion_mode=RepoCompletionMode.GRAPH_PROVED),
     ).ok
 
     result = runtime.repo_workspace.release.create_release(
@@ -239,26 +239,26 @@ def test_release_target_cannot_regress_from_proved_to_declared(tmp_path: Path) -
     )
 
     assert not result.ok
-    assert result.issues[0].kind == "release_parent_target_regression"
+    assert result.issues[0].kind == "release_parent_completion_regression"
 
 
-def test_release_lineage_read_rejects_corrupt_target_regression(tmp_path: Path) -> None:
+def test_release_lineage_read_rejects_corrupt_completion_regression(tmp_path: Path) -> None:
     runtime, versions = _prepare_release_repo(tmp_path)
-    first = _release("r1", versions, target=ProofAvailability.PROVED)
-    second = _release("r2", versions, parent="r1", target=ProofAvailability.PROVED)
+    first = _release("r1", versions, completion_mode=RepoCompletionMode.GRAPH_PROVED)
+    second = _release("r2", versions, parent="r1", completion_mode=RepoCompletionMode.GRAPH_PROVED)
     assert runtime.repo_workspace.release.create_release(tmp_path, release=first).ok
     assert runtime.repo_workspace.release.create_release(tmp_path, release=second).ok
     path = runtime.foundation.layout.release_path(FoundationContext(repo_root=tmp_path), "r2")
     assert runtime.foundation.store.write_json_atomic(
         path,
-        second.model_copy(update={"target_proof_availability": ProofAvailability.DECLARED}),
+        second.model_copy(update={"completion_mode": RepoCompletionMode.GRAPH_DECLARED}),
         mode=WriteMode.UPDATE_EXISTING,
     ).ok
 
     result = runtime.repo_workspace.release.resolve_release_lineage(tmp_path, release_id="r2")
 
     assert not result.ok
-    assert result.issues[0].kind == "release_parent_target_regression"
+    assert result.issues[0].kind == "release_parent_completion_regression"
 
 
 def _set_contract_exports(runtime, repo_root: Path, *, node_path: str, exports: list[DeclRef]) -> None:

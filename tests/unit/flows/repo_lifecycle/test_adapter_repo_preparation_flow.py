@@ -7,7 +7,7 @@ from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
-from lean_constellation.domain.repo import ProofAvailability, RepoPublicationStatus, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode, RepoPublicationStatus
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.repo_lifecycle.submissions import (
@@ -112,8 +112,7 @@ def _prepare_adapter_repo(lean_runtime, repo_root: Path) -> None:
     lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root)
     configured_as_requirement_provider = lean_runtime.repo_workspace.metadata.update_repo_config(
         repo_root,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert configured_as_requirement_provider.ok
     written = lean_runtime.repo_workspace.preparation.write_preparation_input(
@@ -251,8 +250,7 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     config = lean_runtime.repo_workspace.metadata.get_repo_config(repo_root)
     publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
     assert config.ok and config.value is not None
-    assert config.value.config.target_proof_availability == ProofAvailability.PROVED
-    assert config.value.config.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert config.value.config.completion_mode == RepoCompletionMode.GRAPH_PROVED
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.STABLE
 

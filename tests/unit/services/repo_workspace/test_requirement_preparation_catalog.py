@@ -13,7 +13,7 @@ from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoFormat,
     RepoPublicationStatus,
-    RepoWorkMode,
+    RepoCompletionMode,
     WorkspaceConfig,
 )
 from lean_constellation.services.foundation import FoundationContext, FoundationService
@@ -433,7 +433,7 @@ def test_workspace_catalog_requirement_groups_and_lake_dependency_wrapper(tmp_pa
     alpha = groups.value[0]
     assert alpha.requirement_count == 2
     assert alpha.required_proof_availability == ProofAvailability.PROVED
-    assert alpha.provider_work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert alpha.provider_completion_mode == RepoCompletionMode.GRAPH_PROVED
     assert alpha.consumer_repos == ["consumer_a", "consumer_b"]
     assert alpha.interface_names == ["alpha_support", "alpha_theorem"]
     assert alpha.source_description_summary == "Alpha source."
@@ -443,7 +443,7 @@ def test_workspace_catalog_requirement_groups_and_lake_dependency_wrapper(tmp_pa
     assert found.value is not None
     assert [item.requirement.name for item in found.value.requirements] == ["need_alpha", "need_alpha_b"]
     assert found.value.required_proof_availability == ProofAvailability.PROVED
-    assert found.value.provider_work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert found.value.provider_completion_mode == RepoCompletionMode.GRAPH_PROVED
 
     empty = catalog.get_requirement_group(workspace, target_repo="missing")
     assert empty.ok
@@ -505,7 +505,7 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
     assert group.value is not None
     assert [item.requirement.name for item in group.value.requirements] == ["need_metric", "need_banach"]
     assert group.value.required_proof_availability == ProofAvailability.DECLARED
-    assert group.value.provider_work_mode == RepoWorkMode.DECLARED_INTERFACE
+    assert group.value.provider_completion_mode == RepoCompletionMode.INTERFACE_DECLARED
 
     draft = preparation.build_preparation_input_from_group(workspace, target_repo="fixed_point_provider")
     assert draft.ok
@@ -537,8 +537,7 @@ def test_requirement_group_builds_preparation_input_and_shell(tmp_path: Path) ->
     assert (workspace / "fixed_point_provider" / ".lean_constellation" / "preparation_input.json").exists()
     provider_config = metadata.get_repo_config(workspace / "fixed_point_provider")
     assert provider_config.ok and provider_config.value is not None
-    assert provider_config.value.config.target_proof_availability == ProofAvailability.DECLARED
-    assert provider_config.value.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
+    assert provider_config.value.config.completion_mode == RepoCompletionMode.INTERFACE_DECLARED
 
     duplicate = preparation.create_provider_repo_shell(workspace, target_repo="fixed_point_provider")
     assert not duplicate.ok
@@ -585,8 +584,7 @@ def test_provider_shell_derives_strictest_required_proof_availability(tmp_path: 
     assert prepared.ok and prepared.value is not None
     config = metadata.get_repo_config(workspace / "mixed_provider")
     assert config.ok and config.value is not None
-    assert config.value.config.target_proof_availability == ProofAvailability.PROVED
-    assert config.value.config.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert config.value.config.completion_mode == RepoCompletionMode.GRAPH_PROVED
     assert not (workspace / "mixed_provider" / ".agent_runtime").exists()
 
 
@@ -628,8 +626,7 @@ def test_main_input_and_native_handoff_base_gate(tmp_path: Path) -> None:
 def test_create_main_repo_shell_materializes_workspace_direct_repo_defaults(tmp_path: Path) -> None:
     runtime = make_runtime(
         workspace_config=WorkspaceConfig(
-            default_direct_repo_proof_availability=ProofAvailability.DECLARED,
-            default_direct_repo_work_mode=RepoWorkMode.DECLARED_FULL_GRAPH,
+            default_direct_repo_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
             default_requirement_proof_availability=ProofAvailability.PROVED,
         )
     )
@@ -649,8 +646,7 @@ def test_create_main_repo_shell_materializes_workspace_direct_repo_defaults(tmp_
 
     assert shell.ok
     assert config.ok and config.value is not None
-    assert config.value.config.target_proof_availability == ProofAvailability.DECLARED
-    assert config.value.config.work_mode == RepoWorkMode.DECLARED_FULL_GRAPH
+    assert config.value.config.completion_mode == RepoCompletionMode.GRAPH_DECLARED
     assert config.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
 
 

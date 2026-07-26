@@ -8,7 +8,7 @@ import pytest
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.refs import DeclRef, MaterialRef, NodeRef, ResourceRef, SourceRef
-from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoModel, RepoPublicationStatus
+from lean_constellation.domain.repo import RepoCompletionMode, RepoFormat, RepoModel, RepoPublicationStatus
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.external_clients import ToolchainCommandView
 from lean_constellation.services.foundation import FoundationContext
@@ -34,7 +34,7 @@ def _prepared_repo(repo_root: Path):
     release = RepoRelease(
         release_id="release_r1",
         node_contract_versions=versions,
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id="checkpoint_r1",
         summary="Release one.",
     )
@@ -393,7 +393,7 @@ def test_lake_build_failure_does_not_allocate_release_truth(tmp_path: Path, monk
     finalizer = runtime.validation_snapshot.release_finalizer
     preview = CandidateReleaseGateView(
         candidate_node_contract_versions=prepared.release.node_contract_versions,
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         gate=runtime.foundation.gate_passed("candidate_repo_release", summary="passed"),
         summary="passed",
     )
@@ -585,7 +585,7 @@ def test_audit_finds_and_cleanup_removes_unreachable_release(tmp_path: Path) -> 
     orphan = RepoRelease(
         release_id="release_orphan",
         node_contract_versions=prepared.release.node_contract_versions,
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id="checkpoint_orphan",
         summary="Orphan.",
     )
@@ -636,7 +636,7 @@ def test_digest_guarded_bulk_cleanup_only_removes_unreferenced_checkpoint_and_st
     orphan_release = RepoRelease(
         release_id="release_orphan",
         node_contract_versions=prepared.release.node_contract_versions,
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id="checkpoint_referenced_by_orphan",
         summary="Orphan committed release retained by bulk cleanup.",
     )
@@ -687,7 +687,7 @@ def test_cleanup_failure_and_concurrent_lock_are_reported(tmp_path: Path, monkey
     orphan = RepoRelease(
         release_id="release_orphan",
         node_contract_versions=prepared.release.node_contract_versions,
-        target_proof_availability=ProofAvailability.DECLARED,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
         repo_checkpoint_id="checkpoint_orphan",
         summary="Orphan.",
     )

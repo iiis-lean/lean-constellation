@@ -12,7 +12,7 @@ from tests.unit_services_helpers import (
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import ExternalCommandResult
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult, WriteMode
@@ -346,8 +346,7 @@ def test_repo_ready_gate_uses_target_proof_availability_for_main_public_exports(
     assert runtime.node.ensure_native_root_main_contract(tmp_path).ok
     configured_declared = runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert configured_declared.ok, configured_declared.issues
     _create_declared_main_public_theorem(runtime, tmp_path)
@@ -370,8 +369,7 @@ def test_repo_ready_gate_uses_target_proof_availability_for_main_public_exports(
     assert runtime.repo_workspace.metadata.mark_repo_developing(tmp_path).ok
     configured_proved = runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
     )
     assert configured_proved.ok, configured_proved.issues
     proved_view = service.get_repo_ready_view(tmp_path)
@@ -393,8 +391,7 @@ def test_repo_ready_gate_rechecks_exact_root_interface_statement_contract(tmp_pa
     assert runtime.node.ensure_native_root_main_contract(tmp_path).ok
     configured = runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert configured.ok, configured.issues
     _create_declared_main_public_theorem(runtime, tmp_path)

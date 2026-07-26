@@ -6,7 +6,7 @@ from typing import Any
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime, publish_native_provider_release
 
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import RepoDeclDep
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
@@ -343,8 +343,7 @@ def test_content_completion_accepts_declared_theorem_under_declared_target(tmp_p
     _seed_declared_public_theorem(runtime, tmp_path)
     configured = runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert configured.ok
     gate = ReadinessGateComponent(
@@ -369,8 +368,7 @@ def test_content_completion_rejects_stale_capture_even_when_interfaces_builds(tm
     _seed_declared_public_theorem(runtime, tmp_path)
     assert runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     ).ok
     path_view = runtime.lean_projection.decl_file.derive_decl_file_path(
         tmp_path,
@@ -434,8 +432,7 @@ def test_content_completion_reports_interfaces_build_failure_as_blocking_issue(t
     _seed_declared_public_theorem(runtime, tmp_path)
     assert runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     ).ok
     runtime.external.lean_toolchain.lake.fail_build = True
     gate = ReadinessGateComponent(
@@ -456,8 +453,7 @@ def test_content_completion_rejects_declared_theorem_under_proved_target(tmp_pat
     _seed_declared_public_theorem(runtime, tmp_path)
     configured = runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
     )
     assert configured.ok
     gate = ReadinessGateComponent(
@@ -516,8 +512,7 @@ def _setup_stable_declared_provider_consumer(workspace: Path) -> tuple[LeanRunti
     assert attached.ok, attached.issues
     assert runtime.repo_workspace.metadata.update_repo_config(
         consumer,
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
     ).ok
     seeded = _seed_proved_public_theorem_with_provider_dep(runtime, consumer, provider_repo="Provider")
     assert seeded.ok, seeded.issues
@@ -634,8 +629,7 @@ def test_cross_repo_dependency_requires_provider_public_export(tmp_path: Path) -
     assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
     assert runtime.repo_workspace.metadata.update_repo_config(
         provider,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     ).ok
     _seed_declared_public_theorem(runtime, provider)
     publish_native_provider_release(runtime, provider, summary="Provider marked stable without Main export.")
@@ -643,8 +637,7 @@ def test_cross_repo_dependency_requires_provider_public_export(tmp_path: Path) -
     assert attached.ok, attached.issues
     assert runtime.repo_workspace.metadata.update_repo_config(
         consumer,
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
     ).ok
     seeded = _seed_proved_public_theorem_with_provider_dep(runtime, consumer, provider_repo="Provider")
 
@@ -664,8 +657,7 @@ def test_strict_proved_audit_does_not_downgrade_declared_provider_policy(tmp_pat
     assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
     assert runtime.repo_workspace.metadata.update_repo_config(
         provider,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     ).ok
     _seed_declared_public_theorem(runtime, provider)
     _export_main_result_from_provider_main(runtime, provider)
@@ -674,8 +666,7 @@ def test_strict_proved_audit_does_not_downgrade_declared_provider_policy(tmp_pat
     assert attached.ok, attached.issues
     assert runtime.repo_workspace.metadata.update_repo_config(
         consumer,
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
     ).ok
     seeded = _seed_proved_public_theorem_with_provider_dep(runtime, consumer, provider_repo="Provider")
     assert seeded.ok, seeded.issues

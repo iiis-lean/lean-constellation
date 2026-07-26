@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from agent_runtime_kit.flow.models import BaseSubmission, FlowStatus
 
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
@@ -102,7 +102,7 @@ def test_repo_ready_submit_only_records_candidate_intent_after_preview(tmp_path:
         return runtime.foundation.ok(
             CandidateReleaseGateView(
                 base_release_id="release-base",
-                target_proof_availability=ProofAvailability.DECLARED,
+                completion_mode=RepoCompletionMode.GRAPH_DECLARED,
                 gate=gate,
                 summary="Candidate preview passed.",
             )
@@ -777,8 +777,7 @@ def test_submit_repo_requirement_uses_consumer_repo_default_proof_availability(t
     assert register_submit_tooling(runtime).ok
     configured = runtime.repo_workspace.metadata.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.PROVED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
         default_requirement_proof_availability=ProofAvailability.PROVED,
     )
     assert configured.ok

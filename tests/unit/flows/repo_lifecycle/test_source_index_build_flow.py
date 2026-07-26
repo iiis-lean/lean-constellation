@@ -139,8 +139,6 @@ def _params(repo_root: Path, **updates: object) -> dict[str, object]:
         "repo_key": repo_root.name,
         "repo_root": str(repo_root),
         "run_objective": "Index the selected source chapter.",
-        "target_proof_availability": "declared",
-        "work_mode": "declared_interface",
         "source_scope": {"mode": "selected", "selectors": ["chapter.md"]},
         "index_policy": "auto",
         "start_reason": "admin_preprocess",

@@ -362,8 +362,7 @@ def _start_native_preparation(ws: RuntimeMatrixWorkspace) -> str:
                 "start_reason": "bootstrap",
                 "run_spec": {
                     "run_objective": "Prepare the Provider repository for the runtime matrix scenario.",
-                    "target_proof_availability": "declared",
-                    "work_mode": "declared_interface",
+                    "completion_mode": "interface_declared",
                     "source_scope": {"mode": "all"},
                     "index_policy": "auto",
                     "root_interface_policy": "auto",

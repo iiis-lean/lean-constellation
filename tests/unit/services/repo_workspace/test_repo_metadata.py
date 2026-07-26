@@ -7,7 +7,7 @@ from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoFormat,
     RepoPublicationStatus,
-    RepoWorkMode,
+    RepoCompletionMode,
 )
 
 
@@ -78,8 +78,7 @@ def test_repo_format_config_and_state_view(tmp_path: Path) -> None:
     assert state.value.repo_format == RepoFormat.NATIVE
     assert state.value.provider_ready is True
     assert state.value.publication_status == RepoPublicationStatus.STABLE
-    assert state.value.target_proof_availability == ProofAvailability.PROVED
-    assert state.value.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert state.value.completion_mode == RepoCompletionMode.GRAPH_PROVED
     assert "max_parallel_content_node_tasks" not in state.value.model_dump()
 
 
@@ -89,34 +88,22 @@ def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> Non
 
     default_config = component.get_repo_config(tmp_path)
     assert default_config.ok and default_config.value is not None
-    assert default_config.value.config.target_proof_availability == ProofAvailability.PROVED
-    assert default_config.value.config.work_mode == RepoWorkMode.PROVED_FULL_GRAPH
+    assert default_config.value.config.completion_mode == RepoCompletionMode.GRAPH_PROVED
     assert default_config.value.config.default_requirement_proof_availability == ProofAvailability.DECLARED
 
     declared = component.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
         default_requirement_proof_availability=ProofAvailability.PROVED,
     )
     assert declared.ok and declared.value is not None
-    assert declared.value.config.target_proof_availability == ProofAvailability.DECLARED
-    assert declared.value.config.work_mode == RepoWorkMode.DECLARED_INTERFACE
+    assert declared.value.config.completion_mode == RepoCompletionMode.INTERFACE_DECLARED
     assert declared.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
 
-    work = component.get_repo_work_config(tmp_path)
-    assert work.ok and work.value is not None
-    assert work.value.repo_key == tmp_path.name
-    assert work.value.target_proof_availability == ProofAvailability.DECLARED
-    assert work.value.work_mode == RepoWorkMode.DECLARED_INTERFACE
-
-    invalid_combo = component.update_repo_config(
-        tmp_path,
-        target_proof_availability=ProofAvailability.PROVED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
-    )
-    assert not invalid_combo.ok
-    assert invalid_combo.issues[0].kind == "repo_config_invalid"
+    policy = component.get_repo_completion_policy(tmp_path)
+    assert policy.ok and policy.value is not None
+    assert policy.value.repo_key == tmp_path.name
+    assert policy.value.completion_mode == RepoCompletionMode.INTERFACE_DECLARED
 
     developing = component.get_repo_publication(tmp_path)
     assert developing.ok and developing.value is not None
@@ -130,8 +117,7 @@ def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> Non
 
     locked = component.update_repo_config(
         tmp_path,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_FULL_GRAPH,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
     )
     assert not locked.ok
     assert locked.issues[0].kind == "repo_config_locked"

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import (
     ProofAvailability,
+    RepoCompletionMode,
+    RepoCompletionPolicyView,
     RepoConfig,
     RepoConfigView,
     RepoFormat,
@@ -19,8 +21,7 @@ from lean_constellation.domain.repo import (
     RepoPublicationStatus,
     RepoPublicationView,
     RepoStateView,
-    RepoWorkConfigView,
-    RepoWorkMode,
+    proof_availability_for_completion_mode,
 )
 from lean_constellation.services.foundation import (
     FoundationContext,
@@ -221,8 +222,7 @@ class RepoMetadataComponent:
         self,
         repo_root: Path,
         *,
-        target_proof_availability: ProofAvailability | str | None = None,
-        work_mode: RepoWorkMode | str | None = None,
+        completion_mode: RepoCompletionMode | str | None = None,
         default_requirement_proof_availability: ProofAvailability | str | None = None,
     ) -> ServiceResult[RepoConfigView]:
         publication = self.get_repo_publication(repo_root)
@@ -234,7 +234,7 @@ class RepoMetadataComponent:
                     "repo_config_locked",
                     "Repo config cannot be changed while the repo publication status is stable.",
                     object_ref=str(self._repo_config_path(repo_root)),
-                    suggested_action="Mark the repo developing before changing target proof availability or work mode.",
+                    suggested_action="Mark the repo developing before changing its completion requirement.",
                 )
             )
         current = self.get_repo_config(repo_root)
@@ -242,10 +242,8 @@ class RepoMetadataComponent:
             return self.runtime.foundation.fail(current.issues)
         config = current.value.config.model_copy(deep=True)
         try:
-            if target_proof_availability is not None:
-                config.target_proof_availability = ProofAvailability(target_proof_availability)
-            if work_mode is not None:
-                config.work_mode = RepoWorkMode(work_mode)
+            if completion_mode is not None:
+                config.completion_mode = RepoCompletionMode(completion_mode)
             if default_requirement_proof_availability is not None:
                 config.default_requirement_proof_availability = ProofAvailability(default_requirement_proof_availability)
             config = RepoConfig.model_validate(config.model_dump())
@@ -256,19 +254,23 @@ class RepoMetadataComponent:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(RepoConfigView(repo_root=str(Path(repo_root)), config=config))
 
-    def get_repo_work_config(self, repo_root: Path) -> ServiceResult[RepoWorkConfigView]:
+    def get_repo_completion_policy(
+        self, repo_root: Path
+    ) -> ServiceResult[RepoCompletionPolicyView]:
         config = self.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
         return self.runtime.foundation.ok(
-            RepoWorkConfigView(
+            RepoCompletionPolicyView(
                 repo_root=str(Path(repo_root)),
                 repo_key=Path(repo_root).name,
-                target_proof_availability=config.value.config.target_proof_availability,
-                work_mode=config.value.config.work_mode,
+                completion_mode=config.value.config.completion_mode,
+                default_requirement_proof_availability=(
+                    config.value.config.default_requirement_proof_availability
+                ),
                 summary=(
-                    "Repo work config loaded: "
-                    f"{config.value.config.target_proof_availability.value} / {config.value.config.work_mode.value}."
+                    "Repo completion policy loaded: "
+                    f"{config.value.config.completion_mode.value}."
                 ),
             )
         )
@@ -309,13 +311,15 @@ class RepoMetadataComponent:
                 repo_format=repo_format.value.repo_format,
                 publication_status=publication.value.publication.status,
                 latest_release_id=publication.value.publication.latest_release_id,
-                target_proof_availability=config.value.config.target_proof_availability,
-                work_mode=config.value.config.work_mode,
+                completion_mode=config.value.config.completion_mode,
                 default_requirement_proof_availability=config.value.config.default_requirement_proof_availability,
                 provider_ready=ready_flag,
                 readiness_policy=(
                     "declared_closure"
-                    if config.value.config.target_proof_availability == ProofAvailability.DECLARED
+                    if proof_availability_for_completion_mode(
+                        config.value.config.completion_mode
+                    )
+                    == ProofAvailability.DECLARED
                     else "proved_closure"
                 ),
                 preparation_input_exists=self.runtime.foundation.layout.preparation_input_path(ctx).exists(),

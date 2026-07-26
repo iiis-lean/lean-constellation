@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo import proof_availability_for_completion_mode
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
@@ -504,7 +505,9 @@ class ExportComponent:
         return self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
             repo_root,
             ref=ref,
-            required_availability=config.value.config.target_proof_availability,
+            required_availability=proof_availability_for_completion_mode(
+                config.value.config.completion_mode
+            ),
         )
 
     def _decl_ref_view(self, repo_root: Path, scope_path: str, ref: DeclRef, *, index: int) -> DeclRefView:

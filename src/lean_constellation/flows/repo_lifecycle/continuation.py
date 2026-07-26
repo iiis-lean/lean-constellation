@@ -49,8 +49,7 @@ class NativeRepoContinuationState(BaseFlowState):
     pre_run_mutation_checkpoint_id: str | None = None
     publication_started_stable: bool = False
     publication_transitioned: bool = False
-    previous_target: str | None = None
-    previous_work_mode: str | None = None
+    previous_completion_mode: str | None = None
     config_change_summary: str | None = None
     resolved_source_files: list[str] = Field(default_factory=list)
     source_index_result: SourceIndexBuildResult | None = None
@@ -93,7 +92,6 @@ class PrepareContinuationDispatchStep(BaseStep):
             kind = "source_index"
             request = FlowRequest(flow_type="source_index_build", scope_id=ctx.scope_id, params={
                 "repo_key": inp.repo_key, "repo_root": inp.repo_root, "run_objective": spec.run_objective,
-                "target_proof_availability": spec.target_proof_availability, "work_mode": spec.work_mode,
                 "source_scope": spec.source_scope.model_dump(mode="json"), "index_policy": spec.index_policy,
                 "start_reason": "continuation", "pre_update_checkpoint_id": state.pre_run_mutation_checkpoint_id,
             })
@@ -209,8 +207,7 @@ class NativeRepoContinuationFlow(LeanBusinessFlow):
             if result.outcome == "prepared":
                 state.pre_run_mutation_checkpoint_id = result.checkpoint_id
                 state.publication_started_stable = result.started_stable
-                state.previous_target = result.previous_target
-                state.previous_work_mode = result.previous_work_mode
+                state.previous_completion_mode = result.previous_completion_mode
                 state.position = FlowPosition(phase="apply_run")
             else:
                 self._finish("blocked", result.reason)

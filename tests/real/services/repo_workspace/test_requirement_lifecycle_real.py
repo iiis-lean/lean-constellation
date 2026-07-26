@@ -15,7 +15,7 @@ from tests.unit_services_helpers import (
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability, RepoWorkMode
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationService, ServiceResult
@@ -142,8 +142,7 @@ def test_repo_workspace_requirement_group_lifecycle_real(tmp_path: Path) -> None
     assert (provider / ".lean_constellation" / "preparation_input.json").exists()
     configured = service.metadata.update_repo_config(
         provider,
-        target_proof_availability=ProofAvailability.DECLARED,
-        work_mode=RepoWorkMode.DECLARED_INTERFACE,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
     assert configured.ok, configured.issues
 
