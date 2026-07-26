@@ -31,6 +31,11 @@ class InterfaceActor(StrEnum):
     SYSTEM = "system"
 
 
+_LEAN_SOURCE_KIND_TO_INTERFACE_KIND = {
+    "abbrev": DeclKind.DEFINITION,
+}
+
+
 class InterfaceView(StrictModel):
     name: str
     kind: DeclKind
@@ -709,18 +714,20 @@ class InterfaceComponent:
                     )
                 ],
             )
-        try:
-            actual = DeclKind(decl_kind)
-        except ValueError:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "interface_binding_kind_invalid",
-                    f"Declaration kind is invalid: {decl_kind}",
-                    object_ref=node_path,
-                    current=decl_kind,
-                    expected=", ".join(kind.value for kind in DeclKind),
+        actual = _LEAN_SOURCE_KIND_TO_INTERFACE_KIND.get(decl_kind)
+        if actual is None:
+            try:
+                actual = DeclKind(decl_kind)
+            except ValueError:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "interface_binding_kind_invalid",
+                        f"Declaration kind is invalid: {decl_kind}",
+                        object_ref=node_path,
+                        current=decl_kind,
+                        expected=", ".join(kind.value for kind in DeclKind),
+                    )
                 )
-            )
         if actual != interface.kind:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(

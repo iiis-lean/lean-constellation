@@ -506,6 +506,42 @@ def test_bind_content_interface_rejects_kind_mismatch(tmp_path: Path) -> None:
     assert bound.issues[0].kind == "interface_binding_kind_mismatch"
 
 
+def test_bind_content_definition_interface_accepts_abbrev_source_kind(tmp_path: Path) -> None:
+    _init_main(tmp_path, interfaces=[])
+    _create_content_node(tmp_path, "Main.Core")
+    component, _export = _component_with_public_decls(
+        tmp_path,
+        {
+            "Main.Core": [
+                DeclPublicView(
+                    ref=DeclRef(node="Main.Core", name="core_abbrev", revision=1),
+                    kind="abbrev",
+                    summary="Source-faithful abbreviation.",
+                )
+            ]
+        },
+    )
+    assert component.add_interface(
+        tmp_path,
+        node_path="Main.Core",
+        name="core_abbrev",
+        kind=DeclKind.DEFINITION,
+        summary="Definition-compatible abbreviation interface.",
+        actor="coordinator",
+    ).ok
+
+    bound = component.bind_interface_to_decl(
+        tmp_path,
+        node_path="Main.Core",
+        interface_name="core_abbrev",
+        decl_name="core_abbrev",
+    )
+
+    assert bound.ok
+    assert bound.value is not None
+    assert bound.value.bound_decl == DeclRef(node="Main.Core", name="core_abbrev", revision=1)
+
+
 def test_bind_content_interface_reports_missing_decl_name_and_outside_target(tmp_path: Path) -> None:
     _init_main(tmp_path, interfaces=[])
     _create_content_node(tmp_path, "Main.Core")
