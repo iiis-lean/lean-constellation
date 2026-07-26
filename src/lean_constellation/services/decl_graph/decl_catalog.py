@@ -279,6 +279,12 @@ class DeclCatalogComponent:
         )
         next_revision.updated_at = utc_now_iso()
         self._reset_revision_to_state(next_revision, start_state)
+        self._rebind_same_node_dependencies_to_current(
+            repo_root,
+            node_path=node_path,
+            decl_name=name,
+            revision=next_revision,
+        )
 
         if self.release_guard is not None:
             guarded = self.release_guard.check_update_candidate(
@@ -1042,6 +1048,27 @@ class DeclCatalogComponent:
                 revision.proof.formal = None
                 if revision.proof.nl is None and not revision.proof.deps:
                     revision.proof = None
+
+    def _rebind_same_node_dependencies_to_current(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        revision: DeclRevision,
+    ) -> None:
+        proof_deps = revision.proof.deps if revision.proof is not None else []
+        for dep in [*revision.statement.deps, *proof_deps]:
+            if (
+                not isinstance(dep, RepoDeclDep)
+                or dep.ref.repo is not None
+                or dep.ref.node not in {node_path, "Main"}
+                or dep.ref.name == decl_name
+            ):
+                continue
+            provider = self.get_decl(repo_root, node_path=node_path, name=dep.ref.name)
+            if provider.ok and provider.value is not None:
+                dep.ref.revision = provider.value.current_revision
 
     def _reverse_dependency_map(
         self,
