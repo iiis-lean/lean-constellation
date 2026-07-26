@@ -124,10 +124,11 @@ def test_decl_stage_groups_expose_expected_tools() -> None:
             "add_statement_resource_origin",
             "remove_statement_origin",
             "clear_statement_origins",
-            "add_statement_dependencies",
-            "remove_statement_dep",
-            "clear_statement_deps",
         },
+    )
+    assert_group_contains(
+        "decl_statement_dependency_write",
+        {"add_statement_dependencies", "remove_statement_dep", "clear_statement_deps"},
     )
     assert_group_contains(
         "decl_stage_proof_nl_write",
@@ -137,23 +138,18 @@ def test_decl_stage_groups_expose_expected_tools() -> None:
             "add_proof_resource_origin",
             "remove_proof_origin",
             "clear_proof_origins",
-            "add_proof_dependencies",
-            "remove_proof_dep",
-            "clear_proof_deps",
         },
     )
-    assert_group_contains("decl_stage_statement_formal_file", {"check_decl_file_snapshot_sync", "check_formal_stage_consistency"})
-    assert_group_contains("decl_stage_statement_formal_file_write", {"prepare_statement_formal_file", "capture_statement_formal_file"})
     assert_group_contains(
-        "decl_stage_statement_formal_dep_write",
-        {"add_statement_dependencies", "remove_statement_dep", "clear_statement_deps"},
-    )
-    assert_group_contains("decl_stage_proof_formal_file", {"check_decl_file_snapshot_sync", "check_formal_stage_consistency"})
-    assert_group_contains("decl_stage_proof_formal_file_write", {"prepare_proof_formal_file", "capture_proof_formal_file"})
-    assert_group_contains(
-        "decl_stage_proof_formal_dep_write",
+        "decl_proof_dependency_write",
         {"add_proof_dependencies", "remove_proof_dep", "clear_proof_deps"},
     )
+    assert_group_contains(
+        "decl_formal_consistency_read",
+        {"check_decl_file_snapshot_sync", "check_formal_stage_consistency"},
+    )
+    assert_group_contains("decl_stage_statement_formal_file_write", {"prepare_statement_formal_file", "capture_statement_formal_file"})
+    assert_group_contains("decl_stage_proof_formal_file_write", {"prepare_proof_formal_file", "capture_proof_formal_file"})
     assert_group_contains("decl_stage_review_status_read", {"inspect_current_stage_review_status"})
     assert_group_contains(
         "decl_stage_statement_nl_review_mark_write",
@@ -171,16 +167,11 @@ def test_decl_stage_groups_expose_expected_tools() -> None:
         "decl_stage_proof_formal_review_mark_write",
         {"record_proof_formal_review_passed", "record_proof_formal_review_rejected"},
     )
-    assert_group_contains(
-        "statement_formal_diagnostics_read",
-        {"run_lean_file_diagnostics", "scan_lean_sorry_axiom", "check_statement_formal_policy"},
-    )
-    assert_group_contains(
-        "proof_formal_diagnostics_read",
-        {"run_lean_file_diagnostics", "scan_lean_sorry_axiom", "check_proof_formal_policy"},
-    )
-    statement_group = runtime.tool_facade.list_registered_tools(group_key="statement_formal_diagnostics_read")
-    proof_group = runtime.tool_facade.list_registered_tools(group_key="proof_formal_diagnostics_read")
+    assert_group_contains("lean_file_diagnostics_read", {"run_lean_file_diagnostics", "scan_lean_sorry_axiom"})
+    assert_group_contains("statement_formal_policy_read", {"check_statement_formal_policy"})
+    assert_group_contains("proof_formal_policy_read", {"check_proof_formal_policy"})
+    statement_group = runtime.tool_facade.list_registered_tools(group_key="statement_formal_policy_read")
+    proof_group = runtime.tool_facade.list_registered_tools(group_key="proof_formal_policy_read")
     assert statement_group.ok and statement_group.value is not None
     assert proof_group.ok and proof_group.value is not None
     assert "check_proof_formal_policy" not in {tool.name for tool in statement_group.value}

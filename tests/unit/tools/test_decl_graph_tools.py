@@ -30,23 +30,17 @@ def test_decl_graph_tools_are_registered() -> None:
         "plan_create_decl",
         "plan_update_decl",
         "plan_delete_decl",
-        "list_current_decls",
         "list_current_node_decls",
-        "get_decl",
         "inspect_current_node_decl",
         "list_node_decls",
         "inspect_node_decl",
         "read_statement_nl",
         "read_proof_nl",
         "read_formal",
-        "get_decl_change",
         "preview_decl_delete_closure",
         "validate_decl_round_draft",
-        "compute_decl_dependency_closure",
         "compute_current_node_decl_dependency_closure",
         "preview_current_node_decl_delete_closure",
-        "check_decl_ready",
-        "list_content_public_decls",
         "list_visible_nodes",
         "list_imported_repos",
         "list_current_node_public_decls",
@@ -57,7 +51,6 @@ def test_decl_graph_tools_are_registered() -> None:
         "inspect_repo_public_decl",
         "read_visible_decl_lean_file",
         "list_active_decl_names",
-        "check_content_node_ready",
         "check_current_content_node_completion",
         "run_decl_round_local_audit",
     }
@@ -98,22 +91,19 @@ def test_decl_update_tool_schema_exposes_new_transition_fields_and_rejects_legac
 
 
 def test_decl_graph_groups_expose_expected_tools() -> None:
-    assert_group_contains("decl_graph_read_current", {"get_current_decl_graph_index", "list_decl_strategies"})
+    assert_group_contains("decl_graph_current_navigation_read", {"get_current_decl_graph_index", "list_decl_strategies"})
     assert_group_contains(
-        "decl_graph_read_coordinator",
+        "decl_graph_read_by_node",
         {"get_node_decl_graph_index", "get_node_decl_graph_store", "list_node_decls", "inspect_node_decl"},
     )
     assert_group_contains("decl_graph_current_write", {"ensure_current_decl_graph", "rebuild_current_decl_graph_index"})
     assert_group_contains("decl_strategy_write", {"ensure_open_decl_strategy", "close_decl_strategy"})
     assert_group_contains("decl_round_change_write", {"create_decl_round_draft", "plan_create_decl", "validate_decl_round_draft"})
     assert_group_contains("decl_round_closeout_write", {"write_decl_change_summary", "write_decl_round_summary", "mark_decl_round_terminal"})
-    assert_group_contains("decl_catalog_plan_write", {"plan_create_decl", "plan_update_decl", "plan_delete_decl"})
-    assert_group_contains("decl_detail_read", {"list_current_decls", "get_decl"})
-    assert_group_contains("decl_history_read", {"get_decl_change"})
+    assert_group_contains("decl_stage_round_read", {"get_decl_round", "run_decl_round_local_audit"})
     assert_group_contains("decl_stage_statement_nl_read", {"read_statement_nl"})
     assert_group_contains("decl_stage_proof_nl_read", {"read_proof_nl"})
     assert_group_contains("decl_stage_formal_read", {"read_formal"})
-    assert_group_contains("decl_readiness_read", {"compute_decl_dependency_closure", "check_decl_ready", "check_content_node_ready"})
     assert_group_contains("current_node_decl_read", {"list_current_node_decls", "inspect_current_node_decl"})
     assert_group_contains(
         "decl_dependency_analysis_read",
@@ -121,8 +111,16 @@ def test_decl_graph_groups_expose_expected_tools() -> None:
     )
     assert_group_contains("node_visibility_read_current", {"list_visible_nodes", "list_imported_repos"})
     assert_group_contains(
-        "public_decl_read",
-        {"list_current_node_public_decls", "inspect_current_node_public_decl", "list_node_public_decls", "inspect_node_public_decl"},
+        "current_node_public_decl_read",
+        {"list_current_node_public_decls", "inspect_current_node_public_decl"},
+    )
+    assert_group_contains(
+        "visible_node_public_decl_read",
+        {"list_node_public_decls", "inspect_node_public_decl"},
+    )
+    assert_group_contains(
+        "imported_repo_public_decl_read",
+        {"list_repo_public_decls", "inspect_repo_public_decl"},
     )
     assert_group_contains("content_completion_gate_read", {"check_current_content_node_completion"})
     assert_group_contains("visible_decl_lean_file_read", {"read_visible_decl_lean_file"})

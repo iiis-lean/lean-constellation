@@ -5,7 +5,6 @@ from __future__ import annotations
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.tools.args import (
-    ChangeIdArgs,
     ChangeSummaryArgs,
     DeclCreateArgs,
     DeclDeleteArgs,
@@ -13,7 +12,6 @@ from lean_constellation.tools.args import (
     DeclInspectArgs,
     DeclNameArgs,
     DeclNamesArgs,
-    DeclReadyArgs,
     NodeDeclInspectArgs,
     NodeDeclListArgs,
     DeclUpdateArgs,
@@ -473,11 +471,6 @@ def _mark_decl_delete(runtime, ctx, args: DeclDeleteArgs):
     return runtime.decl_graph.mark_decl_delete(ctx.repo_root, node_path=_node(ctx), **args.model_dump())
 
 
-def _list_decls(runtime, ctx, args: NoArgs):
-    del args
-    return runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=_node(ctx))
-
-
 def _list_current_node_decls(runtime, ctx, args: NoArgs):
     del args
     views = runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=_node(ctx))
@@ -491,10 +484,6 @@ def _list_node_decls(runtime, ctx, args: NodeDeclListArgs):
     if not views.ok or views.value is None:
         return runtime.foundation.fail(views.issues)
     return runtime.foundation.ok([_decl_list_item(runtime, ctx.repo_root, item) for item in views.value], warnings=views.issues)
-
-
-def _get_decl(runtime, ctx, args: DeclNameArgs):
-    return runtime.decl_graph.get_decl_view(ctx.repo_root, node_path=_node(ctx), name=args.decl_name)
 
 
 def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):
@@ -531,10 +520,6 @@ def _inspect_node_decl(runtime, ctx, args: NodeDeclInspectArgs):
     )
 
 
-def _get_decl_change(runtime, ctx, args: ChangeIdArgs):
-    return runtime.decl_graph.get_decl_change(ctx.repo_root, node_path=_node(ctx), change_id=args.change_id)
-
-
 def _compute_delete_closure(runtime, ctx, args: DeclNamesArgs):
     return runtime.decl_graph.compute_delete_closure(ctx.repo_root, node_path=_node(ctx), decl_names=args.decl_names)
 
@@ -553,15 +538,6 @@ def _compute_dependency_closure(runtime, ctx, args: DeclNamesArgs):
 
 def _preview_delete_closure(runtime, ctx, args: DeclNamesArgs):
     return runtime.decl_graph.compute_delete_closure(ctx.repo_root, node_path=_node(ctx), decl_names=args.decl_names)
-
-
-def _check_decl_ready(runtime, ctx, args: DeclReadyArgs):
-    return runtime.decl_graph.check_decl_ready(ctx.repo_root, node_path=_node(ctx), decl_name=args.decl_name, policy=args.policy)
-
-
-def _list_content_public_decls(runtime, ctx, args: NoArgs):
-    del args
-    return runtime.decl_graph.list_content_public_decls(ctx.repo_root, node_path=_node(ctx))
 
 
 def _list_visible_nodes(runtime, ctx, args: NoArgs):
@@ -814,11 +790,6 @@ def _list_active_decl_names(runtime, ctx, args: NoArgs):
     return runtime.decl_graph.list_active_decl_names(ctx.repo_root, node_path=_node(ctx))
 
 
-def _check_content_ready(runtime, ctx, args: NoArgs):
-    del args
-    return runtime.decl_graph.check_content_node_ready(ctx.repo_root, node_path=_node(ctx))
-
-
 def _check_content_completion(runtime, ctx, args: NoArgs):
     del args
     return runtime.validation_snapshot.check_content_node_completion(ctx.repo_root, node_path=_node(ctx))
@@ -844,7 +815,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="decl_graph_index",
-            groups={AppGroup.DECL_GRAPH_READ_CURRENT},
+            groups={AppGroup.DECL_GRAPH_CURRENT_NAVIGATION_READ},
             roles=roles,
             handler=_graph_index,
         ),
@@ -854,7 +825,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="decl_graph_store",
-            groups={AppGroup.DECL_GRAPH_READ_CURRENT},
+            groups={AppGroup.DECL_GRAPH_CURRENT_NAVIGATION_READ},
             roles=roles,
             handler=_graph_store,
         ),
@@ -864,7 +835,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeDeclListArgs,
             capability=ToolCapability.READ,
             result_view="decl_graph_index",
-            groups={AppGroup.DECL_GRAPH_READ_COORDINATOR},
+            groups={AppGroup.DECL_GRAPH_READ_BY_NODE},
             roles={"coordinator", "admin"},
             handler=_node_graph_index,
             required_context={"repo"},
@@ -875,7 +846,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeDeclListArgs,
             capability=ToolCapability.READ,
             result_view="decl_graph_store",
-            groups={AppGroup.DECL_GRAPH_READ_COORDINATOR},
+            groups={AppGroup.DECL_GRAPH_READ_BY_NODE},
             roles={"coordinator", "admin"},
             handler=_node_graph_store,
             required_context={"repo"},
@@ -916,7 +887,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="decl_strategy_list",
-            groups={AppGroup.DECL_GRAPH_READ_CURRENT},
+            groups={AppGroup.DECL_GRAPH_CURRENT_NAVIGATION_READ},
             roles=roles,
             handler=_list_strategies,
         ),
@@ -926,7 +897,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=StrategyIdArgs,
             capability=ToolCapability.READ,
             result_view="decl_strategy",
-            groups={AppGroup.DECL_GRAPH_READ_CURRENT},
+            groups={AppGroup.DECL_GRAPH_CURRENT_NAVIGATION_READ},
             roles=roles,
             handler=_get_strategy,
         ),
@@ -946,7 +917,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="decl_round_list",
-            groups={AppGroup.DECL_GRAPH_READ_CURRENT},
+            groups={AppGroup.DECL_GRAPH_CURRENT_NAVIGATION_READ},
             roles=roles,
             handler=_list_rounds,
         ),
@@ -956,7 +927,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=RoundIdArgs,
             capability=ToolCapability.READ,
             result_view="decl_round",
-            groups={AppGroup.DECL_GRAPH_READ_CURRENT},
+            groups={AppGroup.DECL_STAGE_ROUND_READ},
             roles=roles,
             handler=_get_round,
         ),
@@ -996,7 +967,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=DeclCreateArgs,
             capability=ToolCapability.WRITE,
             result_view="public_decl_detail",
-            groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
+            groups={AppGroup.DECL_ROUND_CHANGE_WRITE},
             roles=plan_roles,
             handler=_create_decl,
         ),
@@ -1006,7 +977,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=DeclUpdateArgs,
             capability=ToolCapability.WRITE,
             result_view="public_decl_detail",
-            groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
+            groups={AppGroup.DECL_ROUND_CHANGE_WRITE},
             roles=plan_roles,
             handler=_open_decl_update,
         ),
@@ -1016,19 +987,9 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=DeclDeleteArgs,
             capability=ToolCapability.WRITE,
             result_view="public_decl_detail",
-            groups={AppGroup.DECL_ROUND_CHANGE_WRITE, AppGroup.DECL_CATALOG_PLAN_WRITE},
+            groups={AppGroup.DECL_ROUND_CHANGE_WRITE},
             roles=plan_roles,
             handler=_mark_decl_delete,
-        ),
-        handler_tool(
-            name="list_current_decls",
-            description="List declarations in the current content node.",
-            args_model=NoArgs,
-            capability=ToolCapability.READ,
-            result_view="decl_list",
-            groups={AppGroup.DECL_DETAIL_READ},
-            roles=roles,
-            handler=_list_decls,
         ),
         handler_tool(
             name="list_current_node_decls",
@@ -1046,20 +1007,10 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeDeclListArgs,
             capability=ToolCapability.READ,
             result_view="decl_list",
-            groups={AppGroup.DECL_GRAPH_READ_COORDINATOR},
+            groups={AppGroup.DECL_GRAPH_READ_BY_NODE},
             roles={"coordinator", "admin"},
             handler=_list_node_decls,
             required_context={"repo"},
-        ),
-        handler_tool(
-            name="get_decl",
-            description="Inspect a declaration catalog entry in the current content node.",
-            args_model=DeclNameArgs,
-            capability=ToolCapability.READ,
-            result_view="decl",
-            groups={AppGroup.DECL_DETAIL_READ},
-            roles=roles,
-            handler=_get_decl,
         ),
         handler_tool(
             name="inspect_current_node_decl",
@@ -1107,20 +1058,10 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeDeclInspectArgs,
             capability=ToolCapability.READ,
             result_view="decl_revision",
-            groups={AppGroup.DECL_GRAPH_READ_COORDINATOR},
+            groups={AppGroup.DECL_GRAPH_READ_BY_NODE},
             roles={"coordinator", "admin"},
             handler=_inspect_node_decl,
             required_context={"repo"},
-        ),
-        handler_tool(
-            name="get_decl_change",
-            description="Inspect a declaration change by change id.",
-            args_model=ChangeIdArgs,
-            capability=ToolCapability.READ,
-            result_view="decl_change",
-            groups={AppGroup.DECL_HISTORY_READ},
-            roles=roles,
-            handler=_get_decl_change,
         ),
         handler_tool(
             name="preview_decl_delete_closure",
@@ -1143,16 +1084,6 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_validate_round_draft,
         ),
         handler_tool(
-            name="compute_decl_dependency_closure",
-            description="Compute upstream and downstream dependency closure for declarations.",
-            args_model=DeclNamesArgs,
-            capability=ToolCapability.READ,
-            result_view="decl_dependency_closure",
-            groups={AppGroup.DECL_READINESS_READ},
-            roles=roles,
-            handler=_compute_dependency_closure,
-        ),
-        handler_tool(
             name="compute_current_node_decl_dependency_closure",
             description="Compute upstream and downstream dependency closure for current-node declarations.",
             args_model=DeclNamesArgs,
@@ -1171,26 +1102,6 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_DEPENDENCY_ANALYSIS_READ},
             roles=roles,
             handler=_preview_delete_closure,
-        ),
-        handler_tool(
-            name="check_decl_ready",
-            description="Check dynamic readiness of a declaration under the repo policy.",
-            args_model=DeclReadyArgs,
-            capability=ToolCapability.READ,
-            result_view="decl_readiness",
-            groups={AppGroup.DECL_READINESS_READ},
-            roles=roles,
-            handler=_check_decl_ready,
-        ),
-        handler_tool(
-            name="list_content_public_decls",
-            description="List public declarations exposed by the current content node.",
-            args_model=NoArgs,
-            capability=ToolCapability.READ,
-            result_view="content_public_decls",
-            groups={AppGroup.DECL_READINESS_READ},
-            roles=roles,
-            handler=_list_content_public_decls,
         ),
         handler_tool(
             name="list_visible_nodes",
@@ -1220,7 +1131,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="public_decls",
-            groups={AppGroup.PUBLIC_DECL_READ},
+            groups={AppGroup.CURRENT_NODE_PUBLIC_DECL_READ},
             roles=roles,
             handler=_list_current_node_public_decls,
         ),
@@ -1230,7 +1141,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=DeclInspectArgs,
             capability=ToolCapability.READ,
             result_view="decl_revision",
-            groups={AppGroup.PUBLIC_DECL_READ},
+            groups={AppGroup.CURRENT_NODE_PUBLIC_DECL_READ},
             roles=roles,
             handler=_inspect_current_node_public_decl,
         ),
@@ -1240,7 +1151,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodePublicDeclListArgs,
             capability=ToolCapability.READ,
             result_view="public_decls",
-            groups={AppGroup.PUBLIC_DECL_READ, AppGroup.PUBLIC_DECL_READ_COORDINATOR},
+            groups={AppGroup.VISIBLE_NODE_PUBLIC_DECL_READ},
             roles=roles,
             handler=_list_node_public_decls,
             required_context={"repo"},
@@ -1251,7 +1162,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodePublicDeclInspectArgs,
             capability=ToolCapability.READ,
             result_view="decl_revision",
-            groups={AppGroup.PUBLIC_DECL_READ, AppGroup.PUBLIC_DECL_READ_COORDINATOR},
+            groups={AppGroup.VISIBLE_NODE_PUBLIC_DECL_READ},
             roles=roles,
             handler=_inspect_node_public_decl,
             required_context={"repo"},
@@ -1262,7 +1173,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=RepoPublicDeclListArgs,
             capability=ToolCapability.READ,
             result_view="public_decls",
-            groups={AppGroup.PUBLIC_DECL_READ, AppGroup.PUBLIC_DECL_READ_COORDINATOR},
+            groups={AppGroup.IMPORTED_REPO_PUBLIC_DECL_READ},
             roles=roles,
             handler=_list_repo_public_decls,
             required_context={"repo"},
@@ -1273,7 +1184,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=RepoPublicDeclInspectArgs,
             capability=ToolCapability.READ,
             result_view="decl_revision",
-            groups={AppGroup.PUBLIC_DECL_READ, AppGroup.PUBLIC_DECL_READ_COORDINATOR},
+            groups={AppGroup.IMPORTED_REPO_PUBLIC_DECL_READ},
             roles=roles,
             handler=_inspect_repo_public_decl,
             required_context={"repo"},
@@ -1295,19 +1206,9 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="decl_names",
-            groups={AppGroup.DECL_GRAPH_READ_CURRENT},
+            groups={AppGroup.DECL_GRAPH_CURRENT_NAVIGATION_READ},
             roles=roles,
             handler=_list_active_decl_names,
-        ),
-        handler_tool(
-            name="check_content_node_ready",
-            description="Check whether the current content node can be submitted ready.",
-            args_model=NoArgs,
-            capability=ToolCapability.READ,
-            result_view="gate_report",
-            groups={AppGroup.DECL_READINESS_READ},
-            roles={"plan", "admin"},
-            handler=_check_content_ready,
         ),
         handler_tool(
             name="check_current_content_node_completion",

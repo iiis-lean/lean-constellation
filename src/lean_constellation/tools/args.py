@@ -107,10 +107,6 @@ class RequirementNameArgs(StrictModel):
     requirement_name: str = Field(description="Repo dependency requirement name in the current repo.")
 
 
-class RequirementObservedArgs(RequirementNameArgs):
-    note: str | None = Field(default=None, description="Optional note for observing the provider result.")
-
-
 class SourceCorpusCheckArgs(StrictModel):
     relpath: str = Field(default=".lean_constellation/source", description="Source corpus path relative to the repo root.")
     entry_path: str | None = Field(default=None, description="Optional entry file path relative to the source corpus root.")
@@ -223,18 +219,8 @@ class ResourceTargetArgs(StrictModel):
     target: str = Field(description="Canonical resource target, usually a URL, arXiv id, DOI, or local path.")
 
 
-class ResourceDraftTargetArgs(StrictModel):
-    target: str = Field(description="Canonical resource target for the draft, usually a URL, arXiv id, DOI, or local-path target.")
-    resource_kind: str | None = Field(default=None, description="Resource kind hint such as arxiv, web, pdf, local, or notes.")
-    title_hint: str | None = Field(default=None, description="Optional human-readable title hint used to initialize draft metadata.")
-
-
 class DraftIdArgs(StrictModel):
-    draft_id: str = Field(description="Resource draft id returned by allocate_resource_draft.")
-
-
-class DraftIdReasonArgs(DraftIdArgs):
-    reason: str = Field(description="Reason for abandoning the resource draft.")
+    draft_id: str = Field(description="Resource draft id from the current flow context or a resource draft read.")
 
 
 class SummaryArgs(StrictModel):
@@ -420,16 +406,6 @@ class RootInterfaceAddArgs(StrictModel):
     kind: str = Field(description="Root Main interface declaration kind.")
     summary: str = Field(description="Root Main interface summary.")
     statement_hint: str | None = Field(default=None, description="Optional statement hint.")
-
-
-class RootInterfaceUpdateArgs(StrictModel):
-    name: str = Field(description="Root Main interface name.")
-    summary: str | None = Field(default=None, description="Updated summary, if changing it.")
-    statement_hint: str | None = Field(default=None, description="Updated statement hint, if changing it.")
-
-
-class RootInterfaceNameArgs(StrictModel):
-    name: str = Field(description="Root Main interface name.")
 
 
 class InterfaceBindArgs(NodePathArgs):
@@ -1033,24 +1009,6 @@ class StageReviewSubmitArgs(StrictModel):
     round_id: str = Field(description="Current declaration round id.")
     stage: str = Field(description="Stage under review.")
     summary: str = Field(description="Overall review summary for the stage.")
-
-
-class AdapterUpstreamMetadataArgs(StrictModel):
-    source_kind: Literal["git", "local_path"] = Field(default="git", description="Upstream source kind.")
-    git_url: str | None = Field(default=None, description="Upstream git repository URL for git source_kind.")
-    revision: str | None = Field(default=None, description="Optional upstream revision.")
-    subdir: str | None = Field(default=None, description="Optional upstream repo subdirectory containing the Lake package.")
-    local_path: str | None = Field(default=None, description="Local upstream path for local_path source_kind.")
-    package_name: str = Field(description="Upstream Lake package name.")
-    dependency_name: str = Field(description="Lake dependency name used by this adapter repo.")
-    evidence_summary: str | None = Field(default=None, description="Evidence for choosing this upstream repo.")
-    setup_summary: str | None = Field(default=None, description="Summary of setup/build status.")
-    visible_modules: list[str] | None = Field(default=None, description="Optional visible upstream modules to record.")
-
-
-class AdapterVisibleModulesArgs(StrictModel):
-    modules: list[str] = Field(description="Visible upstream modules to record.")
-    summary: str | None = Field(default=None, description="Optional summary.")
 
 
 class UpstreamDeclSearchArgs(StrictModel):

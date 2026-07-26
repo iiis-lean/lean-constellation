@@ -27,9 +27,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 264
-    assert len(implemented_tool_cases()) == 196
-    assert len(pending_tool_cases()) == 68
+    assert len(cases) == 244
+    assert len(implemented_tool_cases()) == 194
+    assert len(pending_tool_cases()) == 50
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -174,27 +174,6 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
     )
     assert added_root_interface.value["interface"]["name"] == "strict_supplement"
 
-    call_tool_with_evidence(
-        server,
-        "root_interface_prepare",
-        "update_root_interface",
-        {"name": "strict_supplement", "summary": "Updated strict supplement interface."},
-        runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
-        recorder=evidence_recorder,
-        expected_failure=True,
-        assertion_summary="Root preparation rejected non-append interface mutation.",
-    )
-
-    call_tool_with_evidence(
-        server,
-        "root_interface_prepare",
-        "remove_root_interface",
-        {"name": "strict_supplement"},
-        runtime_context=_ctx(ws.provider_repo, view="root_interface_prepare", agent_type="RootInterfacePrepareAgent"),
-        recorder=evidence_recorder,
-        expected_failure=True,
-        assertion_summary="Root preparation rejected supplement interface removal.",
-    )
     restore_with_evidence(
         ws.admin,
         ws.provider_repo,

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from lean_constellation.services import create_test_runtime_services
-from lean_constellation.tools import build_application_tool_specs
+from lean_constellation.tools import (
+    build_application_tool_groups,
+    build_application_tool_specs,
+    build_application_tool_views,
+)
 from lean_constellation.tools.internal.source_material import _COMMITTED_SOURCE_INDEX_VIEWS
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
-from lean_constellation.tools.views import build_application_tool_views
 
 
 def test_every_application_view_expands_without_overlap() -> None:
@@ -19,16 +22,48 @@ def test_every_application_view_expands_without_overlap() -> None:
         assert len(expanded.value) == len(set(expanded.value))
 
 
-def test_source_index_committed_read_views_match_handler_routing() -> None:
-    committed_read_views = {
+def test_source_index_navigation_views_match_handler_routing() -> None:
+    navigation_views = {
         view.key
         for view in build_application_tool_views()
-        if AppGroup.SOURCE_INDEX_COMMITTED_READ.value in view.group_keys
+        if AppGroup.SOURCE_INDEX_NAVIGATION_READ.value in view.group_keys
     }
+    committed_read_views = navigation_views - {"source_index_builder", "source_index_reviewer"}
 
     assert _COMMITTED_SOURCE_INDEX_VIEWS == committed_read_views
     assert "content_plan" in committed_read_views
     assert "statement_formal_worker" in committed_read_views
+
+
+def test_application_registry_is_orthogonal_and_fully_exposed() -> None:
+    specs = build_application_tool_specs()
+    groups = build_application_tool_groups(specs)
+    views = build_application_tool_views(groups)
+    group_by_key = {group.key: group for group in groups}
+
+    assert len(specs) == 244
+    assert all(len(spec.tool_groups) == 1 for spec in specs)
+    assert all(group.tool_names for group in groups)
+    assert all(view.extra_tool_names == [] for view in views)
+
+    used_groups = {group_key for view in views for group_key in view.group_keys}
+    assert used_groups == set(group_by_key)
+
+    exposed_tools = {
+        tool_name
+        for view in views
+        for group_key in view.group_keys
+        for tool_name in group_by_key[group_key].tool_names
+    }
+    assert exposed_tools == {spec.name for spec in specs}
+
+    for view in views:
+        names = [
+            tool_name
+            for group_key in view.group_keys
+            for tool_name in group_by_key[group_key].tool_names
+        ]
+        assert len(names) == len(set(names)), view.key
 
 
 def test_representative_agent_type_resolves_expected_view() -> None:
@@ -264,6 +299,33 @@ def test_legacy_decl_readiness_tools_are_not_in_production_views() -> None:
         expanded = runtime.tool_facade.tool_view.tool_names_for_view(view_key)
         assert expanded.ok and expanded.value is not None
         assert legacy_tools.isdisjoint(expanded.value), f"{view_key} still exposes legacy tools"
+
+
+def test_internal_and_legacy_tools_are_not_registered_as_application_tools() -> None:
+    retired = {
+        "list_current_visible_node_boundaries",
+        "list_current_decls",
+        "get_decl",
+        "get_decl_change",
+        "compute_decl_dependency_closure",
+        "check_decl_ready",
+        "list_content_public_decls",
+        "check_content_node_ready",
+        "allocate_resource_draft",
+        "abandon_resource_draft",
+        "write_adapter_upstream_metadata",
+        "mark_upstream_build_trusted",
+        "record_visible_upstream_modules",
+        "ensure_adapter_decl_catalog",
+        "refresh_adapter_projection",
+        "attach_requirement_provider_dependency",
+        "list_requirement_resume_candidates",
+        "mark_requirement_result_observed",
+        "update_root_interface",
+        "remove_root_interface",
+    }
+
+    assert retired.isdisjoint({spec.name for spec in build_application_tool_specs()})
 
 
 def test_coordinator_contract_closeout_tools_only_visible_to_coordinator() -> None:

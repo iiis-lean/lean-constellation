@@ -115,7 +115,6 @@ def _expand_tool_names(view: ToolViewSpec, group_by_key: dict[str, ToolGroupSpec
     names: list[str] = []
     for group_key in view.group_keys:
         names.extend(group_by_key[group_key].tool_names)
-    names.extend(view.extra_tool_names)
     return names
 
 

@@ -85,22 +85,8 @@ def required_tool_groups_for_skill(skill_key: StringKey) -> tuple[str, ...]:
 
 
 def _reference_files(definition: LeanSkillDefinition) -> Mapping[str, str]:
-    lines = [
-        f"# {definition.name}",
-        "",
-        "This reference file is generated from the Lean Constellation application skill registry.",
-        "It records the tool-group expectations that should stay aligned with ToolFacade views.",
-        "",
-        "## Required Tool Groups",
-        "",
-    ]
-    if definition.required_tool_groups:
-        lines.extend(f"- `{group}`" for group in definition.required_tool_groups)
-    else:
-        lines.append("- None required beyond the Agent-specific submit workflow.")
-    if definition.source_design_doc:
-        lines.extend(["", "## Source Design Document", "", f"- `{definition.source_design_doc}`"])
-    return {"references/tool_groups.md": "\n".join(lines) + "\n"}
+    del definition
+    return {}
 
 
 def _body(title: str, purpose: str, steps: tuple[str, ...], boundaries: tuple[str, ...]) -> str:
@@ -261,13 +247,13 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         description="Use when a Coordinator must design or update the semantic contract of a Scope or Content node.",
         group="node",
         required_tool_groups=_groups(
-            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
-            AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE,
-            AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE,
-            AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE,
+            AppGroup.NODE_CONTRACT_READ_BY_NODE,
+            AppGroup.NODE_CONTRACT_TEXT_WRITE_BY_NODE,
+            AppGroup.NODE_CONTRACT_DEPENDENCY_WRITE_BY_NODE,
+            AppGroup.NODE_CONTRACT_MATERIAL_WRITE_BY_NODE,
             AppGroup.SOURCE_MATERIAL_TEXT_READ,
-            AppGroup.NODE_CONTRACT_MATHLIB_COORDINATOR_WRITE,
-            AppGroup.NODE_TREE_COORDINATOR_WRITE,
+            AppGroup.NODE_CONTRACT_MATHLIB_WRITE_BY_NODE,
+            AppGroup.NODE_TREE_WRITE,
             AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
@@ -328,7 +314,9 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         required_tool_groups=_groups(
             AppGroup.NODE_CONTRACT_READ_CURRENT,
             AppGroup.NODE_VISIBILITY_READ_CURRENT,
-            AppGroup.PUBLIC_DECL_READ,
+            AppGroup.CURRENT_NODE_PUBLIC_DECL_READ,
+            AppGroup.VISIBLE_NODE_PUBLIC_DECL_READ,
+            AppGroup.IMPORTED_REPO_PUBLIC_DECL_READ,
             AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
@@ -426,7 +414,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
         name="external-resource-discovery",
         description="Use when existing evidence is insufficient and an Agent must discover a precise arXiv theorem-like resource target.",
         group="resource",
-        required_tool_groups=_groups(AppGroup.EXTERNAL_RESOURCE_DISCOVERY),
+        required_tool_groups=_groups(AppGroup.EXTERNAL_THEOREM_SEARCH_READ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# External Resource Discovery
 
@@ -552,12 +540,12 @@ Then stop using this Skill and return to the caller's next-action loop in the sa
         required_tool_groups=_groups(
             AppGroup.REPO_PREPARATION_INPUT_READ,
             AppGroup.REPO_WORK_CONFIG_READ,
-            AppGroup.NODE_TREE_COORDINATOR_READ,
-            AppGroup.NODE_TREE_COORDINATOR_WRITE,
-            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
-            AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE,
+            AppGroup.NODE_TREE_READ,
+            AppGroup.NODE_TREE_WRITE,
+            AppGroup.NODE_CONTRACT_READ_BY_NODE,
+            AppGroup.NODE_CONTRACT_TEXT_WRITE_BY_NODE,
             AppGroup.SOURCE_CORPUS_READ,
-            AppGroup.SOURCE_INDEX_COMMITTED_READ,
+            AppGroup.SOURCE_INDEX_NAVIGATION_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Coordinator Node Decomposition
@@ -604,11 +592,11 @@ The current tree and affected contracts express stable mathematical ownership wi
         description="Use when a Coordinator must create, maintain, or close a Scope contract and its public boundary.",
         group="coordinator",
         required_tool_groups=_groups(
-            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
-            AppGroup.NODE_TREE_COORDINATOR_READ,
+            AppGroup.NODE_CONTRACT_READ_BY_NODE,
+            AppGroup.NODE_TREE_READ,
             AppGroup.SCOPE_EXPORT_INTERFACE_READ,
             AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
-            AppGroup.SCOPE_CONTRACT_COORDINATOR_COMMIT,
+            AppGroup.SCOPE_CONTRACT_COMMIT,
             AppGroup.SCOPE_CLOSE_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
@@ -641,9 +629,9 @@ The Scope is either durably maintained but not yet closable, or its stable contr
         description="Use after terminal Content task callbacks to reconcile every result before choosing another repository action.",
         group="coordinator",
         required_tool_groups=_groups(
-            AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE,
-            AppGroup.DECL_GRAPH_READ_COORDINATOR,
-            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.CONTENT_TASK_RESULT_FINALIZE,
+            AppGroup.DECL_GRAPH_READ_BY_NODE,
+            AppGroup.NODE_CONTRACT_READ_BY_NODE,
             AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
@@ -694,9 +682,10 @@ Do not call a normal Coordinator submit from inside this closeout.
             AppGroup.WORKSPACE_REQUIREMENT_READ,
             AppGroup.LAKE_DEPENDENCY_READ,
             AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
-            AppGroup.PUBLIC_DECL_READ_COORDINATOR,
-            AppGroup.NODE_TREE_COORDINATOR_READ,
-            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
+            AppGroup.VISIBLE_NODE_PUBLIC_DECL_READ,
+            AppGroup.IMPORTED_REPO_PUBLIC_DECL_READ,
+            AppGroup.NODE_TREE_READ,
+            AppGroup.NODE_CONTRACT_READ_BY_NODE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Coordinator Requirement Result Closeout
@@ -723,9 +712,9 @@ The accepted requirement, attached Lake dependency, stable provider public API, 
         description="Use when upcoming repository work may lack source evidence, Resources, Mathlib support, or a provider dependency boundary.",
         group="coordinator",
         required_tool_groups=_groups(
-            AppGroup.NODE_TREE_COORDINATOR_READ,
-            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
-            AppGroup.SOURCE_INDEX_COMMITTED_READ,
+            AppGroup.NODE_TREE_READ,
+            AppGroup.NODE_CONTRACT_READ_BY_NODE,
+            AppGroup.SOURCE_INDEX_NAVIGATION_READ,
             AppGroup.RESOURCE_LIBRARY_READ,
             AppGroup.MATERIAL_CONTEXT_READ,
             AppGroup.MATHLIB_INDEX_READ,
@@ -741,7 +730,7 @@ Use this Skill before dispatching a mathematical region when its evidence or dep
 ## Inspect In Increasing Scope
 
 1. Read `get_node_tree` and the relevant node contract.
-2. Read the committed SourceIndex through `get_source_index` and `get_source_index_coverage`.
+2. Start with `get_source_index_overview`. Use `list_source_index_files` or `list_source_blocks` to locate candidates, `get_source_block` for the selected block's complete refs and links, and `read_source_range` for exact evidence. Use full `get_source_index` only when a cross-block or global consistency concern cannot be resolved from compact navigation.
 3. Read `get_material_context` and accepted Resources.
 4. Search the repo MathlibIndex with `search_mathlib_index`; use the Mathlib recon/search/curation Skills only when the index is insufficient.
 5. Call `list_current_lake_dependencies` and check already attached public APIs.
@@ -774,8 +763,8 @@ The dependency gap is either resolved synchronously or classified into one preci
         group="coordinator",
         required_tool_groups=_groups(
             AppGroup.CONTENT_TASK_ADMISSION_READ,
-            AppGroup.NODE_CONTRACT_READ_COORDINATOR,
-            AppGroup.NODE_TREE_COORDINATOR_READ,
+            AppGroup.NODE_CONTRACT_READ_BY_NODE,
+            AppGroup.NODE_TREE_READ,
             AppGroup.SOURCE_MATERIAL_TEXT_READ,
             SubmitGroup.COORDINATOR_SUBMIT,
         ),
@@ -815,7 +804,8 @@ Either no dispatch occurred and the Coordinator returns to its next-action loop 
         required_tool_groups=_groups(
             AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
             AppGroup.WORKSPACE_REQUIREMENT_READ,
-            AppGroup.PUBLIC_DECL_READ_COORDINATOR,
+            AppGroup.VISIBLE_NODE_PUBLIC_DECL_READ,
+            AppGroup.IMPORTED_REPO_PUBLIC_DECL_READ,
             AppGroup.LAKE_DEPENDENCY_READ,
             AppGroup.LAKE_DEPENDENCY_WRITE,
             SubmitGroup.COORDINATOR_SUBMIT,
@@ -866,7 +856,7 @@ Do not attach the future provider from this Skill. The requirement resume gate l
         required_tool_groups=_groups(
             AppGroup.REPO_RUN_CONTEXT_READ,
             AppGroup.REPO_PREPARATION_INPUT_READ,
-            AppGroup.NODE_TREE_COORDINATOR_READ,
+            AppGroup.NODE_TREE_READ,
             AppGroup.SCOPE_EXPORT_INTERFACE_READ,
             AppGroup.SCOPE_CLOSE_READ,
             AppGroup.LAKE_DEPENDENCY_READ,
@@ -1016,7 +1006,7 @@ Either readiness remains unresolved and the Coordinator returns to its next-acti
 
 Use this skill when the current content node task may need preparation before entering or continuing DeclGraph work.
 
-Preparation recon is delegated work. Your job is to decide whether a child flow is needed, give it a focused objective, and interpret its callback result. Do not do broad dependency, Mathlib, or resource recon inside the ContentPlanAgent context when a dedicated child flow should do it.
+You may perform targeted searches, inspections, and small verified index corrections to answer a concrete planning question. Delegate systematic, multi-candidate, or persistence-worthy dependency, Mathlib, or resource recon to the dedicated child flow so that its findings are recorded and reviewed separately. Your job is to decide when that child is needed, give it a focused objective, and interpret its callback result.
 
 The callback turn already contains the current child input/result once, followed by short routing and current-state guidance. Do not rebuild or paste a second summary. Use `list_content_preparation_results` only when an older attempt matters, then use `get_content_preparation_result` for the one selected attempt.
 
@@ -1097,7 +1087,11 @@ After a preparation child flow returns:
         name="decl-strategy-planning",
         description="Use when the ContentPlanAgent creates, continues, closes, or replaces a DeclGraph strategy.",
         group="content_plan",
-        required_tool_groups=_groups(AppGroup.DECL_GRAPH_READ_CURRENT, AppGroup.DECL_STRATEGY_WRITE),
+        required_tool_groups=_groups(
+            AppGroup.DECL_GRAPH_CURRENT_NAVIGATION_READ,
+            AppGroup.DECL_STAGE_ROUND_READ,
+            AppGroup.DECL_STRATEGY_WRITE,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Decl Strategy Planning
 
@@ -1271,7 +1265,11 @@ Call `submit_current_decl_round` only when the draft is valid and ready for Decl
         name="decl-round-closeout",
         description="Use when the ContentPlanAgent receives a DeclGraphRoundFlow callback and must summarize and commit the round.",
         group="content_plan",
-        required_tool_groups=_groups(AppGroup.DECL_ROUND_CLOSEOUT_WRITE, AppGroup.DECL_GRAPH_READ_CURRENT),
+        required_tool_groups=_groups(
+            AppGroup.DECL_ROUND_CLOSEOUT_WRITE,
+            AppGroup.DECL_GRAPH_CURRENT_NAVIGATION_READ,
+            AppGroup.DECL_STAGE_ROUND_READ,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Decl Round Closeout
 
@@ -1404,7 +1402,12 @@ After an accepted failed submit, stop.
         name="decl-dependency-origin-curation",
         description="Curate source/resource origins and declaration dependencies for Lean Constellation declaration stage artifacts.",
         group="decl_stage",
-        required_tool_groups=_groups(AppGroup.CURRENT_NODE_DECL_READ, AppGroup.PUBLIC_DECL_READ),
+        required_tool_groups=_groups(
+            AppGroup.CURRENT_NODE_DECL_READ,
+            AppGroup.CURRENT_NODE_PUBLIC_DECL_READ,
+            AppGroup.VISIBLE_NODE_PUBLIC_DECL_READ,
+            AppGroup.IMPORTED_REPO_PUBLIC_DECL_READ,
+        ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# decl-dependency-origin-curation
 
@@ -1478,10 +1481,12 @@ The revision/reason remains structured truth and is not copied into the docstrin
         description="Formalize an accepted natural-language declaration statement into a Lean declaration.",
         group="lean",
         required_tool_groups=_groups(
-            AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE,
+            AppGroup.DECL_STAGE_FORMAL_READ,
             AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE_WRITE,
-            AppGroup.DECL_STAGE_STATEMENT_FORMAL_DEP_WRITE,
-            AppGroup.STATEMENT_FORMAL_DIAGNOSTICS_READ,
+            AppGroup.DECL_STATEMENT_DEPENDENCY_WRITE,
+            AppGroup.DECL_FORMAL_CONSISTENCY_READ,
+            AppGroup.LEAN_FILE_DIAGNOSTICS_READ,
+            AppGroup.STATEMENT_FORMAL_POLICY_READ,
             AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
             AppGroup.MATHLIB_INDEX_READ,
             AppGroup.MATHLIB_INDEX_WRITE,
@@ -1520,10 +1525,12 @@ The revision/reason remains structured truth and is not copied into the docstrin
         description="Formalize a reviewed natural-language proof route into a Lean proof while preserving the accepted formal statement.",
         group="lean",
         required_tool_groups=_groups(
-            AppGroup.DECL_STAGE_PROOF_FORMAL_FILE,
+            AppGroup.DECL_STAGE_FORMAL_READ,
             AppGroup.DECL_STAGE_PROOF_FORMAL_FILE_WRITE,
-            AppGroup.DECL_STAGE_PROOF_FORMAL_DEP_WRITE,
-            AppGroup.PROOF_FORMAL_DIAGNOSTICS_READ,
+            AppGroup.DECL_PROOF_DEPENDENCY_WRITE,
+            AppGroup.DECL_FORMAL_CONSISTENCY_READ,
+            AppGroup.LEAN_FILE_DIAGNOSTICS_READ,
+            AppGroup.PROOF_FORMAL_POLICY_READ,
             AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
             AppGroup.MATHLIB_INDEX_READ,
             AppGroup.MATHLIB_INDEX_WRITE,

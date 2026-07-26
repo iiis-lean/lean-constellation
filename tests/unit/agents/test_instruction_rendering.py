@@ -306,9 +306,9 @@ def test_adapter_decl_catalog_instruction_matches_catalog_boundary() -> None:
     assert "submit_adapter_catalog_blocked" in text
     assert "After an accepted submit, stop" in text
     assert "selected upstream as fixed" in text
-    assert "write_adapter_upstream_metadata" in text
-    assert "Never call" in text
-    assert "refresh_adapter_projection" in text
+    assert "write_adapter_upstream_metadata" not in text
+    assert "refresh_adapter_projection" not in text
+    assert "deterministic preparation responsibilities" in text
     assert "root interface edits" in text
 
 

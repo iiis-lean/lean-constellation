@@ -341,7 +341,13 @@ def test_get_current_repo_requirement_is_read_only_for_coordinator(tmp_path: Pat
             flat_args={"requirement_name": "need_provider"},
         )
     )
-    assert issues[0].kind in {"tool_not_in_view", "tool_role_not_allowed", "role_not_allowed"}
+    assert issues[0].kind in {
+        "tool_not_found",
+        "tool_not_registered",
+        "tool_not_in_view",
+        "tool_role_not_allowed",
+        "role_not_allowed",
+    }
 
     for tool_name, flat_args in (
         ("list_requirement_resume_candidates", {"provider_repo": "Provider"}),
@@ -354,7 +360,13 @@ def test_get_current_repo_requirement_is_read_only_for_coordinator(tmp_path: Pat
                 flat_args=flat_args,
             )
         )
-        assert control_issues[0].kind in {"tool_not_in_view", "tool_role_not_allowed", "role_not_allowed"}
+        assert control_issues[0].kind in {
+            "tool_not_found",
+            "tool_not_registered",
+            "tool_not_in_view",
+            "tool_role_not_allowed",
+            "role_not_allowed",
+        }
 
 
 def test_coordinator_can_read_all_decls_in_any_current_repo_node(tmp_path: Path) -> None:
@@ -1871,26 +1883,9 @@ def test_root_interface_prepare_tools_are_root_scoped_and_worker_callable(tmp_pa
             flat_args={},
         )
     )
-    update_rejected = _unwrap_tool_failure(
-        runtime.tool_facade.invoke_agent_tool(
-            raw,
-            tool_name="update_root_interface",
-            flat_args={"name": "core_definition", "summary": "Updated core definition."},
-        )
-    )
-    remove_rejected = _unwrap_tool_failure(
-        runtime.tool_facade.invoke_agent_tool(
-            raw,
-            tool_name="remove_root_interface",
-            flat_args={"name": "core_definition"},
-        )
-    )
-
     assert added["node_path"] == "Main"
     assert listed["node_path"] == "Main"
     assert listed["interfaces"][0]["name"] == "core_definition"
-    assert update_rejected[0].kind == "tool_not_in_view"
-    assert remove_rejected[0].kind == "tool_not_in_view"
 
 
 def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: Path) -> None:

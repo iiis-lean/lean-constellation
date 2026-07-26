@@ -179,15 +179,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),
-    "allocate_resource_draft": ToolCase(
-        tool_name="allocate_resource_draft",
-        status="pending_fixture",
-        category="resource_draft_lifecycle_write",
-        reason=(
-            "Resource draft allocation is lifecycle/service-owned after ResourceCurationFlow "
-            "pre-creates the active draft; no production Agent view should call it directly."
-        ),
-    ),
     "get_material_context": ToolCase(
         tool_name="get_material_context",
         status="implemented",
@@ -251,16 +242,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         reason="Read-only resource draft validation call covered by strict ToolSweep runner.",
         view_key="resource_curator",
         agent_type="ResourceCuratorAgent",
-    ),
-    "abandon_resource_draft": ToolCase(
-        tool_name="abandon_resource_draft",
-        status="pending_fixture",
-        category="resource_draft_lifecycle_write",
-        reason=(
-            "Resource draft abandon is lifecycle/service-owned after ResourceCurationFlow "
-            "manages duplicate, external, rejected, and cleanup branches; no production Agent "
-            "view should call it directly."
-        ),
     ),
     "scan_source_corpus": ToolCase(
         tool_name="scan_source_corpus",
@@ -502,24 +483,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="RootInterfacePrepareAgent",
         restore_policy="checkpoint",
     ),
-    "update_root_interface": ToolCase(
-        tool_name="update_root_interface",
-        status="implemented",
-        category="root_interface_prepare_boundary",
-        reason="RootInterfacePrepare append-only view rejection covered by strict ToolSweep runner.",
-        view_key="root_interface_prepare",
-        agent_type="RootInterfacePrepareAgent",
-        expected_failure=True,
-    ),
-    "remove_root_interface": ToolCase(
-        tool_name="remove_root_interface",
-        status="implemented",
-        category="root_interface_prepare_boundary",
-        reason="RootInterfacePrepare immutable-baseline removal rejection covered by strict ToolSweep runner.",
-        view_key="root_interface_prepare",
-        agent_type="RootInterfacePrepareAgent",
-        expected_failure=True,
-    ),
     "inspect_workspace_for_coordinator": ToolCase(
         tool_name="inspect_workspace_for_coordinator",
         status="implemented",
@@ -559,24 +522,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         reason="Read-only Lake dependency list covered by strict ToolSweep runner.",
         view_key="native_repo_coordinator",
         agent_type="CoordinatorAgent",
-    ),
-    "attach_requirement_provider_dependency": ToolCase(
-        tool_name="attach_requirement_provider_dependency",
-        status="pending_fixture",
-        category="requirement_control_write",
-        reason="Admin repair tool intentionally excluded from Agent ToolViews; needs a dedicated admin control-plane harness.",
-    ),
-    "list_requirement_resume_candidates": ToolCase(
-        tool_name="list_requirement_resume_candidates",
-        status="pending_fixture",
-        category="requirement_control_read",
-        reason="Admin dispatch query intentionally excluded from Agent ToolViews; needs a dedicated admin control-plane harness.",
-    ),
-    "mark_requirement_result_observed": ToolCase(
-        tool_name="mark_requirement_result_observed",
-        status="pending_fixture",
-        category="requirement_control_write",
-        reason="Admin wake-event mutation intentionally excluded from Agent ToolViews; needs a dedicated admin control-plane harness.",
     ),
     "get_node_contract": ToolCase(
         tool_name="get_node_contract",
@@ -653,15 +598,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="native_repo_coordinator",
         agent_type="CoordinatorAgent",
         restore_policy="checkpoint",
-    ),
-    "list_current_visible_node_boundaries": ToolCase(
-        tool_name="list_current_visible_node_boundaries",
-        status="pending_fixture",
-        category="node_boundary_read_legacy",
-        reason=(
-            "Legacy current-boundary list remains registered for compatibility, but production Agent views use "
-            "list_visible_nodes instead and do not expose this legacy tool."
-        ),
     ),
     "list_visible_nodes": ToolCase(
         tool_name="list_visible_nodes",
@@ -1751,32 +1687,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),
-    "list_current_decls": ToolCase(
-        tool_name="list_current_decls",
-        status="pending_fixture",
-        category="decl_detail_read_legacy",
-        reason=(
-            "Legacy decl-detail list remains registered for compatibility, but production Agent views use "
-            "list_current_node_decls instead and do not expose this legacy tool."
-        ),
-    ),
-    "get_decl": ToolCase(
-        tool_name="get_decl",
-        status="pending_fixture",
-        category="decl_detail_read_legacy",
-        reason=(
-            "Legacy decl-detail read remains registered for compatibility, but production Agent views use "
-            "inspect_current_node_decl instead and do not expose this legacy tool."
-        ),
-    ),
-    "get_decl_change": ToolCase(
-        tool_name="get_decl_change",
-        status="pending_fixture",
-        category="decl_history_read_legacy",
-        reason=(
-            "Decl change read remains registered for compatibility and is not exposed by current production Agent views."
-        ),
-    ),
     "preview_decl_delete_closure": ToolCase(
         tool_name="preview_decl_delete_closure",
         status="implemented",
@@ -1793,15 +1703,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),
-    "compute_decl_dependency_closure": ToolCase(
-        tool_name="compute_decl_dependency_closure",
-        status="pending_fixture",
-        category="decl_readiness_read_legacy",
-        reason=(
-            "Legacy dependency closure tool is not in the current ContentPlan view; ContentPlan uses "
-            "compute_current_node_decl_dependency_closure. Needs a dedicated production-view fixture before it can count as implemented."
-        ),
-    ),
     "compute_current_node_decl_dependency_closure": ToolCase(
         tool_name="compute_current_node_decl_dependency_closure",
         status="implemented",
@@ -1810,24 +1711,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         view_key="content_plan",
         agent_type="ContentPlanAgent",
     ),
-    "check_decl_ready": ToolCase(
-        tool_name="check_decl_ready",
-        status="pending_fixture",
-        category="decl_readiness_read_legacy",
-        reason=(
-            "Legacy declaration readiness tool is not in the current ContentPlan view. Current completion "
-            "coverage uses check_current_content_node_completion."
-        ),
-    ),
-    "list_content_public_decls": ToolCase(
-        tool_name="list_content_public_decls",
-        status="pending_fixture",
-        category="decl_readiness_read_legacy",
-        reason=(
-            "Legacy content public declaration list is not in the current ContentPlan view. "
-            "Needs a dedicated production-view fixture before it can count as implemented."
-        ),
-    ),
     "list_active_decl_names": ToolCase(
         tool_name="list_active_decl_names",
         status="implemented",
@@ -1835,15 +1718,6 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         reason="Active declaration name list covered by strict DeclGraph ToolSweep.",
         view_key="content_plan",
         agent_type="ContentPlanAgent",
-    ),
-    "check_content_node_ready": ToolCase(
-        tool_name="check_content_node_ready",
-        status="pending_fixture",
-        category="decl_readiness_read_legacy",
-        reason=(
-            "Legacy content readiness tool is not in the current ContentPlan view; ContentPlan uses "
-            "check_current_content_node_completion."
-        ),
     ),
     "check_current_content_node_completion": ToolCase(
         tool_name="check_current_content_node_completion",

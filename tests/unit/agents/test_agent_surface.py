@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+
 from lean_constellation.agents import build_agent_type_specs, build_agent_surface_reports
 from lean_constellation.tools import build_application_tool_specs, build_submit_tool_specs
 
@@ -7,24 +9,47 @@ from lean_constellation.tools import build_application_tool_specs, build_submit_
 EXPECTED_SURFACE_COUNTS = {
     "RepoFormatDiscoveryAgent": (6, 12, 1, 2, 0),
     "SourceCorpusPrepareAgent": (3, 7, 1, 2, 1),
-    "SourceIndexBuilderAgent": (4, 25, 1, 1, 0),
-    "SourceIndexReviewerAgent": (3, 14, 1, 1, 0),
-    "RootInterfacePrepareAgent": (6, 15, 1, 1, 0),
+    "SourceIndexBuilderAgent": (6, 25, 1, 1, 0),
+    "SourceIndexReviewerAgent": (5, 14, 1, 1, 0),
+    "RootInterfacePrepareAgent": (7, 15, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 24, 1, 4, 2),
-    "CoordinatorAgent": (36, 89, 2, 4, 19),
-    "ContentPlanAgent": (29, 82, 3, 6, 17),
-    "NodeDirDependencyReconAgent": (5, 14, 1, 1, 2),
+    "CoordinatorAgent": (38, 89, 2, 4, 19),
+    "ContentPlanAgent": (32, 82, 3, 6, 17),
+    "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 22, 2, 3, 4),
-    "StatementNLWorkerAgent": (14, 53, 1, 2, 4),
-    "StatementNLReviewerAgent": (14, 46, 1, 1, 2),
-    "StatementFormalWorkerAgent": (20, 60, 1, 2, 8),
-    "StatementFormalReviewerAgent": (15, 47, 1, 1, 2),
-    "ProofNLWorkerAgent": (21, 68, 1, 2, 7),
-    "ProofNLReviewerAgent": (18, 51, 1, 1, 2),
-    "ProofFormalWorkerAgent": (23, 69, 1, 2, 8),
-    "ProofFormalReviewerAgent": (17, 50, 1, 1, 2),
+    "StatementNLWorkerAgent": (17, 47, 1, 2, 4),
+    "StatementNLReviewerAgent": (16, 40, 1, 1, 2),
+    "StatementFormalWorkerAgent": (23, 54, 1, 2, 8),
+    "StatementFormalReviewerAgent": (17, 41, 1, 1, 2),
+    "ProofNLWorkerAgent": (24, 62, 1, 2, 7),
+    "ProofNLReviewerAgent": (20, 45, 1, 1, 2),
+    "ProofFormalWorkerAgent": (26, 63, 1, 2, 8),
+    "ProofFormalReviewerAgent": (19, 44, 1, 1, 2),
+}
+
+EXPECTED_APPLICATION_SURFACE_HASHES = {
+    "RepoFormatDiscoveryAgent": "6a9b3b7a40f76fe2845129db49a0f1d8b34e704cd764f27c98b2b3c86362ac98",
+    "SourceCorpusPrepareAgent": "8a56bf36f9cc83b6ad7eef83155f55a77bd60516c1c6a31851b6053edbb09bd3",
+    "SourceIndexBuilderAgent": "83c7d2aa3b835727f89779c44b92f708371a1b3e7c085b9b1b8787f4fc1e5876",
+    "SourceIndexReviewerAgent": "71ed43ad69003736a91fbb5146983683c80cc23eb821ee5abf464d546a32641f",
+    "RootInterfacePrepareAgent": "744c85a080bb7ec6ecf1e2923beee4fb683ce68347599ab76c2eee9b3e905cd9",
+    "AdapterDeclCatalogAgent": "832d605c4fca89e0bace44a54ab04487dbf11c268c50629a606b8e6519006fb5",
+    "ResourceCuratorAgent": "6b8d4e4823e83c81b3a971103810bcb4fb934d156f9fabed276d2245efd1e069",
+    "CoordinatorAgent": "b6ba7567ce2fb8c4fd287f6bcd99484dc2489fc526a2faa80475d982f0e4ce11",
+    "ContentPlanAgent": "058df71bb6fe177102c865552a98390507343023bee00ddb3853ef179aaae6a8",
+    "NodeDirDependencyReconAgent": "78424e9c83a6d31e464f5bcfaa583279a967ed718f7783ed820bd5ea5419709c",
+    "MathlibReconAgent": "2106d09b06fa7140322909262cdb5a533b4ba881b13bb74ee1932e714a000220",
+    "ResourceReconAgent": "02a24ca89792c62f0048e410363e3cbe50f3adb1e07c1ba853dbdacb50ed97b8",
+    "StatementNLWorkerAgent": "4e2d436cc21b335411a67a09f6caffe9afbf13aa6ed7f98d925c9a9e28dc3828",
+    "StatementNLReviewerAgent": "9383cba02dd4cb451cb191fd09723f867556ec5e6b7a72bff01e834f66d216d8",
+    "StatementFormalWorkerAgent": "7869ff275fef8444220beaf7f0cc98a304324253f0e43705f3b801ae160075f3",
+    "StatementFormalReviewerAgent": "cd3487030262745005090073f9d16650a870d36a4902964c7b394b3a0ffe4159",
+    "ProofNLWorkerAgent": "4518445a7af668a3137bcd98978137060e4dbf02760a296e890f5b03216b9147",
+    "ProofNLReviewerAgent": "f191874f0e93ca1de947420794cbf36f2ba02aaf4fc9f4ea2bea4c4897fcc13e",
+    "ProofFormalWorkerAgent": "551ef7ade689e21b51a731fc808ed537300d2b241a92e7a8109da0ea8a7c2f2f",
+    "ProofFormalReviewerAgent": "7a5c928293e28ed14e3407c78c2bec001ce8e0c93e7d07786af4789ea7a396f8",
 }
 
 
@@ -54,6 +79,8 @@ def test_agent_surface_reports_cover_every_production_agent() -> None:
             len(report.skills),
         ) == expected
         assert report.missing_skill_required_groups == {}
+        names = sorted(tool.name for tool in report.application_tools)
+        assert sha256("\n".join(names).encode()).hexdigest() == EXPECTED_APPLICATION_SURFACE_HASHES[agent_type]
 
 
 def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
@@ -136,7 +163,7 @@ def test_repo_format_discovery_surface_matches_remote_only_design() -> None:
         "repo_preparation_input_read",
         "repo_preparation_start_preflight_read",
         "repo_preparation_requirement_read",
-        "workspace_repo_catalog_read",
+        "workspace_overview_read",
         "upstream_repo_search",
         "github_repository_read",
     } == set(report.application_group_keys)
@@ -156,7 +183,7 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
     assert len(report.skills) == 19
-    assert len(report.application_group_keys) == 36
+    assert len(report.application_group_keys) == 38
     assert len(report.application_tools) == 89
     assert "read_visible_decl_lean_file" in tools
     assert len(report.submit_group_keys) == 2

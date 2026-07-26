@@ -29,8 +29,6 @@ from lean_constellation.tools.args import (
     NodePathArgs,
     NoArgs,
     RootInterfaceAddArgs,
-    RootInterfaceNameArgs,
-    RootInterfaceUpdateArgs,
     ScopeExportAddArgs,
     ScopeExportRemoveArgs,
     ScopePathArgs,
@@ -146,16 +144,6 @@ class RootInterfaceRunContextView(StrictModel):
 def _current_contract(runtime, ctx, args):
     del args
     return runtime.node.get_current_contract_view(ctx.repo_root, node_path=current_node_path(ctx))
-
-
-def _current_visible_boundaries(runtime, ctx, args):
-    del args
-    role = ctx.actor.role
-    return runtime.node.public_decl_access.list_visible_nodes(
-        ctx.repo_root,
-        actor_role=role.value if hasattr(role, "value") else str(role),
-        current_node_path=current_node_path(ctx),
-    )
 
 
 def _current_node_deps(runtime, ctx, args):
@@ -479,26 +467,6 @@ def _add_root_interface(runtime, ctx, args: RootInterfaceAddArgs):
         kind=args.kind,
         summary=args.summary,
         statement_hint=args.statement_hint,
-        actor=actor_for_write(ctx),
-    )
-
-
-def _update_root_interface(runtime, ctx, args: RootInterfaceUpdateArgs):
-    return runtime.node.interface.update_interface(
-        ctx.repo_root,
-        node_path="Main",
-        name=args.name,
-        summary=args.summary,
-        statement_hint=args.statement_hint,
-        actor=actor_for_write(ctx),
-    )
-
-
-def _remove_root_interface(runtime, ctx, args: RootInterfaceNameArgs):
-    return runtime.node.interface.remove_interface(
-        ctx.repo_root,
-        node_path="Main",
-        name=args.name,
         actor=actor_for_write(ctx),
     )
 
@@ -917,7 +885,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="node",
             backing_method="get_current_contract_view",
             result_view="current_node_contract",
-            groups={AppGroup.NODE_CONTRACT_READ_COORDINATOR},
+            groups={AppGroup.NODE_CONTRACT_READ_BY_NODE},
             roles=all_roles,
         ),
         handler_tool(
@@ -926,7 +894,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="node_tree_overview",
-            groups={AppGroup.NODE_TREE_COORDINATOR_READ},
+            groups={AppGroup.NODE_TREE_READ},
             roles=all_roles,
             handler=_get_node_tree,
         ),
@@ -936,7 +904,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodePathArgs,
             capability=ToolCapability.READ,
             result_view="node_overview",
-            groups={AppGroup.NODE_TREE_COORDINATOR_READ},
+            groups={AppGroup.NODE_TREE_READ},
             roles=all_roles,
             handler=_get_node,
         ),
@@ -960,7 +928,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="node",
             backing_method="create_scope_node",
             result_view="node",
-            groups={AppGroup.NODE_TREE_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_TREE_WRITE},
             roles=coordinator_roles,
         ),
         direct_tool(
@@ -971,7 +939,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_service="node",
             backing_method="create_content_node",
             result_view="node",
-            groups={AppGroup.NODE_TREE_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_TREE_WRITE},
             roles=coordinator_roles,
         ),
         handler_tool(
@@ -980,7 +948,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ContractCoreUpdateArgs,
             capability=ToolCapability.WRITE,
             result_view="mutation",
-            groups={AppGroup.NODE_CONTRACT_CORE_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_CONTRACT_TEXT_WRITE_BY_NODE},
             roles=coordinator_roles,
             handler=_update_node_contract_text,
         ),
@@ -990,7 +958,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodePathArgs,
             capability=ToolCapability.READ,
             result_view="node_delete_impact",
-            groups={AppGroup.NODE_TREE_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_TREE_WRITE},
             roles=coordinator_roles,
             handler=_preview_delete_node,
         ),
@@ -1000,19 +968,9 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeDeleteArgs,
             capability=ToolCapability.WRITE,
             result_view="mutation",
-            groups={AppGroup.NODE_TREE_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_TREE_WRITE},
             roles=coordinator_roles,
             handler=_delete_node,
-        ),
-        handler_tool(
-            name="list_current_visible_node_boundaries",
-            description="List ready same-repo nodes visible to the current node with compact public declarations; contract interfaces are not exposed here.",
-            args_model=NoArgs,
-            capability=ToolCapability.READ,
-            result_view="visible_node_boundaries",
-            groups={AppGroup.NODE_BOUNDARY_READ_CURRENT},
-            roles=all_roles,
-            handler=_current_visible_boundaries,
         ),
         handler_tool(
             name="list_current_node_deps",
@@ -1050,7 +1008,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeDependencyAddArgs,
             capability=ToolCapability.WRITE,
             result_view="node_dependency_mutation",
-            groups={AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_CONTRACT_DEPENDENCY_WRITE_BY_NODE},
             roles=coordinator_roles,
             handler=_add_node_dep,
         ),
@@ -1060,7 +1018,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeDependencyRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="node_dependency_mutation",
-            groups={AppGroup.NODE_CONTRACT_DEPENDENCY_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_CONTRACT_DEPENDENCY_WRITE_BY_NODE},
             roles=coordinator_roles,
             handler=_remove_node_dep,
         ),
@@ -1090,7 +1048,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeMaterialRefAddArgs,
             capability=ToolCapability.WRITE,
             result_view="current_node_material_mutation",
-            groups={AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_CONTRACT_MATERIAL_WRITE_BY_NODE},
             roles=coordinator_roles,
             handler=_add_node_material_ref,
         ),
@@ -1100,7 +1058,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeMaterialRefRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="current_node_material_mutation",
-            groups={AppGroup.NODE_CONTRACT_MATERIAL_COORDINATOR_WRITE},
+            groups={AppGroup.NODE_CONTRACT_MATERIAL_WRITE_BY_NODE},
             roles=coordinator_roles,
             handler=_remove_node_material_ref,
         ),
@@ -1123,7 +1081,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_component="material_ref",
             backing_method="list_node_material_refs",
             result_view="node_material_refs",
-            groups={AppGroup.NODE_CONTRACT_READ_COORDINATOR},
+            groups={AppGroup.NODE_CONTRACT_READ_BY_NODE},
             roles=all_roles,
         ),
         handler_tool(
@@ -1162,29 +1120,9 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=RootInterfaceAddArgs,
             capability=ToolCapability.WRITE,
             result_view="interface_mutation",
-            groups={AppGroup.ROOT_INTERFACE_WRITE},
+            groups={AppGroup.ROOT_INTERFACE_APPEND_WRITE},
             roles={"worker", "admin"},
             handler=_add_root_interface,
-        ),
-        handler_tool(
-            name="update_root_interface",
-            description="Update a supplement root Main interface summary or statement hint.",
-            args_model=RootInterfaceUpdateArgs,
-            capability=ToolCapability.WRITE,
-            result_view="interface_mutation",
-            groups={AppGroup.ROOT_INTERFACE_WRITE},
-            roles={"worker", "admin"},
-            handler=_update_root_interface,
-        ),
-        handler_tool(
-            name="remove_root_interface",
-            description="Remove a supplement root Main interface.",
-            args_model=RootInterfaceNameArgs,
-            capability=ToolCapability.WRITE,
-            result_view="interface_mutation",
-            groups={AppGroup.ROOT_INTERFACE_WRITE},
-            roles={"worker", "admin"},
-            handler=_remove_root_interface,
         ),
         handler_tool(
             name="add_node_interface",
@@ -1252,7 +1190,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ContentTaskResultListArgs,
             capability=ToolCapability.READ,
             result_view="content_task_results",
-            groups={AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE},
+            groups={AppGroup.CONTENT_TASK_RESULT_FINALIZE},
             roles=coordinator_roles,
             handler=_list_recent_content_task_results,
         ),
@@ -1262,7 +1200,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ContentTaskResultInspectArgs,
             capability=ToolCapability.READ,
             result_view="content_task_result",
-            groups={AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE},
+            groups={AppGroup.CONTENT_TASK_RESULT_FINALIZE},
             roles=coordinator_roles,
             handler=_inspect_content_task_result,
         ),
@@ -1272,7 +1210,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeContractCommitArgs,
             capability=ToolCapability.WRITE,
             result_view="content_task_finalize",
-            groups={AppGroup.CONTENT_TASK_RESULT_COORDINATOR_FINALIZE},
+            groups={AppGroup.CONTENT_TASK_RESULT_FINALIZE},
             roles=coordinator_roles,
             handler=_commit_content_contract,
         ),
@@ -1324,7 +1262,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NodeContractCommitArgs,
             capability=ToolCapability.WRITE,
             result_view="scope_contract_commit_receipt",
-            groups={AppGroup.SCOPE_CONTRACT_COORDINATOR_COMMIT},
+            groups={AppGroup.SCOPE_CONTRACT_COMMIT},
             roles=coordinator_roles,
             handler=_commit_scope_contract,
         ),

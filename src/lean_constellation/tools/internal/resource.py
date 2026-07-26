@@ -9,10 +9,8 @@ from lean_constellation.services.material.resource_library import ResourceDraftS
 from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
     DraftIdArgs,
-    DraftIdReasonArgs,
     MaterialContextArgs,
     ResourceArtifactExtractArgs,
-    ResourceDraftTargetArgs,
     ResourceKeyArgs,
     ResourceListArgs,
     ResourceMaterialAcquireArgs,
@@ -195,38 +193,12 @@ def _get_resource(runtime, ctx: ToolExecutionContext, args: ResourceKeyArgs):
     )
 
 
-def _allocate_resource_draft(
-    runtime, ctx: ToolExecutionContext, args: ResourceDraftTargetArgs
-):
-    allocated = runtime.material.allocate_resource_draft(
-        ctx.repo_root, **args.model_dump(exclude_unset=True)
-    )
-    if not allocated.ok or allocated.value is None:
-        return runtime.foundation.fail(allocated.issues)
-    return runtime.foundation.ok(
-        _resource_draft_agent_view(allocated.value), warnings=allocated.issues
-    )
-
-
 def _get_resource_draft(runtime, ctx: ToolExecutionContext, args: DraftIdArgs):
     loaded = runtime.material.get_resource_draft(ctx.repo_root, draft_id=args.draft_id)
     if not loaded.ok or loaded.value is None:
         return runtime.foundation.fail(loaded.issues)
     return runtime.foundation.ok(
         _resource_draft_agent_view(loaded.value), warnings=loaded.issues
-    )
-
-
-def _abandon_resource_draft(
-    runtime, ctx: ToolExecutionContext, args: DraftIdReasonArgs
-):
-    abandoned = runtime.material.abandon_resource_draft(
-        ctx.repo_root, draft_id=args.draft_id, reason=args.reason
-    )
-    if not abandoned.ok or abandoned.value is None:
-        return runtime.foundation.fail(abandoned.issues)
-    return runtime.foundation.ok(
-        _resource_draft_agent_view(abandoned.value), warnings=abandoned.issues
     )
 
 
@@ -311,7 +283,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=MaterialContextArgs,
             capability=ToolCapability.READ,
             result_view="material_context",
-            groups={AppGroup.MATERIAL_CONTEXT_READ, AppGroup.RESOURCE_CURATION_CONTEXT_READ},
+            groups={AppGroup.MATERIAL_CONTEXT_READ},
             roles=roles,
             handler=_material_context,
         ),
@@ -321,7 +293,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ResourceTargetArgs,
             capability=ToolCapability.READ,
             result_view="resource_target",
-            groups={AppGroup.RESOURCE_TARGET_PREFLIGHT_READ, AppGroup.RESOURCE_CURATION_CONTEXT_READ},
+            groups={AppGroup.RESOURCE_TARGET_PREFLIGHT_READ},
             roles=roles,
             handler=_normalize_resource_target,
             required_context=set(),
@@ -332,7 +304,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ResourceTargetArgs,
             capability=ToolCapability.READ,
             result_view="resource_duplicate",
-            groups={AppGroup.RESOURCE_TARGET_PREFLIGHT_READ, AppGroup.RESOURCE_CURATION_CONTEXT_READ},
+            groups={AppGroup.RESOURCE_TARGET_PREFLIGHT_READ},
             roles=roles,
             handler=_find_duplicate_resource,
         ),
@@ -410,16 +382,6 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_get_resource,
         ),
         handler_tool(
-            name="allocate_resource_draft",
-            description="Allocate a resource draft and return its logical files; the active draft is the current working directory.",
-            args_model=ResourceDraftTargetArgs,
-            capability=ToolCapability.WRITE,
-            result_view="resource_draft_detail",
-            groups={AppGroup.RESOURCE_DRAFT_LIFECYCLE_WRITE},
-            roles=curator_roles,
-            handler=_allocate_resource_draft,
-        ),
-        handler_tool(
             name="get_resource_draft",
             description="Inspect target metadata, status, and logical files for one resource draft.",
             args_model=DraftIdArgs,
@@ -439,15 +401,5 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="gate_report",
             groups={AppGroup.RESOURCE_DRAFT_CURRENT_READ},
             roles=curator_roles,
-        ),
-        handler_tool(
-            name="abandon_resource_draft",
-            description="Mark a resource draft as abandoned with a reason when it should not be finalized into the resource library.",
-            args_model=DraftIdReasonArgs,
-            capability=ToolCapability.WRITE,
-            result_view="resource_draft_detail",
-            groups={AppGroup.RESOURCE_DRAFT_LIFECYCLE_WRITE},
-            roles=curator_roles,
-            handler=_abandon_resource_draft,
         ),
     ]

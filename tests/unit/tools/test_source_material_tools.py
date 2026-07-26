@@ -63,20 +63,7 @@ def test_source_material_groups_expose_expected_tools() -> None:
         {"create_source_block", "create_source_link", "set_file_indexing_status"},
     )
     assert_group_contains(
-        "source_index_draft_read",
-        {
-            "get_source_index",
-            "get_source_index_overview",
-            "list_source_index_files",
-            "list_source_blocks",
-            "get_source_block",
-            "get_source_index_update_context",
-            "validate_source_index",
-            "get_source_index_coverage",
-        },
-    )
-    assert_group_contains(
-        "source_index_committed_read",
+        "source_index_navigation_read",
         {
             "get_source_index_overview",
             "list_source_index_files",
@@ -86,7 +73,11 @@ def test_source_material_groups_expose_expected_tools() -> None:
         },
     )
     assert_group_contains(
-        "source_index_committed_audit_read",
+        "source_index_draft_context_read",
+        {"get_source_index_update_context", "validate_source_index"},
+    )
+    assert_group_contains(
+        "source_index_full_audit_read",
         {"get_source_index"},
     )
     assert_group_contains("source_material_text_read", {"search_source_text", "read_source_range", "validate_source_range", "preview_source_ref"})

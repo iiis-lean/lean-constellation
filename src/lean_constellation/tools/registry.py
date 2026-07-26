@@ -93,9 +93,12 @@ def _validate_tool_specs(specs: Sequence[ToolSpec]) -> None:
     ]
     if submit_like:
         raise ValueError(f"Submit tools are not allowed in layer 2 registry: {', '.join(sorted(submit_like))}")
-    missing_groups = [spec.name for spec in specs if not spec.tool_groups]
-    if missing_groups:
-        raise ValueError(f"Every application tool must declare at least one group: {', '.join(sorted(missing_groups))}")
+    invalid_groups = [spec.name for spec in specs if len(spec.tool_groups) != 1]
+    if invalid_groups:
+        raise ValueError(
+            "Every application tool must declare exactly one group: "
+            f"{', '.join(sorted(invalid_groups))}"
+        )
     missing_roles = [spec.name for spec in specs if not spec.allowed_roles]
     if missing_roles:
         raise ValueError(f"Every application tool must declare allowed roles: {', '.join(sorted(missing_roles))}")

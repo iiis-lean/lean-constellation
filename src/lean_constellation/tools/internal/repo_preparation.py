@@ -31,7 +31,6 @@ from lean_constellation.tools.args import (
     ProviderRepoArgs,
     QueryLimitArgs,
     RequirementNameArgs,
-    RequirementObservedArgs,
     TargetRepoArgs,
     UrlOrSlugArgs,
 )
@@ -330,13 +329,6 @@ def _inspect_workspace_for_coordinator(runtime, ctx, args: NoArgs):
     )
 
 
-def _list_resume_candidates(runtime, ctx, args: ProviderRepoArgs):
-    return runtime.repo_workspace.list_resume_candidates_for_requirement(
-        _workspace_root(ctx),
-        provider_repo=args.provider_repo,
-    )
-
-
 def _load_scoped_preparation_requirements(runtime, ctx):
     prepared = runtime.repo_workspace.preparation.get_preparation_input(ctx.repo_root)
     if not prepared.ok or prepared.value is None:
@@ -548,7 +540,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="workspace_coordinator_overview",
-            groups={AppGroup.WORKSPACE_REPO_CATALOG_READ, AppGroup.WORKSPACE_PROVIDER_CATALOG_READ},
+            groups={AppGroup.WORKSPACE_OVERVIEW_READ},
             roles={"coordinator", "admin"},
             handler=_inspect_workspace_for_coordinator,
         ),
@@ -634,38 +626,6 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="lake_dependency_attach",
             groups={AppGroup.LAKE_DEPENDENCY_WRITE},
             roles={"coordinator", "admin"},
-        ),
-        direct_tool(
-            name="attach_requirement_provider_dependency",
-            description="Attach the satisfied provider repo for one requirement as a Lake dependency and mark it handled.",
-            args_model=RequirementNameArgs,
-            capability=ToolCapability.WRITE,
-            backing_service="repo_workspace",
-            backing_method="attach_provider_for_requirement",
-            result_view="requirement_consume",
-            groups={AppGroup.REQUIREMENT_PROVIDER_ADMIN_WRITE},
-            roles={"admin"},
-        ),
-        handler_tool(
-            name="list_requirement_resume_candidates",
-            description="List consumer repos whose waiting requirements can resume from a stable provider repo.",
-            args_model=ProviderRepoArgs,
-            capability=ToolCapability.READ,
-            result_view="requirement_resume_candidates",
-            groups={AppGroup.WORKSPACE_REQUIREMENT_CONTROL_READ},
-            roles={"admin"},
-            handler=_list_resume_candidates,
-        ),
-        direct_tool(
-            name="mark_requirement_result_observed",
-            description="Mark a waiting requirement provider result as observed in the current repo.",
-            args_model=RequirementObservedArgs,
-            capability=ToolCapability.WRITE,
-            backing_service="repo_workspace",
-            backing_method="mark_requirement_result_observed",
-            result_view="requirement_waiting",
-            groups={AppGroup.WORKSPACE_REQUIREMENT_CONTROL_WRITE},
-            roles={"admin"},
         ),
         handler_tool(
             name="search_github_lean_repositories",

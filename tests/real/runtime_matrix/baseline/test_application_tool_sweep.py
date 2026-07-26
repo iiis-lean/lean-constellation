@@ -37,7 +37,7 @@ CALLED_CHECKPOINTED_WRITE_TOOLS = {
 
 def test_application_tool_sweep_classifies_every_registered_tool() -> None:
     specs = build_application_tool_specs()
-    assert len(specs) == 264
+    assert len(specs) == 244
     classified = {item.tool_name: item for item in (_classify_tool(spec) for spec in specs)}
     assert set(classified) == {spec.name for spec in specs}
     assert {classified[name].mode for name in CALLED_READ_ONLY_TOOLS} == {"called_success"}

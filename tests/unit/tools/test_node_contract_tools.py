@@ -16,7 +16,6 @@ def test_node_contract_tools_are_registered() -> None:
         "update_node_contract_text",
         "preview_delete_node",
         "delete_node",
-        "list_current_visible_node_boundaries",
         "list_current_node_deps",
         "add_current_node_dep",
         "remove_current_node_dep",
@@ -32,8 +31,6 @@ def test_node_contract_tools_are_registered() -> None:
         "list_root_interfaces",
         "get_root_interface_run_context",
         "add_root_interface",
-        "update_root_interface",
-        "remove_root_interface",
         "add_node_interface",
         "update_node_interface",
         "remove_node_interface",
@@ -62,23 +59,23 @@ def test_node_contract_groups_expose_expected_tools() -> None:
         "node_contract_read_current",
         {"get_current_node_contract", "list_current_node_deps", "list_current_node_material_refs"},
     )
-    assert_group_contains("node_contract_read_coordinator", {"get_node_contract", "list_node_material_refs"})
-    assert_group_contains("node_tree_coordinator_read", {"get_node_tree", "get_node"})
-    assert_group_contains("node_tree_coordinator_write", {"create_scope_node", "create_content_node", "preview_delete_node", "delete_node"})
-    assert_group_contains("node_contract_core_coordinator_write", {"update_node_contract_text"})
+    assert_group_contains("node_contract_read_by_node", {"get_node_contract", "list_node_material_refs"})
+    assert_group_contains("node_tree_read", {"get_node_tree", "get_node"})
+    assert_group_contains("node_tree_write", {"create_scope_node", "create_content_node", "preview_delete_node", "delete_node"})
+    assert_group_contains("node_contract_text_write_by_node", {"update_node_contract_text"})
     assert_group_contains("node_contract_dependency_current_write", {"add_current_node_dep", "remove_current_node_dep"})
     assert_group_contains("node_contract_material_current_write", {"add_current_material_ref", "remove_current_material_ref"})
-    assert_group_contains("node_contract_dependency_coordinator_write", {"add_node_dep", "remove_node_dep"})
-    assert_group_contains("node_contract_material_coordinator_write", {"add_node_material_ref", "remove_node_material_ref"})
+    assert_group_contains("node_contract_dependency_write_by_node", {"add_node_dep", "remove_node_dep"})
+    assert_group_contains("node_contract_material_write_by_node", {"add_node_material_ref", "remove_node_material_ref"})
     assert_group_contains("scope_export_interface_read", {"list_node_interfaces", "list_scope_exports", "list_scope_export_candidates"})
     assert_group_contains("scope_export_interface_write", {"add_node_interface", "bind_node_interface", "add_scope_export"})
     assert_group_contains("content_interface_current_write", {"bind_current_node_interface"})
     assert_group_contains("root_interface_state_read", {"list_root_interfaces"})
     assert_group_contains("root_interface_prepare_read", {"get_root_interface_run_context"})
-    assert_group_contains("root_interface_write", {"add_root_interface", "update_root_interface", "remove_root_interface"})
-    assert_group_contains("scope_contract_coordinator_commit", {"commit_scope_contract"})
+    assert_group_contains("root_interface_append_write", {"add_root_interface"})
+    assert_group_contains("scope_contract_commit", {"commit_scope_contract"})
     assert_group_contains(
-        "content_task_result_coordinator_finalize",
+        "content_task_result_finalize",
         {"list_recent_content_task_results", "inspect_content_task_result", "commit_content_contract"},
     )
     assert_group_contains("scope_close_read", {"get_scope_close_view"})
@@ -111,8 +108,6 @@ def test_node_contract_mutation_result_views_match_receipts() -> None:
         assert specs[name].result_view == "current_node_material_mutation"
     for name in {
         "add_root_interface",
-        "update_root_interface",
-        "remove_root_interface",
         "add_node_interface",
         "update_node_interface",
         "remove_node_interface",

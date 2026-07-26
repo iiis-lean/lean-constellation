@@ -22,20 +22,14 @@ def test_resource_tools_are_registered() -> None:
         "search_resource_text",
         "list_resources",
         "get_resource",
-        "allocate_resource_draft",
         "get_resource_draft",
         "check_resource_draft",
-        "abandon_resource_draft",
     }
 
     assert_tools_registered(expected)
 
 
 def test_resource_groups_expose_expected_tools() -> None:
-    assert_group_contains(
-        "resource_curation_context_read",
-        {"get_material_context", "normalize_resource_target", "find_duplicate_resource"},
-    )
     assert_group_contains("material_context_read", {"get_material_context"})
     assert_group_contains(
         "resource_target_preflight_read",
@@ -47,7 +41,6 @@ def test_resource_groups_expose_expected_tools() -> None:
     )
     assert_group_contains("resource_library_read", {"read_resource_range", "search_resource_text", "list_resources", "get_resource"})
     assert_group_contains("resource_draft_current_read", {"get_resource_draft", "check_resource_draft"})
-    assert_group_contains("resource_draft_lifecycle_write", {"allocate_resource_draft", "abandon_resource_draft"})
 
 
 def test_resource_acquisition_schemas_use_resource_draft_language() -> None:
@@ -70,12 +63,7 @@ def test_resource_result_views_use_logical_agent_projections() -> None:
     specs = {spec.name: spec for spec in build_application_tool_specs()}
 
     assert specs["get_resource"].result_view == "resource_detail"
-    for name in {
-        "allocate_resource_draft",
-        "get_resource_draft",
-        "abandon_resource_draft",
-    }:
-        assert specs[name].result_view == "resource_draft_detail"
+    assert specs["get_resource_draft"].result_view == "resource_draft_detail"
     for name in {"acquire_resource_material", "import_resource_material"}:
         assert specs[name].result_view == "resource_acquisition_handles"
     for name in {

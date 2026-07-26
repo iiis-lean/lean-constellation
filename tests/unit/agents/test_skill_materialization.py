@@ -47,7 +47,7 @@ def test_skill_registry_builds_all_fixed_skills() -> None:
     assert "## Workflow" in specs["source-material-acquisition"].body
 
 
-def test_skill_materialization_writes_skill_md_and_references(tmp_path: Path) -> None:
+def test_skill_materialization_writes_skill_md_without_registry_references(tmp_path: Path) -> None:
     paths = materialize_skill_specs(
         tmp_path,
         ["source-material-acquisition", "resource-request-submission"],
@@ -58,10 +58,8 @@ def test_skill_materialization_writes_skill_md_and_references(tmp_path: Path) ->
 
     assert (material_skill / "SKILL.md").read_text(encoding="utf-8").startswith("---")
     assert 'name: "source-material-acquisition"' in (material_skill / "SKILL.md").read_text(encoding="utf-8")
-    assert "source_acquisition" in (
-        material_skill / "references" / "tool_groups.md"
-    ).read_text(encoding="utf-8")
-    assert "resource_request_submit" in (request_skill / "references" / "tool_groups.md").read_text(encoding="utf-8")
+    assert not (material_skill / "references" / "tool_groups.md").exists()
+    assert not (request_skill / "references" / "tool_groups.md").exists()
 
 
 def test_multiple_agent_types_reuse_same_skill_spec() -> None:
