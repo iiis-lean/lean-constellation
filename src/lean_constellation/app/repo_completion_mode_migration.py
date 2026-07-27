@@ -557,6 +557,7 @@ def _preview_scope_archive(
     snapshot_id: str,
     expected_scope_id: str,
     require_new: bool = False,
+    allow_unstarted_created_steps: bool = False,
 ) -> tuple[list[FileRewrite], dict[str, int]]:
     manifest = _load_json(scope_dir / "snapshot.json")
     if manifest.get("snapshot_id") != snapshot_id:
@@ -585,7 +586,17 @@ def _preview_scope_archive(
         elif object_type == "step" and path.name == "step.json":
             counts["step"] += 1
             status = str(payload.get("status") or "")
-            if status not in _FINAL_STEP_STATUSES:
+            safe_unstarted_step = (
+                allow_unstarted_created_steps
+                and status == "created"
+                and payload.get("started_at") is None
+                and payload.get("finished_at") is None
+                and payload.get("submission") is None
+                and payload.get("result") is None
+                and payload.get("error") is None
+                and not (payload.get("agent_bindings") or {}).get("by_role")
+            )
+            if status not in _FINAL_STEP_STATUSES and not safe_unstarted_step:
                 raise RepoCompletionModeMigrationError(
                     f"selected checkpoint contains nonterminal Step {payload.get('step_id')}: {status}"
                 )

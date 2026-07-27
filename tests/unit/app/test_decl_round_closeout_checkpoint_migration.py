@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from agent_runtime_kit.flow.models import FlowPosition, FlowStatus
+from agent_runtime_kit.flow.standard_steps.agent_step import AgentStepState
 
 from lean_constellation.app.decl_round_closeout_checkpoint_migration import (
     DeclRoundCloseoutCheckpointMigrationError,
@@ -12,6 +13,10 @@ from lean_constellation.app.decl_round_closeout_checkpoint_migration import (
     preview_decl_round_closeout_checkpoint,
     validate_decl_round_closeout_checkpoint,
 )
+from lean_constellation.app.repo_completion_mode_migration import (
+    RepoCompletionModeMigrationError,
+)
+from lean_constellation.flows.common.agent_steps import CoordinatorAgentStep
 from lean_constellation.flows.content_node_task.decl_round.flow import (
     DeclGraphRoundFlow,
     DeclGraphRoundInput,
@@ -46,7 +51,19 @@ def _flow_payload(flow) -> dict[str, object]:  # noqa: ANN001
     return payload
 
 
-def _build_closeout_checkpoint(tmp_path: Path) -> tuple[Path, str]:
+def _step_payload(step) -> dict[str, object]:  # noqa: ANN001
+    payload = step.model_dump(mode="json")
+    payload["object_type"] = "step"
+    payload["schema_version"] = 1
+    payload["step_type"] = step.step_type
+    return payload
+
+
+def _build_closeout_checkpoint(
+    tmp_path: Path,
+    *,
+    include_unstarted_step: bool = False,
+) -> tuple[Path, str]:
     repo_root, checkpoint_id = _build_legacy_checkpoint(tmp_path)
     checkpoint = (
         repo_root
@@ -203,6 +220,31 @@ def _build_closeout_checkpoint(tmp_path: Path) -> tuple[Path, str]:
         )
         _write_json(path, _flow_payload(flow))
         flow_paths.append(path)
+    if include_unstarted_step:
+        step = CoordinatorAgentStep(
+            step_id="coordinator_callback_created",
+            flow_id=content_flow.flow_id,
+            scope_id="repo:Repo",
+            state=AgentStepState(
+                agent_role="coordinator",
+                agent_type="CoordinatorAgent",
+                home_id="CoordinatorAgent",
+                create_agent_if_missing=True,
+                bind_created_agent_to="flow",
+            ),
+        )
+        step_path = (
+            files_root
+            / "scopes"
+            / "repo_Repo"
+            / "flows"
+            / content_flow.flow_id
+            / "steps"
+            / step.step_id
+            / "step.json"
+        )
+        _write_json(step_path, _step_payload(step))
+        flow_paths.append(step_path)
     scope_manifest_path = scope / "snapshot.json"
     scope_manifest = json.loads(scope_manifest_path.read_text(encoding="utf-8"))
     scope_manifest["files"] = [
@@ -295,6 +337,86 @@ def test_decl_round_closeout_checkpoint_migration_clones_and_validates(
     assert pending["execution_result_kind"] == "success"
     assert pending["plan_closeout_acknowledged_at"] is None
     assert pending["plan_closeout_acknowledged_by"] is None
+
+
+def test_decl_round_closeout_checkpoint_migration_preserves_unstarted_step(
+    tmp_path: Path,
+) -> None:
+    repo_root, checkpoint_id = _build_closeout_checkpoint(
+        tmp_path,
+        include_unstarted_step=True,
+    )
+
+    preview = preview_decl_round_closeout_checkpoint(
+        repo_root,
+        checkpoint_id=checkpoint_id,
+    )
+    applied = apply_decl_round_closeout_checkpoint(
+        repo_root,
+        checkpoint_id=checkpoint_id,
+        expected_token=preview.recovery_token,
+        report_dir=tmp_path / "reports",
+    )
+
+    assert preview.step_count == 1
+    migrated_steps = [
+        path
+        for scope_snapshot_id in applied.new_scope_snapshot_ids.values()
+        for path in (
+            repo_root
+            / ".agent_runtime"
+            / "snapshots"
+            / "scopes"
+            / scope_snapshot_id
+            / "files"
+        ).rglob("coordinator_callback_created/step.json")
+    ]
+    assert len(migrated_steps) == 1
+    migrated_step = migrated_steps[0]
+    payload = json.loads(migrated_step.read_text(encoding="utf-8"))
+    assert payload["status"] == "created"
+    assert payload["started_at"] is None
+    assert payload["submission"] is None
+    assert payload["result"] is None
+
+
+def test_decl_round_closeout_checkpoint_migration_rejects_started_step(
+    tmp_path: Path,
+) -> None:
+    repo_root, checkpoint_id = _build_closeout_checkpoint(
+        tmp_path,
+        include_unstarted_step=True,
+    )
+    scope = (
+        repo_root
+        / ".agent_runtime"
+        / "snapshots"
+        / "scopes"
+        / "ss_source"
+    )
+    step_path = next(scope.rglob("coordinator_callback_created/step.json"))
+    payload = json.loads(step_path.read_text(encoding="utf-8"))
+    payload["status"] = "running"
+    payload["started_at"] = _TIMESTAMP
+    _write_json(step_path, payload)
+    manifest_path = scope / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    step_relpath = step_path.relative_to(scope / "files").as_posix()
+    step_entry = next(
+        item for item in manifest["files"] if item["relpath"] == step_relpath
+    )
+    step_entry["size"] = step_path.stat().st_size
+    step_entry["sha256"] = _sha256(step_path)
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(
+        RepoCompletionModeMigrationError,
+        match="nonterminal Step coordinator_callback_created: running",
+    ):
+        preview_decl_round_closeout_checkpoint(
+            repo_root,
+            checkpoint_id=checkpoint_id,
+        )
 
 
 def test_decl_round_closeout_apply_rejects_stale_token(tmp_path: Path) -> None:

@@ -613,6 +613,7 @@ def _rewrite_scope_identity(
         snapshot_id=snapshot_id,
         expected_scope_id=expected_scope_id,
         require_new=True,
+        allow_unstarted_created_steps=True,
     )
     if rewrites:
         raise DeclRoundCloseoutCheckpointMigrationError(
@@ -686,6 +687,7 @@ def _scope_counts(
             snapshot_id=snapshot_id,
             expected_scope_id=scope_id,
             require_new=True,
+            allow_unstarted_created_steps=True,
         )
         if rewrites:
             raise DeclRoundCloseoutCheckpointMigrationError(
