@@ -607,6 +607,10 @@ class ContractComponent:
         node.active_contract_version = contract.version
         if node.open_contract_version == contract.version:
             node.open_contract_version = None
+        index = self.node_tree.node_store.build_index(repo_root, replacements=[node])
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.fail(index.issues)
+        ctx = FoundationContext(repo_root=Path(repo_root))
         with self.runtime.foundation.store.mutation("commit_node_contract") as mutation:
             mutation.stage_json(
                 self._contract_file_for_node(repo_root, node, contract.version),
@@ -617,6 +621,11 @@ class ContractComponent:
                 self.node_tree.node_store.node_file(repo_root, node_id=node.node_id),
                 node,
                 mode=WriteMode.UPDATE_EXISTING,
+            )
+            mutation.stage_json(
+                self.runtime.foundation.layout.node_index_path(ctx),
+                index.value,
+                mode=WriteMode.OVERWRITE,
             )
             committed = mutation.commit()
         if not committed.ok:

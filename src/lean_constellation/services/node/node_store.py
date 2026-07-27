@@ -55,12 +55,35 @@ class NodeStore:
         return self.rebuild_index(repo_root)
 
     def rebuild_index(self, repo_root: Path) -> ServiceResult[NodeIndex]:
+        built = self.build_index(repo_root)
+        if not built.ok or built.value is None:
+            return self.runtime.foundation.fail(built.issues)
+        ctx = FoundationContext(repo_root=Path(repo_root))
+        written = self.runtime.foundation.store.write_json_atomic(
+            self.runtime.foundation.layout.node_index_path(ctx),
+            built.value,
+            mode=WriteMode.OVERWRITE,
+        )
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return built
+
+    def build_index(
+        self,
+        repo_root: Path,
+        *,
+        replacements: list[NodeMetadata] | None = None,
+    ) -> ServiceResult[NodeIndex]:
+        """Render the derived node index without writing it."""
         nodes = self._scan_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
             return self.runtime.foundation.fail(nodes.issues)
+        nodes_by_id = {node.node_id: node for node in nodes.value}
+        for replacement in replacements or []:
+            nodes_by_id[replacement.node_id] = replacement
         active_path_to_node_id: dict[str, str] = {}
         entries: list[NodeIndexEntry] = []
-        for node in sorted(nodes.value, key=lambda item: (item.path, item.node_id)):
+        for node in sorted(nodes_by_id.values(), key=lambda item: (item.path, item.node_id)):
             active = node.lifecycle.value == "active"
             if active:
                 existing = active_path_to_node_id.get(node.path)
@@ -91,14 +114,6 @@ class NodeStore:
             active_path_to_node_id=active_path_to_node_id,
             summary=f"Indexed {len(entries)} nodes; {len(active_path_to_node_id)} active paths.",
         )
-        ctx = FoundationContext(repo_root=Path(repo_root))
-        written = self.runtime.foundation.store.write_json_atomic(
-            self.runtime.foundation.layout.node_index_path(ctx),
-            index,
-            mode=WriteMode.OVERWRITE,
-        )
-        if not written.ok:
-            return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(index)
 
     def resolve_active_node(self, repo_root: Path, *, path: str) -> ServiceResult[NodeMetadata]:
