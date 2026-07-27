@@ -15,6 +15,7 @@ from lean_constellation.app.operator_data.decl_projection import (
     NodeInput,
     ProjectionSyncInput,
     RoundCloseoutInput,
+    RoundExecutionInput,
     RoundBatchInput,
     RoundIdentityInput,
     RoundInput,
@@ -57,6 +58,12 @@ DECL_PROJECTION_ROUTES = (
     DeclProjectionRoute("POST", "/repos/{repo_key}/decl/stages/gate", StageGateInput, "gate_and_advance_stage"),
     DeclProjectionRoute("GET", "/repos/{repo_key}/decl/rounds/audit", RoundIdentityInput, "audit_round_final"),
     DeclProjectionRoute("POST", "/repos/{repo_key}/decl/rounds/closeout", RoundCloseoutInput, "closeout_round"),
+    DeclProjectionRoute(
+        "POST",
+        "/repos/{repo_key}/decl/rounds/execution-result",
+        RoundExecutionInput,
+        "record_round_execution",
+    ),
     DeclProjectionRoute("POST", "/repos/{repo_key}/projection/refresh", NodeInput, "refresh_node_projection"),
     DeclProjectionRoute("GET", "/repos/{repo_key}/projection/sync", ProjectionSyncInput, "check_projection_sync"),
 )

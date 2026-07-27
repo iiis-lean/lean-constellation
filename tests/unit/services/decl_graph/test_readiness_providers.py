@@ -182,11 +182,20 @@ def _publish_committed_heads(tmp_path: Path, names: list[str]) -> None:
                 round_id=round_record.round_id,
                 summary="Completed readiness fixture round.",
             ).ok
-            assert runtime.decl_graph.mark_round_terminal(
+            assert runtime.decl_graph.strategy_round.record_round_execution_result(
                 tmp_path,
                 node_path=NODE_PATH,
                 round_id=round_record.round_id,
-                result_kind="success",
+                result_kind="blocked",
+                reason="Test fixture committed revisions before round closeout.",
+            ).ok
+            assert runtime.decl_graph.strategy_round.persist_round_closeout(
+                tmp_path,
+                node_path=NODE_PATH,
+                round_id=round_record.round_id,
+                result_kind="blocked",
+                reason="Test fixture committed revisions before round closeout.",
+                acknowledged_by="test-fixture",
             ).ok
     for name in names:
         assert runtime.lean_projection.sync_decl_file_after_revision_reset(

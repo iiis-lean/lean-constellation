@@ -328,7 +328,8 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
 
     assert "rewrites the working file" in statement_worker
     assert "Capture and deterministic gates own statement formal policy checks" in statement_worker
-    assert "add_statement_dependencies" in statement_worker
+    assert "add_statement_repo_dependencies" in statement_worker
+    assert "add_statement_mathlib_dependencies" in statement_worker
     assert "clear_statement_deps" in statement_worker
     assert "write_statement_formal_deps" not in statement_worker
     assert "add_current_node_dep" in statement_worker
@@ -356,7 +357,8 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
     proof_nl_worker = render_agent_instruction("ProofNLWorkerAgent")
     proof_nl_reviewer = render_agent_instruction("ProofNLReviewerAgent")
     assert "set_proof_nl" in proof_nl_worker
-    assert "add_proof_dependencies" in proof_nl_worker
+    assert "add_proof_repo_dependencies" in proof_nl_worker
+    assert "add_proof_mathlib_dependencies" in proof_nl_worker
     assert "write_proof_nl" not in proof_nl_worker
     assert "search_arxiv_theorems" in proof_nl_worker
     assert "record_proof_nl_review_passed" in proof_nl_reviewer
@@ -366,7 +368,8 @@ def test_formal_stage_instructions_match_stage_specific_tool_boundaries() -> Non
 
     assert "discards uncaptured proof edits" in proof_worker
     assert "check_proof_formal_policy" in proof_worker
-    assert "add_proof_dependencies" in proof_worker
+    assert "add_proof_repo_dependencies" in proof_worker
+    assert "add_proof_mathlib_dependencies" in proof_worker
     assert "reread_required=true" in proof_worker
     assert "is not a blocker" in proof_worker
     assert "same AgentStep" in proof_worker

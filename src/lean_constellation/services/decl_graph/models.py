@@ -52,6 +52,7 @@ class DeclRoundStatus(StrEnum):
 
     DRAFT = "draft"
     RUNNING = "running"
+    AWAITING_CLOSEOUT = "awaiting_closeout"
     COMMITTED = "committed"
 
 
@@ -341,8 +342,13 @@ class DeclGraphRound(StrictModel):
     revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
     change_summaries: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
+    execution_result_kind: DeclRoundResultKind | None = None
+    execution_reason: str | None = None
+    execution_completed_at: str | None = None
     result_kind: DeclRoundResultKind | None = None
     result_reason: str | None = None
+    plan_closeout_acknowledged_at: str | None = None
+    plan_closeout_acknowledged_by: str | None = None
     created_at: str = Field(default_factory=utc_now_iso)
     started_at: str | None = None
     committed_at: str | None = None
@@ -575,6 +581,8 @@ class DeclDependencyMutationReceipt(_CompactMutationReceipt):
     removed: list[DeclDep] = Field(default_factory=list)
     already_present: list[DeclDep] = Field(default_factory=list)
     managed_projection: DeclManagedProjectionEffect | None = None
+    dependency_stage: Literal["statement", "proof"] | None = None
+    mathlib_index: dict[str, object] | None = None
 
 
 class DeclView(StrictModel):
@@ -637,8 +645,12 @@ class DeclGraphRoundView(StrictModel):
     change_ids: list[str] = Field(default_factory=list)
     change_summaries: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
+    execution_result_kind: DeclRoundResultKind | None = None
+    execution_reason: str | None = None
     result_kind: DeclRoundResultKind | None = None
     result_reason: str | None = None
+    closeout_required: bool = False
+    required_next_action: str | None = None
     created_at: str | None = None
     started_at: str | None = None
     committed_at: str | None = None

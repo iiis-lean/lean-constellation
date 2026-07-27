@@ -109,6 +109,16 @@ class StrategyRoundComponent:
                     expected=DeclStrategyStatus.OPEN.value,
                 )
             )
+        pending = self._unfinished_round(repo_root, node_path=node_path)
+        if pending is not None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "strategy_round_closeout_pending",
+                    "A declaration round must be closed before its strategy can be closed.",
+                    object_ref=strategy_id,
+                    current=f"{pending.round_id}:{pending.status.value}",
+                )
+            )
         strategy.value.status = DeclStrategyStatus.FAILED if failed else DeclStrategyStatus.CLOSED
         strategy.value.summary = summary.strip()
         strategy.value.closed_reason = reason.strip() if reason else None
@@ -141,14 +151,14 @@ class StrategyRoundComponent:
                     expected=DeclStrategyStatus.OPEN.value,
                 )
             )
-        running = self._running_round(repo_root, node_path=node_path)
-        if running is not None:
+        pending = self._unfinished_round(repo_root, node_path=node_path)
+        if pending is not None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "round_already_running",
-                    "A Content node already has a running decl round.",
+                    "round_closeout_pending",
+                    "A Content node already has an unfinished declaration round.",
                     object_ref=node_path,
-                    current=running.round_id,
+                    current=f"{pending.round_id}:{pending.status.value}",
                 )
             )
         allocated = self.runtime.foundation.store.allocate_uuid(
@@ -200,14 +210,18 @@ class StrategyRoundComponent:
                     expected=DeclRoundStatus.DRAFT.value,
                 )
             )
-        running = self._running_round(repo_root, node_path=node_path)
-        if running is not None:
+        pending = self._unfinished_round(
+            repo_root,
+            node_path=node_path,
+            exclude_round_id=round_id,
+        )
+        if pending is not None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "round_already_running",
-                    "A Content node already has a running decl round.",
+                    "round_closeout_pending",
+                    "A Content node already has another unfinished declaration round.",
                     object_ref=node_path,
-                    current=running.round_id,
+                    current=f"{pending.round_id}:{pending.status.value}",
                 )
             )
         round_record.value.status = DeclRoundStatus.RUNNING
@@ -243,8 +257,37 @@ class StrategyRoundComponent:
                     expected=", ".join(round_record.value.change_ids),
                 )
             )
-        round_record.value.change_summaries[change_id] = summary.strip()
-        return self._write_round(repo_root, node_path=node_path, round_record=round_record.value)
+        normalized_summary = summary.strip()
+        existing = round_record.value.change_summaries.get(change_id)
+        if existing is not None:
+            if existing == normalized_summary:
+                return self.runtime.foundation.ok(round_record.value)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_change_summary_conflict",
+                    "A declaration change summary cannot be replaced after it has been recorded.",
+                    object_ref=change_id,
+                    current=existing,
+                    expected=normalized_summary,
+                )
+            )
+        if round_record.value.status == DeclRoundStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_change_summary_committed",
+                    "A committed round cannot accept a new declaration change summary.",
+                    object_ref=change_id,
+                )
+            )
+        updated_round = round_record.value.model_copy(
+            update={
+                "change_summaries": {
+                    **round_record.value.change_summaries,
+                    change_id: normalized_summary,
+                }
+            }
+        )
+        return self._write_round(repo_root, node_path=node_path, round_record=updated_round)
 
     def write_round_summary(
         self,
@@ -275,10 +318,31 @@ class StrategyRoundComponent:
                     current=", ".join(missing),
                 )
             )
-        round_record.value.summary = summary.strip()
+        normalized_summary = summary.strip()
+        if round_record.value.summary is not None:
+            if round_record.value.summary == normalized_summary:
+                return self.runtime.foundation.ok(round_record.value)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_summary_conflict",
+                    "A round summary cannot be replaced after it has been recorded.",
+                    object_ref=round_id,
+                    current=round_record.value.summary,
+                    expected=normalized_summary,
+                )
+            )
+        if round_record.value.status == DeclRoundStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_summary_committed",
+                    "A committed round cannot accept a new round summary.",
+                    object_ref=round_id,
+                )
+            )
+        round_record.value.summary = normalized_summary
         return self._write_round(repo_root, node_path=node_path, round_record=round_record.value)
 
-    def mark_round_terminal(
+    def record_round_execution_result(
         self,
         repo_root: Path,
         *,
@@ -291,21 +355,37 @@ class StrategyRoundComponent:
         round_record = self.get_round(repo_root, node_path=node_path, round_id=round_id)
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
-        if round_record.value.status not in {DeclRoundStatus.DRAFT, DeclRoundStatus.RUNNING}:
+        normalized_reason = reason.strip() if reason and reason.strip() else None
+        if round_record.value.status == DeclRoundStatus.AWAITING_CLOSEOUT:
+            if (
+                round_record.value.execution_result_kind == result_kind
+                and round_record.value.execution_reason == normalized_reason
+            ):
+                return self.runtime.foundation.ok(round_record.value)
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "round_already_terminal",
-                    "Decl round is already terminal.",
+                    "round_execution_result_conflict",
+                    "Declaration round execution result has already been recorded with different truth.",
                     object_ref=round_id,
-                    current=round_record.value.status.value,
+                    current=round_record.value.execution_result_kind.value
+                    if round_record.value.execution_result_kind is not None
+                    else None,
+                    expected=result_kind.value,
                 )
             )
-        if not round_record.value.summary:
+        if (
+            round_record.value.status == DeclRoundStatus.DRAFT
+            and result_kind == DeclRoundResultKind.FAILED
+        ):
+            pass
+        elif round_record.value.status != DeclRoundStatus.RUNNING:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "round_summary_missing",
-                    "Round summary is required before marking the round terminal.",
+                    "round_not_running",
+                    "Only a running declaration round, or a failed child start for a draft round, can record an execution result.",
                     object_ref=round_id,
+                    current=round_record.value.status.value,
+                    expected=DeclRoundStatus.RUNNING.value,
                 )
             )
         if result_kind in {DeclRoundResultKind.BLOCKED, DeclRoundResultKind.FAILED} and not (reason and reason.strip()):
@@ -317,11 +397,94 @@ class StrategyRoundComponent:
                     field="reason",
                 )
             )
-        round_record.value.result_kind = result_kind
-        round_record.value.result_reason = reason.strip() if reason else None
-        round_record.value.committed_at = utc_now_iso()
-        round_record.value.status = DeclRoundStatus.COMMITTED
+        round_record.value.execution_result_kind = result_kind
+        round_record.value.execution_reason = normalized_reason
+        round_record.value.execution_completed_at = utc_now_iso()
+        round_record.value.status = DeclRoundStatus.AWAITING_CLOSEOUT
         return self._write_round(repo_root, node_path=node_path, round_record=round_record.value)
+
+    def persist_round_closeout(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        result_kind: DeclRoundResultKind | str,
+        reason: str | None,
+        acknowledged_by: str,
+    ) -> ServiceResult[tuple[DeclGraphRound, bool]]:
+        """Persist the final Plan-owned round closeout after revision commit."""
+
+        result_kind = DeclRoundResultKind(result_kind)
+        normalized_reason = reason.strip() if reason and reason.strip() else None
+        normalized_actor = acknowledged_by.strip()
+        if not normalized_actor:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_closeout_actor_required",
+                    "Round closeout requires the acknowledging Agent id.",
+                    field="acknowledged_by",
+                )
+            )
+        round_record = self.get_round(repo_root, node_path=node_path, round_id=round_id)
+        if not round_record.ok or round_record.value is None:
+            return self.runtime.foundation.fail(round_record.issues)
+        if round_record.value.status == DeclRoundStatus.COMMITTED:
+            if (
+                round_record.value.result_kind == result_kind
+                and round_record.value.result_reason == normalized_reason
+            ):
+                if round_record.value.plan_closeout_acknowledged_at is not None:
+                    return self.runtime.foundation.ok((round_record.value, False))
+                round_record.value.plan_closeout_acknowledged_at = utc_now_iso()
+                round_record.value.plan_closeout_acknowledged_by = normalized_actor
+                written = self._write_round(
+                    repo_root,
+                    node_path=node_path,
+                    round_record=round_record.value,
+                )
+                if not written.ok or written.value is None:
+                    return self.runtime.foundation.fail(written.issues)
+                return self.runtime.foundation.ok((written.value, True))
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_closeout_conflict",
+                    "Committed declaration round closeout truth conflicts with this request.",
+                    object_ref=round_id,
+                    current=(
+                        round_record.value.result_kind.value
+                        if round_record.value.result_kind is not None
+                        else None
+                    ),
+                    expected=result_kind.value,
+                )
+            )
+        if round_record.value.status not in {
+            DeclRoundStatus.DRAFT,
+            DeclRoundStatus.AWAITING_CLOSEOUT,
+        }:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_not_ready_for_closeout",
+                    "Declaration round must be draft or awaiting ContentPlan closeout.",
+                    object_ref=round_id,
+                    current=round_record.value.status.value,
+                )
+            )
+        round_record.value.result_kind = result_kind
+        round_record.value.result_reason = normalized_reason
+        round_record.value.committed_at = utc_now_iso()
+        round_record.value.plan_closeout_acknowledged_at = round_record.value.committed_at
+        round_record.value.plan_closeout_acknowledged_by = normalized_actor
+        round_record.value.status = DeclRoundStatus.COMMITTED
+        written = self._write_round(
+            repo_root,
+            node_path=node_path,
+            round_record=round_record.value,
+        )
+        if not written.ok or written.value is None:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok((written.value, True))
 
     def get_strategy(
         self,
@@ -394,11 +557,30 @@ class StrategyRoundComponent:
             return 1
         return max(round_record.round_index for round_record in rounds.value) + 1
 
-    def _running_round(self, repo_root: Path, *, node_path: str) -> DeclGraphRound | None:
+    def _unfinished_round(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        exclude_round_id: str | None = None,
+    ) -> DeclGraphRound | None:
         rounds = self.list_rounds(repo_root, node_path=node_path)
         if not rounds.ok or rounds.value is None:
             return None
         for round_record in rounds.value:
-            if round_record.status == DeclRoundStatus.RUNNING:
+            if round_record.round_id == exclude_round_id:
+                continue
+            if (
+                round_record.status
+                in {
+                    DeclRoundStatus.DRAFT,
+                    DeclRoundStatus.RUNNING,
+                    DeclRoundStatus.AWAITING_CLOSEOUT,
+                }
+                or (
+                    round_record.status == DeclRoundStatus.COMMITTED
+                    and round_record.plan_closeout_acknowledged_at is None
+                )
+            ):
                 return round_record
         return None

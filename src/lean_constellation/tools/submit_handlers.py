@@ -181,6 +181,36 @@ def _require_stage(runtime: Any, ctx: ToolExecutionContext) -> ServiceResult[tup
     return runtime.foundation.ok((ctx.decl_stage.stage, ctx.decl_stage.round_id))
 
 
+def _require_no_pending_decl_round(runtime: Any, ctx: ToolExecutionContext) -> ServiceResult[None]:
+    node = _require_node(runtime, ctx)
+    if not node.ok or node.value is None:
+        return runtime.foundation.fail(node.issues)
+    rounds = runtime.decl_graph.list_rounds(ctx.repo_root, node_path=node.value)
+    if not rounds.ok or rounds.value is None:
+        return runtime.foundation.fail(rounds.issues)
+    pending = [
+        item
+        for item in rounds.value
+        if item.status.value in {"draft", "running", "awaiting_closeout"}
+        or (
+            item.status.value == "committed"
+            and item.plan_closeout_acknowledged_at is None
+        )
+    ]
+    if pending:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_round_closeout_pending",
+                "Close every declaration round before preparation or Content terminal submission.",
+                object_ref=node.value,
+                current=", ".join(
+                    f"{item.round_id}:{item.status.value}" for item in pending
+                ),
+            )
+        )
+    return runtime.foundation.ok(None)
+
+
 def _gate_or_fail(runtime: Any, gate: GateReport | None) -> ServiceResult[None]:
     if gate is None:
         return _fail(runtime, "gate_missing", "Required submit gate did not return a report.")
@@ -907,6 +937,9 @@ def submit_content_preparation_recon(runtime: Any, ctx: ToolExecutionContext, ar
     node = _require_node(runtime, ctx)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
+    round_gate = _require_no_pending_decl_round(runtime, ctx)
+    if not round_gate.ok:
+        return runtime.foundation.fail(round_gate.issues)
     if not args.objective or not args.objective.strip():
         return _fail(runtime, "preparation_objective_required", "Preparation recon dispatch requires a non-empty objective.", field="objective")
     duplicate = _preparation_already_used(runtime, ctx, args.recon_kind)
@@ -969,6 +1002,9 @@ def submit_content_node_ready(runtime: Any, ctx: ToolExecutionContext, args: Sub
     node = _require_node(runtime, ctx)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
+    round_gate = _require_no_pending_decl_round(runtime, ctx)
+    if not round_gate.ok:
+        return runtime.foundation.fail(round_gate.issues)
     completion = runtime.validation_snapshot.check_content_node_completion(ctx.repo_root, node_path=node.value)
     if not completion.ok or completion.value is None:
         return runtime.foundation.fail(completion.issues)
@@ -986,6 +1022,9 @@ def submit_content_node_blocked(runtime: Any, ctx: ToolExecutionContext, args: S
     node = _require_node(runtime, ctx)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
+    round_gate = _require_no_pending_decl_round(runtime, ctx)
+    if not round_gate.ok:
+        return runtime.foundation.fail(round_gate.issues)
     gate = runtime.validation_snapshot.readiness_gate.check_content_node_blocked_submit(ctx.repo_root, node_path=node.value, reason=args.reason)
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
@@ -1003,6 +1042,9 @@ def submit_content_node_failed(runtime: Any, ctx: ToolExecutionContext, args: Su
     node = _require_node(runtime, ctx)
     if not node.ok or node.value is None:
         return runtime.foundation.fail(node.issues)
+    round_gate = _require_no_pending_decl_round(runtime, ctx)
+    if not round_gate.ok:
+        return runtime.foundation.fail(round_gate.issues)
     if not args.reason.strip():
         return _fail(runtime, "content_failed_reason_required", "Content failed submit requires a reason.", field="reason")
     return _prepared(

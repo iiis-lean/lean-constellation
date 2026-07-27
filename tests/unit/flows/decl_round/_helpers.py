@@ -135,7 +135,15 @@ def seed_committed_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, dec
         lean_code=f"theorem {decl_name} : True := by trivial",
         lean_check=lean_check_payload(),
     ).ok
-    assert runtime.decl_graph.commit_decl_revision(repo_root, node_path=NODE_PATH, name=decl_name, state=DeclState.PROVED).ok
+    for stage in ("statement_nl", "statement_formal", "proof_nl", "proof_formal"):
+        advanced = runtime.decl_graph.advance_stage_state(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            stage=stage,
+            decl_names=[decl_name],
+        )
+        assert advanced.ok, advanced.issues
     seeded_round = runtime.decl_graph.get_round(repo_root, node_path=NODE_PATH, round_id=round_id)
     assert seeded_round.ok and seeded_round.value is not None, seeded_round.issues
     for change_id in seeded_round.value.change_ids:
@@ -152,12 +160,19 @@ def seed_committed_theorem(runtime: LeanRuntimeServices, repo_root: Path, *, dec
         round_id=round_id,
         summary=f"Seeded theorem {decl_name}.",
     ).ok
-    terminal = runtime.decl_graph.mark_round_terminal(
+    execution = runtime.decl_graph.record_round_execution_result(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        outcome="completed",
+    )
+    assert execution.ok, execution.issues
+    terminal = runtime.decl_graph.closeout_round_by_plan(
         repo_root,
         node_path=NODE_PATH,
         round_id=round_id,
         result_kind=DeclRoundResultKind.SUCCESS,
-        reason=f"{strategy_id} seed completed.",
+        acknowledged_by="test-content-plan",
     )
     assert terminal.ok, terminal.issues
 

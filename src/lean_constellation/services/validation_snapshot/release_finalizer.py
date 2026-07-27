@@ -344,7 +344,18 @@ class RepoReleaseFinalizerComponent:
                 return self.runtime.foundation.fail(rounds.issues)
             open_strategies = [item.strategy_id for item in strategies.value if item.status == DeclStrategyStatus.OPEN]
             open_rounds = [
-                item.round_id for item in rounds.value if item.status in {DeclRoundStatus.DRAFT, DeclRoundStatus.RUNNING}
+                item.round_id
+                for item in rounds.value
+                if item.status
+                in {
+                    DeclRoundStatus.DRAFT,
+                    DeclRoundStatus.RUNNING,
+                    DeclRoundStatus.AWAITING_CLOSEOUT,
+                }
+                or (
+                    item.status == DeclRoundStatus.COMMITTED
+                    and item.plan_closeout_acknowledged_at is None
+                )
             ]
             graph_issues = []
             if open_strategies:
@@ -357,7 +368,7 @@ class RepoReleaseFinalizerComponent:
             if open_rounds:
                 graph_issues.append(self.runtime.foundation.issue(
                     "release_decl_graph_open",
-                    "Content node has draft or running declaration rounds.",
+                    "Content node has unfinished or unacknowledged declaration rounds.",
                     object_ref=node.path,
                     current=", ".join(sorted(open_rounds)),
                 ))

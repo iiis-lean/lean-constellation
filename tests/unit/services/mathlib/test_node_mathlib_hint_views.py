@@ -125,11 +125,11 @@ def test_node_mathlib_decl_hint_mutation_and_missing_remove_noop(tmp_path: Path)
     assert [issue.kind for issue in missing.issues] == ["mathlib_decl_use_missing"]
 
 
-def test_node_mathlib_hint_view_surfaces_missing_index_warning(tmp_path: Path) -> None:
+def test_node_mathlib_hint_view_surfaces_legacy_missing_index_warning(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
 
-    added = service.add_node_mathlib_module_hint(
+    added = service.node_mathlib_use.add_mathlib_module_use(
         tmp_path,
         node_path="Main.Topic.Core",
         module="Mathlib.Missing.Module",
@@ -150,6 +150,10 @@ def test_node_mathlib_hint_view_surfaces_missing_index_warning(tmp_path: Path) -
 def test_node_mathlib_hint_wrapper_preserves_remove_permission_gate(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
+    assert service.upsert_mathlib_module_entry(
+        tmp_path,
+        module="Mathlib.Topology.Basic",
+    ).ok
     assert service.add_node_mathlib_module_hint(
         tmp_path,
         node_path="Main.Topic.Core",

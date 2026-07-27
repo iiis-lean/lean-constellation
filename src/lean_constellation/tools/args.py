@@ -793,6 +793,10 @@ class RepoPublicDeclInspectArgs(RepoKeyArgs, DeclInspectArgs):
 class VisibleDeclLeanFileArgs(NodePathArgs, DeclNameArgs):
     repo_key: str | None = Field(default=None, description="Optional visible provider repo key; omit for the current repo.")
     revision: int | None = Field(default=None, ge=1, description="Optional visible revision; omit to use the effective current/public revision.")
+    include_docstring: bool = Field(
+        default=False,
+        description="Whether to retain the provider's managed declaration docstring in the returned Lean source.",
+    )
 
 
 class DeclNamesArgs(StrictModel):
@@ -848,24 +852,30 @@ class MathlibDeclDependencyInput(StrictModel):
     reason: str | None = Field(default=None, description="Why this Mathlib declaration is required.")
 
 
-class StatementDependenciesAddArgs(StrictModel):
-    decl_name: str = Field(description="Declaration name to update in the current statement stage batch.")
-    repo_declarations: list[RepoDeclDependencyInput] = Field(
-        default_factory=list,
+class RepoDeclDependencyAddArgs(RepoDeclDependencyInput):
+    decl_name: str = Field(description="Declaration name to update in the current stage batch.")
+
+
+class RepoDeclDependenciesAddArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current stage batch.")
+    dependencies: list[RepoDeclDependencyInput] = Field(
+        min_length=1,
         max_length=25,
-        description="Project declaration dependencies to add atomically to the statement dependency set.",
-    )
-    mathlib_declarations: list[MathlibDeclDependencyInput] = Field(
-        default_factory=list,
-        max_length=25,
-        description="Mathlib declaration dependencies to add atomically to the statement dependency set.",
+        description="Project declaration dependencies to add atomically.",
     )
 
-    @model_validator(mode="after")
-    def _require_dependency(self) -> "StatementDependenciesAddArgs":
-        if not self.repo_declarations and not self.mathlib_declarations:
-            raise ValueError("At least one project or Mathlib dependency is required.")
-        return self
+
+class MathlibDeclDependencyAddArgs(MathlibDeclDependencyInput):
+    decl_name: str = Field(description="Declaration name to update in the current stage batch.")
+
+
+class MathlibDeclDependenciesAddArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name to update in the current stage batch.")
+    dependencies: list[MathlibDeclDependencyInput] = Field(
+        min_length=1,
+        max_length=25,
+        description="Mathlib declaration dependencies to verify, ensure in the repo index, and add atomically.",
+    )
 
 
 class StatementDepRemoveArgs(StrictModel):
@@ -907,26 +917,6 @@ class ProofOriginRemoveArgs(StrictModel):
 class ProofOriginsClearArgs(StrictModel):
     decl_name: str = Field(description="Theorem-like declaration name to update in the current Proof NL stage batch.")
     reason: str | None = Field(default=None, description="Optional reason for clearing proof origins.")
-
-
-class ProofDependenciesAddArgs(StrictModel):
-    decl_name: str = Field(description="Theorem-like declaration name to update in the current proof stage batch.")
-    repo_declarations: list[RepoDeclDependencyInput] = Field(
-        default_factory=list,
-        max_length=25,
-        description="Project declaration dependencies to add atomically to the proof dependency set.",
-    )
-    mathlib_declarations: list[MathlibDeclDependencyInput] = Field(
-        default_factory=list,
-        max_length=25,
-        description="Mathlib declaration dependencies to add atomically to the proof dependency set.",
-    )
-
-    @model_validator(mode="after")
-    def _require_dependency(self) -> "ProofDependenciesAddArgs":
-        if not self.repo_declarations and not self.mathlib_declarations:
-            raise ValueError("At least one project or Mathlib dependency is required.")
-        return self
 
 
 class ProofDepRemoveArgs(StrictModel):

@@ -51,6 +51,10 @@ def test_current_contract_view_aggregates_deps_material_and_mathlib(tmp_path: Pa
     runtime = make_runtime()
     service = runtime.node
     _create_node_tree(tmp_path, service)
+    assert runtime.mathlib.upsert_mathlib_module_entry(
+        tmp_path,
+        module="Mathlib.Data.Nat.Basic",
+    ).ok
     assert runtime.mathlib.add_mathlib_module_use(
         tmp_path,
         node_path="Main.Topic.Consumer",

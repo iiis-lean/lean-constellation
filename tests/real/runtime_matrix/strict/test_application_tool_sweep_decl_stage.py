@@ -156,27 +156,30 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
         assertion_summary="Typed statement origin clearing worked.",
     )
     assert len(_field(cleared_origins.value, "removed")) == 1
+    indexed_true_module = ws.runtime.mathlib.upsert_mathlib_module_entry(
+        ws.provider_repo,
+        module="Init.Prelude",
+        summary="Lean prelude declarations used by the strict ToolSweep.",
+    )
+    assert indexed_true_module.ok, indexed_true_module.issues
     indexed_true = ws.runtime.mathlib.upsert_mathlib_decl_entry(
         ws.provider_repo,
         name="True",
         module="Init.Prelude",
         kind="inductive",
+        signature="Prop",
         summary="Truth proposition used by the strict ToolSweep statement.",
     )
     assert indexed_true.ok, indexed_true.issues
     mathlib_dep = call_tool_with_evidence(
         server,
         "statement_nl_worker",
-        "add_statement_dependencies",
+        "add_statement_mathlib_dependency",
         {
             "decl_name": round_fixture.decl_name,
-            "mathlib_declarations": [
-                {
-                    "name": "True",
-                    "module": "Init.Prelude",
-                    "reason": "The statement mentions True.",
-                }
-            ],
+            "name": "True",
+            "module": "Init.Prelude",
+            "reason": "The statement mentions True.",
         },
         runtime_context=statement_nl_ctx,
         recorder=evidence_recorder,
@@ -196,21 +199,27 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     decl_dep = call_tool_with_evidence(
         server,
         "statement_nl_worker",
-        "add_statement_dependencies",
+        "add_statement_repo_dependency",
         {
             "decl_name": round_fixture.decl_name,
-            "repo_declarations": [
-                {
-                    "name": "supporting_statement",
-                    "reason": "Support declaration used by statement.",
-                }
-            ],
+            "name": "supporting_statement",
+            "reason": "Support declaration used by statement.",
         },
         runtime_context=statement_nl_ctx,
         recorder=evidence_recorder,
         assertion_summary="Typed statement declaration dependency was added.",
     )
     assert _field(decl_dep.value, "added")[0]["ref"]["name"] == "supporting_statement"
+    listed_statement_deps = call_tool_with_evidence(
+        server,
+        "statement_nl_worker",
+        "list_statement_dependencies",
+        {"decl_name": round_fixture.decl_name},
+        runtime_context=statement_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Current statement dependencies were read through the narrow projection.",
+    )
+    assert _field(listed_statement_deps.value, "stage") == "statement"
     cleared_deps = call_tool_with_evidence(
         server,
         "statement_nl_worker",
@@ -305,10 +314,10 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     formal_mathlib_dep = call_tool_with_evidence(
         server,
         "statement_formal_worker",
-        "add_statement_dependencies",
+        "add_statement_mathlib_dependencies",
         {
             "decl_name": round_fixture.decl_name,
-            "mathlib_declarations": [
+            "dependencies": [
                 {
                     "name": "True",
                     "module": "Init.Prelude",
@@ -334,10 +343,10 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     formal_decl_dep = call_tool_with_evidence(
         server,
         "statement_formal_worker",
-        "add_statement_dependencies",
+        "add_statement_repo_dependencies",
         {
             "decl_name": round_fixture.decl_name,
-            "repo_declarations": [
+            "dependencies": [
                 {
                     "name": "supporting_statement",
                     "reason": "Support declaration checked during formalization.",
@@ -534,16 +543,12 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     proof_mathlib_dep = call_tool_with_evidence(
         server,
         "proof_nl_worker",
-        "add_proof_dependencies",
+        "add_proof_mathlib_dependency",
         {
             "decl_name": round_fixture.decl_name,
-            "mathlib_declarations": [
-                {
-                    "name": "True",
-                    "module": "Init.Prelude",
-                    "reason": "Proof closes True.",
-                }
-            ],
+            "name": "True",
+            "module": "Init.Prelude",
+            "reason": "Proof closes True.",
         },
         runtime_context=proof_nl_ctx,
         recorder=evidence_recorder,
@@ -563,21 +568,27 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     proof_decl_dep = call_tool_with_evidence(
         server,
         "proof_nl_worker",
-        "add_proof_dependencies",
+        "add_proof_repo_dependency",
         {
             "decl_name": round_fixture.decl_name,
-            "repo_declarations": [
-                {
-                    "name": "supporting_statement",
-                    "reason": "Strict proof dependency probe.",
-                }
-            ],
+            "name": "supporting_statement",
+            "reason": "Strict proof dependency probe.",
         },
         runtime_context=proof_nl_ctx,
         recorder=evidence_recorder,
         assertion_summary="Proof NL worker added a typed project proof dependency.",
     )
     assert _field(proof_decl_dep.value, "added")[0]["ref"]["name"] == "supporting_statement"
+    listed_proof_deps = call_tool_with_evidence(
+        server,
+        "proof_nl_worker",
+        "list_proof_dependencies",
+        {"decl_name": round_fixture.decl_name},
+        runtime_context=proof_nl_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="Current proof dependencies were read through the narrow projection.",
+    )
+    assert _field(listed_proof_deps.value, "stage") == "proof"
     proof_cleared_deps = call_tool_with_evidence(
         server,
         "proof_nl_worker",
@@ -696,10 +707,10 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     proof_formal_mathlib_dep = call_tool_with_evidence(
         server,
         "proof_formal_worker",
-        "add_proof_dependencies",
+        "add_proof_mathlib_dependencies",
         {
             "decl_name": round_fixture.decl_name,
-            "mathlib_declarations": [
+            "dependencies": [
                 {
                     "name": "True",
                     "module": "Init.Prelude",
@@ -725,10 +736,10 @@ def test_strict_decl_stage_formal_tool_cases_execute_with_real_lake(
     proof_formal_decl_dep = call_tool_with_evidence(
         server,
         "proof_formal_worker",
-        "add_proof_dependencies",
+        "add_proof_repo_dependencies",
         {
             "decl_name": round_fixture.decl_name,
-            "repo_declarations": [
+            "dependencies": [
                 {
                     "name": "supporting_statement",
                     "reason": "Proof formal dependency probe.",

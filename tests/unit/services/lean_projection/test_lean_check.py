@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
@@ -276,6 +278,39 @@ def test_formal_policies_reject_disabling_long_line_linter(tmp_path: Path) -> No
     assert statement.ok and statement.value is not None
     assert statement.value.status == "failed"
     assert "linter_style_long_line_disabled" in statement.value.message
+
+
+@pytest.mark.parametrize(
+    ("source", "issue"),
+    [
+        (
+            "set_option linter.unusedDecidableInType false\n\n"
+            "theorem foo : True := by\n"
+            "  trivial\n",
+            "linter_unused_decidable_in_type_disabled",
+        ),
+        (
+            "@[nolint unusedDecidableInType]\n"
+            "theorem foo : True := by\n"
+            "  trivial\n",
+            "linter_unused_decidable_in_type_suppressed",
+        ),
+    ],
+)
+def test_formal_policies_reject_unused_decidable_linter_suppression(
+    tmp_path: Path,
+    source: str,
+    issue: str,
+) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text(source, encoding="utf-8")
+    component = _component(tmp_path)
+
+    proof = component.build_proof_lean_check(tmp_path, file_path=lean_file)
+
+    assert proof.ok and proof.value is not None
+    assert proof.value.status == "failed"
+    assert issue in proof.value.message
 
 
 def test_proof_policy_and_adapter_trusted_check_are_strict(tmp_path: Path) -> None:

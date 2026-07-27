@@ -782,7 +782,21 @@ def test_delete_sanity_guard_rejects_inbound_current_refs_before_audit(tmp_path:
         summary="Created main.",
     ).ok
     assert runtime.decl_graph.write_round_summary(tmp_path, node_path=NODE_PATH, round_id=round_id, summary="Seeded dependency.").ok
-    assert runtime.decl_graph.mark_round_terminal(tmp_path, node_path=NODE_PATH, round_id=round_id, result_kind="success").ok
+    assert runtime.decl_graph.strategy_round.record_round_execution_result(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        result_kind="blocked",
+        reason="Test fixture committed revisions before round closeout.",
+    ).ok
+    assert runtime.decl_graph.strategy_round.persist_round_closeout(
+        tmp_path,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        result_kind="blocked",
+        reason="Test fixture committed revisions before round closeout.",
+        acknowledged_by="test-fixture",
+    ).ok
     delete_round_id = _create_round(runtime, tmp_path, objective="Delete only support.")
     delete = runtime.decl_graph.mark_decl_delete(
         tmp_path,

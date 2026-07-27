@@ -626,6 +626,81 @@ class ToolkitIngestionComponent:
             return self.runtime.foundation.fail(recorded.issues)
         return self.runtime.foundation.ok(recorded.value, warnings=[*prepared.issues, *recorded.issues])
 
+    def resolve_mathlib_decl_entry(
+        self,
+        repo_root: Path,
+        *,
+        decl_name: str,
+        module_name: str | None = None,
+    ) -> ServiceResult[MathlibDeclEntryView]:
+        """Resolve and exactly verify canonical declaration metadata without writing the index."""
+
+        normalized_decl = decl_name.strip()
+        requested_module = module_name.strip() if module_name else None
+        if not normalized_decl:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_name_empty",
+                    "Mathlib declaration name must be non-empty.",
+                    field="decl_name",
+                )
+            )
+        navigation = self.inspect_mathlib_declaration(repo_root, decl_name=normalized_decl)
+        if not navigation.ok or navigation.value is None:
+            return self.runtime.foundation.fail(navigation.issues)
+        canonical_module = navigation.value.module
+        if canonical_module is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_module_missing",
+                    "Exact Mathlib declaration navigation did not identify a defining module.",
+                    object_ref=normalized_decl,
+                    field="module",
+                )
+            )
+        if requested_module is not None and requested_module != canonical_module:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_module_conflict",
+                    "Requested Mathlib module does not match exact declaration metadata.",
+                    object_ref=normalized_decl,
+                    current=requested_module,
+                    expected=canonical_module,
+                )
+            )
+        checked = self.check_mathlib_accessible(
+            repo_root,
+            name_or_module=normalized_decl,
+            module=canonical_module,
+            target_kind="declaration",
+        )
+        if not checked.ok or checked.value is None:
+            return self.runtime.foundation.fail(checked.issues)
+        if not checked.value.passed:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "mathlib_decl_access_check_failed",
+                    "Mathlib declaration is not accessible from the current repo.",
+                    object_ref=normalized_decl,
+                    details={
+                        "diagnostics": "\n".join(checked.value.diagnostics),
+                        "checked_code": checked.value.checked_code,
+                    },
+                )
+            )
+        existing = self.mathlib_index.get_mathlib_decl_entry(repo_root, name=normalized_decl)
+        return self.runtime.foundation.ok(
+            MathlibDeclEntryView(
+                name=normalized_decl,
+                module=canonical_module,
+                kind=navigation.value.kind,
+                signature=navigation.value.signature,
+                snippet=navigation.value.code_excerpt,
+                summary=existing.value.summary if existing.ok and existing.value is not None else None,
+                note=existing.value.note if existing.ok and existing.value is not None else None,
+            )
+        )
+
     def record_mathlib_batch_checked(
         self,
         repo_root: Path,

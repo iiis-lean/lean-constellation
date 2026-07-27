@@ -31,6 +31,27 @@ def _create_content_node(tmp_path: Path) -> None:
 
 def _create_round(tmp_path: Path, *, objective: str = "Plan a round.") -> str:
     service = make_runtime().decl_graph
+    for prior in service.list_rounds(tmp_path, node_path="Main.Topic.Core").value or []:
+        if prior.status.value == "committed":
+            continue
+        revisions = service.list_round_revisions(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            round_id=prior.round_id,
+        )
+        if revisions.ok and revisions.value and all(
+            revision.status.value == "committed"
+            for _, revision in revisions.value
+        ):
+            persisted = service.strategy_round.persist_round_closeout(
+                tmp_path,
+                node_path="Main.Topic.Core",
+                round_id=prior.round_id,
+                result_kind="success",
+                reason=None,
+                acknowledged_by="test-fixture",
+            )
+            assert persisted.ok, persisted.issues
     strategy = service.ensure_open_strategy(tmp_path, node_path="Main.Topic.Core", objective="Strategy.")
     assert strategy.ok and strategy.value is not None
     round_record = service.create_round_draft(

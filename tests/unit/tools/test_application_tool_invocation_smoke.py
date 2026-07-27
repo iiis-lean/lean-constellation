@@ -1088,6 +1088,14 @@ def test_mark_decl_round_terminal_commits_open_revisions_after_runtime_failure(t
         round_id=round_record.value.round_id,
         summary="Close the failed round.",
     ).ok
+    recorded = runtime.decl_graph.record_round_execution_result(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+        outcome="failed",
+        reason="Agent response stream disconnected.",
+    )
+    assert recorded.ok, recorded.issues
 
     value = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
@@ -1107,9 +1115,16 @@ def test_mark_decl_round_terminal_commits_open_revisions_after_runtime_failure(t
         )
     )
 
-    assert value["status"] == "committed"
+    assert value["changed"] is True
     assert value["result_kind"] == "failed"
-    assert value["result_reason"] == "Agent response stream disconnected."
+    closed_round = runtime.decl_graph.get_round(
+        tmp_path,
+        node_path="Main.Topic",
+        round_id=round_record.value.round_id,
+    )
+    assert closed_round.ok and closed_round.value is not None
+    assert closed_round.value.status.value == "committed"
+    assert closed_round.value.result_reason == "Agent response stream disconnected."
     revision = runtime.decl_graph.get_decl_revision(
         tmp_path,
         node_path="Main.Topic",
@@ -1563,7 +1578,8 @@ def test_repo_public_decl_tools_read_stable_provider_repo(tmp_path: Path) -> Non
     assert source["revision"] == 1
     assert source["stage"] == "proof"
     assert source["source"] == "captured_revision"
-    assert "# lean-constellation target: `provider_result`" in source["content"]
+    assert "# lean-constellation target: `provider_result`" not in source["content"]
+    assert "theorem provider_result : True := by" in source["content"]
 
 
 def test_current_node_dependency_and_material_tools_invoke_mutation_wrappers(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ from lean_constellation.app.operator_data.decl_projection import (
     NodeInput,
     ProjectionSyncInput,
     RoundCloseoutInput,
+    RoundExecutionInput,
     RoundIdentityInput,
     RoundInput,
     StageGateInput,
@@ -561,13 +562,45 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
             RoundIdentityInput(node_path=NODE_PATH, round_id=round_id),
         )
     ).passed
+    runtime = registry.workspace_runtime()
+    persisted_round = runtime.decl_graph.get_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+    )
+    assert persisted_round.ok and persisted_round.value is not None
+    for ref in persisted_round.value.revision_refs:
+        assert runtime.decl_graph.write_decl_change_summary(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            change_id=ref.change_id,
+            summary=f"Declared {ref.decl_name}.",
+        ).ok
+    assert runtime.decl_graph.write_round_summary(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        summary="Declared the synthetic public interface.",
+    ).ok
+    _require(
+        api.decl_projection.record_round_execution(
+            REPO_KEY,
+            RoundExecutionInput(
+                node_path=NODE_PATH,
+                round_id=round_id,
+                outcome="completed",
+            ),
+        )
+    )
     closeout = _require(
         api.decl_projection.closeout_round(
             REPO_KEY,
             RoundCloseoutInput(
                 node_path=NODE_PATH,
                 round_id=round_id,
-                outcome="completed",
+                result_kind="success",
+                acknowledged_by="test-content-plan",
             ),
         )
     )

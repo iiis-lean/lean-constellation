@@ -50,6 +50,7 @@ from lean_constellation.services.decl_graph.round_execution import (
     DeclRoundExecutionComponent,
     DeclStageName,
     RoundCloseoutResult,
+    RoundExecutionRecordResult,
     RoundFinalAuditResult,
     RoundStageGateView,
     RoundStageReview,
@@ -221,7 +222,7 @@ class DeclGraphService:
     ) -> ServiceResult[RoundFinalAuditResult]:
         return self.round_execution.final_audit(repo_root, node_path=node_path, round_id=round_id)
 
-    def closeout_round(
+    def record_round_execution_result(
         self,
         repo_root: Path,
         *,
@@ -229,13 +230,32 @@ class DeclGraphService:
         round_id: str,
         outcome: str,
         reason: str | None = None,
-    ) -> ServiceResult[RoundCloseoutResult]:
-        return self.round_execution.build_round_result(
+    ) -> ServiceResult[RoundExecutionRecordResult]:
+        return self.round_execution.record_round_execution_result(
             repo_root,
             node_path=node_path,
             round_id=round_id,
             outcome=outcome,  # type: ignore[arg-type]
             reason=reason,
+        )
+
+    def closeout_round_by_plan(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        result_kind: DeclRoundResultKind | str,
+        reason: str | None = None,
+        acknowledged_by: str,
+    ) -> ServiceResult[RoundCloseoutResult]:
+        return self.round_execution.closeout_round_by_plan(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            result_kind=result_kind,
+            reason=reason,
+            acknowledged_by=acknowledged_by,
         )
 
     def ensure_decl_graph(self, repo_root: Path, *, node_path: str) -> ServiceResult[DeclGraphStoreView]:
@@ -423,13 +443,22 @@ class DeclGraphService:
         round_id: str,
         result_kind: DeclRoundResultKind | str,
         reason: str | None = None,
+        acknowledged_by: str = "system",
     ) -> ServiceResult[DeclGraphRound]:
-        return self.strategy_round.mark_round_terminal(
+        closed = self.closeout_round_by_plan(
             repo_root,
             node_path=node_path,
             round_id=round_id,
             result_kind=result_kind,
             reason=reason,
+            acknowledged_by=acknowledged_by,
+        )
+        if not closed.ok:
+            return self.runtime.foundation.fail(closed.issues)
+        return self.strategy_round.get_round(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
         )
 
     def mark_round_terminal_view(
@@ -440,6 +469,7 @@ class DeclGraphService:
         round_id: str,
         result_kind: DeclRoundResultKind | str,
         reason: str | None = None,
+        acknowledged_by: str = "system",
     ) -> ServiceResult[DeclGraphRoundView]:
         round_record = self.mark_round_terminal(
             repo_root,
@@ -447,6 +477,7 @@ class DeclGraphService:
             round_id=round_id,
             result_kind=result_kind,
             reason=reason,
+            acknowledged_by=acknowledged_by,
         )
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)

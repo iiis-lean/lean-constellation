@@ -37,7 +37,7 @@ def _make_api(tmp_path: Path) -> tuple[NodeOperatorApi, Path]:
 
 
 def test_node_operator_create_read_stale_version_and_fixed_mathlib_actor(tmp_path: Path) -> None:
-    api, _ = _make_api(tmp_path)
+    api, repo_root = _make_api(tmp_path)
     created = api.create_content_node(
         "MainRepo",
         CreateContentNodeInput(
@@ -50,6 +50,12 @@ def test_node_operator_create_read_stale_version_and_fixed_mathlib_actor(tmp_pat
         ),
     )
     assert created.ok
+    loaded = api.execution.registry.get_or_load_paused("MainRepo", refresh_homes=False)
+    assert loaded.ok and loaded.value is not None
+    assert loaded.value.mathlib.upsert_mathlib_module_entry(
+        repo_root,
+        module="Mathlib.Data.Finset.Basic",
+    ).ok
 
     stale = api.update_contract_text(
         "MainRepo",

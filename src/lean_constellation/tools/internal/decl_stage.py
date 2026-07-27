@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
-from lean_constellation.domain.refs import DeclRef, MathlibRef
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.decl_graph.models import (
     DeclOriginRef,
     DeclState,
-    MathlibDeclDep,
     RepoDeclDep,
 )
 from lean_constellation.services.decl_graph.proof_nl_validation import validate_proof_deps, validate_proof_origin_ref
+from lean_constellation.services.mathlib.service import MathlibDependencyRequest
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     DeclNameArgs,
     DeclStageFileCheckArgs,
     NoArgs,
-    ProofDependenciesAddArgs,
+    MathlibDeclDependenciesAddArgs,
+    MathlibDeclDependencyAddArgs,
+    MathlibDeclDependencyInput,
     ProofDepRemoveArgs,
     ProofDepsClearArgs,
     ProofFormalReviewPassedArgs,
@@ -28,7 +30,9 @@ from lean_constellation.tools.args import (
     ProofOriginsClearArgs,
     ProofResourceOriginAddArgs,
     ProofSourceOriginAddArgs,
-    StatementDependenciesAddArgs,
+    RepoDeclDependenciesAddArgs,
+    RepoDeclDependencyAddArgs,
+    RepoDeclDependencyInput,
     StatementDepRemoveArgs,
     StatementDepsClearArgs,
     StatementFormalReviewPassedArgs,
@@ -81,6 +85,38 @@ def _assert_any_stage(runtime, ctx, *, expected_stages: set[str], decl_name: str
             )
         )
     return _assert_stage(runtime, ctx, expected_stage=ctx.decl_stage.stage, decl_name=decl_name)
+
+
+def _assert_dependency_add_stage(runtime, ctx, *, expected_stages: set[str], decl_name: str):
+    """Allow worker writes and the narrow add-only reviewer repair surface."""
+
+    if ctx.actor.role != "reviewer":
+        return _assert_any_stage(
+            runtime,
+            ctx,
+            expected_stages=expected_stages,
+            decl_name=decl_name,
+        )
+    if ctx.decl_stage is None or ctx.decl_stage.stage not in expected_stages:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_stage_dependency_repair_rejected",
+                "Reviewer dependency repair does not match the current review stage.",
+                object_ref=decl_name,
+                current=ctx.decl_stage.stage if ctx.decl_stage is not None else None,
+                expected=",".join(sorted(expected_stages)),
+            )
+        )
+    if ctx.decl_stage.batch_decls and decl_name not in ctx.decl_stage.batch_decls:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_stage_dependency_repair_rejected",
+                "Declaration is not in the current reviewer batch.",
+                object_ref=decl_name,
+                expected=",".join(ctx.decl_stage.batch_decls),
+            )
+        )
+    return runtime.foundation.ok(None)
 
 
 def _normalize_formal_check_stage(stage: str) -> str | None:
@@ -222,36 +258,8 @@ def _clear_statement_origins(runtime, ctx, args: StatementOriginsClearArgs):
 
 
 def _actor_role(ctx) -> str:
-    role = getattr(ctx, "agent_role", None)
-    if role is None:
-        return "worker"
+    role = ctx.actor.role
     return role.value if hasattr(role, "value") else str(role)
-
-
-def _resolved_mathlib_dep_module(runtime, entry, *, requested_module: str | None, dep_name: str, field_prefix: str):
-    entry_module = getattr(entry, "module", None)
-    module = requested_module or entry_module
-    if not module:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                f"{field_prefix}_mathlib_dep_module_missing",
-                "Mathlib dependency must include a module or refer to a MathlibIndex entry with a module.",
-                object_ref=dep_name,
-                field="module",
-            )
-        )
-    if requested_module and entry_module and requested_module != entry_module:
-        return runtime.foundation.fail(
-            runtime.foundation.issue(
-                f"{field_prefix}_mathlib_dep_module_mismatch",
-                "Mathlib dependency module does not match the repo-level MathlibIndex entry.",
-                object_ref=dep_name,
-                field="module",
-                current=requested_module,
-                expected=entry_module,
-            )
-        )
-    return runtime.foundation.ok(module)
 
 
 def _assert_statement_decl_dep_visible(
@@ -321,7 +329,7 @@ def _assert_statement_decl_dep_visible(
     return runtime.foundation.ok(DeclRef(node=current_node, name=dep_name, revision=current.value.revision))
 
 
-def _add_statement_dependencies(runtime, ctx, args: StatementDependenciesAddArgs):
+def _add_statement_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAddArgs):
     allowed = _assert_any_stage(
         runtime,
         ctx,
@@ -331,7 +339,7 @@ def _add_statement_dependencies(runtime, ctx, args: StatementDependenciesAddArgs
     if not allowed.ok:
         return allowed
     resolved = []
-    for item in args.repo_declarations:
+    for item in args.dependencies:
         visible = _assert_statement_decl_dep_visible(
             runtime,
             ctx,
@@ -344,21 +352,65 @@ def _add_statement_dependencies(runtime, ctx, args: StatementDependenciesAddArgs
         if not visible.ok or visible.value is None:
             return runtime.foundation.fail(visible.issues)
         resolved.append(RepoDeclDep(ref=visible.value, reason=item.reason))
-    for item in args.mathlib_declarations:
-        entry = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=item.name)
-        if not entry.ok or entry.value is None:
-            return runtime.foundation.fail(entry.issues)
-        module = _resolved_mathlib_dep_module(
+    return _add_dependency_batch(
+        runtime,
+        ctx,
+        decl_name=args.decl_name,
+        stage="statement",
+        dependencies=resolved,
+    )
+
+
+def _add_statement_repo_dependency(runtime, ctx, args: RepoDeclDependencyAddArgs):
+    return _add_statement_repo_dependencies(
+        runtime,
+        ctx,
+        RepoDeclDependenciesAddArgs(
+            decl_name=args.decl_name,
+            dependencies=[RepoDeclDependencyInput(**args.model_dump(exclude={"decl_name"}))],
+        ),
+    )
+
+
+def _add_statement_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenciesAddArgs):
+    allowed = _assert_dependency_add_stage(
+        runtime,
+        ctx,
+        expected_stages={"statement_nl", "statement_formal"},
+        decl_name=args.decl_name,
+    )
+    if not allowed.ok:
+        return allowed
+    return runtime.mathlib.add_decl_dependencies_transaction(
+        ctx.repo_root,
+        requests=[
+            MathlibDependencyRequest(
+                name=item.name,
+                module=item.module,
+                reason=item.reason,
+            )
+            for item in args.dependencies
+        ],
+        dependency_stage="statement",
+        add_dependencies=lambda dependencies: _add_dependency_batch(
             runtime,
-            entry.value,
-            requested_module=item.module,
-            dep_name=item.name,
-            field_prefix="statement",
-        )
-        if not module.ok or module.value is None:
-            return runtime.foundation.fail(module.issues)
-        resolved.append(MathlibDeclDep(ref=MathlibRef(name=item.name, module=module.value), reason=item.reason))
-    return _add_dependency_batch(runtime, ctx, decl_name=args.decl_name, stage="statement", dependencies=resolved)
+            ctx,
+            decl_name=args.decl_name,
+            stage="statement",
+            dependencies=dependencies,
+        ),
+    )
+
+
+def _add_statement_mathlib_dependency(runtime, ctx, args: MathlibDeclDependencyAddArgs):
+    return _add_statement_mathlib_dependencies(
+        runtime,
+        ctx,
+        MathlibDeclDependenciesAddArgs(
+            decl_name=args.decl_name,
+            dependencies=[MathlibDeclDependencyInput(**args.model_dump(exclude={"decl_name"}))],
+        ),
+    )
 
 
 def _remove_statement_dep(runtime, ctx, args: StatementDepRemoveArgs):
@@ -523,7 +575,7 @@ def _assert_proof_decl_dep_visible(
     return runtime.foundation.ok(DeclRef(node=current_node, name=dep_name, revision=revision or dep.value.revision))
 
 
-def _add_proof_dependencies(runtime, ctx, args: ProofDependenciesAddArgs):
+def _add_proof_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAddArgs):
     allowed = _assert_any_stage(
         runtime,
         ctx,
@@ -533,7 +585,7 @@ def _add_proof_dependencies(runtime, ctx, args: ProofDependenciesAddArgs):
     if not allowed.ok:
         return allowed
     resolved = []
-    for item in args.repo_declarations:
+    for item in args.dependencies:
         visible = _assert_proof_decl_dep_visible(
             runtime,
             ctx,
@@ -546,20 +598,6 @@ def _add_proof_dependencies(runtime, ctx, args: ProofDependenciesAddArgs):
         if not visible.ok or visible.value is None:
             return runtime.foundation.fail(visible.issues)
         resolved.append(RepoDeclDep(ref=visible.value, reason=item.reason))
-    for item in args.mathlib_declarations:
-        entry = runtime.mathlib.get_mathlib_decl_entry(ctx.repo_root, name=item.name)
-        if not entry.ok or entry.value is None:
-            return runtime.foundation.fail(entry.issues)
-        module = _resolved_mathlib_dep_module(
-            runtime,
-            entry.value,
-            requested_module=item.module,
-            dep_name=item.name,
-            field_prefix="proof",
-        )
-        if not module.ok or module.value is None:
-            return runtime.foundation.fail(module.issues)
-        resolved.append(MathlibDeclDep(ref=MathlibRef(name=item.name, module=module.value), reason=item.reason))
     validation = validate_proof_deps(
         runtime,
         ctx.repo_root,
@@ -570,7 +608,79 @@ def _add_proof_dependencies(runtime, ctx, args: ProofDependenciesAddArgs):
     )
     if not validation.ok:
         return validation
-    return _add_dependency_batch(runtime, ctx, decl_name=args.decl_name, stage="proof", dependencies=resolved)
+    return _add_dependency_batch(
+        runtime,
+        ctx,
+        decl_name=args.decl_name,
+        stage="proof",
+        dependencies=resolved,
+    )
+
+
+def _add_proof_repo_dependency(runtime, ctx, args: RepoDeclDependencyAddArgs):
+    return _add_proof_repo_dependencies(
+        runtime,
+        ctx,
+        RepoDeclDependenciesAddArgs(
+            decl_name=args.decl_name,
+            dependencies=[RepoDeclDependencyInput(**args.model_dump(exclude={"decl_name"}))],
+        ),
+    )
+
+
+def _add_proof_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenciesAddArgs):
+    allowed = _assert_dependency_add_stage(
+        runtime,
+        ctx,
+        expected_stages={"proof_nl", "proof_formal"},
+        decl_name=args.decl_name,
+    )
+    if not allowed.ok:
+        return allowed
+
+    def add_dependencies(dependencies):
+        validation = validate_proof_deps(
+            runtime,
+            ctx.repo_root,
+            node_path=_node(ctx),
+            round_id=_round_id(ctx),
+            decl_name=args.decl_name,
+            deps=dependencies,
+        )
+        if not validation.ok:
+            return validation
+        return _add_dependency_batch(
+            runtime,
+            ctx,
+            decl_name=args.decl_name,
+            stage="proof",
+            dependencies=dependencies,
+        )
+
+    return runtime.mathlib.add_decl_dependencies_transaction(
+        ctx.repo_root,
+        requests=[
+            MathlibDependencyRequest(
+                name=item.name,
+                module=item.module,
+                reason=item.reason,
+            )
+            for item in args.dependencies
+        ],
+        dependency_stage="proof",
+        add_dependencies=add_dependencies,
+    )
+
+
+def _add_proof_mathlib_dependency(runtime, ctx, args: MathlibDeclDependencyAddArgs):
+    return _add_proof_mathlib_dependencies(
+        runtime,
+        ctx,
+        MathlibDeclDependenciesAddArgs(
+            decl_name=args.decl_name,
+            dependencies=[MathlibDeclDependencyInput(**args.model_dump(exclude={"decl_name"}))],
+        ),
+    )
 
 
 def _add_dependency_batch(runtime, ctx, *, decl_name: str, stage: str, dependencies: list[object]):
@@ -1269,14 +1379,44 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_clear_statement_origins,
         ),
         handler_tool(
-            name="add_statement_dependencies",
-            description="Add one batch of typed project and Mathlib dependencies needed by the statement candidate, then reread once if necessary.",
-            args_model=StatementDependenciesAddArgs,
+            name="add_statement_repo_dependency",
+            description="Add one visible project declaration dependency needed by the current statement candidate.",
+            args_model=RepoDeclDependencyAddArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
-            groups={AppGroup.DECL_STATEMENT_DEPENDENCY_WRITE},
+            groups={AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE},
             roles=worker_roles,
-            handler=_add_statement_dependencies,
+            handler=_add_statement_repo_dependency,
+        ),
+        handler_tool(
+            name="add_statement_repo_dependencies",
+            description="Add a verified batch of visible project declaration dependencies needed by the current statement candidate.",
+            args_model=RepoDeclDependenciesAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_stage_dependency_delta",
+            groups={AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE},
+            roles=worker_roles,
+            handler=_add_statement_repo_dependencies,
+        ),
+        handler_tool(
+            name="add_statement_mathlib_dependency",
+            description="Exactly verify, index, and add one Mathlib declaration dependency needed by the current statement candidate.",
+            args_model=MathlibDeclDependencyAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_stage_dependency_delta",
+            groups={AppGroup.DECL_STATEMENT_MATHLIB_DEPENDENCY_WRITE},
+            roles={"worker", "reviewer"},
+            handler=_add_statement_mathlib_dependency,
+        ),
+        handler_tool(
+            name="add_statement_mathlib_dependencies",
+            description="Exactly verify, index, and atomically add a small batch of Mathlib declaration dependencies needed by the current statement candidate.",
+            args_model=MathlibDeclDependenciesAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_stage_dependency_delta",
+            groups={AppGroup.DECL_STATEMENT_MATHLIB_DEPENDENCY_WRITE},
+            roles={"worker", "reviewer"},
+            handler=_add_statement_mathlib_dependencies,
         ),
         handler_tool(
             name="remove_statement_dep",
@@ -1284,7 +1424,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=StatementDepRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_mutation",
-            groups={AppGroup.DECL_STATEMENT_DEPENDENCY_WRITE},
+            groups={AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE},
             roles=worker_roles,
             handler=_remove_statement_dep,
         ),
@@ -1294,7 +1434,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=StatementDepsClearArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_mutation",
-            groups={AppGroup.DECL_STATEMENT_DEPENDENCY_WRITE},
+            groups={AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE},
             roles=worker_roles,
             handler=_clear_statement_deps,
         ),
@@ -1349,14 +1489,44 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_clear_proof_origins,
         ),
         handler_tool(
-            name="add_proof_dependencies",
-            description="Add one batch of typed project and Mathlib dependencies used by the proof route or formal proof, then reread once if necessary.",
-            args_model=ProofDependenciesAddArgs,
+            name="add_proof_repo_dependency",
+            description="Add one visible project declaration dependency used by the current proof route or formal proof.",
+            args_model=RepoDeclDependencyAddArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
-            groups={AppGroup.DECL_PROOF_DEPENDENCY_WRITE},
+            groups={AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE},
             roles=worker_roles,
-            handler=_add_proof_dependencies,
+            handler=_add_proof_repo_dependency,
+        ),
+        handler_tool(
+            name="add_proof_repo_dependencies",
+            description="Add a verified batch of visible project declaration dependencies used by the current proof route or formal proof.",
+            args_model=RepoDeclDependenciesAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_stage_dependency_delta",
+            groups={AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE},
+            roles=worker_roles,
+            handler=_add_proof_repo_dependencies,
+        ),
+        handler_tool(
+            name="add_proof_mathlib_dependency",
+            description="Exactly verify, index, and add one Mathlib declaration dependency used by the current proof.",
+            args_model=MathlibDeclDependencyAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_stage_dependency_delta",
+            groups={AppGroup.DECL_PROOF_MATHLIB_DEPENDENCY_WRITE},
+            roles={"worker", "reviewer"},
+            handler=_add_proof_mathlib_dependency,
+        ),
+        handler_tool(
+            name="add_proof_mathlib_dependencies",
+            description="Exactly verify, index, and atomically add a small batch of Mathlib declaration dependencies used by the current proof.",
+            args_model=MathlibDeclDependenciesAddArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_stage_dependency_delta",
+            groups={AppGroup.DECL_PROOF_MATHLIB_DEPENDENCY_WRITE},
+            roles={"worker", "reviewer"},
+            handler=_add_proof_mathlib_dependencies,
         ),
         handler_tool(
             name="remove_proof_dep",
@@ -1364,7 +1534,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ProofDepRemoveArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_mutation",
-            groups={AppGroup.DECL_PROOF_DEPENDENCY_WRITE},
+            groups={AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE},
             roles=worker_roles,
             handler=_remove_proof_dep,
         ),
@@ -1374,7 +1544,7 @@ def build_tool_specs() -> list[ToolSpec]:
             args_model=ProofDepsClearArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_mutation",
-            groups={AppGroup.DECL_PROOF_DEPENDENCY_WRITE},
+            groups={AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE},
             roles=worker_roles,
             handler=_clear_proof_deps,
         ),
@@ -1539,3 +1709,6 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_run_round_local_audit,
         ),
     ]
+    RepoDeclDependenciesAddArgs,
+    RepoDeclDependencyAddArgs,
+    RepoDeclDependencyInput,

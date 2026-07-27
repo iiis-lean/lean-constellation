@@ -28,6 +28,12 @@ class LeanCheckComponent:
     _ERROR_SEVERITIES = {"error", "fatal"}
     _LONG_LINE_DIAGNOSTIC_MARKERS = ("linter.style.longline", "line exceeds the 100 character limit")
     _LONG_LINE_DISABLE_RE = re.compile(r"(?m)^\s*set_option\s+linter\.style\.longLine\s+false\b")
+    _UNUSED_DECIDABLE_DISABLE_RE = re.compile(
+        r"(?m)^\s*set_option\s+linter\.unusedDecidableInType\s+false\b"
+    )
+    _UNUSED_DECIDABLE_NOLINT_RE = re.compile(
+        r"(?m)^\s*@\[\s*nolint\s+unusedDecidableInType\s*\]"
+    )
     _FORBIDDEN_WORD_RE = re.compile(r"(?<![A-Za-z0-9_'])(sorry|admit|axiom|opaque|unsafe)(?![A-Za-z0-9_'])")
 
     def __init__(
@@ -187,6 +193,10 @@ class LeanCheckComponent:
             policy_issues.append("linter_style_long_line")
         if self._LONG_LINE_DISABLE_RE.search(source_text):
             policy_issues.append("linter_style_long_line_disabled")
+        if self._UNUSED_DECIDABLE_DISABLE_RE.search(source_text):
+            policy_issues.append("linter_unused_decidable_in_type_disabled")
+        if self._UNUSED_DECIDABLE_NOLINT_RE.search(source_text):
+            policy_issues.append("linter_unused_decidable_in_type_suppressed")
         passed = not policy_issues
         message = "Lean check passed." if passed else "Lean check failed: " + ", ".join(policy_issues)
         return LeanCheckView(

@@ -57,6 +57,10 @@ def test_node_dep_operator_ownership_is_isolated_from_agents(tmp_path) -> None:
 def test_operator_can_only_remove_operator_owned_mathlib_use(tmp_path) -> None:
     runtime = _tree(tmp_path)
     service = runtime.mathlib
+    assert service.upsert_mathlib_module_entry(
+        tmp_path,
+        module="Mathlib.Data.Nat.Basic",
+    ).ok
     assert service.add_mathlib_module_use(
         tmp_path,
         node_path="Main.Consumer",

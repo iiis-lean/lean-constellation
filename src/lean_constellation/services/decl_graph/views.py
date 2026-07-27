@@ -8,6 +8,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclGraphRoundView,
     DeclGraphStrategy,
     DeclGraphStrategyView,
+    DeclRoundStatus,
     DeclReviewMarkRecord,
     DeclReviewMarkView,
     DeclRevision,
@@ -63,8 +64,29 @@ class DeclGraphViewMapper:
             change_ids=round_record.change_ids,
             change_summaries=dict(round_record.change_summaries),
             summary=round_record.summary,
+            execution_result_kind=round_record.execution_result_kind,
+            execution_reason=round_record.execution_reason,
             result_kind=round_record.result_kind,
             result_reason=round_record.result_reason,
+            closeout_required=(
+                round_record.status == DeclRoundStatus.AWAITING_CLOSEOUT
+                or (
+                    round_record.status == DeclRoundStatus.COMMITTED
+                    and round_record.plan_closeout_acknowledged_at is None
+                )
+            ),
+            required_next_action=(
+                "Write every declaration change summary, write the round summary, then close the round."
+                if round_record.status == DeclRoundStatus.AWAITING_CLOSEOUT
+                else (
+                    "Acknowledge the migrated round closeout before planning more work."
+                    if (
+                        round_record.status == DeclRoundStatus.COMMITTED
+                        and round_record.plan_closeout_acknowledged_at is None
+                    )
+                    else None
+                )
+            ),
             created_at=round_record.created_at,
             started_at=round_record.started_at,
             committed_at=round_record.committed_at,

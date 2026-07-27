@@ -85,6 +85,8 @@ def test_add_mathlib_module_use_refreshes_prelude_and_dedupes(tmp_path: Path) ->
 def test_worker_can_only_remove_worker_added_mathlib_module_use(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
+    for module in ["Mathlib.Topology.Basic", "Mathlib.Algebra.Group.Basic"]:
+        assert service.upsert_mathlib_module_entry(tmp_path, module=module).ok
 
     coordinator_added = service.add_mathlib_module_use(
         tmp_path,
@@ -159,6 +161,10 @@ def test_module_use_missing_invalid_and_coordinator_remove_branches(tmp_path: Pa
     assert missing.value.changed is False
     assert missing.issues[0].kind == "mathlib_module_use_missing"
 
+    assert service.upsert_mathlib_module_entry(
+        tmp_path,
+        module="Mathlib.Data.Finset.Basic",
+    ).ok
     added = service.add_mathlib_module_use(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -190,6 +196,10 @@ def test_module_use_reports_prelude_refresh_failure(tmp_path: Path) -> None:
     )
     service = MathlibService(runtime, mathlib_index=runtime.mathlib.mathlib_index, node_mathlib_use=component)
     _create_content_node(tmp_path, service)
+    assert service.upsert_mathlib_module_entry(
+        tmp_path,
+        module="Mathlib.Data.Finset.Basic",
+    ).ok
     assert runtime.node.commit_content_contract(
         tmp_path,
         node_path="Main.Topic.Core",
@@ -288,6 +298,17 @@ def test_add_mathlib_decl_use_records_hint_and_refreshes_prelude_import(tmp_path
 def test_add_mathlib_decl_use_missing_index_warning_and_remove_permission(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
+    assert service.upsert_mathlib_module_entry(
+        tmp_path,
+        module="Mathlib.Missing",
+    ).ok
+    assert service.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Missing.decl",
+        module="Mathlib.Missing",
+        kind="theorem",
+        summary="Synthetic indexed declaration.",
+    ).ok
 
     added = service.add_mathlib_decl_use(
         tmp_path,
@@ -297,7 +318,7 @@ def test_add_mathlib_decl_use_missing_index_warning_and_remove_permission(tmp_pa
         actor="coordinator",
     )
     assert added.ok
-    assert [issue.kind for issue in added.issues] == ["mathlib_decl_not_indexed"]
+    assert added.issues == []
 
     denied = service.remove_mathlib_decl_use(
         tmp_path,
@@ -392,14 +413,14 @@ def test_validate_node_mathlib_uses_reports_import_hint_and_invalid_entries(tmp_
 def test_validate_node_mathlib_uses_warning_policy_for_missing_index_entries(tmp_path: Path) -> None:
     service = make_runtime().mathlib
     _create_content_node(tmp_path, service)
-    assert service.add_mathlib_module_use(
+    assert service.node_mathlib_use.add_mathlib_module_use(
         tmp_path,
         node_path="Main.Topic.Core",
         module="Mathlib.Missing.Module",
         reason=None,
         actor="coordinator",
     ).ok
-    assert service.add_mathlib_decl_use(
+    assert service.node_mathlib_use.add_mathlib_decl_use(
         tmp_path,
         node_path="Main.Topic.Core",
         decl_name="Missing.decl",

@@ -35,12 +35,25 @@ class NodeReleaseGuard:
         rounds = self.runtime.decl_graph.list_rounds(repo_root, node_path=node_path)
         if not rounds.ok or rounds.value is None:
             return self.runtime.foundation.fail(rounds.issues)
-        unfinished = [item.round_id for item in rounds.value if item.status in {DeclRoundStatus.DRAFT, DeclRoundStatus.RUNNING}]
+        unfinished = [
+            item.round_id
+            for item in rounds.value
+            if item.status
+            in {
+                DeclRoundStatus.DRAFT,
+                DeclRoundStatus.RUNNING,
+                DeclRoundStatus.AWAITING_CLOSEOUT,
+            }
+            or (
+                item.status == DeclRoundStatus.COMMITTED
+                and item.plan_closeout_acknowledged_at is None
+            )
+        ]
         if unfinished:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "content_head_round_unfinished",
-                    "Content contract cannot commit while a declaration round is draft or running.",
+                    "Content contract cannot commit while a declaration round is unfinished or awaiting closeout.",
                     object_ref=node_path,
                     current=", ".join(sorted(unfinished)),
                 )
@@ -326,7 +339,18 @@ class NodeReleaseGuard:
             if not rounds.ok or rounds.value is None:
                 return self.runtime.foundation.fail(rounds.issues)
             open_decl_truth.extend(
-                f"round:{item.round_id}" for item in rounds.value if item.status in {DeclRoundStatus.DRAFT, DeclRoundStatus.RUNNING}
+                f"round:{item.round_id}"
+                for item in rounds.value
+                if item.status
+                in {
+                    DeclRoundStatus.DRAFT,
+                    DeclRoundStatus.RUNNING,
+                    DeclRoundStatus.AWAITING_CLOSEOUT,
+                }
+                or (
+                    item.status == DeclRoundStatus.COMMITTED
+                    and item.plan_closeout_acknowledged_at is None
+                )
             )
         latest = self.runtime.repo_workspace.release.get_latest_release(repo_root)
         if not latest.ok:

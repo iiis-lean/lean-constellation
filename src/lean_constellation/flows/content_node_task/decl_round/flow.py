@@ -242,7 +242,14 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
                     step_id=new_decl_round_step_id("decl_round_build_result"),
                     flow_id=self.flow_id,
                     scope_id=self.scope_id,
-                    state=BuildRoundResultStepState(flow_outcome=state.pending_flow_outcome),
+                    state=BuildRoundResultStepState(
+                        flow_outcome=state.pending_flow_outcome,
+                        reason=(
+                            state.terminal_reason.message
+                            if state.terminal_reason is not None
+                            else None
+                        ),
+                    ),
                 )
             )
         return None

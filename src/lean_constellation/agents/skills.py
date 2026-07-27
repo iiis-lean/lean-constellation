@@ -1164,19 +1164,19 @@ Call `submit_current_decl_round` only when the draft is valid and ready for Decl
 
 Use this skill after a DeclGraphRoundFlow terminal callback and before planning the next action.
 
-Round closeout records what happened. It is a synchronous state update sequence, not a submit action. After closeout, re-read truth and continue planning unless a submit action is the next justified step.
+The round Flow records only its structured execution outcome and leaves the round waiting for ContentPlan closeout; it does not write semantic summaries, commit revisions, or refresh the final node projection. Round closeout is the ContentPlan-owned synchronous state sequence that records meaning and atomically commits accepted truth. After closeout, re-read truth and continue planning unless a submit action is the next justified step.
 
 ## Required Order
 
-1. Read the terminal callback result.
-2. Re-read the current round, changed declarations, affected revisions, and relevant graph state.
+1. Read the callback result and confirm the current round is awaiting closeout.
+2. Re-read the current round, changed declarations, affected revisions, and relevant graph state; do not duplicate the detailed callback payload already present in the turn.
 3. Write one summary per changed declaration with `write_decl_change_summary`.
 4. Write the round summary with `write_decl_round_summary`.
 5. Commit terminal closeout with `mark_decl_round_terminal`.
 6. Re-read current truth.
 7. Decide whether to plan another round, run preparation, check content completion, report blocked, or fail.
 
-Do not start a new round before closeout is recorded.
+Do not start a new round, dispatch preparation, close the strategy, or submit a Content terminal result before closeout is recorded.
 
 ## Change Summaries
 
@@ -1200,11 +1200,11 @@ Use `write_decl_round_summary` to summarize the whole round. The round summary s
 
 ## Terminal Commit
 
-Use `mark_decl_round_terminal` only after the change summaries and round summary are written. After marking terminal, read current truth again and re-read the current mode Skill and `decl-strategy-planning` before any new planning action.
+Use `mark_decl_round_terminal` only after the change summaries and round summary are written. A successful execution may be conservatively closed as success, blocked, or failed; blocked may become blocked or failed; failed may only remain failed. The operation commits open revisions and the round atomically, applies successful delete lifecycle, refreshes or safely defers the final projection, and records your closeout acknowledgement. Replaying the exact same closeout returns unchanged rather than an error. After marking terminal, read current truth again and re-read the current mode Skill and `decl-strategy-planning` before any new planning action.
 
 ## Boundaries
 
-- Do not start a new round before closeout is recorded.
+- Do not start a new round or perform another business action before closeout is recorded.
 - Do not change statement or proof artifacts during closeout.
 - Do not use closeout tools as a substitute for worker or reviewer results.
 - Do not hide blocked causes in a generic summary.
@@ -1309,11 +1309,11 @@ Use this skill when a declaration worker or reviewer must connect a statement or
 3. Prefer stable evidence in the source corpus, resource library, visible public declarations, and recorded Mathlib index before broader semantic search.
 4. Use semantic search or external theorem discovery only as discovery. A search hit is not a stable origin until it is already represented in source corpus or resource library truth.
 5. For Statement NL workers, write statement text first, then add only stable typed source/resource evidence ranges. Use origin removal or clearing only to repair the current candidate.
-6. For Statement NL workers, record statement dependencies one at a time as typed project-declaration or Mathlib-declaration dependencies. Use dependency removal or clearing only to repair the current candidate. Do not use a flat dependency list or an untyped origin dictionary as the Agent-facing write path.
-7. For Statement Formal workers, refine typed statement dependencies when the final formal statement uses a project or Mathlib declaration that is not already recorded. Do not mutate statement text, statement origins, proof routes, or proof artifacts while doing this.
-8. For Proof NL workers, write proof-route text first, then add only stable typed source/resource origins that support the proof route itself. Record proof dependencies one at a time as typed project-declaration or Mathlib-declaration dependencies; do not use a flat dependency list or an untyped origin dictionary as the Agent-facing write path.
+6. For Statement NL workers, add project dependencies with the statement repo dependency tool and Mathlib dependencies with the statement Mathlib dependency tool. Use the singular form for one item and the plural form for a small known batch. Use dependency removal or clearing only to repair the current candidate. Do not use a flat mixed dependency list or an untyped origin dictionary.
+7. For Statement Formal workers, refine typed statement dependencies when the final formal statement uses a project or Mathlib declaration that is not already recorded. Exact Mathlib dependency addition verifies or reuses canonical index truth and updates the managed projection atomically; do not separately curate the repo index for that dependency. Do not mutate statement text, statement origins, proof routes, or proof artifacts while doing this.
+8. For Proof NL workers, write proof-route text first, then add only stable typed source/resource origins that support the proof route itself. Add project and Mathlib proof dependencies through their separate typed tools; do not use a flat mixed dependency list or an untyped origin dictionary.
 9. For Proof Formal workers, refine typed proof dependencies when the final formal proof actually uses a project or Mathlib declaration that is not already recorded. Do not mutate proof-route text or proof origins while doing this.
-10. For reviewers, inspect typed source/resource origins and repo_decl/mathlib_decl dependencies as artifacts under review; do not mutate them.
+10. For reviewers, inspect typed source/resource origins and dependencies as artifacts under review. When the candidate is otherwise acceptable and only a small number of already verified Mathlib dependencies were omitted, use the stage-matching add-only Mathlib dependency tool. Do not alter project dependencies, remove or replace dependencies, or use this repair for semantic, helper, or boundary gaps.
 11. Record origins only for source/resource ranges that actually support the statement or proof. Generated or agent-authored text may have no origin; do not overclaim support.
 12. Keep statement dependencies and proof dependencies separate. Statement dependencies are only the project or Mathlib declarations needed to express the statement; proof-only helper lemmas belong to proof dependencies.
 13. Do not use unfinished same-round declarations as stable dependencies unless the current truth already marks them accepted and suitable for this stage.
@@ -1370,13 +1370,14 @@ The revision/reason remains structured truth and is not copied into the docstrin
         required_tool_groups=_groups(
             AppGroup.DECL_STAGE_FORMAL_READ,
             AppGroup.DECL_STAGE_STATEMENT_FORMAL_FILE_WRITE,
-            AppGroup.DECL_STATEMENT_DEPENDENCY_WRITE,
+            AppGroup.DECL_STATEMENT_DEPENDENCY_READ,
+            AppGroup.DECL_STATEMENT_REPO_DEPENDENCY_WRITE,
+            AppGroup.DECL_STATEMENT_MATHLIB_DEPENDENCY_WRITE,
             AppGroup.DECL_FORMAL_CONSISTENCY_READ,
             AppGroup.LEAN_FILE_DIAGNOSTICS_READ,
             AppGroup.STATEMENT_FORMAL_POLICY_READ,
             AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
             AppGroup.MATHLIB_INDEX_READ,
-            AppGroup.MATHLIB_INDEX_WRITE,
             AppGroup.MATHLIB_SEMANTIC_SEARCH,
             AppGroup.MATHLIB_NAVIGATION,
             AppGroup.NODE_MATHLIB_HINT_READ,
@@ -1393,11 +1394,11 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Prepare the declaration-owned file with `prepare_statement_formal_file` only to recover missing or damaged scaffold, marker, docstring, or file structure. Do not call it casually after valid uncaptured edits because it rewrites the working file.",
                 "Preserve managed imports/docstring; place small local helpers before the target docstring and the primary declaration immediately after it. Keep reusable helpers as separate tracked Decls.",
                 "Use `run_lean_file_diagnostics` while iterating. Do not guess or report the Lean full name: `capture_statement_formal_file` builds the exact module and discovers/compiler-confirms it.",
-                "Refine typed statement dependencies with add/remove/clear tools. If a mutation refreshes the file, re-read it before editing and do not duplicate derived imports.",
+                "Read the exact set with `list_statement_dependencies`; add project dependencies with `add_statement_repo_dependency` or its plural form, and Mathlib dependencies with `add_statement_mathlib_dependency` or its plural form. Use remove/clear only for repair. If a mutation refreshes the file, re-read it before editing and do not duplicate derived imports.",
                 "Capture with `capture_statement_formal_file`, require `check_formal_stage_consistency` to pass, and then call `submit_stage_worker_completed`.",
                 "Read current node Mathlib hints first, then the repo MathlibIndex; only use broader search/navigation when those are insufficient.",
-                "For a Mathlib candidate you intend to use, inspect or check it first, then record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`.",
-                "Record confirmed current-node module and declaration relevance in one `add_current_mathlib_hints` batch.",
+                "For a Mathlib candidate used by the current statement, add the exact typed dependency through the Mathlib dependency tool; it verifies the declaration and ensures canonical MathlibIndex truth atomically.",
+                "Record confirmed current-node module and declaration relevance in `add_current_mathlib_hints` only when the knowledge is broadly reusable across the node.",
                 "Use `add_current_node_dep` only when the current formal statement actually needs a provider node dependency that is not already available.",
             ),
             (
@@ -1414,13 +1415,14 @@ The revision/reason remains structured truth and is not copied into the docstrin
         required_tool_groups=_groups(
             AppGroup.DECL_STAGE_FORMAL_READ,
             AppGroup.DECL_STAGE_PROOF_FORMAL_FILE_WRITE,
-            AppGroup.DECL_PROOF_DEPENDENCY_WRITE,
+            AppGroup.DECL_PROOF_DEPENDENCY_READ,
+            AppGroup.DECL_PROOF_REPO_DEPENDENCY_WRITE,
+            AppGroup.DECL_PROOF_MATHLIB_DEPENDENCY_WRITE,
             AppGroup.DECL_FORMAL_CONSISTENCY_READ,
             AppGroup.LEAN_FILE_DIAGNOSTICS_READ,
             AppGroup.PROOF_FORMAL_POLICY_READ,
             AppGroup.NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE,
             AppGroup.MATHLIB_INDEX_READ,
-            AppGroup.MATHLIB_INDEX_WRITE,
             AppGroup.MATHLIB_SEMANTIC_SEARCH,
             AppGroup.MATHLIB_NAVIGATION,
             AppGroup.NODE_MATHLIB_HINT_READ,
@@ -1437,9 +1439,9 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` while iterating; proof formal completed work must satisfy strict proof policy.",
                 "Capture at the durable boundary with `capture_proof_formal_file`; if any edit happens after capture, capture again.",
                 "Before submit, require `check_formal_stage_consistency` to pass.",
-                "Refine typed proof dependencies with one `add_proof_dependencies` batch, or use `remove_proof_dep` / `clear_proof_deps` for repair; these are proof deps, not statement deps. A successful mutation with `managed_projection_changed=true` or `reread_required=true` is not a blocker: re-read the declaration-owned file once after the batch in the same AgentStep and continue.",
+                "Read the exact set with `list_proof_dependencies`; add project dependencies with `add_proof_repo_dependency` or its plural form, and Mathlib dependencies with `add_proof_mathlib_dependency` or its plural form. Use `remove_proof_dep` / `clear_proof_deps` only for repair. A successful mutation with `managed_projection_changed=true` or `reread_required=true` is not a blocker: re-read the declaration-owned file once after the batch in the same AgentStep and continue.",
                 "Read current node Mathlib hints first, then repo MathlibIndex; search or navigate only when those are insufficient.",
-                "For a Mathlib candidate you intend to use in the current proof, inspect or check it first, record verified entries with `record_mathlib_decl`, `record_mathlib_module`, or `ingest_mathlib_candidate`, record current-node relevance with hint tools, and add the typed proof Mathlib dep.",
+                "For a Mathlib candidate used in the current proof, add the exact typed dependency through the Mathlib dependency tool; it verifies or reuses canonical MathlibIndex truth atomically. Record current-node relevance with hint tools only when the knowledge is broadly reusable across the node.",
                 "Use `add_current_node_dep` only when the final proof actually needs a verified provider public declaration that is not already available.",
             ),
             (

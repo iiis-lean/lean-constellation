@@ -152,7 +152,22 @@ def _seed_committed_proved_theorem(runtime: LeanRuntimeServices, repo_root: Path
         summary="Seed theorem is proved.",
     )
     assert round_summary.ok, round_summary.issues
-    terminal = runtime.decl_graph.mark_round_terminal(repo_root, node_path=NODE_PATH, round_id=round_id, result_kind="success")
+    recorded = runtime.decl_graph.strategy_round.record_round_execution_result(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        result_kind="blocked",
+        reason="Test fixture committed revisions before round closeout.",
+    )
+    assert recorded.ok, recorded.issues
+    terminal = runtime.decl_graph.strategy_round.persist_round_closeout(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        result_kind="blocked",
+        reason="Test fixture committed revisions before round closeout.",
+        acknowledged_by="test-fixture",
+    )
     assert terminal.ok, terminal.issues
     return proof_path
 

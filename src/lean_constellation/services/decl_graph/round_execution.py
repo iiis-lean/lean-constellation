@@ -16,6 +16,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclReadinessBlocker,
     DeclRevisionRef,
     DeclRoundResultKind,
+    DeclRoundStatus,
     DeclStage,
     DeclState,
 )
@@ -77,12 +78,21 @@ class RoundFinalAuditResult(StrictModel):
     summary: str
 
 
-class RoundCloseoutResult(StrictModel):
+class RoundExecutionRecordResult(StrictModel):
     outcome: RoundFlowOutcome
+    round_id: str
+    status: Literal["awaiting_closeout"]
+    summary: str
+
+
+class RoundCloseoutResult(StrictModel):
+    changed: bool
+    result_kind: DeclRoundResultKind
     committed_revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
     projection_outcome: Literal["refreshed", "deferred", "not_requested"]
     projection_summary: str | None = None
     round_id: str
+    closeout_complete: bool = True
     summary: str
 
 
@@ -384,7 +394,7 @@ class DeclRoundExecutionComponent:
             )
         )
 
-    def build_round_result(
+    def record_round_execution_result(
         self,
         repo_root: Path,
         *,
@@ -392,6 +402,54 @@ class DeclRoundExecutionComponent:
         round_id: str,
         outcome: RoundFlowOutcome,
         reason: str | None = None,
+    ) -> ServiceResult[RoundExecutionRecordResult]:
+        result_kind = {
+            "completed": DeclRoundResultKind.SUCCESS,
+            "blocked": DeclRoundResultKind.BLOCKED,
+            "failed": DeclRoundResultKind.FAILED,
+        }[outcome]
+        if outcome == "completed":
+            audit = self.final_audit(repo_root, node_path=node_path, round_id=round_id)
+            if not audit.ok or audit.value is None:
+                return self.runtime.foundation.fail(audit.issues)
+            if not audit.value.passed:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "round_final_audit_failed",
+                        audit.value.summary,
+                        object_ref=round_id,
+                    )
+                )
+        recorded = self.graph.strategy_round.record_round_execution_result(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            result_kind=result_kind,
+            reason=reason,
+        )
+        if not recorded.ok or recorded.value is None:
+            return self.runtime.foundation.fail(recorded.issues)
+        return self.runtime.foundation.ok(
+            RoundExecutionRecordResult(
+                outcome=outcome,
+                round_id=round_id,
+                status="awaiting_closeout",
+                summary=(
+                    f"Recorded {outcome} execution for DeclGraph round {round_id}; "
+                    "ContentPlan closeout is required."
+                ),
+            )
+        )
+
+    def closeout_round_by_plan(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        result_kind: DeclRoundResultKind | str,
+        reason: str | None = None,
+        acknowledged_by: str,
     ) -> ServiceResult[RoundCloseoutResult]:
         graph_root = self.graph.graph_store.graph_root(repo_root, node_path=node_path)
         projection_root = local_projection_path(
@@ -400,12 +458,13 @@ class DeclRoundExecutionComponent:
         )
         snapshot = _RoundTreesSnapshot([graph_root, projection_root])
         try:
-            return self._build_round_result(
+            return self._closeout_round_by_plan(
                 repo_root,
                 node_path=node_path,
                 round_id=round_id,
-                outcome=outcome,
+                result_kind=DeclRoundResultKind(result_kind),
                 reason=reason,
+                acknowledged_by=acknowledged_by,
             )
         except _CloseoutFailure as failure:
             rollback_failures = snapshot.restore()
@@ -422,48 +481,185 @@ class DeclRoundExecutionComponent:
         finally:
             snapshot.close()
 
-    def _build_round_result(
+    def _closeout_round_by_plan(
         self,
         repo_root: Path,
         *,
         node_path: str,
         round_id: str,
-        outcome: RoundFlowOutcome,
+        result_kind: DeclRoundResultKind,
         reason: str | None = None,
+        acknowledged_by: str,
     ) -> ServiceResult[RoundCloseoutResult]:
         round_record = self.graph.get_round(repo_root, node_path=node_path, round_id=round_id)
         self._require(round_record)
         assert round_record.value is not None
-        round_refs = {ref.decl_name: ref for ref in round_record.value.revision_refs}
+        current_round = round_record.value
+        normalized_reason = reason.strip() if reason and reason.strip() else None
+        if (
+            result_kind in {DeclRoundResultKind.BLOCKED, DeclRoundResultKind.FAILED}
+            and normalized_reason is None
+        ):
+            raise _CloseoutFailure(
+                [
+                    self.runtime.foundation.issue(
+                        "round_terminal_reason_required",
+                        "Blocked or failed round result requires a reason.",
+                        object_ref=round_id,
+                        field="reason",
+                    )
+                ]
+            )
+        if current_round.status == DeclRoundStatus.COMMITTED:
+            persisted = self.graph.strategy_round.persist_round_closeout(
+                repo_root,
+                node_path=node_path,
+                round_id=round_id,
+                result_kind=result_kind,
+                reason=normalized_reason,
+                acknowledged_by=acknowledged_by,
+            )
+            self._require(persisted)
+            assert persisted.value is not None
+            _, changed = persisted.value
+            return self.runtime.foundation.ok(
+                RoundCloseoutResult(
+                    changed=changed,
+                    result_kind=result_kind,
+                    committed_revision_refs=[],
+                    projection_outcome="not_requested",
+                    round_id=round_id,
+                    summary=(
+                        "Acknowledged migrated declaration round closeout."
+                        if changed
+                        else "Declaration round closeout was already acknowledged."
+                    ),
+                )
+            )
+        if current_round.status == DeclRoundStatus.DRAFT:
+            if result_kind == DeclRoundResultKind.SUCCESS:
+                raise _CloseoutFailure(
+                    [
+                        self.runtime.foundation.issue(
+                            "draft_round_success_invalid",
+                            "A declaration round that never executed cannot be closed as success.",
+                            object_ref=round_id,
+                        )
+                    ]
+                )
+        elif current_round.status == DeclRoundStatus.AWAITING_CLOSEOUT:
+            allowed_results = {
+                DeclRoundResultKind.SUCCESS: {
+                    DeclRoundResultKind.SUCCESS,
+                    DeclRoundResultKind.BLOCKED,
+                    DeclRoundResultKind.FAILED,
+                },
+                DeclRoundResultKind.BLOCKED: {
+                    DeclRoundResultKind.BLOCKED,
+                    DeclRoundResultKind.FAILED,
+                },
+                DeclRoundResultKind.FAILED: {DeclRoundResultKind.FAILED},
+            }
+            execution_result = current_round.execution_result_kind
+            if execution_result is None or result_kind not in allowed_results[execution_result]:
+                raise _CloseoutFailure(
+                    [
+                        self.runtime.foundation.issue(
+                            "round_closeout_result_incompatible",
+                            "ContentPlan cannot upgrade the recorded round execution outcome.",
+                            object_ref=round_id,
+                            current=execution_result.value if execution_result is not None else None,
+                            expected=result_kind.value,
+                        )
+                    ]
+                )
+        else:
+            raise _CloseoutFailure(
+                [
+                    self.runtime.foundation.issue(
+                        "round_not_ready_for_closeout",
+                        "Declaration round is not ready for ContentPlan closeout.",
+                        object_ref=round_id,
+                        current=current_round.status.value,
+                    )
+                ]
+            )
+        revisions = self.graph.list_round_revisions(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+        )
+        self._require(revisions)
+        round_refs = {ref.decl_name: ref for ref in current_round.revision_refs}
+        missing_summaries = [
+            round_refs[decl_name].change_id
+            for decl_name, revision in revisions.value or []
+            if revision.change is None or not revision.change.summary
+        ]
+        if missing_summaries:
+            raise _CloseoutFailure(
+                [
+                    self.runtime.foundation.issue(
+                        "decl_change_summary_missing",
+                        "Every round change must have its own summary before closeout.",
+                        object_ref=round_id,
+                        current=", ".join(missing_summaries),
+                    )
+                ]
+            )
+        if not current_round.summary:
+            raise _CloseoutFailure(
+                [
+                    self.runtime.foundation.issue(
+                        "round_summary_missing",
+                        "Round summary is required before closeout.",
+                        object_ref=round_id,
+                    )
+                ]
+            )
         committed_refs: list[DeclRevisionRef] = []
         projection_summary: str | None = None
         projection_outcome: Literal["refreshed", "deferred", "not_requested"] = "not_requested"
-        revisions = self.graph.list_round_revisions(repo_root, node_path=node_path, round_id=round_id)
-        self._require(revisions)
-        if outcome == "completed":
-            audit = self.final_audit(repo_root, node_path=node_path, round_id=round_id)
-            self._require(audit)
-            if audit.value is None or not audit.value.passed:
-                issue = self.runtime.foundation.issue(
-                    "round_final_audit_failed",
-                    audit.value.summary if audit.value is not None else "Round final audit failed.",
-                    object_ref=round_id,
-                )
-                raise _CloseoutFailure([issue])
         for decl_name, revision in revisions.value or []:
+            decl = self.graph.get_decl(repo_root, node_path=node_path, name=decl_name)
+            self._require(decl)
+            assert decl.value is not None
+            expected_ref = round_refs.get(decl_name)
+            if expected_ref is None or decl.value.current_revision != expected_ref.revision:
+                raise _CloseoutFailure(
+                    [
+                        self.runtime.foundation.issue(
+                            "round_revision_not_current",
+                            "Round closeout requires every affected revision to remain current.",
+                            object_ref=decl_name,
+                            current=str(decl.value.current_revision),
+                            expected=str(expected_ref.revision if expected_ref is not None else None),
+                        )
+                    ]
+                )
             if revision.status != "open":
-                continue
+                raise _CloseoutFailure(
+                    [
+                        self.runtime.foundation.issue(
+                            "round_revision_not_open",
+                            "Round closeout requires every affected revision to remain open.",
+                            object_ref=f"{decl_name}@{revision.revision}",
+                            current=str(revision.status),
+                            expected="open",
+                        )
+                    ]
+                )
             committed = self.graph.commit_decl_revision(
                 repo_root,
                 node_path=node_path,
                 name=decl_name,
                 revision=revision.revision,
                 state=revision.state,
-                apply_delete_lifecycle=outcome == "completed",
+                apply_delete_lifecycle=result_kind == DeclRoundResultKind.SUCCESS,
             )
             self._require(committed)
             committed_refs.append(round_refs[decl_name])
-        if outcome == "completed":
+        if result_kind == DeclRoundResultKind.SUCCESS:
             public_decls = self.graph.list_content_public_decls(repo_root, node_path=node_path)
             self._require(public_decls)
             deferred_public_names = sorted(
@@ -483,55 +679,26 @@ class DeclRoundExecutionComponent:
                 self._require(projection)
                 projection_outcome = "refreshed"
                 projection_summary = projection.value.summary if projection.value is not None else None
-        current_round = self.graph.get_round(repo_root, node_path=node_path, round_id=round_id)
-        self._require(current_round)
-        assert current_round.value is not None
-        for change_id in current_round.value.change_ids:
-            if change_id in current_round.value.change_summaries:
-                continue
-            self._require(
-                self.graph.write_decl_change_summary(
-                    repo_root,
-                    node_path=node_path,
-                    round_id=round_id,
-                    change_id=change_id,
-                    summary=f"DeclGraphRoundFlow {outcome} for change {change_id}.",
-                )
-            )
-        current_round = self.graph.get_round(repo_root, node_path=node_path, round_id=round_id)
-        self._require(current_round)
-        assert current_round.value is not None
-        if not current_round.value.summary:
-            self._require(
-                self.graph.write_round_summary(
-                    repo_root,
-                    node_path=node_path,
-                    round_id=round_id,
-                    summary=f"DeclGraphRoundFlow finished with {outcome}.",
-                )
-            )
-        result_kind = {
-            "completed": DeclRoundResultKind.SUCCESS,
-            "blocked": DeclRoundResultKind.BLOCKED,
-            "failed": DeclRoundResultKind.FAILED,
-        }[outcome]
-        self._require(
-            self.graph.mark_round_terminal(
+        persisted = self.graph.strategy_round.persist_round_closeout(
                 repo_root,
                 node_path=node_path,
                 round_id=round_id,
                 result_kind=result_kind,
-                reason=reason or f"DeclGraphRoundFlow finished with {outcome}.",
-            )
+                reason=normalized_reason,
+                acknowledged_by=acknowledged_by,
         )
+        self._require(persisted)
+        assert persisted.value is not None
+        _, changed = persisted.value
         return self.runtime.foundation.ok(
             RoundCloseoutResult(
-                outcome=outcome,
+                changed=changed,
+                result_kind=result_kind,
                 committed_revision_refs=committed_refs,
                 projection_outcome=projection_outcome,
                 projection_summary=projection_summary,
                 round_id=round_id,
-                summary=f"Built DeclGraph round result: {outcome}.",
+                summary=f"ContentPlan closed declaration round as {result_kind.value}.",
             )
         )
 

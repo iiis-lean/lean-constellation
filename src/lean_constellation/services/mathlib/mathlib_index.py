@@ -64,6 +64,14 @@ class MathlibModuleEntryMutationView(StrictModel):
     summary: str
 
 
+class MathlibIndexEnsureEffect(StrictModel):
+    changed: bool = False
+    created_declarations: list[str] = Field(default_factory=list)
+    reused_declarations: list[str] = Field(default_factory=list)
+    updated_declarations: list[str] = Field(default_factory=list)
+    created_modules: list[str] = Field(default_factory=list)
+
+
 class MathlibIndexComponent:
     """Maintain `.lean_constellation/indexes/mathlib.json`."""
 
@@ -262,6 +270,122 @@ class MathlibIndexComponent:
                 )
             )
         return self.runtime.foundation.ok(self._decl_view(entry))
+
+    def ensure_mathlib_decl_entries(
+        self,
+        repo_root: Path,
+        *,
+        entries: list[MathlibDeclEntryView],
+        modules: list[str] | None = None,
+    ) -> ServiceResult[MathlibIndexEnsureEffect]:
+        """Persist canonical verified declaration/module entries in one index write."""
+
+        loaded = self._load_index(repo_root)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        index = loaded.value.model_copy(deep=True)
+        created_declarations: list[str] = []
+        reused_declarations: list[str] = []
+        updated_declarations: list[str] = []
+        created_modules: list[str] = []
+
+        for raw_module in modules or []:
+            normalized_module = self._normalize_module_or_fail(raw_module)
+            if not normalized_module.ok or normalized_module.value is None:
+                return self.runtime.foundation.fail(normalized_module.issues)
+            if normalized_module.value not in index.modules:
+                index.modules[normalized_module.value] = MathlibModuleEntry(
+                    module=normalized_module.value
+                )
+                created_modules.append(normalized_module.value)
+
+        for candidate in entries:
+            normalized_name = self._normalize_decl_or_fail(candidate.name)
+            if not normalized_name.ok or normalized_name.value is None:
+                return self.runtime.foundation.fail(normalized_name.issues)
+            if candidate.module is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "mathlib_decl_module_missing",
+                        "A canonical Mathlib declaration entry must include its defining module.",
+                        object_ref=candidate.name,
+                        field="module",
+                    )
+                )
+            normalized_module = self._normalize_module_or_fail(candidate.module)
+            if not normalized_module.ok or normalized_module.value is None:
+                return self.runtime.foundation.fail(normalized_module.issues)
+
+            name = normalized_name.value
+            module = normalized_module.value
+            existing = index.declarations.get(name)
+            if existing is not None and existing.module not in {None, module}:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "mathlib_decl_module_conflict",
+                        "Canonical Mathlib declaration metadata conflicts with the repo index.",
+                        object_ref=name,
+                        current=existing.module,
+                        expected=module,
+                    )
+                )
+
+            module_entry = index.modules.get(module)
+            if module_entry is None:
+                module_entry = MathlibModuleEntry(module=module)
+                index.modules[module] = module_entry
+                created_modules.append(module)
+            if name not in module_entry.important_decl_names:
+                module_entry.important_decl_names.append(name)
+
+            if existing is None:
+                index.declarations[name] = MathlibDeclEntry(
+                    name=name,
+                    module=module,
+                    kind=candidate.kind,
+                    signature=candidate.signature,
+                    snippet=candidate.snippet,
+                    summary=candidate.summary,
+                    note=candidate.note,
+                )
+                created_declarations.append(name)
+                continue
+
+            updated = existing.model_copy(
+                update={
+                    "module": module,
+                    "kind": existing.kind or candidate.kind,
+                    "signature": existing.signature or candidate.signature,
+                    "snippet": existing.snippet or candidate.snippet,
+                }
+            )
+            if updated != existing:
+                index.declarations[name] = updated
+                updated_declarations.append(name)
+            else:
+                reused_declarations.append(name)
+
+        normalized_index = self._normalize_index(index)
+        current_normalized = self._normalize_index(loaded.value)
+        changed = normalized_index != current_normalized
+        if changed:
+            saved = self._save_index(repo_root, normalized_index)
+            if not saved.ok:
+                return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(
+            MathlibIndexEnsureEffect(
+                changed=changed,
+                created_declarations=created_declarations,
+                reused_declarations=reused_declarations,
+                updated_declarations=updated_declarations,
+                created_modules=created_modules,
+            )
+        )
+
+    def index_path(self, repo_root: Path) -> Path:
+        """Return the canonical repo-local MathlibIndex path for transaction composition."""
+
+        return self._index_path(repo_root)
 
     def upsert_mathlib_decl_entry(
         self,

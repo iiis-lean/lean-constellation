@@ -153,6 +153,13 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
         round_id=round_record.value.round_id,
         summary="Both declarations were completed.",
     ).ok
+    recorded = service.strategy_round.record_round_execution_result(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        result_kind=DeclRoundResultKind.SUCCESS,
+    )
+    assert recorded.ok, recorded.issues
 
     terminal = service.mark_round_terminal(
         tmp_path,
@@ -175,7 +182,9 @@ def test_round_draft_start_summary_and_success_terminal(tmp_path: Path) -> None:
     assert raw_round["status"] == "committed"
     assert raw_round["result_kind"] == "success"
     assert raw_round["committed_at"] is not None
-    assert "completed_at" not in raw_round
+    assert raw_round["execution_result_kind"] == "success"
+    assert raw_round["execution_completed_at"] is not None
+    assert raw_round["plan_closeout_acknowledged_at"] is not None
 
     reloaded = make_runtime().decl_graph.get_round(
         tmp_path,
@@ -238,7 +247,7 @@ def test_round_terminal_requires_summary_and_blocked_reason(tmp_path: Path) -> N
     assert blocked.value.result_reason == "Need a provider repo."
 
 
-def test_round_start_rejects_second_running_round(tmp_path: Path) -> None:
+def test_round_draft_rejects_second_unfinished_round(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     service = make_runtime().decl_graph
     strategy = service.ensure_open_strategy(tmp_path, node_path="Main.Topic.Core", objective="Parallel attempt.")
@@ -256,10 +265,6 @@ def test_round_start_rejects_second_running_round(tmp_path: Path) -> None:
         objective="Second round.",
     )
     assert first.ok and first.value is not None
-    assert second.ok and second.value is not None
+    assert not second.ok
+    assert second.issues[0].kind == "round_closeout_pending"
     assert service.start_round(tmp_path, node_path="Main.Topic.Core", round_id=first.value.round_id).ok
-
-    blocked = service.start_round(tmp_path, node_path="Main.Topic.Core", round_id=second.value.round_id)
-
-    assert not blocked.ok
-    assert blocked.issues[0].kind == "round_already_running"

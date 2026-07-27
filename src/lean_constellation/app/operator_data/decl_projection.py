@@ -119,7 +119,14 @@ class StageGateInput(RoundIdentityInput):
 
 
 class RoundCloseoutInput(RoundIdentityInput):
+    result_kind: Literal["success", "blocked", "failed"]
+    reason: str | None = None
+    acknowledged_by: str = "operator"
+
+
+class RoundExecutionInput(RoundIdentityInput):
     outcome: Literal["completed", "blocked", "failed"]
+    reason: str | None = None
 
 
 class ProjectionSyncInput(DeclIdentityInput):
@@ -407,7 +414,20 @@ class DeclProjectionOperator:
         return self.executor.execute(
             repo_key,
             MUTATE_DECL,
-            lambda ctx: ctx.runtime.decl_graph.closeout_round(ctx.repo_root, **request.model_dump()),
+            lambda ctx: ctx.runtime.decl_graph.closeout_round_by_plan(
+                ctx.repo_root,
+                **request.model_dump(),
+            ),
+        )
+
+    def record_round_execution(self, repo_key: str, request: RoundExecutionInput) -> ServiceResult:
+        return self.executor.execute(
+            repo_key,
+            MUTATE_DECL,
+            lambda ctx: ctx.runtime.decl_graph.record_round_execution_result(
+                ctx.repo_root,
+                **request.model_dump(),
+            ),
         )
 
     def refresh_node_projection(self, repo_key: str, request: NodeInput) -> ServiceResult:

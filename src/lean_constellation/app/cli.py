@@ -69,6 +69,21 @@ def build_parser() -> argparse.ArgumentParser:
     repo_completion_migration.add_argument("--checkpoint-id", required=True)
     repo_completion_migration.add_argument("--expected-token", default=None)
     repo_completion_migration.add_argument("--report-dir", type=Path, default=None)
+    decl_closeout_migration = sub.add_parser(
+        "migrate-decl-closeout-checkpoint",
+        help=(
+            "Offline immutable-clone migration of one repo/runtime checkpoint "
+            "to the current declaration-round closeout and Agent resource schema."
+        ),
+    )
+    decl_closeout_migration.add_argument(
+        "mode",
+        choices=["preview", "apply", "validate"],
+    )
+    decl_closeout_migration.add_argument("repo_root", type=Path)
+    decl_closeout_migration.add_argument("--checkpoint-id", required=True)
+    decl_closeout_migration.add_argument("--expected-token", default=None)
+    decl_closeout_migration.add_argument("--report-dir", type=Path, default=None)
     sub.add_parser("status", help="Read production server runtime status over Admin HTTP.")
     flow_tree = sub.add_parser("flow-tree", help="Read production flow/step tree over Admin HTTP.")
     flow_tree.add_argument("--repo-key", required=True)
@@ -315,6 +330,41 @@ def main(argv: list[str] | None = None) -> int:
                     checkpoint_id=args.checkpoint_id,
                 )
         except RepoCompletionModeMigrationError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            return 1
+        print(json.dumps({"ok": True, "value": report.to_dict()}, indent=2, sort_keys=True))
+        return 0
+    if args.command == "migrate-decl-closeout-checkpoint":
+        from lean_constellation.app.decl_round_closeout_checkpoint_migration import (
+            DeclRoundCloseoutCheckpointMigrationError,
+            apply_decl_round_closeout_checkpoint,
+            preview_decl_round_closeout_checkpoint,
+            validate_decl_round_closeout_checkpoint,
+        )
+
+        try:
+            if args.mode == "preview":
+                report = preview_decl_round_closeout_checkpoint(
+                    args.repo_root,
+                    checkpoint_id=args.checkpoint_id,
+                )
+            elif args.mode == "apply":
+                if not args.expected_token:
+                    parser.error("--expected-token is required for apply")
+                if args.report_dir is None:
+                    parser.error("--report-dir is required for apply")
+                report = apply_decl_round_closeout_checkpoint(
+                    args.repo_root,
+                    checkpoint_id=args.checkpoint_id,
+                    expected_token=args.expected_token,
+                    report_dir=args.report_dir,
+                )
+            else:
+                report = validate_decl_round_closeout_checkpoint(
+                    args.repo_root,
+                    checkpoint_id=args.checkpoint_id,
+                )
+        except DeclRoundCloseoutCheckpointMigrationError as exc:
             print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
             return 1
         print(json.dumps({"ok": True, "value": report.to_dict()}, indent=2, sort_keys=True))

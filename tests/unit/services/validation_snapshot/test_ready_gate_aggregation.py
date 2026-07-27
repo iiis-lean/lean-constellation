@@ -212,11 +212,20 @@ def _create_declared_main_public_theorem(runtime: LeanRuntimeServices, repo_root
         round_id=round_record.value.round_id,
         summary=f"Declared {decl_name} for the Main export.",
     ).ok
-    assert runtime.decl_graph.mark_round_terminal(
+    assert runtime.decl_graph.strategy_round.record_round_execution_result(
         repo_root,
         node_path=MAIN_CONTENT_NODE_PATH,
         round_id=round_record.value.round_id,
-        result_kind="success",
+        result_kind="blocked",
+        reason="Test fixture committed revisions before round closeout.",
+    ).ok
+    assert runtime.decl_graph.strategy_round.persist_round_closeout(
+        repo_root,
+        node_path=MAIN_CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+        result_kind="blocked",
+        reason="Test fixture committed revisions before round closeout.",
+        acknowledged_by="test-fixture",
     ).ok
     assert runtime.lean_projection.sync_decl_file_after_revision_reset(
         repo_root,

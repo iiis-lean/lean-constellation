@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lean_constellation.services.decl_graph import DeclDraftSpec, DeclState
+from lean_constellation.services.decl_graph import (
+    DeclDraftSpec,
+    DeclRoundResultKind,
+    DeclState,
+)
 from tests.unit.flows.decl_round._helpers import (
     NODE_PATH,
     create_round_with_decl,
@@ -10,6 +14,53 @@ from tests.unit.flows.decl_round._helpers import (
     seed_committed_theorem,
 )
 from tests.unit_services_helpers import lean_check_payload, write_statement_formal_for_test
+
+
+def _record_and_close_round(
+    runtime,
+    repo_root: Path,
+    *,
+    round_id: str,
+    outcome: str,
+    result_kind: DeclRoundResultKind,
+    reason: str | None = None,
+):
+    round_record = runtime.decl_graph.get_round(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+    )
+    assert round_record.ok and round_record.value is not None, round_record.issues
+    for change_id in round_record.value.change_ids:
+        assert runtime.decl_graph.write_decl_change_summary(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            change_id=change_id,
+            summary=f"Completed {change_id}.",
+        ).ok
+    assert runtime.decl_graph.write_round_summary(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        summary=f"Round execution ended as {outcome}.",
+    ).ok
+    recorded = runtime.decl_graph.record_round_execution_result(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        outcome=outcome,
+        reason=reason,
+    )
+    assert recorded.ok, recorded.issues
+    return runtime.decl_graph.closeout_round_by_plan(
+        repo_root,
+        node_path=NODE_PATH,
+        round_id=round_id,
+        result_kind=result_kind,
+        reason=reason,
+        acknowledged_by="test-content-plan",
+    )
 
 
 def test_round_with_decl_drafts_rolls_back_complete_graph_on_mid_batch_failure(tmp_path: Path, monkeypatch) -> None:
@@ -74,11 +125,13 @@ def test_blocked_business_terminal_commits_partial_revision_and_allows_follow_up
     )
     assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
 
-    closed = runtime.decl_graph.closeout_round(
+    closed = _record_and_close_round(
+        runtime,
         repo_root,
-        node_path=NODE_PATH,
         round_id=round_id,
         outcome="blocked",
+        result_kind=DeclRoundResultKind.BLOCKED,
+        reason="The proof is blocked.",
     )
 
     assert closed.ok, closed.issues
@@ -121,11 +174,13 @@ def test_failed_business_terminal_commits_partial_revision(tmp_path: Path) -> No
     )
     assert runtime.decl_graph.start_round(repo_root, node_path=NODE_PATH, round_id=round_id).ok
 
-    closed = runtime.decl_graph.closeout_round(
+    closed = _record_and_close_round(
+        runtime,
         repo_root,
-        node_path=NODE_PATH,
         round_id=round_id,
         outcome="failed",
+        result_kind=DeclRoundResultKind.FAILED,
+        reason="The proof failed.",
     )
 
     assert closed.ok, closed.issues
@@ -168,11 +223,13 @@ def test_blocked_delete_commits_obsolete_revision_without_deleting_decl_lifecycl
         round_id=round_record.value.round_id,
     ).ok
 
-    closed = runtime.decl_graph.closeout_round(
+    closed = _record_and_close_round(
+        runtime,
         repo_root,
-        node_path=NODE_PATH,
         round_id=round_record.value.round_id,
         outcome="blocked",
+        result_kind=DeclRoundResultKind.BLOCKED,
+        reason="Delete was blocked.",
     )
 
     assert closed.ok, closed.issues
@@ -216,11 +273,12 @@ def test_completed_delete_commits_obsolete_revision_and_deletes_decl_lifecycle(t
         round_id=round_record.value.round_id,
     ).ok
 
-    closed = runtime.decl_graph.closeout_round(
+    closed = _record_and_close_round(
+        runtime,
         repo_root,
-        node_path=NODE_PATH,
         round_id=round_record.value.round_id,
         outcome="completed",
+        result_kind=DeclRoundResultKind.SUCCESS,
     )
 
     assert closed.ok, closed.issues
@@ -289,10 +347,11 @@ def test_final_audit_accepts_same_node_dependency_from_earlier_committed_round(t
     assert audit.ok, audit.issues
     assert audit.value is not None
     assert audit.value.passed is True
-    closed = runtime.decl_graph.closeout_round(
+    closed = _record_and_close_round(
+        runtime,
         repo_root,
-        node_path=NODE_PATH,
         round_id=round_id,
         outcome="completed",
+        result_kind=DeclRoundResultKind.SUCCESS,
     )
     assert closed.ok, closed.issues

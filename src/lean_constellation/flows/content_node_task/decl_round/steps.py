@@ -606,6 +606,7 @@ class RoundFinalAuditStep(BaseStep):
 class BuildRoundResultStepState(BaseStepState):
     state_type: Literal["decl_round_build_result"] = "decl_round_build_result"
     flow_outcome: Literal["completed", "blocked", "failed"]
+    reason: str | None = None
 
 
 class BuildRoundResultStep(BaseStep):
@@ -622,14 +623,20 @@ class BuildRoundResultStep(BaseStep):
         input_model = _require_decl_round_input(flow.input)
         repo_root = _repo_root(input_model)
         if repo_root is not None:
-            closed = _decl_graph(ctx).closeout_round(
+            recorded = _decl_graph(ctx).record_round_execution_result(
                 repo_root,
                 node_path=input_model.node_path,
                 round_id=input_model.round_id,
                 outcome=state.flow_outcome,
+                reason=state.reason,
             )
-            if not closed.ok:
-                raise FlowStepValidationError(_first_issue_message(closed.issues, "Failed to close DeclGraph round."))
+            if not recorded.ok:
+                raise FlowStepValidationError(
+                    _first_issue_message(
+                        recorded.issues,
+                        "Failed to record DeclGraph round execution result.",
+                    )
+                )
         return ctx.complete_step(
             BuildRoundResultStepResult(
                 flow_outcome=state.flow_outcome,

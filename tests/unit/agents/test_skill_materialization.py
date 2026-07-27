@@ -286,7 +286,7 @@ def test_decl_stage_common_skills_keep_stage_specific_tools_out_of_shared_skill(
     assert "capture_statement_formal_file" in statement
     assert "check_formal_stage_consistency" in statement
     assert "write_statement_formal_deps" not in statement
-    assert "record_mathlib_decl" in statement
+    assert "add_statement_mathlib_dependency" in statement
     assert "add_current_mathlib_hints" in statement
     assert "add_current_node_dep" in statement
     assert "prepare_proof_formal_file" not in statement

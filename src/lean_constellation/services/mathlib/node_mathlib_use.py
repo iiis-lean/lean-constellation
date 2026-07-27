@@ -63,6 +63,7 @@ class NodeMathlibHintMutationReceipt(_CompactMutationReceipt):
     managed_projection_changed: bool = False
     changed_files: list[str] = Field(default_factory=list)
     reread_required: bool = False
+    mathlib_index: dict[str, object] | None = None
     summary: str
 
 
@@ -78,6 +79,7 @@ class NodeMathlibHintsBatchReceipt(_CompactMutationReceipt):
     managed_projection_changed: bool = False
     changed_files: list[str] = Field(default_factory=list)
     reread_required: bool = False
+    mathlib_index: dict[str, object] | None = None
     summary: str
 
 

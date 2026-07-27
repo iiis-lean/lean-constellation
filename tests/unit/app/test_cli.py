@@ -30,6 +30,7 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "agent-trace-report" in help_text
     assert "semantic-watch" in help_text
     assert "migrate-repo-completion-checkpoint" in help_text
+    assert "migrate-decl-closeout-checkpoint" in help_text
     assert "repo-run-initial" in help_text
     assert "repo-run-continue" in help_text
     assert "repo-release-preview" in help_text
@@ -59,6 +60,47 @@ def test_cli_repo_completion_migration_preview_is_offline(
     exit_code = main(
         [
             "migrate-repo-completion-checkpoint",
+            "preview",
+            str(tmp_path / "Repo"),
+            "--checkpoint-id",
+            "repo_cp_source",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "value": {"mode": "preview", "recovery_token": "token"},
+    }
+    assert calls == [(tmp_path / "Repo", "repo_cp_source")]
+
+
+def test_cli_decl_closeout_migration_preview_is_offline(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    calls = []
+
+    class _Report:
+        def to_dict(self):  # noqa: ANN201
+            return {"mode": "preview", "recovery_token": "token"}
+
+    def fake_preview(repo_root, *, checkpoint_id):  # noqa: ANN001
+        calls.append((repo_root, checkpoint_id))
+        return _Report()
+
+    monkeypatch.setattr(
+        (
+            "lean_constellation.app.decl_round_closeout_checkpoint_migration."
+            "preview_decl_round_closeout_checkpoint"
+        ),
+        fake_preview,
+    )
+
+    exit_code = main(
+        [
+            "migrate-decl-closeout-checkpoint",
             "preview",
             str(tmp_path / "Repo"),
             "--checkpoint-id",

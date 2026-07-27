@@ -19,14 +19,14 @@ EXPECTED_SURFACE_COUNTS = {
     "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 22, 2, 3, 4),
-    "StatementNLWorkerAgent": (17, 47, 1, 2, 4),
-    "StatementNLReviewerAgent": (16, 40, 1, 1, 2),
-    "StatementFormalWorkerAgent": (23, 54, 1, 2, 8),
-    "StatementFormalReviewerAgent": (17, 41, 1, 1, 2),
-    "ProofNLWorkerAgent": (24, 62, 1, 2, 7),
-    "ProofNLReviewerAgent": (20, 45, 1, 1, 2),
-    "ProofFormalWorkerAgent": (26, 63, 1, 2, 8),
-    "ProofFormalReviewerAgent": (19, 44, 1, 1, 2),
+    "StatementNLWorkerAgent": (19, 51, 1, 2, 4),
+    "StatementNLReviewerAgent": (18, 43, 1, 1, 2),
+    "StatementFormalWorkerAgent": (24, 53, 1, 2, 7),
+    "StatementFormalReviewerAgent": (19, 44, 1, 1, 2),
+    "ProofNLWorkerAgent": (25, 61, 1, 2, 6),
+    "ProofNLReviewerAgent": (22, 48, 1, 1, 2),
+    "ProofFormalWorkerAgent": (27, 62, 1, 2, 7),
+    "ProofFormalReviewerAgent": (21, 47, 1, 1, 2),
 }
 
 EXPECTED_APPLICATION_SURFACE_HASHES = {
@@ -42,14 +42,14 @@ EXPECTED_APPLICATION_SURFACE_HASHES = {
     "NodeDirDependencyReconAgent": "78424e9c83a6d31e464f5bcfaa583279a967ed718f7783ed820bd5ea5419709c",
     "MathlibReconAgent": "2106d09b06fa7140322909262cdb5a533b4ba881b13bb74ee1932e714a000220",
     "ResourceReconAgent": "02a24ca89792c62f0048e410363e3cbe50f3adb1e07c1ba853dbdacb50ed97b8",
-    "StatementNLWorkerAgent": "4e2d436cc21b335411a67a09f6caffe9afbf13aa6ed7f98d925c9a9e28dc3828",
-    "StatementNLReviewerAgent": "9383cba02dd4cb451cb191fd09723f867556ec5e6b7a72bff01e834f66d216d8",
-    "StatementFormalWorkerAgent": "7869ff275fef8444220beaf7f0cc98a304324253f0e43705f3b801ae160075f3",
-    "StatementFormalReviewerAgent": "cd3487030262745005090073f9d16650a870d36a4902964c7b394b3a0ffe4159",
-    "ProofNLWorkerAgent": "4518445a7af668a3137bcd98978137060e4dbf02760a296e890f5b03216b9147",
-    "ProofNLReviewerAgent": "f191874f0e93ca1de947420794cbf36f2ba02aaf4fc9f4ea2bea4c4897fcc13e",
-    "ProofFormalWorkerAgent": "551ef7ade689e21b51a731fc808ed537300d2b241a92e7a8109da0ea8a7c2f2f",
-    "ProofFormalReviewerAgent": "7a5c928293e28ed14e3407c78c2bec001ce8e0c93e7d07786af4789ea7a396f8",
+    "StatementNLWorkerAgent": "8cdeacab5e02c431e57e7ed682cd883d95e540bfc39f40c3bae4cb5797c4b48a",
+    "StatementNLReviewerAgent": "811e80e3382d93e44f4fcc5777e2572856489ac6332d7f467413aba31275dc18",
+    "StatementFormalWorkerAgent": "076a0713389bd1ee00e668aca6b3e236803085c1c5a9bbe1c306c396e243f425",
+    "StatementFormalReviewerAgent": "2f138ac5b6b413969ff8ec81645d85aed4d8f090b7a5d1410c4c83fde7f67917",
+    "ProofNLWorkerAgent": "6a168beaf86c3cd1616bb1000bd52a5f3df77c322c8ae630bde6e382ca9bd395",
+    "ProofNLReviewerAgent": "5e9698c61cd57f7fd0485476c5b02059b95042221b573b23db89f3063379bef8",
+    "ProofFormalWorkerAgent": "e34179c14a3ff2c564aaec7ab6ef6d59d863825ea32b9e1fc5b319c766854fe3",
+    "ProofFormalReviewerAgent": "374e489be28c239d3e7c356e223f8e3a78d63e006ea60a84abb415d0b2ba6f25",
 }
 
 
@@ -94,7 +94,25 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
 
     assert "capture_statement_formal_file" in statement_worker_tools
     assert "capture_statement_formal_file" not in statement_reviewer_tools
-    assert {"add_statement_dependencies", "remove_statement_dep", "clear_statement_deps"} <= statement_worker_tools
+    assert {
+        "list_statement_dependencies",
+        "add_statement_repo_dependency",
+        "add_statement_repo_dependencies",
+        "add_statement_mathlib_dependency",
+        "add_statement_mathlib_dependencies",
+        "remove_statement_dep",
+        "clear_statement_deps",
+    } <= statement_worker_tools
+    assert {
+        "list_statement_dependencies",
+        "add_statement_mathlib_dependency",
+        "add_statement_mathlib_dependencies",
+    } <= statement_reviewer_tools
+    assert {
+        "add_statement_repo_dependency",
+        "remove_statement_dep",
+        "clear_statement_deps",
+    }.isdisjoint(statement_reviewer_tools)
     assert "write_statement_formal_deps" not in statement_worker_tools
     assert "write_statement_formal_deps" not in statement_reviewer_tools
     assert "add_current_node_dep" in statement_worker_tools
@@ -120,7 +138,11 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
         "set_proof_nl",
         "add_proof_source_origin",
         "add_proof_resource_origin",
-        "add_proof_dependencies",
+        "list_proof_dependencies",
+        "add_proof_repo_dependency",
+        "add_proof_repo_dependencies",
+        "add_proof_mathlib_dependency",
+        "add_proof_mathlib_dependencies",
         "remove_proof_dep",
         "clear_proof_deps",
     } <= proof_nl_worker_tools
@@ -129,7 +151,25 @@ def test_decl_stage_surfaces_keep_reviewer_and_worker_file_boundaries() -> None:
     assert "record_proof_nl_review_rejected" in proof_nl_reviewer_tools
     assert "record_decl_review" not in proof_nl_reviewer_tools
     assert "inspect_current_stage_review_status" in proof_nl_reviewer_tools
-    assert {"add_proof_dependencies", "remove_proof_dep", "clear_proof_deps"} <= proof_worker_tools
+    assert {
+        "list_proof_dependencies",
+        "add_proof_repo_dependency",
+        "add_proof_repo_dependencies",
+        "add_proof_mathlib_dependency",
+        "add_proof_mathlib_dependencies",
+        "remove_proof_dep",
+        "clear_proof_deps",
+    } <= proof_worker_tools
+    assert {
+        "list_proof_dependencies",
+        "add_proof_mathlib_dependency",
+        "add_proof_mathlib_dependencies",
+    } <= proof_reviewer_tools
+    assert {
+        "add_proof_repo_dependency",
+        "remove_proof_dep",
+        "clear_proof_deps",
+    }.isdisjoint(proof_reviewer_tools)
     assert "add_current_node_dep" in proof_worker_tools
     assert "search_arxiv_theorems" not in proof_worker_tools
     assert "record_proof_formal_review_passed" in proof_reviewer_tools

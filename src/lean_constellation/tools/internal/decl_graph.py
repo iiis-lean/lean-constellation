@@ -214,7 +214,87 @@ def _read_proof_nl(runtime, ctx, args: DeclNameArgs):
     )
 
 
+def _list_statement_dependencies(runtime, ctx, args: DeclNameArgs):
+    decl, loaded = _load_decl_revision(
+        runtime,
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+        revision=None,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if loaded is None or not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
+    return runtime.foundation.ok(
+        {
+            "decl_name": args.decl_name,
+            "stage": "statement",
+            "dependencies": [
+                item.model_dump(mode="json", exclude_none=True)
+                for item in loaded.value.statement.deps
+            ],
+        }
+    )
+
+
+def _list_proof_dependencies(runtime, ctx, args: DeclNameArgs):
+    decl, loaded = _load_decl_revision(
+        runtime,
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+        revision=None,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if loaded is None or not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
+    return runtime.foundation.ok(
+        {
+            "decl_name": args.decl_name,
+            "stage": "proof",
+            "dependencies": [
+                item.model_dump(mode="json", exclude_none=True)
+                for item in (loaded.value.proof.deps if loaded.value.proof is not None else [])
+            ],
+        }
+    )
+
+
 def _read_formal(runtime, ctx, args: DeclFormalReadArgs):
+    decl, loaded = _load_decl_revision(
+        runtime,
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+        revision=None,
+    )
+    if not decl.ok or decl.value is None:
+        return runtime.foundation.fail(decl.issues)
+    if loaded is None or not loaded.ok or loaded.value is None:
+        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
+    proof_formal = loaded.value.proof.formal if loaded.value.proof is not None else None
+    statement_formal = loaded.value.statement.formal
+    if not (
+        (proof_formal is not None and (proof_formal.code or "").strip())
+        or (statement_formal is not None and (statement_formal.code or "").strip())
+    ):
+        return runtime.foundation.ok(
+            {
+                "available": False,
+                "decl_name": args.decl_name,
+                "node_path": _node(ctx),
+                "revision": loaded.value.revision,
+                "stage": None,
+                "module": decl.value.module,
+                "path": None,
+                "lean_decl_name": loaded.value.lean_decl_name,
+                "code": None,
+                "check": None,
+                "summary": "No formal Lean artifact has been captured for the current declaration revision.",
+            }
+        )
     read = runtime.lean_projection.decl_file.read_decl_owned_lean_file(
         ctx.repo_root,
         node_path=_node(ctx),
@@ -237,17 +317,6 @@ def _read_formal(runtime, ctx, args: DeclFormalReadArgs):
                     content[: marker.value.docstring_start_offset]
                     + content[marker.value.docstring_end_offset :]
                 )
-    decl, loaded = _load_decl_revision(
-        runtime,
-        ctx.repo_root,
-        node_path=_node(ctx),
-        decl_name=args.decl_name,
-        revision=read.value.revision,
-    )
-    if not decl.ok or decl.value is None:
-        return runtime.foundation.fail(decl.issues)
-    if loaded is None or not loaded.ok or loaded.value is None:
-        return runtime.foundation.fail(loaded.issues if loaded is not None else [])
     formal = (
         loaded.value.proof.formal
         if read.value.stage == "proof" and loaded.value.proof is not None
@@ -255,6 +324,7 @@ def _read_formal(runtime, ctx, args: DeclFormalReadArgs):
     )
     return runtime.foundation.ok(
         {
+            "available": True,
             "decl_name": args.decl_name,
             "node_path": _node(ctx),
             "revision": read.value.revision,
@@ -264,6 +334,7 @@ def _read_formal(runtime, ctx, args: DeclFormalReadArgs):
             "lean_decl_name": read.value.lean_decl_name,
             "code": content,
             "check": formal.check.model_dump(mode="json", exclude_none=True) if formal is not None and formal.check is not None else None,
+            "summary": read.value.summary,
         }
     )
 
@@ -438,25 +509,15 @@ def _write_round_summary(runtime, ctx, args: RoundSummaryArgs):
 
 
 def _mark_round_terminal(runtime, ctx, args: RoundTerminalArgs):
-    outcome = {
-        "success": "completed",
-        "blocked": "blocked",
-        "failed": "failed",
-    }[args.result_kind]
-    closed = runtime.decl_graph.closeout_round(
+    closed = runtime.decl_graph.closeout_round_by_plan(
         ctx.repo_root,
         node_path=_node(ctx),
         round_id=_required_round_id(runtime, ctx, args.round_id),
         reason=args.reason,
-        outcome=outcome,
+        result_kind=args.result_kind,
+        acknowledged_by=ctx.runtime.agent_id or "content_plan",
     )
-    if not closed.ok:
-        return closed
-    return runtime.decl_graph.get_round_view(
-        ctx.repo_root,
-        node_path=_node(ctx),
-        round_id=_required_round_id(runtime, ctx, args.round_id),
-    )
+    return closed
 
 
 def _create_decl(runtime, ctx, args: DeclCreateArgs):
@@ -782,7 +843,27 @@ def _read_visible_decl_lean_file(runtime, ctx, args: VisibleDeclLeanFileArgs):
                 object_ref=f"{target_node}::{args.decl_name}",
             )
         )
-    return read
+    if args.include_docstring:
+        return read
+    repo_format = runtime.repo_workspace.metadata.get_repo_format(target_root)
+    managed = not (
+        repo_format.ok
+        and repo_format.value is not None
+        and repo_format.value.repo_format == RepoFormat.ADAPTER
+    )
+    if not managed:
+        return read
+    marker = runtime.lean_projection.annotation.parse_target_marker(read.value.content)
+    if not marker.ok or marker.value is None:
+        return read
+    content = (
+        read.value.content[: marker.value.docstring_start_offset]
+        + read.value.content[marker.value.docstring_end_offset :]
+    )
+    return runtime.foundation.ok(
+        read.value.model_copy(update={"content": content}),
+        warnings=read.issues,
+    )
 
 
 def _list_active_decl_names(runtime, ctx, args: NoArgs):
@@ -956,7 +1037,7 @@ def build_tool_specs() -> list[ToolSpec]:
             description="Mark a declaration round as success, blocked, or failed after closeout.",
             args_model=RoundTerminalArgs,
             capability=ToolCapability.WRITE,
-            result_view="decl_round",
+            result_view="decl_round_closeout_receipt",
             groups={AppGroup.DECL_ROUND_CLOSEOUT_WRITE},
             roles=plan_roles,
             handler=_mark_round_terminal,
@@ -1033,6 +1114,16 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_read_statement_nl,
         ),
         handler_tool(
+            name="list_statement_dependencies",
+            description="List only the canonical typed Statement dependencies for one current-node declaration.",
+            args_model=DeclNameArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_dependency_list",
+            groups={AppGroup.DECL_STATEMENT_DEPENDENCY_READ},
+            roles=roles,
+            handler=_list_statement_dependencies,
+        ),
+        handler_tool(
             name="read_proof_nl",
             description="Read the complete Proof NL text, origins, and typed Proof dependencies for one current-node declaration.",
             args_model=DeclNameArgs,
@@ -1041,6 +1132,16 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_STAGE_PROOF_NL_READ},
             roles=roles,
             handler=_read_proof_nl,
+        ),
+        handler_tool(
+            name="list_proof_dependencies",
+            description="List only the canonical typed Proof dependencies for one current-node declaration.",
+            args_model=DeclNameArgs,
+            capability=ToolCapability.READ,
+            result_view="decl_dependency_list",
+            groups={AppGroup.DECL_PROOF_DEPENDENCY_READ},
+            roles=roles,
+            handler=_list_proof_dependencies,
         ),
         handler_tool(
             name="read_formal",

@@ -336,16 +336,34 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     )
     assert _field(round_summary.value, "summary") == "Strict ToolSweep round summary."
 
+    started = ws.runtime.decl_graph.start_round(
+        ws.provider_repo,
+        node_path=CONTENT_NODE_PATH,
+        round_id=round_id,
+    )
+    assert started.ok, started.issues
+    recorded = ws.runtime.decl_graph.record_round_execution_result(
+        ws.provider_repo,
+        node_path=CONTENT_NODE_PATH,
+        round_id=round_id,
+        outcome="blocked",
+        reason="Strict ToolSweep intentionally leaves the planned revisions unexecuted.",
+    )
+    assert recorded.ok, recorded.issues
     terminal = call_tool_with_evidence(
         server,
         "content_plan",
         "mark_decl_round_terminal",
-        {"round_id": round_id, "result_kind": "blocked"},
+        {
+            "round_id": round_id,
+            "result_kind": "blocked",
+            "reason": "Strict ToolSweep intentionally leaves the planned revisions unexecuted.",
+        },
         runtime_context=plan_ctx,
         recorder=evidence_recorder,
         assertion_summary="Unexecuted ToolSweep changes were closed as a terminal blocked round.",
     )
-    assert _field(terminal.value, "status") == "committed"
+    assert _field(terminal.value, "closeout_complete") is True
     assert _field(terminal.value, "result_kind") == "blocked"
 
     closed_strategy = call_tool_with_evidence(
@@ -413,10 +431,11 @@ def _seed_ready_decl(ws: RuntimeMatrixWorkspace, name: str, *, public: bool) -> 
         name=name,
         kind="theorem",
         objective=f"Create {name}.",
-        summary=f"{name} summary.",
-        public=public,
-        target_state=DeclState.PROVED,
-    )
+            summary=f"{name} summary.",
+            public=public,
+            target_state=DeclState.PROVED,
+            require_target_state_satisfied=False,
+        )
     assert created.ok and created.value is not None, created.issues
     assert ws.runtime.decl_graph.start_round(ws.provider_repo, node_path=CONTENT_NODE_PATH, round_id=round_record.value.round_id).ok
     assert ws.runtime.decl_graph.write_statement_nl(
@@ -475,8 +494,15 @@ def _seed_ready_decl(ws: RuntimeMatrixWorkspace, name: str, *, public: bool) -> 
         marks=[reviewed.value],
     )
     assert submitted.ok, submitted.issues
-    committed = ws.runtime.decl_graph.commit_decl_revision(ws.provider_repo, node_path=CONTENT_NODE_PATH, name=name, state=DeclState.PROVED)
-    assert committed.ok, committed.issues
+    advanced = ws.runtime.decl_graph.advance_stage_state(
+        ws.provider_repo,
+        node_path=CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+        stage=DeclStage.PROOF_FORMAL,
+        decl_names=[name],
+    )
+    assert advanced.ok and advanced.value is not None, advanced.issues
+    assert advanced.value == [name]
     assert ws.runtime.decl_graph.write_decl_change_summary(
         ws.provider_repo,
         node_path=CONTENT_NODE_PATH,
@@ -489,6 +515,12 @@ def _seed_ready_decl(ws: RuntimeMatrixWorkspace, name: str, *, public: bool) -> 
         node_path=CONTENT_NODE_PATH,
         round_id=round_record.value.round_id,
         summary=f"{name} seed round complete.",
+    ).ok
+    assert ws.runtime.decl_graph.record_round_execution_result(
+        ws.provider_repo,
+        node_path=CONTENT_NODE_PATH,
+        round_id=round_record.value.round_id,
+        outcome="completed",
     ).ok
     terminal = ws.runtime.decl_graph.mark_round_terminal(
         ws.provider_repo,
