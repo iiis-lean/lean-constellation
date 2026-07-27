@@ -62,11 +62,14 @@ def check_repo_release_runtime_closeout(
             object_ref=owner_flow_id,
         ))
     else:
-        position = str(getattr(getattr(owner, "state", None), "position", ""))
+        position_model = getattr(getattr(owner, "state", None), "position", "")
+        position = str(position_model)
+        position_phase = str(getattr(position_model, "phase", position_model))
         allowed = {
-            "submission_preview": "coordinator_agent" in position,
-            "prepare": "mark_repo_ready" in position,
-            "commit": "completed" in position,
+            "submission_preview": position_phase
+            in {"coordinator_agent", "coordinator_callback", "coordinator_requirement_resume"},
+            "prepare": position_phase == "mark_repo_ready",
+            "commit": position_phase == "completed",
         }[phase]
         if not allowed:
             issues.append(runtime.foundation.issue(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from agent_runtime_kit.flow.models import BaseSubmission, FlowStatus
 
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
@@ -74,7 +75,14 @@ def test_successful_submit_records_typed_submission(tmp_path: Path) -> None:
     assert gateway.accepted[0].searched_targets == ["topology repo"]
 
 
-def test_repo_ready_submit_only_records_candidate_intent_after_preview(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "coordinator_phase",
+    ["coordinator_agent", "coordinator_callback", "coordinator_requirement_resume"],
+)
+def test_repo_ready_submit_only_records_candidate_intent_after_preview(
+    tmp_path: Path,
+    coordinator_phase: str,
+) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
@@ -83,7 +91,7 @@ def test_repo_ready_submit_only_records_candidate_intent_after_preview(tmp_path:
         flow_type="native_repo_coordinator",
         scope_id=f"repo:{tmp_path.name}",
         status="running",
-        state=SimpleNamespace(position="coordinator_agent"),
+        state=SimpleNamespace(position=SimpleNamespace(phase=coordinator_phase)),
         input=SimpleNamespace(repo_root=str(tmp_path), run_context=SimpleNamespace(base_release_id="release-base")),
     )
     runtime.ark.flow_service = SimpleNamespace(
