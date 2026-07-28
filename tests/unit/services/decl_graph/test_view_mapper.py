@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from lean_constellation.services.decl_graph import (
     Decl,
     DeclGraphRound,
     DeclGraphStrategy,
+    DeclRoundStatus,
     DeclReviewMarkRecord,
     DeclRevision,
     DeclStage,
@@ -64,3 +68,15 @@ def test_strategy_round_decl_and_review_views_are_read_only_shapes() -> None:
     assert mapper.round_view(round_record).change_ids == []
     assert mapper.decl_view(decl).visibility == "private"
     assert mapper.review_mark_view(review).passed is True
+
+
+def test_committed_round_requires_complete_plan_closeout_truth() -> None:
+    with pytest.raises(ValidationError):
+        DeclGraphRound(
+            round_id="round-legacy",
+            node_path="Main.Topic",
+            strategy_id="strategy-1",
+            round_index=1,
+            status=DeclRoundStatus.COMMITTED,
+            objective="Legacy committed round without Plan closeout.",
+        )

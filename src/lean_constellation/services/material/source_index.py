@@ -165,17 +165,6 @@ class SourceIndexView(StrictModel):
     committed_at: str | None = None
     summary: str = "Source index draft."
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_absolute_root(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        migrated.pop("repo_root", None)
-        migrated["schema_version"] = 4
-        return migrated
-
-
 class SourceIndexCoverageView(StrictModel):
     file_count: int
     surveyed_file_count: int

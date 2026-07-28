@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.repo_run import SourceScope
+from lean_constellation.services.material.source_corpus import SourceCorpusManifestView
+from lean_constellation.services.material.source_index import SourceIndexView
 
 
 def _prepare_source(repo_root: Path) -> None:
@@ -20,6 +25,25 @@ def _prepare_source(repo_root: Path) -> None:
         encoding="utf-8",
     )
     (source_root / "chapter.md").write_text("Definition A.\nLemma B.\nTheorem C.\n", encoding="utf-8")
+
+
+def test_material_views_reject_legacy_absolute_root_schema() -> None:
+    with pytest.raises(ValidationError):
+        SourceCorpusManifestView.model_validate(
+            {
+                "schema_version": 1,
+                "repo_root": "/legacy/Repo",
+                "summary": "Legacy source corpus.",
+            }
+        )
+    with pytest.raises(ValidationError):
+        SourceIndexView.model_validate(
+            {
+                "schema_version": 3,
+                "repo_root": "/legacy/Repo",
+                "summary": "Legacy source index view.",
+            }
+        )
 
 
 def test_source_index_persists_domain_model_and_returns_view(tmp_path: Path) -> None:

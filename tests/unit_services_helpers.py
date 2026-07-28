@@ -57,8 +57,8 @@ def lean_check_payload(
         "contains_axiom": contains_axiom,
         "message": f"Lean check {status}.",
         "diagnostics": {
-            "repo_root": ".",
-            "file_path": None,
+            "schema_version": 2,
+            "repo_file_path": None,
             "passed": passed,
             "diagnostics": [],
             "summary": f"Diagnostics {status}.",

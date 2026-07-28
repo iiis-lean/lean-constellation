@@ -1,9 +1,11 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.lean_check import LeanDiagnostics
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
 from lean_constellation.services.lean_projection import LeanCheckComponent
 
@@ -55,6 +57,19 @@ def _component(tmp_path: Path, diagnostics: list[dict] | None = None, ok: bool =
     )
     runtime = make_runtime(external_overrides={"lean_mcp_toolkit": toolkit, "lake": FakeLake()})
     return runtime.lean_projection.lean_check
+
+
+def test_lean_diagnostics_reject_legacy_absolute_path_schema() -> None:
+    with pytest.raises(ValidationError):
+        LeanDiagnostics.model_validate(
+            {
+                "schema_version": 1,
+                "repo_root": "/legacy/Repo",
+                "file_path": "/legacy/Repo/Main.lean",
+                "passed": True,
+                "summary": "Legacy diagnostics.",
+            }
+        )
 
 
 def test_run_file_diagnostics_uses_toolkit_and_reports_errors(tmp_path: Path) -> None:

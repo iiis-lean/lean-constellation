@@ -529,11 +529,7 @@ class DeclRoundExecutionComponent:
                     committed_revision_refs=[],
                     projection_outcome="not_requested",
                     round_id=round_id,
-                    summary=(
-                        "Acknowledged migrated declaration round closeout."
-                        if changed
-                        else "Declaration round closeout was already acknowledged."
-                    ),
+                    summary="Declaration round closeout was already acknowledged.",
                 )
             )
         if current_round.status == DeclRoundStatus.DRAFT:

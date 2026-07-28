@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_serializer
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.lean_check import LeanCheck
@@ -364,6 +364,17 @@ class DeclGraphRound(StrictModel):
         if value < 1:
             raise ValueError("round_index must be >= 1")
         return value
+
+    @model_validator(mode="after")
+    def _validate_committed_closeout(self) -> DeclGraphRound:
+        if self.status == DeclRoundStatus.COMMITTED and (
+            self.plan_closeout_acknowledged_at is None
+            or self.plan_closeout_acknowledged_by is None
+        ):
+            raise ValueError(
+                "committed declaration rounds require complete Plan closeout truth"
+            )
+        return self
 
     @field_validator("revision_refs")
     @classmethod

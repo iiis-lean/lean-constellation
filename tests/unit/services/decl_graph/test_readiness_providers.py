@@ -217,8 +217,8 @@ def _passed_check() -> LeanCheckView:
         contains_axiom=False,
         message="Lean check passed.",
         diagnostics=LeanDiagnosticsView(
-            repo_root="/tmp/repo",
-            file_path=None,
+            schema_version=2,
+            repo_file_path=None,
             passed=True,
             diagnostics=[],
             summary="Diagnostics passed.",

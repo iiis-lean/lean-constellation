@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.services.external_clients import (
@@ -40,17 +40,6 @@ class SourceCorpusManifestView(StrictModel):
     generated_at: str = Field(default_factory=utc_now_iso)
     files: list[SourceCorpusFileView] = Field(default_factory=list)
     summary: str
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_absolute_root(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        migrated.pop("repo_root", None)
-        migrated["schema_version"] = 2
-        return migrated
-
 
 class SourceAcquisitionView(StrictModel):
     ok: bool

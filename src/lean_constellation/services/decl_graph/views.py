@@ -68,24 +68,11 @@ class DeclGraphViewMapper:
             execution_reason=round_record.execution_reason,
             result_kind=round_record.result_kind,
             result_reason=round_record.result_reason,
-            closeout_required=(
-                round_record.status == DeclRoundStatus.AWAITING_CLOSEOUT
-                or (
-                    round_record.status == DeclRoundStatus.COMMITTED
-                    and round_record.plan_closeout_acknowledged_at is None
-                )
-            ),
+            closeout_required=round_record.status == DeclRoundStatus.AWAITING_CLOSEOUT,
             required_next_action=(
                 "Write every declaration change summary, write the round summary, then close the round."
                 if round_record.status == DeclRoundStatus.AWAITING_CLOSEOUT
-                else (
-                    "Acknowledge the migrated round closeout before planning more work."
-                    if (
-                        round_record.status == DeclRoundStatus.COMMITTED
-                        and round_record.plan_closeout_acknowledged_at is None
-                    )
-                    else None
-                )
+                else None
             ),
             created_at=round_record.created_at,
             started_at=round_record.started_at,

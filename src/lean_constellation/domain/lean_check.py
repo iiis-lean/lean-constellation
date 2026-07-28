@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 
@@ -24,36 +23,6 @@ class LeanDiagnostics(StrictModel):
     diagnostics: list[LeanDiagnosticItem] = Field(default_factory=list)
     summary: str
     raw_excerpt: str | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_paths(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        repo_root = migrated.pop("repo_root", None)
-        file_path = migrated.pop("file_path", None)
-        if "repo_file_path" not in migrated and file_path is not None:
-            candidate = Path(str(file_path))
-            if candidate.is_absolute():
-                if repo_root is None:
-                    raise ValueError(
-                        "absolute legacy diagnostic file_path requires repo_root"
-                    )
-                root = Path(str(repo_root)).resolve()
-                resolved = candidate.resolve()
-                if not resolved.is_relative_to(root):
-                    raise ValueError(
-                        "legacy diagnostic file_path is outside repo_root"
-                    )
-                migrated["repo_file_path"] = resolved.relative_to(root).as_posix()
-            else:
-                if any(part in {"", ".", ".."} for part in candidate.parts):
-                    raise ValueError("diagnostic repo_file_path is unsafe")
-                migrated["repo_file_path"] = candidate.as_posix()
-        migrated["schema_version"] = 2
-        return migrated
-
 
 class SorryAxiomOccurrence(StrictModel):
     kind: Literal["sorry", "admit", "axiom", "opaque", "unsafe"]

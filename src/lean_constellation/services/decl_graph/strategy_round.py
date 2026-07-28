@@ -434,18 +434,7 @@ class StrategyRoundComponent:
                 round_record.value.result_kind == result_kind
                 and round_record.value.result_reason == normalized_reason
             ):
-                if round_record.value.plan_closeout_acknowledged_at is not None:
-                    return self.runtime.foundation.ok((round_record.value, False))
-                round_record.value.plan_closeout_acknowledged_at = utc_now_iso()
-                round_record.value.plan_closeout_acknowledged_by = normalized_actor
-                written = self._write_round(
-                    repo_root,
-                    node_path=node_path,
-                    round_record=round_record.value,
-                )
-                if not written.ok or written.value is None:
-                    return self.runtime.foundation.fail(written.issues)
-                return self.runtime.foundation.ok((written.value, True))
+                return self.runtime.foundation.ok((round_record.value, False))
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "round_closeout_conflict",
@@ -577,10 +566,6 @@ class StrategyRoundComponent:
                     DeclRoundStatus.RUNNING,
                     DeclRoundStatus.AWAITING_CLOSEOUT,
                 }
-                or (
-                    round_record.status == DeclRoundStatus.COMMITTED
-                    and round_record.plan_closeout_acknowledged_at is None
-                )
             ):
                 return round_record
         return None
