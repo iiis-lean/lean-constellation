@@ -107,7 +107,11 @@ def _create_scope_with_public_decl(runtime, repo_root: Path) -> DeclRef:
     ref = DeclRef(repo=None, node="Main.Provider", name="helper", revision=1)
     loaded.value.exports = [ref]
     assert runtime.foundation.store.write_json_atomic(contract_path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
-    assert runtime.node.commit_scope_contract(repo_root, scope_path="Main.Provider", summary="Expose helper.").ok
+    assert runtime.node.contract._commit_scope_contract_after_guard(
+        repo_root,
+        scope_path="Main.Provider",
+        summary="Expose helper.",
+    ).ok
     return ref
 
 
@@ -1379,7 +1383,11 @@ def test_public_decl_boundary_tools_invoke_node_access_resolver(tmp_path: Path) 
         success_criteria="Consumer ready.",
     ).ok
     _create_public_decl(runtime, tmp_path, node_path="Main.Provider.Core", name="helper")
-    assert runtime.node.commit_scope_contract(tmp_path, scope_path="Main.Provider", summary="Expose helper.").ok
+    assert runtime.node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Provider",
+        summary="Expose helper.",
+    ).ok
     assert runtime.node.add_current_node_dep(
         tmp_path,
         node_path="Main.Consumer",

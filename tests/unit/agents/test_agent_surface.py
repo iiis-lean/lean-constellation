@@ -14,8 +14,8 @@ EXPECTED_SURFACE_COUNTS = {
     "RootInterfacePrepareAgent": (7, 15, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 24, 1, 4, 2),
-    "CoordinatorAgent": (38, 89, 2, 4, 17),
-    "ContentPlanAgent": (32, 82, 3, 6, 15),
+    "CoordinatorAgent": (40, 92, 2, 4, 17),
+    "ContentPlanAgent": (34, 85, 3, 6, 16),
     "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
     "ResourceReconAgent": (8, 22, 2, 3, 4),
@@ -37,8 +37,8 @@ EXPECTED_APPLICATION_SURFACE_HASHES = {
     "RootInterfacePrepareAgent": "744c85a080bb7ec6ecf1e2923beee4fb683ce68347599ab76c2eee9b3e905cd9",
     "AdapterDeclCatalogAgent": "832d605c4fca89e0bace44a54ab04487dbf11c268c50629a606b8e6519006fb5",
     "ResourceCuratorAgent": "6b8d4e4823e83c81b3a971103810bcb4fb934d156f9fabed276d2245efd1e069",
-    "CoordinatorAgent": "9c37af24edb14574de83c3d8152334d64e521d76131bdbd7064bfed5606f25f8",
-    "ContentPlanAgent": "bf10268f6fe7b7e29b55c41abfbd066d1d2f0958e3a9a0648142b5b0ee3fa4dc",
+    "CoordinatorAgent": "3d1e55f533b99becb875461f2f222935cf3523de7ff485f802744eb0f14f1fd2",
+    "ContentPlanAgent": "025b5a89bdd41e17244ecd9c82854c46e0d969d22d4a15ff22a16e3032b3e33a",
     "NodeDirDependencyReconAgent": "78424e9c83a6d31e464f5bcfaa583279a967ed718f7783ed820bd5ea5419709c",
     "MathlibReconAgent": "2106d09b06fa7140322909262cdb5a533b4ba881b13bb74ee1932e714a000220",
     "ResourceReconAgent": "02a24ca89792c62f0048e410363e3cbe50f3adb1e07c1ba853dbdacb50ed97b8",
@@ -223,8 +223,8 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
     assert len(report.skills) == 17
-    assert len(report.application_group_keys) == 38
-    assert len(report.application_tools) == 89
+    assert len(report.application_group_keys) == 40
+    assert len(report.application_tools) == 92
     assert "read_visible_decl_lean_file" in tools
     assert len(report.submit_group_keys) == 2
     assert len(report.submit_tools) == 4
@@ -426,15 +426,36 @@ def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
         "add_node_mathlib_decl_hint",
         "list_node_public_decls",
         "inspect_node_public_decl",
+        "inspect_public_statement_closure",
+        "promote_decl_public",
+        "promote_public_statement_closure",
     } <= coordinator_tools
     assert "list_current_node_public_decls" not in coordinator_tools
     assert "inspect_current_node_public_decl" not in coordinator_tools
     assert "add_node_dep" not in content_plan_tools
     assert "bind_current_node_interface" in content_plan_tools
+    assert {
+        "inspect_current_node_public_statement_closure",
+        "promote_current_decl_public",
+        "promote_current_node_public_statement_closure",
+    } <= content_plan_tools
+    assert {
+        "promote_decl_public",
+        "promote_public_statement_closure",
+    }.isdisjoint(content_plan_tools)
     assert "bind_node_interface" not in content_plan_tools
     assert "add_node_mathlib_module_hint" not in mathlib_recon_tools
     assert "search_arxiv_theorems" not in mathlib_recon_tools
     assert "search_arxiv_theorems" in {tool.name for tool in reports["ProofNLWorkerAgent"].application_tools}
+    for agent_type, report in reports.items():
+        if agent_type in {"CoordinatorAgent", "ContentPlanAgent"}:
+            continue
+        assert {
+            "promote_decl_public",
+            "promote_public_statement_closure",
+            "promote_current_decl_public",
+            "promote_current_node_public_statement_closure",
+        }.isdisjoint({tool.name for tool in report.application_tools})
 
 
 def test_source_prepare_and_resource_curator_keep_acquisition_boundaries() -> None:

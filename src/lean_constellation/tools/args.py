@@ -803,6 +803,50 @@ class DeclNamesArgs(StrictModel):
     decl_names: list[str] = Field(description="Declaration names in the current content node.")
 
 
+class PublicStatementClosureArgs(StrictModel):
+    root_decl_names: list[str] = Field(
+        default_factory=list,
+        description="Optional current-node declaration roots; existing public roots are always included.",
+    )
+
+
+class PublicStatementRootInput(StrictModel):
+    node_path: str = Field(description="Current-repository Content node path.")
+    decl_name: str = Field(description="Declaration name in that Content node.")
+
+
+class RepoPublicStatementClosureArgs(StrictModel):
+    boundary: Literal["node", "repo"] = Field(
+        description="Inspect or repair one Content node boundary or the repository Main boundary.",
+    )
+    node_path: str | None = Field(
+        default=None,
+        description="Content node path; required only when boundary is node.",
+    )
+    roots: list[PublicStatementRootInput] = Field(
+        default_factory=list,
+        description="Optional current-repository roots added to the existing public boundary.",
+    )
+
+    @model_validator(mode="after")
+    def _boundary_matches_node_path(self) -> "RepoPublicStatementClosureArgs":
+        if self.boundary == "node" and not (self.node_path or "").strip():
+            raise ValueError("node_path is required when boundary=node")
+        if self.boundary == "repo" and self.node_path is not None:
+            raise ValueError("node_path must be omitted when boundary=repo")
+        if self.boundary == "node" and any(
+            root.node_path != self.node_path for root in self.roots
+        ):
+            raise ValueError(
+                "Every root node_path must match node_path when boundary=node"
+            )
+        return self
+
+
+class NodeDeclPromotionArgs(NodePathArgs):
+    decl_name: str = Field(description="Declaration name in the selected current-repository Content node.")
+
+
 class DeclReadyArgs(DeclNameArgs):
     policy: str | None = Field(default=None, description="Optional readiness policy override.")
 

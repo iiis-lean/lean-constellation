@@ -248,8 +248,8 @@ def test_agent_resource_contract_covers_current_tool_surface() -> None:
     resources = _agent_resource_contract()
 
     assert resources.agent_type_count == 20
-    assert resources.application_tool_count == 252
-    assert resources.application_group_count == 99
+    assert resources.application_tool_count == 258
+    assert resources.application_group_count == 103
     assert resources.application_view_count == 20
     assert resources.submit_tool_count == 29
     assert resources.submit_group_count == 16

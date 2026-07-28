@@ -573,6 +573,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             SkillKey.DECL_STRATEGY_PLANNING,
             SkillKey.DECL_ROUND_CHANGE_PLANNING,
             SkillKey.DECL_ROUND_CLOSEOUT,
+            SkillKey.CURRENT_NODE_PUBLIC_BOUNDARY_CURATION,
             SkillKey.CONTENT_NODE_COMPLETION_DECISION,
         ],
         app_view=AppView.CONTENT_PLAN,

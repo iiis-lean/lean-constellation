@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from lean_constellation.services import create_test_runtime_services
+from lean_constellation.tools.args import PublicStatementClosureArgs
 from lean_constellation.tools import (
     build_application_tool_groups,
     build_application_tool_specs,
@@ -41,7 +42,7 @@ def test_application_registry_is_orthogonal_and_fully_exposed() -> None:
     views = build_application_tool_views(groups)
     group_by_key = {group.key: group for group in groups}
 
-    assert len(specs) == 252
+    assert len(specs) == 258
     assert all(len(spec.tool_groups) == 1 for spec in specs)
     assert all(group.tool_names for group in groups)
     assert all(view.extra_tool_names == [] for view in views)
@@ -94,6 +95,10 @@ def test_representative_agent_type_resolves_expected_view() -> None:
     assert adapter_catalog.ok
     assert adapter_catalog.value is not None
     assert adapter_catalog.value.key == "adapter_repo_import"
+
+
+def test_current_node_public_closure_args_cannot_select_repo_or_node() -> None:
+    assert set(PublicStatementClosureArgs.model_fields) == {"root_decl_names"}
 
 
 def test_content_plan_exposes_only_current_node_interface_binding() -> None:

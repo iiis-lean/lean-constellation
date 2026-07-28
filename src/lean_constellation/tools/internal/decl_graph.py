@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.tools.args import (
     ChangeSummaryArgs,
@@ -14,12 +15,15 @@ from lean_constellation.tools.args import (
     DeclNamesArgs,
     NodeDeclInspectArgs,
     NodeDeclListArgs,
+    NodeDeclPromotionArgs,
     DeclUpdateArgs,
     NodePublicDeclInspectArgs,
     NodePublicDeclListArgs,
     NoArgs,
     RepoPublicDeclInspectArgs,
     RepoPublicDeclListArgs,
+    RepoPublicStatementClosureArgs,
+    PublicStatementClosureArgs,
     RoundDraftArgs,
     RoundIdArgs,
     RoundSummaryArgs,
@@ -44,6 +48,71 @@ def _maybe_node(ctx) -> str | None:
 def _actor_role(ctx) -> str:
     role = ctx.actor.role
     return role.value if hasattr(role, "value") else str(role)
+
+
+def _closure_roots(args: RepoPublicStatementClosureArgs) -> list[DeclRef]:
+    return [
+        DeclRef(node=root.node_path, name=root.decl_name)
+        for root in args.roots
+    ]
+
+
+def _inspect_current_node_public_statement_closure(runtime, ctx, args: PublicStatementClosureArgs):
+    return runtime.node.public_statement_closure.inspect_node(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        root_decl_names=args.root_decl_names or None,
+    )
+
+
+def _promote_current_decl_public(runtime, ctx, args: DeclNameArgs):
+    return runtime.node.public_statement_closure.promote_decl_public(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        decl_name=args.decl_name,
+    )
+
+
+def _promote_current_node_public_statement_closure(runtime, ctx, args: PublicStatementClosureArgs):
+    return runtime.node.public_statement_closure.promote_node_closure(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        root_decl_names=args.root_decl_names or None,
+    )
+
+
+def _inspect_public_statement_closure(runtime, ctx, args: RepoPublicStatementClosureArgs):
+    if args.boundary == "node":
+        return runtime.node.public_statement_closure.inspect_node(
+            ctx.repo_root,
+            node_path=args.node_path or "",
+            root_decl_names=[root.decl_name for root in args.roots] or None,
+        )
+    return runtime.node.public_statement_closure.inspect_repo(
+        ctx.repo_root,
+        roots=_closure_roots(args) or None,
+    )
+
+
+def _promote_decl_public(runtime, ctx, args: NodeDeclPromotionArgs):
+    return runtime.node.public_statement_closure.promote_decl_public(
+        ctx.repo_root,
+        node_path=args.node_path,
+        decl_name=args.decl_name,
+    )
+
+
+def _promote_public_statement_closure(runtime, ctx, args: RepoPublicStatementClosureArgs):
+    if args.boundary == "node":
+        return runtime.node.public_statement_closure.promote_node_closure(
+            ctx.repo_root,
+            node_path=args.node_path or "",
+            root_decl_names=[root.decl_name for root in args.roots] or None,
+        )
+    return runtime.node.public_statement_closure.promote_repo_closure(
+        ctx.repo_root,
+        roots=_closure_roots(args) or None,
+    )
 
 
 def _decl_satisfaction(runtime, repo_root, *, node_path: str, decl_name: str):
@@ -1083,6 +1152,36 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_list_current_node_decls,
         ),
         handler_tool(
+            name="inspect_current_node_public_statement_closure",
+            description="Inspect whether current-node public roots expose every same-node formal Statement dependency.",
+            args_model=PublicStatementClosureArgs,
+            capability=ToolCapability.READ,
+            result_view="public_statement_closure",
+            groups={AppGroup.CURRENT_NODE_PUBLIC_CLOSURE_READ},
+            roles=plan_roles,
+            handler=_inspect_current_node_public_statement_closure,
+        ),
+        handler_tool(
+            name="promote_current_decl_public",
+            description="Add public visibility to one ready declaration in the current Content node.",
+            args_model=DeclNameArgs,
+            capability=ToolCapability.WRITE,
+            result_view="public_statement_promotion_receipt",
+            groups={AppGroup.CURRENT_NODE_PUBLIC_VISIBILITY_WRITE},
+            roles=plan_roles,
+            handler=_promote_current_decl_public,
+        ),
+        handler_tool(
+            name="promote_current_node_public_statement_closure",
+            description="Atomically promote ready same-node formal Statement dependencies required by current-node public roots.",
+            args_model=PublicStatementClosureArgs,
+            capability=ToolCapability.WRITE,
+            result_view="public_statement_promotion_receipt",
+            groups={AppGroup.CURRENT_NODE_PUBLIC_VISIBILITY_WRITE},
+            roles=plan_roles,
+            handler=_promote_current_node_public_statement_closure,
+        ),
+        handler_tool(
             name="list_node_decls",
             description="List all public and private declarations in one permitted node of the current repository.",
             args_model=NodeDeclListArgs,
@@ -1091,6 +1190,39 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_GRAPH_READ_BY_NODE},
             roles={"coordinator", "admin"},
             handler=_list_node_decls,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="inspect_public_statement_closure",
+            description="Inspect formal Statement dependency visibility for one current-repository Content node or the repository Main boundary.",
+            args_model=RepoPublicStatementClosureArgs,
+            capability=ToolCapability.READ,
+            result_view="public_statement_closure",
+            groups={AppGroup.REPO_PUBLIC_CLOSURE_READ},
+            roles={"coordinator", "admin"},
+            handler=_inspect_public_statement_closure,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="promote_decl_public",
+            description="Add public visibility to one ready declaration in a selected current-repository Content node.",
+            args_model=NodeDeclPromotionArgs,
+            capability=ToolCapability.WRITE,
+            result_view="public_statement_promotion_receipt",
+            groups={AppGroup.REPO_PUBLIC_VISIBILITY_WRITE},
+            roles={"coordinator", "admin"},
+            handler=_promote_decl_public,
+            required_context={"repo"},
+        ),
+        handler_tool(
+            name="promote_public_statement_closure",
+            description="Atomically repair formal Statement dependency visibility for one Content node or the repository Main boundary.",
+            args_model=RepoPublicStatementClosureArgs,
+            capability=ToolCapability.WRITE,
+            result_view="public_statement_promotion_receipt",
+            groups={AppGroup.REPO_PUBLIC_VISIBILITY_WRITE},
+            roles={"coordinator", "admin"},
+            handler=_promote_public_statement_closure,
             required_context={"repo"},
         ),
         handler_tool(

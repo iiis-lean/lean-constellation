@@ -112,7 +112,7 @@ Read `get_current_repo_completion_policy` and apply its completion mode to the
 source and interface scope named by the current run:
 
 - interface_declared: build the smallest stable node subtree needed to expose
-  the required public interfaces and their declaration prerequisites. Do not
+  the required public interfaces and their formal Statement prerequisites. Do not
   create proof-only helper nodes.
 - graph_declared: represent the selected source scope as a complete
   declaration graph, including important definitions, theorem statements, and
@@ -126,7 +126,10 @@ completion mode defines *how far* that scope must be completed. Preserve every
 released state floor and release-protected statement. Use scope nodes for broad
 mathematical regions, content nodes for coherent declaration work, explicit
 exports for sibling reuse, and contracts that state the completion expected for
-their declarations.
+their declarations. A public root is incomplete when a current-repository
+declaration required by its formal Statement remains private or is missing from
+the enclosing Scope export chain. Proof-only dependencies remain implementation
+detail unless independently selected as stable API.
 """
 
 
@@ -136,7 +139,8 @@ Read `get_current_repo_completion_policy`, then plan rounds for the current
 contract and source ownership:
 
 - interface_declared: declare the contract-required public interfaces and
-  only the foundations needed to state and compile them. Do not plan proof-only
+  the formal Statement foundations needed to state and compile them. Those
+  prerequisites must be public in the current node. Do not plan proof-only
   hidden helpers.
 - graph_declared: declare every important definition, theorem statement, and
   intermediate lemma statement in the node's selected source scope. Stop
@@ -151,6 +155,8 @@ node owns. Completion mode determines the required state of that material.
 Never lower a released state floor or rewrite a release-protected statement.
 Before targeting `proved`, verify source proof stages and accepted dependency
 closure; do not turn missing helpers into repeated unbounded parent retries.
+Before Content completion, inspect the current-node public Statement closure and
+use add-only visibility promotion for already-ready local prerequisites.
 """
 
 
@@ -259,6 +265,8 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             AppGroup.SCOPE_EXPORT_INTERFACE_READ,
             AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
             AppGroup.SCOPE_CLOSE_READ,
+            AppGroup.REPO_PUBLIC_CLOSURE_READ,
+            AppGroup.REPO_PUBLIC_VISIBILITY_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body=_body(
@@ -268,6 +276,8 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Read required interfaces and current export candidates with `list_node_interfaces`, `list_scope_export_candidates`, and `list_scope_exports`.",
                 "Preserve historical public export chains as compatible anchors; append new exports without silently replacing a released boundary.",
                 "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
+                "Inspect the Scope or repository formal Statement closure. Every current-repository declaration required to state a selected public root must be public and exported through each enclosing Scope.",
+                "Use `promote_decl_public` for one reviewed declaration or `promote_public_statement_closure` for an add-only closure repair. Do not promote proof-only helpers automatically.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
                 "Use `get_scope_close_view` to confirm exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
             ),
@@ -511,6 +521,8 @@ The current tree and affected contracts express stable mathematical ownership wi
             AppGroup.SCOPE_EXPORT_INTERFACE_WRITE,
             AppGroup.SCOPE_CONTRACT_COMMIT,
             AppGroup.SCOPE_CLOSE_READ,
+            AppGroup.REPO_PUBLIC_CLOSURE_READ,
+            AppGroup.REPO_PUBLIC_VISIBILITY_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Coordinator Scope Lifecycle
@@ -528,7 +540,7 @@ When concrete export selection or interface binding is required, read `scope-exp
 
 ## Commit
 
-Call `commit_scope_contract` only after required children are complete, exports and bindings satisfy the contract, and the close view reports stable projection and readiness. If the gate rejects, repair only Coordinator-owned semantic state and re-read the close view.
+Call `inspect_public_statement_closure` for the Scope before commit. A selected public theorem or definition must expose its current-repository formal Statement dependency closure through the Scope chain; proof-only dependencies remain private. Use add-only promotion only for already-ready declarations. Then call `commit_scope_contract` only after required children are complete, exports and bindings satisfy the contract, and the close view reports stable projection and readiness. If the gate rejects, repair only Coordinator-owned semantic state and re-read the close view.
 
 Do not export a declaration merely because it exists, and do not hide an unsatisfied interface behind an unrelated export.
 
@@ -774,6 +786,8 @@ Do not attach the future provider from this Skill. The requirement resume gate l
             AppGroup.SCOPE_CLOSE_READ,
             AppGroup.LAKE_DEPENDENCY_READ,
             AppGroup.REPO_READY_READ,
+            AppGroup.REPO_PUBLIC_CLOSURE_READ,
+            AppGroup.REPO_PUBLIC_VISIBILITY_WRITE,
             SubmitGroup.COORDINATOR_SUBMIT,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
@@ -786,8 +800,9 @@ Use this Skill only when all expected Content work is reconciled, required Scope
 1. Re-read `get_current_repo_run_context`, `get_preparation_input`, `get_node_tree`, and current Lake dependencies. Confirm the bound release baseline still matches current truth.
 2. Call `get_scope_close_view` for Main and any relevant unverified Scope.
 3. Check Main interfaces and exports against protected root contracts.
-4. Call `get_repo_ready_node_view`. It previews the authoritative candidate release gate across active contract heads, DeclGraphs, files/projections, compatibility, target policy, and build preconditions; inspect every reported issue.
-5. If the deterministic view is not ready, repair only the owning semantic state and return to the next-action loop.
+4. Call `inspect_public_statement_closure` with the repository boundary. Every Main root's current-repository formal Statement dependencies must be public in their Content nodes and exported through Main. Use `promote_public_statement_closure` only for an add-only repair of already-ready declarations.
+5. Call `get_repo_ready_node_view`. It previews the authoritative candidate release gate across active contract heads, DeclGraphs, files/projections, compatibility, target policy, public Statement closure, and build preconditions; inspect every reported issue.
+6. If the deterministic view is not ready, repair only the owning semantic state and return to the next-action loop.
 
 ## Submit
 
@@ -1108,6 +1123,8 @@ Use `plan_create_decl` for new declarations. Each create change should have:
 - target_state;
 - require_target_state_satisfied.
 
+Choose visibility from the intended stable API rather than proof implementation convenience. Contract interface outputs, stable reusable constructions, and declarations required by the formal Statement of an intended public root should be public. Proof-only helpers remain private by default. Existing committed declarations that only need added visibility are repaired during public-boundary curation and do not require a new update round.
+
 For a native repository, do not plan or guess `Decl.module` or the Lean full declaration name. The system derives the module from repo/node/kind/name and formal capture discovers the full name.
 
 Helper lemmas that matter to later work should be tracked as their own declarations. Do not hide important helper lemmas as untracked local Lean code.
@@ -1210,6 +1227,41 @@ Use `mark_decl_round_terminal` only after the change summaries and round summary
 - Do not hide blocked causes in a generic summary.
 """,
     ),
+    SkillKey.CURRENT_NODE_PUBLIC_BOUNDARY_CURATION.value: LeanSkillDefinition(
+        name="current-node-public-boundary-curation",
+        description="Use when ContentPlan must inspect or repair the current Content node's public formal Statement surface.",
+        group="content_plan",
+        required_tool_groups=_groups(
+            AppGroup.CURRENT_NODE_PUBLIC_DECL_READ,
+            AppGroup.CURRENT_NODE_PUBLIC_CLOSURE_READ,
+            AppGroup.CURRENT_NODE_PUBLIC_VISIBILITY_WRITE,
+        ),
+        source_design_doc="dev_docs/implementation/public_statement_closure_and_visibility_promotion/02_Agent工具权限与文本更新.md",
+        body="""# Current Node Public Boundary Curation
+
+Use this Skill during round planning and Content closeout to keep the current node's public API formally usable.
+
+## Select Public Roots
+
+Public roots include contract interfaces, stable reusable constructions or structures, and independently useful theorem results. A small stable API is preferred, but it cannot hide declarations that are required to state those roots.
+
+Proof-only dependencies and local proof helpers remain private unless they are independently useful public API.
+
+## Inspect And Repair
+
+1. Read current public declarations and call `inspect_current_node_public_statement_closure`.
+2. Inspect each reported private formal Statement prerequisite.
+3. If one already-ready declaration was intentionally selected as public API, call `promote_current_decl_public`.
+4. For a complete add-only local repair, call `promote_current_node_public_statement_closure`.
+5. Reinspect before the Content completion gate.
+
+Visibility promotion changes no declaration code, revision, proof, or contract dependency. It cannot repair unfinished work.
+
+## Boundary
+
+These tools are restricted to the current Content node. If a formal Statement dependency belongs to another node and is not public through that provider boundary, report a Coordinator blocker. Do not create or export parent Scope boundaries from this Skill.
+""",
+    ),
     SkillKey.CONTENT_NODE_COMPLETION_DECISION.value: LeanSkillDefinition(
         name="content-node-completion-decision",
         description="Use when the ContentPlanAgent decides whether the current content node task should end as ready, blocked, or failed.",
@@ -1218,6 +1270,8 @@ Use `mark_decl_round_terminal` only after the change summaries and round summary
             SubmitGroup.CONTENT_COMPLETION_SUBMIT,
             AppGroup.CONTENT_INTERFACE_CURRENT_WRITE,
             AppGroup.CONTENT_COMPLETION_GATE_READ,
+            AppGroup.CURRENT_NODE_PUBLIC_CLOSURE_READ,
+            AppGroup.CURRENT_NODE_PUBLIC_VISIBILITY_WRITE,
         ),
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Content Node Completion Decision
@@ -1238,13 +1292,19 @@ Before the readiness gate, inspect the current contract and current public decla
 
 This is ContentPlan closeout work. Do not treat an unbound current-node interface as a Coordinator blocker when a valid declaration is available. Do not alter the interface requirement, bind a declaration from another node, or bind parent Scope exports; those remain outside this tool's authority.
 
+## Public Statement Closure
+
+Before the readiness gate, call `inspect_current_node_public_statement_closure`. Every public declaration must expose every same-node declaration named by its formal Statement dependencies. Proof-only dependencies remain private unless independently selected as stable API.
+
+Use `promote_current_decl_public` for one reviewed declaration or `promote_current_node_public_statement_closure` for a complete add-only local repair. If another node's required declaration is not already public through its boundary, report a precise Coordinator blocker instead of expanding authority.
+
 ## Interface Semantic Fit
 
 For each required interface, read the actual bound public declaration and compare it with the interface summary and statement hint. Preserve the hinted consumer objects, binders, assumptions, index representation, and conclusion direction. If a hint includes a partial Lean snippet, verify that the bound declaration supplies that capability semantically; name similarity is not evidence, and the hint is not an exact header equality requirement. If the declaration is clearly mismatched, continue current-node work or report a contract blocker instead of submitting ready.
 
 ## Ready
 
-Before ready, call `check_current_content_node_completion`. Use the returned gate report as the authority for whether the current node satisfies its contract, proof-policy requirements, dependency identities, managed-file synchronization, interfaces, and unresolved callback requirements. The deterministic gate refreshes the node boundary and builds its `Interfaces` module so every current public declaration is checked through the actual import surface and standard artifacts are generated.
+Before ready, call `check_current_content_node_completion`. Use the returned gate report as the authority for whether the current node satisfies its contract, public Statement closure, proof-policy requirements, dependency identities, managed-file synchronization, interfaces, and unresolved callback requirements. The deterministic gate refreshes the node boundary and builds its `Interfaces` module so every current public declaration is checked through the actual import surface and standard artifacts are generated.
 
 Call `submit_content_node_ready` only when the current tools show the node satisfies its contract. After an accepted ready submit, stop.
 

@@ -33,6 +33,7 @@ class SkillKey(StrEnum):
     DECL_STRATEGY_PLANNING = "decl-strategy-planning"
     DECL_ROUND_CHANGE_PLANNING = "decl-round-change-planning"
     DECL_ROUND_CLOSEOUT = "decl-round-closeout"
+    CURRENT_NODE_PUBLIC_BOUNDARY_CURATION = "current-node-public-boundary-curation"
     CONTENT_NODE_COMPLETION_DECISION = "content-node-completion-decision"
     CONTENT_PLAN_COMPLETION_POLICY = "content-plan-completion-policy"
     DECL_DEPENDENCY_ORIGIN_CURATION = "decl-dependency-origin-curation"
