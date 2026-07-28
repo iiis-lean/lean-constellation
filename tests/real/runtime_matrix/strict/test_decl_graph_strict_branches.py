@@ -186,13 +186,15 @@ def _seed_committed_decl(ws: RuntimeMatrixWorkspace, *, name: str, public: bool)
         lean_check=_passed_proof_check(),
         deps=[],
     ).ok
-    committed = ws.runtime.decl_graph.commit_decl_revision(
-        ws.provider_repo,
-        node_path=round_fixture.node_path,
-        name=name,
-        state=DeclState.PROVED,
-    )
-    assert committed.ok, committed.issues
+    for stage in ("statement_nl", "statement_formal", "proof_nl", "proof_formal"):
+        advanced = ws.runtime.decl_graph.advance_stage_state(
+            ws.provider_repo,
+            node_path=round_fixture.node_path,
+            round_id=round_fixture.round_id,
+            stage=stage,
+            decl_names=[name],
+        )
+        assert advanced.ok, advanced.issues
     assert ws.runtime.decl_graph.write_decl_change_summary(
         ws.provider_repo,
         node_path=round_fixture.node_path,
@@ -206,6 +208,13 @@ def _seed_committed_decl(ws: RuntimeMatrixWorkspace, *, name: str, public: bool)
         round_id=round_fixture.round_id,
         summary=f"{name} seed round complete.",
     ).ok
+    recorded = ws.runtime.decl_graph.record_round_execution_result(
+        ws.provider_repo,
+        node_path=round_fixture.node_path,
+        round_id=round_fixture.round_id,
+        outcome="completed",
+    )
+    assert recorded.ok, recorded.issues
     terminal = ws.runtime.decl_graph.mark_round_terminal(
         ws.provider_repo,
         node_path=round_fixture.node_path,

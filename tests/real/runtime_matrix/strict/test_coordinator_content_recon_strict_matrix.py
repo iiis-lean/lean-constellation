@@ -298,6 +298,13 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
 
     decl_ws = create_runtime_matrix_workspace(tmp_path / "decl")
     round_fixture = decl_ws.create_decl_round()
+    decl_round = decl_ws.runtime.decl_graph.get_round(
+        decl_ws.provider_repo,
+        node_path=round_fixture.node_path,
+        round_id=round_fixture.round_id,
+    )
+    assert decl_round.ok and decl_round.value is not None, decl_round.issues
+    change_id = decl_round.value.change_ids[0]
     decl_provider = ScriptedMcpProvider(
         decl_ws.runtime,
         {
@@ -310,8 +317,40 @@ def test_strict_content_node_task_terminal_and_dispatch_evidence(
                         "round_id": round_fixture.round_id,
                         "round_index": round_fixture.round_index,
                     },
-                ),
-                ("submit_content_node_failed", {"reason": "Strict decl round callback observed."}),
+                    ),
+                        [
+                            (
+                                "application",
+                                "write_decl_change_summary",
+                                {
+                                    "round_id": round_fixture.round_id,
+                                    "change_id": change_id,
+                                    "summary": "Strict blocked change reviewed during callback.",
+                                },
+                            ),
+                            (
+                                "application",
+                                "write_decl_round_summary",
+                                {
+                                    "round_id": round_fixture.round_id,
+                                    "summary": "Strict decl round child blocked.",
+                                },
+                            ),
+                            (
+                                "application",
+                                "mark_decl_round_terminal",
+                            {
+                                "round_id": round_fixture.round_id,
+                                "result_kind": "blocked",
+                                "reason": "Strict decl round child blocked.",
+                            },
+                        ),
+                        (
+                            "submit",
+                            "submit_content_node_failed",
+                            {"reason": "Strict decl round callback observed."},
+                        ),
+                    ],
             ],
             "StatementNLWorkerAgent": [
                 (

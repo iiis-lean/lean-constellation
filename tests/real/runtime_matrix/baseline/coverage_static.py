@@ -82,7 +82,7 @@ def registry_fingerprint(snapshot: RegistrySnapshot | None = None) -> str:
 
 # This pin makes registry additions/removals fail until the Runtime Matrix
 # coverage declaration is consciously refreshed.
-EXPECTED_REGISTRY_FINGERPRINT = "d44f29ba3a8b4ff098909bf2cebc70311a495b14f243eff5ddc6c0600c1ba0c3"
+EXPECTED_REGISTRY_FINGERPRINT = "5c7ca8f5cfed934b37640c63796eb6d56ca9680d86a1258618f7db4e57e200d8"
 
 
 def required_registry_tags(snapshot: RegistrySnapshot | None = None) -> set[str]:

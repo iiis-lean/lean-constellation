@@ -153,6 +153,13 @@ def test_content_node_task_decl_round_dispatch_callback_branch(
 ) -> None:
     ws = runtime_matrix_workspace
     round_fixture = ws.create_decl_round()
+    decl_round = ws.runtime.decl_graph.get_round(
+        ws.provider_repo,
+        node_path=round_fixture.node_path,
+        round_id=round_fixture.round_id,
+    )
+    assert decl_round.ok and decl_round.value is not None, decl_round.issues
+    change_id = decl_round.value.change_ids[0]
     provider = ScriptedMcpProvider(
         ws.runtime,
         {
@@ -165,8 +172,42 @@ def test_content_node_task_decl_round_dispatch_callback_branch(
                         "round_id": round_fixture.round_id,
                         "round_index": round_fixture.round_index,
                     },
-                ),
-                ("submit_content_node_failed", {"reason": "Runtime Matrix decl round callback observed."}),
+                    ),
+                        [
+                            (
+                                "application",
+                                "write_decl_change_summary",
+                                {
+                                    "round_id": round_fixture.round_id,
+                                    "change_id": change_id,
+                                    "summary": "Blocked change reviewed during callback.",
+                                },
+                            ),
+                            (
+                                "application",
+                                "write_decl_round_summary",
+                                {
+                                    "round_id": round_fixture.round_id,
+                                    "summary": "Runtime Matrix decl round child blocked.",
+                                },
+                            ),
+                            (
+                                "application",
+                                "mark_decl_round_terminal",
+                            {
+                                "round_id": round_fixture.round_id,
+                                "result_kind": "blocked",
+                                "reason": "Runtime Matrix decl round child blocked.",
+                            },
+                        ),
+                        (
+                            "submit",
+                            "submit_content_node_failed",
+                            {
+                                "reason": "Runtime Matrix decl round callback observed."
+                            },
+                        ),
+                    ],
             ],
             "StatementNLWorkerAgent": [
                 (
