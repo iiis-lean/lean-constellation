@@ -14,6 +14,7 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.common.checkpoint_policy import repo_flow_boundary_checkpoints_enabled
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.publication import ReleasePolicy
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.services.validation_snapshot.release_finalizer import PreparedRepoReleaseView
 
@@ -115,7 +116,6 @@ class MarkCoordinatorRepoReadyStepResult(LeanRenderableStepResult):
             "satisfied_requirement_count": self.satisfied_requirement_count,
             "repo_summary": self.repo_summary,
             "release_id": self.prepared_release.release.release_id if self.prepared_release else None,
-            "checkpoint_id": self.prepared_release.release.repo_checkpoint_id if self.prepared_release else None,
             "blocking_issue_kinds": list(self.blocking_issue_kinds),
             "error_code": self.error_code,
             "error_message": self.error_message,
@@ -412,6 +412,41 @@ class MarkCoordinatorRepoReadyStep(BaseStep):
         from lean_constellation.flows.coordinator.release_runtime import check_repo_release_runtime_closeout
 
         validation_snapshot = _validation_snapshot(ctx)
+        publication_policy = (
+            validation_snapshot.runtime.repo_workspace.publication.resolve_policy(
+                repo_root
+            )
+        )
+        if not publication_policy.ok or publication_policy.value is None:
+            code, message = _first_issue(
+                publication_policy.issues,
+                fallback_code="repo_publication_policy_invalid",
+            )
+            return ctx.complete_step(
+                MarkCoordinatorRepoReadyStepResult(
+                    outcome="blocked",
+                    repo_key=input_model.repo_key,
+                    repo_summary=self.repo_summary,
+                    error_code=code,
+                    error_message=message,
+                    summary=message,
+                )
+            )
+        if (
+            publication_policy.value.policy.release_policy
+            == ReleasePolicy.MANUAL
+        ):
+            return ctx.complete_step(
+                MarkCoordinatorRepoReadyStepResult(
+                    outcome="ready_marked",
+                    repo_key=input_model.repo_key,
+                    repo_summary=self.repo_summary,
+                    summary=(
+                        "Repository work completed; publication policy defers "
+                        "Semantic Release to an explicit operator action."
+                    ),
+                )
+            )
         runtime_closeout = check_repo_release_runtime_closeout(
             validation_snapshot.runtime,
             repo_root,

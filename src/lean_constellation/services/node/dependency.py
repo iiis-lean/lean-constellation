@@ -685,11 +685,33 @@ class DependencyComponent:
             return self.runtime.foundation.fail(deps.issues)
         boundaries: list[VisibleNodeBoundaryItem] = []
         for dep in deps.value:
-            if dep.path is None:
-                continue
-            provider_root = (Path(repo_root) / dep.path).resolve(strict=False)
             expected_root = (Path(repo_root).parent / dep.name).resolve(strict=False)
-            if provider_root != expected_root or not (provider_root / ".lean_constellation").is_dir():
+            if dep.path is not None:
+                provider_root = (Path(repo_root) / dep.path).resolve(strict=False)
+                if provider_root != expected_root:
+                    continue
+            elif dep.git is not None and dep.rev is not None:
+                provider_root = expected_root
+                latest = self.runtime.repo_workspace.release.get_latest_release(
+                    provider_root
+                )
+                if not latest.ok or latest.value is None:
+                    continue
+                resolved = (
+                    self.runtime.repo_workspace.git_release.resolve_release_commit(
+                        provider_root,
+                        release_id=latest.value.release.release_id,
+                    )
+                )
+                if (
+                    not resolved.ok
+                    or resolved.value is None
+                    or resolved.value != dep.rev
+                ):
+                    continue
+            else:
+                continue
+            if not (provider_root / ".lean_constellation").is_dir():
                 continue
             availability = self.runtime.repo_workspace.provider_availability.check_provider_available(provider_root)
             if not availability.ok or availability.value is None:

@@ -626,9 +626,26 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
         preview_validation = client.post("/admin/repos/Provider/releases/preview", json={})
         shown = client.get(f"/admin/repos/Provider/releases/{release.release_id}")
         unsafe = client.get("/admin/repos/Provider/releases/unsafe!release")
-        rejected = client.post(f"/admin/repos/Provider/releases/{release.release_id}/restore", json={
-            "repo_root": str(workspace / "Other"), "dry_run": True,
-        })
+        restore_preview = client.post(
+            f"/admin/repos/Provider/releases/{release.release_id}/restore/preview",
+            json={},
+        )
+        restore_rejected = client.post(
+            f"/admin/repos/Provider/releases/{release.release_id}/restore/apply",
+            json={"expected_recovery_token": "0" * 64},
+        )
+        workspace_preview = client.post(
+            "/admin/workspace/publication/preview",
+            json={"repo_keys": ["Provider"]},
+        )
+        publication_prepared = client.post(
+            "/admin/repos/Provider/publication/prepare",
+            json={"title": "Provider"},
+        )
+        remote_preview = client.post(
+            f"/admin/repos/Provider/publication/remotes/{release.release_id}/preview",
+            json={},
+        )
 
     assert listed.status_code == 200
     assert [item["release"]["release_id"] for item in listed.json()["value"]["releases"]] == ["release-r1"]
@@ -640,10 +657,24 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
     assert shown.status_code == 200
     assert shown.json()["value"]["release"]["release_id"] == "release-r1"
     assert unsafe.status_code == 422
-    assert rejected.status_code == 422
-    assert "route-owned fields" in rejected.json()["issues"][0]["message"]
-
-
+    assert restore_preview.status_code == 200
+    assert len(restore_preview.json()["value"]["recovery_token"]) == 64
+    assert restore_rejected.status_code == 400
+    assert (
+        restore_rejected.json()["issues"][0]["kind"]
+        == "git_release_restore_token_mismatch"
+    )
+    assert workspace_preview.status_code == 200
+    assert workspace_preview.json()["value"]["superproject_required"] is False
+    assert publication_prepared.status_code == 200
+    assert publication_prepared.json()["value"]["manifest_path"].endswith(
+        ".lean_constellation/publication/manifest.json"
+    )
+    assert remote_preview.status_code == 400
+    assert (
+        remote_preview.json()["issues"][0]["kind"]
+        == "publication_remote_not_configured"
+    )
 def test_production_app_server_exposes_workspace_external_health(tmp_path) -> None:
     toolkit = LeanMcpToolkitClient(dispatcher=lambda tool, payload: {"ok": True})
     config = LeanAppConfig(

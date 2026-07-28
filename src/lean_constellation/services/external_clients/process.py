@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -33,6 +34,8 @@ class CommandRunner(Protocol):
         timeout_seconds: int,
         stdout_excerpt_chars: int,
         stderr_excerpt_chars: int,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
     ) -> ExternalCommandResult:
         ...
 
@@ -48,9 +51,12 @@ class SubprocessCommandRunner:
         timeout_seconds: int,
         stdout_excerpt_chars: int,
         stderr_excerpt_chars: int,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
     ) -> ExternalCommandResult:
         started = time.monotonic()
         command_list = [str(part) for part in command]
+        command_env = None if env is None else {**os.environ, **{str(key): str(value) for key, value in env.items()}}
         try:
             completed = subprocess.run(
                 command_list,
@@ -58,6 +64,8 @@ class SubprocessCommandRunner:
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=command_env,
+                input=input_text,
                 timeout=timeout_seconds,
                 check=False,
             )

@@ -1,11 +1,7 @@
 from pathlib import Path
 
 from lean_constellation.domain.repo import RepoFormat, RepoPublicationState, RepoPublicationStatus
-from lean_constellation.services.foundation import FoundationContext, WriteMode
-from lean_constellation.services.validation_snapshot.snapshot_restore import (
-    RepoCheckpointKind,
-    RepoCheckpointSnapshotManifest,
-)
+from lean_constellation.services.foundation import WriteMode
 from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo, _release
 from tests.unit_services_helpers import make_runtime
 
@@ -19,32 +15,34 @@ def _write_publication(runtime, repo_root: Path, *, latest_release_id: str | Non
     ).ok
 
 
-def _write_checkpoint(runtime, repo_root: Path, checkpoint_id: str) -> None:
-    root = runtime.foundation.layout.snapshot_root(FoundationContext(repo_root=repo_root)) / "repo_checkpoints" / checkpoint_id
-    manifest = RepoCheckpointSnapshotManifest(
-        snapshot_id=checkpoint_id,
-        checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
-        created_at="2026-07-12T00:00:00Z",
-        repo_root=str(repo_root),
-        ark_runtime_snapshot_id="ark_snapshot_1",
-        files_manifest_relpath="files.json",
-        summary="Checkpoint fixture.",
+def _publish_git_release(runtime, repo_root: Path, release) -> None:  # noqa: ANN001
+    initialized = runtime.repo_workspace.git_release.ensure_independent_repo(repo_root)
+    assert initialized.ok and initialized.value is not None
+    candidate_files = [
+        path.relative_to(repo_root).as_posix()
+        for path in runtime.validation_snapshot.release_finalizer._candidate_files(repo_root)
+    ]
+    committed = runtime.repo_workspace.git_release.commit_release(
+        repo_root,
+        release=release,
+        candidate_files=candidate_files,
+        expected_head=initialized.value.head_commit,
     )
-    assert runtime.foundation.store.write_json_atomic(root / "snapshot.json", manifest).ok
+    assert committed.ok
 
 
-def test_native_provider_requires_release_and_checkpoint(tmp_path: Path) -> None:
+def test_native_provider_requires_git_backed_release(tmp_path: Path) -> None:
     runtime, versions = _prepare_release_repo(tmp_path)
     assert runtime.repo_workspace.metadata.set_repo_format(tmp_path, repo_format=RepoFormat.NATIVE, reason="native").ok
     release = _release("r1", versions)
     assert runtime.repo_workspace.release.create_release(tmp_path, release=release).ok
     _write_publication(runtime, tmp_path, latest_release_id="r1")
 
-    missing_checkpoint = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
-    assert not missing_checkpoint.ok
-    assert missing_checkpoint.issues[0].kind == "provider_native_checkpoint_missing"
+    missing_git_release = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
+    assert not missing_git_release.ok
+    assert missing_git_release.issues[0].kind == "provider_native_git_release_invalid"
 
-    _write_checkpoint(runtime, tmp_path, release.repo_checkpoint_id)
+    _publish_git_release(runtime, tmp_path, release)
     available = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
     assert available.ok and available.value.passed is True
 

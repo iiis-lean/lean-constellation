@@ -20,6 +20,10 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.repo import RepoPublicationState
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.foundation import IssueSeverity, ServiceResult
+from lean_constellation.services.repo_workspace.git_release import (
+    GitReleaseCommitView,
+    GitReleaseValidationView,
+)
 from lean_constellation.services.validation_snapshot import (
     AuditReport,
     CandidateReleaseGateView,
@@ -63,10 +67,6 @@ class ReleaseCandidateInput(OperatorInputModel):
 
 class ReleaseIdInput(OperatorInputModel):
     release_id: str
-
-
-class ReleaseRestoreInput(ReleaseIdInput):
-    dry_run: bool = False
 
 
 class CheckpointKindInput(OperatorInputModel):
@@ -126,7 +126,8 @@ class OperatorCheckpointRestoreView(StrictModel):
 
 class OperatorReleaseFinalizeView(StrictModel):
     release: "OperatorRepoReleaseView"
-    checkpoint: OperatorCheckpointView
+    git_release: "OperatorGitReleaseView"
+    checkpoint: OperatorCheckpointView | None = None
     publication: "OperatorReleasePublicationView"
     reconciliation: ProviderRequirementReconciliationView
     notification_pending: bool = False
@@ -143,6 +144,13 @@ class OperatorReleasePublishView(StrictModel):
 
 class OperatorRepoReleaseView(StrictModel):
     release: RepoRelease
+    summary: str
+
+
+class OperatorGitReleaseView(StrictModel):
+    release_id: str
+    commit: str
+    tree: str
     summary: str
 
 
@@ -385,36 +393,6 @@ class ReleaseCheckpointOperatorApi:
             lambda ctx: ctx.runtime.validation_snapshot.audit_repo_release_storage(ctx.repo_root),
         ), _release_storage_audit_view)
 
-    def restore_repo_release(
-        self, repo_key: str, input_model: ReleaseRestoreInput
-    ) -> ServiceResult[OperatorCheckpointRestoreView]:
-        def restore(ctx):  # noqa: ANN001, ANN202
-            release = ctx.runtime.repo_workspace.release.get_release(
-                ctx.repo_root,
-                release_id=input_model.release_id,
-            )
-            if not release.ok or release.value is None:
-                return ctx.runtime.foundation.fail(release.issues)
-            checked = ctx.runtime.validation_snapshot.validate_repo_checkpoint_snapshot(
-                ctx.repo_root,
-                snapshot_id=release.value.release.repo_checkpoint_id,
-            )
-            if not checked.ok or checked.value is None:
-                return ctx.runtime.foundation.fail(checked.issues)
-            lc_only = self._require_lc_only(ctx.runtime.foundation, checked.value)
-            if not lc_only.ok:
-                return lc_only
-            restored = ctx.runtime.validation_snapshot.restore_repo_release(
-                ctx.repo_root,
-                release_id=input_model.release_id,
-                dry_run=input_model.dry_run,
-            )
-            return self._sanitize_restore(ctx.runtime.foundation, restored)
-
-        return project_operator_result(
-            self.executor.execute(repo_key, SELF_MANAGED_RELEASE, restore)
-        )
-
     def check_checkpoint_gate(
         self, repo_key: str, input_model: CheckpointKindInput
     ) -> ServiceResult[OperatorGateView]:
@@ -493,14 +471,6 @@ class ReleaseCheckpointOperatorApi:
             lc_only = self._require_lc_only(ctx.runtime.foundation, checked.value)
             if not lc_only.ok:
                 return lc_only
-            if checked.value.checkpoint_kind is RepoCheckpointKind.REPO_RELEASE:
-                return ctx.runtime.foundation.fail(
-                    ctx.runtime.foundation.issue(
-                        "operator_release_checkpoint_requires_release_restore",
-                        "Release checkpoints must be restored through restore_repo_release.",
-                        object_ref=input_model.snapshot_id,
-                    )
-                )
             restored = ctx.runtime.validation_snapshot.restore_repo_checkpoint_snapshot(
                 ctx.repo_root,
                 snapshot_id=input_model.snapshot_id,
@@ -558,6 +528,17 @@ class ReleaseCheckpointOperatorApi:
             summary=value.summary,
         )
 
+    @staticmethod
+    def _git_release_view(
+        value: GitReleaseCommitView | GitReleaseValidationView,
+    ) -> OperatorGitReleaseView:
+        return OperatorGitReleaseView(
+            release_id=value.release_id,
+            commit=value.commit,
+            tree=value.tree,
+            summary=value.summary,
+        )
+
     @classmethod
     def _sanitize_restore(cls, result, value):  # noqa: ANN001, ANN206
         if not value.ok or value.value is None:
@@ -574,13 +555,17 @@ class ReleaseCheckpointOperatorApi:
 
     @classmethod
     def _sanitize_finalize(cls, result, value):  # noqa: ANN001, ANN206
-        lc_only = cls._require_lc_only(result, value.checkpoint)
-        if not lc_only.ok:
-            return lc_only
+        checkpoint = None
+        if value.checkpoint is not None:
+            lc_only = cls._require_lc_only(result, value.checkpoint)
+            if not lc_only.ok:
+                return lc_only
+            checkpoint = cls._checkpoint_view(value.checkpoint)
         return result.ok(
             OperatorReleaseFinalizeView(
                 release=_repo_release_view(value.release),
-                checkpoint=cls._checkpoint_view(value.checkpoint),
+                git_release=cls._git_release_view(value.git_release),
+                checkpoint=checkpoint,
                 publication=OperatorReleasePublicationView(
                     publication=value.publication.publication
                 ),
@@ -599,6 +584,7 @@ __all__ = [
     "CheckpointRestoreInput",
     "OperatorCheckpointRestoreView",
     "OperatorCheckpointView",
+    "OperatorGitReleaseView",
     "OperatorAuditReportView",
     "OperatorCandidateReleaseView",
     "OperatorReleasePublicationView",
@@ -610,5 +596,4 @@ __all__ = [
     "ReleaseCandidateInput",
     "ReleaseCheckpointOperatorApi",
     "ReleaseIdInput",
-    "ReleaseRestoreInput",
 ]

@@ -170,6 +170,9 @@ class RepoRequirementComponent:
         *,
         requirement_name: str,
         provider_repo: str,
+        provider_release_id: str | None = None,
+        provider_commit: str | None = None,
+        provider_git_url: str | None = None,
         note: str | None = None,
     ) -> ServiceResult[RequirementView]:
         loaded = self.get_requirement(repo_root, name=requirement_name)
@@ -190,6 +193,55 @@ class RepoRequirementComponent:
             )
         requirement.status = RepoDependencyRequirementStatus.SATISFIED
         requirement.provider_repo = self.runtime.foundation.layout.ensure_safe_key(provider_repo)
+        requirement.provider_release_id = provider_release_id
+        requirement.provider_commit = provider_commit
+        requirement.provider_git_url = self._strip_or_none(provider_git_url)
+        requirement.note = self._strip_or_none(note) or requirement.note
+        return self._save(repo_root, requirement)
+
+    def record_requirement_provider_release(
+        self,
+        repo_root: Path,
+        *,
+        requirement_name: str,
+        provider_repo: str,
+        provider_release_id: str,
+        provider_commit: str,
+        provider_git_url: str,
+        note: str | None = None,
+    ) -> ServiceResult[RequirementView]:
+        loaded = self.get_requirement(repo_root, name=requirement_name)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        requirement = loaded.value.requirement
+        if requirement.status not in {
+            RepoDependencyRequirementStatus.SATISFIED,
+            RepoDependencyRequirementStatus.HANDLED,
+        }:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_not_satisfied",
+                    "Provider Release identity can only be recorded for satisfied or handled requirements.",
+                    current=requirement.status.value,
+                    expected=RepoDependencyRequirementStatus.SATISFIED.value,
+                )
+            )
+        safe_provider = self.runtime.foundation.layout.ensure_safe_key(
+            provider_repo
+        )
+        if requirement.provider_repo not in {None, safe_provider}:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_provider_mismatch",
+                    "Provider Release identity belongs to a different provider.",
+                    current=safe_provider,
+                    expected=requirement.provider_repo,
+                )
+            )
+        requirement.provider_repo = safe_provider
+        requirement.provider_release_id = provider_release_id
+        requirement.provider_commit = provider_commit
+        requirement.provider_git_url = provider_git_url.strip()
         requirement.note = self._strip_or_none(note) or requirement.note
         return self._save(repo_root, requirement)
 

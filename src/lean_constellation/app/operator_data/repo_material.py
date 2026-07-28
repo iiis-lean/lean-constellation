@@ -299,6 +299,7 @@ class OperatorLakeBuildView(StrictModel):
 
 
 class OperatorSourceCorpusManifestView(StrictModel):
+    schema_version: Literal[2]
     relpath: str
     overview: str | None = None
     entry_path: str | None = None
@@ -353,7 +354,7 @@ class OperatorMaterialContextView(StrictModel):
 
 
 class OperatorSourceIndexView(StrictModel):
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     status: str
     active_file_scope: list[str] = Field(default_factory=list)
     overview: str | None = None
@@ -450,7 +451,7 @@ def _lake_build_view(value: ToolchainCommandView) -> OperatorLakeBuildView:
 
 
 def _source_manifest_view(value: SourceCorpusManifestView) -> OperatorSourceCorpusManifestView:
-    return OperatorSourceCorpusManifestView(**value.model_dump(exclude={"repo_root"}))
+    return OperatorSourceCorpusManifestView(**value.model_dump())
 
 
 def _source_import_view(value: SourceCorpusImportView) -> OperatorSourceCorpusImportView:
@@ -507,7 +508,7 @@ def _material_context_view(value: MaterialContextView) -> OperatorMaterialContex
 
 
 def _source_index_view(value: SourceIndexView) -> OperatorSourceIndexView:
-    return OperatorSourceIndexView(**value.model_dump(exclude={"repo_root"}))
+    return OperatorSourceIndexView(**value.model_dump())
 
 
 class _PathFreeExecutor:

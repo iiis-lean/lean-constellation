@@ -65,13 +65,26 @@ def _released_runtime(tmp_path):
     )
     assert checkpoint.ok and checkpoint.value is not None
     release = RepoRelease(release_id="release-r1", node_contract_versions={"main": 1},
-                          completion_mode="graph_proved", repo_checkpoint_id=checkpoint.value.snapshot_id,
+                          completion_mode="graph_proved",
+                          semantic_manifest_digest="1" * 64,
+                          dependency_lock_digest="2" * 64,
                           summary="R1")
     ctx = FoundationContext(repo_root=root)
     assert lean_runtime.foundation.store.write_json_atomic(lean_runtime.foundation.layout.release_path(ctx, "release-r1"), release).ok
     assert lean_runtime.foundation.store.write_json_atomic(
         lean_runtime.repo_workspace.metadata._repo_publication_path(root),
         RepoPublicationState(status=RepoPublicationStatus.STABLE, latest_release_id="release-r1"),
+    ).ok
+    initialized = lean_runtime.repo_workspace.git_release.ensure_independent_repo(root)
+    assert initialized.ok and initialized.value is not None
+    assert lean_runtime.repo_workspace.git_release.commit_release(
+        root,
+        release=release,
+        candidate_files=[
+            path.relative_to(root).as_posix()
+            for path in lean_runtime.validation_snapshot.release_finalizer._candidate_files(root)
+        ],
+        expected_head=initialized.value.head_commit,
     ).ok
     return runtime, lean_runtime, root
 

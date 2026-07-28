@@ -46,44 +46,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Format to export. Repeat to select both; defaults to both.",
     )
-    decl_transition_migration = sub.add_parser(
-        "migrate-decl-transition-schema",
-        help="Offline one-time migration of live Decl transition metadata; never rewrites snapshots or reports.",
-    )
-    decl_transition_migration.add_argument("mode", choices=["dry-run", "apply", "validate"])
-    decl_transition_migration.add_argument("repo_root", type=Path)
-    decl_transition_migration.add_argument("--manifest-dir", type=Path, default=None)
-    decl_transition_migration.add_argument("--rebuild-runtime-indexes", action="store_true")
-    repo_completion_migration = sub.add_parser(
-        "migrate-repo-completion-checkpoint",
-        help=(
-            "Offline immutable-clone migration of one legacy repo/runtime checkpoint "
-            "to the current completion and Agent resource schema."
-        ),
-    )
-    repo_completion_migration.add_argument(
-        "mode",
-        choices=["preview", "apply", "validate"],
-    )
-    repo_completion_migration.add_argument("repo_root", type=Path)
-    repo_completion_migration.add_argument("--checkpoint-id", required=True)
-    repo_completion_migration.add_argument("--expected-token", default=None)
-    repo_completion_migration.add_argument("--report-dir", type=Path, default=None)
-    decl_closeout_migration = sub.add_parser(
-        "migrate-decl-closeout-checkpoint",
-        help=(
-            "Offline immutable-clone migration of one repo/runtime checkpoint "
-            "to the current declaration-round closeout and Agent resource schema."
-        ),
-    )
-    decl_closeout_migration.add_argument(
-        "mode",
-        choices=["preview", "apply", "validate"],
-    )
-    decl_closeout_migration.add_argument("repo_root", type=Path)
-    decl_closeout_migration.add_argument("--checkpoint-id", required=True)
-    decl_closeout_migration.add_argument("--expected-token", default=None)
-    decl_closeout_migration.add_argument("--report-dir", type=Path, default=None)
     sub.add_parser("status", help="Read production server runtime status over Admin HTTP.")
     flow_tree = sub.add_parser("flow-tree", help="Read production flow/step tree over Admin HTTP.")
     flow_tree.add_argument("--repo-key", required=True)
@@ -179,10 +141,91 @@ def build_parser() -> argparse.ArgumentParser:
     release_preview = sub.add_parser("repo-release-preview", help="Preview the current release candidate gates.")
     release_preview.add_argument("--repo-key", required=True)
     release_preview.add_argument("--summary", default="Admin release preview.")
-    release_restore = sub.add_parser("repo-release-restore", help="Restore the current latest repository release.")
-    release_restore.add_argument("--repo-key", required=True)
-    release_restore.add_argument("release_id")
-    release_restore.add_argument("--dry-run", action="store_true")
+    release_restore_preview = sub.add_parser(
+        "repo-release-restore-preview",
+        help="Preview a CAS-protected Git Release restore.",
+    )
+    release_restore_preview.add_argument("--repo-key", required=True)
+    release_restore_preview.add_argument("release_id")
+    release_restore_apply = sub.add_parser(
+        "repo-release-restore-apply",
+        help="Apply an exact previewed Git Release restore.",
+    )
+    release_restore_apply.add_argument("--repo-key", required=True)
+    release_restore_apply.add_argument("release_id")
+    release_restore_apply.add_argument("--expected-token", required=True)
+    publication_prepare = sub.add_parser(
+        "repo-publication-prepare",
+        help="Refresh managed portable publication documents.",
+    )
+    publication_prepare.add_argument("--repo-key", required=True)
+    publication_prepare.add_argument("--title", default=None)
+    remote_preview = sub.add_parser(
+        "repo-publication-remote-preview",
+        help="Preview canonical remote configuration or exact Release push.",
+    )
+    remote_preview.add_argument("--repo-key", required=True)
+    remote_preview.add_argument("release_id")
+    remote_apply = sub.add_parser(
+        "repo-publication-remote-apply",
+        help="Configure the canonical remote and optionally push one immutable Release ref.",
+    )
+    remote_apply.add_argument("--repo-key", required=True)
+    remote_apply.add_argument("release_id")
+    remote_apply.add_argument("--expected-token", required=True)
+    remote_apply.add_argument("--push", action="store_true")
+    for name, help_text in (
+        (
+            "repo-dependency-change-preview",
+            "Preview one exact Git dependency locator or provider pin change.",
+        ),
+        (
+            "repo-dependency-change-apply",
+            "Apply one previewed exact Git dependency change.",
+        ),
+    ):
+        dependency = sub.add_parser(name, help=help_text)
+        dependency.add_argument("--repo-key", required=True)
+        dependency.add_argument("--provider-repo-key", required=True)
+        dependency.add_argument("--target-provider-release-id", required=True)
+        dependency.add_argument("--target-git-url", required=True)
+        dependency.add_argument(
+            "--release-mode",
+            choices=["defer", "dependency_maintenance"],
+            default="defer",
+        )
+        dependency.add_argument(
+            "--validation-profile",
+            choices=["dependency_minimal", "dependency_plus_policy"],
+            default="dependency_minimal",
+        )
+        if name.endswith("-apply"):
+            dependency.add_argument("--expected-token", required=True)
+    for name, help_text in (
+        (
+            "workspace-publication-preview",
+            "Preview exact child Releases and an optional multi-repo superproject.",
+        ),
+        (
+            "workspace-publication-apply",
+            "Apply a previewed Workspace publication.",
+        ),
+    ):
+        workspace_publication = sub.add_parser(name, help=help_text)
+        workspace_publication.add_argument(
+            "--repo-key",
+            action="append",
+            dest="repo_keys",
+            default=None,
+        )
+        workspace_publication.add_argument("--output-root", type=Path, default=None)
+        workspace_publication.add_argument("--push-children", action="store_true")
+        workspace_publication.add_argument(
+            "--push-superproject",
+            action="store_true",
+        )
+        if name.endswith("-apply"):
+            workspace_publication.add_argument("--expected-token", required=True)
     release_audit = sub.add_parser("repo-release-audit", help="Audit repository release storage.")
     release_audit.add_argument("--repo-key", required=True)
     release_cleanup = sub.add_parser(
@@ -280,94 +323,6 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
-        return 0
-    if args.command == "migrate-decl-transition-schema":
-        from lean_constellation.app.decl_transition_migration import (
-            DeclTransitionMigrationError,
-            migrate_decl_transition_schema,
-        )
-
-        try:
-            report = migrate_decl_transition_schema(
-                args.repo_root,
-                mode=args.mode,
-                manifest_dir=args.manifest_dir,
-                rebuild_runtime_indexes=args.rebuild_runtime_indexes,
-            )
-        except DeclTransitionMigrationError as exc:
-            print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
-            return 1
-        print(json.dumps({"ok": True, "value": report.to_dict()}, indent=2, sort_keys=True))
-        return 0
-    if args.command == "migrate-repo-completion-checkpoint":
-        from lean_constellation.app.repo_completion_mode_migration import (
-            RepoCompletionModeMigrationError,
-            apply_repo_completion_checkpoint,
-            preview_repo_completion_checkpoint,
-            validate_repo_completion_checkpoint,
-        )
-
-        try:
-            if args.mode == "preview":
-                report = preview_repo_completion_checkpoint(
-                    args.repo_root,
-                    checkpoint_id=args.checkpoint_id,
-                )
-            elif args.mode == "apply":
-                if not args.expected_token:
-                    parser.error("--expected-token is required for apply")
-                if args.report_dir is None:
-                    parser.error("--report-dir is required for apply")
-                report = apply_repo_completion_checkpoint(
-                    args.repo_root,
-                    checkpoint_id=args.checkpoint_id,
-                    expected_token=args.expected_token,
-                    report_dir=args.report_dir,
-                )
-            else:
-                report = validate_repo_completion_checkpoint(
-                    args.repo_root,
-                    checkpoint_id=args.checkpoint_id,
-                )
-        except RepoCompletionModeMigrationError as exc:
-            print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
-            return 1
-        print(json.dumps({"ok": True, "value": report.to_dict()}, indent=2, sort_keys=True))
-        return 0
-    if args.command == "migrate-decl-closeout-checkpoint":
-        from lean_constellation.app.decl_round_closeout_checkpoint_migration import (
-            DeclRoundCloseoutCheckpointMigrationError,
-            apply_decl_round_closeout_checkpoint,
-            preview_decl_round_closeout_checkpoint,
-            validate_decl_round_closeout_checkpoint,
-        )
-
-        try:
-            if args.mode == "preview":
-                report = preview_decl_round_closeout_checkpoint(
-                    args.repo_root,
-                    checkpoint_id=args.checkpoint_id,
-                )
-            elif args.mode == "apply":
-                if not args.expected_token:
-                    parser.error("--expected-token is required for apply")
-                if args.report_dir is None:
-                    parser.error("--report-dir is required for apply")
-                report = apply_decl_round_closeout_checkpoint(
-                    args.repo_root,
-                    checkpoint_id=args.checkpoint_id,
-                    expected_token=args.expected_token,
-                    report_dir=args.report_dir,
-                )
-            else:
-                report = validate_decl_round_closeout_checkpoint(
-                    args.repo_root,
-                    checkpoint_id=args.checkpoint_id,
-                )
-        except DeclRoundCloseoutCheckpointMigrationError as exc:
-            print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
-            return 1
-        print(json.dumps({"ok": True, "value": report.to_dict()}, indent=2, sort_keys=True))
         return 0
     config = load_app_config(args.config)
     if args.command == "config-view":
@@ -593,10 +548,77 @@ def main(argv: list[str] | None = None) -> int:
         return _print_http_result(_request_json(
             "POST", f"{admin_base_url}/admin/repos/{args.repo_key}/releases/preview", {"summary": args.summary}
         ))
-    if args.command == "repo-release-restore":
+    if args.command == "repo-release-restore-preview":
         return _print_http_result(_request_json(
-            "POST", f"{admin_base_url}/admin/repos/{args.repo_key}/releases/{args.release_id}/restore",
-            {"dry_run": args.dry_run},
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/releases/{args.release_id}/restore/preview",
+            {},
+        ))
+    if args.command == "repo-release-restore-apply":
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/releases/{args.release_id}/restore/apply",
+            {"expected_recovery_token": args.expected_token},
+        ))
+    if args.command == "repo-publication-prepare":
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/publication/prepare",
+            {"title": args.title},
+        ))
+    if args.command == "repo-publication-remote-preview":
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/publication/remotes/{args.release_id}/preview",
+            {},
+        ))
+    if args.command == "repo-publication-remote-apply":
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/publication/remotes/{args.release_id}/apply",
+            {
+                "expected_recovery_token": args.expected_token,
+                "push": args.push,
+            },
+        ))
+    if args.command in {
+        "repo-dependency-change-preview",
+        "repo-dependency-change-apply",
+    }:
+        payload = {
+            "provider_repo_key": args.provider_repo_key,
+            "target_provider_release_id": args.target_provider_release_id,
+            "target_git_url": args.target_git_url,
+            "release_mode": args.release_mode,
+            "validation_profile": args.validation_profile,
+        }
+        if args.command.endswith("-apply"):
+            payload["expected_recovery_token"] = args.expected_token
+        operation = "apply" if args.command.endswith("-apply") else "preview"
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/publication/dependencies/{operation}",
+            payload,
+        ))
+    if args.command in {
+        "workspace-publication-preview",
+        "workspace-publication-apply",
+    }:
+        payload = {
+            "repo_keys": args.repo_keys,
+            "output_root": (
+                str(args.output_root) if args.output_root is not None else None
+            ),
+            "push_children": args.push_children,
+            "push_superproject": args.push_superproject,
+        }
+        if args.command.endswith("-apply"):
+            payload["expected_recovery_token"] = args.expected_token
+        operation = "apply" if args.command.endswith("-apply") else "preview"
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/workspace/publication/{operation}",
+            payload,
         ))
     if args.command == "repo-release-audit":
         return _print_http_result(_request_json(

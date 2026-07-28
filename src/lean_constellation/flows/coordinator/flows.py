@@ -104,7 +104,6 @@ class NativeRepoCoordinatorResult(LeanRenderableFlowResult):
             "provider_ready_marked": self.provider_ready_marked,
             "satisfied_requirement_count": self.satisfied_requirement_count,
             "release_id": self.prepared_release.release.release_id if self.prepared_release else None,
-            "checkpoint_id": self.prepared_release.release.repo_checkpoint_id if self.prepared_release else None,
         }
 
 

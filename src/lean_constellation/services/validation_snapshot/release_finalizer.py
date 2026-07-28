@@ -23,7 +23,13 @@ from lean_constellation.domain.repo import (
     proof_availability_for_completion_mode,
     proof_availability_satisfies,
 )
-from lean_constellation.domain.repo_release import RepoRelease, RepoReleaseView
+from lean_constellation.domain.repo_release import (
+    RepoRelease,
+    RepoReleaseKind,
+    RepoReleaseView,
+    RepoReleaseValidationProfile,
+)
+from lean_constellation.domain.publication import PushPolicy
 from lean_constellation.services.decl_graph.models import DeclRoundStatus, DeclStrategyStatus
 from lean_constellation.services.external_clients import ToolchainCommandView
 from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult, WriteMode
@@ -32,7 +38,12 @@ from lean_constellation.services.node import ContractVersionStatus, NodeKind, No
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
     RepoCheckpointKind,
     RepoCheckpointSnapshotView,
-    SnapshotRestoreView,
+)
+from lean_constellation.services.repo_workspace.git_release import (
+    GitReleaseCommitView,
+    GitReleaseRestorePreview,
+    GitReleaseRestoreView,
+    GitReleaseValidationView,
 )
 
 if TYPE_CHECKING:
@@ -52,6 +63,7 @@ class PreparedRepoReleaseView(StrictModel):
     release: RepoRelease
     publication: RepoPublicationState
     candidate_digest: str
+    expected_git_head: str | None = None
     build: ToolchainCommandView
     gate: GateReport
     summary: str
@@ -77,7 +89,8 @@ class ProviderRequirementReconciliationView(StrictModel):
 
 class RepoReleaseFinalizeView(StrictModel):
     release: RepoReleaseView
-    checkpoint: RepoCheckpointSnapshotView
+    git_release: GitReleaseCommitView | GitReleaseValidationView
+    checkpoint: RepoCheckpointSnapshotView | None = None
     publication: RepoPublicationView
     reconciliation: ProviderRequirementReconciliationView
     notification_pending: bool = False
@@ -99,8 +112,24 @@ class RepoReleaseStorageAuditView(StrictModel):
 class RepoReleaseFinalizerComponent:
     """Prepare and publish native releases without exposing partial latest truth."""
 
-    _EXCLUDED_TOP_LEVEL = {".git", ".lake", ".agent_runtime", "__pycache__", ".pytest_cache"}
-    _EXCLUDED_CONSTELLATION_CHILDREN = {"snapshots", ".locks"}
+    _EXCLUDED_TOP_LEVEL = {
+        ".agent_runtime",
+        ".git",
+        ".lake",
+        ".pytest_cache",
+        ".runtime",
+        "__pycache__",
+    }
+    _EXCLUDED_CONSTELLATION_CHILDREN = {".locks", "locks", "snapshots", "staging"}
+    _SEMANTIC_EXCLUDED_ROOT_FILES = {
+        ".gitignore",
+        "API.md",
+        "PROVENANCE.md",
+        "README.md",
+        "lake-manifest.json",
+        "lakefile.lean",
+        "lakefile.toml",
+    }
 
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
@@ -443,8 +472,39 @@ class RepoReleaseFinalizerComponent:
                 blocking_issue_kinds=preview.value.blocking_issue_kinds,
                 summary=preview.value.summary,
             ))
+        release_id_result = self.runtime.repo_workspace.release.allocate_release_id(
+            Path(repo_root)
+        )
+        if not release_id_result.ok or release_id_result.value is None:
+            return self.runtime.foundation.fail(release_id_result.issues)
+        semantic_digest = self.compute_semantic_manifest_digest(Path(repo_root))
+        release = RepoRelease(
+            release_id=release_id_result.value,
+            parent_release_id=base_release_id,
+            release_kind=RepoReleaseKind.SEMANTIC,
+            validation_profile=RepoReleaseValidationProfile.SEMANTIC_FULL,
+            node_contract_versions=preview.value.candidate_node_contract_versions,
+            completion_mode=preview.value.completion_mode,
+            semantic_manifest_digest=semantic_digest,
+            dependency_lock_digest=self.compute_dependency_lock_digest(
+                Path(repo_root)
+            ),
+            summary=summary,
+        )
+        publication_files = (
+            self.runtime.repo_workspace.publication.prepare_publication(
+                Path(repo_root),
+                release_id=release.release_id,
+                semantic_manifest_digest=semantic_digest,
+                generated_at=release.created_at,
+            )
+        )
+        if not publication_files.ok:
+            self._refresh_publication_documents_for_current_release(Path(repo_root))
+            return self.runtime.foundation.fail(publication_files.issues)
         build = self.runtime.external.lean_toolchain.run_lake_build(Path(repo_root))
         if not build.ok:
+            self._refresh_publication_documents_for_current_release(Path(repo_root))
             issue = self.runtime.foundation.issue(
                 "release_lake_build_failed",
                 "The candidate repository failed the required Lake build.",
@@ -461,23 +521,10 @@ class RepoReleaseFinalizerComponent:
                 outcome="blocked", gate=gate, build=build,
                 blocking_issue_kinds=[issue.kind], summary="Candidate Lake build failed."
             ))
-        release_id_result = self.runtime.repo_workspace.release.allocate_release_id(Path(repo_root))
-        if not release_id_result.ok or release_id_result.value is None:
-            return self.runtime.foundation.fail(release_id_result.issues)
-        checkpoint_id_result = self.runtime.foundation.store.allocate_uuid(
-            lambda candidate: self.runtime.validation_snapshot.snapshot_restore._snapshot_dir(Path(repo_root), candidate).exists(),
-            prefix="repo_release_cp",
-        )
-        if not checkpoint_id_result.ok or checkpoint_id_result.value is None:
-            return self.runtime.foundation.fail(checkpoint_id_result.issues)
-        release = RepoRelease(
-            release_id=release_id_result.value,
-            parent_release_id=base_release_id,
-            node_contract_versions=preview.value.candidate_node_contract_versions,
-            completion_mode=preview.value.completion_mode,
-            repo_checkpoint_id=checkpoint_id_result.value,
-            summary=summary,
-        )
+        git_state = self.runtime.repo_workspace.git_release.inspect_repo(Path(repo_root))
+        if not git_state.ok or git_state.value is None:
+            self._refresh_publication_documents_for_current_release(Path(repo_root))
+            return self.runtime.foundation.fail(git_state.issues)
         publication = RepoPublicationState(
             status=RepoPublicationStatus.STABLE,
             latest_release_id=release.release_id,
@@ -487,6 +534,11 @@ class RepoReleaseFinalizerComponent:
             release=release,
             publication=publication,
             candidate_digest=digest,
+            expected_git_head=(
+                git_state.value.head_commit
+                if git_state.value.initialized and git_state.value.independent
+                else None
+            ),
             build=build,
             gate=preview.value.gate,
             summary=f"Prepared candidate release {release.release_id}.",
@@ -522,20 +574,33 @@ class RepoReleaseFinalizerComponent:
             and current_publication.value.publication.latest_release_id == prepared.release.release_id
         ):
             return self._finalize_existing_release(repo_root, prepared=prepared)
-        checkpoint: RepoCheckpointSnapshotView | None = None
-        release_published = False
-        publication_committed = False
-        publication_durability_warning = False
+        original_publication = current_publication.value.publication
+        original_model = self.runtime.repo_workspace.metadata.get_repo_model(repo_root)
+        if not original_model.ok or original_model.value is None:
+            return self.runtime.foundation.fail(original_model.issues)
+        original_repo_model = original_model.value
         committed_release_view: RepoReleaseView | None = None
+        git_commit: GitReleaseCommitView | None = None
+        transaction_warnings = []
         try:
             with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
                 publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
                 if not publication.ok or publication.value is None:
                     return self.runtime.foundation.fail(publication.issues)
                 current = publication.value.publication
+                dependency_maintenance = (
+                    prepared.release.release_kind
+                    == RepoReleaseKind.DEPENDENCY_MAINTENANCE
+                )
+                valid_status = (
+                    current.status == RepoPublicationStatus.STABLE
+                    if dependency_maintenance
+                    else current.status == RepoPublicationStatus.DEVELOPING
+                )
                 if (
-                    current.status != RepoPublicationStatus.DEVELOPING
-                    or current.latest_release_id != prepared.release.parent_release_id
+                    not valid_status
+                    or current.latest_release_id
+                    != prepared.release.parent_release_id
                 ):
                     return self.runtime.foundation.fail(self.runtime.foundation.issue(
                         "release_base_mismatch",
@@ -543,33 +608,74 @@ class RepoReleaseFinalizerComponent:
                         current=current.latest_release_id,
                         expected=prepared.release.parent_release_id,
                     ))
-                requirement_closeout = self._check_requirement_closeout(repo_root)
-                if not requirement_closeout.ok or requirement_closeout.value is None:
-                    return self.runtime.foundation.fail(requirement_closeout.issues)
-                if not requirement_closeout.value.passed:
-                    return self.runtime.foundation.fail(requirement_closeout.value.issues)
+                if not dependency_maintenance:
+                    requirement_closeout = self._check_requirement_closeout(repo_root)
+                    if (
+                        not requirement_closeout.ok
+                        or requirement_closeout.value is None
+                    ):
+                        return self.runtime.foundation.fail(
+                            requirement_closeout.issues
+                        )
+                    if not requirement_closeout.value.passed:
+                        return self.runtime.foundation.fail(
+                            requirement_closeout.value.issues
+                        )
                 digest = self.compute_candidate_digest(repo_root)
                 if digest != prepared.candidate_digest:
                     return self.runtime.foundation.fail(self.runtime.foundation.issue(
                         "release_candidate_drift", "Candidate truth changed after preparation.",
                         current=digest, expected=prepared.candidate_digest,
                     ))
-                model = self.runtime.repo_workspace.metadata.get_repo_model(repo_root)
-                if not model.ok or model.value is None:
-                    return self.runtime.foundation.fail(model.issues)
-                checkpoint_result = self.runtime.validation_snapshot.snapshot_restore.create_repo_release_checkpoint(
+                semantic_digest = self.compute_semantic_manifest_digest(repo_root)
+                if semantic_digest != prepared.release.semantic_manifest_digest:
+                    return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                        "release_semantic_manifest_drift",
+                        "Semantic Release truth changed after preparation.",
+                        current=semantic_digest,
+                        expected=prepared.release.semantic_manifest_digest,
+                    ))
+                dependency_digest = self.compute_dependency_lock_digest(repo_root)
+                if dependency_digest != prepared.release.dependency_lock_digest:
+                    return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                        "release_dependency_lock_drift",
+                        "Dependency lock truth changed after preparation.",
+                        current=dependency_digest,
+                        expected=prepared.release.dependency_lock_digest,
+                    ))
+                initialized = self.runtime.repo_workspace.git_release.ensure_independent_repo(repo_root)
+                if not initialized.ok or initialized.value is None:
+                    return self.runtime.foundation.fail(initialized.issues)
+                if initialized.value.head_commit != prepared.expected_git_head:
+                    return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                        "git_release_head_drift",
+                        "Repository Git HEAD changed after Release preparation.",
+                        current=initialized.value.head_commit or "<unborn>",
+                        expected=prepared.expected_git_head or "<unborn>",
+                    ))
+                if not dependency_maintenance:
+                    try:
+                        summary_sync = (
+                            self.runtime.repo_workspace.metadata.set_repo_summary(
+                                repo_root,
+                                summary=prepared.release.summary,
+                            )
+                        )
+                    except Exception:
+                        summary_sync = None
+                    if summary_sync is None or not summary_sync.ok:
+                        transaction_warnings.append(
+                            self.runtime.foundation.issue(
+                                "release_summary_sync_pending",
+                                "Release can proceed, but display summary synchronization is pending.",
+                                severity="warning",
+                                object_ref=prepared.release.release_id,
+                            )
+                        )
+                created = self.runtime.repo_workspace.release.create_release(
                     repo_root,
-                    snapshot_id=prepared.release.repo_checkpoint_id,
                     release=prepared.release,
-                    publication=prepared.publication,
-                    repo_model=RepoModel(main_node=model.value.main_node, summary=prepared.release.summary),
-                    expected_candidate_digest=prepared.candidate_digest,
-                    label=f"release {prepared.release.release_id}",
                 )
-                if not checkpoint_result.ok or checkpoint_result.value is None:
-                    return self.runtime.foundation.fail(checkpoint_result.issues)
-                checkpoint = checkpoint_result.value
-                created = self.runtime.repo_workspace.release.create_release(repo_root, release=prepared.release)
                 if not created.ok or created.value is None:
                     release_path = self.runtime.foundation.layout.release_path(
                         FoundationContext(repo_root=repo_root, caller="release_finalizer.create_readback"),
@@ -582,13 +688,8 @@ class RepoReleaseFinalizerComponent:
                     conflicting_visible_release = (
                         release_path.exists() and not exact_visible_release
                     )
-                    cleanup_error = self._cleanup_precommit_artifacts(
-                        repo_root,
-                        release_id=prepared.release.release_id if exact_visible_release else None,
-                        checkpoint_id=prepared.release.repo_checkpoint_id,
-                    )
-                    if cleanup_error is not None:
-                        return self.runtime.foundation.fail(cleanup_error)
+                    if exact_visible_release:
+                        self._remove_unpublished_release(repo_root, prepared.release.release_id)
                     if conflicting_visible_release:
                         return self.runtime.foundation.fail(self.runtime.foundation.issue(
                             "release_identity_conflict",
@@ -596,39 +697,61 @@ class RepoReleaseFinalizerComponent:
                             object_ref=prepared.release.release_id,
                         ))
                     return self.runtime.foundation.fail(created.issues)
-                release_published = True
                 committed_release_view = created.value
                 publication_path = self.runtime.repo_workspace.metadata._repo_publication_path(repo_root)
                 committed = self.runtime.foundation.store.write_json_atomic(
                     publication_path, prepared.publication, mode=WriteMode.OVERWRITE
                 )
                 if not committed.ok:
-                    publication_readback = self.runtime.foundation.store.read_json(
-                        publication_path, RepoPublicationState
+                    self._rollback_release_worktree(
+                        repo_root,
+                        release_id=prepared.release.release_id,
+                        publication=original_publication,
+                        repo_model=original_repo_model,
                     )
-                    if (
-                        publication_readback.ok
-                        and publication_readback.value == prepared.publication
-                    ):
-                        publication_committed = True
-                        publication_durability_warning = True
-                    else:
-                        cleanup_error = self._cleanup_precommit_artifacts(
-                            repo_root,
-                            release_id=prepared.release.release_id,
-                            checkpoint_id=prepared.release.repo_checkpoint_id,
-                        )
-                        if cleanup_error is not None:
-                            return self.runtime.foundation.fail(cleanup_error)
-                        return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                            "release_publication_commit_failed",
-                            "Failed to commit the stable publication pointer.",
-                            details={"issues": "; ".join(issue.kind for issue in committed.issues)},
-                        ))
-                else:
-                    publication_committed = True
+                    return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                        "release_publication_commit_failed",
+                        "Failed to stage the stable publication pointer.",
+                        details={"issues": "; ".join(issue.kind for issue in committed.issues)},
+                    ))
+                candidate_files = [
+                    path.relative_to(repo_root).as_posix()
+                    for path in self._candidate_files(repo_root)
+                ]
+                policy = self.runtime.repo_workspace.publication.resolve_policy(
+                    repo_root
+                )
+                if not policy.ok or policy.value is None:
+                    self._rollback_release_worktree(
+                        repo_root,
+                        release_id=prepared.release.release_id,
+                        publication=original_publication,
+                        repo_model=original_repo_model,
+                    )
+                    return self.runtime.foundation.fail(policy.issues)
+                published = self.runtime.repo_workspace.git_release.commit_release(
+                    repo_root,
+                    release=prepared.release,
+                    candidate_files=candidate_files,
+                    expected_head=prepared.expected_git_head,
+                    commit_message=(
+                        f"chore(deps): {prepared.release.summary}"
+                        if dependency_maintenance
+                        else f"release(repo): {prepared.release.summary}"
+                    ),
+                    commit_identity=policy.value.policy.commit_identity,
+                )
+                if not published.ok or published.value is None:
+                    self._rollback_release_worktree(
+                        repo_root,
+                        release_id=prepared.release.release_id,
+                        publication=original_publication,
+                        repo_model=original_repo_model,
+                    )
+                    return self.runtime.foundation.fail(published.issues)
+                git_commit = published.value
         except Exception as exc:  # lifecycle lock and filesystem failures
-            if publication_committed and committed_release_view is not None and checkpoint is not None:
+            if git_commit is not None and committed_release_view is not None:
                 warning = self.runtime.foundation.issue(
                     "release_postcommit_followup_pending",
                     f"Release publication committed; a later transaction follow-up failed: {exc}",
@@ -637,7 +760,7 @@ class RepoReleaseFinalizerComponent:
                 )
                 return self.runtime.foundation.ok(RepoReleaseFinalizeView(
                     release=committed_release_view,
-                    checkpoint=checkpoint,
+                    git_release=git_commit,
                     publication=RepoPublicationView(repo_root=str(repo_root), publication=prepared.publication),
                     reconciliation=ProviderRequirementReconciliationView(
                         release_id=prepared.release.release_id,
@@ -647,43 +770,61 @@ class RepoReleaseFinalizerComponent:
                     notification_pending=True,
                     summary=f"Committed native repo release {prepared.release.release_id}; follow-up pending.",
                 ), warnings=[warning])
-            cleanup_error = self._cleanup_precommit_artifacts(
+            self._rollback_release_worktree(
                 repo_root,
-                release_id=prepared.release.release_id if release_published else None,
-                checkpoint_id=prepared.release.repo_checkpoint_id if checkpoint is not None else None,
+                release_id=(
+                    prepared.release.release_id
+                    if committed_release_view is not None
+                    else None
+                ),
+                publication=original_publication,
+                repo_model=original_repo_model,
             )
-            if cleanup_error is not None:
-                return self.runtime.foundation.fail(cleanup_error)
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
                 "release_truth_publish_failed", f"Release publication transaction failed: {exc}",
                 object_ref=prepared.release.release_id,
             ))
 
-        if committed_release_view is None or checkpoint is None:
+        if committed_release_view is None or git_commit is None:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                "release_commit_state_missing", "Publication committed without in-memory release/checkpoint evidence."
+                "release_commit_state_missing",
+                "Publication committed without in-memory Git Release evidence.",
             ))
-        warnings = []
-        if publication_durability_warning:
+        validation = self.runtime.repo_workspace.git_release.validate_release(
+            repo_root,
+            release=prepared.release,
+        )
+        warnings = list(transaction_warnings)
+        if not validation.ok:
             warnings.append(self.runtime.foundation.issue(
-                "release_publication_durability_warning",
-                "Publication replace is visible, but the writer reported a post-replace durability failure.",
+                "release_git_readback_pending",
+                "Git Release committed, but post-commit readback validation requires follow-up.",
                 severity="warning",
                 object_ref=prepared.release.release_id,
+                details={"issues": "; ".join(issue.kind for issue in validation.issues)},
             ))
-        try:
-            summary_sync = self.runtime.repo_workspace.metadata.set_repo_summary(
-                repo_root, summary=prepared.release.summary
+        checkpoint_view = None
+        checkpoint_policy = (
+            self.runtime.repo_workspace.publication.resolve_policy(repo_root)
+        )
+        if (
+            checkpoint_policy.ok
+            and checkpoint_policy.value is not None
+            and checkpoint_policy.value.policy.post_release_checkpoint
+        ):
+            checkpoint = self._create_post_release_checkpoint(
+                repo_root,
+                release=prepared.release,
             )
-        except Exception:
-            summary_sync = None
-        if summary_sync is None or not summary_sync.ok:
-            warnings.append(self.runtime.foundation.issue(
-                "release_summary_sync_pending",
-                "Release committed, but display summary synchronization is pending.",
-                severity="warning",
-                object_ref=prepared.release.release_id,
-            ))
+            checkpoint_view = checkpoint.value if checkpoint.ok else None
+            if not checkpoint.ok:
+                warnings.append(self.runtime.foundation.issue(
+                    "release_post_checkpoint_pending",
+                    "Git Release committed, but the optional operational checkpoint could not be created.",
+                    severity="warning",
+                    object_ref=prepared.release.release_id,
+                    details={"issues": "; ".join(issue.kind for issue in checkpoint.issues)},
+                ))
         try:
             readback = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
         except Exception:
@@ -729,9 +870,43 @@ class RepoReleaseFinalizerComponent:
                     severity="warning",
                     object_ref=prepared.release.release_id,
                 ))
+        policy = self.runtime.repo_workspace.publication.resolve_policy(repo_root)
+        if (
+            policy.ok
+            and policy.value is not None
+            and policy.value.policy.push_policy == PushPolicy.ON_RELEASE
+        ):
+            push_preview = self.runtime.repo_workspace.remote_publication.preview(
+                repo_root,
+                release_id=prepared.release.release_id,
+            )
+            if push_preview.ok and push_preview.value is not None:
+                pushed = self.runtime.repo_workspace.remote_publication.apply(
+                    repo_root,
+                    preview=push_preview.value,
+                    expected_recovery_token=push_preview.value.recovery_token,
+                    push=True,
+                )
+            else:
+                pushed = push_preview
+            if not pushed.ok:
+                warnings.append(
+                    self.runtime.foundation.issue(
+                        "release_remote_publication_pending",
+                        "Local Git Release committed, but configured remote publication is pending.",
+                        severity="warning",
+                        object_ref=prepared.release.release_id,
+                        details={
+                            "issues": "; ".join(
+                                issue.kind for issue in pushed.issues
+                            )
+                        },
+                    )
+                )
         result = RepoReleaseFinalizeView(
             release=committed_release_view,
-            checkpoint=checkpoint,
+            git_release=git_commit,
+            checkpoint=checkpoint_view,
             publication=RepoPublicationView(repo_root=str(repo_root), publication=prepared.publication),
             reconciliation=reconciliation_view,
             notification_pending=bool(reconciliation_view.pending or reconciliation_view.conflicts),
@@ -742,15 +917,12 @@ class RepoReleaseFinalizerComponent:
     def _finalize_existing_release(
         self, repo_root: Path, *, prepared: PreparedRepoReleaseView
     ) -> ServiceResult[RepoReleaseFinalizeView]:
-        checkpoint = self.runtime.validation_snapshot.snapshot_restore._load_existing_release_checkpoint_view(
+        git_release = self.runtime.repo_workspace.git_release.validate_release(
             repo_root,
-            prepared.release.repo_checkpoint_id,
             release=prepared.release,
-            publication=prepared.publication,
-            repo_model=RepoModel(main_node="Main", summary=prepared.release.summary),
         )
-        if not checkpoint.ok or checkpoint.value is None:
-            return self.runtime.foundation.fail(checkpoint.issues)
+        if not git_release.ok or git_release.value is None:
+            return self.runtime.foundation.fail(git_release.issues)
         warnings = []
         try:
             release = self.runtime.repo_workspace.release.get_release(
@@ -833,7 +1005,7 @@ class RepoReleaseFinalizerComponent:
                 release=prepared.release,
                 summary=prepared.release.summary,
             ),
-            checkpoint=checkpoint.value,
+            git_release=git_release.value,
             publication=RepoPublicationView(repo_root=str(repo_root), publication=prepared.publication),
             reconciliation=reconciliation_view,
             notification_pending=pending,
@@ -874,6 +1046,20 @@ class RepoReleaseFinalizerComponent:
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
         provider_key = provider_root.name
+        provider_commit = self.runtime.repo_workspace.git_release.resolve_release_commit(
+            provider_root, release_id=release_id
+        )
+        if not provider_commit.ok or provider_commit.value is None:
+            return self.runtime.foundation.fail(provider_commit.issues)
+        provider_policy = self.runtime.repo_workspace.publication.resolve_policy(
+            provider_root
+        )
+        if not provider_policy.ok or provider_policy.value is None:
+            return self.runtime.foundation.fail(provider_policy.issues)
+        provider_git_url = (
+            provider_policy.value.policy.canonical_fetch_url
+            or provider_root.resolve().as_uri()
+        )
         satisfied: list[str] = []
         already: list[str] = []
         pending: list[str] = []
@@ -904,6 +1090,25 @@ class RepoReleaseFinalizerComponent:
                 RepoDependencyRequirementStatus.SATISFIED,
                 RepoDependencyRequirementStatus.HANDLED,
             }:
+                if (
+                    requirement.provider_release_id != release_id
+                    or requirement.provider_commit != provider_commit.value
+                    or requirement.provider_git_url != provider_git_url
+                ):
+                    refreshed = (
+                        self.runtime.repo_workspace.requirement.record_requirement_provider_release(
+                            consumer,
+                            requirement_name=requirement.name,
+                            provider_repo=provider_key,
+                            provider_release_id=release_id,
+                            provider_commit=provider_commit.value,
+                            provider_git_url=provider_git_url,
+                            note=f"Provider release {release_id} is ready.",
+                        )
+                    )
+                    if not refreshed.ok:
+                        pending.append(key)
+                        continue
                 already.append(key)
                 continue
             if requirement.status != RepoDependencyRequirementStatus.OPEN:
@@ -917,6 +1122,9 @@ class RepoReleaseFinalizerComponent:
                 continue
             marked = self.runtime.repo_workspace.requirement.mark_requirement_satisfied(
                 consumer, requirement_name=requirement.name, provider_repo=provider_key,
+                provider_release_id=release_id,
+                provider_commit=provider_commit.value,
+                provider_git_url=provider_git_url,
                 note=f"Provider release {release_id} is ready.",
             )
             if marked.ok:
@@ -975,59 +1183,33 @@ class RepoReleaseFinalizerComponent:
             else:
                 reachable = {item.release_id for item in lineage.value}
                 for lineage_release in lineage.value:
-                    checkpoint = self.runtime.validation_snapshot.snapshot_restore.validate_repo_checkpoint_snapshot(
-                        repo_root, snapshot_id=lineage_release.repo_checkpoint_id
+                    git_release = self.runtime.repo_workspace.git_release.validate_release(
+                        repo_root,
+                        release=lineage_release,
                     )
-                    if not checkpoint.ok:
-                        issues.append("release_checkpoint_manifest_invalid")
-                        continue
-                    archive_root = self.runtime.validation_snapshot.snapshot_restore._snapshot_dir(
-                        repo_root, lineage_release.repo_checkpoint_id
-                    ) / "files" / "lean_constellation"
-                    archived_release = self.runtime.foundation.store.read_json(
-                        archive_root / "releases" / f"{lineage_release.release_id}.json", RepoRelease
-                    )
-                    archived_publication = self.runtime.foundation.store.read_json(
-                        archive_root / "repo_publication.json", RepoPublicationState
-                    )
-                    archived_model = self.runtime.foundation.store.read_json(
-                        archive_root / "repo.json", RepoModel
-                    )
-                    if not archived_release.ok or archived_release.value != lineage_release:
-                        issues.append("release_checkpoint_truth_mismatch")
-                    if (
-                        not archived_publication.ok
-                        or archived_publication.value is None
-                        or archived_publication.value.status != RepoPublicationStatus.STABLE
-                        or archived_publication.value.latest_release_id != lineage_release.release_id
-                    ):
-                        issues.append("release_checkpoint_truth_mismatch")
-                    if (
-                        not archived_model.ok
-                        or archived_model.value is None
-                        or archived_model.value.summary != lineage_release.summary
-                    ):
-                        issues.append("release_checkpoint_truth_mismatch")
+                    if not git_release.ok:
+                        issues.extend(issue.kind for issue in git_release.issues)
         all_release_ids = {item.release.release_id for item in releases.value}
-        release_checkpoints = (
-            self.runtime.validation_snapshot.snapshot_restore.list_repo_checkpoint_snapshots(
-                repo_root,
-                checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
-            )
-        )
-        if not release_checkpoints.ok or release_checkpoints.value is None:
-            return self.runtime.foundation.fail(release_checkpoints.issues)
-        checkpoint_ids = {item.snapshot_id for item in release_checkpoints.value}
+        if not all_release_ids and latest_id is None:
+            ref_release_ids: set[str] = set()
+        else:
+            git_refs = self.runtime.repo_workspace.git_release.list_release_refs(repo_root)
+            if not git_refs.ok or git_refs.value is None:
+                issues.extend(issue.kind for issue in git_refs.issues)
+                ref_release_ids = set()
+            else:
+                ref_release_ids = set(git_refs.value)
+        for missing_ref in sorted(all_release_ids - ref_release_ids):
+            issues.append(f"release_ref_missing:{missing_ref}")
+        for orphan_ref in sorted(ref_release_ids - all_release_ids):
+            issues.append(f"release_ref_without_manifest:{orphan_ref}")
         checkpoint_root = self.runtime.validation_snapshot.snapshot_restore._snapshot_root(repo_root)
-        referenced_checkpoints = {item.release.repo_checkpoint_id for item in releases.value}
         staging_root = checkpoint_root / ".staging"
         staging = [str(path) for path in sorted(staging_root.iterdir())] if staging_root.exists() else []
         orphan_releases = sorted(all_release_ids - reachable)
-        orphan_checkpoints = sorted(checkpoint_ids - referenced_checkpoints)
+        orphan_checkpoints: list[str] = []
         if orphan_releases:
             issues.append("orphan_repo_release")
-        if orphan_checkpoints:
-            issues.append("orphan_repo_release_checkpoint")
         try:
             for flow in self.runtime.list_flows():
                 result = getattr(flow, "result", None)
@@ -1154,16 +1336,15 @@ class RepoReleaseFinalizerComponent:
                         (item.release for item in listed.value if item.release.release_id == release_id), None
                     )
                     if target is not None:
+                        deleted_ref = self.runtime.repo_workspace.git_release.delete_release_ref(
+                            repo_root,
+                            release_id=release_id,
+                        )
+                        if not deleted_ref.ok:
+                            return self.runtime.foundation.fail(deleted_ref.issues)
                         self._remove_unpublished_release(repo_root, release_id)
-                        self._remove_unpublished_checkpoint(repo_root, target.repo_checkpoint_id)
-                        changed.extend([f"release:{release_id}", f"checkpoint:{target.repo_checkpoint_id}"])
+                        changed.append(f"release:{release_id}")
                 elif checkpoint_id is not None:
-                    if any(item.release.repo_checkpoint_id == checkpoint_id for item in listed.value):
-                        return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                            "release_artifact_reachable",
-                            "A checkpoint referenced by any immutable release cannot be cleaned up.",
-                            object_ref=checkpoint_id,
-                        ))
                     checkpoint_path = self.runtime.validation_snapshot.snapshot_restore._snapshot_dir(
                         repo_root, checkpoint_id
                     )
@@ -1194,43 +1375,83 @@ class RepoReleaseFinalizerComponent:
                 "release_cleanup_failed", f"Release artifact cleanup failed: {exc}", object_ref=object_ref
             ))
 
-    def restore_repo_release(
+    def preview_repo_release_restore(
         self,
         repo_root: Path,
         *,
         release_id: str,
-        dry_run: bool = False,
-    ) -> ServiceResult[SnapshotRestoreView]:
+    ) -> ServiceResult[GitReleaseRestorePreview]:
         repo_root = Path(repo_root)
         try:
             with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
-                publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
-                if not publication.ok or publication.value is None:
-                    return self.runtime.foundation.fail(publication.issues)
-                if publication.value.publication.latest_release_id != release_id:
-                    return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                        "historical_release_restore_not_supported",
-                        "Only the current latest release can be restored as the working repository.",
-                        current=release_id, expected=publication.value.publication.latest_release_id,
-                    ))
-                release = self.runtime.repo_workspace.release.get_release(repo_root, release_id=release_id)
+                release = (
+                    self.runtime.repo_workspace.git_release.read_release_manifest(
+                        repo_root,
+                        release_id=release_id,
+                    )
+                )
                 if not release.ok or release.value is None:
                     return self.runtime.foundation.fail(release.issues)
-                restored = self.runtime.validation_snapshot.snapshot_restore.restore_repo_checkpoint_snapshot(
-                    repo_root, snapshot_id=release.value.release.repo_checkpoint_id,
-                    dry_run=dry_run, prune_extra_files=True,
-                    allow_release_internal=True,
+                validated = self.runtime.repo_workspace.git_release.validate_release(
+                    repo_root,
+                    release=release.value,
                 )
-                if not restored.ok or restored.value is None or dry_run:
-                    return restored
+                if not validated.ok:
+                    return self.runtime.foundation.fail(validated.issues)
+                return self.runtime.repo_workspace.git_release.preview_restore_release(
+                    repo_root,
+                    release_id=release_id,
+                )
+        except Exception as exc:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "release_restore_preview_failed",
+                f"Release restore preview failed: {exc}",
+                object_ref=release_id,
+            ))
+
+    def apply_repo_release_restore(
+        self,
+        repo_root: Path,
+        *,
+        preview: GitReleaseRestorePreview,
+        expected_recovery_token: str,
+    ) -> ServiceResult[GitReleaseRestoreView]:
+        repo_root = Path(repo_root)
+        try:
+            with self.runtime.repo_workspace.lifecycle_lock.locked(repo_root):
+                release = (
+                    self.runtime.repo_workspace.git_release.read_release_manifest(
+                        repo_root,
+                        release_id=preview.release_id,
+                    )
+                )
+                if not release.ok or release.value is None:
+                    return self.runtime.foundation.fail(release.issues)
+                validated = self.runtime.repo_workspace.git_release.validate_release(
+                    repo_root,
+                    release=release.value,
+                )
+                if not validated.ok:
+                    return self.runtime.foundation.fail(validated.issues)
+                restored = (
+                    self.runtime.repo_workspace.git_release.apply_restore_release(
+                        repo_root,
+                        preview=preview,
+                        expected_recovery_token=expected_recovery_token,
+                    )
+                )
+                if not restored.ok or restored.value is None:
+                    return self.runtime.foundation.fail(restored.issues)
                 current = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
                 if (
                     not current.ok or current.value is None
                     or current.value.publication.status != RepoPublicationStatus.STABLE
-                    or current.value.publication.latest_release_id != release_id
+                    or current.value.publication.latest_release_id != preview.release_id
                 ):
                     return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                        "release_storage_corrupt", "Restored release publication truth is inconsistent.", object_ref=release_id
+                        "release_storage_corrupt",
+                        "Restored release publication truth is inconsistent.",
+                        object_ref=preview.release_id,
                     ))
                 build = self.runtime.external.lean_toolchain.run_lake_build(repo_root)
                 if not build.ok:
@@ -1241,13 +1462,72 @@ class RepoReleaseFinalizerComponent:
                 return restored
         except Exception as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                "release_restore_failed", f"Release restore failed: {exc}", object_ref=release_id
+                "release_restore_failed",
+                f"Release restore failed: {exc}",
+                object_ref=preview.release_id,
             ))
 
     def compute_candidate_digest(self, repo_root: Path) -> str:
         repo_root = Path(repo_root)
+        return self._digest_files(repo_root, self._candidate_files(repo_root))
+
+    def compute_semantic_manifest_digest(self, repo_root: Path) -> str:
+        repo_root = Path(repo_root)
+        semantic_files = []
+        for path in self._candidate_files(repo_root):
+            relpath = path.relative_to(repo_root)
+            if relpath.as_posix() in self._SEMANTIC_EXCLUDED_ROOT_FILES:
+                continue
+            if relpath.parts[:2] == (".lean_constellation", "releases"):
+                continue
+            if relpath.as_posix() in {
+                ".lean_constellation/repo.json",
+                ".lean_constellation/repo_publication.json",
+            }:
+                continue
+            if (
+                len(relpath.parts) >= 2
+                and relpath.parts[0] == ".lean_constellation"
+                and relpath.parts[1] in {"publication", "release_receipts"}
+            ):
+                continue
+            if relpath.parts[:2] == ("docs", "lean-constellation"):
+                continue
+            semantic_files.append(path)
+        return self._digest_files(repo_root, semantic_files)
+
+    def compute_dependency_lock_digest(self, repo_root: Path) -> str:
+        repo_root = Path(repo_root)
+        parsed = self.runtime.repo_workspace.lake_dependency.parse_lake_dependencies(repo_root)
+        if not parsed.ok or parsed.value is None:
+            payload: list[dict[str, object]] = []
+        else:
+            payload = [
+                {
+                    "name": item.name,
+                    "source": item.source,
+                    "scope": item.scope,
+                    "path": item.path if item.source == "path" else None,
+                    "rev": item.rev,
+                    "subdir": item.subdir,
+                }
+                for item in sorted(
+                    parsed.value.dependencies,
+                    key=lambda dependency: (
+                        dependency.name,
+                        dependency.git or "",
+                        dependency.path or "",
+                    ),
+                )
+            ]
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _digest_files(repo_root: Path, files: list[Path]) -> str:
         digest = hashlib.sha256()
-        for path in sorted(self._candidate_files(repo_root), key=lambda item: item.relative_to(repo_root).as_posix()):
+        for path in sorted(files, key=lambda item: item.relative_to(repo_root).as_posix()):
             relpath = path.relative_to(repo_root).as_posix()
             digest.update(relpath.encode("utf-8"))
             digest.update(b"\0")
@@ -1255,12 +1535,106 @@ class RepoReleaseFinalizerComponent:
             digest.update(b"\0")
         return digest.hexdigest()
 
+    def _create_post_release_checkpoint(
+        self,
+        repo_root: Path,
+        *,
+        release: RepoRelease,
+    ) -> ServiceResult[RepoCheckpointSnapshotView]:
+        return self.runtime.validation_snapshot.snapshot_restore.create_repo_checkpoint_archive(
+            repo_root,
+            checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
+            label=f"post-release {release.release_id}",
+        )
+
+    def _rollback_release_worktree(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str | None,
+        publication: RepoPublicationState,
+        repo_model: RepoModel,
+    ) -> None:
+        publication_path = self.runtime.repo_workspace.metadata._repo_publication_path(repo_root)
+        current_publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+        if (
+            not current_publication.ok
+            or current_publication.value is None
+            or current_publication.value.publication != publication
+        ):
+            restored = self.runtime.foundation.store.write_json_atomic(
+                publication_path,
+                publication,
+                mode=WriteMode.OVERWRITE,
+            )
+            if not restored.ok:
+                raise OSError(
+                    "failed to restore publication truth: "
+                    + "; ".join(issue.kind for issue in restored.issues)
+                )
+        if release_id is not None:
+            self._remove_unpublished_release(repo_root, release_id)
+        current_model = self.runtime.repo_workspace.metadata.get_repo_model(repo_root)
+        if not current_model.ok or current_model.value != repo_model:
+            restored_model = self.runtime.foundation.store.write_json_atomic(
+                self.runtime.foundation.layout.repo_metadata_path(
+                    FoundationContext(repo_root=repo_root)
+                ),
+                repo_model,
+                mode=WriteMode.OVERWRITE,
+            )
+            if not restored_model.ok:
+                raise OSError(
+                    "failed to restore repo model: "
+                    + "; ".join(issue.kind for issue in restored_model.issues)
+                )
+        self._refresh_publication_documents_for_current_release(repo_root)
+
+    def _refresh_publication_documents_for_current_release(
+        self,
+        repo_root: Path,
+    ) -> bool:
+        publication = self.runtime.repo_workspace.metadata.get_repo_publication(
+            repo_root
+        )
+        if not publication.ok or publication.value is None:
+            return False
+        release_id = publication.value.publication.latest_release_id
+        semantic_digest = None
+        if release_id is not None:
+            release = self.runtime.repo_workspace.release.get_release(
+                repo_root,
+                release_id=release_id,
+            )
+            if release.ok and release.value is not None:
+                semantic_digest = release.value.release.semantic_manifest_digest
+                generated_at = release.value.release.created_at
+            else:
+                generated_at = None
+        else:
+            generated_at = None
+        refreshed = self.runtime.repo_workspace.publication.prepare_publication(
+            repo_root,
+            release_id=release_id,
+            semantic_manifest_digest=semantic_digest,
+            generated_at=generated_at,
+        )
+        return refreshed.ok
+
     def _candidate_files(self, repo_root: Path) -> list[Path]:
         files: list[Path] = []
+        policy = self.runtime.repo_workspace.publication.resolve_policy(repo_root)
+        include_lake_manifest = (
+            policy.value.policy.include_lake_manifest
+            if policy.ok and policy.value is not None
+            else True
+        )
         for path in repo_root.rglob("*"):
             if not path.is_file():
                 continue
             rel = path.relative_to(repo_root)
+            if rel.as_posix() == "lake-manifest.json" and not include_lake_manifest:
+                continue
             if rel.parts[0] in self._EXCLUDED_TOP_LEVEL:
                 continue
             if rel.parts[0] == ".lean_constellation" and len(rel.parts) > 1:
@@ -1303,15 +1677,16 @@ class RepoReleaseFinalizerComponent:
                 return self.runtime.foundation.fail(current_config.issues)
             if not base_release.ok or base_release.value is None:
                 return self.runtime.foundation.fail(base_release.issues)
-            checkpoint = self.runtime.validation_snapshot.snapshot_restore.validate_repo_checkpoint_snapshot(
-                repo_root, snapshot_id=base_release.value.release.repo_checkpoint_id
+            git_release = self.runtime.repo_workspace.git_release.validate_release(
+                repo_root,
+                release=base_release.value.release,
             )
-            if not checkpoint.ok:
+            if not git_release.ok:
                 return self.runtime.foundation.fail(self.runtime.foundation.issue(
                     "release_baseline_corrupt",
-                    "The base release checkpoint is missing or invalid.",
-                    object_ref=base_release.value.release.repo_checkpoint_id,
-                    details={"issues": "; ".join(issue.kind for issue in checkpoint.issues)},
+                    "The base Git Release ref, commit, or manifest is missing or invalid.",
+                    object_ref=base_release.value.release.release_id,
+                    details={"issues": "; ".join(issue.kind for issue in git_release.issues)},
                 ))
             if not completion_mode_satisfies(
                 current_config.value.config.completion_mode,
@@ -1386,13 +1761,6 @@ class RepoReleaseFinalizerComponent:
         )
 
     def _remove_unpublished_checkpoint(self, repo_root: Path, checkpoint_id: str) -> None:
-        publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
-        if publication.ok and publication.value is not None and publication.value.publication.latest_release_id:
-            latest = self.runtime.repo_workspace.release.get_release(
-                repo_root, release_id=publication.value.publication.latest_release_id
-            )
-            if latest.ok and latest.value is not None and latest.value.release.repo_checkpoint_id == checkpoint_id:
-                return
         path = self.runtime.validation_snapshot.snapshot_restore._snapshot_dir(repo_root, checkpoint_id)
         if path.exists():
             shutil.rmtree(path)

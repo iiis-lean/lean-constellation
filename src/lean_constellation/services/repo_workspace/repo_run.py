@@ -132,11 +132,15 @@ class RepoRunComponent:
             if not base.ok or base.value is None:
                 findings.append(self.runtime.foundation.issue("release_baseline_corrupt", "The bound release cannot be read."))
             else:
-                checkpoint = self.runtime.validation_snapshot.validate_repo_checkpoint_snapshot(
-                    repo_root, snapshot_id=base.value.release.repo_checkpoint_id
+                git_release = self.runtime.repo_workspace.git_release.validate_release(
+                    repo_root,
+                    release=base.value.release,
                 )
-                if not checkpoint.ok or checkpoint.value is None:
-                    findings.append(self.runtime.foundation.issue("release_baseline_corrupt", "The bound release checkpoint evidence cannot be read."))
+                if not git_release.ok or git_release.value is None:
+                    findings.append(self.runtime.foundation.issue(
+                        "release_baseline_corrupt",
+                        "The bound Git Release ref, commit, or manifest cannot be read.",
+                    ))
                 if not completion_mode_satisfies(
                     run_spec.completion_mode,
                     base.value.release.completion_mode,

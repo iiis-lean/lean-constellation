@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from pydantic import Field
 
@@ -186,9 +186,22 @@ class LeanToolchainClient:
         self.toolkit = toolkit
         self.config = config or LeanToolchainClientConfig()
 
-    def run_lake_update(self, repo_root: Path, *, timeout_seconds: int | None = None) -> ToolchainCommandView:
+    def run_lake_update(
+        self,
+        repo_root: Path,
+        *,
+        packages: list[str] | None = None,
+        transport_rewrites: Mapping[str, str] | None = None,
+        timeout_seconds: int | None = None,
+    ) -> ToolchainCommandView:
+        env = self._git_transport_env(transport_rewrites)
         try:
-            result = self.lake.run_lake_update(Path(repo_root), timeout_seconds=timeout_seconds)
+            result = self.lake.run_lake_update(
+                Path(repo_root),
+                packages=packages,
+                timeout_seconds=timeout_seconds,
+                env=env,
+            )
         except TypeError:
             result = self.lake.run_lake_update(Path(repo_root))
         return self._command_view(result)
@@ -199,13 +212,35 @@ class LeanToolchainClient:
         *,
         target: str | None = None,
         targets: list[str] | None = None,
+        transport_rewrites: Mapping[str, str] | None = None,
         timeout_seconds: int | None = None,
     ) -> ToolchainCommandView:
+        env = self._git_transport_env(transport_rewrites)
         try:
-            result = self.lake.run_lake_build(Path(repo_root), target=target, targets=targets, timeout_seconds=timeout_seconds)
+            result = self.lake.run_lake_build(
+                Path(repo_root),
+                target=target,
+                targets=targets,
+                timeout_seconds=timeout_seconds,
+                env=env,
+            )
         except TypeError:
             result = self.lake.run_lake_build(Path(repo_root), target=target)
         return self._command_view(result)
+
+    @staticmethod
+    def _git_transport_env(
+        rewrites: Mapping[str, str] | None,
+    ) -> dict[str, str] | None:
+        if not rewrites:
+            return None
+        env = {"GIT_CONFIG_COUNT": str(len(rewrites))}
+        for index, (canonical_url, local_url) in enumerate(
+            sorted(rewrites.items())
+        ):
+            env[f"GIT_CONFIG_KEY_{index}"] = f"url.{local_url}.insteadOf"
+            env[f"GIT_CONFIG_VALUE_{index}"] = canonical_url
+        return env
 
     def run_minimal_import_check(self, repo_root: Path, module: str, *, timeout_seconds: int | None = None) -> ToolchainLeanCheckView:
         try:

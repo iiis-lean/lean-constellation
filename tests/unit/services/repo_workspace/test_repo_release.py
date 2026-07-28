@@ -144,7 +144,8 @@ def _release(
         parent_release_id=parent,
         node_contract_versions=versions,
         completion_mode=completion_mode,
-        repo_checkpoint_id=f"checkpoint_{release_id}",
+        semantic_manifest_digest="1" * 64,
+        dependency_lock_digest="2" * 64,
         summary=f"Release {release_id}.",
     )
 

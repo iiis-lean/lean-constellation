@@ -322,15 +322,11 @@ def test_workspace_catalog_degrades_broken_provider_to_not_ready_warning(tmp_pat
     broken = workspace / "broken"
     metadata.ensure_repo_model(consumer)
     release = publish_native_provider_release(metadata.runtime, broken, summary="Broken provider fixture.")
-    checkpoint_manifest = (
-        metadata.runtime.foundation.layout.snapshot_root(
-            FoundationContext(repo_root=broken)
-        )
-        / "repo_checkpoints"
-        / release.repo_checkpoint_id
-        / "snapshot.json"
+    deleted = metadata.runtime.repo_workspace.git_release.delete_release_ref(
+        broken,
+        release_id=release.release_id,
     )
-    checkpoint_manifest.unlink()
+    assert deleted.ok and deleted.value is True
 
     state = metadata.get_repo_state_view(broken)
     ready = catalog.list_ready_provider_repos(workspace, current_repo="consumer")
@@ -338,9 +334,9 @@ def test_workspace_catalog_degrades_broken_provider_to_not_ready_warning(tmp_pat
 
     assert state.ok and state.value is not None
     assert state.value.provider_ready is False
-    assert [issue.kind for issue in state.issues] == ["provider_native_checkpoint_missing"]
+    assert [issue.kind for issue in state.issues] == ["provider_native_git_release_invalid"]
     assert ready.ok and ready.value == []
-    assert [issue.kind for issue in ready.issues] == ["provider_native_checkpoint_missing"]
+    assert [issue.kind for issue in ready.issues] == ["provider_native_git_release_invalid"]
     assert coordinator.ok and coordinator.value is not None
     assert coordinator.value.ready_provider_repos == []
 

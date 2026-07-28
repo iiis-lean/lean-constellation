@@ -39,9 +39,11 @@ from lean_constellation.domain.repo import (
     RepoConfigView,
     RepoPublicationView,
 )
+from lean_constellation.domain.publication import RepoPublicationOverride
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_release import RepoReleaseListView
+from lean_constellation.domain.repo_release import RepoReleaseValidationProfile
 from lean_constellation.flows.repo_lifecycle.source_index import SourceIndexBuildResult
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind
 from lean_constellation.flows.testing import (
@@ -50,7 +52,10 @@ from lean_constellation.flows.testing import (
     ControlledAgentOverrideSpec,
 )
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
-from lean_constellation.services.repo_workspace import RepoSkeletonView
+from lean_constellation.services.repo_workspace import (
+    DependencyReleaseMode,
+    RepoSkeletonView,
+)
 from lean_constellation.services.repo_workspace.repo_lifecycle_lock import RepoLifecycleLockBusyError
 from lean_constellation.services.runtime import LeanRuntimeServices
 
@@ -569,8 +574,66 @@ class RepoReleaseIdInput(StrictModel):
         return Path(value).expanduser()
 
 
-class RepoReleaseRestoreInput(RepoReleaseIdInput):
-    dry_run: bool = False
+class RepoReleaseRestoreApplyInput(RepoReleaseIdInput):
+    expected_recovery_token: str = Field(min_length=64, max_length=64)
+
+
+class RepoPublicationPrepareInput(StrictModel):
+    repo_root: Path
+    title: str | None = None
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class RepoRemotePublicationInput(RepoReleaseIdInput):
+    expected_recovery_token: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    push: bool = False
+
+
+class RepoDependencyChangeInput(StrictModel):
+    repo_root: Path
+    provider_repo_key: str
+    target_provider_release_id: str
+    target_git_url: str
+    release_mode: DependencyReleaseMode = DependencyReleaseMode.DEFER
+    validation_profile: RepoReleaseValidationProfile = (
+        RepoReleaseValidationProfile.DEPENDENCY_MINIMAL
+    )
+    expected_recovery_token: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
+class WorkspacePublicationInput(StrictModel):
+    workspace_root: Path
+    repo_keys: list[str] | None = None
+    output_root: Path | None = None
+    push_children: bool = False
+    push_superproject: bool = False
+    expected_recovery_token: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+
+    @field_validator("workspace_root", "output_root", mode="before")
+    @classmethod
+    def _coerce_paths(cls, value: Any) -> Path | None:
+        return None if value is None else Path(value).expanduser()
 
 
 class RepoReleaseOrphanCleanupInput(StrictModel):
@@ -667,6 +730,7 @@ class RepoConfigUpdateInput(StrictModel):
     repo_root: Path
     completion_mode: RepoCompletionMode | None = None
     default_requirement_proof_availability: ProofAvailability | None = None
+    publication: RepoPublicationOverride | None = None
 
     @field_validator("repo_root", mode="before")
     @classmethod
@@ -1153,12 +1217,205 @@ class LeanAdminApi:
                 "repo_lifecycle_lock_busy", str(exc), object_ref=str(repo_root)
             ))
 
-    def restore_repo_release(self, input_model: RepoReleaseRestoreInput):  # noqa: ANN201
-        return self.runtime.validation_snapshot.release_finalizer.restore_repo_release(
+    def preview_repo_release_restore(
+        self,
+        input_model: RepoReleaseIdInput,
+    ):  # noqa: ANN201
+        safe = self._check_release_restore_runtime_safe()
+        if not safe.ok:
+            return self.runtime.foundation.fail(safe.issues)
+        return (
+            self.runtime.validation_snapshot.release_finalizer.preview_repo_release_restore(
+                input_model.repo_root,
+                release_id=input_model.release_id,
+            )
+        )
+
+    def apply_repo_release_restore(
+        self,
+        input_model: RepoReleaseRestoreApplyInput,
+    ):  # noqa: ANN201
+        safe = self._check_release_restore_runtime_safe()
+        if not safe.ok:
+            return self.runtime.foundation.fail(safe.issues)
+        preview = (
+            self.runtime.validation_snapshot.release_finalizer.preview_repo_release_restore(
+                input_model.repo_root,
+                release_id=input_model.release_id,
+            )
+        )
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        return (
+            self.runtime.validation_snapshot.release_finalizer.apply_repo_release_restore(
+                input_model.repo_root,
+                preview=preview.value,
+                expected_recovery_token=input_model.expected_recovery_token,
+            )
+        )
+
+    def prepare_repo_publication(
+        self,
+        input_model: RepoPublicationPrepareInput,
+    ):  # noqa: ANN201
+        latest = self.runtime.repo_workspace.release.get_latest_release(
+            input_model.repo_root
+        )
+        release_id = (
+            latest.value.release.release_id
+            if latest.ok and latest.value is not None
+            else None
+        )
+        semantic_digest = (
+            latest.value.release.semantic_manifest_digest
+            if latest.ok and latest.value is not None
+            else None
+        )
+        generated_at = (
+            latest.value.release.created_at
+            if latest.ok and latest.value is not None
+            else None
+        )
+        return self.runtime.repo_workspace.publication.prepare_publication(
+            input_model.repo_root,
+            title=input_model.title,
+            release_id=release_id,
+            semantic_manifest_digest=semantic_digest,
+            generated_at=generated_at,
+        )
+
+    def preview_repo_remote_publication(
+        self,
+        input_model: RepoRemotePublicationInput,
+    ):  # noqa: ANN201
+        return self.runtime.repo_workspace.remote_publication.preview(
             input_model.repo_root,
             release_id=input_model.release_id,
-            dry_run=input_model.dry_run,
         )
+
+    def apply_repo_remote_publication(
+        self,
+        input_model: RepoRemotePublicationInput,
+    ):  # noqa: ANN201
+        if input_model.expected_recovery_token is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "remote_publication_token_required",
+                    "Remote publication apply requires an exact preview token.",
+                    object_ref=input_model.release_id,
+                )
+            )
+        preview = self.runtime.repo_workspace.remote_publication.preview(
+            input_model.repo_root,
+            release_id=input_model.release_id,
+        )
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        return self.runtime.repo_workspace.remote_publication.apply(
+            input_model.repo_root,
+            preview=preview.value,
+            expected_recovery_token=input_model.expected_recovery_token,
+            push=input_model.push,
+        )
+
+    def preview_repo_dependency_change(
+        self,
+        input_model: RepoDependencyChangeInput,
+    ):  # noqa: ANN201
+        return self.runtime.repo_workspace.dependency_release.preview(
+            input_model.repo_root,
+            provider_repo_key=input_model.provider_repo_key,
+            target_provider_release_id=input_model.target_provider_release_id,
+            target_git_url=input_model.target_git_url,
+            release_mode=input_model.release_mode,
+            validation_profile=input_model.validation_profile,
+        )
+
+    def apply_repo_dependency_change(
+        self,
+        input_model: RepoDependencyChangeInput,
+    ):  # noqa: ANN201
+        if input_model.expected_recovery_token is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "dependency_change_token_required",
+                    "Dependency change apply requires an exact preview token.",
+                    object_ref=input_model.provider_repo_key,
+                )
+            )
+        preview = self.preview_repo_dependency_change(input_model)
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        return self.runtime.repo_workspace.dependency_release.apply(
+            input_model.repo_root,
+            preview=preview.value,
+            expected_recovery_token=input_model.expected_recovery_token,
+        )
+
+    def preview_workspace_publication(
+        self,
+        input_model: WorkspacePublicationInput,
+    ):  # noqa: ANN201
+        return self.runtime.repo_workspace.workspace_publication.preview(
+            input_model.workspace_root,
+            repo_keys=input_model.repo_keys,
+            output_root=input_model.output_root,
+            push_children=input_model.push_children,
+            push_superproject=input_model.push_superproject,
+        )
+
+    def apply_workspace_publication(
+        self,
+        input_model: WorkspacePublicationInput,
+    ):  # noqa: ANN201
+        if input_model.expected_recovery_token is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "workspace_publication_token_required",
+                    "Workspace publication apply requires an exact preview token.",
+                    object_ref=str(input_model.workspace_root),
+                )
+            )
+        preview = self.preview_workspace_publication(input_model)
+        if not preview.ok or preview.value is None:
+            return self.runtime.foundation.fail(preview.issues)
+        return self.runtime.repo_workspace.workspace_publication.apply(
+            input_model.workspace_root,
+            preview=preview.value,
+            expected_recovery_token=input_model.expected_recovery_token,
+        )
+
+    def _check_release_restore_runtime_safe(self) -> ServiceResult[bool]:
+        controller = self.runtime.ark.pause_controller
+        if controller is None:
+            return self.runtime.foundation.ok(True)
+        if not hasattr(controller, "is_paused") or not controller.is_paused():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "release_restore_runtime_not_paused",
+                    "Release restore requires a paused or unloaded runtime.",
+                )
+            )
+        queues = self._candidate_queue_view()
+        if (
+            queues.active_flow_advances
+            or queues.running_step_ids
+            or queues.created_step_ids
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "release_restore_runtime_not_quiescent",
+                    "Release restore requires no active Flow advance or running/created Step.",
+                    details={
+                        "active_flow_advances": ",".join(
+                            queues.active_flow_advances
+                        ),
+                        "running_step_ids": ",".join(queues.running_step_ids),
+                        "created_step_ids": ",".join(queues.created_step_ids),
+                    },
+                )
+            )
+        return self.runtime.foundation.ok(True)
 
     def audit_repo_releases(self, repo_root: Path):  # noqa: ANN201
         try:
@@ -1323,6 +1580,7 @@ class LeanAdminApi:
             input_model.repo_root,
             completion_mode=input_model.completion_mode,
             default_requirement_proof_availability=input_model.default_requirement_proof_availability,
+            publication=input_model.publication,
         )
 
     def get_repo_publication(self, repo_root: Path) -> ServiceResult[RepoPublicationView]:

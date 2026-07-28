@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.services.external_clients import (
@@ -32,7 +32,7 @@ class SourceCorpusFileView(StrictModel):
 
 
 class SourceCorpusManifestView(StrictModel):
-    repo_root: str
+    schema_version: Literal[2] = 2
     relpath: str = ".lean_constellation/source"
     overview: str | None = None
     entry_path: str | None = None
@@ -40,6 +40,16 @@ class SourceCorpusManifestView(StrictModel):
     generated_at: str = Field(default_factory=utc_now_iso)
     files: list[SourceCorpusFileView] = Field(default_factory=list)
     summary: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_absolute_root(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        migrated.pop("repo_root", None)
+        migrated["schema_version"] = 2
+        return migrated
 
 
 class SourceAcquisitionView(StrictModel):
@@ -129,7 +139,6 @@ class SourceCorpusComponent:
         files = [self._file_view(root, item) for item in sorted(root.rglob("*")) if item.is_file()]
         default_entry = entry_path or self._default_entry(root, files)
         manifest = SourceCorpusManifestView(
-            repo_root=str(Path(repo_root)),
             relpath=relpath,
             overview=overview,
             entry_path=default_entry,

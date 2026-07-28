@@ -32,6 +32,10 @@ from lean_constellation.services.validation_snapshot.snapshot_restore import (
     SnapshotRestoreView,
 )
 from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
+from lean_constellation.services.repo_workspace.git_release import (
+    GitReleaseRestorePreview,
+    GitReleaseRestoreView,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.adapter import AdapterService
@@ -198,28 +202,6 @@ class ValidationSnapshotService:
         dry_run: bool = False,
         prune_extra_files: bool = False,
     ) -> ServiceResult[SnapshotRestoreView]:
-        manifest = self.snapshot_restore._load_manifest(Path(repo_root), snapshot_id)
-        if manifest.ok and manifest.value is not None and manifest.value.checkpoint_kind == RepoCheckpointKind.REPO_RELEASE:
-            releases = self.runtime.repo_workspace.release.list_releases(Path(repo_root))
-            if not releases.ok or releases.value is None:
-                return self.runtime.foundation.fail(releases.issues)
-            matches = [
-                item.release.release_id
-                for item in releases.value
-                if item.release.repo_checkpoint_id == snapshot_id
-            ]
-            if len(matches) != 1:
-                return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                    "repo_release_checkpoint_identity_invalid",
-                    "Release checkpoint must be referenced by exactly one immutable RepoRelease.",
-                    object_ref=snapshot_id,
-                    details={"matches": ", ".join(matches)},
-                ))
-            return self.release_finalizer.restore_repo_release(
-                Path(repo_root),
-                release_id=matches[0],
-                dry_run=dry_run,
-            )
         return self.snapshot_restore.restore_repo_checkpoint_snapshot(
             repo_root,
             snapshot_id=snapshot_id,
@@ -296,9 +278,26 @@ class ValidationSnapshotService:
             staging_id=staging_id,
         )
 
-    def restore_repo_release(
-        self, repo_root: Path, *, release_id: str, dry_run: bool = False
-    ) -> ServiceResult[SnapshotRestoreView]:
-        return self.release_finalizer.restore_repo_release(
-            repo_root, release_id=release_id, dry_run=dry_run
+    def preview_repo_release_restore(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str,
+    ) -> ServiceResult[GitReleaseRestorePreview]:
+        return self.release_finalizer.preview_repo_release_restore(
+            repo_root,
+            release_id=release_id,
+        )
+
+    def apply_repo_release_restore(
+        self,
+        repo_root: Path,
+        *,
+        preview: GitReleaseRestorePreview,
+        expected_recovery_token: str,
+    ) -> ServiceResult[GitReleaseRestoreView]:
+        return self.release_finalizer.apply_repo_release_restore(
+            repo_root,
+            preview=preview,
+            expected_recovery_token=expected_recovery_token,
         )

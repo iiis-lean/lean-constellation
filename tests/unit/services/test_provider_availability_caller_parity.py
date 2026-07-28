@@ -55,10 +55,10 @@ CASES = (
         availability_issue="provider_native_stable_release_missing",
     ),
     ProviderCase(
-        name="dangling_native_checkpoint",
+        name="dangling_native_git_release",
         available=False,
         decl_ref=DeclRef(repo="Provider", node="Main.Core", name="provider_result", revision=1),
-        availability_issue="provider_native_checkpoint_missing",
+        availability_issue="provider_native_git_release_invalid",
         hard_failure=True,
     ),
     ProviderCase(
@@ -97,7 +97,7 @@ def _prepare_provider(runtime, provider_root: Path, case: ProviderCase) -> None:
             publication,
             mode=WriteMode.OVERWRITE,
         ).ok
-    elif case.name == "dangling_native_checkpoint":
+    elif case.name == "dangling_native_git_release":
         publication = runtime.repo_workspace.metadata.get_repo_publication(provider_root)
         assert publication.ok and publication.value is not None
         release = runtime.repo_workspace.release.get_release(
@@ -105,13 +105,11 @@ def _prepare_provider(runtime, provider_root: Path, case: ProviderCase) -> None:
             release_id=publication.value.publication.latest_release_id,
         )
         assert release.ok and release.value is not None
-        checkpoint = (
-            runtime.foundation.layout.snapshot_root(FoundationContext(repo_root=provider_root))
-            / "repo_checkpoints"
-            / release.value.release.repo_checkpoint_id
-            / "snapshot.json"
+        deleted = runtime.repo_workspace.git_release.delete_release_ref(
+            provider_root,
+            release_id=release.value.release.release_id,
         )
-        checkpoint.unlink()
+        assert deleted.ok and deleted.value is True
 
 
 def _write_workspace_dependency(consumer_root: Path) -> None:

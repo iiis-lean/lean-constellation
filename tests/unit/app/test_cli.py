@@ -29,92 +29,18 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "agent-event" in help_text
     assert "agent-trace-report" in help_text
     assert "semantic-watch" in help_text
-    assert "migrate-repo-completion-checkpoint" in help_text
-    assert "migrate-decl-closeout-checkpoint" in help_text
     assert "repo-run-initial" in help_text
     assert "repo-run-continue" in help_text
     assert "repo-release-preview" in help_text
-    assert "repo-release-restore" in help_text
-
-
-def test_cli_repo_completion_migration_preview_is_offline(
-    tmp_path,
-    capsys,
-    monkeypatch,
-) -> None:  # noqa: ANN001
-    calls = []
-
-    class _Report:
-        def to_dict(self):  # noqa: ANN201
-            return {"mode": "preview", "recovery_token": "token"}
-
-    def fake_preview(repo_root, *, checkpoint_id):  # noqa: ANN001
-        calls.append((repo_root, checkpoint_id))
-        return _Report()
-
-    monkeypatch.setattr(
-        "lean_constellation.app.repo_completion_mode_migration.preview_repo_completion_checkpoint",
-        fake_preview,
-    )
-
-    exit_code = main(
-        [
-            "migrate-repo-completion-checkpoint",
-            "preview",
-            str(tmp_path / "Repo"),
-            "--checkpoint-id",
-            "repo_cp_source",
-        ]
-    )
-
-    assert exit_code == 0
-    assert json.loads(capsys.readouterr().out) == {
-        "ok": True,
-        "value": {"mode": "preview", "recovery_token": "token"},
-    }
-    assert calls == [(tmp_path / "Repo", "repo_cp_source")]
-
-
-def test_cli_decl_closeout_migration_preview_is_offline(
-    tmp_path,
-    capsys,
-    monkeypatch,
-) -> None:  # noqa: ANN001
-    calls = []
-
-    class _Report:
-        def to_dict(self):  # noqa: ANN201
-            return {"mode": "preview", "recovery_token": "token"}
-
-    def fake_preview(repo_root, *, checkpoint_id):  # noqa: ANN001
-        calls.append((repo_root, checkpoint_id))
-        return _Report()
-
-    monkeypatch.setattr(
-        (
-            "lean_constellation.app.decl_round_closeout_checkpoint_migration."
-            "preview_decl_round_closeout_checkpoint"
-        ),
-        fake_preview,
-    )
-
-    exit_code = main(
-        [
-            "migrate-decl-closeout-checkpoint",
-            "preview",
-            str(tmp_path / "Repo"),
-            "--checkpoint-id",
-            "repo_cp_source",
-        ]
-    )
-
-    assert exit_code == 0
-    assert json.loads(capsys.readouterr().out) == {
-        "ok": True,
-        "value": {"mode": "preview", "recovery_token": "token"},
-    }
-    assert calls == [(tmp_path / "Repo", "repo_cp_source")]
-
+    assert "repo-release-restore-preview" in help_text
+    assert "repo-release-restore-apply" in help_text
+    assert "repo-publication-prepare" in help_text
+    assert "repo-publication-remote-preview" in help_text
+    assert "repo-publication-remote-apply" in help_text
+    assert "repo-dependency-change-preview" in help_text
+    assert "repo-dependency-change-apply" in help_text
+    assert "workspace-publication-preview" in help_text
+    assert "workspace-publication-apply" in help_text
 
 def test_cli_config_view_prints_redacted_config(tmp_path, capsys) -> None:
     config_path = tmp_path / "config.toml"
@@ -498,27 +424,154 @@ def test_cli_repo_run_initial_builds_semantic_http_payload(tmp_path, capsys, mon
     )]
 
 
-def test_cli_release_restore_uses_only_semantic_restore_options(tmp_path, capsys, monkeypatch) -> None:
+def test_cli_git_release_restore_preview_and_apply_use_cas_routes(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # noqa: ANN001
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        f'workspace_root = "{tmp_path / "workspace"}"\nadmin_http_base_url = "http://admin.test"\n',
+        f'workspace_root = "{tmp_path / "workspace"}"\n'
+        'admin_http_base_url = "http://admin.test"\n',
         encoding="utf-8",
     )
     calls = []
 
     def fake_request_json(method, url, payload=None):  # noqa: ANN001
         calls.append((method, url, payload))
-        return {"ok": True, "value": {"dry_run": True}}
+        return {"ok": True, "value": {}}
 
     monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
-    exit_code = main([
-        "--config", str(config_path), "repo-release-restore", "--repo-key", "Provider",
-        "release-r2", "--dry-run",
-    ])
+    assert main([
+        "--config",
+        str(config_path),
+        "repo-release-restore-preview",
+        "--repo-key",
+        "Provider",
+        "release-r2",
+    ]) == 0
+    assert main([
+        "--config",
+        str(config_path),
+        "repo-release-restore-apply",
+        "--repo-key",
+        "Provider",
+        "release-r2",
+        "--expected-token",
+        "a" * 64,
+    ]) == 0
+    capsys.readouterr()
 
-    assert exit_code == 0
-    assert json.loads(capsys.readouterr().out)["ok"] is True
-    assert calls == [(
-        "POST", "http://admin.test/admin/repos/Provider/releases/release-r2/restore",
-        {"dry_run": True},
-    )]
+    assert calls == [
+        (
+            "POST",
+            "http://admin.test/admin/repos/Provider/releases/release-r2/restore/preview",
+            {},
+        ),
+        (
+            "POST",
+            "http://admin.test/admin/repos/Provider/releases/release-r2/restore/apply",
+            {"expected_recovery_token": "a" * 64},
+        ),
+    ]
+
+
+def test_cli_publication_commands_preserve_explicit_policy_inputs(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'workspace_root = "{tmp_path / "workspace"}"\n'
+        'admin_http_base_url = "http://admin.test"\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_request_json(method, url, payload=None):  # noqa: ANN001
+        calls.append((method, url, payload))
+        return {"ok": True, "value": {}}
+
+    monkeypatch.setattr("lean_constellation.app.cli._request_json", fake_request_json)
+    assert main([
+        "--config",
+        str(config_path),
+        "repo-publication-prepare",
+        "--repo-key",
+        "Provider",
+        "--title",
+        "Provider API",
+    ]) == 0
+    assert main([
+        "--config",
+        str(config_path),
+        "repo-publication-remote-apply",
+        "--repo-key",
+        "Provider",
+        "release-r2",
+        "--expected-token",
+        "b" * 64,
+        "--push",
+    ]) == 0
+    assert main([
+        "--config",
+        str(config_path),
+        "repo-dependency-change-preview",
+        "--repo-key",
+        "Consumer",
+        "--provider-repo-key",
+        "Provider",
+        "--target-provider-release-id",
+        "release-r2",
+        "--target-git-url",
+        "https://example.invalid/Provider.git",
+    ]) == 0
+    assert main([
+        "--config",
+        str(config_path),
+        "workspace-publication-apply",
+        "--repo-key",
+        "Provider",
+        "--output-root",
+        str(tmp_path / "published"),
+        "--push-children",
+        "--expected-token",
+        "c" * 64,
+    ]) == 0
+    capsys.readouterr()
+
+    assert calls == [
+        (
+            "POST",
+            "http://admin.test/admin/repos/Provider/publication/prepare",
+            {"title": "Provider API"},
+        ),
+        (
+            "POST",
+            "http://admin.test/admin/repos/Provider/publication/remotes/release-r2/apply",
+            {"expected_recovery_token": "b" * 64, "push": True},
+        ),
+        (
+            "POST",
+            "http://admin.test/admin/repos/Consumer/publication/dependencies/preview",
+            {
+                "provider_repo_key": "Provider",
+                "target_provider_release_id": "release-r2",
+                "target_git_url": "https://example.invalid/Provider.git",
+                "release_mode": "defer",
+                "validation_profile": "dependency_minimal",
+            },
+        ),
+        (
+            "POST",
+            "http://admin.test/admin/workspace/publication/apply",
+            {
+                "repo_keys": ["Provider"],
+                "output_root": str(tmp_path / "published"),
+                "push_children": True,
+                "push_superproject": False,
+                "expected_recovery_token": "c" * 64,
+            },
+        ),
+    ]

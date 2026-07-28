@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,27 @@ class FakeLake:
 
     def run_lake_update(self, repo_root: Path, timeout_seconds: int | None = None) -> ExternalCommandResult:
         del timeout_seconds
+        lakefile = (repo_root / "lakefile.toml").read_text(encoding="utf-8")
+        packages = [
+            {
+                "name": name,
+                "url": git_url,
+                "rev": revision,
+            }
+            for name, git_url, revision in re.findall(
+                (
+                    r'\[\[require\]\]\s*'
+                    r'name\s*=\s*"([^"]+)"\s*'
+                    r'git\s*=\s*"([^"]+)"\s*'
+                    r'rev\s*=\s*"([^"]+)"'
+                ),
+                lakefile,
+            )
+        ]
+        (repo_root / "lake-manifest.json").write_text(
+            json.dumps({"packages": packages}, indent=2) + "\n",
+            encoding="utf-8",
+        )
         return ExternalCommandResult(
             ok=True,
             command=["lake", "update"],

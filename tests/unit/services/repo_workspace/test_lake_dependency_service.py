@@ -3,11 +3,16 @@ from tests.unit_services_helpers import make_runtime, publish_adapter_provider_r
 from pathlib import Path
 
 import json
+import tomllib
 
 from lean_constellation.domain.lake_project import LocalLakePackageCacheConfig, NativeLakeProjectConfig
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
+from lean_constellation.services.external_clients import (
+    ExternalCommandResult,
+    LeanCheckSummaryView,
+    ToolchainCommandView,
+)
 from lean_constellation.services.repo_workspace import LakeDependencyComponent
 
 
@@ -22,6 +27,26 @@ class FakeLakeClient:
 
     def run_lake_update(self, repo_root: Path) -> ExternalCommandResult:
         self.updated.append(Path(repo_root))
+        if self.update_ok:
+            parsed = tomllib.loads(
+                (Path(repo_root) / "lakefile.toml").read_text(encoding="utf-8")
+            )
+            packages = []
+            for item in parsed.get("require", []):
+                if "git" not in item:
+                    continue
+                packages.append(
+                    {
+                        "name": item["name"],
+                        "url": item["git"],
+                        "rev": item.get("rev"),
+                    }
+                )
+            if packages:
+                (Path(repo_root) / "lake-manifest.json").write_text(
+                    json.dumps({"packages": packages}),
+                    encoding="utf-8",
+                )
         return ExternalCommandResult(
             ok=self.update_ok,
             command=["lake", "update"],
@@ -271,6 +296,90 @@ def test_attach_workspace_dependency_failure_branches(tmp_path: Path) -> None:
     assert 'name = "provider"' not in (consumer / "lakefile.toml").read_text(encoding="utf-8")
 
 
+def test_attach_released_git_dependency_uses_exact_commit_and_canonical_transport(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path
+    consumer = workspace / "Consumer"
+    provider = workspace / "Provider"
+    component, _ = _lake_component()
+    runtime = component.runtime
+    consumer.mkdir()
+    (consumer / "lakefile.toml").write_text(
+        'name = "Consumer"\n\n[[lean_lib]]\nname = "Consumer"\n',
+        encoding="utf-8",
+    )
+    release = publish_native_provider_release(
+        runtime, provider, release_id="provider_r1"
+    )
+    commit = runtime.repo_workspace.git_release.resolve_release_commit(
+        provider, release_id=release.release_id
+    ).value
+    calls: list[tuple[list[str] | None, dict[str, str] | None]] = []
+
+    def update(_repo_root, *, packages=None, transport_rewrites=None):  # noqa: ANN001, ANN202
+        calls.append((packages, transport_rewrites))
+        (consumer / "lake-manifest.json").write_text(
+            json.dumps(
+                {
+                    "packages": [
+                        {
+                            "name": "Provider",
+                            "url": "https://example.invalid/Provider.git",
+                            "rev": commit,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return runtime.foundation.ok(
+            ToolchainCommandView(
+                ok=True,
+                command=["lake", "update", "Provider"],
+                exit_code=0,
+                summary="updated",
+            )
+        )
+
+    def build(_repo_root, *, target=None, transport_rewrites=None):  # noqa: ANN001, ANN202
+        assert target is None
+        assert transport_rewrites == {
+            "https://example.invalid/Provider.git": provider.resolve().as_uri()
+        }
+        return runtime.foundation.ok(
+            ToolchainCommandView(
+                ok=True,
+                command=["lake", "build"],
+                exit_code=0,
+                summary="built",
+            )
+        )
+
+    monkeypatch.setattr(component, "run_lake_update", update)
+    monkeypatch.setattr(component, "run_lake_build", build)
+    attached = component.attach_released_repo_git_dependency(
+        consumer,
+        provider_repo_key="Provider",
+        provider_release_id=release.release_id,
+        canonical_git_url="https://example.invalid/Provider.git",
+    )
+
+    assert attached.ok and attached.value is not None, attached.issues
+    assert attached.value.pin.provider_commit == commit
+    assert calls == [
+        (
+            ["Provider"],
+            {
+                "https://example.invalid/Provider.git": provider.resolve().as_uri()
+            },
+        )
+    ]
+    lakefile = (consumer / "lakefile.toml").read_text(encoding="utf-8")
+    assert 'git = "https://example.invalid/Provider.git"' in lakefile
+    assert f'rev = "{commit}"' in lakefile
+
+
 def test_initialize_native_skeleton_validation_and_check_gate(tmp_path: Path) -> None:
     component, external = _lake_component()
 
@@ -505,7 +614,9 @@ def test_attach_ready_workspace_repo_dependency_requires_stable_repo(tmp_path: P
     attached = service.attach_ready_workspace_repo_dependency(consumer, provider_repo="provider")
 
     assert attached.ok and attached.value is not None
-    assert attached.value.provider_repo_key == "provider"
+    assert attached.value.pin.provider_repo_key == "provider"
+    assert attached.value.dependency.source == "git"
+    assert attached.value.dependency.rev == attached.value.pin.provider_commit
     assert 'name = "provider"' in (consumer / "lakefile.toml").read_text(encoding="utf-8")
 
 

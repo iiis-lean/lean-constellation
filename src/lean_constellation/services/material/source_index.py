@@ -152,8 +152,7 @@ class SourceFileIndexView(StrictModel):
 
 
 class SourceIndexView(StrictModel):
-    repo_root: str
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     status: SourceIndexStatus = "draft"
     active_file_scope: list[str] = Field(default_factory=list)
     overview: str | None = None
@@ -165,6 +164,16 @@ class SourceIndexView(StrictModel):
     updated_at: str = Field(default_factory=utc_now_iso)
     committed_at: str | None = None
     summary: str = "Source index draft."
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_absolute_root(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        migrated.pop("repo_root", None)
+        migrated["schema_version"] = 4
+        return migrated
 
 
 class SourceIndexCoverageView(StrictModel):
@@ -2189,8 +2198,7 @@ class SourceIndexComponent:
 
     def _to_index_view(self, repo_root: Path, index: SourceIndex) -> SourceIndexView:
         return SourceIndexView(
-            repo_root=str(Path(repo_root)),
-            schema_version=3,
+            schema_version=4,
             status=index.status,
             active_file_scope=list(index.active_file_scope),
             overview=index.overview,

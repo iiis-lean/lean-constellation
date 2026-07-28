@@ -209,12 +209,8 @@ def publish_native_provider_release(
     )
     from lean_constellation.domain.repo_release import RepoRelease
     from lean_constellation.services.decl_graph.models import DeclLifecycle, DeclRevisionStatus
-    from lean_constellation.services.foundation import FoundationContext, WriteMode
+    from lean_constellation.services.foundation import WriteMode
     from lean_constellation.services.node import NodeContractStatus, NodeKind
-    from lean_constellation.services.validation_snapshot.snapshot_restore import (
-        RepoCheckpointKind,
-        RepoCheckpointSnapshotManifest,
-    )
 
     repo_root = Path(repo_root)
     initialize_native_test_repo(repo_root, project_name=repo_root.name or "ProviderRepo")
@@ -277,32 +273,24 @@ def publish_native_provider_release(
         versions[node.node_id] = contract.version
 
     release_id = release_id or f"release_{uuid4().hex}"
-    checkpoint_id = f"checkpoint_{release_id}"
+    assert runtime.repo_workspace.metadata.set_repo_summary(repo_root, summary=summary).ok
     release = RepoRelease(
         release_id=release_id,
         node_contract_versions=versions,
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id=checkpoint_id,
+        semantic_manifest_digest=runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest(
+            repo_root
+        ),
+        dependency_lock_digest=runtime.validation_snapshot.release_finalizer.compute_dependency_lock_digest(
+            repo_root
+        ),
         summary=summary,
     )
+    assert runtime.repo_workspace.publication.refresh_managed_gitignore(repo_root).ok
+    git_state = runtime.repo_workspace.git_release.ensure_independent_repo(repo_root)
+    assert git_state.ok and git_state.value is not None
     assert runtime.repo_workspace.release.create_release(repo_root, release=release).ok
 
-    checkpoint_root = (
-        runtime.foundation.layout.snapshot_root(FoundationContext(repo_root=repo_root))
-        / "repo_checkpoints"
-        / checkpoint_id
-    )
-    manifest = RepoCheckpointSnapshotManifest(
-        snapshot_id=checkpoint_id,
-        checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
-        created_at="2026-07-12T00:00:00Z",
-        repo_root=str(repo_root),
-        ark_runtime_snapshot_id=f"ark_{checkpoint_id}",
-        files_manifest_relpath="files.json",
-        summary="Native provider release evidence fixture.",
-    )
-    assert runtime.foundation.store.write_json_atomic(checkpoint_root / "snapshot.json", manifest).ok
-    assert runtime.repo_workspace.metadata.set_repo_summary(repo_root, summary=summary).ok
     publication = RepoPublicationState(
         status=RepoPublicationStatus.STABLE,
         latest_release_id=release_id,
@@ -312,6 +300,18 @@ def publish_native_provider_release(
         publication,
         mode=WriteMode.OVERWRITE,
     ).ok
+    candidate_files = [
+        path.relative_to(repo_root).as_posix()
+        for path in runtime.validation_snapshot.release_finalizer._candidate_files(repo_root)
+    ]
+    committed = runtime.repo_workspace.git_release.commit_release(
+        repo_root,
+        release=release,
+        candidate_files=candidate_files,
+        expected_head=git_state.value.head_commit,
+        commit_message=f"release(test): {summary}",
+    )
+    assert committed.ok and committed.value is not None
     available = runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
     assert available.ok and available.value is not None and available.value.passed
     return release

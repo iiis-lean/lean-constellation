@@ -43,6 +43,9 @@ class RepoDependencyRequirement(StrictModel):
     status: RepoDependencyRequirementStatus = RepoDependencyRequirementStatus.OPEN
     satisfaction_mode: RepoDependencySatisfactionMode = RepoDependencySatisfactionMode.REPO_READY
     provider_repo: str | None = None
+    provider_release_id: str | None = None
+    provider_commit: str | None = None
+    provider_git_url: str | None = None
     provider_request_submitted_at: str | None = None
     provider_result_observed_at: str | None = None
     note: str | None = None

@@ -15,6 +15,7 @@ from lean_constellation.app import (
 )
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoPublicationStatus
+from lean_constellation.domain.publication import RepoPublicationOverride
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
 
 
@@ -186,6 +187,9 @@ def test_admin_can_read_update_repo_config_and_publication(tmp_path: Path) -> No
             repo_root=repo_root,
             completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
             default_requirement_proof_availability=ProofAvailability.PROVED,
+            publication=RepoPublicationOverride(
+                canonical_fetch_url="https://example.invalid/MainRepo.git"
+            ),
         )
     )
     publication = admin.get_repo_publication(repo_root)
@@ -195,5 +199,8 @@ def test_admin_can_read_update_repo_config_and_publication(tmp_path: Path) -> No
     assert updated_config.ok and updated_config.value is not None
     assert updated_config.value.config.completion_mode == RepoCompletionMode.INTERFACE_DECLARED
     assert updated_config.value.config.default_requirement_proof_availability == ProofAvailability.PROVED
+    assert updated_config.value.config.publication.canonical_fetch_url == (
+        "https://example.invalid/MainRepo.git"
+    )
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.DEVELOPING

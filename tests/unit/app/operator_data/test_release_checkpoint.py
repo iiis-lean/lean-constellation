@@ -12,7 +12,6 @@ from lean_constellation.app.operator_data.release import (
     CheckpointListInput,
     CheckpointRestoreInput,
     ReleaseCandidateInput,
-    ReleaseRestoreInput,
 )
 from lean_constellation.domain.repo import (
     RepoCompletionMode,
@@ -22,12 +21,12 @@ from lean_constellation.domain.repo import (
 )
 from lean_constellation.domain.repo_release import RepoRelease, RepoReleaseView
 from lean_constellation.services.external_clients import ToolchainCommandView
+from lean_constellation.services.repo_workspace.git_release import GitReleaseCommitView
 from lean_constellation.services.validation_snapshot import (
     CandidateReleasePreparationView,
     PreparedRepoReleaseView,
     ProviderRequirementReconciliationView,
     RepoCheckpointKind,
-    RepoCheckpointSnapshotView,
     RepoReleaseFinalizeView,
 )
 
@@ -128,7 +127,7 @@ def test_operator_checkpoint_rejects_ark_composite_and_release_owned_kind(tmp_pa
         CheckpointCreateInput(checkpoint_kind=RepoCheckpointKind.REPO_RELEASE)
 
 
-def test_release_restore_rejects_composite_checkpoint_before_project_mutation(tmp_path) -> None:
+def test_release_restore_rejects_dirty_git_worktree_before_project_mutation(tmp_path) -> None:
     api, runtime, repo_root = _api(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.commit_scope_contract(
@@ -138,31 +137,42 @@ def test_release_restore_rejects_composite_checkpoint_before_project_mutation(tm
     ).ok
     root = runtime.node.node_tree.get_node(repo_root, path="Main").value
     assert root is not None and root.active_contract_version is not None
-    composite = runtime.validation_snapshot.create_repo_checkpoint_archive(
-        repo_root,
-        checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
-        snapshot_id="composite-release-checkpoint",
-        ark_runtime_snapshot_id="ark-internal",
-    )
-    assert composite.ok
     release = RepoRelease(
         release_id="composite_release",
         node_contract_versions={root.node_id: root.active_contract_version},
         completion_mode=RepoCompletionMode.GRAPH_PROVED,
-        repo_checkpoint_id="composite-release-checkpoint",
-        summary="Composite checkpoint must be rejected.",
+        semantic_manifest_digest="1" * 64,
+        dependency_lock_digest="2" * 64,
+        summary="Dirty restore must be rejected.",
     )
-    assert runtime.repo_workspace.release.create_release(repo_root, release=release).ok
+    initialized = runtime.repo_workspace.git_release.ensure_independent_repo(repo_root)
+    assert initialized.ok
+    release_path = (
+        repo_root / ".lean_constellation" / "releases" / f"{release.release_id}.json"
+    )
+    assert runtime.foundation.store.write_json_atomic(release_path, release).ok
+    committed = runtime.repo_workspace.git_release.commit_release(
+        repo_root,
+        release=release,
+        candidate_files=[
+            path.relative_to(repo_root).as_posix()
+            for path in runtime.validation_snapshot.release_finalizer._candidate_files(
+                repo_root
+            )
+        ],
+        expected_head=None,
+    )
+    assert committed.ok
     marker = repo_root / "marker.txt"
     marker.write_text("working tree remains unchanged\n", encoding="utf-8")
 
-    rejected = api.release_checkpoint.restore_repo_release(
-        "MainRepo",
-        ReleaseRestoreInput(release_id=release.release_id),
+    rejected = runtime.validation_snapshot.preview_repo_release_restore(
+        repo_root,
+        release_id=release.release_id,
     )
 
     assert not rejected.ok
-    assert rejected.issues[0].kind == "operator_checkpoint_contains_ark_runtime"
+    assert rejected.issues[0].kind == "git_restore_worktree_not_clean"
     assert marker.read_text(encoding="utf-8") == "working tree remains unchanged\n"
 
 
@@ -174,7 +184,8 @@ def test_publish_is_one_call_self_managed_and_never_exposes_prepared_payload(
         release_id="release_one",
         node_contract_versions={"node_main": 1},
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id="checkpoint_one",
+        semantic_manifest_digest="1" * 64,
+        dependency_lock_digest="2" * 64,
         summary="First release.",
     )
     publication = RepoPublicationState(
@@ -216,14 +227,19 @@ def test_publish_is_one_call_self_managed_and_never_exposes_prepared_payload(
                     release=RepoReleaseView(
                         repo_root=str(repo_root), release=release, summary="published"
                     ),
-                    checkpoint=RepoCheckpointSnapshotView(
-                        snapshot_id=release.repo_checkpoint_id,
-                        checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
-                        root=str(repo_root / ".lean_constellation/snapshots/internal"),
-                        ark_runtime_snapshot_id=None,
-                        file_count=3,
-                        summary="release checkpoint",
+                    git_release=GitReleaseCommitView(
+                        repo_root=str(repo_root),
+                        release_id=release.release_id,
+                        release_ref=(
+                            "refs/lean-constellation/releases/"
+                            f"{release.release_id}"
+                        ),
+                        commit="a" * 40,
+                        tree="b" * 40,
+                        published_files=["Main.lean"],
+                        summary="Git release committed.",
                     ),
+                    checkpoint=None,
                     publication=RepoPublicationView(
                         repo_root=str(repo_root), publication=publication
                     ),
@@ -263,7 +279,8 @@ def test_publish_propagates_stale_candidate_failure_without_private_payload(
         release_id="release_stale",
         node_contract_versions={"node_main": 1},
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id="checkpoint_stale",
+        semantic_manifest_digest="1" * 64,
+        dependency_lock_digest="2" * 64,
         summary="Stale release.",
     )
     publication = RepoPublicationState(status=RepoPublicationStatus.STABLE, latest_release_id=release.release_id)

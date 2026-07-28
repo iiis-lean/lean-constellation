@@ -15,13 +15,23 @@ from tests.unit.services.repo_workspace.test_repo_release import _prepare_releas
 
 
 def _prepared(runtime, repo_root: Path, release: RepoRelease) -> PreparedRepoReleaseView:  # noqa: ANN001
+    prepared_publication = runtime.repo_workspace.publication.prepare_publication(
+        repo_root,
+        release_id=release.release_id,
+        semantic_manifest_digest=release.semantic_manifest_digest,
+        generated_at=release.created_at,
+    )
+    assert prepared_publication.ok, prepared_publication.issues
     publication = runtime.repo_workspace.metadata.get_repo_publication(repo_root).value.publication.model_copy(
         update={"status": RepoPublicationStatus.STABLE, "latest_release_id": release.release_id}
     )
+    git_state = runtime.repo_workspace.git_release.inspect_repo(repo_root)
+    assert git_state.ok and git_state.value is not None
     return PreparedRepoReleaseView(
         release=release,
         publication=publication,
         candidate_digest=runtime.validation_snapshot.release_finalizer.compute_candidate_digest(repo_root),
+        expected_git_head=git_state.value.head_commit,
         build=ToolchainCommandView(ok=True, command=["lake", "build"], summary="built", exit_code=0),
         gate=runtime.foundation.gate_passed("candidate_repo_release", summary="passed"),
         summary=f"prepared {release.release_id}",
@@ -50,7 +60,16 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
         release_id="release_r1",
         node_contract_versions=versions,
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id="checkpoint_r1",
+        semantic_manifest_digest=(
+            runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest(
+                repo_root
+            )
+        ),
+        dependency_lock_digest=(
+            runtime.validation_snapshot.release_finalizer.compute_dependency_lock_digest(
+                repo_root
+            )
+        ),
         summary="Declared R1.",
     )
     committed_r1 = runtime.validation_snapshot.commit_prepared_release(
@@ -74,7 +93,16 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
         parent_release_id="release_r1",
         node_contract_versions=versions,
         completion_mode=RepoCompletionMode.GRAPH_PROVED,
-        repo_checkpoint_id="checkpoint_r2",
+        semantic_manifest_digest=(
+            runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest(
+                repo_root
+            )
+        ),
+        dependency_lock_digest=(
+            runtime.validation_snapshot.release_finalizer.compute_dependency_lock_digest(
+                repo_root
+            )
+        ),
         summary="Proved R2.",
     )
     committed_r2 = runtime.validation_snapshot.commit_prepared_release(
@@ -89,16 +117,22 @@ def test_declared_r1_to_proved_r2_release_restore_rebuilds_with_real_lake(tmp_pa
     assert not historical_cleanup.ok
     assert historical_cleanup.issues[0].kind == "release_artifact_reachable"
 
-    (repo_root / "Main.lean").write_text("this is not Lean\n", encoding="utf-8")
-    restored = runtime.validation_snapshot.restore_repo_release(repo_root, release_id="release_r2")
-    assert restored.ok, restored.issues
-    assert "provedExtension" in (repo_root / "Main.lean").read_text(encoding="utf-8")
-    assert runtime.external.lean_toolchain.run_lake_build(repo_root).ok
-    historical = runtime.validation_snapshot.restore_repo_release(repo_root, release_id="release_r1", dry_run=True)
-    assert not historical.ok
-    assert historical.issues[0].kind == "historical_release_restore_not_supported"
-    generic_historical = runtime.validation_snapshot.restore_repo_checkpoint_snapshot(
-        repo_root, snapshot_id="checkpoint_r1", dry_run=True
+    restore_preview = runtime.validation_snapshot.preview_repo_release_restore(
+        repo_root, release_id="release_r1"
     )
-    assert not generic_historical.ok
-    assert generic_historical.issues[0].kind == "historical_release_restore_not_supported"
+    assert restore_preview.ok and restore_preview.value is not None
+    restored = runtime.validation_snapshot.apply_repo_release_restore(
+        repo_root,
+        preview=restore_preview.value,
+        expected_recovery_token=restore_preview.value.recovery_token,
+    )
+    assert restored.ok, restored.issues
+    assert "provedExtension" not in (repo_root / "Main.lean").read_text(encoding="utf-8")
+    assert runtime.external.lean_toolchain.run_lake_build(repo_root).ok
+    historical = runtime.validation_snapshot.preview_repo_release_restore(
+        repo_root,
+        release_id="release_r2",
+    )
+    assert historical.ok and historical.value is not None
+    assert historical.value.commit == committed_r2.value.git_release.commit
+    assert historical.value.expected_head == committed_r1.value.git_release.commit

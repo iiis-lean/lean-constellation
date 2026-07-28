@@ -35,7 +35,12 @@ def _prepared_repo(repo_root: Path):
         release_id="release_r1",
         node_contract_versions=versions,
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id="checkpoint_r1",
+        semantic_manifest_digest=runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest(
+            repo_root
+        ),
+        dependency_lock_digest=runtime.validation_snapshot.release_finalizer.compute_dependency_lock_digest(
+            repo_root
+        ),
         summary="Release one.",
     )
     publication = runtime.repo_workspace.metadata.get_repo_publication(repo_root).value.publication.model_copy(
@@ -60,6 +65,7 @@ def test_release_commit_publishes_final_truth_checkpoint_and_unique_latest(tmp_p
     )
 
     assert finalized.ok and finalized.value is not None
+    assert finalized.value.git_release.release_id == prepared.release.release_id
     assert finalized.value.checkpoint.ark_runtime_snapshot_id is None
     publication = runtime.repo_workspace.metadata.get_repo_publication(tmp_path).value.publication
     assert publication.status == RepoPublicationStatus.STABLE
@@ -80,6 +86,10 @@ def test_release_commit_publishes_final_truth_checkpoint_and_unique_latest(tmp_p
     assert archived_publication.ok and archived_publication.value == publication
     assert archived_release.ok and archived_release.value == prepared.release
     assert archived_model.ok and archived_model.value.summary == prepared.release.summary
+    assert runtime.repo_workspace.git_release.validate_release(
+        tmp_path,
+        release=prepared.release,
+    ).ok
     audit = runtime.validation_snapshot.audit_repo_release_storage(tmp_path)
     assert audit.ok and audit.value is not None and audit.value.passed
 
@@ -104,9 +114,10 @@ def test_publication_commit_failure_leaves_no_release_or_checkpoint(tmp_path: Pa
         FoundationContext(repo_root=tmp_path), prepared.release.release_id
     )
     assert not release_path.exists()
-    assert not runtime.validation_snapshot.snapshot_restore._snapshot_dir(
-        tmp_path, prepared.release.repo_checkpoint_id
-    ).exists()
+    assert runtime.repo_workspace.git_release.resolve_release_commit(
+        tmp_path,
+        release_id=prepared.release.release_id,
+    ).ok is False
     publication = runtime.repo_workspace.metadata.get_repo_publication(tmp_path).value.publication
     assert publication.status == RepoPublicationStatus.DEVELOPING
     assert publication.latest_release_id is None
@@ -180,9 +191,10 @@ def test_release_create_durability_failures_cleanup_exact_artifacts(
     )
     assert not result.ok
     assert not release_path.exists()
-    assert not runtime.validation_snapshot.snapshot_restore._snapshot_dir(
-        tmp_path, prepared.release.repo_checkpoint_id
-    ).exists()
+    assert not runtime.repo_workspace.git_release.resolve_release_commit(
+        tmp_path,
+        release_id=prepared.release.release_id,
+    ).ok
     publication = runtime.repo_workspace.metadata.get_repo_publication(tmp_path).value.publication
     assert publication.status == RepoPublicationStatus.DEVELOPING
     assert publication.latest_release_id is None
@@ -206,9 +218,10 @@ def test_release_create_conflicting_existing_payload_is_never_deleted(
     assert not result.ok
     assert result.issues[0].kind == "release_identity_conflict"
     assert runtime.foundation.store.read_json(release_path, RepoRelease).value == conflicting
-    assert not runtime.validation_snapshot.snapshot_restore._snapshot_dir(
-        tmp_path, prepared.release.repo_checkpoint_id
-    ).exists()
+    assert not runtime.repo_workspace.git_release.resolve_release_commit(
+        tmp_path,
+        release_id=prepared.release.release_id,
+    ).ok
     assert runtime.repo_workspace.metadata.get_repo_publication(tmp_path).value.publication.latest_release_id is None
 
 
@@ -305,75 +318,45 @@ def test_committed_retry_rejects_readable_release_payload_conflict(tmp_path: Pat
     assert retried.issues[0].kind == "release_identity_conflict"
 
 
-def test_existing_release_checkpoint_requires_exact_prepared_overlay(tmp_path: Path) -> None:
+def test_git_release_manifest_readback_detects_live_truth_conflict(tmp_path: Path) -> None:
     runtime, prepared, _ = _prepared_repo(tmp_path)
-    checkpoint = runtime.validation_snapshot.snapshot_restore.create_repo_release_checkpoint(
+    assert runtime.validation_snapshot.release_finalizer.commit_prepared_release(
         tmp_path,
-        snapshot_id=prepared.release.repo_checkpoint_id,
-        release=prepared.release,
-        publication=prepared.publication,
-        repo_model=RepoModel(main_node="Main", summary=prepared.release.summary),
-        expected_candidate_digest=prepared.candidate_digest,
-    )
-    assert checkpoint.ok
+        prepared=prepared,
+    ).ok
     conflicting_release = prepared.release.model_copy(update={"summary": "Different release summary."})
-    conflict = runtime.validation_snapshot.snapshot_restore.create_repo_release_checkpoint(
+    conflict = runtime.repo_workspace.git_release.validate_release(
         tmp_path,
-        snapshot_id=prepared.release.repo_checkpoint_id,
         release=conflicting_release,
-        publication=prepared.publication,
-        repo_model=RepoModel(main_node="Main", summary=conflicting_release.summary),
-        expected_candidate_digest=prepared.candidate_digest,
     )
+
     assert not conflict.ok
-    assert conflict.issues[0].kind == "repo_release_checkpoint_id_conflict"
+    assert conflict.issues[0].kind == "git_release_manifest_mismatch"
 
 
 @pytest.mark.parametrize(
-    "postcommit_failure", ["summary", "publication_readback", "release_readback", "publication_parent_fsync"]
+    "postcommit_failure", ["git_readback", "checkpoint"]
 )
 def test_postcommit_failures_retain_stable_release(
     tmp_path: Path, monkeypatch, postcommit_failure: str
 ) -> None:  # noqa: ANN001
     runtime, prepared, _ = _prepared_repo(tmp_path)
-    if postcommit_failure == "summary":
+    if postcommit_failure == "git_readback":
         monkeypatch.setattr(
-            runtime.repo_workspace.metadata,
-            "set_repo_summary",
-            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("summary")),
+            runtime.repo_workspace.git_release,
+            "validate_release",
+            lambda *args, **kwargs: runtime.foundation.fail(
+                runtime.foundation.issue("injected_git_readback", "readback")
+            ),
         )
-    elif postcommit_failure == "publication_readback":
-        original = runtime.repo_workspace.metadata.get_repo_publication
-        calls = 0
-
-        def fail_postcommit(*args, **kwargs):  # noqa: ANN001
-            nonlocal calls
-            calls += 1
-            if calls >= 3:
-                raise OSError("readback")
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(runtime.repo_workspace.metadata, "get_repo_publication", fail_postcommit)
-    elif postcommit_failure == "release_readback":
-        original_release = runtime.repo_workspace.release.get_release
-
-        def fail_stable_readback(repo_root, *, release_id):  # noqa: ANN001
-            publication_path = runtime.repo_workspace.metadata._repo_publication_path(repo_root)
-            if publication_path.exists() and "stable" in publication_path.read_text(encoding="utf-8"):
-                return runtime.foundation.fail(runtime.foundation.issue("injected_release_readback", "readback"))
-            return original_release(repo_root, release_id=release_id)
-
-        monkeypatch.setattr(runtime.repo_workspace.release, "get_release", fail_stable_readback)
     else:
-        publication_path = runtime.repo_workspace.metadata._repo_publication_path(tmp_path)
-        original_fsync = runtime.foundation.store._fsync_parent
-
-        def fail_publication_fsync(path):  # noqa: ANN001
-            if Path(path) == publication_path:
-                raise OSError("publication parent fsync")
-            return original_fsync(path)
-
-        monkeypatch.setattr(runtime.foundation.store, "_fsync_parent", fail_publication_fsync)
+        monkeypatch.setattr(
+            runtime.validation_snapshot.release_finalizer,
+            "_create_post_release_checkpoint",
+            lambda *args, **kwargs: runtime.foundation.fail(
+                runtime.foundation.issue("injected_checkpoint_failure", "checkpoint")
+            ),
+        )
 
     result = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
         tmp_path, prepared=prepared
@@ -500,82 +483,6 @@ def test_release_business_closeout_does_not_inspect_runtime(
     assert closeout.ok and closeout.value is not None and closeout.value.passed
 
 
-@pytest.mark.parametrize(
-    "failure_stage",
-    ["copy", "hash", "write", "files_manifest", "snapshot_manifest", "manifest_readback", "fsync", "parent_fsync", "rename"],
-)
-def test_checkpoint_staging_failures_publish_no_release(
-    tmp_path: Path, monkeypatch, failure_stage: str
-) -> None:  # noqa: ANN001
-    repo_root = tmp_path / failure_stage
-    runtime, prepared, _ = _prepared_repo(repo_root)
-    snapshots = runtime.validation_snapshot.snapshot_restore
-    finalizer = runtime.validation_snapshot.release_finalizer
-    final_root = snapshots._snapshot_dir(repo_root, prepared.release.repo_checkpoint_id)
-    if failure_stage == "copy":
-        monkeypatch.setattr(snapshots, "_copy_project_files", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("copy")))
-    elif failure_stage == "hash":
-        monkeypatch.setattr(snapshots, "_sha256_file", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("hash")))
-    elif failure_stage == "write":
-        original_write = runtime.foundation.store.write_json_atomic
-
-        def fail_overlay(path, value, **kwargs):  # noqa: ANN001
-            if ".staging" in Path(path).parts and Path(path).name == "repo_publication.json":
-                return runtime.foundation.fail(runtime.foundation.issue("injected_write_failure", "write"))
-            return original_write(path, value, **kwargs)
-
-        monkeypatch.setattr(runtime.foundation.store, "write_json_atomic", fail_overlay)
-    elif failure_stage in {"files_manifest", "snapshot_manifest"}:
-        original_write = runtime.foundation.store.write_json_atomic
-        target_name = "files_manifest.json" if failure_stage == "files_manifest" else "snapshot.json"
-
-        def fail_manifest(path, value, **kwargs):  # noqa: ANN001
-            if ".staging" in Path(path).parts and Path(path).name == target_name:
-                return runtime.foundation.fail(runtime.foundation.issue("injected_manifest_write", "write"))
-            return original_write(path, value, **kwargs)
-
-        monkeypatch.setattr(runtime.foundation.store, "write_json_atomic", fail_manifest)
-    elif failure_stage == "manifest_readback":
-        original_read = runtime.foundation.store.read_json
-
-        def fail_readback(path, model):  # noqa: ANN001
-            if ".staging" in Path(path).parts and Path(path).name == "snapshot.json":
-                return runtime.foundation.fail(runtime.foundation.issue("injected_manifest_readback", "read"))
-            return original_read(path, model)
-
-        monkeypatch.setattr(runtime.foundation.store, "read_json", fail_readback)
-    elif failure_stage == "fsync":
-        monkeypatch.setattr(snapshots, "_fsync_tree", lambda *args: (_ for _ in ()).throw(OSError("fsync")))
-    elif failure_stage == "parent_fsync":
-        monkeypatch.setattr(
-            runtime.foundation.store,
-            "_fsync_parent",
-            lambda *args: (_ for _ in ()).throw(OSError("parent fsync")),
-        )
-    else:
-        import lean_constellation.services.validation_snapshot.snapshot_restore as snapshot_module
-
-        original_replace = snapshot_module.os.replace
-
-        def fail_final_rename(source, target):  # noqa: ANN001
-            if Path(target) == final_root:
-                raise OSError("rename")
-            return original_replace(source, target)
-
-        monkeypatch.setattr(snapshot_module.os, "replace", fail_final_rename)
-
-    result = finalizer.commit_prepared_release(
-        repo_root, prepared=prepared
-    )
-
-    assert not result.ok
-    assert not final_root.exists()
-    assert runtime.repo_workspace.release.list_releases(repo_root).value == []
-    publication = runtime.repo_workspace.metadata.get_repo_publication(repo_root).value.publication
-    assert publication.status == RepoPublicationStatus.DEVELOPING
-    assert publication.latest_release_id is None
-
-
 def test_audit_finds_and_cleanup_removes_unreachable_release(tmp_path: Path) -> None:
     runtime, prepared, _ = _prepared_repo(tmp_path)
     committed = runtime.validation_snapshot.release_finalizer.commit_prepared_release(
@@ -586,7 +493,8 @@ def test_audit_finds_and_cleanup_removes_unreachable_release(tmp_path: Path) -> 
         release_id="release_orphan",
         node_contract_versions=prepared.release.node_contract_versions,
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id="checkpoint_orphan",
+        semantic_manifest_digest="3" * 64,
+        dependency_lock_digest="4" * 64,
         summary="Orphan.",
     )
     assert runtime.repo_workspace.release.create_release(tmp_path, release=orphan).ok
@@ -637,46 +545,33 @@ def test_digest_guarded_bulk_cleanup_only_removes_unreferenced_checkpoint_and_st
         release_id="release_orphan",
         node_contract_versions=prepared.release.node_contract_versions,
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id="checkpoint_referenced_by_orphan",
+        semantic_manifest_digest="3" * 64,
+        dependency_lock_digest="4" * 64,
         summary="Orphan committed release retained by bulk cleanup.",
     )
     assert runtime.repo_workspace.release.create_release(tmp_path, release=orphan_release).ok
     checkpoint_root = runtime.validation_snapshot.snapshot_restore._snapshot_root(tmp_path)
-    orphan_checkpoint = checkpoint_root / "checkpoint_unreferenced"
-    orphan_checkpoint.mkdir(parents=True)
-    assert runtime.foundation.store.write_json_atomic(
-        orphan_checkpoint / "snapshot.json",
-        RepoCheckpointSnapshotManifest(
-            snapshot_id=orphan_checkpoint.name,
-            checkpoint_kind=RepoCheckpointKind.REPO_RELEASE,
-            created_at="2026-07-17T00:00:00Z",
-            repo_root=str(tmp_path),
-            ark_runtime_snapshot_id=None,
-            files_manifest_relpath="files_manifest.json",
-            summary="Unreferenced release checkpoint.",
-        ),
-    ).ok
     staging = checkpoint_root / ".staging" / "interrupted"
     staging.mkdir(parents=True)
 
     audit = runtime.validation_snapshot.audit_repo_release_storage(tmp_path)
     assert audit.ok and audit.value is not None
     assert audit.value.orphan_release_ids == ["release_orphan"]
-    assert audit.value.orphan_checkpoint_ids == ["checkpoint_unreferenced"]
+    assert audit.value.orphan_checkpoint_ids == []
 
     (checkpoint_root / ".staging" / "concurrent").mkdir()
     stale = runtime.validation_snapshot.cleanup_repo_release_orphans(
         tmp_path, expected_audit_digest=audit.value.audit_digest
     )
     assert not stale.ok and stale.issues[0].kind == "release_audit_digest_mismatch"
-    assert orphan_checkpoint.exists() and staging.exists()
+    assert staging.exists()
 
     current = runtime.validation_snapshot.audit_repo_release_storage(tmp_path).value
     cleaned = runtime.validation_snapshot.cleanup_repo_release_orphans(
         tmp_path, expected_audit_digest=current.audit_digest
     )
     assert cleaned.ok and cleaned.value is not None and cleaned.value.changed
-    assert not orphan_checkpoint.exists() and not staging.exists()
+    assert not staging.exists()
     assert runtime.repo_workspace.release.get_release(
         tmp_path, release_id="release_orphan"
     ).ok
@@ -688,25 +583,17 @@ def test_cleanup_failure_and_concurrent_lock_are_reported(tmp_path: Path, monkey
         release_id="release_orphan",
         node_contract_versions=prepared.release.node_contract_versions,
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id="checkpoint_orphan",
+        semantic_manifest_digest="3" * 64,
+        dependency_lock_digest="4" * 64,
         summary="Orphan.",
     )
     assert runtime.repo_workspace.release.create_release(tmp_path, release=orphan).ok
     checkpoint = runtime.validation_snapshot.snapshot_restore._snapshot_dir(tmp_path, "checkpoint_orphan")
     checkpoint.mkdir(parents=True)
-    original_rmtree = __import__(
-        "lean_constellation.services.validation_snapshot.release_finalizer", fromlist=["shutil"]
-    ).shutil.rmtree
-
-    def fail_checkpoint(path, *args, **kwargs):  # noqa: ANN001
-        if Path(path) == checkpoint:
-            raise OSError("cleanup")
-        return original_rmtree(path, *args, **kwargs)
-
     monkeypatch.setattr(
-        __import__("lean_constellation.services.validation_snapshot.release_finalizer", fromlist=["shutil"]).shutil,
-        "rmtree",
-        fail_checkpoint,
+        runtime.validation_snapshot.release_finalizer,
+        "_remove_unpublished_release",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("cleanup")),
     )
     failed = runtime.validation_snapshot.cleanup_unpublished_release_artifacts(
         tmp_path, release_id="release_orphan"
@@ -741,9 +628,27 @@ def test_actual_consumer_requirement_save_failure_is_postcommit_pending(tmp_path
             requirement_refs=[{"consumer_repo": "Consumer", "requirement_name": "need_provider"}],
         ),
     ).ok
-    prepared = prepared.model_copy(update={
-        "candidate_digest": runtime.validation_snapshot.release_finalizer.compute_candidate_digest(provider)
-    })
+    prepared = prepared.model_copy(
+        update={
+            "candidate_digest": runtime.validation_snapshot.release_finalizer.compute_candidate_digest(
+                provider
+            ),
+            "release": prepared.release.model_copy(
+                update={
+                    "semantic_manifest_digest": (
+                        runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest(
+                            provider
+                        )
+                    ),
+                    "dependency_lock_digest": (
+                        runtime.validation_snapshot.release_finalizer.compute_dependency_lock_digest(
+                            provider
+                        )
+                    ),
+                }
+            ),
+        }
+    )
     requirement_path = runtime.foundation.layout.requirement_path(
         FoundationContext(repo_root=consumer), "need_provider"
     )

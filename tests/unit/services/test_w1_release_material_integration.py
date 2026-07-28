@@ -104,7 +104,7 @@ def test_release_availability_and_scoped_source_index_share_one_runtime_without_
     availability = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
     baseline = runtime.repo_workspace.release.resolve_release_baseline(tmp_path)
 
-    assert committed.ok and committed.value is not None and committed.value.schema_version == 3
+    assert committed.ok and committed.value is not None and committed.value.schema_version == 4
     assert coverage.ok and coverage.value is not None and coverage.value.pending_file_paths == ["README.md"]
     assert availability.ok and availability.value is not None and availability.value.passed
     assert baseline.ok and baseline.value is not None and baseline.value.release_id == release.release_id

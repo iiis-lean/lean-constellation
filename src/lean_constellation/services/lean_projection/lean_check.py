@@ -146,8 +146,7 @@ class LeanCheckComponent:
         if not scan.ok or scan.value is None:
             return self.runtime.foundation.fail(scan.issues)
         diagnostics = LeanDiagnosticsView(
-            repo_root=str(Path(repo_root)),
-            file_path=None,
+            repo_file_path=None,
             passed=True,
             diagnostics=[],
             summary=f"Policy scan for compiler-confirmed upstream module {module}; source diagnostics are represented by the registered declaration identity check.",
@@ -263,8 +262,11 @@ class LeanCheckComponent:
         items = [self._diagnostic_item(item) for item in diagnostics]
         passed = not any(item.severity.lower() in self._ERROR_SEVERITIES for item in items)
         return LeanDiagnosticsView(
-            repo_root=str(repo_root),
-            file_path=str(file_path) if file_path else None,
+            repo_file_path=(
+                file_path.resolve().relative_to(repo_root.resolve()).as_posix()
+                if file_path
+                else None
+            ),
             passed=passed,
             diagnostics=items,
             summary=summary,

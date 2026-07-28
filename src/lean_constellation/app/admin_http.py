@@ -24,10 +24,13 @@ from lean_constellation.app.admin_api import (
     NativeSourceIndexRecoveryPreviewInput,
     NativeSourceIndexRecoveryStartInput,
     RepoConfigUpdateInput,
+    RepoDependencyChangeInput,
+    RepoPublicationPrepareInput,
     RepoReleaseIdInput,
     RepoReleaseOrphanCleanupInput,
     RepoReleasePreviewInput,
-    RepoReleaseRestoreInput,
+    RepoReleaseRestoreApplyInput,
+    RepoRemotePublicationInput,
     RepoRunRequestInput,
     RepoRunStartInput,
     RequirementResumeInput,
@@ -45,6 +48,7 @@ from lean_constellation.app.admin_api import (
     StandaloneSourceIndexRunInput,
     ValidateMainSourceCorpusInput,
     WriteMainRepoPreparationInput,
+    WorkspacePublicationInput,
 )
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.services.foundation import ServiceResult
@@ -662,9 +666,98 @@ def create_workspace_admin_http_routes(
             lambda admin, model: admin.preview_repo_release(model.repo_root, summary=model.summary),
         )
 
-    async def repo_release_restore(request: Request) -> JSONResponse:
+    async def repo_release_restore_preview(request: Request) -> JSONResponse:
         return await _repo_path_model_route(
-            request, registry, RepoReleaseRestoreInput, LeanAdminApi.restore_repo_release
+            request,
+            registry,
+            RepoReleaseIdInput,
+            LeanAdminApi.preview_repo_release_restore,
+        )
+
+    async def repo_release_restore_apply(request: Request) -> JSONResponse:
+        return await _repo_path_model_route(
+            request,
+            registry,
+            RepoReleaseRestoreApplyInput,
+            LeanAdminApi.apply_repo_release_restore,
+        )
+
+    async def repo_publication_prepare(request: Request) -> JSONResponse:
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            RepoPublicationPrepareInput,
+            LeanAdminApi.prepare_repo_publication,
+        )
+
+    async def repo_remote_publication_preview(request: Request) -> JSONResponse:
+        return await _repo_path_model_route(
+            request,
+            registry,
+            RepoRemotePublicationInput,
+            LeanAdminApi.preview_repo_remote_publication,
+        )
+
+    async def repo_remote_publication_apply(request: Request) -> JSONResponse:
+        return await _repo_path_model_route(
+            request,
+            registry,
+            RepoRemotePublicationInput,
+            LeanAdminApi.apply_repo_remote_publication,
+        )
+
+    async def repo_dependency_change_preview(request: Request) -> JSONResponse:
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            RepoDependencyChangeInput,
+            LeanAdminApi.preview_repo_dependency_change,
+        )
+
+    async def repo_dependency_change_apply(request: Request) -> JSONResponse:
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            RepoDependencyChangeInput,
+            LeanAdminApi.apply_repo_dependency_change,
+        )
+
+    async def workspace_publication_preview(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        if "workspace_root" in data:
+            return _request_validation_response(
+                "Body must not provide route-owned field: workspace_root."
+            )
+        data["workspace_root"] = str(registry.workspace_root)
+        try:
+            input_model = WorkspacePublicationInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+        )
+        return _service_result_response(
+            admin.preview_workspace_publication(input_model)
+        )
+
+    async def workspace_publication_apply(request: Request) -> JSONResponse:
+        data = await _json_or_empty(request)
+        if "workspace_root" in data:
+            return _request_validation_response(
+                "Body must not provide route-owned field: workspace_root."
+            )
+        data["workspace_root"] = str(registry.workspace_root)
+        try:
+            input_model = WorkspacePublicationInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+        )
+        return _service_result_response(
+            admin.apply_workspace_publication(input_model)
         )
 
     async def repo_release_audit(request: Request) -> JSONResponse:
@@ -951,7 +1044,41 @@ def create_workspace_admin_http_routes(
             methods=["POST"],
         ),
         Route("/admin/repos/{repo_key:str}/releases/{release_id:str}", repo_release, methods=["GET"]),
-        Route("/admin/repos/{repo_key:str}/releases/{release_id:str}/restore", repo_release_restore, methods=["POST"]),
+        Route(
+            "/admin/repos/{repo_key:str}/releases/{release_id:str}/restore/preview",
+            repo_release_restore_preview,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/releases/{release_id:str}/restore/apply",
+            repo_release_restore_apply,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/publication/prepare",
+            repo_publication_prepare,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/publication/remotes/{release_id:str}/preview",
+            repo_remote_publication_preview,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/publication/remotes/{release_id:str}/apply",
+            repo_remote_publication_apply,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/publication/dependencies/preview",
+            repo_dependency_change_preview,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/publication/dependencies/apply",
+            repo_dependency_change_apply,
+            methods=["POST"],
+        ),
         Route(
             "/admin/repos/{repo_key:str}/releases/{release_id:str}/reconcile-requirements",
             repo_release_reconcile_requirements,
@@ -976,6 +1103,16 @@ def create_workspace_admin_http_routes(
         Route("/admin/main-repo/source-corpus/validate", workspace_validate_main_source, methods=["POST"]),
         Route("/admin/main-repo/native-skeleton/init", workspace_init_main_native_skeleton, methods=["POST"]),
         Route("/admin/main-repo/bootstrap-native", workspace_bootstrap_main_native, methods=["POST"]),
+        Route(
+            "/admin/workspace/publication/preview",
+            workspace_publication_preview,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/workspace/publication/apply",
+            workspace_publication_apply,
+            methods=["POST"],
+        ),
     ]
 
 

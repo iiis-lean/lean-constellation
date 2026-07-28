@@ -8,9 +8,13 @@ from lean_constellation.domain.repo import RepoCompletionMode, RepoPublicationSt
 from lean_constellation.domain.repo_release import (
     DeclReleaseStatusView,
     ReleasedDeclProtectionView,
+    RepoDependencyChangeKind,
+    RepoDependencyReleaseChange,
     RepoRelease,
     RepoReleaseBaselineView,
+    RepoReleaseKind,
     RepoReleaseListView,
+    RepoReleaseValidationProfile,
     RepoReleaseView,
     ResolvedDeclRefView,
 )
@@ -21,7 +25,8 @@ def _release() -> RepoRelease:
         release_id="release_1",
         node_contract_versions={"node_main": 2, "node_content": 3},
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        repo_checkpoint_id="checkpoint_1",
+        semantic_manifest_digest="1" * 64,
+        dependency_lock_digest="2" * 64,
         summary="First declared release.",
     )
 
@@ -70,9 +75,10 @@ def test_repo_release_truth_and_views_roundtrip() -> None:
     [
         {"release_id": "../release"},
         {"parent_release_id": "release_1"},
-        {"repo_checkpoint_id": "bad/checkpoint"},
         {"node_contract_versions": {}},
         {"node_contract_versions": {"node_main": 0}},
+        {"semantic_manifest_digest": "not-a-digest"},
+        {"dependency_lock_digest": "A" * 64},
         {"summary": " "},
     ],
 )
@@ -82,6 +88,52 @@ def test_repo_release_rejects_invalid_identity_and_contract_map(patch: dict[str,
 
     with pytest.raises(ValidationError):
         RepoRelease.model_validate(payload)
+
+
+def test_dependency_maintenance_release_requires_a_typed_change() -> None:
+    change = RepoDependencyReleaseChange(
+        kind=RepoDependencyChangeKind.LOCATOR_REBIND,
+        provider_repo_key="Provider",
+        previous_release_id="release_provider_1",
+        release_id="release_provider_1",
+        previous_commit="3" * 40,
+        commit="3" * 40,
+        previous_git_url="/workspace/Provider",
+        git_url="https://example.invalid/Provider.git",
+    )
+    release = RepoRelease(
+        release_id="release_maintenance_1",
+        parent_release_id="release_1",
+        release_kind=RepoReleaseKind.DEPENDENCY_MAINTENANCE,
+        validation_profile=RepoReleaseValidationProfile.DEPENDENCY_MINIMAL,
+        node_contract_versions={"node_main": 2},
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+        semantic_manifest_digest="1" * 64,
+        dependency_lock_digest="4" * 64,
+        dependency_change=change,
+        summary="Rebind Provider to its canonical transport.",
+    )
+
+    assert release.dependency_change == change
+
+    with pytest.raises(ValidationError):
+        RepoRelease.model_validate(
+            release.model_copy(update={"dependency_change": None}).model_dump(mode="python")
+        )
+
+
+def test_dependency_change_shape_is_fail_closed() -> None:
+    with pytest.raises(ValidationError):
+        RepoDependencyReleaseChange(
+            kind=RepoDependencyChangeKind.LOCATOR_REBIND,
+            provider_repo_key="Provider",
+            previous_release_id="release_provider_1",
+            release_id="release_provider_2",
+            previous_commit="3" * 40,
+            commit="4" * 40,
+            previous_git_url="/workspace/Provider",
+            git_url="https://example.invalid/Provider.git",
+        )
 
 
 def test_old_and_adapter_publication_payloads_allow_missing_latest_release() -> None:

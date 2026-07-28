@@ -6,6 +6,10 @@ from enum import StrEnum
 from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
+from lean_constellation.domain.publication import (
+    RepoPublicationOverride,
+    WorkspacePublicationPolicy,
+)
 
 
 class RepoFormat(StrEnum):
@@ -74,6 +78,7 @@ class RepoFormatState(StrictModel):
 class RepoConfig(StrictModel):
     completion_mode: RepoCompletionMode = RepoCompletionMode.GRAPH_PROVED
     default_requirement_proof_availability: ProofAvailability = ProofAvailability.DECLARED
+    publication: RepoPublicationOverride | None = None
 
 
 class RepoPublicationState(StrictModel):
@@ -100,6 +105,9 @@ class WorkspaceConfig(StrictModel):
             ProofAvailability.DECLARED: RepoCompletionMode.INTERFACE_DECLARED,
             ProofAvailability.PROVED: RepoCompletionMode.GRAPH_PROVED,
         }
+    )
+    publication: WorkspacePublicationPolicy = Field(
+        default_factory=WorkspacePublicationPolicy
     )
 
     @model_validator(mode="after")

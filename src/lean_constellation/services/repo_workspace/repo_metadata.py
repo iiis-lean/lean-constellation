@@ -23,6 +23,7 @@ from lean_constellation.domain.repo import (
     RepoStateView,
     proof_availability_for_completion_mode,
 )
+from lean_constellation.domain.publication import RepoPublicationOverride
 from lean_constellation.services.foundation import (
     FoundationContext,
     IssueSeverity,
@@ -224,11 +225,12 @@ class RepoMetadataComponent:
         *,
         completion_mode: RepoCompletionMode | str | None = None,
         default_requirement_proof_availability: ProofAvailability | str | None = None,
+        publication: RepoPublicationOverride | None = None,
     ) -> ServiceResult[RepoConfigView]:
-        publication = self.get_repo_publication(repo_root)
-        if not publication.ok or publication.value is None:
-            return self.runtime.foundation.fail(publication.issues)
-        if publication.value.publication.status == RepoPublicationStatus.STABLE:
+        publication_state = self.get_repo_publication(repo_root)
+        if not publication_state.ok or publication_state.value is None:
+            return self.runtime.foundation.fail(publication_state.issues)
+        if publication_state.value.publication.status == RepoPublicationStatus.STABLE:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "repo_config_locked",
@@ -246,6 +248,8 @@ class RepoMetadataComponent:
                 config.completion_mode = RepoCompletionMode(completion_mode)
             if default_requirement_proof_availability is not None:
                 config.default_requirement_proof_availability = ProofAvailability(default_requirement_proof_availability)
+            if publication is not None:
+                config.publication = publication
             config = RepoConfig.model_validate(config.model_dump())
         except Exception as exc:  # noqa: BLE001 - normalized as ServiceResult.
             return self.runtime.foundation.fail(self.runtime.foundation.issue("repo_config_invalid", f"Invalid repo config: {exc}"))

@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lean_constellation.domain.repo import RepoFormat, RepoPublicationStatus
-from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
-from lean_constellation.services.validation_snapshot.snapshot_restore import RepoCheckpointSnapshotManifest
+from lean_constellation.services.foundation import GateReport, ServiceResult
 
 if TYPE_CHECKING:
     from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
@@ -91,20 +90,19 @@ class ProviderAvailabilityComponent:
                     object_ref=state.latest_release_id,
                 )
             )
-        checkpoint_id = release.value.release.repo_checkpoint_id
-        snapshot_path = (
-            self.runtime.foundation.layout.snapshot_root(FoundationContext(repo_root=repo_root))
-            / "repo_checkpoints"
-            / checkpoint_id
-            / "snapshot.json"
+        git_release = self.runtime.repo_workspace.git_release.validate_release(
+            repo_root,
+            release=release.value.release,
         )
-        manifest = self.runtime.foundation.store.read_json(snapshot_path, RepoCheckpointSnapshotManifest)
-        if not manifest.ok or manifest.value is None or manifest.value.snapshot_id != checkpoint_id:
+        if not git_release.ok or git_release.value is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "provider_native_checkpoint_missing",
-                    "Native provider release checkpoint is missing or unreadable.",
-                    object_ref=checkpoint_id,
+                    "provider_native_git_release_invalid",
+                    "Native provider Git Release ref, commit, or manifest is missing or unreadable.",
+                    object_ref=state.latest_release_id,
+                    details={
+                        "issues": "; ".join(issue.kind for issue in git_release.issues)
+                    },
                 )
             )
         return self.runtime.foundation.ok(

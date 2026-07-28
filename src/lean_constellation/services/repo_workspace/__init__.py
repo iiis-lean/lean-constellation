@@ -33,6 +33,38 @@ from lean_constellation.services.repo_workspace.repo_release import RepoReleaseC
 from lean_constellation.services.repo_workspace.repo_run import RepoRunComponent
 from lean_constellation.services.repo_workspace.repo_lifecycle_lock import RepoLifecycleLockBusyError, RepoLifecycleLockComponent
 from lean_constellation.services.repo_workspace.provider_availability import ProviderAvailabilityComponent
+from lean_constellation.services.repo_workspace.git_release import (
+    GitReleaseCommitView,
+    GitReleaseComponent,
+    GitReleaseRestorePreview,
+    GitReleaseRestoreView,
+    GitReleaseValidationView,
+    GitRepoStateView,
+)
+from lean_constellation.services.repo_workspace.dependency_release import (
+    DependencyReleaseMode,
+    RepoDependencyChangePreview,
+    RepoDependencyChangeReceipt,
+    RepoDependencyReleaseComponent,
+)
+from lean_constellation.services.repo_workspace.publication import (
+    PublicApiDocument,
+    RepoPublicationComponent,
+    RepoPublicationManifest,
+    RepoPublicationPreparationView,
+    RepoProvenanceDocument,
+)
+from lean_constellation.services.repo_workspace.remote_publication import (
+    RepoRemotePublicationComponent,
+    RepoRemotePublicationPreview,
+)
+from lean_constellation.services.repo_workspace.workspace_publication import (
+    WorkspaceChildRelease,
+    WorkspacePublicationComponent,
+    WorkspacePublicationPreview,
+    WorkspacePublicationReceipt,
+    WorkspaceReleaseManifest,
+)
 
 __all__ = [
     "AdapterSetupView",
@@ -59,4 +91,26 @@ __all__ = [
     "RepoLifecycleLockBusyError",
     "RepoLifecycleLockComponent",
     "ProviderAvailabilityComponent",
+    "DependencyReleaseMode",
+    "GitReleaseCommitView",
+    "GitReleaseComponent",
+    "GitReleaseRestorePreview",
+    "GitReleaseRestoreView",
+    "GitReleaseValidationView",
+    "GitRepoStateView",
+    "PublicApiDocument",
+    "RepoDependencyChangePreview",
+    "RepoDependencyChangeReceipt",
+    "RepoDependencyReleaseComponent",
+    "RepoPublicationComponent",
+    "RepoPublicationManifest",
+    "RepoPublicationPreparationView",
+    "RepoProvenanceDocument",
+    "RepoRemotePublicationComponent",
+    "RepoRemotePublicationPreview",
+    "WorkspaceChildRelease",
+    "WorkspacePublicationComponent",
+    "WorkspacePublicationPreview",
+    "WorkspacePublicationReceipt",
+    "WorkspaceReleaseManifest",
 ]

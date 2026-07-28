@@ -34,6 +34,10 @@ from lean_constellation.domain.repo import (
     proof_availability_satisfies,
 )
 from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.services.repo_workspace.git_release import GitReleaseComponent
+from lean_constellation.services.repo_workspace.dependency_release import (
+    RepoDependencyReleaseComponent,
+)
 from lean_constellation.services.repo_workspace.lake_dependency import (
     AdapterSetupView,
     LakeDependencyAttachView,
@@ -54,7 +58,14 @@ from lean_constellation.services.repo_workspace.repo_lifecycle_lock import (
     WorkspaceRepoCreationLockComponent,
 )
 from lean_constellation.services.repo_workspace.provider_availability import ProviderAvailabilityComponent
+from lean_constellation.services.repo_workspace.publication import RepoPublicationComponent
+from lean_constellation.services.repo_workspace.remote_publication import (
+    RepoRemotePublicationComponent,
+)
 from lean_constellation.services.repo_workspace.workspace_catalog import WorkspaceCatalogComponent
+from lean_constellation.services.repo_workspace.workspace_publication import (
+    WorkspacePublicationComponent,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -92,6 +103,11 @@ class RepoWorkspaceService:
         preparation: RepoPreparationComponent | None = None,
         workspace_catalog: WorkspaceCatalogComponent | None = None,
         release: RepoReleaseComponent | None = None,
+        git_release: GitReleaseComponent | None = None,
+        publication: RepoPublicationComponent | None = None,
+        dependency_release: RepoDependencyReleaseComponent | None = None,
+        remote_publication: RepoRemotePublicationComponent | None = None,
+        workspace_publication: WorkspacePublicationComponent | None = None,
         provider_availability: ProviderAvailabilityComponent | None = None,
         native_lake_project_config: NativeLakeProjectConfig | None = None,
         workspace_config: WorkspaceConfig | None = None,
@@ -100,6 +116,20 @@ class RepoWorkspaceService:
         self.workspace_config = workspace_config or WorkspaceConfig()
         self.metadata = metadata or RepoMetadataComponent(runtime)
         self.release = release or RepoReleaseComponent(runtime)
+        self.git_release = git_release or GitReleaseComponent(runtime)
+        self.publication = publication or RepoPublicationComponent(
+            runtime,
+            workspace_policy=self.workspace_config.publication,
+        )
+        self.dependency_release = dependency_release or RepoDependencyReleaseComponent(
+            runtime
+        )
+        self.remote_publication = (
+            remote_publication or RepoRemotePublicationComponent(runtime)
+        )
+        self.workspace_publication = (
+            workspace_publication or WorkspacePublicationComponent(runtime)
+        )
         self.provider_availability = provider_availability or ProviderAvailabilityComponent(runtime, self.metadata, self.release)
         self.requirement = requirement or RepoRequirementComponent(runtime)
         self.lake_dependency = lake_dependency or LakeDependencyComponent(
@@ -413,10 +443,21 @@ class RepoWorkspaceService:
             return self.runtime.foundation.fail(dependencies.issues)
         already_attached = any(item.name == provider_repo for item in dependencies.value.dependencies)
         if not already_attached:
-            attached = self.lake_dependency.attach_workspace_repo_dependency(
-                consumer_repo_root,
-                provider_repo_key=provider_repo,
-            )
+            if (
+                requirement_value.provider_release_id is not None
+                and requirement_value.provider_git_url is not None
+            ):
+                attached = self.lake_dependency.attach_released_repo_git_dependency(
+                    consumer_repo_root,
+                    provider_repo_key=provider_repo,
+                    provider_release_id=requirement_value.provider_release_id,
+                    canonical_git_url=requirement_value.provider_git_url,
+                )
+            else:
+                attached = self.lake_dependency.attach_workspace_repo_dependency(
+                    consumer_repo_root,
+                    provider_repo_key=provider_repo,
+                )
             if not attached.ok:
                 return self.runtime.foundation.fail(attached.issues)
         if requirement_value.status == RepoDependencyRequirementStatus.SATISFIED:
@@ -478,9 +519,36 @@ class RepoWorkspaceService:
                     details={"issues": "; ".join(issue.kind for issue in availability.value.issues)},
                 )
             )
+        provider_format = self.metadata.get_repo_format(provider_root)
+        if not provider_format.ok or provider_format.value is None:
+            return self.runtime.foundation.fail(provider_format.issues)
+        if provider_format.value.repo_format == RepoFormat.NATIVE:
+            publication = self.metadata.get_repo_publication(provider_root)
+            if (
+                not publication.ok
+                or publication.value is None
+                or publication.value.publication.latest_release_id is None
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "provider_native_stable_release_missing",
+                        "Native provider has no current Git Release.",
+                        object_ref=provider_repo,
+                    )
+                )
+            policy = self.publication.resolve_policy(provider_root)
+            if not policy.ok or policy.value is None:
+                return self.runtime.foundation.fail(policy.issues)
+            return self.lake_dependency.attach_released_repo_git_dependency(
+                consumer_repo_root,
+                provider_repo_key=provider_repo,
+                provider_release_id=(
+                    publication.value.publication.latest_release_id
+                ),
+                canonical_git_url=policy.value.policy.canonical_fetch_url,
+            )
         return self.lake_dependency.attach_workspace_repo_dependency(
-            consumer_repo_root,
-            provider_repo_key=provider_repo,
+            consumer_repo_root, provider_repo_key=provider_repo
         )
 
     def mark_requirement_waiting_for_provider(

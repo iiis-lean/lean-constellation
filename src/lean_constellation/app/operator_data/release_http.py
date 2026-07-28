@@ -14,7 +14,6 @@ from lean_constellation.app.operator_data.release import (
     CheckpointRestoreInput,
     ReleaseCandidateInput,
     ReleaseIdInput,
-    ReleaseRestoreInput,
 )
 
 
@@ -35,7 +34,6 @@ RELEASE_HTTP_ROUTES = (
     ReleaseHttpRoute("POST", "/admin/operator/repos/{repo_key}/releases/get", "get_repo_release", ReleaseIdInput),
     ReleaseHttpRoute("GET", "/admin/operator/repos/{repo_key}/releases/latest", "get_latest_repo_release"),
     ReleaseHttpRoute("GET", "/admin/operator/repos/{repo_key}/releases/audit", "audit_repo_release_storage"),
-    ReleaseHttpRoute("POST", "/admin/operator/repos/{repo_key}/releases/restore", "restore_repo_release", ReleaseRestoreInput),
     ReleaseHttpRoute("POST", "/admin/operator/repos/{repo_key}/checkpoints/gate", "check_checkpoint_gate", CheckpointKindInput),
     ReleaseHttpRoute("POST", "/admin/operator/repos/{repo_key}/checkpoints", "create_checkpoint", CheckpointCreateInput),
     ReleaseHttpRoute("POST", "/admin/operator/repos/{repo_key}/checkpoints/list", "list_checkpoints", CheckpointListInput),

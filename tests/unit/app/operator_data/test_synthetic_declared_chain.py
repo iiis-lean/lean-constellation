@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -36,7 +37,6 @@ from lean_constellation.app.operator_data.node import (
 from lean_constellation.app.operator_data.release import (
     CheckpointListInput,
     ReleaseCandidateInput,
-    ReleaseRestoreInput,
 )
 from lean_constellation.app.operator_data.repo_material import (
     NativeRepoCreateInput,
@@ -719,10 +719,56 @@ def test_operator_constructs_publishes_and_restores_synthetic_declared_repo(tmp_
     lakefile = repo_root / "lakefile.toml"
     released_lakefile = lakefile.read_text(encoding="utf-8")
     lakefile.write_text(released_lakefile + "\n# post-release drift\n", encoding="utf-8")
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Lean Constellation Test",
+            "-c",
+            "user.email=lean-constellation@example.invalid",
+            "add",
+            "-A",
+        ],
+        cwd=repo_root,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Lean Constellation Test",
+            "-c",
+            "user.email=lean-constellation@example.invalid",
+            "commit",
+            "-m",
+            "test: add post-release drift",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (
+        subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == ""
+    )
+    restore_preview = _require(
+        runtime.validation_snapshot.preview_repo_release_restore(
+            repo_root,
+            release_id=release_id,
+        )
+    )
     restored = _require(
-        api.release_checkpoint.restore_repo_release(
-            REPO_KEY,
-            ReleaseRestoreInput(release_id=release_id),
+        runtime.validation_snapshot.apply_repo_release_restore(
+            repo_root,
+            preview=restore_preview,
+            expected_recovery_token=restore_preview.recovery_token,
         )
     )
     assert restored.dry_run is False

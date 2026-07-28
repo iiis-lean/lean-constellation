@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import tempfile
 from pathlib import Path
+from typing import Mapping
 
 from pydantic import Field
 
@@ -55,8 +56,21 @@ class LakeCommandClient:
         self.config = config or LakeCommandClientConfig()
         self.runner = runner or SubprocessCommandRunner()
 
-    def run_lake_update(self, repo_root: Path, timeout: int | None = None, timeout_seconds: int | None = None) -> ExternalCommandResult:
-        return self.run_command(repo_root, [self.config.lake_bin, "update"], timeout=timeout_seconds or timeout)
+    def run_lake_update(
+        self,
+        repo_root: Path,
+        packages: list[str] | None = None,
+        timeout: int | None = None,
+        timeout_seconds: int | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ExternalCommandResult:
+        command = [self.config.lake_bin, "update", *(packages or [])]
+        return self.run_command(
+            repo_root,
+            command,
+            timeout=timeout_seconds or timeout,
+            env=env,
+        )
 
     def run_lake_build(
         self,
@@ -65,13 +79,19 @@ class LakeCommandClient:
         targets: list[str] | None = None,
         timeout: int | None = None,
         timeout_seconds: int | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> ExternalCommandResult:
         command = [self.config.lake_bin, "build"]
         if targets:
             command.extend(targets)
         elif target:
             command.append(target)
-        return self.run_command(repo_root, command, timeout=timeout_seconds or timeout)
+        return self.run_command(
+            repo_root,
+            command,
+            timeout=timeout_seconds or timeout,
+            env=env,
+        )
 
     def run_minimal_import_check(
         self,
@@ -142,7 +162,13 @@ class LakeCommandClient:
             issue_code=result.issue_code,
         )
 
-    def run_command(self, repo_root: Path, argv: list[str], timeout: int | None = None) -> ExternalCommandResult:
+    def run_command(
+        self,
+        repo_root: Path,
+        argv: list[str],
+        timeout: int | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ExternalCommandResult:
         repo_root = Path(repo_root)
         if not argv:
             return ExternalCommandResult(
@@ -162,13 +188,15 @@ class LakeCommandClient:
                 issue_code="missing_repo_root",
                 summary=f"Repo root does not exist: {repo_root}",
             )
-        return self.runner.run(
-            argv,
-            cwd=repo_root,
-            timeout_seconds=timeout or self.config.timeout_seconds,
-            stdout_excerpt_chars=self.config.stdout_excerpt_chars,
-            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
-        )
+        kwargs = {
+            "cwd": repo_root,
+            "timeout_seconds": timeout or self.config.timeout_seconds,
+            "stdout_excerpt_chars": self.config.stdout_excerpt_chars,
+            "stderr_excerpt_chars": self.config.stderr_excerpt_chars,
+        }
+        if env is not None:
+            kwargs["env"] = env
+        return self.runner.run(argv, **kwargs)
 
     def summarize_command_result(self, result: ExternalCommandResult) -> LakeCommandSummaryView:
         return LakeCommandSummaryView(

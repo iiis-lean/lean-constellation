@@ -7,12 +7,6 @@ from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
 from lean_constellation.domain.repo_release import RepoRelease
 from lean_constellation.services.foundation import FoundationContext
-from lean_constellation.services.validation_snapshot import RepoCheckpointKind
-from lean_constellation.services.validation_snapshot.snapshot_restore import (
-    RepoCheckpointSnapshotManifest,
-    SnapshotFileEntry,
-    SnapshotFilesManifest,
-)
 from lean_constellation.domain.repo_run import SourceScope
 
 
@@ -75,28 +69,28 @@ def test_transition_allows_target_upgrade_and_rejects_downgrade(tmp_path) -> Non
     release = RepoRelease(
         release_id="release-r1", node_contract_versions={"main": 1},
         completion_mode=RepoCompletionMode.GRAPH_PROVED,
-        repo_checkpoint_id="repo-r1", summary="R1",
+        semantic_manifest_digest="1" * 64,
+        dependency_lock_digest="2" * 64,
+        summary="R1",
     )
     ctx = FoundationContext(repo_root=root)
     assert runtime.foundation.store.write_json_atomic(runtime.foundation.layout.release_path(ctx, "release-r1"), release).ok
-    snapshot_root = runtime.foundation.layout.snapshot_root(ctx) / "repo_checkpoints" / "repo-r1"
-    runtime.foundation.store.ensure_dir(snapshot_root)
-    assert runtime.foundation.store.write_json_atomic(
-        snapshot_root / "snapshot.json",
-        RepoCheckpointSnapshotManifest(
-            snapshot_id="repo-r1", checkpoint_kind=RepoCheckpointKind.BEFORE_NATIVE_RUN_MUTATION,
-            created_at="2026-07-13T00:00:00Z", repo_root=str(root), ark_runtime_snapshot_id="ark-r1",
-            files_manifest_relpath="files_manifest.json", summary="R1 checkpoint",
-        ),
-    ).ok
-    assert runtime.foundation.store.write_json_atomic(
-        snapshot_root / "files_manifest.json",
-        SnapshotFilesManifest(summary="empty fixture archive"),
-    ).ok
     assert runtime.foundation.store.write_json_atomic(
         runtime.repo_workspace.metadata._repo_publication_path(root),
         RepoPublicationState(status=RepoPublicationStatus.STABLE, latest_release_id="release-r1"),
     ).ok
+    initialized = runtime.repo_workspace.git_release.ensure_independent_repo(root)
+    assert initialized.ok and initialized.value is not None
+    committed = runtime.repo_workspace.git_release.commit_release(
+        root,
+        release=release,
+        candidate_files=[
+            path.relative_to(root).as_posix()
+            for path in runtime.validation_snapshot.release_finalizer._candidate_files(root)
+        ],
+        expected_head=initialized.value.head_commit,
+    )
+    assert committed.ok
     downgrade = runtime.repo_workspace.run.resolve_continuation_repo_run_spec(
         root,
         run_objective="Downgrade.",
@@ -116,18 +110,11 @@ def test_transition_allows_target_upgrade_and_rejects_downgrade(tmp_path) -> Non
     )
     assert resumed.ok and resumed.value is not None and resumed.value.passed
 
-    assert runtime.foundation.store.write_json_atomic(
-        snapshot_root / "files_manifest.json",
-        SnapshotFilesManifest(
-            entries=[SnapshotFileEntry(
-                source_relpath="lakefile.toml",
-                archive_relpath="lakefile.toml",
-                file_size=1,
-                sha256="0" * 64,
-            )],
-            summary="corrupted archive fixture",
-        ),
-    ).ok
+    deleted = runtime.repo_workspace.git_release.delete_release_ref(
+        root,
+        release_id=release.release_id,
+    )
+    assert deleted.ok and deleted.value is True
     corrupted = runtime.repo_workspace.run.validate_repo_run_transition(
         root, run_spec=resume, start_kind="continuation", base_release_id="release-r1"
     )

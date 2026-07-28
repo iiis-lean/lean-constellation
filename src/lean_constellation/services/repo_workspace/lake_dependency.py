@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +15,7 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.preparation import UpstreamDependencyInput
 from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.publication import RepoPortability
 from lean_constellation.services.external_clients.lean_toolchain import ToolchainCommandView, ToolchainLeanCheckView
 from lean_constellation.services.foundation import GateReport, ServiceResult
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
@@ -45,6 +48,24 @@ class LakeDependencyAttachView(StrictModel):
     dependency: LakeDependencyEntry
     changed: bool
     lake_update_summary: str | None = None
+    summary: str
+
+
+class LakeGitDependencyPin(StrictModel):
+    provider_repo_key: str
+    provider_release_id: str
+    provider_commit: str
+    git_url: str
+    portability: RepoPortability
+
+
+class LakeGitDependencyAttachView(StrictModel):
+    consumer_repo_root: str
+    pin: LakeGitDependencyPin
+    dependency: LakeDependencyEntry
+    changed: bool
+    targeted_update_summary: str
+    build_summary: str
     summary: str
 
 
@@ -161,6 +182,369 @@ class LakeDependencyComponent:
             )
         )
 
+    def attach_released_repo_git_dependency(
+        self,
+        consumer_repo_root: Path,
+        *,
+        provider_repo_key: str,
+        provider_release_id: str,
+        canonical_git_url: str | None = None,
+    ) -> ServiceResult[LakeGitDependencyAttachView]:
+        """Attach one LC provider by immutable Release commit, never dirty path truth."""
+        provider_repo_key = self.runtime.foundation.layout.ensure_safe_key(
+            provider_repo_key
+        )
+        consumer_root = Path(consumer_repo_root).resolve()
+        provider_root = (consumer_root.parent / provider_repo_key).resolve()
+        lakefile = consumer_root / "lakefile.toml"
+        if not provider_root.is_dir():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_repo_not_found",
+                    "Provider repository is not available in the workspace.",
+                    object_ref=str(provider_root),
+                )
+            )
+        if not lakefile.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "lakefile_not_found",
+                    "Git dependency attachment requires lakefile.toml.",
+                    object_ref=str(lakefile),
+                )
+            )
+        release = self.runtime.repo_workspace.release.get_release(
+            provider_root, release_id=provider_release_id
+        )
+        if not release.ok or release.value is None:
+            return self.runtime.foundation.fail(release.issues)
+        validated = self.runtime.repo_workspace.git_release.validate_release(
+            provider_root,
+            release=release.value.release,
+        )
+        if not validated.ok or validated.value is None:
+            return self.runtime.foundation.fail(validated.issues)
+        existing = self.parse_lake_dependencies(consumer_root)
+        if not existing.ok or existing.value is None:
+            return self.runtime.foundation.fail(existing.issues)
+        if any(item.name == provider_repo_key for item in existing.value.dependencies):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "dependency_already_attached",
+                    f"Lake dependency already attached: {provider_repo_key}",
+                    object_ref=str(lakefile),
+                )
+            )
+        canonical = canonical_git_url.strip() if canonical_git_url else None
+        git_url = canonical or self._relative_path(provider_root, consumer_root)
+        portability = (
+            RepoPortability.PORTABLE
+            if canonical is not None
+            else RepoPortability.LOCAL_WORKSPACE
+        )
+        transport_rewrites = (
+            {canonical: provider_root.as_uri()} if canonical is not None else None
+        )
+        original_lakefile = lakefile.read_bytes()
+        manifest_path = consumer_root / "lake-manifest.json"
+        original_manifest = (
+            manifest_path.read_bytes() if manifest_path.exists() else None
+        )
+        package_path = consumer_root / ".lake" / "packages" / provider_repo_key
+        with tempfile.TemporaryDirectory(
+            prefix="lean-constellation-lake-dependency-"
+        ) as temp_dir:
+            package_backup = Path(temp_dir) / "package"
+            if package_path.exists():
+                if package_path.is_symlink():
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "lake_dependency_package_symlink_unsupported",
+                            "Git dependency transaction cannot replace a symlinked package.",
+                            object_ref=str(package_path),
+                        )
+                    )
+                shutil.copytree(package_path, package_backup)
+            block = (
+                "\n[[require]]\n"
+                f'name = "{provider_repo_key}"\n'
+                f'git = "{git_url}"\n'
+                f'rev = "{validated.value.commit}"\n'
+            )
+            lakefile.write_text(
+                original_lakefile.decode("utf-8") + block,
+                encoding="utf-8",
+            )
+            update = self.run_lake_update(
+                consumer_root,
+                packages=[provider_repo_key],
+                transport_rewrites=transport_rewrites,
+            )
+            if not update.ok or update.value is None:
+                self._restore_dependency_transaction(
+                    lakefile=lakefile,
+                    original_lakefile=original_lakefile,
+                    manifest_path=manifest_path,
+                    original_manifest=original_manifest,
+                    package_path=package_path,
+                    package_backup=package_backup,
+                )
+                return self.runtime.foundation.fail(update.issues)
+            manifest_gate = self._validate_manifest_git_pin(
+                manifest_path,
+                package=provider_repo_key,
+                git_url=git_url,
+                commit=validated.value.commit,
+            )
+            if not manifest_gate.ok:
+                self._restore_dependency_transaction(
+                    lakefile=lakefile,
+                    original_lakefile=original_lakefile,
+                    manifest_path=manifest_path,
+                    original_manifest=original_manifest,
+                    package_path=package_path,
+                    package_backup=package_backup,
+                )
+                return self.runtime.foundation.fail(manifest_gate.issues)
+            build = self.run_lake_build(
+                consumer_root,
+                transport_rewrites=transport_rewrites,
+            )
+            if not build.ok or build.value is None:
+                self._restore_dependency_transaction(
+                    lakefile=lakefile,
+                    original_lakefile=original_lakefile,
+                    manifest_path=manifest_path,
+                    original_manifest=original_manifest,
+                    package_path=package_path,
+                    package_backup=package_backup,
+                )
+                return self.runtime.foundation.fail(build.issues)
+        pin = LakeGitDependencyPin(
+            provider_repo_key=provider_repo_key,
+            provider_release_id=provider_release_id,
+            provider_commit=validated.value.commit,
+            git_url=git_url,
+            portability=portability,
+        )
+        return self.runtime.foundation.ok(
+            LakeGitDependencyAttachView(
+                consumer_repo_root=str(consumer_root),
+                pin=pin,
+                dependency=LakeDependencyEntry(
+                    name=provider_repo_key,
+                    source="git",
+                    git=git_url,
+                    rev=validated.value.commit,
+                ),
+                changed=True,
+                targeted_update_summary=update.value.summary,
+                build_summary=build.value.summary,
+                summary=(
+                    f"Attached {provider_repo_key} at immutable Release "
+                    f"{provider_release_id}."
+                ),
+            )
+        )
+
+    def replace_released_repo_git_dependency(
+        self,
+        consumer_repo_root: Path,
+        *,
+        provider_repo_key: str,
+        provider_release_id: str,
+        git_url: str,
+        local_transport_repo: Path | None = None,
+    ) -> ServiceResult[LakeGitDependencyAttachView]:
+        """Replace one existing Git locator/pin and verify Lake's exact resolution."""
+        provider_repo_key = self.runtime.foundation.layout.ensure_safe_key(
+            provider_repo_key
+        )
+        consumer_root = Path(consumer_repo_root).resolve()
+        provider_root = (
+            Path(local_transport_repo).resolve()
+            if local_transport_repo is not None
+            else (consumer_root.parent / provider_repo_key).resolve()
+        )
+        release = self.runtime.repo_workspace.release.get_release(
+            provider_root, release_id=provider_release_id
+        )
+        if not release.ok or release.value is None:
+            return self.runtime.foundation.fail(release.issues)
+        validated = self.runtime.repo_workspace.git_release.validate_release(
+            provider_root, release=release.value.release
+        )
+        if not validated.ok or validated.value is None:
+            return self.runtime.foundation.fail(validated.issues)
+        lakefile = consumer_root / "lakefile.toml"
+        if not lakefile.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "lakefile_not_found",
+                    "Git dependency replacement requires lakefile.toml.",
+                    object_ref=str(lakefile),
+                )
+            )
+        existing = self.parse_lake_dependencies(consumer_root)
+        if not existing.ok or existing.value is None:
+            return self.runtime.foundation.fail(existing.issues)
+        matches = [
+            item
+            for item in existing.value.dependencies
+            if item.name == provider_repo_key
+        ]
+        if len(matches) != 1 or matches[0].source != "git":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "git_dependency_not_replaceable",
+                    "Dependency replacement requires exactly one existing Git dependency.",
+                    object_ref=provider_repo_key,
+                )
+            )
+        normalized_git_url = git_url.strip()
+        if not normalized_git_url:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "git_dependency_url_missing",
+                    "Replacement Git URL must be non-empty.",
+                    object_ref=provider_repo_key,
+                )
+            )
+        original_lakefile = lakefile.read_bytes()
+        replaced = self._replace_toml_git_dependency(
+            original_lakefile.decode("utf-8"),
+            package=provider_repo_key,
+            git_url=normalized_git_url,
+            commit=validated.value.commit,
+        )
+        if replaced is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "git_dependency_block_uneditable",
+                    "Could not locate a unique editable dependency block.",
+                    object_ref=provider_repo_key,
+                )
+            )
+        if replaced.encode("utf-8") == original_lakefile:
+            return self.runtime.foundation.ok(
+                LakeGitDependencyAttachView(
+                    consumer_repo_root=str(consumer_root),
+                    pin=LakeGitDependencyPin(
+                        provider_repo_key=provider_repo_key,
+                        provider_release_id=provider_release_id,
+                        provider_commit=validated.value.commit,
+                        git_url=normalized_git_url,
+                        portability=(
+                            RepoPortability.LOCAL_WORKSPACE
+                            if normalized_git_url.startswith("../")
+                            else RepoPortability.PORTABLE
+                        ),
+                    ),
+                    dependency=matches[0],
+                    changed=False,
+                    targeted_update_summary="Dependency already uses the requested pin.",
+                    build_summary="Build not required for an unchanged pin.",
+                    summary="Git dependency pin is already current.",
+                )
+            )
+        manifest_path = consumer_root / "lake-manifest.json"
+        original_manifest = (
+            manifest_path.read_bytes() if manifest_path.exists() else None
+        )
+        package_path = consumer_root / ".lake" / "packages" / provider_repo_key
+        transport_rewrites = (
+            {normalized_git_url: provider_root.as_uri()}
+            if local_transport_repo is not None
+            else None
+        )
+        with tempfile.TemporaryDirectory(
+            prefix="lean-constellation-lake-dependency-"
+        ) as temp_dir:
+            package_backup = Path(temp_dir) / "package"
+            if package_path.exists():
+                if package_path.is_symlink():
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "lake_dependency_package_symlink_unsupported",
+                            "Git dependency transaction cannot replace a symlinked package.",
+                            object_ref=str(package_path),
+                        )
+                    )
+                shutil.copytree(package_path, package_backup)
+            lakefile.write_text(replaced, encoding="utf-8")
+            update = self.run_lake_update(
+                consumer_root,
+                packages=[provider_repo_key],
+                transport_rewrites=transport_rewrites,
+            )
+            if not update.ok or update.value is None:
+                self._restore_dependency_transaction(
+                    lakefile=lakefile,
+                    original_lakefile=original_lakefile,
+                    manifest_path=manifest_path,
+                    original_manifest=original_manifest,
+                    package_path=package_path,
+                    package_backup=package_backup,
+                )
+                return self.runtime.foundation.fail(update.issues)
+            manifest_gate = self._validate_manifest_git_pin(
+                manifest_path,
+                package=provider_repo_key,
+                git_url=normalized_git_url,
+                commit=validated.value.commit,
+            )
+            if not manifest_gate.ok:
+                self._restore_dependency_transaction(
+                    lakefile=lakefile,
+                    original_lakefile=original_lakefile,
+                    manifest_path=manifest_path,
+                    original_manifest=original_manifest,
+                    package_path=package_path,
+                    package_backup=package_backup,
+                )
+                return self.runtime.foundation.fail(manifest_gate.issues)
+            build = self.run_lake_build(
+                consumer_root,
+                transport_rewrites=transport_rewrites,
+            )
+            if not build.ok or build.value is None:
+                self._restore_dependency_transaction(
+                    lakefile=lakefile,
+                    original_lakefile=original_lakefile,
+                    manifest_path=manifest_path,
+                    original_manifest=original_manifest,
+                    package_path=package_path,
+                    package_backup=package_backup,
+                )
+                return self.runtime.foundation.fail(build.issues)
+        pin = LakeGitDependencyPin(
+            provider_repo_key=provider_repo_key,
+            provider_release_id=provider_release_id,
+            provider_commit=validated.value.commit,
+            git_url=normalized_git_url,
+            portability=(
+                RepoPortability.LOCAL_WORKSPACE
+                if normalized_git_url.startswith("../")
+                else RepoPortability.PORTABLE
+            ),
+        )
+        return self.runtime.foundation.ok(
+            LakeGitDependencyAttachView(
+                consumer_repo_root=str(consumer_root),
+                pin=pin,
+                dependency=LakeDependencyEntry(
+                    name=provider_repo_key,
+                    source="git",
+                    git=normalized_git_url,
+                    rev=validated.value.commit,
+                ),
+                changed=True,
+                targeted_update_summary=update.value.summary,
+                build_summary=build.value.summary,
+                summary=f"Replaced exact Git dependency for {provider_repo_key}.",
+            )
+        )
+
     def initialize_native_repo_skeleton(
         self,
         repo_root: Path,
@@ -186,6 +570,18 @@ class LakeDependencyComponent:
         if not fmt.ok:
             return self.runtime.foundation.fail(fmt.issues)
         written = self._write_native_skeleton(repo_root, project_name, lean_toolchain, config=effective_config)
+        ignored = self.runtime.repo_workspace.publication.refresh_managed_gitignore(
+            repo_root
+        )
+        if not ignored.ok:
+            return self.runtime.foundation.fail(ignored.issues)
+        if ignored.value:
+            written.append(repo_root / ".gitignore")
+        git_repo = self.runtime.repo_workspace.git_release.ensure_independent_repo(
+            repo_root
+        )
+        if not git_repo.ok:
+            return self.runtime.foundation.fail(git_repo.issues)
         linked_packages = self._prepare_local_package_cache(repo_root, effective_config)
         if not linked_packages.ok or linked_packages.value is None:
             return self.runtime.foundation.fail(linked_packages.issues)
@@ -309,8 +705,18 @@ class LakeDependencyComponent:
             self.runtime.foundation.gate_passed("native_repo_skeleton", summary="Native repo skeleton is present.")
         )
 
-    def run_lake_update(self, repo_root: Path) -> ServiceResult[ToolchainCommandView]:
-        summary = self.runtime.external.lean_toolchain.run_lake_update(Path(repo_root))
+    def run_lake_update(
+        self,
+        repo_root: Path,
+        *,
+        packages: list[str] | None = None,
+        transport_rewrites: dict[str, str] | None = None,
+    ) -> ServiceResult[ToolchainCommandView]:
+        summary = self.runtime.external.lean_toolchain.run_lake_update(
+            Path(repo_root),
+            packages=packages,
+            transport_rewrites=transport_rewrites,
+        )
         if not summary.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -322,8 +728,18 @@ class LakeDependencyComponent:
             )
         return self.runtime.foundation.ok(summary)
 
-    def run_lake_build(self, repo_root: Path, *, target: str | None = None) -> ServiceResult[ToolchainCommandView]:
-        summary = self.runtime.external.lean_toolchain.run_lake_build(Path(repo_root), target=target)
+    def run_lake_build(
+        self,
+        repo_root: Path,
+        *,
+        target: str | None = None,
+        transport_rewrites: dict[str, str] | None = None,
+    ) -> ServiceResult[ToolchainCommandView]:
+        summary = self.runtime.external.lean_toolchain.run_lake_build(
+            Path(repo_root),
+            target=target,
+            transport_rewrites=transport_rewrites,
+        )
         if not summary.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -502,6 +918,123 @@ class LakeDependencyComponent:
                 )
             )
         return self.runtime.foundation.ok(payload)
+
+    def _validate_manifest_git_pin(
+        self,
+        manifest_path: Path,
+        *,
+        package: str,
+        git_url: str,
+        commit: str,
+    ) -> ServiceResult[bool]:
+        loaded = self._read_local_lake_manifest(manifest_path)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        candidates = [
+            item
+            for item in loaded.value.get("packages", [])
+            if isinstance(item, dict) and item.get("name") == package
+        ]
+        if len(candidates) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "lake_manifest_dependency_missing",
+                    "Lake manifest must contain exactly one attached provider package.",
+                    object_ref=package,
+                )
+            )
+        candidate = candidates[0]
+        candidate_url = str(
+            candidate.get("url")
+            or candidate.get("git")
+            or candidate.get("source")
+            or ""
+        )
+        candidate_commit = str(
+            candidate.get("rev")
+            or candidate.get("revision")
+            or candidate.get("commit")
+            or ""
+        )
+        if candidate_url != git_url or candidate_commit != commit:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "lake_manifest_dependency_pin_mismatch",
+                    "Lake manifest did not resolve the requested exact Git dependency.",
+                    object_ref=package,
+                    current=f"{candidate_url}@{candidate_commit}",
+                    expected=f"{git_url}@{commit}",
+                )
+            )
+        if Path(candidate_url).is_absolute():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "lake_manifest_absolute_dependency_path",
+                    "Lake manifest contains a machine-specific absolute dependency path.",
+                    object_ref=package,
+                )
+            )
+        return self.runtime.foundation.ok(True)
+
+    @staticmethod
+    def _replace_toml_git_dependency(
+        text: str,
+        *,
+        package: str,
+        git_url: str,
+        commit: str,
+    ) -> str | None:
+        marker = re.compile(r"(?m)^\s*\[\[require\]\]\s*$")
+        starts = [match.start() for match in marker.finditer(text)]
+        matches: list[tuple[int, int]] = []
+        for index, start in enumerate(starts):
+            end = starts[index + 1] if index + 1 < len(starts) else len(text)
+            block = text[start:end]
+            name = re.search(r'(?m)^\s*name\s*=\s*"([^"]+)"\s*$', block)
+            if name and name.group(1) == package:
+                matches.append((start, end))
+        if len(matches) != 1:
+            return None
+        start, end = matches[0]
+        block = text[start:end]
+        if re.search(r"(?m)^\s*git\s*=", block) is None:
+            return None
+        block = re.sub(
+            r'(?m)^\s*git\s*=\s*"[^"]*"\s*$',
+            f'git = "{git_url}"',
+            block,
+            count=1,
+        )
+        if re.search(r"(?m)^\s*rev\s*=", block):
+            block = re.sub(
+                r'(?m)^\s*rev\s*=\s*"[^"]*"\s*$',
+                f'rev = "{commit}"',
+                block,
+                count=1,
+            )
+        else:
+            block = block.rstrip() + f'\nrev = "{commit}"\n'
+        return text[:start] + block + text[end:]
+
+    @staticmethod
+    def _restore_dependency_transaction(
+        *,
+        lakefile: Path,
+        original_lakefile: bytes,
+        manifest_path: Path,
+        original_manifest: bytes | None,
+        package_path: Path,
+        package_backup: Path,
+    ) -> None:
+        lakefile.write_bytes(original_lakefile)
+        if original_manifest is None:
+            manifest_path.unlink(missing_ok=True)
+        else:
+            manifest_path.write_bytes(original_manifest)
+        if package_path.exists():
+            shutil.rmtree(package_path)
+        if package_backup.exists():
+            shutil.copytree(package_backup, package_path)
 
     def _lakefile(self, repo_root: Path) -> Path | None:
         repo_root = Path(repo_root)

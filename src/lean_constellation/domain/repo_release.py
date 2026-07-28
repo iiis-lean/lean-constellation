@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 from typing import Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
@@ -13,25 +14,110 @@ from lean_constellation.domain.repo import RepoCompletionMode
 
 
 _SAFE_RELEASE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 DeclStateValue: TypeAlias = Literal["planned", "specified", "declared", "proof_planned", "proved", "obsolete"]
 
 
-class RepoRelease(StrictModel):
-    release_id: str
-    parent_release_id: str | None = None
-    node_contract_versions: dict[str, int]
-    completion_mode: RepoCompletionMode
-    repo_checkpoint_id: str
-    summary: str
-    created_at: str = Field(default_factory=utc_now_iso)
+class RepoReleaseKind(StrEnum):
+    SEMANTIC = "semantic"
+    DEPENDENCY_MAINTENANCE = "dependency_maintenance"
 
-    @field_validator("release_id", "repo_checkpoint_id")
+
+class RepoReleaseValidationProfile(StrEnum):
+    SEMANTIC_FULL = "semantic_full"
+    DEPENDENCY_MINIMAL = "dependency_minimal"
+    DEPENDENCY_PLUS_POLICY = "dependency_plus_policy"
+
+
+class RepoDependencyChangeKind(StrEnum):
+    LOCATOR_REBIND = "locator_rebind"
+    PROVIDER_PIN_UPGRADE = "provider_pin_upgrade"
+
+
+class RepoDependencyReleaseChange(StrictModel):
+    kind: RepoDependencyChangeKind
+    provider_repo_key: str
+    previous_release_id: str | None = None
+    release_id: str
+    previous_commit: str | None = None
+    commit: str
+    previous_git_url: str | None = None
+    git_url: str
+
+    @field_validator("provider_repo_key", "release_id")
     @classmethod
     def _safe_required_key(cls, value: str) -> str:
         normalized = value.strip()
         if not _SAFE_RELEASE_KEY_RE.fullmatch(normalized):
-            raise ValueError("release and checkpoint identifiers must be safe non-empty keys")
+            raise ValueError("dependency release identifiers must be safe non-empty keys")
+        return normalized
+
+    @field_validator("previous_release_id")
+    @classmethod
+    def _safe_optional_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not _SAFE_RELEASE_KEY_RE.fullmatch(normalized):
+            raise ValueError("previous_release_id must be a safe non-empty key")
+        return normalized
+
+    @field_validator("previous_commit", "commit")
+    @classmethod
+    def _valid_commit(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not _GIT_OBJECT_ID_RE.fullmatch(normalized):
+            raise ValueError("dependency commits must be full lowercase Git object ids")
+        return normalized
+
+    @field_validator("previous_git_url", "git_url")
+    @classmethod
+    def _non_empty_git_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("dependency Git URLs must be non-empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _change_shape_matches_kind(self) -> "RepoDependencyReleaseChange":
+        if self.kind == RepoDependencyChangeKind.LOCATOR_REBIND:
+            if self.previous_release_id != self.release_id:
+                raise ValueError("locator_rebind must preserve the provider release id")
+            if self.previous_commit != self.commit:
+                raise ValueError("locator_rebind must preserve the provider commit")
+            if self.previous_git_url == self.git_url:
+                raise ValueError("locator_rebind must change the provider Git URL")
+        elif self.previous_commit == self.commit:
+            raise ValueError("provider_pin_upgrade must change the provider commit")
+        return self
+
+
+class RepoRelease(StrictModel):
+    schema_version: Literal[2] = 2
+    release_id: str
+    parent_release_id: str | None = None
+    release_kind: RepoReleaseKind = RepoReleaseKind.SEMANTIC
+    validation_profile: RepoReleaseValidationProfile = RepoReleaseValidationProfile.SEMANTIC_FULL
+    node_contract_versions: dict[str, int]
+    completion_mode: RepoCompletionMode
+    semantic_manifest_digest: str
+    dependency_lock_digest: str
+    dependency_change: RepoDependencyReleaseChange | None = None
+    summary: str
+    created_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("release_id")
+    @classmethod
+    def _safe_required_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not _SAFE_RELEASE_KEY_RE.fullmatch(normalized):
+            raise ValueError("release identifiers must be safe non-empty keys")
         return normalized
 
     @field_validator("parent_release_id")
@@ -64,10 +150,30 @@ class RepoRelease(StrictModel):
             raise ValueError("release summary must be non-empty")
         return normalized
 
+    @field_validator("semantic_manifest_digest", "dependency_lock_digest")
+    @classmethod
+    def _valid_digest(cls, value: str) -> str:
+        normalized = value.strip()
+        if not _SHA256_RE.fullmatch(normalized):
+            raise ValueError("release digests must be lowercase SHA-256 hex")
+        return normalized
+
     @model_validator(mode="after")
-    def _parent_is_not_self(self) -> "RepoRelease":
+    def _valid_release_shape(self) -> "RepoRelease":
         if self.parent_release_id == self.release_id:
             raise ValueError("parent_release_id must not equal release_id")
+        if self.release_kind == RepoReleaseKind.SEMANTIC:
+            if self.validation_profile != RepoReleaseValidationProfile.SEMANTIC_FULL:
+                raise ValueError("semantic releases require the semantic_full validation profile")
+            if self.dependency_change is not None:
+                raise ValueError("semantic releases must not carry a dependency maintenance change")
+        else:
+            if self.validation_profile == RepoReleaseValidationProfile.SEMANTIC_FULL:
+                raise ValueError(
+                    "dependency maintenance releases require a dependency validation profile"
+                )
+            if self.dependency_change is None:
+                raise ValueError("dependency maintenance releases require dependency_change")
         return self
 
 
@@ -122,9 +228,13 @@ __all__ = [
     "DeclReleaseStatusView",
     "DeclStateValue",
     "ReleasedDeclProtectionView",
+    "RepoDependencyChangeKind",
+    "RepoDependencyReleaseChange",
     "RepoRelease",
     "RepoReleaseBaselineView",
+    "RepoReleaseKind",
     "RepoReleaseListView",
+    "RepoReleaseValidationProfile",
     "RepoReleaseView",
     "ResolvedDeclRefView",
 ]

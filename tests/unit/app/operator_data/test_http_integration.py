@@ -211,7 +211,7 @@ def test_operator_route_names_are_fixed_unique_and_separate_from_admin_mcp(tmp_p
     ]
     names = [route.name for route in operator_routes]
 
-    assert len(operator_routes) == 108
+    assert len(operator_routes) == 107
     assert len(names) == len(set(names))
     assert all(name.startswith("operator_") for name in names)
 
