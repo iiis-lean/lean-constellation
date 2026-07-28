@@ -174,7 +174,7 @@ class ExportComponent:
                         )
                     )
             elif child.kind == NodeKind.SCOPE:
-                child_contract = self.contract.get_visible_contract(repo_root, node_path=child.path)
+                child_contract = self.contract.get_current_contract(repo_root, node_path=child.path)
                 if not child_contract.ok or child_contract.value is None:
                     continue
                 for ref in child_contract.value.contract.exports:
@@ -452,12 +452,12 @@ class ExportComponent:
                     object_ref=scope_path,
                 )
             )
-        child_contract = self.contract.get_visible_contract(repo_root, node_path=direct_child)
+        child_contract = self.contract.get_current_contract(repo_root, node_path=direct_child)
         if not child_contract.ok or child_contract.value is None:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "scope_export_child_scope_not_committed",
-                    f"Child Scope boundary is not committed: {direct_child}",
+                    "scope_export_child_scope_unavailable",
+                    f"Child Scope boundary is unavailable: {direct_child}",
                     object_ref=scope_path,
                 )
             )

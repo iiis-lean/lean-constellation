@@ -29,6 +29,7 @@ from lean_constellation.services.node.interface import InterfaceComponent, Inter
 from lean_constellation.services.node.material_ref import MaterialRefComponent
 from lean_constellation.services.node.node_tree import DeleteImpactView, NodeKind, NodeTreeComponent, NodeView
 from lean_constellation.services.node.public_decl_access import PublicDeclAccessResolver
+from lean_constellation.services.node.public_statement_closure import PublicStatementClosureComponent
 from lean_constellation.services.node.release_guard import NodeReleaseGuard
 
 if TYPE_CHECKING:
@@ -260,6 +261,7 @@ class NodeService:
             dependency=self.dependency,
             export=self.export,
         )
+        self.public_statement_closure = PublicStatementClosureComponent(runtime)
 
     def create_scope_node(
         self,
@@ -346,9 +348,26 @@ class NodeService:
         return self.dependency.check_content_batch_independent(repo_root, node_paths=node_paths)
 
     def commit_scope_contract(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[NodeContractView]:
+        preflight = self.contract.check_scope_contract_commit(
+            repo_root,
+            scope_path=scope_path,
+            summary=summary,
+        )
+        if not preflight.ok or preflight.value is None:
+            return self.runtime.foundation.fail(preflight.issues)
+        if not preflight.value.passed:
+            return self.runtime.foundation.fail(preflight.value.issues)
         current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
+        closure = self.public_statement_closure.check_scope(
+            repo_root,
+            scope_path=scope_path,
+        )
+        if not closure.ok or closure.value is None:
+            return self.runtime.foundation.fail(closure.issues)
+        if not closure.value.passed:
+            return self.runtime.foundation.fail(closure.value.issues)
         guarded = self.release_guard.check_scope_contract_candidate(
             repo_root, scope_path=scope_path, candidate=current.value.contract
         )
@@ -368,6 +387,14 @@ class NodeService:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("node_not_content", "Content contract commit requires a Content node.", object_ref=node_path)
             )
+        closure = self.public_statement_closure.check_node(
+            repo_root,
+            node_path=node_path,
+        )
+        if not closure.ok or closure.value is None:
+            return self.runtime.foundation.fail(closure.issues)
+        if not closure.value.passed:
+            return self.runtime.foundation.fail(closure.value.issues)
         head = self.release_guard.capture_content_contract_head(repo_root, node_path=node_path)
         if not head.ok or head.value is None:
             return self.runtime.foundation.fail(head.issues)

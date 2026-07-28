@@ -282,7 +282,14 @@ def test_definition_declared_with_statement_check_is_ready(tmp_path: Path) -> No
 def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_round_draft(tmp_path)
-    _create_decl(tmp_path, round_id=round_id, name="supporting_def", kind="definition", target_state=DeclState.DECLARED)
+    _create_decl(
+        tmp_path,
+        round_id=round_id,
+        name="supporting_def",
+        kind="definition",
+        public=True,
+        target_state=DeclState.DECLARED,
+    )
     _create_decl(tmp_path, round_id=round_id, name="main_result", public=True, target_state=DeclState.DECLARED)
     _start_round(tmp_path, round_id)
     _declare_definition(tmp_path, round_id=round_id, name="supporting_def")

@@ -402,6 +402,14 @@ class ReadinessGateComponent:
             )
         )
 
+        public_closure = self.node.public_statement_closure.check_node(
+            repo_root,
+            node_path=node_path,
+        )
+        if not public_closure.ok or public_closure.value is None:
+            return self.runtime.foundation.fail(public_closure.issues)
+        reports.append(public_closure.value)
+
         if interfaces_ready:
             reports.append(self._build_node_interfaces_gate(repo_root, node_path=node_path))
 
@@ -536,6 +544,14 @@ class ReadinessGateComponent:
             return self.runtime.foundation.fail(deps.issues)
         reports.append(deps.value)
 
+        public_closure = self.node.public_statement_closure.check_scope(
+            Path(repo_root),
+            scope_path=scope_path,
+        )
+        if not public_closure.ok or public_closure.value is None:
+            return self.runtime.foundation.fail(public_closure.issues)
+        reports.append(public_closure.value)
+
         refreshed_boundary, interfaces_ready = self._refresh_node_boundary(Path(repo_root), node_path=scope_path)
         reports.extend(refreshed_boundary)
         if interfaces_ready:
@@ -624,6 +640,11 @@ class ReadinessGateComponent:
         if not statement_contracts.ok or statement_contracts.value is None:
             return self.runtime.foundation.fail(statement_contracts.issues)
         reports.append(statement_contracts.value)
+
+        public_closure = self.node.public_statement_closure.check_repo(repo_root)
+        if not public_closure.ok or public_closure.value is None:
+            return self.runtime.foundation.fail(public_closure.issues)
+        reports.append(public_closure.value)
 
         root_deps = self.node.dependency.validate_node_deps(repo_root, node_path="Main")
         if not root_deps.ok or root_deps.value is None:

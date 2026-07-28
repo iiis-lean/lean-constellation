@@ -87,7 +87,11 @@ def _write_child_scope_export(tmp_path: Path) -> DeclRef:
     ref = DeclRef(repo=None, node="Main.Topic.Sub.Inner", name="sub_result", revision=1)
     loaded.value.exports = [ref]
     assert foundation.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
-    committed = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main.Topic.Sub", summary="Sub exports ready.")
+    committed = make_runtime().node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic.Sub",
+        summary="Sub exports ready.",
+    )
     assert committed.ok
     return ref
 
@@ -158,6 +162,49 @@ def test_list_scope_export_candidates_from_content_and_child_scope(tmp_path: Pat
     assert child_scope_candidate.source_kind == "scope"
     assert child_scope_candidate.ready is True
     assert child_scope_candidate.stale is False
+
+
+def test_scope_export_draft_can_propagate_an_open_child_scope_boundary(
+    tmp_path: Path,
+) -> None:
+    _create_tree(tmp_path)
+    foundation = make_runtime().foundation
+    path = foundation.node_contract_path(
+        FoundationContext(repo_root=tmp_path),
+        "Main.Topic.Sub",
+        1,
+    )
+    loaded = foundation.read_json(path, NodeContractSnapshot)
+    assert loaded.ok and loaded.value is not None
+    ref = DeclRef(
+        repo=None,
+        node="Main.Topic.Sub.Inner",
+        name="sub_result",
+        revision=1,
+    )
+    loaded.value.exports = [ref]
+    assert foundation.write_json_atomic(
+        path,
+        loaded.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    component = _component_with_provider(tmp_path)
+
+    candidates = component.list_scope_export_candidates(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+    added = component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=ref.node,
+        decl_name=ref.name,
+    )
+
+    assert candidates.ok and candidates.value is not None
+    assert ref in [candidate.ref for candidate in candidates.value.candidates]
+    assert added.ok and added.value is not None
+    assert added.value.changed is True
 
 
 def test_list_scope_export_candidates_marks_already_exported(tmp_path: Path) -> None:

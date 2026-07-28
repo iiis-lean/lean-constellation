@@ -401,6 +401,14 @@ class RepoReleaseFinalizerComponent:
         if not ordinary.ok or ordinary.value is None:
             return self.runtime.foundation.fail(ordinary.issues)
         reports.append(ordinary.value)
+        public_closure = self.runtime.node.public_statement_closure.check_repo(repo_root)
+        if not public_closure.ok or public_closure.value is None:
+            return self.runtime.foundation.fail(public_closure.issues)
+        reports.append(
+            public_closure.value.model_copy(
+                update={"gate_name": "candidate_release_public_statement_closure"}
+            )
+        )
 
         gate = self.runtime.foundation.merge_gate_reports("candidate_repo_release", reports)
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)

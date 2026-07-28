@@ -36,7 +36,11 @@ def _commit_provider_scope(tmp_path: Path, service: NodeService) -> DeclRef:
     ref = DeclRef(repo=None, node="Main.Topic.Provider", name="helper", revision=1)
     loaded.value.exports = [ref]
     assert service.runtime.foundation.store.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
-    committed = service.commit_scope_contract(tmp_path, scope_path="Main.Topic.Provider", summary="Provider exposes helper.")
+    committed = service.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main.Topic.Provider",
+        summary="Provider exposes helper.",
+    )
     assert committed.ok
     return ref
 

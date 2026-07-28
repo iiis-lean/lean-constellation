@@ -67,7 +67,7 @@ def _write_provider_export(tmp_path: Path) -> DeclRef:
 
 def _commit_provider_scope(tmp_path: Path) -> DeclRef:
     ref = _write_provider_export(tmp_path)
-    committed = make_runtime().node.commit_scope_contract(
+    committed = make_runtime().node.contract._commit_scope_contract_after_guard(
         tmp_path,
         scope_path="Main.Topic.Provider",
         summary="Provider exposes helper.",

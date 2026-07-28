@@ -75,6 +75,14 @@ from lean_constellation.services.node.public_decl_access import (
     VisibleNodeAccessItem,
     VisibleNodeAccessView,
 )
+from lean_constellation.services.node.public_statement_closure import (
+    PublicStatementClosureBoundary,
+    PublicStatementClosureComponent,
+    PublicStatementClosureDecl,
+    PublicStatementClosureReport,
+    PublicStatementExternalCheck,
+    PublicStatementPromotionReceipt,
+)
 from lean_constellation.services.node.service import (
     ContentTaskFinalizeInput,
     ContentTaskFinalizeView,
@@ -151,6 +159,12 @@ __all__ = [
     "NodeService",
     "OpenContractView",
     "PublicDeclAccessResolver",
+    "PublicStatementClosureBoundary",
+    "PublicStatementClosureComponent",
+    "PublicStatementClosureDecl",
+    "PublicStatementClosureReport",
+    "PublicStatementExternalCheck",
+    "PublicStatementPromotionReceipt",
     "RunnableContentNodeView",
     "RootInterfaceReadyGateView",
     "ScopeExportCandidate",

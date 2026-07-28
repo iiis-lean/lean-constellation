@@ -460,7 +460,11 @@ def test_commit_scope_contract_checks_interface_binding_against_exports(tmp_path
     loaded.value.interfaces[0].bound_decl = ref
     assert foundation.store.write_json_atomic(path, loaded.value, mode=WriteMode.UPDATE_EXISTING).ok
 
-    committed = make_runtime().node.commit_scope_contract(tmp_path, scope_path="Main", summary="Main scope exposes the required interface.")
+    committed = make_runtime().node.contract._commit_scope_contract_after_guard(
+        tmp_path,
+        scope_path="Main",
+        summary="Main scope exposes the required interface.",
+    )
     assert committed.ok
     assert committed.value is not None
     assert committed.value.status == ContractVersionStatus.COMMITTED
