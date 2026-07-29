@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.interface import DeclInterface, DeclKind
+from lean_constellation.domain.interface import DeclInterface, DeclKind, exact_interface_lean_decl_name
 from lean_constellation.domain.preparation import RepoPreparationInput
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
+from lean_constellation.services.decl_graph.models import DeclRevisionStatus
 from lean_constellation.services.node.contract import ContractComponent, NodeContractView
 from lean_constellation.services.node.export import DeclPublicView, ExportComponent
 from lean_constellation.services.node.node_tree import NodeContract, NodeKind
@@ -345,6 +346,50 @@ class InterfaceComponent:
             )
         )
 
+    def check_bound_interface_lean_identities(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract: NodeContract | None = None,
+    ) -> ServiceResult[GateReport]:
+        """Revalidate exact Lean identities for all qualified bound interfaces."""
+
+        candidate = contract
+        if candidate is None:
+            current = self.contract.get_current_contract(repo_root, node_path=node_path)
+            if not current.ok or current.value is None:
+                return self.runtime.foundation.fail(current.issues)
+            candidate = current.value.contract
+        issues = []
+        checked = 0
+        for interface in candidate.interfaces:
+            if interface.bound_decl is None or exact_interface_lean_decl_name(interface.name) is None:
+                continue
+            checked += 1
+            validated = self._validate_binding_lean_identity(
+                repo_root,
+                node_path=node_path,
+                interface=interface,
+                ref=interface.bound_decl,
+            )
+            if not validated.ok:
+                issues.extend(validated.issues)
+        if issues:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "interface_lean_identities",
+                    issues,
+                    summary=f"{len(issues)} qualified interface Lean identity checks failed.",
+                )
+            )
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
+                "interface_lean_identities",
+                summary=f"{checked} qualified interface Lean identities are exact.",
+            )
+        )
+
     def sync_protected_root_interfaces_from_preparation_input(
         self,
         repo_root: Path,
@@ -565,6 +610,14 @@ class InterfaceComponent:
             )
         if not resolved.ok or resolved.value is None:
             return self.runtime.foundation.fail(resolved.issues)
+        identity = self._validate_binding_lean_identity(
+            repo_root,
+            node_path=node_path,
+            interface=interface,
+            ref=resolved.value,
+        )
+        if not identity.ok:
+            return self.runtime.foundation.fail(identity.issues)
         statement = self._validate_binding_statement_contract(
             repo_root,
             node_path=node_path,
@@ -574,6 +627,128 @@ class InterfaceComponent:
         if not statement.ok:
             return self.runtime.foundation.fail(statement.issues)
         return self.runtime.foundation.ok(resolved.value, warnings=resolved.issues)
+
+    def _validate_binding_lean_identity(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        interface: DeclInterface,
+        ref: DeclRef,
+    ) -> ServiceResult[None]:
+        expected = exact_interface_lean_decl_name(interface.name)
+        if expected is None:
+            return self.runtime.foundation.ok(None)
+        target_root = Path(repo_root)
+        if ref.repo is not None:
+            target_root = target_root.parent / self.runtime.foundation.layout.ensure_safe_key(ref.repo)
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(target_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format == RepoFormat.ADAPTER:
+            loaded_adapter = self.runtime.adapter.inspect_adapter_decl(target_root, name=ref.name)
+            if not loaded_adapter.ok or loaded_adapter.value is None:
+                return self.runtime.foundation.fail(loaded_adapter.issues)
+            if (
+                ref.node != "Main"
+                or loaded_adapter.value.revision.revision != ref.revision
+                or not loaded_adapter.value.finalized
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "interface_binding_adapter_decl_ref_incompatible",
+                        "The bound adapter declaration anchor is not a finalized exact revision.",
+                        object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    )
+                )
+            actual = loaded_adapter.value.lean_decl_name
+            return self._compare_lean_identity(
+                interface=interface,
+                ref=ref,
+                actual=actual,
+                expected=expected,
+            )
+        resolved = self.runtime.decl_graph.ref_compatibility.resolve_decl_ref(
+            repo_root,
+            ref=ref,
+            required_availability=ProofAvailability.DECLARED,
+        )
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        resolved_revision = resolved.value.resolved_revision
+        self_bound_open_content = (
+            ref.repo is None
+            and ref.node == node_path
+            and resolved.value.reason == "target_missing"
+        )
+        if self_bound_open_content:
+            resolved_revision = ref.revision
+        elif not resolved.value.compatible or resolved_revision is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_lean_decl_ref_incompatible",
+                    "The bound declaration anchor is not compatible with the current public target.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    current=resolved.value.reason,
+                )
+            )
+        revision = self.runtime.decl_graph.get_decl_revision(
+            target_root,
+            node_path=ref.node,
+            name=ref.name,
+            revision=resolved_revision,
+        )
+        if not revision.ok or revision.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_lean_decl_revision_missing",
+                    "The bound declaration revision required by the interface is unavailable.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                )
+            )
+        if revision.value.status != DeclRevisionStatus.COMMITTED:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_lean_decl_revision_not_committed",
+                    "The bound declaration revision required by the interface is not committed.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    current=revision.value.status.value,
+                    expected=DeclRevisionStatus.COMMITTED.value,
+                )
+            )
+        return self._compare_lean_identity(
+            interface=interface,
+            ref=ref,
+            actual=revision.value.lean_decl_name,
+            expected=expected,
+        )
+
+    def _compare_lean_identity(
+        self,
+        *,
+        interface: DeclInterface,
+        ref: DeclRef,
+        actual: str | None,
+        expected: str,
+    ) -> ServiceResult[None]:
+        normalized_actual = actual.strip() if actual is not None else ""
+        if normalized_actual.startswith("_root_."):
+            normalized_actual = normalized_actual[len("_root_.") :]
+        if normalized_actual != expected:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "interface_binding_lean_decl_name_mismatch",
+                    "Qualified interface name does not match the bound Lean declaration identity.",
+                    object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    current=normalized_actual or "missing",
+                    expected=expected,
+                    suggested_action=(
+                        "Update the declaration formal code so its captured Lean declaration name "
+                        "exactly matches the qualified interface, then bind again."
+                    ),
+                )
+            )
+        return self.runtime.foundation.ok(None)
 
     def _resolve_content_binding(
         self,

@@ -1,12 +1,15 @@
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, make_runtime
 
 from pathlib import Path
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
+from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
+from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.decl_graph.models import DeclFormalSection, DeclStatement
 from lean_constellation.services.node import DeclPublicView, ExportComponent, InterfaceComponent, NodeContractSnapshot
 
 
@@ -96,6 +99,74 @@ def _component_with_public_decls(tmp_path: Path, decls: dict[str, list[DeclPubli
     provider = FakePublicDeclProvider(foundation, complete)
     runtime = make_runtime(providers=LeanProviderOverrides(content_public_decl_provider=provider))
     return runtime.node.interface, runtime.node.export
+
+
+def _seed_declared_public_definition(
+    repo_root: Path,
+    *,
+    node_path: str,
+    name: str,
+    lean_decl_name: str,
+) -> None:
+    runtime = make_runtime()
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        repo_root,
+        node_path=node_path,
+        objective=f"Declare {name}.",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        repo_root,
+        node_path=node_path,
+        strategy_id=strategy.value.strategy_id,
+        objective=f"Declare {name}.",
+    )
+    assert round_record.ok and round_record.value is not None
+    created = runtime.decl_graph.create_decl(
+        repo_root,
+        node_path=node_path,
+        round_id=round_record.value.round_id,
+        name=name,
+        kind="definition",
+        objective=f"Define {name}.",
+        summary=f"{name} definition.",
+        public=True,
+        target_state=DeclState.DECLARED,
+    )
+    assert created.ok, created.issues
+    revision = runtime.decl_graph.get_decl_revision(
+        repo_root,
+        node_path=node_path,
+        name=name,
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    revision.value.state = DeclState.DECLARED
+    revision.value.lean_decl_name = lean_decl_name
+    revision.value.statement = DeclStatement(
+        formal=DeclFormalSection(
+            code=f"def {lean_decl_name} : Nat := 0",
+            check=LeanCheck.model_validate(lean_check_payload()),
+        )
+    )
+    written = runtime.foundation.store.write_json_atomic(
+        runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=name,
+            revision=1,
+        ),
+        revision.value,
+        mode=WriteMode.UPDATE_EXISTING,
+    )
+    assert written.ok
+    committed = runtime.decl_graph.commit_decl_revision(
+        repo_root,
+        node_path=node_path,
+        name=name,
+        state=DeclState.DECLARED,
+    )
+    assert committed.ok, committed.issues
 
 
 def test_add_update_remove_supplement_interface(tmp_path: Path) -> None:
@@ -469,6 +540,154 @@ def test_bind_and_unbind_content_interface_to_public_decl(tmp_path: Path) -> Non
     assert unbound.value is not None
     assert unbound.value.changed is True
     assert unbound.value.bound_decl is None
+
+
+def test_qualified_content_interface_requires_exact_lean_decl_identity(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path, project_name="TestProject")
+    _init_main(tmp_path, interfaces=[])
+    _create_content_node(tmp_path, "Main.Core")
+    _seed_declared_public_definition(
+        tmp_path,
+        node_path="Main.Core",
+        name="CoreDefinition",
+        lean_decl_name="CoreDefinition",
+    )
+    runtime = make_runtime()
+    assert runtime.node.interface.add_interface(
+        tmp_path,
+        node_path="Main.Core",
+        name="TestProject.CoreDefinition",
+        kind=DeclKind.DEFINITION,
+        summary="Qualified definition interface.",
+        actor="coordinator",
+    ).ok
+
+    rejected = runtime.node.interface.bind_interface_to_decl(
+        tmp_path,
+        node_path="Main.Core",
+        interface_name="TestProject.CoreDefinition",
+        decl_name="CoreDefinition",
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "interface_binding_lean_decl_name_mismatch"
+    assert rejected.issues[0].current == "CoreDefinition"
+    assert rejected.issues[0].expected == "TestProject.CoreDefinition"
+
+
+def test_qualified_content_interface_accepts_exact_lean_decl_identity(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path, project_name="TestProject")
+    _init_main(tmp_path, interfaces=[])
+    _create_content_node(tmp_path, "Main.Core")
+    _seed_declared_public_definition(
+        tmp_path,
+        node_path="Main.Core",
+        name="CoreDefinition",
+        lean_decl_name="TestProject.CoreDefinition",
+    )
+    runtime = make_runtime()
+    assert runtime.node.interface.add_interface(
+        tmp_path,
+        node_path="Main.Core",
+        name="TestProject.CoreDefinition",
+        kind=DeclKind.DEFINITION,
+        summary="Qualified definition interface.",
+        actor="coordinator",
+    ).ok
+
+    bound = runtime.node.interface.bind_interface_to_decl(
+        tmp_path,
+        node_path="Main.Core",
+        interface_name="TestProject.CoreDefinition",
+        decl_name="CoreDefinition",
+    )
+
+    assert bound.ok, bound.issues
+    assert bound.value is not None
+    assert bound.value.bound_decl == DeclRef(
+        node="Main.Core",
+        name="CoreDefinition",
+        revision=1,
+    )
+
+
+def test_content_commit_revalidates_legacy_qualified_interface_binding(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path, project_name="TestProject")
+    _init_main(tmp_path, interfaces=[])
+    _create_content_node(tmp_path, "Main.Core")
+    _seed_declared_public_definition(
+        tmp_path,
+        node_path="Main.Core",
+        name="CoreDefinition",
+        lean_decl_name="CoreDefinition",
+    )
+    contract = _load_contract(tmp_path, "Main.Core")
+    contract.interfaces = [
+        DeclInterface(
+            name="TestProject.CoreDefinition",
+            kind=DeclKind.DEFINITION,
+            summary="Qualified definition interface.",
+            bound_decl=DeclRef(
+                node="Main.Core",
+                name="CoreDefinition",
+                revision=1,
+            ),
+        )
+    ]
+    _write_contract(tmp_path, "Main.Core", contract)
+
+    committed = make_runtime().node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Core",
+        summary="Legacy binding should be rejected.",
+    )
+
+    assert not committed.ok
+    assert committed.issues[0].kind == "interface_binding_lean_decl_name_mismatch"
+
+
+def test_scope_commit_revalidates_legacy_qualified_interface_binding(tmp_path: Path) -> None:
+    initialize_native_test_repo(tmp_path, project_name="TestProject")
+    _init_main(tmp_path, interfaces=[])
+    _create_content_node(tmp_path, "Main.Topic.Core")
+    _seed_declared_public_definition(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="CoreDefinition",
+        lean_decl_name="CoreDefinition",
+    )
+    runtime = make_runtime()
+    assert runtime.node.contract._commit_content_contract_with_head(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        summary="Commit the provider content boundary.",
+        decl_graph_head={"CoreDefinition": 1},
+    ).ok
+    provider_ref = DeclRef(
+        node="Main.Topic.Core",
+        name="CoreDefinition",
+        revision=1,
+    )
+    contract = _load_contract(tmp_path, "Main.Topic")
+    contract.exports = [provider_ref]
+    contract.interfaces = [
+        DeclInterface(
+            name="TestProject.CoreDefinition",
+            kind=DeclKind.DEFINITION,
+            summary="Qualified definition interface.",
+            bound_decl=provider_ref,
+        )
+    ]
+    _write_contract(tmp_path, "Main.Topic", contract)
+
+    committed = runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main.Topic",
+        summary="Legacy binding should be rejected.",
+    )
+
+    assert not committed.ok
+    assert committed.issues[0].kind == "interface_binding_lean_decl_name_mismatch"
 
 
 def test_bind_content_interface_rejects_kind_mismatch(tmp_path: Path) -> None:

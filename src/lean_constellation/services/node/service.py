@@ -250,6 +250,7 @@ class NodeService:
             contract=self.contract,
             public_decl_provider=public_decl_provider,
             node_projection=node_projection,  # type: ignore[arg-type]
+            interface_identity=self.interface,
         )
         self.material_ref = material_ref or MaterialRefComponent(
             runtime,
@@ -360,6 +361,15 @@ class NodeService:
         current = self.contract.get_edit_contract(repo_root, node_path=scope_path)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
+        identities = self.interface.check_bound_interface_lean_identities(
+            repo_root,
+            node_path=scope_path,
+            contract=current.value.contract,
+        )
+        if not identities.ok or identities.value is None:
+            return self.runtime.foundation.fail(identities.issues)
+        if not identities.value.passed:
+            return self.runtime.foundation.fail(identities.value.issues)
         closure = self.public_statement_closure.check_scope(
             repo_root,
             scope_path=scope_path,
@@ -387,6 +397,18 @@ class NodeService:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("node_not_content", "Content contract commit requires a Content node.", object_ref=node_path)
             )
+        current = self.contract.get_edit_contract(repo_root, node_path=node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        identities = self.interface.check_bound_interface_lean_identities(
+            repo_root,
+            node_path=node_path,
+            contract=current.value.contract,
+        )
+        if not identities.ok or identities.value is None:
+            return self.runtime.foundation.fail(identities.issues)
+        if not identities.value.passed:
+            return self.runtime.foundation.fail(identities.value.issues)
         closure = self.public_statement_closure.check_node(
             repo_root,
             node_path=node_path,
@@ -978,6 +1000,14 @@ class NodeService:
         if not contract_gate.ok or contract_gate.value is None:
             return self.runtime.foundation.fail(contract_gate.issues)
         reports.append(contract_gate.value)
+
+        identity_gate = self.interface.check_bound_interface_lean_identities(
+            repo_root,
+            node_path=scope_path,
+        )
+        if not identity_gate.ok or identity_gate.value is None:
+            return self.runtime.foundation.fail(identity_gate.issues)
+        reports.append(identity_gate.value)
 
         validation_gate = self.runtime.validation_snapshot.check_scope_commit(
             repo_root,

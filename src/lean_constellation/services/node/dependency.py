@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import Field, TypeAdapter
 
@@ -29,6 +29,7 @@ from lean_constellation.services.node.projection_transaction import persist_cont
 
 if TYPE_CHECKING:
     from lean_constellation.services.lean_projection.node_projection import NodeProjectionComponent
+    from lean_constellation.services.node.interface import InterfaceComponent
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -81,6 +82,17 @@ class VisibleBoundaryView(StrictModel):
     summary: str
 
 
+class InterfaceIdentityGateProvider(Protocol):
+    def check_bound_interface_lean_identities(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract: object | None = None,
+    ) -> ServiceResult[GateReport]:
+        ...
+
+
 class DependencyComponent:
     """Maintain NodeDep entries embedded in NodeContract."""
 
@@ -92,12 +104,14 @@ class DependencyComponent:
         contract: ContractComponent | None = None,
         public_decl_provider: ContentPublicDeclProvider | None = None,
         node_projection: "NodeProjectionComponent | None" = None,
+        interface_identity: "InterfaceComponent | InterfaceIdentityGateProvider | None" = None,
     ) -> None:
         self.runtime = runtime
         self.node_tree = node_tree or NodeTreeComponent(runtime)
         self.contract = contract or ContractComponent(runtime, self.node_tree)
         self.public_decl_provider = public_decl_provider
         self.node_projection = node_projection
+        self.interface_identity = interface_identity
 
     def list_visible_node_boundaries(self, repo_root: Path, *, node_path: str) -> ServiceResult[VisibleBoundaryView]:
         current = self.node_tree.get_node(repo_root, path=node_path)
@@ -114,6 +128,15 @@ class DependencyComponent:
             contract = self.contract.get_visible_contract(repo_root, node_path=node.path)
             if not contract.ok or contract.value is None:
                 continue
+            identity = self._check_boundary_interface_identities(
+                repo_root,
+                node_path=node.path,
+                contract=contract.value.contract,
+            )
+            if not identity.ok or identity.value is None:
+                return self.runtime.foundation.fail(identity.issues)
+            if not identity.value.passed:
+                return self.runtime.foundation.fail(identity.value.issues)
             exported_decl_refs = self._public_decl_refs(contract.value.contract)
             if node.kind == NodeKind.CONTENT and self.public_decl_provider is not None:
                 public = self.public_decl_provider.list_content_public_decls(repo_root, node_path=node.path)
@@ -718,6 +741,14 @@ class DependencyComponent:
                 return self.runtime.foundation.fail(availability.issues)
             if not availability.value.passed:
                 continue
+            identity = self._check_boundary_interface_identities(
+                provider_root,
+                node_path="Main",
+            )
+            if not identity.ok or identity.value is None:
+                return self.runtime.foundation.fail(identity.issues)
+            if not identity.value.passed:
+                return self.runtime.foundation.fail(identity.value.issues)
             config = self.runtime.repo_workspace.metadata.get_repo_config(provider_root)
             if not config.ok or config.value is None:
                 return self.runtime.foundation.fail(config.issues)
@@ -752,6 +783,27 @@ class DependencyComponent:
                 )
             )
         return self.runtime.foundation.ok(boundaries)
+
+    def _check_boundary_interface_identities(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract: object | None = None,
+    ) -> ServiceResult[GateReport]:
+        provider = self.interface_identity
+        if provider is None:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_passed(
+                    "interface_lean_identities",
+                    summary="No interface identity provider is configured.",
+                )
+            )
+        return provider.check_bound_interface_lean_identities(
+            repo_root,
+            node_path=node_path,
+            contract=contract,
+        )
 
     def _refresh_prelude(self, repo_root: Path, *, node_path: str) -> ServiceResult[object]:
         node_projection = self.node_projection

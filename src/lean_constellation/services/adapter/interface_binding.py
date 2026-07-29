@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.interface import DeclInterface, DeclKind
+from lean_constellation.domain.interface import DeclInterface, DeclKind, exact_interface_lean_decl_name
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.adapter.adapter_decl_catalog import AdapterDeclCatalogComponent, AdapterDeclView
 from lean_constellation.services.foundation import GateReport, ServiceResult, WriteMode
@@ -91,6 +91,9 @@ class InterfaceBindingComponent:
                     expected=interface.kind.value,
                 )
             )
+        identity = self._validate_lean_identity(interface, view)
+        if not identity.ok:
+            return self.runtime.foundation.fail(identity.issues)
         statement = self._validate_statement_contract(interface, view)
         if not statement.ok:
             return self.runtime.foundation.fail(statement.issues)
@@ -213,6 +216,10 @@ class InterfaceBindingComponent:
                     )
                 )
                 continue
+            identity = self._validate_lean_identity(interface, view)
+            if not identity.ok:
+                issues.extend(identity.issues)
+                continue
             statement = self._validate_statement_contract(interface, view)
             if not statement.ok:
                 issues.extend(statement.issues)
@@ -242,6 +249,27 @@ class InterfaceBindingComponent:
             return True
         theorem_like = {DeclKind.THEOREM, DeclKind.LEMMA}
         return required in theorem_like and actual in theorem_like
+
+    def _validate_lean_identity(
+        self,
+        interface: DeclInterface,
+        decl: AdapterDeclView,
+    ) -> ServiceResult[None]:
+        expected = exact_interface_lean_decl_name(interface.name)
+        if expected is None:
+            return self.runtime.foundation.ok(None)
+        actual = decl.lean_decl_name.removeprefix("_root_.")
+        if actual != expected:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_interface_lean_decl_name_mismatch",
+                    "Qualified adapter interface name does not match the bound Lean declaration identity.",
+                    object_ref=interface.name,
+                    current=actual,
+                    expected=expected,
+                )
+            )
+        return self.runtime.foundation.ok(None)
 
     def _validate_statement_contract(
         self,

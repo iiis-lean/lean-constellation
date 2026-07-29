@@ -947,6 +947,51 @@ def test_adapter_interface_binding_projection_and_ready_gate(tmp_path: Path) -> 
     assert provider_ready_after.value.publication.status == RepoPublicationStatus.DEVELOPING
 
 
+def test_adapter_qualified_interface_requires_exact_lean_identity(tmp_path: Path) -> None:
+    mismatching = DeclInterface(
+        name="Expected.main_result",
+        kind=DeclKind.THEOREM,
+        summary="Expose main theorem under an exact Lean identity.",
+    )
+    service = _service(tmp_path, interfaces=[mismatching])
+    assert service.ensure_flat_main_catalog(tmp_path).ok
+    _finalize_theorem(service, tmp_path)
+
+    rejected = service.bind_adapter_interface(
+        tmp_path,
+        interface_name="Expected.main_result",
+        decl_name="main_result",
+        binding_summary="Attempt the qualified binding.",
+    )
+
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "adapter_interface_lean_decl_name_mismatch"
+    assert rejected.issues[0].current == "Upstream.Basic.main_result"
+    assert rejected.issues[0].expected == "Expected.main_result"
+
+
+def test_adapter_qualified_interface_accepts_exact_lean_identity(tmp_path: Path) -> None:
+    matching = DeclInterface(
+        name="Upstream.Basic.main_result",
+        kind=DeclKind.THEOREM,
+        summary="Expose main theorem under its exact Lean identity.",
+    )
+    service = _service(tmp_path, interfaces=[matching])
+    assert service.ensure_flat_main_catalog(tmp_path).ok
+    _finalize_theorem(service, tmp_path)
+
+    bound = service.bind_adapter_interface(
+        tmp_path,
+        interface_name="Upstream.Basic.main_result",
+        decl_name="main_result",
+        binding_summary="Bind the exact qualified identity.",
+    )
+
+    assert bound.ok, bound.issues
+    assert bound.value is not None
+    assert bound.value.bound_decl is not None
+
+
 def test_adapter_exact_interface_statement_contract_rejects_binding_and_later_drift(tmp_path: Path) -> None:
     matching_interface = DeclInterface(
         name="main_result",

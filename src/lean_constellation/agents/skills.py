@@ -1104,7 +1104,7 @@ For every source- or contract-derived create, update, or delete, inspect the com
 
 For every change, state which already accepted lower declarations or Mathlib facts it consumes and which upper declaration, public interface, or contract goal it must serve. Prefer repairing a private declaration whose source-derived interface does not connect over adding an unexplained bridge. Create a tracked bridge/helper only when it has independent mathematical meaning, a clear source/Lean role, or multiple real consumers.
 
-When a contract statement hint gives a consumer-side Lean shape, copy the relevant objects, binders, assumptions, index representation, and conclusion direction into the change objective. Do not add assumptions the consumer cannot supply, replace a required object/index with an easier one, or weaken the required conclusion. The worker may choose the exact Lean header inside that semantic boundary.
+When a contract statement hint gives a consumer-side Lean shape, copy the relevant objects, binders, assumptions, index representation, and conclusion direction into the change objective. Do not add assumptions the consumer cannot supply, replace a required object/index with an easier one, or weaken the required conclusion. The worker may choose the exact Lean header inside that semantic boundary, but a qualified interface name fixes the compiler-confirmed Lean full name and therefore the required namespace.
 
 ## Target Readiness
 
@@ -1453,6 +1453,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Search dependencies in visible project context and Mathlib before adding imports, dependencies, or hints.",
                 "Prepare the declaration-owned file with `prepare_statement_formal_file` only to recover missing or damaged scaffold, marker, docstring, or file structure. Do not call it casually after valid uncaptured edits because it rewrites the working file.",
                 "Preserve managed imports/docstring; place small local helpers before the target docstring and the primary declaration immediately after it. Keep reusable helpers as separate tracked Decls.",
+                "If target metadata identifies a qualified contract interface, place the declaration in the namespace required by that interface; capture must discover that exact Lean full name.",
                 "Use `run_lean_file_diagnostics` while iterating. Do not guess or report the Lean full name: `capture_statement_formal_file` builds the exact module and discovers/compiler-confirms it.",
                 "Read the exact set with `list_statement_dependencies`; add project dependencies with `add_statement_repo_dependency` or its plural form, and Mathlib dependencies with `add_statement_mathlib_dependency` or its plural form. Use remove/clear only for repair. If a mutation refreshes the file, re-read it before editing and do not duplicate derived imports.",
                 "Capture with `capture_statement_formal_file`, require `check_formal_stage_consistency` to pass, and then call `submit_stage_worker_completed`.",

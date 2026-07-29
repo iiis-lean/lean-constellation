@@ -19,6 +19,15 @@ class DeclKind(StrEnum):
     OTHER = "other"
 
 
+def exact_interface_lean_decl_name(interface_name: str) -> str | None:
+    """Return the exact Lean identity required by a qualified interface name."""
+
+    normalized = interface_name.strip()
+    if normalized.startswith("_root_."):
+        normalized = normalized[len("_root_.") :]
+    return normalized if "." in normalized else None
+
+
 class DeclInterface(StrictModel):
     name: str
     kind: DeclKind

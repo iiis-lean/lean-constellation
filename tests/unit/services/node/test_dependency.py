@@ -11,6 +11,7 @@ from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationService, ServiceResult
 from lean_constellation.services.node import ContractVersionStatus, DeclPublicView, NodeContractSnapshot
 from lean_constellation.services.node.contract_fields import NodeDep, NodeDepActor
+from lean_constellation.services.node.dependency import DependencyComponent
 
 
 class FakePublicDeclProvider:
@@ -20,6 +21,32 @@ class FakePublicDeclProvider:
 
     def list_content_public_decls(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[DeclPublicView]]:
         return self.foundation.ok(self.decls.get(node_path, []))
+
+
+class RejectingInterfaceIdentityProvider:
+    def __init__(self, foundation: FoundationService) -> None:
+        self.foundation = foundation
+
+    def check_bound_interface_lean_identities(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract: object | None = None,
+    ):
+        del repo_root, contract
+        issue = self.foundation.issue(
+            "interface_binding_lean_decl_name_mismatch",
+            "Qualified interface identity is invalid.",
+            object_ref=node_path,
+        )
+        return self.foundation.ok(
+            self.foundation.gate_failed(
+                "interface_lean_identities",
+                [issue],
+                summary="Qualified interface identity is invalid.",
+            )
+        )
 
 
 def _create_base_tree(tmp_path: Path) -> None:
@@ -94,6 +121,24 @@ def test_list_visible_node_boundaries_only_shows_committed_boundaries(tmp_path: 
     assert [item.node_path for item in visible.value.boundaries] == ["Main.Topic.Provider"]
     assert visible.value.boundaries[0].index == 0
     assert visible.value.boundaries[0].exported_decl_refs[0].name == "helper"
+
+
+def test_visible_boundary_fails_closed_on_invalid_interface_identity(tmp_path: Path) -> None:
+    _create_base_tree(tmp_path)
+    _commit_provider_scope(tmp_path)
+    runtime = make_runtime()
+    component = DependencyComponent(
+        runtime,
+        interface_identity=RejectingInterfaceIdentityProvider(runtime.foundation),
+    )
+
+    visible = component.list_visible_node_boundaries(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+
+    assert not visible.ok
+    assert visible.issues[0].kind == "interface_binding_lean_decl_name_mismatch"
 
 
 def test_visible_content_boundary_includes_ready_public_declarations(tmp_path: Path) -> None:
