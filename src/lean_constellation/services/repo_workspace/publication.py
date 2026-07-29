@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import quote
 
 from pydantic import Field
 
@@ -15,9 +16,18 @@ from lean_constellation.domain.publication import (
     RepoPortability,
     RepoPublicationOverride,
     RepoPublicationPolicy,
+    RepoPublicationPresentation,
     WorkspacePublicationPolicy,
 )
-from lean_constellation.services.foundation import ServiceResult
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    proof_availability_for_completion_mode,
+)
+from lean_constellation.services.foundation import (
+    FoundationContext,
+    ServiceResult,
+    WriteMode,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -49,6 +59,25 @@ _EXCLUDED_CONSTELLATION_DIRS = {
     "snapshots",
     "staging",
 }
+_CITATION_TEMPLATE = """cff-version: 1.2.0
+message: "If you use this formalization, please cite it using this metadata."
+title: "REPLACE WITH THE FORMALIZATION TITLE"
+type: software
+authors:
+  - name: "REPLACE WITH THE FORMALIZATION AUTHOR OR TEAM"
+repository-code: "REPLACE WITH THE CANONICAL REPOSITORY URL"
+license: "REPLACE WITH AN SPDX IDENTIFIER"
+"""
+_LICENSING_TEMPLATE = """# Licensing
+
+Replace this template with explicit, scope-aware licensing before public
+distribution.
+
+- State the license for Lean source code and repository documentation.
+- Attribute retained source papers, TeX, figures, or datasets separately.
+- Link each scope to its corresponding `LICENSE` or `LICENSES/*` file.
+- Do not infer copyright ownership or a license from SourceCorpus metadata.
+"""
 
 
 class PublicationFileEntry(StrictModel):
@@ -76,16 +105,32 @@ class PublicApiDeclaration(StrictModel):
     node_path: str
     module: str
     lean_full_name: str | None = None
-    statement: str | None = None
+    state: str
+    status: str
+    proof_available: bool = False
+    formal_code: str | None = None
     statement_dependencies: list[str] = Field(default_factory=list)
+    proof_dependencies: list[str] = Field(default_factory=list)
     source_origins: list[str] = Field(default_factory=list)
     summary: str | None = None
 
 
+class RepoPublicationDependency(StrictModel):
+    repo: str
+    required_proof_availability: str
+    provider_completion_mode: str | None = None
+    provider_release_id: str | None = None
+    source: str | None = None
+    status: str
+
+
 class PublicApiDocument(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     repo_key: str
     release_id: str | None = None
+    completion_mode: str
+    proof_availability: str
+    dependencies: list[RepoPublicationDependency] = Field(default_factory=list)
     declarations: list[PublicApiDeclaration] = Field(default_factory=list)
     summary: str
 
@@ -106,11 +151,13 @@ class RepoProvenanceDocument(StrictModel):
 class RepoPublicationPreparationView(StrictModel):
     repo_key: str
     manifest_path: str
+    presentation_path: str
     readme_path: str
     public_api_markdown_path: str
     public_api_json_path: str
     provenance_path: str
     gitignore_path: str
+    topics: list[str] = Field(default_factory=list)
     written_files: list[str] = Field(default_factory=list)
     summary: str
 
@@ -126,6 +173,40 @@ class RepoPublicationComponent:
     ) -> None:
         self.runtime = runtime
         self.workspace_policy = workspace_policy or WorkspacePublicationPolicy()
+
+    def get_presentation(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[RepoPublicationPresentation]:
+        path = self.runtime.foundation.layout.publication_presentation_path(
+            FoundationContext(repo_root=Path(repo_root))
+        )
+        if not path.exists():
+            return self.runtime.foundation.ok(RepoPublicationPresentation())
+        loaded = self.runtime.foundation.store.read_json(
+            path, RepoPublicationPresentation
+        )
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        return self.runtime.foundation.ok(loaded.value)
+
+    def set_presentation(
+        self,
+        repo_root: Path,
+        *,
+        presentation: RepoPublicationPresentation,
+    ) -> ServiceResult[RepoPublicationPresentation]:
+        path = self.runtime.foundation.layout.publication_presentation_path(
+            FoundationContext(repo_root=Path(repo_root))
+        )
+        written = self.runtime.foundation.store.write_json_atomic(
+            path,
+            presentation,
+            mode=WriteMode.OVERWRITE,
+        )
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(presentation)
 
     def resolve_policy(
         self,
@@ -306,6 +387,12 @@ class RepoPublicationComponent:
         publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
+        config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        dependencies = self._publication_dependencies(repo_root)
+        if not dependencies.ok or dependencies.value is None:
+            return self.runtime.foundation.fail(dependencies.issues)
         tree = self.runtime.node.node_tree.get_node_tree(repo_root)
         if not tree.ok or tree.value is None:
             return self.runtime.foundation.fail(tree.issues)
@@ -350,6 +437,14 @@ class RepoPublicationComponent:
                 self._dependency_label(item)
                 for item in revision.value.statement.deps
             ]
+            proof_dependencies = [
+                self._dependency_label(item)
+                for item in (
+                    revision.value.proof.deps
+                    if revision.value.proof is not None
+                    else []
+                )
+            ]
             source_origins = [
                 self._origin_label(item)
                 for item in (
@@ -365,12 +460,26 @@ class RepoPublicationComponent:
                     node_path=ref.node,
                     module=decl.value.module or ref.node,
                     lean_full_name=revision.value.lean_decl_name,
-                    statement=(
-                        revision.value.statement.formal.code
-                        if revision.value.statement.formal is not None
-                        else None
+                    state=str(revision.value.state),
+                    status=str(revision.value.status),
+                    proof_available=(
+                        revision.value.proof is not None
+                        and revision.value.proof.formal is not None
+                    ),
+                    formal_code=(
+                        revision.value.proof.formal.code
+                        if (
+                            revision.value.proof is not None
+                            and revision.value.proof.formal is not None
+                        )
+                        else (
+                            revision.value.statement.formal.code
+                            if revision.value.statement.formal is not None
+                            else None
+                        )
                     ),
                     statement_dependencies=statement_dependencies,
+                    proof_dependencies=proof_dependencies,
                     source_origins=source_origins,
                     summary=decl.value.summary,
                 )
@@ -383,6 +492,11 @@ class RepoPublicationComponent:
                     if release_id is not None
                     else publication.value.publication.latest_release_id
                 ),
+                completion_mode=config.value.config.completion_mode.value,
+                proof_availability=proof_availability_for_completion_mode(
+                    config.value.config.completion_mode
+                ).value,
+                dependencies=dependencies.value,
                 declarations=sorted(
                     declarations, key=lambda item: (item.node_path, item.name)
                 ),
@@ -395,11 +509,47 @@ class RepoPublicationComponent:
         repo_root: Path,
         *,
         title: str | None = None,
+        presentation: RepoPublicationPresentation | None = None,
         release_id: str | None = None,
         semantic_manifest_digest: str | None = None,
         generated_at: str | None = None,
     ) -> ServiceResult[RepoPublicationPreparationView]:
         repo_root = Path(repo_root).resolve()
+        presentation_path = (
+            self.runtime.foundation.layout.publication_presentation_path(
+                FoundationContext(repo_root=repo_root)
+            )
+        )
+        presentation_written = False
+        if presentation is not None:
+            saved_presentation = self.set_presentation(
+                repo_root,
+                presentation=presentation,
+            )
+            if not saved_presentation.ok or saved_presentation.value is None:
+                return self.runtime.foundation.fail(saved_presentation.issues)
+            presentation_value = saved_presentation.value
+            presentation_written = True
+        else:
+            loaded_presentation = self.get_presentation(repo_root)
+            if (
+                not loaded_presentation.ok
+                or loaded_presentation.value is None
+            ):
+                return self.runtime.foundation.fail(loaded_presentation.issues)
+            presentation_value = loaded_presentation.value
+            if not presentation_path.exists():
+                initialized = self.set_presentation(
+                    repo_root,
+                    presentation=presentation_value,
+                )
+                if not initialized.ok:
+                    return self.runtime.foundation.fail(initialized.issues)
+                presentation_written = True
+        if title is not None:
+            presentation_value = presentation_value.model_copy(
+                update={"title": title.strip()}
+            )
         gitignore = self.refresh_managed_gitignore(repo_root)
         if not gitignore.ok:
             return self.runtime.foundation.fail(gitignore.issues)
@@ -414,14 +564,10 @@ class RepoPublicationComponent:
         )
         if not provenance.ok or provenance.value is None:
             return self.runtime.foundation.fail(provenance.issues)
-        metadata = self.runtime.repo_workspace.metadata.get_repo_model(repo_root)
-        if not metadata.ok or metadata.value is None:
-            return self.runtime.foundation.fail(metadata.issues)
         readme_text = self._render_readme_block(
             repo_root,
             api=api.value,
-            title=title or repo_root.name,
-            objective=metadata.value.summary,
+            presentation=presentation_value,
         )
         readme_path = repo_root / "README.md"
         existing = (
@@ -434,11 +580,20 @@ class RepoPublicationComponent:
             replacement=readme_text,
         )
         written: list[str] = []
+        if presentation_written:
+            written.append(presentation_path.relative_to(repo_root).as_posix())
         if updated_readme != existing:
             readme_path.write_text(updated_readme, encoding="utf-8")
             written.append("README.md")
         docs_root = repo_root / "docs" / "lean-constellation"
         docs_root.mkdir(parents=True, exist_ok=True)
+        templates = self._ensure_publication_templates(
+            repo_root,
+            docs_root=docs_root,
+        )
+        if not templates.ok or templates.value is None:
+            return self.runtime.foundation.fail(templates.issues)
+        written.extend(templates.value)
         api_json_path = docs_root / "public-api.json"
         api_md_path = docs_root / "PUBLIC_API.md"
         provenance_path = docs_root / "provenance.json"
@@ -473,11 +628,15 @@ class RepoPublicationComponent:
             RepoPublicationPreparationView(
                 repo_key=repo_root.name,
                 manifest_path=manifest_path.relative_to(repo_root).as_posix(),
+                presentation_path=presentation_path.relative_to(
+                    repo_root
+                ).as_posix(),
                 readme_path="README.md",
                 public_api_markdown_path=api_md_path.relative_to(repo_root).as_posix(),
                 public_api_json_path=api_json_path.relative_to(repo_root).as_posix(),
                 provenance_path=provenance_path.relative_to(repo_root).as_posix(),
                 gitignore_path=".gitignore",
+                topics=presentation_value.topics,
                 written_files=sorted(set(written)),
                 summary="Prepared portable repository publication files.",
             )
@@ -541,6 +700,80 @@ class RepoPublicationComponent:
             )
         )
 
+    def _publication_dependencies(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[list[RepoPublicationDependency]]:
+        listed = self.runtime.repo_workspace.requirement.list_requirements(repo_root)
+        if not listed.ok or listed.value is None:
+            return self.runtime.foundation.fail(listed.issues)
+        grouped: dict[str, RepoPublicationDependency] = {}
+        for view in listed.value:
+            requirement = view.requirement
+            if requirement.status.value == "obsolete":
+                continue
+            provider_repo = requirement.provider_repo or requirement.target_repo
+            provider_completion_mode = None
+            provider_release_id = requirement.provider_release_id
+            provider_root = repo_root.parent / provider_repo
+            if provider_release_id is not None and provider_root.is_dir():
+                release = self.runtime.repo_workspace.release.get_release(
+                    provider_root,
+                    release_id=provider_release_id,
+                )
+                if release.ok and release.value is not None:
+                    provider_completion_mode = (
+                        release.value.release.completion_mode.value
+                    )
+            source = requirement.provider_git_url
+            if source is None and provider_root.is_dir():
+                source = "local workspace"
+            current = grouped.get(provider_repo)
+            required = requirement.required_proof_availability
+            if (
+                current is None
+                or required == ProofAvailability.PROVED
+                and current.required_proof_availability
+                != ProofAvailability.PROVED.value
+            ):
+                grouped[provider_repo] = RepoPublicationDependency(
+                    repo=provider_repo,
+                    required_proof_availability=required.value,
+                    provider_completion_mode=provider_completion_mode,
+                    provider_release_id=provider_release_id,
+                    source=source,
+                    status=requirement.status.value,
+                )
+        return self.runtime.foundation.ok(
+            [grouped[key] for key in sorted(grouped)]
+        )
+
+    def _ensure_publication_templates(
+        self,
+        repo_root: Path,
+        *,
+        docs_root: Path,
+    ) -> ServiceResult[list[str]]:
+        written: list[str] = []
+        candidates = (
+            (
+                repo_root / "CITATION.cff",
+                docs_root / "CITATION_TEMPLATE.cff",
+                _CITATION_TEMPLATE,
+            ),
+            (
+                repo_root / "LICENSE",
+                docs_root / "LICENSING_TEMPLATE.md",
+                _LICENSING_TEMPLATE,
+            ),
+        )
+        for authoritative, template_path, content in candidates:
+            if authoritative.exists() or template_path.exists():
+                continue
+            template_path.write_text(content, encoding="utf-8")
+            written.append(template_path.relative_to(repo_root).as_posix())
+        return self.runtime.foundation.ok(written)
+
     @staticmethod
     def _dependency_label(value: object) -> str:
         ref = getattr(value, "ref", value)
@@ -567,56 +800,249 @@ class RepoPublicationComponent:
 
     @staticmethod
     def _render_public_api_markdown(value: PublicApiDocument) -> str:
-        lines = ["# Public API", ""]
+        lines = [
+            "# Public API",
+            "",
+            f"- Repository completion: `{value.completion_mode}`",
+            f"- Proof availability: `{value.proof_availability}`",
+            "",
+        ]
         for decl in value.declarations:
             lines.extend(
                 [
                     f"## `{decl.name}`",
                     "",
+                    decl.summary or "No declaration summary is available.",
+                    "",
                     f"- Kind: `{decl.kind}`",
                     f"- Node: `{decl.node_path}`",
                     f"- Module: `{decl.module}`",
+                    f"- Status: `{decl.state}` (`{decl.status}`)",
+                    (
+                        "- Formal code: final proof projection"
+                        if decl.proof_available
+                        else "- Formal code: statement projection"
+                    ),
                 ]
             )
-            if decl.statement:
-                lines.extend(["", "```lean", decl.statement.rstrip(), "```"])
+            if decl.formal_code:
+                lines.extend(
+                    ["", "```lean", decl.formal_code.rstrip(), "```"]
+                )
             if decl.statement_dependencies:
                 lines.extend(
                     [
                         "",
-                        "Statement dependencies:",
+                        "### Statement dependencies",
+                        "",
                         *[f"- `{item}`" for item in decl.statement_dependencies],
+                    ]
+                )
+            if decl.proof_dependencies:
+                lines.extend(
+                    [
+                        "",
+                        "### Proof dependencies",
+                        "",
+                        *[f"- `{item}`" for item in decl.proof_dependencies],
+                    ]
+                )
+            if decl.source_origins:
+                lines.extend(
+                    [
+                        "",
+                        "### Sources",
+                        "",
+                        *[f"- `{item}`" for item in decl.source_origins],
                     ]
                 )
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
-    @staticmethod
+    @classmethod
     def _render_readme_block(
+        cls,
         repo_root: Path,
         *,
         api: PublicApiDocument,
-        title: str,
-        objective: str | None,
+        presentation: RepoPublicationPresentation,
     ) -> str:
-        declarations = (
-            "\n".join(f"- `{item.name}` — {item.kind}" for item in api.declarations)
-            or "- No public declarations have been exported."
+        title = presentation.title or repo_root.name
+        description = presentation.description or (
+            "A Lean 4 formalization project generated with Lean Constellation."
         )
-        objective_text = objective or "Lean formalization project."
-        release = api.release_id or "not released"
-        return (
-            f"{_README_BEGIN}\n"
-            f"# {title}\n\n"
-            f"{objective_text}\n\n"
-            "## Build\n\n"
-            "```sh\nlake build\n```\n\n"
-            f"Current Lean Constellation Release: `{release}`.\n\n"
-            "## Public declarations\n\n"
-            f"{declarations}\n\n"
-            "Generated metadata is available in `docs/lean-constellation/`.\n"
-            f"{_README_END}"
+        lines = [
+            _README_BEGIN,
+            f"# {title}",
+            "",
+            cls._render_badges(repo_root, api=api, presentation=presentation),
+            "",
+            description,
+            "",
+            "## Project status",
+            "",
+            "| Property | Value |",
+            "| --- | --- |",
+            f"| Completion | `{api.completion_mode}` |",
+            f"| Proof availability | `{api.proof_availability}` |",
+            "",
+            "## Build",
+            "",
+            "```sh",
+            "lake build",
+            "```",
+        ]
+        if api.dependencies:
+            lines.extend(
+                [
+                    "",
+                    "## Repository dependencies",
+                    "",
+                    "| Repository | Required proofs | Provider completion | Release | Source |",
+                    "| --- | --- | --- | --- | --- |",
+                    *[
+                        "| "
+                        + " | ".join(
+                            [
+                                cls._markdown_cell(item.repo),
+                                f"`{item.required_proof_availability}`",
+                                (
+                                    f"`{item.provider_completion_mode}`"
+                                    if item.provider_completion_mode
+                                    else "unknown"
+                                ),
+                                (
+                                    f"`{item.provider_release_id}`"
+                                    if item.provider_release_id
+                                    else "unreleased"
+                                ),
+                                cls._dependency_source_markdown(item),
+                            ]
+                        )
+                        + " |"
+                        for item in api.dependencies
+                    ],
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                "## Public declarations",
+                "",
+                "| Declaration | Kind | Node | Status |",
+                "| --- | --- | --- | --- |",
+            ]
         )
+        if api.declarations:
+            lines.extend(
+                "| "
+                + " | ".join(
+                    [
+                        (
+                            "[`"
+                            + item.name
+                            + "`](docs/lean-constellation/PUBLIC_API.md#"
+                            + cls._markdown_anchor(item.name)
+                            + ")"
+                        ),
+                        f"`{item.kind}`",
+                        f"`{item.node_path}`",
+                        f"`{item.state}`",
+                    ]
+                )
+                + " |"
+                for item in api.declarations
+            )
+        else:
+            lines.append("| No public declarations | — | — | — |")
+        lines.extend(
+            [
+                "",
+                "See the [complete Public API](docs/lean-constellation/PUBLIC_API.md) "
+                "for declaration summaries, final Lean code, dependencies, and sources.",
+                "",
+                "## About this formalization",
+                "",
+                presentation.about_markdown
+                or (
+                    "<!-- Add mathematical provenance and formalization credit in "
+                    ".lean_constellation/publication/presentation.json. -->"
+                ),
+                "",
+                "## Citation",
+                "",
+                presentation.citation_markdown
+                or (
+                    "Citation metadata has not been supplied yet. Complete "
+                    "`docs/lean-constellation/CITATION_TEMPLATE.cff` and publish it "
+                    "as `CITATION.cff`."
+                ),
+                "",
+                "## Licensing",
+                "",
+                presentation.licensing_markdown
+                or (
+                    "Licensing metadata has not been supplied yet. Complete "
+                    "`docs/lean-constellation/LICENSING_TEMPLATE.md` and add the "
+                    "corresponding license files before public distribution."
+                ),
+                _README_END,
+            ]
+        )
+        return "\n".join(lines).rstrip() + "\n"
+
+    @classmethod
+    def _render_badges(
+        cls,
+        repo_root: Path,
+        *,
+        api: PublicApiDocument,
+        presentation: RepoPublicationPresentation,
+    ) -> str:
+        badges = [
+            ("completion", api.completion_mode.replace("_", " "), "2f855a", None),
+            ("proofs", api.proof_availability, "2f855a", None),
+        ]
+        toolchain_path = repo_root / "lean-toolchain"
+        if toolchain_path.exists():
+            toolchain = toolchain_path.read_text(encoding="utf-8").strip()
+            lean_version = toolchain.rsplit(":", maxsplit=1)[-1].removeprefix("v")
+            badges.append(("Lean", lean_version, "0b6e4f", None))
+        badges.append(("Lean Constellation", "generated", "5b4b8a", None))
+        badges.extend(
+            (item.label, item.message, item.color, item.link)
+            for item in presentation.badges
+        )
+        badges.extend(("topic", topic, "lightgrey", None) for topic in presentation.topics)
+        rendered = []
+        for label, message, color, link in badges:
+            image = (
+                "https://img.shields.io/badge/"
+                f"{quote(label, safe='')}-{quote(message, safe='')}-{quote(color, safe='')}"
+            )
+            markdown = f"![{label}: {message}]({image})"
+            rendered.append(f"[{markdown}]({link})" if link else markdown)
+        return " ".join(rendered)
+
+    @staticmethod
+    def _markdown_anchor(value: str) -> str:
+        return value.strip().lower()
+
+    @staticmethod
+    def _markdown_cell(value: str) -> str:
+        return value.replace("|", "\\|")
+
+    @classmethod
+    def _dependency_source_markdown(
+        cls,
+        dependency: RepoPublicationDependency,
+    ) -> str:
+        source = dependency.source
+        if source is None:
+            return "not recorded"
+        if source.startswith(("https://", "http://")):
+            return f"[remote]({source})"
+        return cls._markdown_cell(source)
 
     @staticmethod
     def _replace_managed_block(

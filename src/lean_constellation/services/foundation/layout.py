@@ -79,6 +79,12 @@ class LayoutComponent:
     def repo_metadata_path(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / "repo.json"
 
+    def publication_root(self, ctx: FoundationContext) -> Path:
+        return self.constellation_root(ctx) / "publication"
+
+    def publication_presentation_path(self, ctx: FoundationContext) -> Path:
+        return self.publication_root(ctx) / "presentation.json"
+
     def preparation_input_path(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / "preparation_input.json"
 

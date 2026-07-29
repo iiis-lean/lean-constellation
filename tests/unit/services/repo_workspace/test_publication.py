@@ -6,13 +6,18 @@ from pathlib import Path
 from lean_constellation.domain.publication import (
     PushPolicy,
     RemoteProfile,
+    RepoPublicationBadge,
     RepoPublicationOverride,
     RepoPortability,
+    RepoPublicationPresentation,
     WorkspacePublicationPolicy,
 )
 from lean_constellation.domain.repo import WorkspaceConfig
 from tests.unit_services_helpers import make_runtime
-from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo
+from tests.unit.services.repo_workspace.test_repo_release import (
+    _prepare_release_repo,
+    _release,
+)
 
 
 def test_managed_gitignore_preserves_user_content_and_is_idempotent(
@@ -61,16 +66,46 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     runtime, _ = _prepare_release_repo(tmp_path)
     assert runtime.repo_workspace.metadata.ensure_repo_model(tmp_path).ok
     assert runtime.repo_workspace.metadata.set_repo_summary(
-        tmp_path, summary="Formalizes a public result."
+        tmp_path, summary="Internal release migration summary."
     ).ok
     readme = tmp_path / "README.md"
     readme.write_text("User preface.\n", encoding="utf-8")
 
-    prepared = runtime.repo_workspace.publication.prepare_publication(tmp_path)
+    prepared = runtime.repo_workspace.publication.prepare_publication(
+        tmp_path,
+        presentation=RepoPublicationPresentation(
+            title="Published result",
+            description="Formalizes a public result.",
+            topics=["Lean4", "formalization", "lean4"],
+            badges=[
+                RepoPublicationBadge(
+                    label="source",
+                    message="paper",
+                    color="informational",
+                )
+            ],
+            about_markdown="Independent formalization.",
+            citation_markdown="Cite the source paper.",
+            licensing_markdown="Released under a declared license.",
+        ),
+    )
 
     assert prepared.ok and prepared.value is not None, prepared.issues
-    assert "User preface." in readme.read_text(encoding="utf-8")
-    assert "PublicResult" in readme.read_text(encoding="utf-8")
+    readme_text = readme.read_text(encoding="utf-8")
+    assert "User preface." in readme_text
+    assert "Formalizes a public result." in readme_text
+    assert "Internal release migration summary." not in readme_text
+    assert "| Declaration | Kind | Node | Status |" in readme_text
+    assert "[`PublicResult`](docs/lean-constellation/PUBLIC_API.md#publicresult)" in readme_text
+    assert "Current Lean Constellation Release" not in readme_text
+    assert "Independent formalization." in readme_text
+    assert prepared.value.topics == ["lean4", "formalization"]
+    presentation = json.loads(
+        (
+            tmp_path / ".lean_constellation/publication/presentation.json"
+        ).read_text()
+    )
+    assert presentation["description"] == "Formalizes a public result."
     api = json.loads(
         (tmp_path / "docs/lean-constellation/public-api.json").read_text()
     )
@@ -79,6 +114,32 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
         "PublicResult",
         "Support",
     }
+    public_result = next(
+        item for item in api["declarations"] if item["name"] == "PublicResult"
+    )
+    assert public_result["state"] == "proved"
+    assert public_result["proof_available"] is True
+    assert "trivial" in public_result["formal_code"]
+    assert "sorry" not in public_result["formal_code"]
+    assert public_result["statement_dependencies"] == [
+        "current repo:Main.Foundation.Defs.Support"
+    ]
+    assert public_result["proof_dependencies"] == [
+        "current repo:Main.Foundation.Defs.ProofHelper"
+    ]
+    api_markdown = (
+        tmp_path / "docs/lean-constellation/PUBLIC_API.md"
+    ).read_text()
+    assert "No declaration summary is available." in api_markdown
+    assert "### Statement dependencies" in api_markdown
+    assert "### Proof dependencies" in api_markdown
+    assert "sorry" not in api_markdown
+    assert (
+        tmp_path / "docs/lean-constellation/CITATION_TEMPLATE.cff"
+    ).is_file()
+    assert (
+        tmp_path / "docs/lean-constellation/LICENSING_TEMPLATE.md"
+    ).is_file()
     for path in (
         tmp_path / "README.md",
         tmp_path / "docs/lean-constellation/public-api.json",
@@ -151,3 +212,42 @@ def test_workspace_remote_profile_derives_repo_neutral_canonical_urls(
         resolved.value.source_by_field["canonical_fetch_url"]
         == "workspace_profile:canonical"
     )
+
+
+def test_readme_lists_provider_release_completion_and_remote_source(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "Workspace"
+    provider_root = workspace / "Provider"
+    consumer_root = workspace / "Consumer"
+    provider_root.mkdir(parents=True)
+    consumer_root.mkdir()
+    provider_runtime, provider_versions = _prepare_release_repo(provider_root)
+    assert provider_runtime.repo_workspace.release.create_release(
+        provider_root,
+        release=_release("provider_r1", provider_versions),
+    ).ok
+    consumer_runtime, _ = _prepare_release_repo(consumer_root)
+    assert consumer_runtime.repo_workspace.requirement.create_requirement(
+        consumer_root,
+        name="provider",
+        target_repo="Provider",
+        required_proof_availability="declared",
+        reason="Use the provider API.",
+    ).ok
+    assert consumer_runtime.repo_workspace.requirement.mark_requirement_satisfied(
+        consumer_root,
+        requirement_name="provider",
+        provider_repo="Provider",
+        provider_release_id="provider_r1",
+        provider_git_url="https://example.invalid/Provider.git",
+    ).ok
+
+    prepared = consumer_runtime.repo_workspace.publication.prepare_publication(
+        consumer_root
+    )
+
+    assert prepared.ok and prepared.value is not None, prepared.issues
+    readme = (consumer_root / "README.md").read_text()
+    assert "| `declared` | `graph_declared` | `provider_r1` |" in readme
+    assert "[remote](https://example.invalid/Provider.git)" in readme

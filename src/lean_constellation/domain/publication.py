@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -98,6 +99,62 @@ class RepoPublicationOverride(StrictModel):
     post_release_checkpoint: bool | None = None
 
 
+class RepoPublicationBadge(StrictModel):
+    label: str
+    message: str
+    color: str = "blue"
+    link: str | None = None
+
+    @field_validator("label", "message", "color", "link")
+    @classmethod
+    def _strip_badge_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("publication badge fields must be non-empty")
+        return normalized
+
+
+class RepoPublicationPresentation(StrictModel):
+    """Human-facing publication metadata, separate from runtime summaries."""
+
+    schema_version: Literal[1] = 1
+    title: str | None = None
+    description: str | None = None
+    topics: list[str] = Field(default_factory=list)
+    badges: list[RepoPublicationBadge] = Field(default_factory=list)
+    about_markdown: str | None = None
+    citation_markdown: str | None = None
+    licensing_markdown: str | None = None
+
+    @field_validator(
+        "title",
+        "description",
+        "about_markdown",
+        "citation_markdown",
+        "licensing_markdown",
+    )
+    @classmethod
+    def _strip_presentation_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("topics")
+    @classmethod
+    def _normalize_topics(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            topic = value.strip().lower()
+            if not topic:
+                continue
+            if topic not in normalized:
+                normalized.append(topic)
+        return normalized
+
+
 class WorkspacePublicationPolicy(StrictModel):
     repo_defaults: RepoPublicationPolicy = Field(default_factory=RepoPublicationPolicy)
     repo_remote_profile: str | None = None
@@ -143,8 +200,10 @@ __all__ = [
     "ReleasePolicy",
     "RemoteProfile",
     "RepoPortability",
+    "RepoPublicationBadge",
     "RepoPublicationOverride",
     "RepoPublicationPolicy",
+    "RepoPublicationPresentation",
     "RepoPublicationReceipt",
     "RepoRemoteBinding",
     "WorkspacePublicationPolicy",

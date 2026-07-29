@@ -48,7 +48,9 @@ from lean_constellation.services.repo_workspace.dependency_release import (
     RepoDependencyReleaseComponent,
 )
 from lean_constellation.services.repo_workspace.publication import (
+    PublicApiDeclaration,
     PublicApiDocument,
+    RepoPublicationDependency,
     RepoPublicationComponent,
     RepoPublicationManifest,
     RepoPublicationPreparationView,
@@ -99,10 +101,12 @@ __all__ = [
     "GitReleaseValidationView",
     "GitRepoStateView",
     "PublicApiDocument",
+    "PublicApiDeclaration",
     "RepoDependencyChangePreview",
     "RepoDependencyChangeReceipt",
     "RepoDependencyReleaseComponent",
     "RepoPublicationComponent",
+    "RepoPublicationDependency",
     "RepoPublicationManifest",
     "RepoPublicationPreparationView",
     "RepoProvenanceDocument",

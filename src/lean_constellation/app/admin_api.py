@@ -39,7 +39,10 @@ from lean_constellation.domain.repo import (
     RepoConfigView,
     RepoPublicationView,
 )
-from lean_constellation.domain.publication import RepoPublicationOverride
+from lean_constellation.domain.publication import (
+    RepoPublicationOverride,
+    RepoPublicationPresentation,
+)
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_release import RepoReleaseListView
@@ -581,6 +584,7 @@ class RepoReleaseRestoreApplyInput(RepoReleaseIdInput):
 class RepoPublicationPrepareInput(StrictModel):
     repo_root: Path
     title: str | None = None
+    presentation: RepoPublicationPresentation | None = None
 
     @field_validator("repo_root", mode="before")
     @classmethod
@@ -1279,6 +1283,7 @@ class LeanAdminApi:
         return self.runtime.repo_workspace.publication.prepare_publication(
             input_model.repo_root,
             title=input_model.title,
+            presentation=input_model.presentation,
             release_id=release_id,
             semantic_manifest_digest=semantic_digest,
             generated_at=generated_at,
