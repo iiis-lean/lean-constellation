@@ -1,8 +1,8 @@
 <p align="center">
   <img
-    src="assets/lean-constellation-logo.png"
+    src="assets/lean-constellation-mark.svg"
     alt="Lean Constellation logo"
-    width="190"
+    width="150"
   >
 </p>
 

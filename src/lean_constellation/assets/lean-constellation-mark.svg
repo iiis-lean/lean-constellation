@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="316 345 627 552" role="img" aria-labelledby="title desc">
+  <title id="title">Lean Constellation mark</title>
+  <desc id="desc">A geometric navy L and C joined by a blue star and cyan flight accent.</desc>
+
+  <rect x="316" y="345" width="627" height="552" fill="#FDF5EB"/>
+
+  <path fill="#092745" d="M338 469h76v328h170l-28 77H338z"/>
+  <path fill="#19B0C1" d="M602 797h53l-28 77h-53z"/>
+
+  <path fill="#092745" d="M679 367h242v79H679z"/>
+  <path
+    fill="#092745"
+    d="M597 455h75v57c0 25-15 43-40 56 25 12 40 31 40 56v51h-75z"
+  />
+  <path fill="#092745" d="M679 681h242v79H679z"/>
+
+  <path
+    fill="#0049F9"
+    d="M686 528c4 22 17 36 40 40-23 4-36 18-40 42-5-24-18-38-42-42 24-4 37-18 42-40z"
+  />
+</svg>

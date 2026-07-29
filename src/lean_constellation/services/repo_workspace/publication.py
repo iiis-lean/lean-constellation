@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+from importlib.resources import files as package_files
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -53,6 +54,7 @@ _MANAGED_IGNORE_BODY = """# BEGIN Lean Constellation managed ignores
 # END Lean Constellation managed ignores"""
 _README_BEGIN = "<!-- BEGIN Lean Constellation: project-summary -->"
 _README_END = "<!-- END Lean Constellation: project-summary -->"
+_PUBLICATION_MARK_PATH = "docs/lean-constellation/assets/lean-constellation-mark.svg"
 _EXCLUDED_TOP_LEVEL = {".git", ".lake", ".agent_runtime", ".runtime"}
 _EXCLUDED_CONSTELLATION_DIRS = {
     ".locks",
@@ -590,6 +592,10 @@ class RepoPublicationComponent:
             written.append("README.md")
         docs_root = repo_root / "docs" / "lean-constellation"
         docs_root.mkdir(parents=True, exist_ok=True)
+        mark_asset = self._ensure_publication_mark(repo_root, docs_root=docs_root)
+        if not mark_asset.ok or mark_asset.value is None:
+            return self.runtime.foundation.fail(mark_asset.issues)
+        written.extend(mark_asset.value)
         templates = self._ensure_publication_templates(
             repo_root,
             docs_root=docs_root,
@@ -774,6 +780,28 @@ class RepoPublicationComponent:
                 )
         return self.runtime.foundation.ok(
             [grouped[key] for key in sorted(grouped)]
+        )
+
+    def _ensure_publication_mark(
+        self,
+        repo_root: Path,
+        *,
+        docs_root: Path,
+    ) -> ServiceResult[list[str]]:
+        asset_root = docs_root / "assets"
+        asset_root.mkdir(parents=True, exist_ok=True)
+        target = asset_root / "lean-constellation-mark.svg"
+        source = (
+            package_files("lean_constellation")
+            .joinpath("assets")
+            .joinpath("lean-constellation-mark.svg")
+            .read_text(encoding="utf-8")
+        )
+        if target.exists() and target.read_text(encoding="utf-8") == source:
+            return self.runtime.foundation.ok([])
+        target.write_text(source, encoding="utf-8")
+        return self.runtime.foundation.ok(
+            [target.relative_to(repo_root).as_posix()]
         )
 
     def _ensure_publication_templates(
@@ -1225,7 +1253,11 @@ class RepoPublicationComponent:
         )
         lines = [
             _README_BEGIN,
-            f"# {title}",
+            (
+                f'<h1><img src="{_PUBLICATION_MARK_PATH}" '
+                'alt="Lean Constellation mark" width="42" '
+                f'align="absmiddle"> {html.escape(title)}</h1>'
+            ),
             "",
             cls._render_badges(repo_root, api=api, presentation=presentation),
             "",
@@ -1320,6 +1352,15 @@ class RepoPublicationComponent:
                     "`docs/lean-constellation/LICENSING_TEMPLATE.md` and add the "
                     "corresponding license files before public distribution."
                 ),
+                "",
+                '<p align="center">',
+                (
+                    f'  <img src="{_PUBLICATION_MARK_PATH}" '
+                    'alt="Lean Constellation" width="72">'
+                ),
+                "  <br>",
+                "  <sub>Generated with <strong>Lean Constellation</strong></sub>",
+                "</p>",
                 _README_END,
             ]
         )
@@ -1333,15 +1374,18 @@ class RepoPublicationComponent:
         api: PublicApiDocument,
         presentation: RepoPublicationPresentation,
     ) -> str:
+        status_color = {
+            ProofAvailability.DECLARED.value: "2563eb",
+            ProofAvailability.PROVED.value: "0f8f88",
+        }.get(api.proof_availability, "6b7280")
         badges = [
-            ("completion", api.completion_mode.replace("_", " "), "2f855a", None),
-            ("proofs", api.proof_availability, "2f855a", None),
+            ("status", api.proof_availability, status_color, None),
         ]
         toolchain_path = repo_root / "lean-toolchain"
         if toolchain_path.exists():
             toolchain = toolchain_path.read_text(encoding="utf-8").strip()
             lean_version = toolchain.rsplit(":", maxsplit=1)[-1].removeprefix("v")
-            badges.append(("Lean", lean_version, "0b6e4f", None))
+            badges.append(("Lean", lean_version, "6b4fbb", None))
         badges.extend(
             (item.label, item.message, item.color, item.link)
             for item in presentation.badges
@@ -1353,6 +1397,7 @@ class RepoPublicationComponent:
                     "label": label,
                     "message": message,
                     "color": color,
+                    "style": "flat-square",
                 }
             )
             markdown = f"![{label}: {message}]({image})"

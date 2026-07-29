@@ -14,6 +14,7 @@ from lean_constellation.domain.publication import (
 )
 from lean_constellation.domain.repo import WorkspaceConfig
 from lean_constellation.services.repo_workspace.publication import (
+    PublicApiDocument,
     PublicApiDeclaration,
     RepoPublicationComponent,
 )
@@ -97,6 +98,11 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert prepared.ok and prepared.value is not None, prepared.issues
     readme_text = readme.read_text(encoding="utf-8")
     assert "User preface." in readme_text
+    assert (
+        '<h1><img src="docs/lean-constellation/assets/'
+        'lean-constellation-mark.svg"'
+    ) in readme_text
+    assert "Generated with <strong>Lean Constellation</strong>" in readme_text
     assert "Formalizes a public result." in readme_text
     assert "Internal release migration summary." not in readme_text
     assert "This repository exports **3 public declarations**" in readme_text
@@ -108,6 +114,10 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert "topic-lean4" not in readme_text
     assert "Lean%20Constellation-generated" not in readme_text
     assert "img.shields.io/static/v1?" in readme_text
+    assert "label=status&message=proved&color=0f8f88&style=flat-square" in readme_text
+    assert "label=completion" not in readme_text
+    assert "label=proofs" not in readme_text
+    assert "label=source&message=paper&color=informational&style=flat-square" in readme_text
     assert "Current Lean Constellation Release" not in readme_text
     assert "Independent formalization." in readme_text
     assert prepared.value.topics == ["lean4", "formalization"]
@@ -192,6 +202,18 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert (
         tmp_path / "docs/lean-constellation/LICENSING_TEMPLATE.md"
     ).is_file()
+    publication_mark = (
+        tmp_path
+        / "docs/lean-constellation/assets/lean-constellation-mark.svg"
+    )
+    assert publication_mark.is_file()
+    assert publication_mark.read_bytes() == (
+        (
+            Path(__file__).resolve().parents[4]
+            / "assets"
+            / "lean-constellation-mark.svg"
+        ).read_bytes()
+    )
     for path in (
         tmp_path / "README.md",
         tmp_path / "docs/lean-constellation/public-api.json",
@@ -199,6 +221,40 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
         tmp_path / ".lean_constellation/publication/manifest.json",
     ):
         assert str(tmp_path) not in path.read_text(encoding="utf-8")
+
+
+def test_publication_status_badge_uses_proof_availability_and_flat_square(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "lean-toolchain").write_text(
+        "leanprover/lean4:v4.32.0\n",
+        encoding="utf-8",
+    )
+    presentation = RepoPublicationPresentation()
+    for availability, color in (("declared", "2563eb"), ("proved", "0f8f88")):
+        api = PublicApiDocument(
+            repo_key="Example",
+            completion_mode="graph_proved",
+            proof_availability=availability,
+            summary="Example API.",
+        )
+
+        rendered = RepoPublicationComponent._render_badges(
+            tmp_path,
+            api=api,
+            presentation=presentation,
+        )
+
+        assert (
+            f"label=status&message={availability}&color={color}"
+            "&style=flat-square"
+        ) in rendered
+        assert "label=completion" not in rendered
+        assert "label=proofs" not in rendered
+        assert (
+            "label=Lean&message=4.32.0&color=6b4fbb&style=flat-square"
+            in rendered
+        )
 
 
 def test_repo_publication_override_wins_over_workspace_defaults(
