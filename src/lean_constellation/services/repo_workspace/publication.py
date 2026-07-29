@@ -1053,6 +1053,7 @@ class RepoPublicationComponent:
         replacement: str,
     ) -> str:
         normalized = current.rstrip()
+        replacement = replacement.rstrip()
         start = normalized.find(begin)
         finish = normalized.find(end)
         if start >= 0 and finish >= start:
