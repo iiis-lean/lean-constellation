@@ -2,7 +2,7 @@
   <img
     src="assets/lean-constellation-mark.svg"
     alt="Lean Constellation logo"
-    width="150"
+    width="180"
   >
 </p>
 

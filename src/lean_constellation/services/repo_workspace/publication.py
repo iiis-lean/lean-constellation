@@ -55,6 +55,12 @@ _MANAGED_IGNORE_BODY = """# BEGIN Lean Constellation managed ignores
 _README_BEGIN = "<!-- BEGIN Lean Constellation: project-summary -->"
 _README_END = "<!-- END Lean Constellation: project-summary -->"
 _PUBLICATION_MARK_PATH = "docs/lean-constellation/assets/lean-constellation-mark.svg"
+_LEAN_CONSTELLATION_REPOSITORY_URL = (
+    "https://github.com/iiis-lean/lean-constellation"
+)
+_LEAN_MCP_TOOLKIT_REPOSITORY_URL = (
+    "https://github.com/iiis-lean/lean-mcp-toolkit"
+)
 _EXCLUDED_TOP_LEVEL = {".git", ".lake", ".agent_runtime", ".runtime"}
 _EXCLUDED_CONSTELLATION_DIRS = {
     ".locks",
@@ -1389,6 +1395,22 @@ class RepoPublicationComponent:
         badges.extend(
             (item.label, item.message, item.color, item.link)
             for item in presentation.badges
+        )
+        badges.extend(
+            (
+                (
+                    "LC",
+                    "Lean Constellation",
+                    "092745",
+                    _LEAN_CONSTELLATION_REPOSITORY_URL,
+                ),
+                (
+                    "MCP",
+                    "Lean Toolkit",
+                    "e45132",
+                    _LEAN_MCP_TOOLKIT_REPOSITORY_URL,
+                ),
+            )
         )
         rendered = []
         for label, message, color, link in badges:

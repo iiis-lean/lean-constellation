@@ -118,6 +118,20 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert "label=completion" not in readme_text
     assert "label=proofs" not in readme_text
     assert "label=source&message=paper&color=informational&style=flat-square" in readme_text
+    assert (
+        "[![LC: Lean Constellation]"
+        "(https://img.shields.io/static/v1?label=LC&message=Lean+Constellation"
+        "&color=092745&style=flat-square)]"
+        "(https://github.com/iiis-lean/lean-constellation)"
+    ) in readme_text
+    assert (
+        "[![MCP: Lean Toolkit]"
+        "(https://img.shields.io/static/v1?label=MCP&message=Lean+Toolkit"
+        "&color=e45132&style=flat-square)]"
+        "(https://github.com/iiis-lean/lean-mcp-toolkit)"
+    ) in readme_text
+    assert readme_text.index("label=source") < readme_text.index("label=LC")
+    assert readme_text.index("label=LC") < readme_text.index("label=MCP")
     assert "Current Lean Constellation Release" not in readme_text
     assert "Independent formalization." in readme_text
     assert prepared.value.topics == ["lean4", "formalization"]
