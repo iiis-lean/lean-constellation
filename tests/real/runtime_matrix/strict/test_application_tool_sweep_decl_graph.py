@@ -366,6 +366,64 @@ def test_strict_decl_graph_strategy_round_readiness_tool_cases_execute(
     assert _field(terminal.value, "closeout_complete") is True
     assert _field(terminal.value, "result_kind") == "blocked"
 
+    discard_round = call_tool_with_evidence(
+        server,
+        "content_plan",
+        "create_decl_round_draft",
+        {"strategy_id": strategy_id, "objective": "Exercise atomic rejected-draft rollback."},
+        runtime_context=plan_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="An isolated declaration round draft was created for discard coverage.",
+    )
+    discard_round_id = _field(discard_round.value, "round_id")
+    discarded_change = call_tool_with_evidence(
+        server,
+        "content_plan",
+        "plan_create_decl",
+        {
+            "round_id": discard_round_id,
+            "name": "discarded_result",
+            "kind": "theorem",
+            "objective": "Create a declaration that must disappear with the rejected draft.",
+            "summary": "Strict ToolSweep discarded theorem.",
+            "public": False,
+            "target_state": "declared",
+        },
+        runtime_context=plan_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="A planned create revision was attached to the isolated discard draft.",
+    )
+    discarded_change_id = _field(discarded_change.value, "change_id")
+    discard_receipt = call_tool_with_evidence(
+        server,
+        "content_plan",
+        "discard_decl_round_draft",
+        {
+            "round_id": discard_round_id,
+            "reason": "Strict ToolSweep simulates deterministic draft validation rejection.",
+        },
+        runtime_context=plan_ctx,
+        recorder=evidence_recorder,
+        assertion_summary="The unsubmitted draft and its planned declaration revision were atomically discarded.",
+    )
+    assert _field(discard_receipt.value, "changed") is True
+    assert _field(discard_receipt.value, "discarded_change_ids") == [discarded_change_id]
+    assert _field(discard_receipt.value, "deleted_created_decl_names") == ["discarded_result"]
+    assert not ws.runtime.decl_graph.get_decl(
+        ws.provider_repo,
+        node_path=CONTENT_NODE_PATH,
+        name="discarded_result",
+    ).ok
+    discarded_round = unwrap(
+        ws.runtime.decl_graph.get_round(
+            ws.provider_repo,
+            node_path=CONTENT_NODE_PATH,
+            round_id=discard_round_id,
+        )
+    )
+    assert discarded_round.status.value == "discarded"
+    assert discarded_round.revision_refs == []
+
     closed_strategy = call_tool_with_evidence(
         server,
         "content_plan",

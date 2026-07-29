@@ -245,6 +245,7 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "plan_update_decl" in round_planning
     assert "preview_decl_delete_closure" in round_planning
     assert "validate_decl_round_draft" in round_planning
+    assert "discard_decl_round_draft" in round_planning
     assert "submit_current_decl_round" in round_planning
 
     closeout = specs["decl-round-closeout"].body

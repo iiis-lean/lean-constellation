@@ -25,6 +25,7 @@ from lean_constellation.tools.args import (
     RepoPublicStatementClosureArgs,
     PublicStatementClosureArgs,
     RoundDraftArgs,
+    RoundDiscardArgs,
     RoundIdArgs,
     RoundSummaryArgs,
     RoundTerminalArgs,
@@ -549,6 +550,16 @@ def _create_round_draft(runtime, ctx, args: RoundDraftArgs):
     )
 
 
+def _discard_round_draft(runtime, ctx, args: RoundDiscardArgs):
+    return runtime.decl_graph.discard_round_draft(
+        ctx.repo_root,
+        node_path=_node(ctx),
+        round_id=_required_round_id(runtime, ctx, args.round_id),
+        reason=args.reason,
+        discarded_by=ctx.runtime.agent_id or "content_plan",
+    )
+
+
 def _list_rounds(runtime, ctx, args: NoArgs):
     del args
     return runtime.decl_graph.list_round_views(ctx.repo_root, node_path=_node(ctx))
@@ -1060,6 +1071,19 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.DECL_ROUND_CHANGE_WRITE},
             roles=plan_roles,
             handler=_create_round_draft,
+        ),
+        handler_tool(
+            name="discard_decl_round_draft",
+            description=(
+                "Atomically discard one unsubmitted draft round and roll back all of its "
+                "planned create, update, and delete revisions."
+            ),
+            args_model=RoundDiscardArgs,
+            capability=ToolCapability.WRITE,
+            result_view="decl_round_discard_receipt",
+            groups={AppGroup.DECL_ROUND_CHANGE_WRITE},
+            roles=plan_roles,
+            handler=_discard_round_draft,
         ),
         handler_tool(
             name="list_decl_rounds",

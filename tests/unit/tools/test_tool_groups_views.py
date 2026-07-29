@@ -42,7 +42,7 @@ def test_application_registry_is_orthogonal_and_fully_exposed() -> None:
     views = build_application_tool_views(groups)
     group_by_key = {group.key: group for group in groups}
 
-    assert len(specs) == 258
+    assert len(specs) == 259
     assert all(len(spec.tool_groups) == 1 for spec in specs)
     assert all(group.tool_names for group in groups)
     assert all(view.extra_tool_names == [] for view in views)

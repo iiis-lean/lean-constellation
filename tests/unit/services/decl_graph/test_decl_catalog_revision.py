@@ -177,6 +177,176 @@ def test_create_decl_records_decl_revision_change_and_index(tmp_path: Path) -> N
     assert index.value.decl_names == ["main_result"]
 
 
+def test_discard_round_draft_rolls_back_created_decls_and_allows_replanning(
+    tmp_path: Path,
+) -> None:
+    _create_content_node(tmp_path)
+    strategy_id, round_id = _create_round(tmp_path)
+    service = make_runtime().decl_graph
+    provider = service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        name="provider",
+        kind="definition",
+        objective="Create the provider first.",
+        summary="Provider.",
+        target_state=DeclState.DECLARED,
+    )
+    consumer = service.create_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        name="consumer",
+        kind="theorem",
+        objective="Use provider only after its round commits.",
+        summary="Consumer.",
+        target_state=DeclState.PROVED,
+        anticipated_statement_dep_names=["provider"],
+    )
+    assert provider.ok and consumer.ok
+    gate = service.validate_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+    )
+    assert gate.ok and gate.value is not None and not gate.value.passed
+    assert {issue.kind for issue in gate.value.issues} == {
+        "round_internal_dependency"
+    }
+
+    discarded = service.discard_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        reason="Split provider and consumer into dependency-ordered rounds.",
+        discarded_by="test-content-plan",
+    )
+
+    assert discarded.ok and discarded.value is not None
+    assert discarded.value.changed is True
+    assert discarded.value.deleted_created_decl_names == ["consumer", "provider"]
+    round_record = service.get_round(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+    )
+    assert round_record.ok and round_record.value is not None
+    assert round_record.value.status == "discarded"
+    assert round_record.value.revision_refs == []
+    assert [ref.decl_name for ref in round_record.value.discarded_revision_refs] == [
+        "provider",
+        "consumer",
+    ]
+    assert not service.get_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="provider",
+    ).ok
+    assert not service.get_decl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="consumer",
+    ).ok
+    index = service.get_decl_graph_index(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+    assert index.ok and index.value is not None
+    assert index.value.decl_names == []
+    assert round_id in index.value.round_ids
+
+    replay = service.discard_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        reason="Split provider and consumer into dependency-ordered rounds.",
+        discarded_by="test-content-plan",
+    )
+    assert replay.ok and replay.value is not None and replay.value.changed is False
+    replacement = service.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy_id,
+        objective="Create only the provider.",
+    )
+    assert replacement.ok and replacement.value is not None
+    assert replacement.value.round_index == 2
+
+
+def test_discard_round_draft_restores_update_and_delete_heads(
+    tmp_path: Path,
+) -> None:
+    _create_content_node(tmp_path)
+    _, seed_round_id = _create_round(tmp_path)
+    _seed_committed_decl(
+        tmp_path,
+        round_id=seed_round_id,
+        name="updated_decl",
+    )
+    _seed_committed_decl(
+        tmp_path,
+        round_id=seed_round_id,
+        name="deleted_decl",
+    )
+    _, round_id = _create_round(tmp_path)
+    service = make_runtime().decl_graph
+    updated = service.open_decl_update(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        name="updated_decl",
+        objective="Redo the proof.",
+        reset_to_state=DeclState.DECLARED,
+        target_state=DeclState.PROVED,
+    )
+    deleted = service.mark_decl_delete(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        name="deleted_decl",
+        objective="Delete this declaration.",
+    )
+    assert updated.ok and deleted.ok
+
+    discarded = service.discard_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        reason="The batch must be replanned.",
+        discarded_by="test-content-plan",
+    )
+
+    assert discarded.ok and discarded.value is not None
+    assert discarded.value.restored_decl_revisions == {
+        "deleted_decl": 1,
+        "updated_decl": 1,
+    }
+    for name in ("updated_decl", "deleted_decl"):
+        decl = service.get_decl(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            name=name,
+        )
+        assert decl.ok and decl.value is not None
+        assert decl.value.current_revision == 1
+        assert decl.value.revision_ids == [1]
+        revision = service.get_decl_revision(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            name=name,
+            revision=1,
+        )
+        assert revision.ok and revision.value is not None
+        assert revision.value.status == "committed"
+        assert not service.graph_store.revision_path(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            decl_name=name,
+            revision=2,
+        ).exists()
+
+
 def test_create_decl_records_relaxed_satisfaction_target(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     _, round_id = _create_round(tmp_path)

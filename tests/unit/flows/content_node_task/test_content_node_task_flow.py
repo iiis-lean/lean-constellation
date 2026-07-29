@@ -291,6 +291,26 @@ def test_content_node_task_plan_agent_uses_native_project_projection_workdir(tmp
     assert runtime.agent_service.start_records[-1].workdir == str(expected)
 
 
+def test_content_plan_without_accepted_submission_fails_owning_flow(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    for _ in range(3):
+        runtime.agent_service.queue_incomplete_turn()
+
+    _advance_and_run(runtime, flow_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.FAILED
+    assert flow.result is None
+    assert flow.error.error_type == "content_plan_agent_incomplete"
+    assert flow.state.position.phase == "plan_agent"
+
+
 def test_content_node_task_rejects_duplicate_preparation_dispatch(tmp_path: Path) -> None:
     runtime, lean_runtime = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"

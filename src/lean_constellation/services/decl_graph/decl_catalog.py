@@ -20,6 +20,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclRevision,
     DeclRevisionStatus,
     DeclGraphRound,
+    DeclRoundDraftDiscardReceipt,
     DeclRoundStatus,
     RepoDeclDep,
     DeclStatement,
@@ -413,6 +414,284 @@ class DeclCatalogComponent:
             return self.runtime.foundation.fail(rebuilt.issues)
         return self.runtime.foundation.ok(
             self._change_view_from_revision(node_path=node_path, round_id=round_id, decl_name=name, revision=next_revision)
+        )
+
+    def discard_round_draft(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        reason: str,
+        discarded_by: str,
+    ) -> ServiceResult[DeclRoundDraftDiscardReceipt]:
+        """Atomically roll back every planned revision in an unsubmitted draft round."""
+
+        normalized_reason = reason.strip()
+        normalized_actor = discarded_by.strip()
+        if not normalized_reason:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_discard_reason_required",
+                    "Discarding a draft declaration round requires a concrete reason.",
+                    object_ref=round_id,
+                    field="reason",
+                )
+            )
+        if not normalized_actor:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_discard_actor_required",
+                    "Discarding a draft declaration round requires an actor.",
+                    object_ref=round_id,
+                    field="discarded_by",
+                )
+            )
+
+        loaded_round = self.strategy_round.get_round(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+        )
+        if not loaded_round.ok or loaded_round.value is None:
+            return self.runtime.foundation.fail(loaded_round.issues)
+        round_record = loaded_round.value
+        if round_record.status == DeclRoundStatus.DISCARDED:
+            if round_record.discard_reason != normalized_reason:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "round_discard_conflict",
+                        "The draft round was already discarded for a different reason.",
+                        object_ref=round_id,
+                        current=round_record.discard_reason,
+                        expected=normalized_reason,
+                    )
+                )
+            return self.runtime.foundation.ok(
+                self._discard_receipt(round_record, changed=False)
+            )
+        if round_record.status != DeclRoundStatus.DRAFT:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_not_discardable",
+                    "Only an unsubmitted draft declaration round can be discarded.",
+                    object_ref=round_id,
+                    current=round_record.status.value,
+                    expected=DeclRoundStatus.DRAFT.value,
+                )
+            )
+        if (
+            round_record.started_at is not None
+            or round_record.execution_result_kind is not None
+            or round_record.execution_reason is not None
+            or round_record.execution_completed_at is not None
+            or round_record.result_kind is not None
+            or round_record.result_reason is not None
+            or round_record.plan_closeout_acknowledged_at is not None
+            or round_record.plan_closeout_acknowledged_by is not None
+            or round_record.committed_at is not None
+            or round_record.change_summaries
+            or round_record.summary is not None
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "round_discard_started_truth_present",
+                    "A draft with execution or closeout truth cannot be discarded.",
+                    object_ref=round_id,
+                )
+            )
+
+        created_decl_names: list[str] = []
+        restored_decl_revisions: dict[str, int] = {}
+        updated_decls: dict[str, Decl] = {}
+        revisions_to_delete: list[tuple[str, int]] = []
+        seen_decl_names: set[str] = set()
+        for ref in round_record.revision_refs:
+            if ref.decl_name in seen_decl_names:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "round_discard_duplicate_decl",
+                        "A discardable draft can contain at most one planned revision per declaration.",
+                        object_ref=ref.decl_name,
+                    )
+                )
+            seen_decl_names.add(ref.decl_name)
+            loaded_decl = self.get_decl(
+                repo_root,
+                node_path=node_path,
+                name=ref.decl_name,
+            )
+            if not loaded_decl.ok or loaded_decl.value is None:
+                return self.runtime.foundation.fail(loaded_decl.issues)
+            loaded_revision = self.get_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=ref.decl_name,
+                revision=ref.revision,
+            )
+            if not loaded_revision.ok or loaded_revision.value is None:
+                return self.runtime.foundation.fail(loaded_revision.issues)
+            decl = loaded_decl.value
+            revision = loaded_revision.value
+            if decl.current_revision != ref.revision or revision.status != DeclRevisionStatus.OPEN:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "round_discard_revision_not_open_head",
+                        "Every discarded revision must be the current open declaration head.",
+                        object_ref=ref.decl_name,
+                        current=f"{decl.current_revision}:{revision.status.value}",
+                        expected=f"{ref.revision}:{DeclRevisionStatus.OPEN.value}",
+                    )
+                )
+            expected_change_id = self._change_id_for_revision(
+                ref.decl_name,
+                ref.revision,
+            )
+            if ref.change_id != expected_change_id or revision.change is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "round_discard_revision_mismatch",
+                        "Draft round revision truth does not match its change reference.",
+                        object_ref=ref.change_id,
+                        current=expected_change_id,
+                    )
+                )
+
+            revisions_to_delete.append((ref.decl_name, ref.revision))
+            if revision.change.kind == DeclChangeKind.CREATE:
+                if ref.revision != 1 or decl.revision_ids != [1]:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "round_discard_create_history_conflict",
+                            "A discarded create must be the declaration's only revision.",
+                            object_ref=ref.decl_name,
+                            current=", ".join(str(item) for item in decl.revision_ids),
+                            expected="1",
+                        )
+                    )
+                created_decl_names.append(ref.decl_name)
+                continue
+
+            remaining_revision_ids = [
+                item for item in decl.revision_ids if item != ref.revision
+            ]
+            if not remaining_revision_ids:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "round_discard_restore_missing",
+                        "A discarded update or delete requires a prior committed revision.",
+                        object_ref=ref.decl_name,
+                    )
+                )
+            restored_revision = max(remaining_revision_ids)
+            loaded_restored = self.get_decl_revision(
+                repo_root,
+                node_path=node_path,
+                name=ref.decl_name,
+                revision=restored_revision,
+            )
+            if (
+                not loaded_restored.ok
+                or loaded_restored.value is None
+                or loaded_restored.value.status != DeclRevisionStatus.COMMITTED
+            ):
+                return self.runtime.foundation.fail(
+                    loaded_restored.issues
+                    or [
+                        self.runtime.foundation.issue(
+                            "round_discard_restore_not_committed",
+                            "The declaration head restored by discard must be committed.",
+                            object_ref=ref.decl_name,
+                            current=str(restored_revision),
+                        )
+                    ]
+                )
+            restored_decl = decl.model_copy(deep=True)
+            restored_decl.current_revision = restored_revision
+            restored_decl.revision_ids = remaining_revision_ids
+            restored_decl.updated_at = utc_now_iso()
+            updated_decls[ref.decl_name] = restored_decl
+            restored_decl_revisions[ref.decl_name] = restored_revision
+
+        discarded_at = utc_now_iso()
+        discarded_round = round_record.model_copy(deep=True)
+        discarded_round.status = DeclRoundStatus.DISCARDED
+        discarded_round.discarded_revision_refs = list(round_record.revision_refs)
+        discarded_round.discarded_created_decl_names = sorted(created_decl_names)
+        discarded_round.discarded_restored_decl_revisions = dict(
+            sorted(restored_decl_revisions.items())
+        )
+        discarded_round.discard_reason = normalized_reason
+        discarded_round.discarded_by = normalized_actor
+        discarded_round.discarded_at = discarded_at
+        discarded_round.revision_refs = []
+
+        index = self.graph_store.get_index(repo_root, node_path=node_path)
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.fail(index.issues)
+        updated_index = index.value.model_copy(deep=True)
+        updated_index.decl_names = [
+            name
+            for name in updated_index.decl_names
+            if name not in set(created_decl_names)
+        ]
+        updated_index.updated_at = discarded_at
+        updated_index.summary = (
+            f"DeclGraph index updated after discarding {round_id}: "
+            f"{len(updated_index.decl_names)} decls, "
+            f"{len(updated_index.round_ids)} rounds, "
+            f"{len(updated_index.strategy_ids)} strategies."
+        )
+
+        with self.runtime.foundation.store.mutation(
+            "discard_decl_round_draft"
+        ) as mutation:
+            for decl_name, revision_id in revisions_to_delete:
+                mutation.stage_delete(
+                    self.graph_store.revision_path(
+                        repo_root,
+                        node_path=node_path,
+                        decl_name=decl_name,
+                        revision=revision_id,
+                    )
+                )
+                if decl_name in created_decl_names:
+                    mutation.stage_delete(
+                        self.graph_store.decl_record_path(
+                            repo_root,
+                            node_path=node_path,
+                            decl_name=decl_name,
+                        )
+                    )
+                else:
+                    mutation.stage_json(
+                        self.graph_store.decl_record_path(
+                            repo_root,
+                            node_path=node_path,
+                            decl_name=decl_name,
+                        ),
+                        updated_decls[decl_name],
+                        mode=WriteMode.UPDATE_EXISTING,
+                    )
+            mutation.stage_json(
+                self.graph_store.round_path(
+                    repo_root,
+                    node_path=node_path,
+                    round_id=round_id,
+                ),
+                discarded_round,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            mutation.stage_json(
+                self.graph_store.index_path(repo_root, node_path=node_path),
+                updated_index,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
+        return self.runtime.foundation.ok(
+            self._discard_receipt(discarded_round, changed=True)
         )
 
     def commit_decl_revision(
@@ -969,6 +1248,34 @@ class DeclCatalogComponent:
 
     def _change_id_for_revision(self, decl_name: str, revision: int) -> str:
         return f"{decl_name}@rev:{revision}"
+
+    def _discard_receipt(
+        self,
+        round_record: DeclGraphRound,
+        *,
+        changed: bool,
+    ) -> DeclRoundDraftDiscardReceipt:
+        return DeclRoundDraftDiscardReceipt(
+            round_id=round_record.round_id,
+            strategy_id=round_record.strategy_id,
+            changed=changed,
+            discarded_change_ids=[
+                item.change_id for item in round_record.discarded_revision_refs
+            ],
+            deleted_created_decl_names=list(
+                round_record.discarded_created_decl_names
+            ),
+            restored_decl_revisions=(
+                dict(round_record.discarded_restored_decl_revisions) or None
+            ),
+            reason=round_record.discard_reason or "",
+            discarded_by=round_record.discarded_by or "",
+            discarded_at=round_record.discarded_at or "",
+            summary=(
+                f"Discarded unsubmitted draft {round_record.round_id}; "
+                f"rolled back {len(round_record.discarded_revision_refs)} planned changes."
+            ),
+        )
 
     def _change_view_from_revision(
         self,

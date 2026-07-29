@@ -68,6 +68,7 @@ DECL_GRAPH_TOOL_SWEEP_NAMES = frozenset(
         "list_decl_strategies",
         "get_decl_strategy",
         "create_decl_round_draft",
+        "discard_decl_round_draft",
         "list_decl_rounds",
         "get_decl_round",
         "write_decl_change_summary",

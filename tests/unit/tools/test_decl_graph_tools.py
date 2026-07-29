@@ -22,6 +22,7 @@ def test_decl_graph_tools_are_registered() -> None:
         "list_decl_strategies",
         "get_decl_strategy",
         "create_decl_round_draft",
+        "discard_decl_round_draft",
         "list_decl_rounds",
         "get_decl_round",
         "write_decl_change_summary",
@@ -98,7 +99,15 @@ def test_decl_graph_groups_expose_expected_tools() -> None:
     )
     assert_group_contains("decl_graph_current_write", {"ensure_current_decl_graph", "rebuild_current_decl_graph_index"})
     assert_group_contains("decl_strategy_write", {"ensure_open_decl_strategy", "close_decl_strategy"})
-    assert_group_contains("decl_round_change_write", {"create_decl_round_draft", "plan_create_decl", "validate_decl_round_draft"})
+    assert_group_contains(
+        "decl_round_change_write",
+        {
+            "create_decl_round_draft",
+            "discard_decl_round_draft",
+            "plan_create_decl",
+            "validate_decl_round_draft",
+        },
+    )
     assert_group_contains("decl_round_closeout_write", {"write_decl_change_summary", "write_decl_round_summary", "mark_decl_round_terminal"})
     assert_group_contains("decl_stage_round_read", {"get_decl_round", "run_decl_round_local_audit"})
     assert_group_contains("decl_stage_statement_nl_read", {"read_statement_nl"})

@@ -669,6 +669,12 @@ class RoundIdArgs(StrictModel):
     round_id: str | None = Field(default=None, description="Declaration round id; omit to use the current stage round.")
 
 
+class RoundDiscardArgs(RoundIdArgs):
+    reason: str = Field(
+        description="Concrete reason the unsubmitted draft must be discarded and replanned."
+    )
+
+
 class StrategyIdArgs(StrictModel):
     strategy_id: str = Field(description="Declaration strategy id.")
 

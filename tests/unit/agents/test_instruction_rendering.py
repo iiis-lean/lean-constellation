@@ -179,6 +179,7 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "write_decl_change_summary" in text
     assert "mark_decl_round_terminal" in text
     assert "validate_decl_round_draft" in text
+    assert "discard_decl_round_draft" in text
     assert "submit_current_decl_round" in text
     assert "check_current_content_node_completion" in text
     assert "bind_current_node_interface" in text

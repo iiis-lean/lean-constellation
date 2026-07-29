@@ -27,6 +27,9 @@ from lean_constellation.flows.content_node_task.steps import (
     new_content_step_id,
 )
 from lean_constellation.flows.content_node_task.submissions import (
+    ContentNodeBlockedSubmission,
+    ContentNodeFailedSubmission,
+    ContentNodeReadySubmission,
     ContentPreparationDispatchSubmission,
     ContentResourceRequestSubmission,
 )
@@ -306,18 +309,22 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
         step_id: str,
     ) -> None:
         if isinstance(result, AgentStepIncompleteResult) or result is None:
-            self._finish_content_task(input_model, "failed", "ContentPlanAgent did not submit a valid result.", "ContentPlanAgent incomplete.")
+            self._fail_content_task(
+                "content_plan_agent_incomplete",
+                "ContentPlanAgent did not submit a valid result.",
+            )
             return
         if not isinstance(result, ContentPlanStepResult):
-            self._finish_content_task(
-                input_model,
-                "failed",
+            self._fail_content_task(
+                "content_plan_agent_unsupported_result",
                 f"ContentPlanAgent returned unsupported result: {getattr(result, 'result_type', None)}.",
-                "ContentPlanAgent returned unsupported result.",
             )
             return
         if result.outcome == "incomplete":
-            self._finish_content_task(input_model, "failed", result.incomplete_reason or result.summary, result.summary)
+            self._fail_content_task(
+                "content_plan_agent_incomplete",
+                result.incomplete_reason or result.summary,
+            )
             return
         if result.outcome == "preparation_dispatch" and isinstance(submission, ContentPreparationDispatchSubmission) and result.preparation is not None:
             kind = result.preparation.recon_kind
@@ -340,11 +347,24 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             self._set_pending_dispatch(state, step_id, submission.submission_id, "decl_graph_round")
             state.position = FlowPosition(phase="ensure_stage_agents")
             return
-        if result.outcome in {"ready", "blocked", "failed"}:
+        terminal_submission_matches = (
+            result.outcome == "ready"
+            and isinstance(submission, ContentNodeReadySubmission)
+        ) or (
+            result.outcome == "blocked"
+            and isinstance(submission, ContentNodeBlockedSubmission)
+        ) or (
+            result.outcome == "failed"
+            and isinstance(submission, ContentNodeFailedSubmission)
+        )
+        if result.outcome in {"ready", "blocked", "failed"} and terminal_submission_matches:
             reason = result.completion.reason if result.completion else None
             self._finish_content_task(input_model, result.outcome, reason, result.summary)
             return
-        self._finish_content_task(input_model, "failed", "ContentPlanAgent result did not match its accepted submission.", "ContentPlanAgent submission mismatch.")
+        self._fail_content_task(
+            "content_plan_agent_submission_mismatch",
+            "ContentPlanAgent result did not match its accepted submission.",
+        )
 
     def _consume_stage_agents_result(
         self,
@@ -393,6 +413,9 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             reason=reason,
             summary=summary or reason or outcome,
         )
+
+    def _fail_content_task(self, error_type: str, message: str) -> None:
+        self.error = BaseFlowError(error_type=error_type, message=message)
 
 
 CONTENT_NODE_TASK_FLOW_TYPES: tuple[type[LeanBusinessFlow], ...] = (ContentNodeTaskFlow,)

@@ -1679,6 +1679,15 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="ContentPlanAgent",
         restore_policy="checkpoint",
     ),
+    "discard_decl_round_draft": ToolCase(
+        tool_name="discard_decl_round_draft",
+        status="implemented",
+        category="decl_round_change_write",
+        reason="Checkpointed rejected draft rollback covered by strict DeclGraph ToolSweep.",
+        view_key="content_plan",
+        agent_type="ContentPlanAgent",
+        restore_policy="checkpoint",
+    ),
     "list_decl_rounds": ToolCase(
         tool_name="list_decl_rounds",
         status="implemented",

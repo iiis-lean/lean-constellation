@@ -54,6 +54,7 @@ class DeclRoundStatus(StrEnum):
     RUNNING = "running"
     AWAITING_CLOSEOUT = "awaiting_closeout"
     COMMITTED = "committed"
+    DISCARDED = "discarded"
 
 
 class DeclRoundResultKind(StrEnum):
@@ -340,6 +341,12 @@ class DeclGraphRound(StrictModel):
     status: DeclRoundStatus = DeclRoundStatus.DRAFT
     objective: str
     revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
+    discarded_revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
+    discarded_created_decl_names: list[str] = Field(default_factory=list)
+    discarded_restored_decl_revisions: dict[str, int] = Field(default_factory=dict)
+    discard_reason: str | None = None
+    discarded_by: str | None = None
+    discarded_at: str | None = None
     change_summaries: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
     execution_result_kind: DeclRoundResultKind | None = None
@@ -374,9 +381,23 @@ class DeclGraphRound(StrictModel):
             raise ValueError(
                 "committed declaration rounds require complete Plan closeout truth"
             )
+        if self.status == DeclRoundStatus.DISCARDED:
+            if self.revision_refs:
+                raise ValueError("discarded declaration rounds cannot retain active revision refs")
+            if not self.discard_reason or not self.discarded_by or not self.discarded_at:
+                raise ValueError("discarded declaration rounds require complete discard truth")
+        elif (
+            self.discarded_revision_refs
+            or self.discarded_created_decl_names
+            or self.discarded_restored_decl_revisions
+            or self.discard_reason is not None
+            or self.discarded_by is not None
+            or self.discarded_at is not None
+        ):
+            raise ValueError("non-discarded declaration rounds cannot carry discard truth")
         return self
 
-    @field_validator("revision_refs")
+    @field_validator("revision_refs", "discarded_revision_refs")
     @classmethod
     def _unique_revision_refs(cls, value: list[DeclRevisionRef]) -> list[DeclRevisionRef]:
         change_ids = [item.change_id for item in value]
@@ -386,6 +407,22 @@ class DeclGraphRound(StrictModel):
         if len(set(targets)) != len(targets):
             raise ValueError("revision_refs target revisions must be unique")
         return value
+
+    @field_validator("discarded_created_decl_names")
+    @classmethod
+    def _unique_discarded_decl_names(cls, value: list[str]) -> list[str]:
+        normalized = [_required_text(item) for item in value]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("discarded_created_decl_names must be unique")
+        return sorted(normalized)
+
+    @field_validator("discarded_restored_decl_revisions")
+    @classmethod
+    def _valid_restored_decl_revisions(cls, value: dict[str, int]) -> dict[str, int]:
+        normalized = {_required_text(name): revision for name, revision in value.items()}
+        if any(revision < 1 for revision in normalized.values()):
+            raise ValueError("discarded restored declaration revisions must be >= 1")
+        return dict(sorted(normalized.items()))
 
     @field_validator("change_summaries")
     @classmethod
@@ -544,6 +581,21 @@ class _CompactMutationReceipt(StrictModel):
         }
 
 
+class DeclRoundDraftDiscardReceipt(_CompactMutationReceipt):
+    """Compact receipt for atomically discarding one unsubmitted draft round."""
+
+    round_id: str
+    strategy_id: str
+    changed: bool
+    discarded_change_ids: list[str] = Field(default_factory=list)
+    deleted_created_decl_names: list[str] = Field(default_factory=list)
+    restored_decl_revisions: dict[str, int] | None = None
+    reason: str
+    discarded_by: str
+    discarded_at: str
+    summary: str
+
+
 class DeclManagedProjectionEffect(StrictModel):
     """Managed Lean projection effects exposed by a compact mutation receipt."""
 
@@ -653,6 +705,12 @@ class DeclGraphRoundView(StrictModel):
     status: DeclRoundStatus
     objective: str
     revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
+    discarded_revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
+    discarded_created_decl_names: list[str] = Field(default_factory=list)
+    discarded_restored_decl_revisions: dict[str, int] = Field(default_factory=dict)
+    discard_reason: str | None = None
+    discarded_by: str | None = None
+    discarded_at: str | None = None
     change_ids: list[str] = Field(default_factory=list)
     change_summaries: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None

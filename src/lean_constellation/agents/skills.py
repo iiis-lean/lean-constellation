@@ -1153,7 +1153,7 @@ Before deleting a declaration, call `preview_decl_delete_closure`. Never plan de
 
 ## Validation And Submit
 
-Call `validate_decl_round_draft` before submitting. If validation rejects the draft, fix the draft or choose a different next action.
+Call `validate_decl_round_draft` before submitting. If validation rejects the unsubmitted draft because its batch shape, dependency order, or planned changes must be replaced, call `discard_decl_round_draft` with the concrete validation reason. Discard rolls back the whole draft atomically; it is not a partial edit tool. Re-read current truth, then create smaller or dependency-ordered replacement rounds. Never discard a running, awaiting-closeout, or committed round.
 
 Call `submit_current_decl_round` only when the draft is valid and ready for DeclGraphRoundFlow execution. After an accepted submit, stop.
 

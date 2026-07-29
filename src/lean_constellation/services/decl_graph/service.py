@@ -33,6 +33,7 @@ from lean_constellation.services.decl_graph.models import (
     DeclView,
     DeclGraphRound,
     DeclRoundResultKind,
+    DeclRoundDraftDiscardReceipt,
     DeclStage,
     DeclState,
     DeclGraphStrategy,
@@ -366,6 +367,23 @@ class DeclGraphService:
         if not round_record.ok or round_record.value is None:
             return self.runtime.foundation.fail(round_record.issues)
         return self.runtime.foundation.ok(self.views.round_view(round_record.value))
+
+    def discard_round_draft(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        reason: str,
+        discarded_by: str,
+    ) -> ServiceResult[DeclRoundDraftDiscardReceipt]:
+        return self.decl_catalog.discard_round_draft(
+            repo_root,
+            node_path=node_path,
+            round_id=round_id,
+            reason=reason,
+            discarded_by=discarded_by,
+        )
 
     def start_round(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[DeclGraphRound]:
         return self.strategy_round.start_round(repo_root, node_path=node_path, round_id=round_id)
