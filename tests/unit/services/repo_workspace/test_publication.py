@@ -13,6 +13,10 @@ from lean_constellation.domain.publication import (
     WorkspacePublicationPolicy,
 )
 from lean_constellation.domain.repo import WorkspaceConfig
+from lean_constellation.services.repo_workspace.publication import (
+    PublicApiDeclaration,
+    RepoPublicationComponent,
+)
 from tests.unit_services_helpers import make_runtime
 from tests.unit.services.repo_workspace.test_repo_release import (
     _prepare_release_repo,
@@ -95,8 +99,15 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert "User preface." in readme_text
     assert "Formalizes a public result." in readme_text
     assert "Internal release migration summary." not in readme_text
-    assert "| Declaration | Kind | Node | Status |" in readme_text
-    assert "[`PublicResult`](docs/lean-constellation/PUBLIC_API.md#publicresult)" in readme_text
+    assert "This repository exports **3 public declarations**" in readme_text
+    assert (
+        "[Public API index](docs/lean-constellation/PUBLIC_API.md)"
+        in readme_text
+    )
+    assert "| Declaration | Kind | Node | Status |" not in readme_text
+    assert "topic-lean4" not in readme_text
+    assert "Lean%20Constellation-generated" not in readme_text
+    assert "img.shields.io/static/v1?" in readme_text
     assert "Current Lean Constellation Release" not in readme_text
     assert "Independent formalization." in readme_text
     assert prepared.value.topics == ["lean4", "formalization"]
@@ -130,10 +141,51 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     api_markdown = (
         tmp_path / "docs/lean-constellation/PUBLIC_API.md"
     ).read_text()
-    assert "No declaration summary is available." in api_markdown
-    assert "### Statement dependencies" in api_markdown
-    assert "### Proof dependencies" in api_markdown
+    assert "## Dependency graph" in api_markdown
+    assert "flowchart TB" in api_markdown
+    assert " --> " in api_markdown
+    assert " -.-> " in api_markdown
+    assert "Transitively implied edges are omitted" in api_markdown
+    assert "| Node | Declaration | Kind | Status |" in api_markdown
+    assert "theorem PublicResult" not in api_markdown
     assert "sorry" not in api_markdown
+    declaration_pages = sorted(
+        (
+            tmp_path / "docs/lean-constellation/public-api"
+        ).glob("*.md")
+    )
+    assert len(declaration_pages) == 3
+    public_result_page = next(
+        path for path in declaration_pages if "publicresult" in path.name
+    )
+    public_result_markdown = public_result_page.read_text()
+    assert "No declaration summary is available." in public_result_markdown
+    assert "## Statement dependencies" in public_result_markdown
+    assert "## Proof dependencies" in public_result_markdown
+    assert "theorem PublicResult" in public_result_markdown
+    assert "trivial" in public_result_markdown
+    assert "sorry" not in public_result_markdown
+    assert api_markdown.index("PublicResult") < api_markdown.index("Support")
+    assert prepared.value.public_api_declarations_dir == (
+        "docs/lean-constellation/public-api"
+    )
+    stale_page = (
+        tmp_path
+        / "docs/lean-constellation/public-api/legacy-node-oldresult.md"
+    )
+    stale_page.write_text("obsolete\n")
+    api_payload = json.loads(
+        (tmp_path / "docs/lean-constellation/public-api.json").read_text()
+    )
+    api_payload["declarations"].append(
+        {"node_path": "Legacy.Node", "name": "OldResult"}
+    )
+    (
+        tmp_path / "docs/lean-constellation/public-api.json"
+    ).write_text(json.dumps(api_payload))
+    refreshed = runtime.repo_workspace.publication.prepare_publication(tmp_path)
+    assert refreshed.ok, refreshed.issues
+    assert not stale_page.exists()
     assert (
         tmp_path / "docs/lean-constellation/CITATION_TEMPLATE.cff"
     ).is_file()
@@ -251,3 +303,51 @@ def test_readme_lists_provider_release_completion_and_remote_source(
     readme = (consumer_root / "README.md").read_text()
     assert "| `declared` | `graph_declared` | `provider_r1` |" in readme
     assert "[remote](https://example.invalid/Provider.git)" in readme
+
+
+def test_public_dependency_graph_is_consumer_first_and_transitively_reduced() -> None:
+    def declaration(
+        name: str,
+        *,
+        statement_dependencies: list[str] | None = None,
+        proof_dependencies: list[str] | None = None,
+    ) -> PublicApiDeclaration:
+        return PublicApiDeclaration(
+            name=name,
+            kind="theorem",
+            node_path="Main.Results",
+            module=f"Example.{name}",
+            state="proved",
+            status="committed",
+            statement_dependencies=statement_dependencies or [],
+            proof_dependencies=proof_dependencies or [],
+        )
+
+    base = declaration("Base")
+    middle = declaration(
+        "Middle",
+        statement_dependencies=["current repo:Main.Results.Base"],
+    )
+    top = declaration(
+        "Top",
+        statement_dependencies=["current repo:Main.Results.Middle"],
+        proof_dependencies=["current repo:Main.Results.Base"],
+    )
+
+    ordered = RepoPublicationComponent._ordered_public_api_declarations(
+        [base, middle, top]
+    )
+    reduced = (
+        RepoPublicationComponent._transitively_reduced_public_dependency_edges(
+            ordered
+        )
+    )
+
+    assert [item.name for item in ordered] == ["Top", "Middle", "Base"]
+    assert {
+        (consumer[1], provider[1], kind)
+        for consumer, provider, kind in reduced
+    } == {
+        ("Top", "Middle", "Statement"),
+        ("Middle", "Base", "Statement"),
+    }

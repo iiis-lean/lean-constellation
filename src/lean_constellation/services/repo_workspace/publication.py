@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 from pathlib import Path, PurePosixPath
+import re
 from typing import TYPE_CHECKING, Literal
-from urllib.parse import quote
+from urllib.parse import urlencode
 
 from pydantic import Field
 
@@ -155,6 +157,7 @@ class RepoPublicationPreparationView(StrictModel):
     readme_path: str
     public_api_markdown_path: str
     public_api_json_path: str
+    public_api_declarations_dir: str
     provenance_path: str
     gitignore_path: str
     topics: list[str] = Field(default_factory=list)
@@ -596,7 +599,16 @@ class RepoPublicationComponent:
         written.extend(templates.value)
         api_json_path = docs_root / "public-api.json"
         api_md_path = docs_root / "PUBLIC_API.md"
+        api_declarations_root = docs_root / "public-api"
+        api_declarations_root.mkdir(parents=True, exist_ok=True)
         provenance_path = docs_root / "provenance.json"
+        stale_pages = self._stale_public_api_pages(
+            api_json_path,
+            declarations_root=api_declarations_root,
+            current=api.value.declarations,
+        )
+        for stale_page in stale_pages:
+            stale_page.unlink()
         for path, value in (
             (api_json_path, api.value),
             (provenance_path, provenance.value),
@@ -607,6 +619,19 @@ class RepoPublicationComponent:
             written.append(path.relative_to(repo_root).as_posix())
         api_md_path.write_text(self._render_public_api_markdown(api.value), encoding="utf-8")
         written.append(api_md_path.relative_to(repo_root).as_posix())
+        for declaration in api.value.declarations:
+            declaration_path = (
+                api_declarations_root
+                / f"{self._public_api_slug(declaration)}.md"
+            )
+            declaration_path.write_text(
+                self._render_public_api_declaration_markdown(
+                    api.value,
+                    declaration=declaration,
+                ),
+                encoding="utf-8",
+            )
+            written.append(declaration_path.relative_to(repo_root).as_posix())
         manifest = self.build_manifest(repo_root, generated_at=generated_at)
         if not manifest.ok or manifest.value is None:
             return self.runtime.foundation.fail(manifest.issues)
@@ -634,6 +659,9 @@ class RepoPublicationComponent:
                 readme_path="README.md",
                 public_api_markdown_path=api_md_path.relative_to(repo_root).as_posix(),
                 public_api_json_path=api_json_path.relative_to(repo_root).as_posix(),
+                public_api_declarations_dir=api_declarations_root.relative_to(
+                    repo_root
+                ).as_posix(),
                 provenance_path=provenance_path.relative_to(repo_root).as_posix(),
                 gitignore_path=".gitignore",
                 topics=presentation_value.topics,
@@ -798,66 +826,390 @@ class RepoPublicationComponent:
         locator = getattr(value, "locator", None)
         return str(locator or getattr(value, "kind", value))
 
-    @staticmethod
-    def _render_public_api_markdown(value: PublicApiDocument) -> str:
+    @classmethod
+    def _render_public_api_markdown(cls, value: PublicApiDocument) -> str:
+        declarations = cls._ordered_public_api_declarations(value.declarations)
+        node_count = len({item.node_path for item in declarations})
         lines = [
             "# Public API",
             "",
             f"- Repository completion: `{value.completion_mode}`",
             f"- Proof availability: `{value.proof_availability}`",
+            f"- Public declarations: `{len(declarations)}` across `{node_count}` nodes",
             "",
+            "## Dependency graph",
+            "",
+            "Consumers appear above the public declarations they depend on. "
+            "Solid arrows are Statement dependencies; dashed arrows are Proof "
+            "dependencies. Transitively implied edges are omitted for readability; "
+            "each declaration page lists the complete direct dependency set. "
+            "Mathlib and non-public project dependencies are not shown.",
+            "",
+            "```mermaid",
+            *cls._render_public_api_mermaid(declarations),
+            "```",
+            "",
+            "## Declarations",
+            "",
+            "| Node | Declaration | Kind | Status |",
+            "| --- | --- | --- | --- |",
         ]
-        for decl in value.declarations:
-            lines.extend(
+        lines.extend(
+            "| "
+            + " | ".join(
                 [
-                    f"## `{decl.name}`",
-                    "",
-                    decl.summary or "No declaration summary is available.",
-                    "",
-                    f"- Kind: `{decl.kind}`",
-                    f"- Node: `{decl.node_path}`",
-                    f"- Module: `{decl.module}`",
-                    f"- Status: `{decl.state}` (`{decl.status}`)",
+                    f"`{decl.node_path}`",
                     (
-                        "- Formal code: final proof projection"
-                        if decl.proof_available
-                        else "- Formal code: statement projection"
+                        "[`"
+                        + decl.name
+                        + "`](public-api/"
+                        + cls._public_api_slug(decl)
+                        + ".md)"
                     ),
+                    f"`{decl.kind}`",
+                    f"`{decl.state}`",
                 ]
             )
-            if decl.formal_code:
-                lines.extend(
-                    ["", "```lean", decl.formal_code.rstrip(), "```"]
-                )
-            if decl.statement_dependencies:
-                lines.extend(
-                    [
-                        "",
-                        "### Statement dependencies",
-                        "",
-                        *[f"- `{item}`" for item in decl.statement_dependencies],
-                    ]
-                )
-            if decl.proof_dependencies:
-                lines.extend(
-                    [
-                        "",
-                        "### Proof dependencies",
-                        "",
-                        *[f"- `{item}`" for item in decl.proof_dependencies],
-                    ]
-                )
-            if decl.source_origins:
-                lines.extend(
-                    [
-                        "",
-                        "### Sources",
-                        "",
-                        *[f"- `{item}`" for item in decl.source_origins],
-                    ]
-                )
-            lines.append("")
+            + " |"
+            for decl in declarations
+        )
         return "\n".join(lines).rstrip() + "\n"
+
+    @staticmethod
+    def _render_public_api_declaration_markdown(
+        value: PublicApiDocument,
+        *,
+        declaration: PublicApiDeclaration,
+    ) -> str:
+        lines = [
+            "[← Public API index](../PUBLIC_API.md)",
+            "",
+            f"# `{declaration.name}`",
+            "",
+            declaration.summary or "No declaration summary is available.",
+            "",
+            f"- Kind: `{declaration.kind}`",
+            f"- Node: `{declaration.node_path}`",
+            f"- Module: `{declaration.module}`",
+            f"- State: `{declaration.state}`",
+            f"- Revision status: `{declaration.status}`",
+            f"- Repository completion: `{value.completion_mode}`",
+            (
+                "- Formal code: final proof projection"
+                if declaration.proof_available
+                else "- Formal code: final statement projection"
+            ),
+        ]
+        if declaration.formal_code:
+            lines.extend(
+                ["", "## Lean code", "", "```lean", declaration.formal_code.rstrip(), "```"]
+            )
+        if declaration.statement_dependencies:
+            lines.extend(
+                [
+                    "",
+                    "## Statement dependencies",
+                    "",
+                    *[
+                        f"- `{item}`"
+                        for item in declaration.statement_dependencies
+                    ],
+                ]
+            )
+        if declaration.proof_dependencies:
+            lines.extend(
+                [
+                    "",
+                    "## Proof dependencies",
+                    "",
+                    *[f"- `{item}`" for item in declaration.proof_dependencies],
+                ]
+            )
+        if declaration.source_origins:
+            lines.extend(
+                [
+                    "",
+                    "## Sources",
+                    "",
+                    *[f"- `{item}`" for item in declaration.source_origins],
+                ]
+            )
+        return "\n".join(lines).rstrip() + "\n"
+
+    @classmethod
+    def _ordered_public_api_declarations(
+        cls,
+        declarations: list[PublicApiDeclaration],
+    ) -> list[PublicApiDeclaration]:
+        by_key = {
+            (item.node_path, item.name): item
+            for item in declarations
+        }
+        edges = cls._public_dependency_edges(declarations)
+        nodes = sorted({item.node_path for item in declarations})
+        node_edges = {
+            (consumer[0], provider[0])
+            for consumer, provider, _ in edges
+            if consumer[0] != provider[0]
+        }
+        node_order = cls._consumer_first_topological_order(nodes, node_edges)
+        ordered: list[PublicApiDeclaration] = []
+        for node_path in node_order:
+            node_keys = sorted(
+                key for key in by_key if key[0] == node_path
+            )
+            internal_edges = {
+                (consumer, provider)
+                for consumer, provider, _ in edges
+                if consumer[0] == node_path and provider[0] == node_path
+            }
+            ordered.extend(
+                by_key[key]
+                for key in cls._consumer_first_topological_order(
+                    node_keys,
+                    internal_edges,
+                )
+            )
+        return ordered
+
+    @classmethod
+    def _public_dependency_edges(
+        cls,
+        declarations: list[PublicApiDeclaration],
+    ) -> list[
+        tuple[tuple[str, str], tuple[str, str], Literal["Statement", "Proof"]]
+    ]:
+        by_label = {
+            f"current repo:{item.node_path}.{item.name}": (
+                item.node_path,
+                item.name,
+            )
+            for item in declarations
+        }
+        edges: set[
+            tuple[
+                tuple[str, str],
+                tuple[str, str],
+                Literal["Statement", "Proof"],
+            ]
+        ] = set()
+        statement_pairs: set[
+            tuple[tuple[str, str], tuple[str, str]]
+        ] = set()
+        for declaration in declarations:
+            consumer = (declaration.node_path, declaration.name)
+            for dependency in declaration.statement_dependencies:
+                provider = by_label.get(dependency)
+                if provider is None or provider == consumer:
+                    continue
+                edges.add((consumer, provider, "Statement"))
+                statement_pairs.add((consumer, provider))
+            for dependency in declaration.proof_dependencies:
+                provider = by_label.get(dependency)
+                if (
+                    provider is None
+                    or provider == consumer
+                    or (consumer, provider) in statement_pairs
+                ):
+                    continue
+                edges.add((consumer, provider, "Proof"))
+        return sorted(edges)
+
+    @staticmethod
+    def _consumer_first_topological_order(
+        values: list[object],
+        edges: set[tuple[object, object]],
+    ) -> list[object]:
+        remaining = set(values)
+        outgoing = {value: set() for value in values}
+        incoming_count = {value: 0 for value in values}
+        for consumer, provider in edges:
+            if (
+                consumer not in remaining
+                or provider not in remaining
+                or provider in outgoing[consumer]
+            ):
+                continue
+            outgoing[consumer].add(provider)
+            incoming_count[provider] += 1
+        ready = sorted(
+            (value for value in values if incoming_count[value] == 0),
+            key=str,
+        )
+        ordered: list[object] = []
+        while ready:
+            current = ready.pop(0)
+            if current not in remaining:
+                continue
+            remaining.remove(current)
+            ordered.append(current)
+            for provider in sorted(outgoing[current], key=str):
+                incoming_count[provider] -= 1
+                if incoming_count[provider] == 0:
+                    ready.append(provider)
+                    ready.sort(key=str)
+        ordered.extend(sorted(remaining, key=str))
+        return ordered
+
+    @classmethod
+    def _render_public_api_mermaid(
+        cls,
+        declarations: list[PublicApiDeclaration],
+    ) -> list[str]:
+        by_key = {
+            (item.node_path, item.name): item
+            for item in declarations
+        }
+        identifiers = {
+            key: f"d{index}"
+            for index, key in enumerate(by_key)
+        }
+        lines = [
+            (
+                '%%{init: {"flowchart": {"defaultRenderer": "elk", '
+                '"nodeSpacing": 24, "rankSpacing": 36}}}%%'
+            ),
+            "flowchart TB",
+        ]
+        for node_index, node_path in enumerate(
+            dict.fromkeys(item.node_path for item in declarations)
+        ):
+            lines.append(
+                f'  subgraph n{node_index}["{html.escape(node_path, quote=True)}"]'
+            )
+            lines.append("    direction TB")
+            for declaration in (
+                item for item in declarations if item.node_path == node_path
+            ):
+                key = (declaration.node_path, declaration.name)
+                label = cls._mermaid_declaration_label(declaration)
+                lines.append(f'    {identifiers[key]}["{label}"]')
+            lines.append("  end")
+        for (
+            consumer,
+            provider,
+            dependency_kind,
+        ) in cls._transitively_reduced_public_dependency_edges(declarations):
+            if consumer not in identifiers or provider not in identifiers:
+                continue
+            connector = "-->" if dependency_kind == "Statement" else "-.->"
+            lines.append(
+                f"  {identifiers[consumer]} {connector} {identifiers[provider]}"
+            )
+        return lines
+
+    @staticmethod
+    def _mermaid_declaration_label(
+        declaration: PublicApiDeclaration,
+    ) -> str:
+        words = declaration.name.split("_")
+        label_lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current}_{word}"
+            if current and len(candidate) > 30:
+                label_lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            label_lines.append(current)
+        return "<br/>".join(
+            html.escape(line, quote=True) for line in label_lines
+        )
+
+    @classmethod
+    def _transitively_reduced_public_dependency_edges(
+        cls,
+        declarations: list[PublicApiDeclaration],
+    ) -> list[
+        tuple[tuple[str, str], tuple[str, str], Literal["Statement", "Proof"]]
+    ]:
+        edges = cls._public_dependency_edges(declarations)
+        pairs = {(consumer, provider) for consumer, provider, _ in edges}
+        outgoing: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        for consumer, provider in pairs:
+            outgoing.setdefault(consumer, set()).add(provider)
+
+        def has_alternate_path(
+            start: tuple[str, str],
+            target: tuple[str, str],
+            *,
+            excluded: tuple[tuple[str, str], tuple[str, str]],
+        ) -> bool:
+            pending = [
+                value
+                for value in outgoing.get(start, set())
+                if (start, value) != excluded
+            ]
+            visited: set[tuple[str, str]] = set()
+            while pending:
+                current = pending.pop()
+                if current == target:
+                    return True
+                if current in visited:
+                    continue
+                visited.add(current)
+                pending.extend(outgoing.get(current, set()) - visited)
+            return False
+
+        return [
+            edge
+            for edge in edges
+            if not has_alternate_path(
+                edge[0],
+                edge[1],
+                excluded=(edge[0], edge[1]),
+            )
+        ]
+
+    @classmethod
+    def _public_api_slug(cls, declaration: PublicApiDeclaration) -> str:
+        return cls._public_api_slug_from_values(
+            node_path=declaration.node_path,
+            name=declaration.name,
+        )
+
+    @staticmethod
+    def _public_api_slug_from_values(*, node_path: str, name: str) -> str:
+        value = f"{node_path}--{name}".lower()
+        return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
+
+    @classmethod
+    def _stale_public_api_pages(
+        cls,
+        api_json_path: Path,
+        *,
+        declarations_root: Path,
+        current: list[PublicApiDeclaration],
+    ) -> list[Path]:
+        if not api_json_path.exists():
+            return []
+        try:
+            payload = json.loads(api_json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        current_names = {
+            f"{cls._public_api_slug(item)}.md"
+            for item in current
+        }
+        stale: list[Path] = []
+        for item in payload.get("declarations", []):
+            node_path = item.get("node_path")
+            name = item.get("name")
+            if not isinstance(node_path, str) or not isinstance(name, str):
+                continue
+            filename = (
+                cls._public_api_slug_from_values(
+                    node_path=node_path,
+                    name=name,
+                )
+                + ".md"
+            )
+            path = declarations_root / filename
+            if filename not in current_names and path.is_file():
+                stale.append(path)
+        return stale
 
     @classmethod
     def _render_readme_block(
@@ -927,39 +1279,21 @@ class RepoPublicationComponent:
         lines.extend(
             [
                 "",
-                "## Public declarations",
+                "## Public API",
                 "",
-                "| Declaration | Kind | Node | Status |",
-                "| --- | --- | --- | --- |",
+                (
+                    f"This repository exports **{len(api.declarations)} public "
+                    "declarations** across "
+                    f"**{len({item.node_path for item in api.declarations})} nodes**."
+                ),
+                "",
+                "Browse the [Public API index](docs/lean-constellation/PUBLIC_API.md) "
+                "for the dependency graph, declaration index, final Lean code, "
+                "dependencies, and sources.",
             ]
         )
-        if api.declarations:
-            lines.extend(
-                "| "
-                + " | ".join(
-                    [
-                        (
-                            "[`"
-                            + item.name
-                            + "`](docs/lean-constellation/PUBLIC_API.md#"
-                            + cls._markdown_anchor(item.name)
-                            + ")"
-                        ),
-                        f"`{item.kind}`",
-                        f"`{item.node_path}`",
-                        f"`{item.state}`",
-                    ]
-                )
-                + " |"
-                for item in api.declarations
-            )
-        else:
-            lines.append("| No public declarations | — | — | — |")
         lines.extend(
             [
-                "",
-                "See the [complete Public API](docs/lean-constellation/PUBLIC_API.md) "
-                "for declaration summaries, final Lean code, dependencies, and sources.",
                 "",
                 "## About this formalization",
                 "",
@@ -1008,25 +1342,22 @@ class RepoPublicationComponent:
             toolchain = toolchain_path.read_text(encoding="utf-8").strip()
             lean_version = toolchain.rsplit(":", maxsplit=1)[-1].removeprefix("v")
             badges.append(("Lean", lean_version, "0b6e4f", None))
-        badges.append(("Lean Constellation", "generated", "5b4b8a", None))
         badges.extend(
             (item.label, item.message, item.color, item.link)
             for item in presentation.badges
         )
-        badges.extend(("topic", topic, "lightgrey", None) for topic in presentation.topics)
         rendered = []
         for label, message, color, link in badges:
-            image = (
-                "https://img.shields.io/badge/"
-                f"{quote(label, safe='')}-{quote(message, safe='')}-{quote(color, safe='')}"
+            image = "https://img.shields.io/static/v1?" + urlencode(
+                {
+                    "label": label,
+                    "message": message,
+                    "color": color,
+                }
             )
             markdown = f"![{label}: {message}]({image})"
             rendered.append(f"[{markdown}]({link})" if link else markdown)
         return " ".join(rendered)
-
-    @staticmethod
-    def _markdown_anchor(value: str) -> str:
-        return value.strip().lower()
 
     @staticmethod
     def _markdown_cell(value: str) -> str:
