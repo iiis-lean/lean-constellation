@@ -23,6 +23,9 @@ EXPECTED_AGENT_TYPES = {
     "RootInterfacePrepareAgent",
     "AdapterDeclCatalogAgent",
     "ResourceCuratorAgent",
+    "RepoResourceDiscoveryAgent",
+    "RepoLeanProviderDiscoveryAgent",
+    "RepoMathlibReconAgent",
     "CoordinatorAgent",
     "ContentPlanAgent",
     "NodeDirDependencyReconAgent",
@@ -41,6 +44,7 @@ EXPECTED_AGENT_TYPES = {
 
 EXPECTED_COORDINATOR_SKILLS = [
     "coordinator-completion-policy",
+    "coordinator-repo-exploration",
     "coordinator-content-result-closeout",
     "resource-result-closeout",
     "coordinator-requirement-result-closeout",

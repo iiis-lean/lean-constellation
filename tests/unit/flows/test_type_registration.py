@@ -6,6 +6,7 @@ from agent_runtime_kit.flow.registry import FlowTypeRegistry, StepTypeRegistry
 from agent_runtime_kit.flow.standard_steps import DispatchStep
 
 from lean_constellation.flows.common.agent_steps import BUSINESS_AGENT_STEP_TYPES
+from lean_constellation.flows.repo_exploration import REPO_EXPLORATION_AGENT_STEP_TYPES
 from lean_constellation.flows.registry import BUSINESS_FLOW_TYPES, BUSINESS_LOGIC_STEP_TYPES, register_lean_flow_step_types
 
 
@@ -20,6 +21,7 @@ def test_lean_flow_step_registry_registers_all_layer4_types() -> None:
         DispatchStep.step_type,
         *(step_cls.step_type for step_cls in BUSINESS_LOGIC_STEP_TYPES),
         *(step_cls.step_type for step_cls in BUSINESS_AGENT_STEP_TYPES),
+        *(step_cls.step_type for step_cls in REPO_EXPLORATION_AGENT_STEP_TYPES),
     }
     assert set(registered) == expected_flow_types | expected_step_types
     assert set(flow_registry.list()) == expected_flow_types

@@ -22,6 +22,19 @@ class QueryLimitArgs(StrictModel):
     limit: int = Field(default=20, ge=1, le=100, description="Maximum number of results to return.")
 
 
+class ExternalResourceSearchArgs(StrictModel):
+    query: str = Field(description="Project topic, theorem, construction, or resource subject to search.")
+    kinds: list[Literal["paper", "book", "documentation", "web"]] | None = Field(
+        default=None,
+        description="Optional resource-kind filter.",
+    )
+    limit: int = Field(default=10, ge=1, le=20, description="Maximum compact candidates returned.")
+
+
+class ExternalResourceInspectArgs(StrictModel):
+    target: str = Field(description="Canonical OpenAlex id, DOI, or arXiv locator to inspect.")
+
+
 class MaxCountArgs(StrictModel):
     max_count: int = Field(default=20, ge=1, le=100, description="Maximum number of items to return.")
 

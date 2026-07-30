@@ -2,8 +2,16 @@ from tests.unit_services_helpers import make_runtime, publish_adapter_provider_r
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    AutoProviderRoute,
+    NativeProviderRoute,
+    RejectedUpstreamCandidate,
+    RepoDependencyRequirement,
     RepoDependencyRequirementStatus,
     RepoPreparationInput,
     RepoRequirementRef,
@@ -54,6 +62,121 @@ def _catalog_components() -> tuple[
     foundation, metadata, requirement, preparation = _components()
     catalog = metadata.runtime.repo_workspace.workspace_catalog
     return foundation, metadata, requirement, preparation, catalog
+
+
+def test_requirement_current_schema_requires_typed_provider_route() -> None:
+    with pytest.raises(ValidationError, match="provider_route"):
+        RepoDependencyRequirement.model_validate(
+            {
+                "name": "need_provider",
+                "target_repo": "Provider",
+                "reason": "The provider is required.",
+            }
+        )
+
+
+def test_requirement_group_route_resolution_merges_confirmed_routes() -> None:
+    _, _, _, preparation = _components()
+    revision = "a" * 40
+    adapter_a = RepoDependencyRequirement(
+        name="need_a",
+        target_repo="Provider",
+        provider_route=AdapterProviderRoute(
+            git_url="https://github.com/example/provider.git",
+            revision=revision,
+            package_name="Provider",
+            evidence_summary="Candidate A was inspected.",
+            known_risks=["Needs module check."],
+        ),
+        reason="Need A.",
+    )
+    adapter_b = RepoDependencyRequirement(
+        name="need_b",
+        target_repo="Provider",
+        provider_route=AdapterProviderRoute(
+            git_url="git@github.com:example/provider.git",
+            revision=revision,
+            likely_import_module="Provider",
+            evidence_summary="Candidate B confirmed the same commit.",
+            known_risks=["Needs module check.", "Needs interface audit."],
+        ),
+        reason="Need B.",
+    )
+    auto = RepoDependencyRequirement(
+        name="need_auto",
+        target_repo="Provider",
+        provider_route=AutoProviderRoute(),
+        reason="Need automatic discovery if no route is confirmed.",
+    )
+
+    resolved = preparation.resolve_requirement_group_provider_route(
+        [auto, adapter_a, adapter_b]
+    )
+
+    assert resolved.ok
+    assert resolved.value is not None
+    route, summary = resolved.value
+    assert isinstance(route, AdapterProviderRoute)
+    assert route.git_url == "https://github.com/example/provider"
+    assert route.package_name == "Provider"
+    assert route.likely_import_module == "Provider"
+    assert route.known_risks == [
+        "Needs module check.",
+        "Needs interface audit.",
+    ]
+    assert "confirmed adapter" in summary
+
+
+def test_requirement_group_route_resolution_rejects_conflicts_and_merges_native() -> None:
+    _, _, _, preparation = _components()
+    native_a = RepoDependencyRequirement(
+        name="need_native_a",
+        target_repo="Provider",
+        provider_route=NativeProviderRoute(
+            evidence_summary="No matching Lean repository was found.",
+            searched_targets=["provider theorem", "Provider theorem"],
+            rejected_candidates=[
+                RejectedUpstreamCandidate(
+                    name="UnrelatedProvider",
+                    reason="Different theorem.",
+                )
+            ],
+        ),
+        reason="Need native A.",
+    )
+    native_b = RepoDependencyRequirement(
+        name="need_native_b",
+        target_repo="Provider",
+        provider_route=NativeProviderRoute(
+            evidence_summary="The source requires a new independent boundary.",
+            searched_targets=["other provider query"],
+        ),
+        reason="Need native B.",
+    )
+    merged = preparation.resolve_requirement_group_provider_route(
+        [native_a, native_b]
+    )
+    assert merged.ok
+    assert merged.value is not None
+    route, _ = merged.value
+    assert isinstance(route, NativeProviderRoute)
+    assert route.searched_targets == ["provider theorem", "other provider query"]
+
+    adapter = RepoDependencyRequirement(
+        name="need_adapter",
+        target_repo="Provider",
+        provider_route=AdapterProviderRoute(
+            git_url="https://github.com/example/provider",
+            revision="b" * 40,
+            evidence_summary="Exact repository found.",
+        ),
+        reason="Need adapter.",
+    )
+    conflict = preparation.resolve_requirement_group_provider_route(
+        [native_a, adapter]
+    )
+    assert not conflict.ok
+    assert conflict.issues[0].kind == "requirement_provider_route_conflict"
 
 
 def test_requirement_lifecycle_and_interface_rules(tmp_path: Path) -> None:
@@ -729,13 +852,9 @@ def test_build_preparation_input_rejects_invalid_mode_empty_group_and_reports_in
     assert invalid_mode.issues[0].kind == "invalid_source_corpus_mode"
 
     draft = preparation.build_preparation_input_from_group(workspace, target_repo="provider")
-    assert draft.ok
-    assert draft.value is not None
-    assert draft.value.warnings == [
-        "Interface conflict for shared; kept first from sorted requirement order."
-    ]
-    assert draft.value.input.interface_inputs[0].summary == "Alpha statement."
-    assert "reason: Use beta." in (draft.value.input.source_description or "")
+    assert not draft.ok
+    assert draft.issues[0].kind == "requirement_interface_conflict"
+    assert draft.issues[0].field == "shared"
 
 
 def test_create_main_repo_shell_rejects_existing_repo(tmp_path: Path) -> None:

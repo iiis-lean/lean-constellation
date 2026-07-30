@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from pydantic import Field, field_validator
+from pathlib import PurePosixPath
+import re
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
@@ -33,9 +37,151 @@ class RepoRequirementRef(StrictModel):
     requirement_name: str
 
 
+class AutoProviderRoute(StrictModel):
+    kind: Literal["auto"] = "auto"
+
+
+class AdapterProviderRoute(StrictModel):
+    kind: Literal["adapter"] = "adapter"
+    git_url: str
+    revision: str
+    subdir: str | None = None
+    package_name: str | None = None
+    likely_import_module: str | None = None
+    evidence_summary: str
+    known_risks: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "git_url",
+        "revision",
+        "package_name",
+        "likely_import_module",
+        "evidence_summary",
+        mode="before",
+    )
+    @classmethod
+    def _strip_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("git_url", "evidence_summary")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        if not value:
+            raise ValueError("value must be non-empty")
+        return value
+
+    @field_validator("revision")
+    @classmethod
+    def _immutable_revision(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value):
+            raise ValueError("revision must be an immutable 40- or 64-character Git commit identity")
+        return value.lower()
+
+    @field_validator("subdir", mode="before")
+    @classmethod
+    def _safe_subdir(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip().strip("/")
+        if not normalized:
+            return None
+        path = PurePosixPath(normalized)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            raise ValueError("subdir must be a safe repository-relative path")
+        return path.as_posix()
+
+    @field_validator("package_name", "likely_import_module")
+    @classmethod
+    def _empty_optional_text(cls, value: str | None) -> str | None:
+        return value or None
+
+    @field_validator("known_risks")
+    @classmethod
+    def _normalize_risks(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = value.strip()
+            if item and item not in seen:
+                seen.add(item)
+                normalized.append(item)
+        return normalized
+
+
+class RejectedUpstreamCandidate(StrictModel):
+    git_url: str | None = None
+    name: str | None = None
+    reason: str
+    evidence_summary: str | None = None
+
+    @field_validator("git_url", "name", "reason", "evidence_summary", mode="before")
+    @classmethod
+    def _strip_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _validate_candidate(self) -> RejectedUpstreamCandidate:
+        if not self.git_url and not self.name:
+            raise ValueError("rejected candidate requires git_url or name")
+        if not self.reason:
+            raise ValueError("rejected candidate reason must be non-empty")
+        return self
+
+
+class NativeProviderRoute(StrictModel):
+    kind: Literal["native"] = "native"
+    evidence_summary: str
+    searched_targets: list[str]
+    rejected_candidates: list[RejectedUpstreamCandidate] = Field(default_factory=list)
+
+    @field_validator("evidence_summary", mode="before")
+    @classmethod
+    def _strip_evidence(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("evidence_summary")
+    @classmethod
+    def _required_evidence(cls, value: str) -> str:
+        if not value:
+            raise ValueError("evidence_summary must be non-empty")
+        return value
+
+    @field_validator("searched_targets")
+    @classmethod
+    def _normalize_targets(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = value.strip()
+            key = item.casefold()
+            if item and key not in seen:
+                seen.add(key)
+                normalized.append(item)
+        if not normalized:
+            raise ValueError("searched_targets must contain at least one non-empty target")
+        return normalized
+
+
+ProviderRoute = Annotated[
+    AutoProviderRoute | AdapterProviderRoute | NativeProviderRoute,
+    Field(discriminator="kind"),
+]
+
+
+class VerifiedAdapterRouteReceipt(StrictModel):
+    git_url: str
+    revision: str
+    subdir: str | None = None
+    package_name: str | None = None
+    likely_import_module: str | None = None
+    lean_toolchain: str | None = None
+    evidence_summary: str
+
+
 class RepoDependencyRequirement(StrictModel):
     name: str
     target_repo: str
+    provider_route: ProviderRoute
     required_proof_availability: ProofAvailability = ProofAvailability.DECLARED
     source_description: str | None = None
     reason: str | None = None
@@ -104,6 +250,8 @@ class RequirementGroupItem(StrictModel):
 
 class RequirementGroupView(StrictModel):
     target_repo: str
+    resolved_provider_route: ProviderRoute
+    route_resolution_summary: str
     required_proof_availability: ProofAvailability = ProofAvailability.DECLARED
     provider_completion_mode: RepoCompletionMode = RepoCompletionMode.INTERFACE_DECLARED
     requirements: list[RequirementGroupItem] = Field(default_factory=list)

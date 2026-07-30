@@ -7,6 +7,8 @@ from agent_runtime_kit.flow.standard_steps import AgentStepState
 
 from lean_constellation.flows.common.agent_steps import (
     ContentPlanAgentStep,
+    DeclStageReviewerAgentStep,
+    DeclStageWorkerAgentStep,
     MathlibReconAgentStep,
     NodeDirDependencyReconAgentStep,
     ResourceReconAgentStep,
@@ -20,6 +22,10 @@ from lean_constellation.flows.common.flow_requests import (
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.content_node_task.decl_round.submissions import DeclRoundDispatchSubmission
+from lean_constellation.flows.content_node_task.decl_round.steps import (
+    DeclStageReviewerStepState,
+    DeclStageWorkerStepState,
+)
 from lean_constellation.flows.content_node_task.preparation.mathlib_recon.submissions import MathlibReconCompletedSubmission
 from lean_constellation.flows.content_node_task.preparation.node_dir_recon.submissions import NodeDirDependencyReconCompletedSubmission
 from lean_constellation.flows.content_node_task.preparation.resource_recon.submissions import (
@@ -184,6 +190,11 @@ def test_content_plan_agent_step_dispatch_and_completion_results(tmp_path: Path)
     assert isinstance(prep.result, ContentPlanStepResult)
     assert prep.result.outcome == "preparation_dispatch"
     assert prep.result.preparation.recon_kind == "node_dir_dependency"
+    assert (
+        runtime.agent_service.start_records[-1]
+        .context_maintenance_policy.threshold
+        == 0.80
+    )
 
     resource = _run_step(
         runtime,
@@ -406,3 +417,71 @@ def test_recon_agent_step_business_results(tmp_path: Path) -> None:
     )
     assert isinstance(resource_request.result, ResourceReconStepResult)
     assert resource_request.result.outcome == "resource_request"
+
+
+def test_decl_stage_compact_preflight_only_runs_on_first_stage_attempt() -> None:
+    def context(step):
+        return SimpleNamespace(load_step=lambda: step)
+
+    first_worker = DeclStageWorkerAgentStep(
+        step_id="worker_first",
+        flow_id="round_1",
+        scope_id="repo:Repo:node:Main.Core",
+        state=DeclStageWorkerStepState(
+            agent_role="statement_nl_worker",
+            retry_attempt_index=0,
+        ),
+    )
+    retry_worker = DeclStageWorkerAgentStep(
+        step_id="worker_retry",
+        flow_id="round_1",
+        scope_id="repo:Repo:node:Main.Core",
+        state=DeclStageWorkerStepState(
+            agent_role="statement_nl_worker",
+            retry_attempt_index=1,
+        ),
+    )
+    first_reviewer = DeclStageReviewerAgentStep(
+        step_id="reviewer_first",
+        flow_id="round_1",
+        scope_id="repo:Repo:node:Main.Core",
+        state=DeclStageReviewerStepState(
+            agent_role="statement_nl_reviewer",
+            review_attempt_index=0,
+        ),
+    )
+    retry_reviewer = DeclStageReviewerAgentStep(
+        step_id="reviewer_retry",
+        flow_id="round_1",
+        scope_id="repo:Repo:node:Main.Core",
+        state=DeclStageReviewerStepState(
+            agent_role="statement_nl_reviewer",
+            review_attempt_index=1,
+        ),
+    )
+
+    worker_policy = first_worker.prepare_agent_context_before_first_turn(
+        context(first_worker),
+        "agent_worker",
+    )
+    reviewer_policy = first_reviewer.prepare_agent_context_before_first_turn(
+        context(first_reviewer),
+        "agent_reviewer",
+    )
+
+    assert worker_policy is not None and worker_policy.threshold == 0.80
+    assert reviewer_policy is not None and reviewer_policy.threshold == 0.80
+    assert (
+        retry_worker.prepare_agent_context_before_first_turn(
+            context(retry_worker),
+            "agent_worker",
+        )
+        is None
+    )
+    assert (
+        retry_reviewer.prepare_agent_context_before_first_turn(
+            context(retry_reviewer),
+            "agent_reviewer",
+        )
+        is None
+    )

@@ -11,6 +11,8 @@ from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import (
+    AutoProviderRoute,
+    ProviderRoute,
     BootstrapInputValidationView,
     ProviderReadyView,
     RepoDependencyRequirementStatus,
@@ -167,6 +169,7 @@ class RepoWorkspaceService:
         reason: str | None = None,
         interfaces: list[dict[str, str]] | None = None,
         required_proof_availability: ProofAvailability | str | None = None,
+        provider_route: ProviderRoute | None = None,
     ) -> ServiceResult[object]:
         required = (
             ProofAvailability(required_proof_availability)
@@ -180,6 +183,7 @@ class RepoWorkspaceService:
             required_proof_availability=required,
             source_description=source_description,
             reason=reason,
+            provider_route=provider_route or AutoProviderRoute(),
         )
         if not created.ok or created.value is None:
             return self.runtime.foundation.fail(created.issues)

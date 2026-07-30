@@ -36,6 +36,8 @@ class RepoCheckpointKind(StrEnum):
     AFTER_CONTENT_TASK_BATCH_TERMINAL = "after_content_task_batch_terminal"
     BEFORE_RESOURCE_REQUEST_DISPATCH = "before_resource_request_dispatch"
     AFTER_RESOURCE_REQUEST_TERMINAL = "after_resource_request_terminal"
+    BEFORE_REPO_EXPLORATION_DISPATCH = "before_repo_exploration_dispatch"
+    AFTER_REPO_EXPLORATION_TERMINAL = "after_repo_exploration_terminal"
     AFTER_CONTENT_PREPARATION_TERMINAL = "after_content_preparation_terminal"
     AFTER_CONTENT_DECL_ROUND_TERMINAL = "after_content_decl_round_terminal"
     MANUAL_TEST_STABLE_POINT = "manual_test_stable_point"
@@ -166,6 +168,16 @@ class SnapshotRestoreComponent:
                 checkpoint_kind=RepoCheckpointKind.AFTER_RESOURCE_REQUEST_TERMINAL,
                 gate_name="after_resource_request_terminal_stable_point",
                 summary="A resource request has reached a terminal flow state.",
+            ),
+            RepoCheckpointKind.BEFORE_REPO_EXPLORATION_DISPATCH: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.BEFORE_REPO_EXPLORATION_DISPATCH,
+                gate_name="before_repo_exploration_dispatch_stable_point",
+                summary="Coordinator is about to dispatch a repository exploration batch.",
+            ),
+            RepoCheckpointKind.AFTER_REPO_EXPLORATION_TERMINAL: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.AFTER_REPO_EXPLORATION_TERMINAL,
+                gate_name="after_repo_exploration_terminal_stable_point",
+                summary="A repository exploration batch has reached terminal flow states.",
             ),
             RepoCheckpointKind.AFTER_CONTENT_PREPARATION_TERMINAL: RepoCheckpointPolicy(
                 checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_PREPARATION_TERMINAL,

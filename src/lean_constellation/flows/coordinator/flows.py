@@ -13,16 +13,22 @@ from lean_constellation.domain.preparation import RepoDependencyRequirementStatu
 from lean_constellation.domain.repo_run import RepoRunContext
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.checkpoint_policy import record_checkpoint_skip_summary, repo_flow_boundary_checkpoints_enabled
-from lean_constellation.flows.common.flow_requests import node_scope_id
+from lean_constellation.flows.common.flow_requests import (
+    build_repo_exploration_request,
+    node_scope_id,
+)
 from lean_constellation.flows.common.rendering import LeanRenderableFlowInput, LeanRenderableFlowResult
 from lean_constellation.flows.coordinator.submissions import (
     CoordinatorContentTasksSubmission,
+    CoordinatorRepoExplorationSubmission,
     CoordinatorRepoRequirementSubmission,
     CoordinatorResourceRequestSubmission,
 )
 from lean_constellation.flows.coordinator.steps import (
     CoordinatorContentBatchSnapshotStep,
     CoordinatorContentBatchSnapshotStepResult,
+    EnsureRepoExplorationAgentsStep,
+    EnsureRepoExplorationAgentsStepResult,
     CoordinatorRequirementResumeGateStep,
     CoordinatorRequirementResumeGateStepResult,
     CoordinatorStepResult,
@@ -81,7 +87,7 @@ class NativeRepoCoordinatorState(BaseFlowState):
     coordinator_turn_index: int = 0
     pending_dispatch_source_step_id: str | None = None
     pending_dispatch_source_submission_id: str | None = None
-    pending_dispatch_kind: Literal["content_tasks", "resource_request"] | None = None
+    pending_dispatch_kind: Literal["content_tasks", "resource_request", "repo_exploration"] | None = None
     pending_content_node_paths: list[str] = Field(default_factory=list)
     pending_resource_target_summary: str | None = None
     active_content_task_count: int = 0
@@ -151,7 +157,11 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
                 }
                 and repo_workspace.requirement.is_requirement_result_observed(requirement)
             )
-        if state.position.phase not in {"waiting_content_tasks", "waiting_resource_request"}:
+        if state.position.phase not in {
+            "waiting_content_tasks",
+            "waiting_resource_request",
+            "waiting_repo_exploration",
+        }:
             return False
         if not state.waiting_dispatch_step_id:
             return False
@@ -170,6 +180,8 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             state.position = FlowPosition(phase="after_content_task_batch_snapshot")
         elif state.position.phase == "waiting_resource_request":
             state.position = FlowPosition(phase="after_resource_request_terminal_snapshot")
+        elif state.position.phase == "waiting_repo_exploration":
+            state.position = FlowPosition(phase="after_repo_exploration_terminal_snapshot")
         elif state.position.phase == "waiting_requirement":
             state.position = FlowPosition(phase="requirement_resume_gate")
         super().on_exit_waiting(ctx)
@@ -210,10 +222,29 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
                     node_paths=list(state.pending_content_node_paths),
                 )
             )
+        if state.position.phase == "ensure_repo_exploration_agents":
+            return ctx.create_step(
+                EnsureRepoExplorationAgentsStep(
+                    step_id=new_coordinator_step_id("ensure_repo_exploration_agents"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                )
+            )
+        if state.position.phase == "before_repo_exploration_dispatch_snapshot":
+            return ctx.create_step(
+                CoordinatorContentBatchSnapshotStep(
+                    step_id=new_coordinator_step_id("before_repo_exploration_dispatch_snapshot"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                    checkpoint_kind="before_repo_exploration_dispatch",
+                )
+            )
         if state.position.phase == "dispatch_content_tasks":
             return ctx.create_step(_dispatch_step_from_pending(ctx, self, state, expected_submission=CoordinatorContentTasksSubmission))
         if state.position.phase == "dispatch_resource_request":
             return ctx.create_step(_dispatch_step_from_pending(ctx, self, state, expected_submission=CoordinatorResourceRequestSubmission))
+        if state.position.phase == "dispatch_repo_exploration":
+            return ctx.create_step(_repo_exploration_dispatch_step(ctx, self, state))
         if state.position.phase == "before_resource_request_dispatch_snapshot":
             return ctx.create_step(
                 CoordinatorContentBatchSnapshotStep(
@@ -240,6 +271,15 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
                     flow_id=self.flow_id,
                     scope_id=self.scope_id,
                     checkpoint_kind="after_resource_request_terminal",
+                )
+            )
+        if state.position.phase == "after_repo_exploration_terminal_snapshot":
+            return ctx.create_step(
+                CoordinatorContentBatchSnapshotStep(
+                    step_id=new_coordinator_step_id("after_repo_exploration_terminal_snapshot"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                    checkpoint_kind="after_repo_exploration_terminal",
                 )
             )
         if state.position.phase == "mark_repo_ready":
@@ -272,6 +312,8 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             self._consume_coordinator_agent_result(ctx, state, result, ctx.step.submission, ctx.step.step_id)
         elif isinstance(result, CoordinatorRequirementResumeGateStepResult):
             self._consume_requirement_resume_gate_result(state, result)
+        elif isinstance(result, EnsureRepoExplorationAgentsStepResult):
+            state.position = FlowPosition(phase="before_repo_exploration_dispatch_snapshot")
         elif isinstance(result, CoordinatorContentBatchSnapshotStepResult):
             self._consume_content_snapshot_result(state, result)
         elif isinstance(result, DispatchStepResult):
@@ -282,6 +324,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         if self.result is None and self.error is None and state.position.phase in {
             "waiting_content_tasks",
             "waiting_resource_request",
+            "waiting_repo_exploration",
             "waiting_requirement",
         }:
             self.status = FlowStatus.WAITING
@@ -437,6 +480,16 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             state.position = FlowPosition(phase="before_resource_request_dispatch_snapshot")
             return
         if (
+            result.outcome == "repo_exploration"
+            and isinstance(submission, CoordinatorRepoExplorationSubmission)
+            and result.repo_exploration is not None
+        ):
+            state.pending_dispatch_source_step_id = step_id
+            state.pending_dispatch_source_submission_id = submission.submission_id
+            state.pending_dispatch_kind = "repo_exploration"
+            state.position = FlowPosition(phase="ensure_repo_exploration_agents")
+            return
+        if (
             result.outcome == "repo_requirement"
             and result.repo_requirement is not None
             and isinstance(submission, CoordinatorRepoRequirementSubmission)
@@ -454,6 +507,7 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
                 reason=submission.reason,
                 interfaces=list(submission.interfaces),
                 required_proof_availability=submission.required_proof_availability,
+                provider_route=submission.provider_route,
             )
             if not created.ok or created.value is None:
                 message = created.issues[0].message if created.issues else "Failed to create repo requirement."
@@ -531,6 +585,12 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
         if result.checkpoint_kind == "after_resource_request_terminal":
             state.position = FlowPosition(phase="coordinator_callback")
             return
+        if result.checkpoint_kind == "before_repo_exploration_dispatch":
+            state.position = FlowPosition(phase="dispatch_repo_exploration")
+            return
+        if result.checkpoint_kind == "after_repo_exploration_terminal":
+            state.position = FlowPosition(phase="coordinator_callback")
+            return
         self._fail_coordinator("coordinator_snapshot_kind_unsupported", f"Unsupported checkpoint kind: {result.checkpoint_kind}.")
 
     def _consume_dispatch_result(
@@ -550,6 +610,9 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             return
         if state.pending_dispatch_kind == "resource_request":
             state.position = FlowPosition(phase="waiting_resource_request")
+            return
+        if state.pending_dispatch_kind == "repo_exploration":
+            state.position = FlowPosition(phase="waiting_repo_exploration")
             return
         self._fail_coordinator("coordinator_dispatch_kind_missing", "Coordinator dispatch completed without pending dispatch kind.")
 
@@ -742,8 +805,8 @@ def _coordinator_initial_prompt(input_model: NativeRepoCoordinatorInput) -> str:
         "After choosing a branch, read its branch Skill before mutation or dispatch."
     )
     parts.append(
-        "Observe repo truth through tools and submit exactly one coordination move: content node tasks, "
-        "resource request, repo requirement, or repo ready."
+        "Observe repo truth through tools and submit exactly one coordination move: repository exploration, "
+        "content node tasks, resource request, repo requirement, or repo ready."
     )
     return "\n".join(parts)
 
@@ -814,6 +877,63 @@ def _dispatch_step_from_pending(
             source_submission_id=source_submission_id,
             requests=list(submission.requests),
             continuation=submission.continuation,
+        ),
+    )
+
+
+def _repo_exploration_dispatch_step(
+    ctx: FlowContext,
+    flow: NativeRepoCoordinatorFlow,
+    state: NativeRepoCoordinatorState,
+) -> DispatchStep:
+    source_step_id = state.pending_dispatch_source_step_id
+    source_submission_id = state.pending_dispatch_source_submission_id
+    if source_step_id is None or source_submission_id is None:
+        raise TypeError("repo exploration dispatch source step/submission is missing")
+    flow_service = ctx.ark.flow_service
+    if flow_service is None:
+        raise TypeError("ark.flow_service is not registered")
+    source_step = flow_service.get_step(source_step_id)
+    submission = source_step.submission
+    if not isinstance(submission, CoordinatorRepoExplorationSubmission):
+        raise TypeError(
+            "repo exploration dispatch expected CoordinatorRepoExplorationSubmission"
+        )
+    input_model = _require_native_coordinator_input(flow.input)
+    repo_root = _coordinator_repo_root(input_model)
+    if not input_model.repo_key or repo_root is None:
+        raise TypeError("repo exploration dispatch requires repo_key and repo_root")
+    role_by_kind = {
+        "resource": "repo_resource_discovery",
+        "lean_provider": "repo_lean_provider_discovery",
+        "mathlib": "repo_mathlib_recon",
+    }
+    requests = []
+    for spec in submission.explorations:
+        role = role_by_kind[spec.kind.value]
+        agent_id = flow.agent_bindings.get(role)
+        if not agent_id:
+            raise TypeError(f"repo exploration Agent role {role} is not bound")
+        requests.append(
+            build_repo_exploration_request(
+                kind=spec.kind.value,
+                repo_key=input_model.repo_key,
+                repo_root=str(repo_root),
+                scope_id=flow.scope_id,
+                objective=spec.objective,
+                context_summary=spec.context_summary,
+                agent_id=agent_id,
+            )
+        )
+    return DispatchStep(
+        step_id=new_coordinator_step_id("dispatch_repo_exploration"),
+        flow_id=flow.flow_id,
+        scope_id=flow.scope_id,
+        state=DispatchStepState(
+            source_step_id=source_step_id,
+            source_submission_id=source_submission_id,
+            requests=requests,
+            continuation="wait_for_callback",
         ),
     )
 

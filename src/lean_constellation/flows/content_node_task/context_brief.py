@@ -58,6 +58,15 @@ class PreparationResultDetailView(StrictModel):
     unresolved_items: list[str] = Field(default_factory=list)
 
 
+class PriorPreparationReceiptView(StrictModel):
+    kind: PreparationKind
+    objective: str | None = None
+    outcome: str
+    mutation_summary: str | None = None
+    verified_findings: list[str] = Field(default_factory=list)
+    unresolved_items: list[str] = Field(default_factory=list)
+
+
 class PreparationContextBrief(StrictModel):
     available_kinds: list[PreparationKind] = Field(default_factory=list)
     missing_kinds: list[PreparationKind] = Field(default_factory=list)
@@ -316,26 +325,126 @@ def build_prior_preparation_prompt_context(ctx, flow) -> str:
         content_flow_id=flow.parent_flow_id,
         exclude_flow_id=flow.flow_id,
     )
-    if not brief.findings:
+    historical = _prior_same_node_preparation_receipts(ctx, flow, limit=2)
+    if not brief.findings and not historical:
         return "No verified prior preparation is available."
-    return "\n".join(
-        [
-            "Verified preparation already available",
-            "",
-            *[
-                (
-                    f"- {item.kind}: {item.summary or item.outcome}"
-                    + (
-                        f" Unresolved items: {len(item.unresolved_items)}."
-                        if item.unresolved_items
-                        else ""
-                    )
+    lines = ["Verified preparation already available", ""]
+    if brief.findings:
+        lines.append("Current content task")
+        lines.extend(
+            (
+                f"- {item.kind}: {item.summary or item.outcome}"
+                + (
+                    f" Unresolved items: {len(item.unresolved_items)}."
+                    if item.unresolved_items
+                    else ""
                 )
-                for item in brief.findings
-            ],
+            )
+            for item in brief.findings
+        )
+    if historical:
+        if brief.findings:
+            lines.append("")
+        lines.append("Recent same-node results for this preparation kind")
+        for receipt in historical:
+            lines.append(
+                f"- Objective: {receipt.objective or '(not recorded)'}; "
+                f"outcome: {receipt.outcome}."
+            )
+            if receipt.mutation_summary:
+                lines.append(f"  Mutation summary: {receipt.mutation_summary}")
+            if receipt.verified_findings:
+                lines.append(
+                    "  Verified findings: "
+                    + "; ".join(receipt.verified_findings)
+                )
+            if receipt.unresolved_items:
+                lines.append(
+                    "  Unresolved items: "
+                    + "; ".join(receipt.unresolved_items)
+                )
+    lines.extend(
+        [
             "",
             "Read current node truth before searching. Independently verify only unresolved claims.",
         ]
+    )
+    return "\n".join(lines)
+
+
+def _prior_same_node_preparation_receipts(
+    ctx,
+    flow,
+    *,
+    limit: int,
+) -> list[PriorPreparationReceiptView]:
+    flow_service = getattr(ctx.ark, "flow_service", None)
+    if (
+        flow_service is None
+        or flow.flow_type not in _PREPARATION_FLOW_KINDS
+        or not flow.parent_flow_id
+    ):
+        return []
+    current_content = flow_service.get_flow(flow.parent_flow_id)
+    current_input = _agent_fields(current_content.input)
+    node_path = _text(current_input.get("node_path"))
+    if not node_path:
+        return []
+    historical_content = [
+        candidate
+        for candidate in flow_service.list_flows(scope_id=flow.scope_id)
+        if candidate.flow_type == "content_node_task"
+        and candidate.flow_id != current_content.flow_id
+        and _text(_agent_fields(candidate.input).get("node_path")) == node_path
+        and (candidate.created_at, candidate.flow_id)
+        < (current_content.created_at, current_content.flow_id)
+    ]
+    historical_content.sort(key=lambda item: (item.created_at, item.flow_id))
+    content_ids = {candidate.flow_id for candidate in historical_content}
+    matching = [
+        candidate
+        for candidate in flow_service.list_flows(scope_id=flow.scope_id)
+        if candidate.parent_flow_id in content_ids
+        and candidate.flow_type == flow.flow_type
+        and candidate.status in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+    ]
+    matching.sort(key=lambda item: (item.created_at, item.flow_id))
+    return [_preparation_receipt(candidate) for candidate in matching[-limit:]]
+
+
+def _preparation_receipt(flow) -> PriorPreparationReceiptView:
+    kind = _PREPARATION_FLOW_KINDS[flow.flow_type]
+    input_fields = _agent_fields(flow.input)
+    result_fields = _agent_fields(flow.result)
+    return PriorPreparationReceiptView(
+        kind=kind,
+        objective=_first_text(
+            input_fields,
+            ("objective", "recon_objective", "material_objective"),
+        ),
+        outcome=(
+            "failed"
+            if flow.status is FlowStatus.FAILED
+            else _text(result_fields.get("outcome")) or "completed"
+        ),
+        mutation_summary=_first_text(
+            result_fields,
+            (
+                "dependency_change_summary",
+                "index_update_summary",
+                "material_change_summary",
+                "node_mathlib_hint_summary",
+            ),
+        ),
+        verified_findings=_bounded_text_list(
+            result_fields.get("useful_findings")
+        ),
+        unresolved_items=_bounded_text_list(
+            result_fields.get("unresolved_within_visible_boundaries")
+            or result_fields.get("unresolved_in_mathlib")
+            or result_fields.get("unresolved_material_needs")
+            or result_fields.get("missing_targets")
+        ),
     )
 
 

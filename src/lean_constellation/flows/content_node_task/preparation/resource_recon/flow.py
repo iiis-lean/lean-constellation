@@ -23,6 +23,8 @@ from lean_constellation.flows.content_node_task.preparation.common import (
     content_node_workdir,
 )
 
+_MAX_RESOURCE_REQUESTS_PER_FLOW = 8
+
 
 class ResourceReconInput(PreparationReconInput):
     input_type: Literal["resource_recon"] = "resource_recon"
@@ -119,7 +121,14 @@ class ResourceReconFlow(LeanBusinessFlow):
             return
         result = ctx.step.result
         if ctx.step.step_type == "resource_recon_agent_step":
-            self._consume_agent_result(state, input_model, result, ctx.step.submission, ctx.step.step_id)
+            self._consume_agent_result(
+                ctx,
+                state,
+                input_model,
+                result,
+                ctx.step.submission,
+                ctx.step.step_id,
+            )
         elif isinstance(result, DispatchStepResult):
             self._consume_dispatch_result(state, input_model, result, ctx.step.step_id)
         super().on_step_terminal(ctx)
@@ -128,6 +137,7 @@ class ResourceReconFlow(LeanBusinessFlow):
 
     def _consume_agent_result(
         self,
+        ctx: FlowStepContext,
         state: ResourceReconState,
         input_model: ResourceReconInput,
         result: object | None,
@@ -164,8 +174,33 @@ class ResourceReconFlow(LeanBusinessFlow):
             )
             return
         if result.outcome == "resource_request" and isinstance(submission, ResourceReconRequestResourceSubmission):
-            if state.resource_request_count >= 1:
-                self.error = BaseFlowError(error_type="resource_recon_request_limit_exceeded", message="ResourceReconFlow supports one resource request dispatch per run.")
+            if state.resource_request_count >= _MAX_RESOURCE_REQUESTS_PER_FLOW:
+                self.error = BaseFlowError(
+                    error_type="resource_recon_request_safety_cap_exceeded",
+                    message=(
+                        "ResourceReconFlow reached its bounded resource request "
+                        f"safety cap of {_MAX_RESOURCE_REQUESTS_PER_FLOW}."
+                    ),
+                )
+                return
+            requested_key = _resource_request_key(ctx, submission)
+            prior_keys = {
+                _resource_request_key(ctx, prior)
+                for step in ctx.ark.flow_service.list_steps(flow_id=self.flow_id)
+                if step.step_id != step_id
+                and isinstance(
+                    (prior := step.submission),
+                    ResourceReconRequestResourceSubmission,
+                )
+            }
+            if requested_key in prior_keys:
+                self.error = BaseFlowError(
+                    error_type="resource_recon_duplicate_request",
+                    message=(
+                        "ResourceReconFlow cannot request the same canonical "
+                        f"resource twice: {requested_key}."
+                    ),
+                )
                 return
             state.resource_request_count += 1
             state.waiting_dispatch_step_id = step_id
@@ -273,6 +308,26 @@ def _child_flows_for_dispatch(ctx: FlowReadContext | FlowContext, parent_flow_id
         for flow in flow_service.list_flows()
         if flow.parent_flow_id == parent_flow_id and flow.parent_dispatch_step_id == dispatch_step_id
     ]
+
+
+def _resource_request_key(
+    ctx: FlowStepContext,
+    submission: ResourceReconRequestResourceSubmission,
+) -> str:
+    material = getattr(ctx.app, "material", None)
+    if material is not None:
+        normalized = material.prepare_resource_target(
+            target_kind=submission.target_kind,
+            target=submission.target,
+            arxiv_version=submission.arxiv_version,
+        )
+        if normalized.ok and normalized.value is not None:
+            return normalized.value.canonical_locator
+    version = submission.arxiv_version or ""
+    return (
+        f"{submission.target_kind}:"
+        f"{submission.target.strip().casefold()}:{version.casefold()}"
+    )
 
 
 def _require_state(state: BaseFlowState) -> ResourceReconState:

@@ -9,6 +9,8 @@ from lean_constellation.services.material.resource_library import ResourceDraftS
 from lean_constellation.services.tool_facade import ToolCapability, ToolExecutionContext, ToolSpec
 from lean_constellation.tools.args import (
     DraftIdArgs,
+    ExternalResourceInspectArgs,
+    ExternalResourceSearchArgs,
     MaterialContextArgs,
     ResourceArtifactExtractArgs,
     ResourceKeyArgs,
@@ -202,6 +204,36 @@ def _get_resource_draft(runtime, ctx: ToolExecutionContext, args: DraftIdArgs):
     )
 
 
+def _search_external_resources(runtime, ctx, args: ExternalResourceSearchArgs):
+    del ctx
+    result = runtime.external.resource_discovery.search(
+        args.query,
+        kinds=args.kinds,
+        limit=args.limit,
+    )
+    if not result.ok:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                result.issue_code or "external_resource_discovery_failed",
+                result.summary,
+            )
+        )
+    return runtime.foundation.ok(result)
+
+
+def _inspect_external_resource(runtime, ctx, args: ExternalResourceInspectArgs):
+    del ctx
+    result = runtime.external.resource_discovery.inspect(args.target)
+    if not result.ok:
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                result.issue_code or "external_resource_inspection_failed",
+                result.summary,
+            )
+        )
+    return runtime.foundation.ok(result)
+
+
 def _acquire_resource_material(runtime, ctx: ToolExecutionContext, args: ResourceMaterialAcquireArgs):
     draft_id = _active_resource_draft_id(runtime, ctx)
     if not draft_id.ok or draft_id.value is None:
@@ -273,6 +305,28 @@ def build_tool_specs() -> list[ToolSpec]:
     roles = {"coordinator", "plan", "worker", "reviewer", "admin"}
     curator_roles = {"worker", "admin"}
     return [
+        handler_tool(
+            name="search_external_resources",
+            description="Search bounded scholarly metadata for source-attributed supporting resources without acquiring or registering them.",
+            args_model=ExternalResourceSearchArgs,
+            capability=ToolCapability.READ,
+            result_view="external_resource_candidates",
+            groups={AppGroup.EXTERNAL_RESOURCE_DISCOVERY_READ},
+            roles={"coordinator", "worker", "admin"},
+            handler=_search_external_resources,
+            required_context=set(),
+        ),
+        handler_tool(
+            name="inspect_external_resource",
+            description="Inspect one canonical OpenAlex, DOI, or arXiv resource candidate as compact scholarly metadata.",
+            args_model=ExternalResourceInspectArgs,
+            capability=ToolCapability.READ,
+            result_view="external_resource_detail",
+            groups={AppGroup.EXTERNAL_RESOURCE_DISCOVERY_READ},
+            roles={"coordinator", "worker", "admin"},
+            handler=_inspect_external_resource,
+            required_context=set(),
+        ),
         handler_tool(
             name="get_material_context",
             description=(

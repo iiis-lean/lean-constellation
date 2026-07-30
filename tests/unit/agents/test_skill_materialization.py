@@ -127,7 +127,7 @@ def test_coordinator_skill_inventory_and_workflow_boundaries() -> None:
     coordinator = get_agent_type_spec("CoordinatorAgent")
     specs = build_skill_specs()
 
-    assert len(coordinator.skill_keys) == 17
+    assert len(coordinator.skill_keys) == 18
     for removed in (
         "coordinator-content-task-lifecycle",
         "coordinator-repo-requirement-lifecycle",

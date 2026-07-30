@@ -85,6 +85,7 @@ def test_node_dir_dependency_recon_flow_completed_result(tmp_path: Path) -> None
     assert flow.result.outcome == "completed"
     assert flow.result.dependency_change_summary == "Added Main.Base."
     assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(tmp_path)
+    assert runtime.agent_service.start_records[-1].context_maintenance_policy is None
 
 
 def test_mathlib_recon_flow_completed_result(tmp_path: Path) -> None:
@@ -112,6 +113,7 @@ def test_mathlib_recon_flow_completed_result(tmp_path: Path) -> None:
     assert flow.result.outcome == "completed"
     assert flow.result.index_update_summary == "Recorded Mathlib.Data.Nat.Basic and Nat.succ_ne_zero."
     assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(tmp_path)
+    assert runtime.agent_service.start_records[-1].context_maintenance_policy is None
 
 
 def test_resource_recon_flow_blocked_and_completed_results(tmp_path: Path) -> None:
@@ -158,7 +160,9 @@ def test_resource_recon_flow_blocked_and_completed_results(tmp_path: Path) -> No
     assert runtime.agent_service.start_records[-1].workdir == _expected_node_workdir(tmp_path)
 
 
-def test_resource_recon_flow_resource_request_callback(tmp_path: Path) -> None:
+def test_resource_recon_flow_supports_multiple_resource_request_callbacks(
+    tmp_path: Path,
+) -> None:
     runtime = _runtime(tmp_path)
     flow_id = _start_recon(runtime, "resource_recon", tmp_path)
     repo_root = tmp_path / "Repo"
@@ -207,6 +211,52 @@ def test_resource_recon_flow_resource_request_callback(tmp_path: Path) -> None:
 
     callback_step_id = runtime.flow_service.advance_flow(flow_id)
     runtime.agent_service.queue_submission(
+        ResourceReconRequestResourceSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="resource_recon_request_resource",
+            tool_name="submit_resource_request",
+            repo_key="Repo",
+            node_path="Main.Core",
+            target_kind="web",
+            target="https://example.com/supporting-note",
+            requests=[
+                build_resource_curation_request(
+                    scope_id="repo:Repo:node:Main.Core",
+                    repo_key="Repo",
+                    repo_root=str(repo_root),
+                    node_path="Main.Core",
+                    target_kind="web",
+                    target="https://example.com/supporting-note",
+                    requested_by="resource_recon",
+                )
+            ],
+            summary="Curate supporting note.",
+        )
+    )
+    runtime.run_step(callback_step_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.state.position.phase == "dispatch_resource_request"
+    assert flow.state.resource_request_count == 2
+
+    second_dispatch_step_id = _advance_and_run(runtime, flow_id)
+    second_child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=second_dispatch_step_id,
+    )[0]
+    _complete_child_flow(
+        runtime,
+        second_child.flow_id,
+        ResourceCurationResult(
+            outcome="rejected",
+            repo_key="Repo",
+            target_summary="web:https://example.com/supporting-note",
+            reason="The note is not authoritative.",
+            summary="Rejected supporting note.",
+        ),
+    )
+
+    second_callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    runtime.agent_service.queue_submission(
         ResourceReconCompletedSubmission(
             submission_id=new_submission_id("sub"),
             submission_type="resource_recon_completed",
@@ -220,12 +270,77 @@ def test_resource_recon_flow_resource_request_callback(tmp_path: Path) -> None:
             summary="Resource recon completed after curation.",
         )
     )
-    runtime.run_step(callback_step_id)
+    runtime.run_step(second_callback_step_id)
 
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result.outcome == "completed"
     assert flow.result.material_change_summary == "Attached duplicate resource res_existing."
     assert "Duplicate resource." in (runtime.agent_service.start_records[1].prompt or "")
+    assert "Rejected supporting note." in (
+        runtime.agent_service.start_records[2].prompt or ""
+    )
     assert runtime.agent_service.start_records[0].workdir == _expected_node_workdir(tmp_path)
     assert runtime.agent_service.start_records[1].workdir == _expected_node_workdir(tmp_path)
+    assert runtime.agent_service.start_records[2].workdir == _expected_node_workdir(tmp_path)
+    assert len(
+        {record.agent_id for record in runtime.agent_service.start_records}
+    ) == 1
+
+
+def test_resource_recon_flow_rejects_repeated_resource_request(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    flow_id = _start_recon(runtime, "resource_recon", tmp_path)
+    repo_root = tmp_path / "Repo"
+
+    def request_submission():
+        return ResourceReconRequestResourceSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="resource_recon_request_resource",
+            tool_name="submit_resource_request",
+            repo_key="Repo",
+            node_path="Main.Core",
+            target_kind="arxiv",
+            target="2501.12345",
+            requests=[
+                build_resource_curation_request(
+                    scope_id="repo:Repo:node:Main.Core",
+                    repo_key="Repo",
+                    repo_root=str(repo_root),
+                    node_path="Main.Core",
+                    target_kind="arxiv",
+                    target="2501.12345",
+                    requested_by="resource_recon",
+                )
+            ],
+            summary="Curate paper.",
+        )
+
+    runtime.agent_service.queue_submission(request_submission())
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    child = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )[0]
+    _complete_child_flow(
+        runtime,
+        child.flow_id,
+        ResourceCurationResult(
+            outcome="rejected",
+            repo_key="Repo",
+            target_summary="arxiv:2501.12345",
+            reason="Not useful.",
+            summary="Rejected paper.",
+        ),
+    )
+
+    callback_step_id = runtime.flow_service.advance_flow(flow_id)
+    runtime.agent_service.queue_submission(request_submission())
+    runtime.run_step(callback_step_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.FAILED
+    assert flow.error.error_type == "resource_recon_duplicate_request"

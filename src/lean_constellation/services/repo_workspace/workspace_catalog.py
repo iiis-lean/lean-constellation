@@ -24,6 +24,9 @@ from lean_constellation.domain.repo import (
 from lean_constellation.services.foundation import FoundationContext, IssueSeverity, ServiceResult
 from lean_constellation.services.repo_workspace.lake_dependency import LakeDependencyComponent, LakeDependencyEntry
 from lean_constellation.services.repo_workspace.repo_metadata import RepoMetadataComponent
+from lean_constellation.services.repo_workspace.repo_preparation import (
+    resolve_requirement_routes,
+)
 from lean_constellation.services.repo_workspace.repo_requirement import RepoRequirementComponent
 
 if TYPE_CHECKING:
@@ -189,10 +192,26 @@ class WorkspaceCatalogComponent:
                         )
                     )
         items.sort(key=lambda item: (item.consumer_repo, item.requirement.name))
+        route, route_summary, conflicts = resolve_requirement_routes(
+            [item.requirement for item in items]
+        )
+        if route is None:
+            return self.runtime.foundation.fail(
+                [
+                    self.runtime.foundation.issue(
+                        "requirement_provider_route_conflict",
+                        conflict,
+                        field="provider_route",
+                    )
+                    for conflict in conflicts
+                ]
+            )
         required = self._required_proof_availability(items)
         return self.runtime.foundation.ok(
             RequirementGroupView(
                 target_repo=target_repo,
+                resolved_provider_route=route,
+                route_resolution_summary=route_summary,
                 required_proof_availability=required,
                 provider_completion_mode=self._provider_completion_mode(required),
                 requirements=items,

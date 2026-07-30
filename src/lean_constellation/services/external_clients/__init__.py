@@ -55,12 +55,24 @@ from lean_constellation.services.external_clients.material_acquisition import (
 )
 from lean_constellation.services.external_clients.process import ExternalCommandResult
 from lean_constellation.services.external_clients.service import ExternalClientConfig, ExternalClientService
+from lean_constellation.services.external_clients.resource_discovery import (
+    ExternalResourceCandidate,
+    ExternalResourceDiscoveryClient,
+    ExternalResourceDiscoveryConfig,
+    ExternalResourceInspectResult,
+    ExternalResourceSearchResult,
+)
 
 __all__ = [
     "AcquiredArtifactResult",
     "AcquiredArtifactView",
     "ExternalClientConfig",
     "ExternalClientService",
+    "ExternalResourceCandidate",
+    "ExternalResourceDiscoveryClient",
+    "ExternalResourceDiscoveryConfig",
+    "ExternalResourceInspectResult",
+    "ExternalResourceSearchResult",
     "ExternalCommandResult",
     "ExtractedMaterialResult",
     "GitCheckoutResult",

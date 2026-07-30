@@ -30,6 +30,7 @@ FLOW_PARAMS = {
         "repo_root": "/workspace/Provider",
         "workspace_root": "/workspace",
         "requirement_refs": ["consumer:req"],
+        "resolved_provider_route": {"kind": "auto"},
         "admin_notes": "unit",
     },
     "native_repo_preparation": {

@@ -19,7 +19,16 @@ from agent_runtime_kit.flow.models import (
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.preparation import RepoRequirementRef, SourceCorpusMode, UpstreamDependencyInput
+from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    AutoProviderRoute,
+    NativeProviderRoute,
+    ProviderRoute,
+    RejectedUpstreamCandidate,
+    RepoRequirementRef,
+    SourceCorpusMode,
+    UpstreamDependencyInput,
+)
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.repo_lifecycle.submissions import (
@@ -236,15 +245,73 @@ class ApplyRepoFormatChoiceStep(BaseStep):
     def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
         flow = _load_requirement_bootstrap_flow(ctx)
         input_model = _require_bootstrap_input(flow.input)
-        submission = _latest_repo_format_submission(ctx, flow)
-        if submission is None:
-            return ctx.complete_step(_repair_result("repo_format_choice_missing", "Repo format choice submission is missing."))
+        route: ProviderRoute = input_model.resolved_provider_route
+        if isinstance(route, AutoProviderRoute):
+            submission = _latest_repo_format_submission(ctx, flow)
+            if submission is None:
+                return ctx.complete_step(
+                    _repair_result(
+                        "repo_format_choice_missing",
+                        "Repo format choice submission is missing.",
+                    )
+                )
+            if isinstance(submission, RepoFormatAdapterChoiceSubmission):
+                if not submission.git_url.strip():
+                    return ctx.complete_step(
+                        _repair_result(
+                            "adapter_choice_missing_upstream",
+                            "Adapter choice must include git_url.",
+                        )
+                    )
+                if not submission.revision:
+                    return ctx.complete_step(
+                        _repair_result(
+                            "adapter_choice_revision_missing",
+                            "Adapter choice must resolve an immutable Git commit before apply.",
+                        )
+                    )
+                try:
+                    route = AdapterProviderRoute(
+                        git_url=submission.git_url,
+                        revision=submission.revision,
+                        subdir=submission.subdir,
+                        package_name=submission.package_name,
+                        likely_import_module=submission.likely_import_module,
+                        evidence_summary=submission.evidence_summary,
+                        known_risks=submission.known_risks,
+                    )
+                except ValueError as exc:
+                    return ctx.complete_step(
+                        _repair_result("adapter_choice_invalid", str(exc))
+                    )
+            elif isinstance(submission, RepoFormatNativeChoiceSubmission):
+                try:
+                    route = NativeProviderRoute(
+                        evidence_summary=submission.summary
+                        or "Repo format discovery selected a native provider.",
+                        searched_targets=submission.searched_targets,
+                        rejected_candidates=[
+                            RejectedUpstreamCandidate.model_validate(
+                                candidate.model_dump(mode="json")
+                            )
+                            for candidate in submission.rejected_candidates
+                        ],
+                    )
+                except ValueError as exc:
+                    return ctx.complete_step(
+                        _repair_result("native_choice_invalid", str(exc))
+                    )
+            else:
+                return ctx.complete_step(
+                    _repair_result(
+                        "unknown_repo_format_choice",
+                        f"Unsupported repo format submission: {submission.submission_type}",
+                    )
+                )
 
         repo_workspace = _repo_workspace(ctx)
         repo_root = Path(input_model.repo_root)
-        if isinstance(submission, RepoFormatAdapterChoiceSubmission):
-            if not submission.git_url.strip():
-                return ctx.complete_step(_repair_result("adapter_choice_missing_upstream", "Adapter choice must include git_url."))
+        if isinstance(route, AdapterProviderRoute):
             prepared_input = repo_workspace.preparation.get_preparation_input(repo_root)
             if not prepared_input.ok or prepared_input.value is None:
                 return ctx.complete_step(
@@ -270,13 +337,13 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                     )
                 )
             upstream = UpstreamDependencyInput(
-                git_url=submission.git_url,
-                revision=submission.revision,
-                subdir=submission.subdir,
-                package_name=submission.package_name,
-                module_name=submission.likely_import_module,
-                evidence_summary=submission.evidence_summary,
-                known_risks=submission.known_risks,
+                git_url=route.git_url,
+                revision=route.revision,
+                subdir=route.subdir,
+                package_name=route.package_name,
+                module_name=route.likely_import_module,
+                evidence_summary=route.evidence_summary,
+                known_risks=route.known_risks,
             )
             initialized = repo_workspace.initialize_repo_as_adapter(
                 repo_root,
@@ -303,7 +370,7 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                 )
             )
 
-        if isinstance(submission, RepoFormatNativeChoiceSubmission):
+        if isinstance(route, NativeProviderRoute):
             initialized = repo_workspace.initialize_repo_as_native(
                 repo_root,
                 project_name=input_model.target_repo,
@@ -328,10 +395,7 @@ class ApplyRepoFormatChoiceStep(BaseStep):
             )
 
         return ctx.complete_step(
-            _repair_result(
-                "unknown_repo_format_choice",
-                f"Unsupported repo format submission: {submission.submission_type}",
-            )
+            _repair_result("unknown_repo_format_choice", "Unsupported provider route.")
         )
 
 

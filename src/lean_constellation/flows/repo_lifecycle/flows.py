@@ -16,6 +16,13 @@ from agent_runtime_kit.flow.standard_steps import (
 )
 from pydantic import Field, model_validator
 
+from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    AutoProviderRoute,
+    NativeProviderRoute,
+    ProviderRoute,
+    VerifiedAdapterRouteReceipt,
+)
 from lean_constellation.domain.repo_recovery import NativeSourceIndexRecoveryContract
 from lean_constellation.domain.repo_run import RepoRunSpec
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
@@ -67,7 +74,38 @@ class RequirementGroupRepoBootstrapParams(LeanFlowParams):
     repo_root: str
     workspace_root: str
     requirement_refs: list[str] = Field(default_factory=list)
+    resolved_provider_route: ProviderRoute
+    verified_adapter_route: VerifiedAdapterRouteReceipt | None = None
     admin_notes: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_direct_route_receipt(
+        self,
+    ) -> RequirementGroupRepoBootstrapParams:
+        route = self.resolved_provider_route
+        receipt = self.verified_adapter_route
+        if isinstance(route, AdapterProviderRoute):
+            if receipt is None:
+                raise ValueError("direct adapter route requires a verified adapter receipt")
+            expected = (
+                route.git_url,
+                route.revision,
+                route.subdir,
+                route.package_name,
+                route.likely_import_module,
+            )
+            current = (
+                receipt.git_url,
+                receipt.revision,
+                receipt.subdir,
+                receipt.package_name,
+                receipt.likely_import_module,
+            )
+            if current != expected:
+                raise ValueError("verified adapter receipt does not match the resolved provider route")
+        elif receipt is not None:
+            raise ValueError("verified adapter receipt is only valid for an adapter route")
+        return self
 
 
 class RequirementGroupRepoBootstrapInput(LeanRenderableFlowInput):
@@ -76,6 +114,8 @@ class RequirementGroupRepoBootstrapInput(LeanRenderableFlowInput):
     repo_root: str
     workspace_root: str
     requirement_refs: list[str] = Field(default_factory=list)
+    resolved_provider_route: ProviderRoute
+    verified_adapter_route: VerifiedAdapterRouteReceipt | None = None
     admin_notes: str | None = None
 
     def agent_title(self) -> str:
@@ -84,6 +124,8 @@ class RequirementGroupRepoBootstrapInput(LeanRenderableFlowInput):
     def agent_fields(self) -> dict[str, object]:
         return {
             "requirement_count": len(self.requirement_refs),
+            "provider_route": self.resolved_provider_route.model_dump(mode="json"),
+            "adapter_route_verified": self.verified_adapter_route is not None,
             "admin_notes": self.admin_notes,
         }
 
@@ -235,7 +277,20 @@ class RequirementGroupRepoBootstrapFlow(LeanBusinessFlow):
     ) -> None:
         if result.outcome == "passed":
             state.preparation_input_validated = True
-            state.position = FlowPosition(phase="format_discovery")
+            if isinstance(input_model.resolved_provider_route, AutoProviderRoute):
+                state.position = FlowPosition(phase="format_discovery")
+            elif isinstance(input_model.resolved_provider_route, AdapterProviderRoute):
+                state.selected_repo_format = "adapter"
+                state.adapter_choice_summary = (
+                    input_model.resolved_provider_route.evidence_summary
+                )
+                state.position = FlowPosition(phase="apply_format_choice")
+            elif isinstance(input_model.resolved_provider_route, NativeProviderRoute):
+                state.selected_repo_format = "native"
+                state.native_choice_summary = (
+                    input_model.resolved_provider_route.evidence_summary
+                )
+                state.position = FlowPosition(phase="apply_format_choice")
             return
         state.position = FlowPosition(phase="completed")
         self.result = RequirementGroupRepoBootstrapResult(

@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lean_constellation.domain.common import utc_now_iso
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    AutoProviderRoute,
+    NativeProviderRoute,
+    ProviderRoute,
+    RejectedUpstreamCandidate,
     RepoDependencyRequirement,
     RepoDependencyRequirementStatus,
     RequirementResumeCandidateView,
@@ -40,6 +47,7 @@ class RepoRequirementComponent:
         required_proof_availability: ProofAvailability | str = ProofAvailability.DECLARED,
         source_description: str | None = None,
         reason: str | None = None,
+        provider_route: ProviderRoute | None = None,
     ) -> ServiceResult[RequirementView]:
         safe_name = self.runtime.foundation.layout.ensure_safe_key(name)
         safe_target = self.runtime.foundation.layout.ensure_safe_key(target_repo)
@@ -50,9 +58,15 @@ class RepoRequirementComponent:
                     "Requirement needs at least source_description or reason.",
                 )
             )
+        normalized_route = self.normalize_provider_route(
+            provider_route or AutoProviderRoute()
+        )
+        if not normalized_route.ok or normalized_route.value is None:
+            return self.runtime.foundation.fail(normalized_route.issues)
         requirement = RepoDependencyRequirement(
             name=safe_name,
             target_repo=safe_target,
+            provider_route=normalized_route.value,
             required_proof_availability=ProofAvailability(required_proof_availability),
             source_description=self._strip_or_none(source_description),
             reason=self._strip_or_none(reason),
@@ -72,6 +86,50 @@ class RepoRequirementComponent:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(self._view(repo_root, requirement))
 
+    def normalize_provider_route(
+        self,
+        provider_route: ProviderRoute,
+    ) -> ServiceResult[ProviderRoute]:
+        if isinstance(provider_route, AdapterProviderRoute):
+            try:
+                git_url = self.runtime.external.github_repo.normalize_github_url(
+                    provider_route.git_url
+                )
+            except ValueError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "provider_route_git_url_invalid",
+                        str(exc),
+                        field="provider_route.git_url",
+                    )
+                )
+            return self.runtime.foundation.ok(
+                provider_route.model_copy(update={"git_url": git_url})
+            )
+        if isinstance(provider_route, NativeProviderRoute):
+            rejected: list[RejectedUpstreamCandidate] = []
+            for candidate in provider_route.rejected_candidates:
+                if candidate.git_url is None:
+                    rejected.append(candidate)
+                    continue
+                try:
+                    git_url = self.runtime.external.github_repo.normalize_github_url(
+                        candidate.git_url
+                    )
+                except ValueError as exc:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "provider_route_rejected_git_url_invalid",
+                            str(exc),
+                            field="provider_route.rejected_candidates.git_url",
+                        )
+                    )
+                rejected.append(candidate.model_copy(update={"git_url": git_url}))
+            return self.runtime.foundation.ok(
+                provider_route.model_copy(update={"rejected_candidates": rejected})
+            )
+        return self.runtime.foundation.ok(provider_route)
+
     def get_requirement(self, repo_root: Path, *, name: str) -> ServiceResult[RequirementView]:
         path = self._path(repo_root, name)
         loaded = self.runtime.foundation.store.read_json(path, RepoDependencyRequirement)
@@ -84,6 +142,99 @@ class RepoRequirementComponent:
                 )
             )
         return self.runtime.foundation.ok(self._view(repo_root, loaded.value))
+
+    @staticmethod
+    def requirement_digest(requirement: RepoDependencyRequirement) -> str:
+        payload = json.dumps(
+            requirement.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def replace_requirement(
+        self,
+        repo_root: Path,
+        *,
+        current_name: str,
+        expected_current_digest: str,
+        replacement: RepoDependencyRequirement,
+    ) -> ServiceResult[RequirementView]:
+        loaded = self.get_requirement(repo_root, name=current_name)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        current = loaded.value.requirement
+        current_digest = self.requirement_digest(current)
+        if current_digest != expected_current_digest:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_digest_mismatch",
+                    "Requirement changed after the operator preview.",
+                    current=current_digest,
+                    expected=expected_current_digest,
+                    object_ref=current_name,
+                )
+            )
+        safe_name = self.runtime.foundation.layout.ensure_safe_key(replacement.name)
+        safe_target = self.runtime.foundation.layout.ensure_safe_key(
+            replacement.target_repo
+        )
+        normalized_route = self.normalize_provider_route(
+            replacement.provider_route
+        )
+        if not normalized_route.ok or normalized_route.value is None:
+            return self.runtime.foundation.fail(normalized_route.issues)
+        replacement = replacement.model_copy(
+            update={
+                "name": safe_name,
+                "target_repo": safe_target,
+                "provider_route": normalized_route.value,
+            }
+        )
+        old_path = self._path(repo_root, current_name)
+        new_path = self._path(repo_root, safe_name)
+        if new_path != old_path and new_path.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_name_duplicate",
+                    f"Requirement already exists: {safe_name}",
+                    object_ref=str(new_path),
+                )
+            )
+        if replacement.model_dump(mode="json") == current.model_dump(mode="json"):
+            return self.runtime.foundation.ok(self._view(repo_root, current))
+        with self.runtime.foundation.store.mutation(
+            "replace_repo_dependency_requirement"
+        ) as mutation:
+            mutation.stage_json(
+                new_path,
+                replacement,
+                mode=(
+                    WriteMode.UPDATE_EXISTING
+                    if new_path == old_path
+                    else WriteMode.CREATE_ONLY
+                ),
+            )
+            if new_path != old_path:
+                mutation.stage_delete(old_path)
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
+        reloaded = self.get_requirement(repo_root, name=safe_name)
+        if not reloaded.ok or reloaded.value is None:
+            return self.runtime.foundation.fail(reloaded.issues)
+        if self.requirement_digest(reloaded.value.requirement) != self.requirement_digest(
+            replacement
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_replace_post_validation_failed",
+                    "Replacement requirement did not reload with the expected digest.",
+                    object_ref=safe_name,
+                )
+            )
+        return reloaded
 
     def list_requirements(
         self,

@@ -18,6 +18,12 @@ from lean_constellation.flows.common.flow_requests import (
 )
 from lean_constellation.flows.common.submissions import new_submission_id, submission_agent_id
 from lean_constellation.domain.interface import DeclKind
+from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    AutoProviderRoute,
+    NativeProviderRoute,
+    ProviderRoute,
+)
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
 from lean_constellation.flows.content_node_task.decl_round.submissions import (
     DeclRoundDispatchSubmission,
@@ -41,9 +47,16 @@ from lean_constellation.flows.content_node_task.submissions import (
 )
 from lean_constellation.flows.coordinator.submissions import (
     CoordinatorContentTasksSubmission,
+    CoordinatorRepoExplorationSubmission,
     CoordinatorRepoReadySubmission,
     CoordinatorRepoRequirementSubmission,
     CoordinatorResourceRequestSubmission,
+    RepoExplorationSpec,
+)
+from lean_constellation.flows.repo_exploration.submissions import (
+    RepoLeanProviderDiscoverySubmission,
+    RepoMathlibReconSubmission,
+    RepoResourceDiscoverySubmission,
 )
 from lean_constellation.flows.repo_lifecycle.submissions import (
     AdapterCatalogBlockedSubmission,
@@ -68,6 +81,7 @@ from lean_constellation.tools.source_index_ownership import authorize_source_ind
 from lean_constellation.tools.submit_args import (
     SubmitAdapterCatalogBlockedArgs,
     SubmitAdapterCatalogReadyArgs,
+    SubmitAdapterRepoRequirementArgs,
     SubmitAdapterRepoChoiceArgs,
     SubmitContentNodeBlockedArgs,
     SubmitContentNodeFailedArgs,
@@ -79,8 +93,13 @@ from lean_constellation.tools.submit_args import (
     SubmitLocalResourceCreatedArgs,
     SubmitMathlibReconCompletedArgs,
     SubmitNativeRepoChoiceArgs,
+    SubmitNativeRepoRequirementArgs,
     SubmitNodeDirDependencyReconCompletedArgs,
     SubmitRepoReadyArgs,
+    SubmitRepoExplorationArgs,
+    SubmitRepoLeanProviderDiscoveryResultArgs,
+    SubmitRepoMathlibReconResultArgs,
+    SubmitRepoResourceDiscoveryResultArgs,
     SubmitRepoRequirementArgs,
     SubmitResourceDuplicateArgs,
     SubmitResourceReconBlockedArgs,
@@ -501,6 +520,88 @@ def submit_resource_request(runtime: Any, ctx: ToolExecutionContext, args: Submi
     return _resource_request(runtime, ctx, args, submission_cls=cls)
 
 
+def submit_repo_exploration(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    args: SubmitRepoExplorationArgs,
+) -> ServiceResult[PreparedSubmissionView]:
+    submission = CoordinatorRepoExplorationSubmission(
+        **_base_kwargs(ctx, tool_name="submit_repo_exploration", summary=args.summary),
+        explorations=[
+            RepoExplorationSpec(
+                kind=item.kind,
+                objective=item.objective,
+                context_summary=item.context_summary.strip() if item.context_summary else None,
+            )
+            for item in args.explorations
+        ],
+    )
+    return _prepared(
+        runtime,
+        submission,
+        agent_view={"accepted_kinds": [item.kind.value for item in submission.explorations]},
+    )
+
+
+def submit_repo_resource_discovery_result(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    args: SubmitRepoResourceDiscoveryResultArgs,
+) -> ServiceResult[PreparedSubmissionView]:
+    return _prepared(
+        runtime,
+        RepoResourceDiscoverySubmission(
+            **_base_kwargs(ctx, tool_name="submit_repo_resource_discovery_result", summary=args.summary),
+            outcome=args.outcome,
+            candidates=[candidate.model_dump() for candidate in args.candidates],
+        ),
+        agent_view={"outcome": args.outcome, "candidate_count": len(args.candidates)},
+    )
+
+
+def submit_repo_lean_provider_discovery_result(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    args: SubmitRepoLeanProviderDiscoveryResultArgs,
+) -> ServiceResult[PreparedSubmissionView]:
+    candidates = []
+    for candidate in args.candidates:
+        data = candidate.model_dump()
+        try:
+            data["git_url"] = runtime.external.github_repo.normalize_github_url(candidate.git_url)
+        except ValueError as exc:
+            return _fail(runtime, "git_url_invalid", str(exc), field="git_url")
+        candidates.append(data)
+    return _prepared(
+        runtime,
+        RepoLeanProviderDiscoverySubmission(
+            **_base_kwargs(ctx, tool_name="submit_repo_lean_provider_discovery_result", summary=args.summary),
+            outcome=args.outcome,
+            candidates=candidates,
+        ),
+        agent_view={"outcome": args.outcome, "candidate_count": len(candidates)},
+    )
+
+
+def submit_repo_mathlib_recon_result(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    args: SubmitRepoMathlibReconResultArgs,
+) -> ServiceResult[PreparedSubmissionView]:
+    return _prepared(
+        runtime,
+        RepoMathlibReconSubmission(
+            **_base_kwargs(ctx, tool_name="submit_repo_mathlib_recon_result", summary=args.summary),
+            **args.model_dump(exclude={"summary"}),
+        ),
+        agent_view={
+            "outcome": args.outcome,
+            "created_module_count": len(args.created_modules),
+            "created_declaration_count": len(args.created_declarations),
+        },
+    )
+
+
 def _resource_target(runtime: Any, target_kind: str, target: str, arxiv_version: str | None) -> ServiceResult[Any]:
     return runtime.material.prepare_resource_target(
         target_kind=target_kind,
@@ -782,7 +883,14 @@ def _current_coordinator_content_parallelism(runtime: Any, ctx: ToolExecutionCon
     return int(getattr(run_spec, "max_parallel_content_node_tasks", 1))
 
 
-def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoRequirementArgs) -> ServiceResult[PreparedSubmissionView]:
+def _submit_repo_requirement(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    args: SubmitRepoRequirementArgs,
+    *,
+    provider_route: ProviderRoute,
+    tool_name: str,
+) -> ServiceResult[PreparedSubmissionView]:
     if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", args.name) is None:
         return runtime.foundation.fail(
             runtime.foundation.issue(
@@ -870,9 +978,10 @@ def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: Submi
     return _prepared(
         runtime,
         CoordinatorRepoRequirementSubmission(
-            **_base_kwargs(ctx, tool_name="submit_repo_requirement", summary=args.summary),
+            **_base_kwargs(ctx, tool_name=tool_name, summary=args.summary),
             requirement_name=requirement_name,
             target_repo=target_repo,
+            provider_route=provider_route,
             required_proof_availability=required_proof_availability,
             source_description=args.source_description.strip() if args.source_description else None,
             reason=args.reason.strip() if args.reason else None,
@@ -881,10 +990,91 @@ def submit_repo_requirement(runtime: Any, ctx: ToolExecutionContext, args: Submi
         agent_view={
             "requirement_name": requirement_name,
             "target_repo": target_repo,
+            "provider_route": provider_route.model_dump(mode="json"),
             "required_proof_availability": str(required_proof_availability),
             "interfaces": interfaces,
             "summary": "Requirement submission validated; waiting state will be recorded after the submission is accepted.",
         },
+    )
+
+
+def submit_repo_requirement(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    args: SubmitRepoRequirementArgs,
+) -> ServiceResult[PreparedSubmissionView]:
+    return _submit_repo_requirement(
+        runtime,
+        ctx,
+        args,
+        provider_route=AutoProviderRoute(),
+        tool_name="submit_repo_requirement",
+    )
+
+
+def submit_adapter_repo_requirement(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    args: SubmitAdapterRepoRequirementArgs,
+) -> ServiceResult[PreparedSubmissionView]:
+    try:
+        route = AdapterProviderRoute(
+            git_url=runtime.external.github_repo.normalize_github_url(args.git_url),
+            revision=args.revision,
+            subdir=args.subdir,
+            package_name=args.package_name,
+            likely_import_module=args.likely_import_module,
+            evidence_summary=args.evidence_summary,
+            known_risks=args.known_risks,
+        )
+    except ValueError as exc:
+        return _fail(
+            runtime,
+            "adapter_provider_route_invalid",
+            str(exc),
+            field="provider_route",
+        )
+    return _submit_repo_requirement(
+        runtime,
+        ctx,
+        args,
+        provider_route=route,
+        tool_name="submit_adapter_repo_requirement",
+    )
+
+
+def submit_native_repo_requirement(
+    runtime: Any,
+    ctx: ToolExecutionContext,
+    args: SubmitNativeRepoRequirementArgs,
+) -> ServiceResult[PreparedSubmissionView]:
+    try:
+        route = NativeProviderRoute(
+            evidence_summary=args.evidence_summary,
+            searched_targets=args.searched_targets,
+            rejected_candidates=[
+                {
+                    "git_url": candidate.git_url,
+                    "name": candidate.name,
+                    "reason": candidate.reason,
+                    "evidence_summary": candidate.evidence_summary,
+                }
+                for candidate in args.rejected_candidates
+            ],
+        )
+    except ValueError as exc:
+        return _fail(
+            runtime,
+            "native_provider_route_invalid",
+            str(exc),
+            field="provider_route",
+        )
+    return _submit_repo_requirement(
+        runtime,
+        ctx,
+        args,
+        provider_route=route,
+        tool_name="submit_native_repo_requirement",
     )
 
 

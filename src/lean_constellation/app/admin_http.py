@@ -49,6 +49,7 @@ from lean_constellation.app.admin_api import (
     ValidateMainSourceCorpusInput,
     WriteMainRepoPreparationInput,
     WorkspacePublicationInput,
+    UpdateRepoRequirementInput,
 )
 from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 from lean_constellation.services.foundation import ServiceResult
@@ -106,6 +107,21 @@ def create_workspace_admin_http_routes(
                 provider_repo=provider_repo,
                 workspace_root=_query_path(query.get("workspace_root")) or registry.workspace_root,
             )
+        )
+
+    async def workspace_update_requirement(request: Request) -> JSONResponse:
+        try:
+            data = await _json_or_empty(request)
+            input_model = UpdateRepoRequirementInput.model_validate(data)
+        except ValidationError as exc:
+            return _request_validation_response(str(exc))
+        admin = LeanAdminApi(
+            registry.workspace_runtime(),
+            workspace_root=registry.workspace_root,
+            repo_runtime_registry=registry,
+        )
+        return _service_result_response(
+            admin.update_repo_requirement(input_model)
         )
 
     async def repo_status(request: Request) -> JSONResponse:
@@ -951,6 +967,7 @@ def create_workspace_admin_http_routes(
         Route("/admin/workspace/external/health", workspace_external_health, methods=["GET"]),
         Route("/admin/workspace/requirements/waiting", workspace_waiting_requirements, methods=["GET"]),
         Route("/admin/workspace/requirements/resume-candidates", workspace_requirement_resume_candidates, methods=["GET"]),
+        Route("/admin/workspace/requirements/update", workspace_update_requirement, methods=["POST"]),
         Route("/admin/workspace/requirements/bootstrap", workspace_start_requirement_bootstrap, methods=["POST"]),
         Route("/admin/workspace/requirements/resume", workspace_resume_requirement, methods=["POST"]),
         Route("/admin/workspace/main-repo/status", workspace_main_repo_status, methods=["GET"]),

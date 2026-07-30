@@ -13,12 +13,15 @@ from lean_constellation.services.external_clients.lake_command import LakeComman
 from lean_constellation.services.external_clients.lean_mcp_toolkit import (
     LeanMcpToolkitClient,
     LeanMcpToolkitClientConfig,
-    ToolkitToolView,
 )
 from lean_constellation.services.external_clients.lean_toolchain import LeanToolchainClient, LeanToolchainClientConfig
 from lean_constellation.services.external_clients.material_acquisition import (
     MaterialAcquisitionConfig,
     MaterialAcquisitionExtractionClient,
+)
+from lean_constellation.services.external_clients.resource_discovery import (
+    ExternalResourceDiscoveryClient,
+    ExternalResourceDiscoveryConfig,
 )
 
 if TYPE_CHECKING:
@@ -31,6 +34,9 @@ class ExternalClientConfig(StrictModel):
     lean_toolchain: LeanToolchainClientConfig = Field(default_factory=LeanToolchainClientConfig)
     material: MaterialAcquisitionConfig = Field(default_factory=MaterialAcquisitionConfig)
     github_repo: GitHubRepoClientConfig = Field(default_factory=GitHubRepoClientConfig)
+    resource_discovery: ExternalResourceDiscoveryConfig = Field(
+        default_factory=ExternalResourceDiscoveryConfig
+    )
 
 
 class ExternalClientHealthView(StrictModel):
@@ -56,6 +62,7 @@ class ExternalClientService:
         lean_mcp_toolkit: LeanMcpToolkitClient | None = None,
         lean_toolchain: LeanToolchainClient | None = None,
         material_acquisition: MaterialAcquisitionExtractionClient | None = None,
+        resource_discovery: ExternalResourceDiscoveryClient | None = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or ExternalClientConfig()
@@ -69,6 +76,9 @@ class ExternalClientService:
             config=self.config.lean_toolchain,
         )
         self.material_acquisition = material_acquisition or MaterialAcquisitionExtractionClient(self.config.material)
+        self.resource_discovery = resource_discovery or ExternalResourceDiscoveryClient(
+            self.config.resource_discovery
+        )
 
     @property
     def material(self) -> MaterialAcquisitionExtractionClient:

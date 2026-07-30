@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 
+from lean_constellation.domain.preparation import AutoProviderRoute
 from lean_constellation.flows.common.agent_steps import (
     AdapterDeclCatalogAgentStep,
     RepoFormatDiscoveryAgentStep,
@@ -44,6 +45,7 @@ def _start_host_flow(runtime: FakeLeanFlowRuntime, tmp_path: Path) -> str:
             "repo_root": str(repo_root),
             "workspace_root": str(tmp_path),
             "requirement_refs": [],
+            "resolved_provider_route": AutoProviderRoute().model_dump(mode="json"),
         },
         scope_id="repo:repo",
     )

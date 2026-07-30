@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from agent_runtime_kit.agent.context import AgentContextMaintenancePolicy
 from agent_runtime_kit.flow.models import BaseSubmission, FlowStatus
 from agent_runtime_kit.flow.standard_steps.agent_step import AgentStep
 
@@ -49,12 +50,14 @@ from lean_constellation.flows.content_node_task.steps import (
 )
 from lean_constellation.flows.coordinator.submissions import (
     CoordinatorContentTasksSubmission,
+    CoordinatorRepoExplorationSubmission,
     CoordinatorRepoReadySubmission,
     CoordinatorRepoRequirementSubmission,
     CoordinatorResourceRequestSubmission,
 )
 from lean_constellation.flows.coordinator.steps import (
     CoordinatorContentTasksResultView,
+    CoordinatorRepoExplorationResultView,
     CoordinatorRepoReadyResultView,
     CoordinatorRepoRequirementResultView,
     CoordinatorResourceRequestResultView,
@@ -99,6 +102,10 @@ def _submission_map(*classes: type[BaseSubmission]) -> dict[str, type[BaseSubmis
         str(cls.model_fields["submission_type"].default): cls
         for cls in classes
     }
+
+
+def _compact_preflight_policy() -> AgentContextMaintenancePolicy:
+    return AgentContextMaintenancePolicy(threshold=0.80, timeout_s=120.0)
 
 
 class RepoFormatDiscoveryAgentStep(AgentStep):
@@ -379,16 +386,28 @@ class CoordinatorAgentStep(AgentStep):
     }
     Submissions: ClassVar[dict[str, type[BaseSubmission]]] = _submission_map(
         CoordinatorContentTasksSubmission,
+        CoordinatorRepoExplorationSubmission,
         CoordinatorResourceRequestSubmission,
         CoordinatorRepoRequirementSubmission,
         CoordinatorRepoReadySubmission,
     )
     SubmitTools: ClassVar[set[str] | None] = {
         "submit_content_node_tasks",
+        "submit_repo_exploration",
         "submit_resource_request",
         "submit_repo_requirement",
+        "submit_adapter_repo_requirement",
+        "submit_native_repo_requirement",
         "submit_repo_ready",
     }
+
+    def prepare_agent_context_before_first_turn(
+        self,
+        ctx,
+        agent_id: str,
+    ) -> AgentContextMaintenancePolicy:
+        del ctx, agent_id
+        return _compact_preflight_policy()
 
     def build_callback_prompt(self, ctx, agent_id: str) -> str:
         base = super().build_callback_prompt(ctx, agent_id)
@@ -398,6 +417,22 @@ class CoordinatorAgentStep(AgentStep):
                 "Required Skill re-entry for this turn: read and apply $resource-result-closeout first, "
                 "then re-read the current Coordinator mode Skill. Close out duplicate/local/external/rejected "
                 "resource truth before choosing exactly one next coordination move."
+            )
+        elif any(
+            child.flow_type
+            in {
+                "repo_resource_discovery",
+                "repo_lean_provider_discovery",
+                "repo_mathlib_recon",
+            }
+            for child in children
+        ):
+            guidance = (
+                "Required Skill re-entry for this turn: read and apply "
+                "$coordinator-repo-exploration first, then re-read the current Coordinator mode Skill. "
+                "Consume only this exploration batch. Preflight any resource candidate before requesting it; "
+                "use a direct adapter requirement only for exact immutable verified Lean evidence; do not "
+                "repeat MathlibIndex writes already completed by recon. Submit exactly one next move."
             )
         else:
             guidance = _coordinator_content_callback_guidance(children)
@@ -428,6 +463,16 @@ class CoordinatorAgentStep(AgentStep):
                 ),
                 summary=submission.summary or f"Coordinator requested resource {submission.target_kind}:{submission.target}.",
             )
+        if isinstance(submission, CoordinatorRepoExplorationSubmission):
+            return CoordinatorStepResult(
+                outcome="repo_exploration",
+                repo_key=submission.repo_key,
+                repo_exploration=CoordinatorRepoExplorationResultView(
+                    kinds=[item.kind.value for item in submission.explorations],
+                ),
+                summary=submission.summary
+                or f"Coordinator requested {len(submission.explorations)} repository explorations.",
+            )
         if isinstance(submission, CoordinatorRepoRequirementSubmission):
             return CoordinatorStepResult(
                 outcome="repo_requirement",
@@ -435,6 +480,7 @@ class CoordinatorAgentStep(AgentStep):
                 repo_requirement=CoordinatorRepoRequirementResultView(
                     requirement_name=submission.requirement_name,
                     target_repo=submission.target_repo,
+                    provider_route=submission.provider_route,
                     required_proof_availability=submission.required_proof_availability,
                     reason=submission.reason,
                     source_description=submission.source_description,
@@ -478,6 +524,14 @@ class ContentPlanAgentStep(AgentStep):
         "submit_content_node_blocked",
         "submit_content_node_failed",
     }
+
+    def prepare_agent_context_before_first_turn(
+        self,
+        ctx,
+        agent_id: str,
+    ) -> AgentContextMaintenancePolicy:
+        del ctx, agent_id
+        return _compact_preflight_policy()
 
     def build_callback_prompt(self, ctx, agent_id: str) -> str:
         base = super().build_callback_prompt(ctx, agent_id)
@@ -725,6 +779,21 @@ class DeclStageWorkerAgentStep(AgentStep):
         "submit_stage_worker_blocked",
     }
 
+    def prepare_agent_context_before_first_turn(
+        self,
+        ctx,
+        agent_id: str,
+    ) -> AgentContextMaintenancePolicy | None:
+        del agent_id
+        state = self._agent_step_state(self._latest_agent_step(ctx))
+        if not isinstance(state, DeclStageWorkerStepState):
+            raise TypeError("decl stage worker step has invalid state")
+        return (
+            _compact_preflight_policy()
+            if state.retry_attempt_index == 0
+            else None
+        )
+
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission
         if isinstance(submission, DeclStageWorkerCompletedSubmission):
@@ -762,6 +831,21 @@ class DeclStageReviewerAgentStep(AgentStep):
         DeclStageReviewSubmittedSubmission,
     )
     SubmitTools: ClassVar[set[str] | None] = {"submit_stage_review"}
+
+    def prepare_agent_context_before_first_turn(
+        self,
+        ctx,
+        agent_id: str,
+    ) -> AgentContextMaintenancePolicy | None:
+        del agent_id
+        state = self._agent_step_state(self._latest_agent_step(ctx))
+        if not isinstance(state, DeclStageReviewerStepState):
+            raise TypeError("decl stage reviewer step has invalid state")
+        return (
+            _compact_preflight_policy()
+            if state.review_attempt_index == 0
+            else None
+        )
 
     def build_result_from_submission(self, ctx, agent_id: str, turn_result: object | None):
         submission = ctx.load_step().submission

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel
 
@@ -128,6 +129,40 @@ class SubmitContentNodeTasksArgs(SummarySubmitArgs):
     node_paths: list[str] = Field(description="Runnable content node paths to dispatch.")
 
 
+class RepoExplorationRequestArg(StrictModel):
+    kind: Literal["resource", "lean_provider", "mathlib"] = Field(
+        description="Distinct repository exploration category."
+    )
+    objective: str = Field(description="Focused, verifiable objective for this exploration category.")
+    context_summary: str | None = Field(
+        default=None,
+        description="Optional direction that does not duplicate the SourceCorpus or SourceIndex.",
+    )
+
+    @field_validator("objective")
+    @classmethod
+    def _objective_non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("exploration objective must be non-empty")
+        return value
+
+
+class SubmitRepoExplorationArgs(SummarySubmitArgs):
+    explorations: list[RepoExplorationRequestArg] = Field(
+        min_length=1,
+        max_length=3,
+        description="One to three distinct focused repository exploration requests.",
+    )
+
+    @model_validator(mode="after")
+    def _unique_kinds(self):
+        kinds = [item.kind for item in self.explorations]
+        if len(kinds) != len(set(kinds)):
+            raise ValueError("repo exploration kinds must be unique within one batch")
+        return self
+
+
 class RequirementInterfaceArg(StrictModel):
     name: str = Field(description="Stable public interface identity that the provider repository must expose.")
     kind: str = Field(description="Required public declaration kind, using one of the supported DeclKind values.")
@@ -160,8 +195,125 @@ class SubmitRepoRequirementArgs(SummarySubmitArgs):
     )
 
 
+class SubmitAdapterRepoRequirementArgs(SubmitRepoRequirementArgs):
+    git_url: str = Field(
+        description="GitHub URL or owner/name slug for the confirmed Lean provider repository."
+    )
+    revision: str = Field(
+        description="Immutable 40- or 64-character Git commit identity verified for the provider."
+    )
+    subdir: str | None = Field(
+        default=None,
+        description="Optional repository-relative subdirectory containing the Lean project.",
+    )
+    package_name: str | None = Field(
+        default=None,
+        description="Optional verified Lake package name.",
+    )
+    likely_import_module: str | None = Field(
+        default=None,
+        description="Optional likely Lean module to import from the provider package.",
+    )
+    evidence_summary: str = Field(
+        description="Concrete evidence confirming this exact adapter route."
+    )
+    known_risks: list[str] = Field(
+        default_factory=list,
+        description="Known risks later adapter preparation must verify.",
+    )
+
+
+class SubmitNativeRepoRequirementArgs(SubmitRepoRequirementArgs):
+    evidence_summary: str = Field(
+        description="Concrete evidence that a new native provider is the appropriate route."
+    )
+    searched_targets: list[str] = Field(
+        description="Non-empty search queries or upstream targets checked before choosing native."
+    )
+    rejected_candidates: list[RejectedUpstreamCandidateArgs] = Field(
+        default_factory=list,
+        description="Specific upstream candidates rejected before choosing native.",
+    )
+
+
 class SubmitRepoReadyArgs(SummarySubmitArgs):
     pass
+
+
+class RepoResourceCandidateArg(StrictModel):
+    title: str = Field(description="Resource title from verified metadata.")
+    authors: list[str] = Field(default_factory=list, description="Verified author names.")
+    resource_kind: str = Field(description="Resource kind such as paper, book, documentation, or web.")
+    canonical_locator: str = Field(description="Canonical DOI, arXiv id/version, or stable URL.")
+    version: str | None = Field(default=None, description="Exact resource version when relevant.")
+    source_urls: list[str] = Field(default_factory=list, description="URLs supporting this metadata and recommendation.")
+    relevance: str = Field(description="Specific relevance to the repository objective.")
+    support_expected: str = Field(description="Mathematical statement, construction, or evidence expected from this resource.")
+    reliability: str = Field(description="Source reliability assessment.")
+    risks_or_gaps: list[str] = Field(default_factory=list, description="Known uncertainty, missing access, or scope gaps.")
+    recommendation: Literal["request", "inspect_later", "ignore"] = Field(description="Recommended Coordinator handling.")
+
+
+class SubmitRepoResourceDiscoveryResultArgs(SummarySubmitArgs):
+    outcome: Literal["completed", "no_useful_findings", "incomplete"] = Field(description="Terminal discovery outcome.")
+    candidates: list[RepoResourceCandidateArg] = Field(default_factory=list, max_length=10, description="Bounded verified candidates, recommended first.")
+
+    @model_validator(mode="after")
+    def _candidate_consistency(self):
+        if self.outcome == "no_useful_findings" and self.candidates:
+            raise ValueError("no_useful_findings may not include resource candidates")
+        for candidate in self.candidates:
+            if candidate.recommendation == "request" and (
+                not candidate.canonical_locator.strip() or not candidate.source_urls
+            ):
+                raise ValueError("request candidates require a canonical locator and source URL")
+        return self
+
+
+class RepoLeanProviderCandidateArg(StrictModel):
+    git_url: str = Field(description="Canonical GitHub repository URL.")
+    resolved_revision: str = Field(description="Resolved immutable commit for direct candidates, or best inspected revision otherwise.")
+    subdir: str | None = Field(default=None, description="Lean project subdirectory when the project is not at repository root.")
+    package_name: str | None = Field(default=None, description="Verified Lake package name when known.")
+    likely_import_modules: list[str] = Field(default_factory=list, description="Likely importable modules supported by repository evidence.")
+    relevant_interfaces: list[str] = Field(default_factory=list, description="Relevant public Lean declarations or interface descriptions.")
+    lean_evidence: list[str] = Field(default_factory=list, description="Concrete Lean file, module, declaration, or build-layout evidence.")
+    adapter_feasibility: Literal["ready", "plausible", "unsuitable"] = Field(description="Evidence-based adapter feasibility.")
+    gaps: list[str] = Field(default_factory=list, description="Missing evidence or capability gaps.")
+    risks: list[str] = Field(default_factory=list, description="License, version, layout, maintenance, or adaptation risks.")
+    recommendation: Literal["direct_adapter_requirement", "generic_requirement", "ignore"] = Field(description="Recommended Coordinator handling.")
+
+    @model_validator(mode="after")
+    def _direct_adapter_consistency(self):
+        if self.recommendation == "direct_adapter_requirement":
+            if self.adapter_feasibility != "ready":
+                raise ValueError("direct adapter candidates must be ready")
+            if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", self.resolved_revision) is None:
+                raise ValueError("direct adapter candidates require an immutable commit")
+            if not self.lean_evidence:
+                raise ValueError("direct adapter candidates require Lean evidence")
+        return self
+
+
+class SubmitRepoLeanProviderDiscoveryResultArgs(SummarySubmitArgs):
+    outcome: Literal["completed", "no_useful_findings", "incomplete"] = Field(description="Terminal provider-discovery outcome.")
+    candidates: list[RepoLeanProviderCandidateArg] = Field(default_factory=list, max_length=8, description="Bounded verified Lean repository candidates.")
+
+    @model_validator(mode="after")
+    def _candidate_consistency(self):
+        if self.outcome == "no_useful_findings" and self.candidates:
+            raise ValueError("no_useful_findings may not include provider candidates")
+        return self
+
+
+class SubmitRepoMathlibReconResultArgs(SummarySubmitArgs):
+    outcome: Literal["completed", "no_useful_findings", "incomplete"] = Field(description="Terminal repository Mathlib recon outcome.")
+    created_modules: list[str] = Field(default_factory=list, description="Checked Mathlib modules newly recorded in the repository index.")
+    reused_modules: list[str] = Field(default_factory=list, description="Existing checked Mathlib modules reused for the objective.")
+    created_declarations: list[str] = Field(default_factory=list, description="Checked Mathlib declarations newly recorded in the repository index.")
+    reused_declarations: list[str] = Field(default_factory=list, description="Existing checked Mathlib declarations reused for the objective.")
+    unresolved: list[str] = Field(default_factory=list, description="Objective-relevant Mathlib questions left unresolved.")
+    usage_notes: list[str] = Field(default_factory=list, description="Concise repository-wide usage guidance for the checked findings.")
 
 
 class SubmitContentPreparationReconArgs(SummarySubmitArgs):

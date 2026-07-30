@@ -71,6 +71,34 @@ def build_content_node_task_request(
     )
 
 
+def build_repo_exploration_request(
+    *,
+    kind: Literal["resource", "lean_provider", "mathlib"],
+    repo_key: str,
+    repo_root: str,
+    scope_id: str,
+    objective: str,
+    context_summary: str | None,
+    agent_id: str,
+) -> FlowRequest:
+    flow_types = {
+        "resource": "repo_resource_discovery",
+        "lean_provider": "repo_lean_provider_discovery",
+        "mathlib": "repo_mathlib_recon",
+    }
+    return FlowRequest(
+        flow_type=flow_types[kind],
+        scope_id=scope_id,
+        params={
+            "repo_key": repo_key,
+            "repo_root": repo_root,
+            "objective": objective,
+            "context_summary": context_summary,
+            "agent_id": agent_id,
+        },
+    )
+
+
 PREPARATION_RECON_FLOW_TYPES: dict[str, str] = {
     "node_dir_dependency": "node_dir_dependency_recon",
     "node_dir_dependency_recon": "node_dir_dependency_recon",

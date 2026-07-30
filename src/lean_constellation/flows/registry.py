@@ -25,6 +25,10 @@ from lean_constellation.flows.repo_lifecycle import (
     RUN_STEP_TYPES,
 )
 from lean_constellation.flows.resource_request import RESOURCE_REQUEST_FLOW_TYPES, RESOURCE_REQUEST_STEP_TYPES
+from lean_constellation.flows.repo_exploration import (
+    REPO_EXPLORATION_AGENT_STEP_TYPES,
+    REPO_EXPLORATION_FLOW_TYPES,
+)
 
 
 BUSINESS_FLOW_TYPES = (
@@ -34,6 +38,7 @@ BUSINESS_FLOW_TYPES = (
     *CONTINUATION_FLOW_TYPES,
     *RESOURCE_REQUEST_FLOW_TYPES,
     *COORDINATOR_FLOW_TYPES,
+    *REPO_EXPLORATION_FLOW_TYPES,
     *CONTENT_NODE_TASK_FLOW_TYPES,
     *PREPARATION_RECON_FLOW_TYPES,
     *DECL_ROUND_FLOW_TYPES,
@@ -84,7 +89,12 @@ def register_lean_flow_step_types(
 
     if step_registry is not None:
         step_classes = _apply_step_type_overrides(
-            (*STANDARD_STEP_TYPES, *BUSINESS_LOGIC_STEP_TYPES, *BUSINESS_AGENT_STEP_TYPES),
+            (
+                *STANDARD_STEP_TYPES,
+                *BUSINESS_LOGIC_STEP_TYPES,
+                *BUSINESS_AGENT_STEP_TYPES,
+                *REPO_EXPLORATION_AGENT_STEP_TYPES,
+            ),
             step_type_overrides or {},
         )
         for step_cls in step_classes:

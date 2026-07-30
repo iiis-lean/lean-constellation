@@ -53,6 +53,8 @@ def _sample_payload(cls):
         "requirement_name": "req",
         "target_repo": "Provider",
         "interfaces": [],
+        "provider_route": {"kind": "auto"},
+        "explorations": [{"kind": "mathlib", "objective": "Find imports."}],
         "recon_kind": "mathlib",
         "objective": "Find imports.",
         "context_summary": "Context",

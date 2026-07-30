@@ -38,6 +38,21 @@ def build_submit_tool_views(group_specs: Iterable[ToolGroupSpec] | None = None) 
         _view(SubmitView.ADAPTER_REPO_IMPORT_SUBMIT, [SubmitGroup.ADAPTER_READY_SUBMIT], _aliases("adapter_repo_import", "AdapterRepoImportAgent", "AdapterDeclCatalogAgent")),
         _view(SubmitView.RESOURCE_CURATOR_SUBMIT, [SubmitGroup.RESOURCE_CURATOR_SUBMIT], _aliases("resource_curator", "ResourceCuratorAgent")),
         _view(
+            SubmitView.REPO_RESOURCE_DISCOVERY_SUBMIT,
+            [SubmitGroup.REPO_RESOURCE_DISCOVERY_SUBMIT],
+            _aliases("repo_resource_discovery", "RepoResourceDiscoveryAgent"),
+        ),
+        _view(
+            SubmitView.REPO_LEAN_PROVIDER_DISCOVERY_SUBMIT,
+            [SubmitGroup.REPO_LEAN_PROVIDER_DISCOVERY_SUBMIT],
+            _aliases("repo_lean_provider_discovery", "RepoLeanProviderDiscoveryAgent"),
+        ),
+        _view(
+            SubmitView.REPO_MATHLIB_RECON_SUBMIT,
+            [SubmitGroup.REPO_MATHLIB_RECON_SUBMIT],
+            _aliases("repo_mathlib_recon", "RepoMathlibReconAgent"),
+        ),
+        _view(
             SubmitView.NATIVE_REPO_COORDINATOR_SUBMIT,
             [SubmitGroup.COORDINATOR_SUBMIT, SubmitGroup.RESOURCE_REQUEST_SUBMIT],
             _aliases("native_repo_coordinator", "NativeRepoCoordinatorAgent", "CoordinatorAgent", "coordinator"),

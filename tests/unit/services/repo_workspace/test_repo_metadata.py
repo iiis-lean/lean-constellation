@@ -2,7 +2,11 @@ from tests.unit_services_helpers import make_runtime, publish_native_provider_re
 
 from pathlib import Path
 
-from lean_constellation.domain.preparation import RepoDependencyRequirement, RepoDependencyRequirementStatus
+from lean_constellation.domain.preparation import (
+    AutoProviderRoute,
+    RepoDependencyRequirement,
+    RepoDependencyRequirementStatus,
+)
 from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoFormat,
@@ -205,11 +209,13 @@ def test_repo_state_view_counts_requirements_structurally_and_warns_on_missing_m
     open_requirement = RepoDependencyRequirement(
         name="open_need",
         target_repo="provider",
+        provider_route=AutoProviderRoute(),
         reason='contains text fragment "status": "handled"',
     )
     handled_requirement = RepoDependencyRequirement(
         name="handled_need",
         target_repo="provider",
+        provider_route=AutoProviderRoute(),
         reason='contains text fragment "status": "open"',
         status=RepoDependencyRequirementStatus.HANDLED,
     )

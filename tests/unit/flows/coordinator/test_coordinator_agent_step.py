@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 
+from lean_constellation.domain.preparation import AutoProviderRoute
 from lean_constellation.flows.common.agent_steps import CoordinatorAgentStep, _coordinator_content_callback_guidance
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
@@ -75,6 +76,11 @@ def test_coordinator_agent_step_dispatch_results(tmp_path: Path) -> None:
     assert content.result.outcome == "content_tasks"
     assert content.result.content_tasks.node_paths == ["Main.Core"]
     assert content.result.content_tasks.request_count == 1
+    assert (
+        runtime.agent_service.start_records[-1]
+        .context_maintenance_policy.threshold
+        == 0.80
+    )
 
     resource = _run_step(
         runtime,
@@ -117,9 +123,10 @@ def test_coordinator_agent_step_requirement_ready_and_incomplete_results(tmp_pat
             submission_type="coordinator_repo_requirement",
             tool_name="submit_repo_requirement",
             repo_key="Repo",
-            requirement_name="provider_req",
-            target_repo="Provider",
-            reason="Need provider theorem.",
+                requirement_name="provider_req",
+                target_repo="Provider",
+                provider_route=AutoProviderRoute(),
+                reason="Need provider theorem.",
             summary="Need provider.",
         ),
     )

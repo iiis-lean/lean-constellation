@@ -109,6 +109,7 @@ def test_requirement_bootstrap_terminal_snapshot(tmp_path: Path) -> None:
             submission_type="repo_format_native_choice",
             tool_name="submit_native_repo_choice",
             summary="Native provider route.",
+            searched_targets=["No reusable Lean provider was found in the fixture search."],
         )
     )
     runtime.run_step(agent_step_id)
@@ -162,6 +163,7 @@ def test_coordinator_requirement_waiting_snapshot(tmp_path: Path) -> None:
             tool_name="submit_repo_requirement",
             requirement_name="need_provider",
             target_repo="ProviderRepo",
+            provider_route={"kind": "auto"},
             reason="A supporting provider repo is required.",
             summary="Need provider repo.",
         )
@@ -189,6 +191,7 @@ def test_coordinator_requirement_waiting_snapshot_is_skipped_when_repo_boundary_
             tool_name="submit_repo_requirement",
             requirement_name="need_provider",
             target_repo="ProviderRepo",
+            provider_route={"kind": "auto"},
             reason="A supporting provider repo is required.",
             summary="Need provider repo.",
         )
@@ -314,6 +317,7 @@ def _start_requirement_bootstrap(runtime: FakeLeanFlowRuntime, repo_root: Path) 
             "repo_root": str(repo_root),
             "workspace_root": str(repo_root.parent),
             "requirement_refs": ["Consumer:need_provider"],
+            "resolved_provider_route": {"kind": "auto"},
         },
         scope_id=f"repo:{repo_root.name}",
     )

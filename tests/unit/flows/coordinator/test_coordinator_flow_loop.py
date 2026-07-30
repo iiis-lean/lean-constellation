@@ -7,7 +7,11 @@ from agent_runtime_kit.flow.models import FlowStatus
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 from lean_constellation.app.config import AutomaticCheckpointAppConfig
 
-from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.preparation import (
+    AutoProviderRoute,
+    RepoPreparationInput,
+    SourceCorpusMode,
+)
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoFormat, RepoPublicationStatus
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
@@ -16,9 +20,17 @@ from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.flows.coordinator.submissions import (
     CoordinatorContentTasksSubmission,
+    CoordinatorRepoExplorationSubmission,
     CoordinatorRepoReadySubmission,
     CoordinatorRepoRequirementSubmission,
     CoordinatorResourceRequestSubmission,
+    RepoExplorationKind,
+    RepoExplorationSpec,
+)
+from lean_constellation.flows.repo_exploration.submissions import (
+    RepoMathlibReconSubmission,
+    RepoResourceCandidate,
+    RepoResourceDiscoverySubmission,
 )
 from lean_constellation.flows.resource_request.flows import ResourceCurationResult
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
@@ -218,6 +230,7 @@ def _prepare_requirement_resume_gate(runtime: FakeLeanFlowRuntime, lean_runtime,
             repo_key="Repo",
             requirement_name="provider_req",
             target_repo="Provider",
+            provider_route=AutoProviderRoute(),
             reason="Need the provider API.",
             summary="Wait for provider.",
         )
@@ -293,6 +306,7 @@ def test_content_task_dispatch_waiting_snapshot_and_callback(tmp_path: Path) -> 
             repo_key="Repo",
             requirement_name="provider_req",
             target_repo="Provider",
+            provider_route=AutoProviderRoute(),
             required_proof_availability=ProofAvailability.PROVED,
             reason="Need external provider.",
             summary="Wait for provider.",
@@ -413,6 +427,134 @@ def test_coordinator_enforces_content_task_batch_parallelism_from_run_context(tm
     assert rejected.error.error_type == "content_task_batch_parallelism_exceeded"
 
 
+def test_repo_exploration_ensures_agents_dispatches_atomic_batch_and_callbacks(
+    tmp_path: Path,
+) -> None:
+    runtime, _, runtime_stability, ark_snapshot = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    flow_id = _start_coordinator(runtime, repo_root)
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoExplorationSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_exploration",
+            tool_name="submit_repo_exploration",
+            repo_key="Repo",
+            explorations=[
+                RepoExplorationSpec(
+                    kind=RepoExplorationKind.RESOURCE,
+                    objective="Find the exact supporting paper.",
+                ),
+                RepoExplorationSpec(
+                    kind=RepoExplorationKind.MATHLIB,
+                    objective="Record checked finite-sum support.",
+                ),
+            ],
+            summary="Explore resources and Mathlib.",
+        )
+    )
+
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "ensure_repo_exploration_agents"
+    ensure_step_id = _advance_and_run(runtime, flow_id)
+    ensure_result = runtime.flow_service.get_step(ensure_step_id).result
+    assert ensure_result.created_roles == [
+        "repo_resource_discovery",
+        "repo_mathlib_recon",
+    ]
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "dispatch_repo_exploration"
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    parent = runtime.flow_service.get_flow(flow_id)
+    assert parent.status is FlowStatus.WAITING
+    assert parent.state.position.phase == "waiting_repo_exploration"
+    children = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )
+    assert [child.flow_type for child in children] == [
+        "repo_resource_discovery",
+        "repo_mathlib_recon",
+    ]
+    assert children[0].agent_bindings.get("repo_resource_discovery") == parent.agent_bindings.get(
+        "repo_resource_discovery"
+    )
+    assert children[1].agent_bindings.get("repo_mathlib_recon") == parent.agent_bindings.get(
+        "repo_mathlib_recon"
+    )
+
+    runtime.agent_service.queue_submission(
+        RepoResourceDiscoverySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="repo_resource_discovery_result",
+            tool_name="submit_repo_resource_discovery_result",
+            repo_key="Repo",
+            outcome="completed",
+            candidates=[
+                RepoResourceCandidate(
+                    title="A paper",
+                    resource_kind="paper",
+                    canonical_locator="https://doi.org/10.1000/example",
+                    source_urls=["https://doi.org/10.1000/example"],
+                    relevance="Supports the target identity.",
+                    support_expected="The exact combinatorial lemma.",
+                    reliability="Published source.",
+                    recommendation="request",
+                )
+            ],
+            summary="One useful paper.",
+        )
+    )
+    _advance_and_run(runtime, children[0].flow_id)
+    runtime.agent_service.queue_submission(
+        RepoMathlibReconSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="repo_mathlib_recon_result",
+            tool_name="submit_repo_mathlib_recon_result",
+            repo_key="Repo",
+            outcome="completed",
+            created_modules=["Mathlib.Data.Finset.Card"],
+            summary="Recorded checked support.",
+        )
+    )
+    _advance_and_run(runtime, children[1].flow_id)
+
+    assert runtime.flow_service.can_advance_flow(flow_id)
+    after_snapshot_step_id = _advance_and_run(runtime, flow_id)
+    after_result = runtime.flow_service.get_step(after_snapshot_step_id).result
+    assert after_result.checkpoint_kind == "after_repo_exploration_terminal"
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "coordinator_callback"
+    assert runtime_stability.calls == [
+        (RepoCheckpointKind.BEFORE_REPO_EXPLORATION_DISPATCH, []),
+        (RepoCheckpointKind.AFTER_REPO_EXPLORATION_TERMINAL, []),
+    ]
+    assert len(ark_snapshot.created) == 2
+
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoExplorationSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_exploration",
+            tool_name="submit_repo_exploration",
+            repo_key="Repo",
+            explorations=[
+                RepoExplorationSpec(
+                    kind=RepoExplorationKind.MATHLIB,
+                    objective="Check one more finite-sum declaration.",
+                )
+            ],
+            summary="Continue the Mathlib exploration.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    assert (
+        runtime.flow_service.get_flow(flow_id).state.position.phase
+        == "ensure_repo_exploration_agents"
+    )
+    second_ensure_step_id = _advance_and_run(runtime, flow_id)
+    second_ensure = runtime.flow_service.get_step(second_ensure_step_id).result
+    assert second_ensure.created_roles == []
+    assert second_ensure.reused_roles == ["repo_mathlib_recon"]
+
+
 def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
     runtime, _, runtime_stability, ark_snapshot = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
@@ -484,6 +626,7 @@ def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
             repo_key="Repo",
             requirement_name="provider_req",
             target_repo="Provider",
+            provider_route=AutoProviderRoute(),
             summary="Wait for provider.",
         )
     )
@@ -517,6 +660,7 @@ def test_requirement_resume_reuses_flow_agent_and_automatically_attaches_provide
             repo_key="Repo",
             requirement_name="provider_req",
             target_repo="Provider",
+            provider_route=AutoProviderRoute(),
             reason="Need the provider API.",
             summary="Wait for provider.",
         )
@@ -579,6 +723,7 @@ def test_requirement_resume_reuses_flow_agent_and_automatically_attaches_provide
             repo_key="Repo",
             requirement_name="next_provider_req",
             target_repo="NextProvider",
+            provider_route=AutoProviderRoute(),
             reason="Continue normal coordination.",
             summary="Wait for another provider.",
         )

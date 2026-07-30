@@ -6,6 +6,11 @@ from types import SimpleNamespace
 import pytest
 from agent_runtime_kit.flow.models import BaseSubmission, FlowStatus
 
+from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    AutoProviderRoute,
+    NativeProviderRoute,
+)
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
@@ -755,9 +760,76 @@ def test_submit_repo_requirement_builds_submission_without_waiting_state(tmp_pat
     assert gateway.accepted[0].submission_type == "coordinator_repo_requirement"
     assert gateway.accepted[0].required_proof_availability == ProofAvailability.DECLARED
     assert gateway.accepted[0].requirement_name == "need_provider"
+    assert isinstance(gateway.accepted[0].provider_route, AutoProviderRoute)
     assert gateway.accepted[0].interfaces[0]["expected_statement_lean_code"] == (
         "theorem ReusableMath.main_result : True := by sorry"
     )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "route_args", "route_type"),
+    [
+        (
+            "submit_adapter_repo_requirement",
+            {
+                "git_url": "example/provider",
+                "revision": "a" * 40,
+                "evidence_summary": "The exact Lean repository and commit were inspected.",
+            },
+            AdapterProviderRoute,
+        ),
+        (
+            "submit_native_repo_requirement",
+            {
+                "evidence_summary": "No suitable Lean provider exists.",
+                "searched_targets": ["provider theorem Lean"],
+                "rejected_candidates": [
+                    {
+                        "name": "UnrelatedProvider",
+                        "reason": "It proves a different theorem.",
+                    }
+                ],
+            },
+            NativeProviderRoute,
+        ),
+    ],
+)
+def test_submit_typed_repo_requirement_builds_one_authoritative_submission(
+    tmp_path: Path,
+    tool_name: str,
+    route_args: dict[str, object],
+    route_type: type,
+) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+    raw = RawToolCallContext(
+        endpoint_view_key="native_repo_coordinator_submit",
+        runtime_context=_runtime_ctx(
+            tmp_path,
+            view="native_repo_coordinator_submit",
+            role="coordinator",
+            agent_type="CoordinatorAgent",
+        ),
+    )
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        raw,
+        tool_name=tool_name,
+        flat_args={
+            "name": f"need_{route_type.__name__.lower()}",
+            "target_repo": "ReusableMath",
+            "summary": "Need the provider.",
+            "reason": "Need an independent provider theorem.",
+            **route_args,
+        },
+    )
+
+    assert result.ok and result.value is not None and result.value.ok
+    assert len(gateway.accepted) == 1
+    submission = gateway.accepted[0]
+    assert submission.submission_type == "coordinator_repo_requirement"
+    assert isinstance(submission.provider_route, route_type)
 
 
 def test_submit_repo_requirement_schema_documents_business_field_contracts() -> None:

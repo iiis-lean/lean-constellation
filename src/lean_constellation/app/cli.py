@@ -64,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
     resume_candidates = sub.add_parser("resume-candidates", help="List consumers that can resume from a stable provider repo.")
     resume_candidates.add_argument("provider_repo")
     resume_candidates.add_argument("--workspace-root", type=Path, default=None)
+    requirement_update = sub.add_parser(
+        "requirement-update",
+        help="Preview or apply a current-schema full requirement replacement.",
+    )
+    requirement_update.add_argument("--input", type=Path, required=True)
+    requirement_update.add_argument("--apply", action="store_true")
     agents_monitor = sub.add_parser("agents", help="List Agent monitor views over Admin HTTP.")
     agents_monitor.add_argument("--repo-key", required=True)
     agents_monitor.add_argument("--scope-id", default=None)
@@ -406,6 +412,16 @@ def main(argv: list[str] | None = None) -> int:
                         "provider_repo": args.provider_repo,
                     },
                 ),
+            )
+        )
+    if args.command == "requirement-update":
+        payload = json.loads(args.input.read_text(encoding="utf-8"))
+        payload["dry_run"] = not args.apply
+        return _print_http_result(
+            _request_json(
+                "POST",
+                f"{admin_base_url}/admin/workspace/requirements/update",
+                payload,
             )
         )
     if args.command == "agents":

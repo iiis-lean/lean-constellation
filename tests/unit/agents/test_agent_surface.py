@@ -14,7 +14,10 @@ EXPECTED_SURFACE_COUNTS = {
     "RootInterfacePrepareAgent": (7, 15, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
     "ResourceCuratorAgent": (8, 24, 1, 4, 2),
-    "CoordinatorAgent": (40, 92, 2, 4, 17),
+    "RepoResourceDiscoveryAgent": (9, 22, 1, 1, 1),
+    "RepoLeanProviderDiscoveryAgent": (11, 26, 1, 1, 1),
+    "RepoMathlibReconAgent": (9, 27, 1, 1, 4),
+    "CoordinatorAgent": (40, 92, 2, 7, 18),
     "ContentPlanAgent": (34, 86, 3, 6, 16),
     "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
@@ -37,6 +40,9 @@ EXPECTED_APPLICATION_SURFACE_HASHES = {
     "RootInterfacePrepareAgent": "744c85a080bb7ec6ecf1e2923beee4fb683ce68347599ab76c2eee9b3e905cd9",
     "AdapterDeclCatalogAgent": "832d605c4fca89e0bace44a54ab04487dbf11c268c50629a606b8e6519006fb5",
     "ResourceCuratorAgent": "6b8d4e4823e83c81b3a971103810bcb4fb934d156f9fabed276d2245efd1e069",
+    "RepoResourceDiscoveryAgent": "584c9be44a4d3a2961e637051397256a5981b852ff6d040a275492f01bdd7b2b",
+    "RepoLeanProviderDiscoveryAgent": "6b96a0a54252dbf0b96206840c36ae53d949bddc773de6d41213d90c7bce86ef",
+    "RepoMathlibReconAgent": "a1d340246bf1f84b698a235569af62f913d3f2229f81f09859dab90151515e39",
     "CoordinatorAgent": "3d1e55f533b99becb875461f2f222935cf3523de7ff485f802744eb0f14f1fd2",
     "ContentPlanAgent": "722a4a93cdb04fe40d753dfb1c6f0a13b20744594ded9759adada64cdacd1663",
     "NodeDirDependencyReconAgent": "78424e9c83a6d31e464f5bcfaa583279a967ed718f7783ed820bd5ea5419709c",
@@ -222,12 +228,12 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
 
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
-    assert len(report.skills) == 17
+    assert len(report.skills) == 18
     assert len(report.application_group_keys) == 40
     assert len(report.application_tools) == 92
     assert "read_visible_decl_lean_file" in tools
     assert len(report.submit_group_keys) == 2
-    assert len(report.submit_tools) == 4
+    assert len(report.submit_tools) == 7
     assert {
         "list_requirement_resume_candidates",
         "mark_requirement_result_observed",

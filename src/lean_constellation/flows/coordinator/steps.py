@@ -12,7 +12,10 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.common.checkpoint_policy import repo_flow_boundary_checkpoints_enabled
-from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
+from lean_constellation.domain.preparation import (
+    ProviderRoute,
+    RepoDependencyRequirementStatus,
+)
 from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.domain.publication import ReleasePolicy
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
@@ -32,9 +35,14 @@ class CoordinatorResourceRequestResultView(StrictModel):
     context_summary: str | None = None
 
 
+class CoordinatorRepoExplorationResultView(StrictModel):
+    kinds: list[Literal["resource", "lean_provider", "mathlib"]] = Field(default_factory=list)
+
+
 class CoordinatorRepoRequirementResultView(StrictModel):
     requirement_name: str
     target_repo: str
+    provider_route: ProviderRoute
     required_proof_availability: ProofAvailability = ProofAvailability.DECLARED
     reason: str | None = None
     source_description: str | None = None
@@ -47,10 +55,11 @@ class CoordinatorRepoReadyResultView(StrictModel):
 
 class CoordinatorStepResult(LeanRenderableStepResult):
     result_type: Literal["coordinator"] = "coordinator"
-    outcome: Literal["content_tasks", "resource_request", "repo_requirement", "repo_ready", "incomplete"]
+    outcome: Literal["content_tasks", "resource_request", "repo_exploration", "repo_requirement", "repo_ready", "incomplete"]
     repo_key: str | None = None
     content_tasks: CoordinatorContentTasksResultView | None = None
     resource_request: CoordinatorResourceRequestResultView | None = None
+    repo_exploration: CoordinatorRepoExplorationResultView | None = None
     repo_requirement: CoordinatorRepoRequirementResultView | None = None
     repo_ready: CoordinatorRepoReadyResultView | None = None
     snapshot_id: str | None = None
@@ -65,6 +74,7 @@ class CoordinatorStepResult(LeanRenderableStepResult):
             if self.resource_request
             else None,
             "requirement_name": self.repo_requirement.requirement_name if self.repo_requirement else None,
+            "exploration_kinds": list(self.repo_exploration.kinds) if self.repo_exploration else None,
             "repo_ready_summary": self.repo_ready.repo_summary if self.repo_ready else None,
             "snapshot_id": self.snapshot_id,
             "incomplete_reason": self.incomplete_reason,
@@ -79,6 +89,8 @@ class CoordinatorContentBatchSnapshotStepResult(LeanRenderableStepResult):
         "after_content_task_batch_terminal",
         "before_resource_request_dispatch",
         "after_resource_request_terminal",
+        "before_repo_exploration_dispatch",
+        "after_repo_exploration_terminal",
     ]
     snapshot_id: str | None = None
     node_paths: list[str] = Field(default_factory=list)
@@ -122,6 +134,20 @@ class MarkCoordinatorRepoReadyStepResult(LeanRenderableStepResult):
         }
 
 
+class EnsureRepoExplorationAgentsStepResult(LeanRenderableStepResult):
+    result_type: Literal["ensure_repo_exploration_agents"] = "ensure_repo_exploration_agents"
+    outcome: Literal["ready"]
+    created_roles: list[str] = Field(default_factory=list)
+    reused_roles: list[str] = Field(default_factory=list)
+
+    def agent_fields(self) -> dict[str, object]:
+        return {
+            "outcome": self.outcome,
+            "created_roles": list(self.created_roles),
+            "reused_roles": list(self.reused_roles),
+        }
+
+
 class CoordinatorRequirementResumeGateStepResult(LeanRenderableStepResult):
     result_type: Literal["coordinator_requirement_resume_gate"] = "coordinator_requirement_resume_gate"
     outcome: Literal["resumed", "still_waiting", "invalid_requirement"]
@@ -161,6 +187,8 @@ class CoordinatorContentBatchSnapshotStep(BaseStep):
         "after_content_task_batch_terminal",
         "before_resource_request_dispatch",
         "after_resource_request_terminal",
+        "before_repo_exploration_dispatch",
+        "after_repo_exploration_terminal",
     ]
     node_paths: list[str] = Field(default_factory=list)
 
@@ -205,6 +233,81 @@ class CoordinatorContentBatchSnapshotStep(BaseStep):
                 checkpoint_kind=self.checkpoint_kind,
                 node_paths=list(self.node_paths),
                 summary="Checkpoint will be created after the step reaches a stable terminal state.",
+            )
+        )
+
+
+class EnsureRepoExplorationAgentsStep(BaseStep):
+    step_type: ClassVar[str] = "ensure_repo_exploration_agents_step"
+    State: ClassVar[type[BaseStepState]] = BaseStepState
+    Result: ClassVar[type[BaseStepResult]] = EnsureRepoExplorationAgentsStepResult
+    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
+        "ensure_repo_exploration_agents": EnsureRepoExplorationAgentsStepResult,
+    }
+
+    ROLE_BY_KIND: ClassVar[dict[str, tuple[str, str]]] = {
+        "resource": ("repo_resource_discovery", "RepoResourceDiscoveryAgent"),
+        "lean_provider": ("repo_lean_provider_discovery", "RepoLeanProviderDiscoveryAgent"),
+        "mathlib": ("repo_mathlib_recon", "RepoMathlibReconAgent"),
+    }
+
+    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
+        from lean_constellation.flows.coordinator.submissions import (
+            CoordinatorRepoExplorationSubmission,
+        )
+
+        flow = _load_native_coordinator_flow(ctx)
+        source_step_id = getattr(flow.state, "pending_dispatch_source_step_id", None)
+        if not source_step_id:
+            raise FlowStepValidationError("repo exploration ensure requires a source Coordinator step")
+        source_step = ctx.ark.flow_service.get_step(source_step_id)
+        submission = source_step.submission
+        if not isinstance(submission, CoordinatorRepoExplorationSubmission):
+            raise FlowStepValidationError("repo exploration ensure source submission is invalid")
+        agent_service = ctx.ark.agent_service
+        if agent_service is None:
+            raise FlowStepValidationError("ark.agent_service is not registered")
+
+        created: list[str] = []
+        reused: list[str] = []
+        bindings: dict[str, str] = {}
+        for spec in submission.explorations:
+            role, agent_type = self.ROLE_BY_KIND[spec.kind.value]
+            agent_id = flow.agent_bindings.get(role)
+            if agent_id is None:
+                agent_id = _prior_repo_exploration_agent_id(
+                    ctx,
+                    flow=flow,
+                    role=role,
+                    agent_type=agent_type,
+                )
+            if agent_id is None:
+                agent = agent_service.create_agent(ctx.scope_id, agent_type, home_id=agent_type)
+                agent_id = str(agent.agent_id)
+                created.append(role)
+            else:
+                agent = agent_service.get_agent(agent_id)
+                if agent.agent_type != agent_type or agent.scope_id != ctx.scope_id:
+                    raise FlowStepValidationError(
+                        f"invalid reusable exploration Agent binding for {role}"
+                    )
+                if agent.status != "idle":
+                    raise FlowStepValidationError(
+                        f"exploration Agent {agent_id} for {role} is not idle"
+                    )
+                reused.append(role)
+            bindings[role] = agent_id
+        if bindings:
+            ctx.ark.flow_service.store.update_flow_record(
+                ctx.flow_id,
+                lambda stored: stored.agent_bindings.by_role.update(bindings),
+            )
+        return ctx.complete_step(
+            EnsureRepoExplorationAgentsStepResult(
+                outcome="ready",
+                created_roles=created,
+                reused_roles=reused,
+                summary="Requested repository exploration Agent roles are ready.",
             )
         )
 
@@ -541,6 +644,39 @@ def _validation_snapshot(ctx: StepRunContext):
     return validation_snapshot
 
 
+def _prior_repo_exploration_agent_id(
+    ctx: StepRunContext,
+    *,
+    flow,
+    role: str,
+    agent_type: str,
+) -> str | None:
+    candidates = [
+        candidate
+        for candidate in ctx.ark.flow_service.list_flows()
+        if candidate.flow_id != flow.flow_id
+        and candidate.flow_type == "native_repo_coordinator"
+        and candidate.scope_id == flow.scope_id
+        and candidate.agent_bindings.get(role)
+    ]
+    candidates.sort(key=lambda candidate: candidate.created_at)
+    for candidate in reversed(candidates):
+        agent_id = candidate.agent_bindings.get(role)
+        if not agent_id:
+            continue
+        try:
+            agent = ctx.ark.agent_service.get_agent(agent_id)
+        except Exception:  # noqa: BLE001 - ignore stale historical bindings.
+            continue
+        if (
+            agent.agent_type == agent_type
+            and agent.scope_id == flow.scope_id
+            and agent.status == "idle"
+        ):
+            return str(agent_id)
+    return None
+
+
 def _repo_workspace(ctx: StepRunContext):
     repo_workspace = getattr(ctx.app, "repo_workspace", None)
     if repo_workspace is None:
@@ -603,6 +739,7 @@ def _first_issue(issues: list[object], *, fallback_code: str) -> tuple[str, str]
 
 COORDINATOR_STEP_TYPES: tuple[type[BaseStep], ...] = (
     CoordinatorContentBatchSnapshotStep,
+    EnsureRepoExplorationAgentsStep,
     CoordinatorRequirementResumeGateStep,
     MarkCoordinatorRepoReadyStep,
 )

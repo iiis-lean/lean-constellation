@@ -43,6 +43,7 @@ class FakeAgentStartRecord:
     env: dict[str, str]
     developer_instructions_template_override: str | None = None
     workdir: str | None = None
+    context_maintenance_policy: object | None = None
 
 
 class FakeAgentService:
@@ -109,6 +110,7 @@ class FakeAgentService:
         developer_instructions_template_override: str | None = None,
         env: dict[str, str] | None = None,
         workdir: str | None = None,
+        context_maintenance_policy: object | None = None,
     ) -> None:
         if agent_id not in self.agents:
             raise ValueError(f"unknown fake agent: {agent_id}")
@@ -121,6 +123,7 @@ class FakeAgentService:
                 env=dict(env or {}),
                 developer_instructions_template_override=developer_instructions_template_override,
                 workdir=workdir,
+                context_maintenance_policy=context_maintenance_policy,
             )
         )
 

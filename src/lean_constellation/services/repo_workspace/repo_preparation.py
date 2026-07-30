@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
+from urllib.parse import urlparse
 
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    AutoProviderRoute,
     BootstrapInputValidationView,
+    NativeProviderRoute,
+    ProviderRoute,
+    RejectedUpstreamCandidate,
+    RepoDependencyRequirement,
     RepoDependencyRequirementStatus,
     RepoPreparationInput,
     RepoPreparationInputDraftView,
@@ -43,6 +50,148 @@ from lean_constellation.services.repo_workspace.repo_requirement import RepoRequ
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
+
+
+def _canonical_git_url(value: str) -> str:
+    candidate = value.strip().removesuffix(".git")
+    if candidate.startswith("git@github.com:"):
+        return f"https://github.com/{candidate.removeprefix('git@github.com:').strip('/')}"
+    if candidate.startswith("github.com/"):
+        candidate = f"https://{candidate}"
+    parsed = urlparse(candidate)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        path = parsed.path.rstrip("/")
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}"
+    return candidate
+
+
+def _merge_optional_adapter_field(
+    routes: Sequence[AdapterProviderRoute],
+    field_name: str,
+) -> tuple[str | None, str | None]:
+    values = {
+        value
+        for route in routes
+        if (value := getattr(route, field_name)) is not None
+    }
+    if len(values) > 1:
+        return None, f"adapter {field_name} values conflict: {', '.join(sorted(values))}"
+    return next(iter(values), None), None
+
+
+def resolve_requirement_routes(
+    requirements: Sequence[RepoDependencyRequirement],
+) -> tuple[ProviderRoute | None, str, list[str]]:
+    """Resolve current requirement routes without selecting an arbitrary consumer."""
+
+    if not requirements:
+        return AutoProviderRoute(), "No requirement routes were present; auto discovery remains required.", []
+    adapter_routes = [
+        route
+        for requirement in requirements
+        if isinstance((route := requirement.provider_route), AdapterProviderRoute)
+    ]
+    native_routes = [
+        route
+        for requirement in requirements
+        if isinstance((route := requirement.provider_route), NativeProviderRoute)
+    ]
+    if adapter_routes and native_routes:
+        return (
+            None,
+            "Provider route resolution failed.",
+            ["adapter and native provider routes cannot be combined for one target repository"],
+        )
+    if adapter_routes:
+        identities = {
+            (
+                _canonical_git_url(route.git_url),
+                route.revision.lower(),
+                route.subdir,
+            )
+            for route in adapter_routes
+        }
+        if len(identities) != 1:
+            return (
+                None,
+                "Provider route resolution failed.",
+                ["adapter routes disagree on Git URL, immutable revision, or subdirectory"],
+            )
+        package_name, package_conflict = _merge_optional_adapter_field(
+            adapter_routes, "package_name"
+        )
+        module_name, module_conflict = _merge_optional_adapter_field(
+            adapter_routes, "likely_import_module"
+        )
+        conflicts = [
+            conflict
+            for conflict in (package_conflict, module_conflict)
+            if conflict is not None
+        ]
+        if conflicts:
+            return None, "Provider route resolution failed.", conflicts
+        git_url, revision, subdir = next(iter(identities))
+        risks: list[str] = []
+        seen_risks: set[str] = set()
+        evidence: list[str] = []
+        for route in adapter_routes:
+            if route.evidence_summary not in evidence:
+                evidence.append(route.evidence_summary)
+            for risk in route.known_risks:
+                if risk not in seen_risks:
+                    seen_risks.add(risk)
+                    risks.append(risk)
+        merged = AdapterProviderRoute(
+            git_url=git_url,
+            revision=revision,
+            subdir=subdir,
+            package_name=package_name,
+            likely_import_module=module_name,
+            evidence_summary="\n".join(evidence),
+            known_risks=risks,
+        )
+        return (
+            merged,
+            f"Resolved {len(adapter_routes)} confirmed adapter route(s) with any auto routes.",
+            [],
+        )
+    if native_routes:
+        targets: list[str] = []
+        target_keys: set[str] = set()
+        rejected: list[RejectedUpstreamCandidate] = []
+        rejected_keys: set[tuple[str | None, str | None, str]] = set()
+        evidence: list[str] = []
+        for route in native_routes:
+            if route.evidence_summary not in evidence:
+                evidence.append(route.evidence_summary)
+            for target in route.searched_targets:
+                key = target.casefold()
+                if key not in target_keys:
+                    target_keys.add(key)
+                    targets.append(target)
+            for candidate in route.rejected_candidates:
+                key = (
+                    _canonical_git_url(candidate.git_url) if candidate.git_url else None,
+                    candidate.name.casefold() if candidate.name else None,
+                    candidate.reason.casefold(),
+                )
+                if key not in rejected_keys:
+                    rejected_keys.add(key)
+                    rejected.append(candidate)
+        return (
+            NativeProviderRoute(
+                evidence_summary="\n".join(evidence),
+                searched_targets=targets,
+                rejected_candidates=rejected,
+            ),
+            f"Resolved {len(native_routes)} confirmed native route(s) with any auto routes.",
+            [],
+        )
+    return (
+        AutoProviderRoute(),
+        f"All {len(requirements)} requirement route(s) request automatic format discovery.",
+        [],
+    )
 
 
 class PreparationStartPreflightView(StrictModel):
@@ -263,11 +412,19 @@ class RepoPreparationComponent:
                         )
                     )
         items.sort(key=lambda item: (item.consumer_repo, item.requirement.name))
+        route = self.resolve_requirement_group_provider_route(
+            [item.requirement for item in items]
+        )
+        if not route.ok or route.value is None:
+            return self.runtime.foundation.fail(route.issues)
+        resolved_route, route_summary = route.value
         required = self._required_proof_availability(items)
         completion_mode = self._provider_completion_mode(required)
         return self.runtime.foundation.ok(
             RequirementGroupView(
                 target_repo=target_repo,
+                resolved_provider_route=resolved_route,
+                route_resolution_summary=route_summary,
                 required_proof_availability=required,
                 provider_completion_mode=completion_mode,
                 requirements=items,
@@ -277,6 +434,24 @@ class RepoPreparationComponent:
                 ),
             )
         )
+
+    def resolve_requirement_group_provider_route(
+        self,
+        requirements: Sequence[RepoDependencyRequirement],
+    ) -> ServiceResult[tuple[ProviderRoute, str]]:
+        route, summary, conflicts = resolve_requirement_routes(requirements)
+        if route is None:
+            return self.runtime.foundation.fail(
+                [
+                    self.runtime.foundation.issue(
+                        "requirement_provider_route_conflict",
+                        conflict,
+                        field="provider_route",
+                    )
+                    for conflict in conflicts
+                ]
+            )
+        return self.runtime.foundation.ok((route, summary))
 
     def build_preparation_input_from_group(
         self,
@@ -315,8 +490,13 @@ class RepoPreparationComponent:
                     seen[interface.name] = interface
                     interfaces.append(interface)
                 elif seen[interface.name].model_dump() != interface.model_dump():
-                    warnings.append(
-                        f"Interface conflict for {interface.name}; kept first from sorted requirement order."
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "requirement_interface_conflict",
+                            "Requirements for one provider repository contain incompatible interfaces with the same name.",
+                            field=interface.name,
+                            object_ref=target_repo,
+                        )
                     )
         reasons = [
             f"- {item.consumer_repo}/{item.requirement.name}: {item.requirement.reason}"

@@ -26,12 +26,15 @@ from lean_constellation.app.semantic_scheduler import (
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    RepoDependencyRequirement,
     RepoDependencyRequirementStatus,
     RepoPreparationInput,
     RepoPreparationInputView,
     RepoShellView,
     RequirementResumeCandidateView,
     SourceCorpusMode,
+    VerifiedAdapterRouteReceipt,
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
@@ -54,12 +57,21 @@ from lean_constellation.flows.testing import (
     CONTROLLED_AGENT_RECORD_KEY,
     ControlledAgentOverrideSpec,
 )
-from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
+from lean_constellation.services.foundation import (
+    FoundationContext,
+    GateReport,
+    ServiceIssue,
+    ServiceResult,
+    WriteMode,
+)
 from lean_constellation.services.repo_workspace import (
     DependencyReleaseMode,
     RepoSkeletonView,
 )
 from lean_constellation.services.repo_workspace.repo_lifecycle_lock import RepoLifecycleLockBusyError
+from lean_constellation.services.repo_workspace.repo_preparation import (
+    resolve_requirement_routes,
+)
 from lean_constellation.services.runtime import LeanRuntimeServices
 
 
@@ -799,6 +811,46 @@ class RequirementResumeInput(StrictModel):
         return Path(value).expanduser()
 
 
+class UpdateRepoRequirementInput(StrictModel):
+    consumer_repo: str
+    current_requirement_name: str
+    expected_current_digest: str
+    replacement: RepoDependencyRequirement
+    reason: str
+    dry_run: bool = True
+
+    @field_validator(
+        "consumer_repo",
+        "current_requirement_name",
+        "expected_current_digest",
+        "reason",
+    )
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must be non-empty")
+        return normalized
+
+
+class RequirementUpdateImpactView(StrictModel):
+    changed: bool
+    current_digest: str
+    replacement_digest: str
+    before_name: str
+    after_name: str
+    changed_fields: list[str] = Field(default_factory=list)
+    affected_requirement_refs: list[str] = Field(default_factory=list)
+    affected_preparation_inputs: list[str] = Field(default_factory=list)
+    affected_runtime_flows: list[str] = Field(default_factory=list)
+    affected_provider_groups: list[str] = Field(default_factory=list)
+    blockers: list[ServiceIssue] = Field(default_factory=list)
+    checkpoint_required: bool = False
+    applied: bool = False
+    checkpoint_id: str | None = None
+    summary: str
+
+
 class LeanAdminApi:
     """Small admin service that composes existing runtime services."""
 
@@ -844,6 +896,11 @@ class LeanAdminApi:
         )
         if not draft.ok or draft.value is None:
             return self.runtime.foundation.fail(draft.issues)
+        verified_adapter_route = self._verify_requirement_adapter_route(
+            draft.value.requirement_group.resolved_provider_route
+        )
+        if not verified_adapter_route.ok:
+            return self.runtime.foundation.fail(verified_adapter_route.issues)
         prepared = self.runtime.repo_workspace.prepare_provider_repo_shell(
             input_model.workspace_root,
             target_repo=input_model.target_repo,
@@ -874,10 +931,479 @@ class LeanAdminApi:
                     "repo_root": prepared.value.shell.repo_root,
                     "workspace_root": str(input_model.workspace_root),
                     "requirement_refs": refs,
+                    "resolved_provider_route": draft.value.requirement_group.resolved_provider_route.model_dump(
+                        mode="json"
+                    ),
+                    "verified_adapter_route": (
+                        verified_adapter_route.value.model_dump(mode="json")
+                        if verified_adapter_route.value is not None
+                        else None
+                    ),
                     "admin_notes": input_model.admin_notes,
                 },
             ),
             repo_root=prepared.value.shell.repo_root,
+        )
+
+    def update_repo_requirement(
+        self,
+        input_model: UpdateRepoRequirementInput,
+    ) -> ServiceResult[RequirementUpdateImpactView]:
+        if self.workspace_root is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "workspace_root_required",
+                    "Requirement update requires a workspace root.",
+                )
+            )
+        try:
+            consumer_repo = self.runtime.foundation.layout.ensure_safe_key(
+                input_model.consumer_repo
+            )
+            current_name = self.runtime.foundation.layout.ensure_safe_key(
+                input_model.current_requirement_name
+            )
+            replacement_name = self.runtime.foundation.layout.ensure_safe_key(
+                input_model.replacement.name
+            )
+            replacement_target = self.runtime.foundation.layout.ensure_safe_key(
+                input_model.replacement.target_repo
+            )
+        except ValueError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_update_identity_invalid",
+                    str(exc),
+                )
+            )
+        consumer_root = self.workspace_root / consumer_repo
+        loaded = self.runtime.repo_workspace.requirement.get_requirement(
+            consumer_root,
+            name=current_name,
+        )
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        current = loaded.value.requirement
+        current_digest = (
+            self.runtime.repo_workspace.requirement.requirement_digest(current)
+        )
+        if current_digest != input_model.expected_current_digest:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_digest_mismatch",
+                    "Requirement changed after the operator preview.",
+                    current=current_digest,
+                    expected=input_model.expected_current_digest,
+                    object_ref=f"{consumer_repo}:{current_name}",
+                )
+            )
+        normalized_route = (
+            self.runtime.repo_workspace.requirement.normalize_provider_route(
+                input_model.replacement.provider_route
+            )
+        )
+        if not normalized_route.ok or normalized_route.value is None:
+            return self.runtime.foundation.fail(normalized_route.issues)
+        replacement = input_model.replacement.model_copy(
+            update={
+                "name": replacement_name,
+                "target_repo": replacement_target,
+                "provider_route": normalized_route.value,
+            }
+        )
+        before = current.model_dump(mode="json")
+        after = replacement.model_dump(mode="json")
+        changed_fields = sorted(
+            key for key in before.keys() | after.keys() if before.get(key) != after.get(key)
+        )
+        replacement_digest = (
+            self.runtime.repo_workspace.requirement.requirement_digest(replacement)
+        )
+        identity_changed = (
+            current.name != replacement.name
+            or current.target_repo != replacement.target_repo
+        )
+        blockers: list[ServiceIssue] = []
+        if identity_changed and current.status != RepoDependencyRequirementStatus.OPEN:
+            blockers.append(
+                self.runtime.foundation.issue(
+                    "requirement_identity_change_after_open",
+                    "Requirement identity can only change while the requirement is open.",
+                    object_ref=f"{consumer_repo}:{current_name}",
+                    current=current.status.value,
+                    expected=RepoDependencyRequirementStatus.OPEN.value,
+                )
+            )
+        if replacement.status in {
+            RepoDependencyRequirementStatus.SATISFIED,
+            RepoDependencyRequirementStatus.HANDLED,
+        } and not replacement.provider_repo:
+            blockers.append(
+                self.runtime.foundation.issue(
+                    "requirement_provider_missing",
+                    "Satisfied or handled requirements require provider_repo.",
+                    field="replacement.provider_repo",
+                )
+            )
+
+        preparation_updates: dict[Path, RepoPreparationInput] = {}
+        affected_refs: list[str] = []
+        for repo_dir in sorted(
+            path for path in self.workspace_root.iterdir() if path.is_dir()
+        ):
+            preparation = self.runtime.repo_workspace.preparation.get_preparation_input(
+                repo_dir
+            )
+            if not preparation.ok or preparation.value is None:
+                continue
+            updated = preparation.value.input.model_copy(deep=True)
+            changed = False
+            refs = []
+            for ref in updated.requirement_refs:
+                if (
+                    ref.consumer_repo == consumer_repo
+                    and ref.requirement_name == current_name
+                ):
+                    affected_refs.append(
+                        f"{repo_dir.name}:{consumer_repo}:{current_name}"
+                    )
+                    refs.append(
+                        ref.model_copy(
+                            update={"requirement_name": replacement.name}
+                        )
+                    )
+                    changed = changed or current.name != replacement.name
+                else:
+                    refs.append(ref)
+            if changed:
+                updated.requirement_refs = refs
+                preparation_updates[repo_dir] = updated
+
+        group_requirements: dict[str, list[RepoDependencyRequirement]] = {}
+        for repo_dir in sorted(
+            path for path in self.workspace_root.iterdir() if path.is_dir()
+        ):
+            listed = self.runtime.repo_workspace.requirement.list_requirements(
+                repo_dir
+            )
+            if not listed.ok or listed.value is None:
+                continue
+            for view in listed.value:
+                requirement = view.requirement
+                if repo_dir.name == consumer_repo and requirement.name == current_name:
+                    requirement = replacement
+                if requirement.status == RepoDependencyRequirementStatus.OPEN:
+                    group_requirements.setdefault(
+                        requirement.target_repo, []
+                    ).append(requirement)
+        affected_groups = sorted(
+            {current.target_repo, replacement.target_repo}
+        )
+        for target_repo in affected_groups:
+            route, _, conflicts = resolve_requirement_routes(
+                group_requirements.get(target_repo, [])
+            )
+            if route is None:
+                blockers.extend(
+                    self.runtime.foundation.issue(
+                        "requirement_provider_route_conflict",
+                        conflict,
+                        field="replacement.provider_route",
+                        object_ref=target_repo,
+                    )
+                    for conflict in conflicts
+                )
+            interfaces: dict[str, DeclInterface] = {}
+            for requirement in group_requirements.get(target_repo, []):
+                for interface in requirement.interfaces:
+                    previous = interfaces.get(interface.name)
+                    if (
+                        previous is not None
+                        and previous.model_dump(mode="json")
+                        != interface.model_dump(mode="json")
+                    ):
+                        blockers.append(
+                            self.runtime.foundation.issue(
+                                "requirement_interface_conflict",
+                                "Requirements for one provider contain incompatible interfaces with the same name.",
+                                field=interface.name,
+                                object_ref=target_repo,
+                            )
+                        )
+                    interfaces[interface.name] = interface
+
+        affected_flows: list[str] = []
+        if self.repo_runtime_registry is not None:
+            for repo_dir in sorted(
+                path for path in self.workspace_root.iterdir() if path.is_dir()
+            ):
+                repo_runtime = self.repo_runtime_registry.try_get_loaded(repo_dir.name)
+                if repo_runtime is None:
+                    continue
+                flow_service = repo_runtime.ark.flow_service
+                if flow_service is None:
+                    continue
+                for flow in flow_service.list_flows():
+                    state = getattr(flow, "state", None)
+                    input_value = getattr(flow, "input", None)
+                    refs = list(getattr(input_value, "requirement_refs", []) or [])
+                    matches_ref = f"{consumer_repo}:{current_name}" in refs
+                    matches_state = current_name in {
+                        getattr(state, "waiting_requirement_name", None),
+                        getattr(state, "resuming_requirement_name", None),
+                    }
+                    if matches_ref or matches_state:
+                        affected_flows.append(flow.flow_id)
+                        if (
+                            identity_changed
+                            and flow.status
+                            not in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+                        ):
+                            blockers.append(
+                                self.runtime.foundation.issue(
+                                    "requirement_update_nonterminal_flow",
+                                    "Identity changes require the affected Flow to reach a terminal repair boundary.",
+                                    object_ref=flow.flow_id,
+                                )
+                            )
+
+        consumer_runtime = (
+            self.repo_runtime_registry.try_get_loaded(consumer_repo)
+            if self.repo_runtime_registry is not None
+            else None
+        )
+        if consumer_runtime is not None:
+            paused = consumer_runtime.ark.pause_controller
+            if (
+                paused is None
+                or not hasattr(paused, "is_paused")
+                or not paused.is_paused()
+            ):
+                blockers.append(
+                    self.runtime.foundation.issue(
+                        "requirement_update_runtime_not_paused",
+                        "Loaded consumer runtime must be paused before apply.",
+                        object_ref=consumer_repo,
+                    )
+                )
+            if consumer_runtime.ark.step_service.list_running_steps():
+                blockers.append(
+                    self.runtime.foundation.issue(
+                        "requirement_update_running_steps",
+                        "Loaded consumer runtime still has running Steps.",
+                        object_ref=consumer_repo,
+                    )
+                )
+            if consumer_runtime.ark.agent_service.list_running_agents():
+                blockers.append(
+                    self.runtime.foundation.issue(
+                        "requirement_update_running_agents",
+                        "Loaded consumer runtime still has running Agents.",
+                        object_ref=consumer_repo,
+                    )
+                )
+            if consumer_runtime.ark.schedule_service.active_flow_advances:
+                blockers.append(
+                    self.runtime.foundation.issue(
+                        "requirement_update_active_advance",
+                        "Loaded consumer runtime still has an active Flow advance.",
+                        object_ref=consumer_repo,
+                    )
+                )
+
+        impact = RequirementUpdateImpactView(
+            changed=bool(changed_fields or preparation_updates),
+            current_digest=current_digest,
+            replacement_digest=replacement_digest,
+            before_name=current.name,
+            after_name=replacement.name,
+            changed_fields=changed_fields,
+            affected_requirement_refs=sorted(set(affected_refs)),
+            affected_preparation_inputs=sorted(
+                str(repo_root) for repo_root in preparation_updates
+            ),
+            affected_runtime_flows=sorted(set(affected_flows)),
+            affected_provider_groups=affected_groups,
+            blockers=blockers,
+            checkpoint_required=consumer_runtime is not None,
+            summary=(
+                f"Requirement update preview found {len(changed_fields)} changed fields "
+                f"and {len(blockers)} blockers."
+            ),
+        )
+        if input_model.dry_run or not impact.changed:
+            return self.runtime.foundation.ok(impact)
+        if blockers:
+            return self.runtime.foundation.fail(blockers)
+
+        checkpoint_id: str | None = None
+        if consumer_runtime is not None:
+            checkpoint = (
+                consumer_runtime.app.snapshot_runtime.create_repo_stable_point_snapshot(
+                    consumer_root,
+                    checkpoint_kind="manual_test_stable_point",
+                    label=(
+                        f"before requirement update {consumer_repo}:{current_name}"
+                    ),
+                    scope_ids=[f"repo:{consumer_repo}"],
+                )
+            )
+            if not checkpoint.ok or checkpoint.value is None:
+                return self.runtime.foundation.fail(checkpoint.issues)
+            checkpoint_id = checkpoint.value.snapshot_id
+
+        old_path = self.runtime.foundation.layout.requirement_path(
+            FoundationContext(repo_root=consumer_root),
+            current_name,
+        )
+        new_path = self.runtime.foundation.layout.requirement_path(
+            FoundationContext(repo_root=consumer_root),
+            replacement.name,
+        )
+        if new_path != old_path and new_path.exists():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_name_duplicate",
+                    f"Requirement already exists: {replacement.name}",
+                    object_ref=str(new_path),
+                )
+            )
+        with self.runtime.foundation.store.mutation(
+            "admin_update_repo_requirement"
+        ) as mutation:
+            mutation.stage_json(
+                new_path,
+                replacement,
+                mode=(
+                    WriteMode.UPDATE_EXISTING
+                    if new_path == old_path
+                    else WriteMode.CREATE_ONLY
+                ),
+            )
+            if new_path != old_path:
+                mutation.stage_delete(old_path)
+            for repo_root, updated in preparation_updates.items():
+                preparation_path = (
+                    self.runtime.foundation.layout.preparation_input_path(
+                        FoundationContext(repo_root=repo_root)
+                    )
+                )
+                mutation.stage_json(
+                    preparation_path,
+                    updated,
+                    mode=WriteMode.UPDATE_EXISTING,
+                )
+            committed = mutation.commit()
+        if not committed.ok:
+            return self.runtime.foundation.fail(committed.issues)
+        reloaded = self.runtime.repo_workspace.requirement.get_requirement(
+            consumer_root,
+            name=replacement.name,
+        )
+        if (
+            not reloaded.ok
+            or reloaded.value is None
+            or self.runtime.repo_workspace.requirement.requirement_digest(
+                reloaded.value.requirement
+            )
+            != replacement_digest
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "requirement_update_post_validation_failed",
+                    "Updated requirement did not reload with the expected digest.",
+                    object_ref=f"{consumer_repo}:{replacement.name}",
+                )
+            )
+        return self.runtime.foundation.ok(
+            impact.model_copy(
+                update={
+                    "applied": True,
+                    "checkpoint_id": checkpoint_id,
+                    "summary": (
+                        f"Updated requirement {consumer_repo}:{current_name} "
+                        f"to {replacement.name}."
+                    ),
+                }
+            )
+        )
+
+    def _verify_requirement_adapter_route(
+        self,
+        route,
+    ) -> ServiceResult[VerifiedAdapterRouteReceipt | None]:
+        if not isinstance(route, AdapterProviderRoute):
+            return self.runtime.foundation.ok(None)
+        probe = self.runtime.external.github_repo.probe_github_lean_repo_candidate(
+            route.git_url,
+            revision=route.revision,
+            subdir=route.subdir,
+        )
+        if not probe.is_lean_project:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_provider_route_probe_failed",
+                    probe.summary
+                    or "The confirmed adapter route did not probe as a Lean project.",
+                    object_ref=route.git_url,
+                    field="provider_route",
+                    details={
+                        "known_risks": "; ".join(probe.known_risks)
+                        or "not_a_lean_project"
+                    },
+                )
+            )
+        if (probe.resolved_revision or "").lower() != route.revision.lower():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_provider_route_revision_mismatch",
+                    "The remote probe did not resolve to the requirement's immutable commit.",
+                    current=probe.resolved_revision,
+                    expected=route.revision,
+                    field="provider_route.revision",
+                )
+            )
+        selected_subdir = probe.selected_subdir or None
+        if selected_subdir != route.subdir:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_provider_route_subdir_mismatch",
+                    "The remote probe selected a different Lean project subdirectory.",
+                    current=selected_subdir,
+                    expected=route.subdir,
+                    field="provider_route.subdir",
+                )
+            )
+        if route.package_name and probe.package_name != route.package_name:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_provider_route_package_mismatch",
+                    "The remote Lake package does not match the confirmed route.",
+                    current=probe.package_name,
+                    expected=route.package_name,
+                    field="provider_route.package_name",
+                )
+            )
+        if route.likely_import_module and route.likely_import_module not in probe.likely_import_modules:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_provider_route_module_mismatch",
+                    "The confirmed import module was not found by the exact remote probe.",
+                    current=", ".join(probe.likely_import_modules),
+                    expected=route.likely_import_module,
+                    field="provider_route.likely_import_module",
+                )
+            )
+        return self.runtime.foundation.ok(
+            VerifiedAdapterRouteReceipt(
+                git_url=route.git_url,
+                revision=route.revision,
+                subdir=route.subdir,
+                package_name=route.package_name,
+                likely_import_module=route.likely_import_module,
+                lean_toolchain=probe.lean_toolchain,
+                evidence_summary=probe.evidence_summary,
+            )
         )
 
     def start_native_preparation(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:

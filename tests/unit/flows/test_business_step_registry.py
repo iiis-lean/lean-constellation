@@ -4,6 +4,7 @@ from agent_runtime_kit.flow.registry import StepTypeRegistry
 from agent_runtime_kit.flow.standard_steps import DispatchStep
 
 from lean_constellation.flows.common.agent_steps import BUSINESS_AGENT_STEP_TYPES
+from lean_constellation.flows.repo_exploration import REPO_EXPLORATION_AGENT_STEP_TYPES
 from lean_constellation.flows.registry import BUSINESS_LOGIC_STEP_TYPES, register_lean_flow_step_types
 
 
@@ -15,9 +16,10 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
         DispatchStep.step_type,
         *(step_cls.step_type for step_cls in BUSINESS_LOGIC_STEP_TYPES),
         *(step_cls.step_type for step_cls in BUSINESS_AGENT_STEP_TYPES),
+        *(step_cls.step_type for step_cls in REPO_EXPLORATION_AGENT_STEP_TYPES),
     }
 
-    for step_cls in BUSINESS_AGENT_STEP_TYPES:
+    for step_cls in (*BUSINESS_AGENT_STEP_TYPES, *REPO_EXPLORATION_AGENT_STEP_TYPES):
         for submission_type, submission_cls in step_cls.Submissions.items():
             fields = set(submission_cls.model_fields)
             payload = {
@@ -31,8 +33,19 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
             for key in fields:
                 if key in payload or key in {"submitted_by_agent_id", "submitted_at", "repo_key", "node_path", "arxiv_version", "summary", "continuation"}:
                     continue
-                if key.endswith("_names") or key.endswith("_deps") or key.endswith("_refs") or key in {
+                if key == "provider_route":
+                    payload[key] = {"kind": "auto"}
+                elif key == "explorations":
+                    payload[key] = [{"kind": "mathlib", "objective": "Find imports."}]
+                elif key.endswith("_names") or key.endswith("_deps") or key.endswith("_refs") or key in {
                     "interfaces",
+                    "candidates",
+                    "created_modules",
+                    "reused_modules",
+                    "created_declarations",
+                    "reused_declarations",
+                    "unresolved",
+                    "usage_notes",
                     "attempted_targets",
                     "missing_materials",
                     "missing_interfaces",
@@ -53,6 +66,8 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                     payload[key] = []
                 elif key in {"approved", "accepted", "retry_required"}:
                     payload[key] = True
+                elif key == "outcome" and submission_type.endswith("_result"):
+                    payload[key] = "completed"
                 elif key in {"round_index"}:
                     payload[key] = 0
                 elif key in {"target_kind"}:

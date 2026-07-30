@@ -46,9 +46,16 @@ def instantiate_submission(cls, **overrides):
         "requirement_name": "req",
         "target_repo": "Provider",
         "interfaces": [],
+        "provider_route": {"kind": "auto"},
         "recon_kind": "mathlib",
         "objective": "Objective",
         "context_summary": "Context",
+        "explorations": [
+            {
+                "kind": "resource",
+                "objective": "Find a relevant external resource.",
+            }
+        ],
         "strategy_id": "strategy_1",
         "round_id": "round_1",
         "round_index": 0,

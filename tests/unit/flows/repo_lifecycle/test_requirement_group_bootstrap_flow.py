@@ -5,7 +5,15 @@ from pathlib import Path
 from agent_runtime_kit.flow.models import FlowStatus, StepStatus
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
-from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
+    AutoProviderRoute,
+    NativeProviderRoute,
+    ProviderRoute,
+    RepoPreparationInput,
+    SourceCorpusMode,
+    VerifiedAdapterRouteReceipt,
+)
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
 from lean_constellation.flows.repo_lifecycle.submissions import (
@@ -131,7 +139,14 @@ def _write_preparation_input(lean_runtime, repo_root: Path, *, source_mode: Sour
     assert written.ok
 
 
-def _start_bootstrap(runtime: FakeLeanFlowRuntime, workspace: Path, repo_root: Path) -> str:
+def _start_bootstrap(
+    runtime: FakeLeanFlowRuntime,
+    workspace: Path,
+    repo_root: Path,
+    *,
+    route: ProviderRoute | None = None,
+    verified_adapter_route: VerifiedAdapterRouteReceipt | None = None,
+) -> str:
     return runtime.start_flow(
         "requirement_group_repo_bootstrap",
         {
@@ -139,6 +154,14 @@ def _start_bootstrap(runtime: FakeLeanFlowRuntime, workspace: Path, repo_root: P
             "repo_root": str(repo_root),
             "workspace_root": str(workspace),
             "requirement_refs": ["consumer:need_provider"],
+            "resolved_provider_route": (
+                route or AutoProviderRoute()
+            ).model_dump(mode="json"),
+            "verified_adapter_route": (
+                verified_adapter_route.model_dump(mode="json")
+                if verified_adapter_route is not None
+                else None
+            ),
         },
         scope_id=f"repo:{repo_root.name}",
     )
@@ -211,7 +234,7 @@ def test_requirement_bootstrap_adapter_choice_initializes_adapter_skeleton(tmp_p
             submission_type="repo_format_adapter_choice",
             tool_name="submit_adapter_repo_choice",
             git_url="https://github.com/example/upstream.git",
-            revision="main",
+            revision="a" * 40,
             subdir="lean",
             package_name="upstream",
             likely_import_module="upstream",
@@ -237,6 +260,73 @@ def test_requirement_bootstrap_adapter_choice_initializes_adapter_skeleton(tmp_p
     assert lake.checked == [(repo_root, "upstream")]
     assert apply_step.result is not None
     assert "Coverage not verified." in apply_step.result.upstream_summary
+
+
+def test_requirement_bootstrap_direct_routes_skip_format_discovery_agent(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, lake = _runtime(tmp_path)
+    workspace = tmp_path / "workspace"
+
+    native_root = workspace / "NativeProvider"
+    _write_preparation_input(lean_runtime, native_root)
+    native_flow_id = _start_bootstrap(
+        runtime,
+        workspace,
+        native_root,
+        route=NativeProviderRoute(
+            evidence_summary="No suitable upstream Lean repository exists.",
+            searched_targets=["native provider theorem"],
+        ),
+    )
+    _advance_and_run(runtime, native_flow_id)
+    apply_step_id = _advance_and_run(runtime, native_flow_id)
+    assert (
+        runtime.flow_service.get_step(apply_step_id).step_type
+        == "apply_repo_format_choice_step"
+    )
+    assert (
+        runtime.flow_service.get_flow(native_flow_id).result.outcome
+        == "native_bootstrap_ready"
+    )
+
+    adapter_root = workspace / "AdapterDirect"
+    _write_preparation_input(lean_runtime, adapter_root)
+    route = AdapterProviderRoute(
+        git_url="https://github.com/example/upstream",
+        revision="b" * 40,
+        subdir="lean",
+        package_name="upstream",
+        likely_import_module="upstream",
+        evidence_summary="The exact remote commit was verified.",
+    )
+    receipt = VerifiedAdapterRouteReceipt(
+        git_url=route.git_url,
+        revision=route.revision,
+        subdir=route.subdir,
+        package_name=route.package_name,
+        likely_import_module=route.likely_import_module,
+        lean_toolchain="leanprover/lean4:v4.32.0",
+        evidence_summary="Remote probe matched the exact route.",
+    )
+    adapter_flow_id = _start_bootstrap(
+        runtime,
+        workspace,
+        adapter_root,
+        route=route,
+        verified_adapter_route=receipt,
+    )
+    _advance_and_run(runtime, adapter_flow_id)
+    direct_apply_step_id = _advance_and_run(runtime, adapter_flow_id)
+    assert (
+        runtime.flow_service.get_step(direct_apply_step_id).step_type
+        == "apply_repo_format_choice_step"
+    )
+    assert (
+        runtime.flow_service.get_flow(adapter_flow_id).result.outcome
+        == "adapter_bootstrap_ready"
+    )
+    assert lake.built[-1] == (adapter_root, "upstream")
 
 
 def test_requirement_bootstrap_missing_preparation_input_needs_admin_repair(tmp_path: Path) -> None:

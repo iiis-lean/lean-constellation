@@ -714,6 +714,7 @@ def test_production_app_server_repo_routes_isolate_flow_state(tmp_path) -> None:
                     "repo_root": str(repo_a),
                     "workspace_root": str(workspace),
                     "requirement_refs": [],
+                    "resolved_provider_route": {"kind": "auto"},
                 },
             },
         )

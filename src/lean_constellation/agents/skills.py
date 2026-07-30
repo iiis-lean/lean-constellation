@@ -161,6 +161,133 @@ use add-only visibility promotion for already-ready local prerequisites.
 
 
 SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
+    SkillKey.COORDINATOR_REPO_EXPLORATION.value: LeanSkillDefinition(
+        name="coordinator-repo-exploration",
+        description="Use when optional repository-level resource, Lean-provider, or Mathlib exploration may change an initial or later planning frontier.",
+        group="coordinator",
+        required_tool_groups=_groups(SubmitGroup.COORDINATOR_SUBMIT),
+        source_design_doc="dev_docs/implementation/coordinator_repo_exploration_and_typed_requirements",
+        body=_body(
+            "coordinator-repo-exploration",
+            "Use this skill selectively before the first NodeTree decision or when later progress exposes a genuinely new repository-wide external question.",
+            (
+                "Read the repository goal, completion policy, SourceCorpus and SourceIndex overview, existing Resources, workspace providers, requirements, Lake dependencies, and MathlibIndex before deciding whether exploration is useful.",
+                "For initial preparation, consider resource, Lean-provider, and Mathlib exploration more actively, but skip categories already covered or unlikely to change NodeTree and requirement decisions.",
+                "During later work, explore only after a new topic, major unresolved external dependency, failed candidate, repeated repo-wide Mathlib representation issue, or materially changed source direction.",
+                "Choose one to three distinct categories and give each a focused, non-overlapping, verifiable objective. Do not copy full repository evidence into context_summary.",
+                "Call `submit_repo_exploration` once and stop. On callback, consume only the current batch: preflight resource candidates before requesting them, use a direct adapter requirement only for exact immutable verified Lean evidence, and do not duplicate MathlibIndex writes already performed by recon.",
+            ),
+            (
+                "Exploration is optional; do not dispatch every category merely because it exists.",
+                "A local tactic failure, ordinary worker retry, or a single missing Mathlib lemma does not justify broad repository exploration.",
+                "Do not retroactively run initial exploration only because the capability appeared after a mature repository was restored.",
+                "Each Coordinator AgentStep still submits exactly one terminal action.",
+            ),
+        ),
+    ),
+    SkillKey.REPO_RESOURCE_DISCOVERY.value: LeanSkillDefinition(
+        name="repo-resource-discovery",
+        description="Discover source-attributed supporting materials without acquiring or registering them.",
+        group="resource",
+        required_tool_groups=_groups(
+            AppGroup.REPO_PREPARATION_INPUT_READ,
+            AppGroup.REPO_COMPLETION_POLICY_READ,
+            AppGroup.SOURCE_CORPUS_READ,
+            AppGroup.SOURCE_INDEX_NAVIGATION_READ,
+            AppGroup.SOURCE_MATERIAL_TEXT_READ,
+            AppGroup.RESOURCE_LIBRARY_READ,
+            AppGroup.RESOURCE_TARGET_PREFLIGHT_READ,
+            AppGroup.EXTERNAL_RESOURCE_DISCOVERY_READ,
+            AppGroup.EXTERNAL_THEOREM_SEARCH_READ,
+            SubmitGroup.REPO_RESOURCE_DISCOVERY_SUBMIT,
+        ),
+        source_design_doc="dev_docs/implementation/coordinator_repo_exploration_and_typed_requirements",
+        body=_body(
+            "repo-resource-discovery",
+            "Find trustworthy external supporting resources for one repository-level objective.",
+            (
+                "Read current source and registered Resource truth first so existing material is not suggested again.",
+                "Search broadly with bounded metadata, then inspect only promising canonical candidates and use theorem search for precise statement-level evidence.",
+                "Record a canonical locator, source URLs, concrete mathematical relevance, expected support, reliability, and remaining risks for every recommended candidate.",
+                "Recommend request only when the target is precise and useful; otherwise use inspect_later or ignore.",
+                "Submit completed, no_useful_findings, or incomplete once, then stop.",
+            ),
+            (
+                "Do not acquire, normalize, draft, or register Resources.",
+                "Do not create requirements, providers, nodes, contracts, declarations, or local candidate registries.",
+                "Do not return full HTML, PDF, TeX, or unbounded abstracts.",
+            ),
+        ),
+    ),
+    SkillKey.REPO_LEAN_PROVIDER_DISCOVERY.value: LeanSkillDefinition(
+        name="repo-lean-provider-discovery",
+        description="Discover and verify existing Lean repositories that may serve as independent providers.",
+        group="workspace",
+        required_tool_groups=_groups(
+            AppGroup.REPO_PREPARATION_INPUT_READ,
+            AppGroup.REPO_COMPLETION_POLICY_READ,
+            AppGroup.SOURCE_CORPUS_READ,
+            AppGroup.SOURCE_INDEX_NAVIGATION_READ,
+            AppGroup.SOURCE_MATERIAL_TEXT_READ,
+            AppGroup.WORKSPACE_OVERVIEW_READ,
+            AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
+            AppGroup.WORKSPACE_REQUIREMENT_READ,
+            AppGroup.LAKE_DEPENDENCY_READ,
+            AppGroup.UPSTREAM_REPO_SEARCH,
+            AppGroup.GITHUB_REPOSITORY_READ,
+            SubmitGroup.REPO_LEAN_PROVIDER_DISCOVERY_SUBMIT,
+        ),
+        source_design_doc="dev_docs/implementation/coordinator_repo_exploration_and_typed_requirements",
+        body=_body(
+            "repo-lean-provider-discovery",
+            "Find importable Lean repository candidates for one repository-level mathematical objective.",
+            (
+                "Read existing providers, requirements, and dependencies before remote search.",
+                "Search GitHub broadly, then probe a small number of relevant candidates for Lean toolchain, Lake project, package, modules, license, and exact declaration evidence.",
+                "Resolve any direct-adapter recommendation to an immutable commit and verify its subdirectory and relevant Lean evidence.",
+                "Use generic_requirement when the candidate is plausible but not exact enough for direct adaptation; use ignore for unsuitable candidates.",
+                "Submit the bounded candidate set once, then stop.",
+            ),
+            (
+                "Do not clone, attach, import, or mutate remote repositories.",
+                "Do not create requirements or change Lake dependencies.",
+                "Keywords, stars, README claims, and repository names are not substitutes for Lean declaration evidence.",
+            ),
+        ),
+    ),
+    SkillKey.REPO_MATHLIB_RECON.value: LeanSkillDefinition(
+        name="repo-mathlib-recon",
+        description="Curate checked repository-wide MathlibIndex support for a focused exploration objective.",
+        group="mathlib",
+        required_tool_groups=_groups(
+            AppGroup.REPO_PREPARATION_INPUT_READ,
+            AppGroup.REPO_COMPLETION_POLICY_READ,
+            AppGroup.SOURCE_CORPUS_READ,
+            AppGroup.SOURCE_INDEX_NAVIGATION_READ,
+            AppGroup.SOURCE_MATERIAL_TEXT_READ,
+            AppGroup.MATHLIB_INDEX_READ,
+            AppGroup.MATHLIB_INDEX_WRITE,
+            AppGroup.MATHLIB_SEMANTIC_SEARCH,
+            AppGroup.MATHLIB_NAVIGATION,
+            SubmitGroup.REPO_MATHLIB_RECON_SUBMIT,
+        ),
+        source_design_doc="dev_docs/implementation/coordinator_repo_exploration_and_typed_requirements",
+        body=_body(
+            "repo-mathlib-recon",
+            "Find and record checked Mathlib modules and declarations that are reusable across the current repository.",
+            (
+                "Read the current MathlibIndex before searching.",
+                "Search semantically only for unresolved objective terms, then inspect exact declarations, modules, names, and signatures.",
+                "Record only verified entries; prefer checked batch recording for several already-understood candidates and split only to diagnose a combined check failure.",
+                "Distinguish created and reused modules and declarations, and preserve unresolved questions explicitly.",
+                "Submit the compact delta once, then stop.",
+            ),
+            (
+                "Do not write node hints, node dependencies, declaration dependencies, Resources, requirements, contracts, declarations, or Lean code.",
+                "Do not record speculative search results or unrelated APIs.",
+            ),
+        ),
+    ),
     SkillKey.NODE_CONTRACT_DESIGN.value: LeanSkillDefinition(
         name="node-contract-design",
         description="Use when a Coordinator must design or update the semantic contract of a Scope or Content node.",
@@ -427,7 +554,7 @@ Do not name caller-private material-write tools in this shared procedure. Apply 
 
 Closeout is complete when the terminal outcome has been checked against current truth, every authorized durable material change has been made, and any external-repository or rejected boundary is explicit.
 
-Then stop using this Skill and return to the caller's next-action loop in the same AgentStep. Do not submit a second Resource request from inside result closeout.
+Then stop using this Skill and return to the caller's next-action loop in the same AgentStep. A ResourceRecon caller may next use `resource-request-submission` for a different precise unresolved target, but it must not request anything before this closeout is complete and must never repeat a target already requested by the same recon Flow.
 """,
     ),
     SkillKey.RESOURCE_DRAFT_CURATION.value: LeanSkillDefinition(
