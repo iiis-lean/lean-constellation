@@ -81,6 +81,82 @@ class RecordingLake:
         )
 
 
+class RecordingTransportLake(RecordingLake):
+    def __init__(self) -> None:
+        super().__init__()
+        self.update_env: dict[str, str] | None = None
+        self.build_env: dict[str, str] | None = None
+
+    def run_lake_update(
+        self,
+        repo_root: Path,
+        packages: list[str] | None = None,
+        timeout_seconds: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ExternalCommandResult:
+        del packages, timeout_seconds
+        self.update_env = env
+        self.updated.append(Path(repo_root))
+        return ExternalCommandResult(
+            ok=True,
+            command=["lake", "update"],
+            cwd=str(repo_root),
+            exit_code=0,
+            summary="update ok",
+        )
+
+    def run_lake_build(
+        self,
+        repo_root: Path,
+        target: str | None = None,
+        targets: list[str] | None = None,
+        timeout_seconds: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ExternalCommandResult:
+        del timeout_seconds
+        self.build_env = env
+        self.built.append((Path(repo_root), target, targets))
+        return ExternalCommandResult(
+            ok=True,
+            command=["lake", "build"],
+            cwd=str(repo_root),
+            exit_code=0,
+            summary="build ok",
+        )
+
+
+def test_git_transport_rewrites_use_git_225_compatible_parameters(
+    tmp_path: Path, monkeypatch
+) -> None:  # noqa: ANN001
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'user.name=Existing User'")
+    lake = RecordingTransportLake()
+    client = LeanToolchainClient(
+        lake=lake,
+        toolkit=LeanMcpToolkitClient(),
+    )
+    rewrites = {
+        "https://example.test/provider.git": "file:///workspace/Provider",
+    }
+
+    assert client.run_lake_update(
+        tmp_path,
+        packages=["Provider"],
+        transport_rewrites=rewrites,
+    ).ok
+    assert client.run_lake_build(
+        tmp_path,
+        transport_rewrites=rewrites,
+    ).ok
+
+    expected = (
+        "'user.name=Existing User' "
+        "'url.file:///workspace/Provider.insteadOf=https://example.test/provider.git'"
+    )
+    assert lake.update_env == {"GIT_CONFIG_PARAMETERS": expected}
+    assert lake.build_env == {"GIT_CONFIG_PARAMETERS": expected}
+    assert "GIT_CONFIG_COUNT" not in lake.update_env
+
+
 def test_runtime_default_toolchain_uses_overridden_lake_and_toolkit(tmp_path: Path) -> None:
     lake = RecordingLake()
     toolkit = LeanMcpToolkitClient(dispatcher=lambda tool_name, payload: {"diagnostics": []})

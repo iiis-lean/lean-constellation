@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -234,13 +236,23 @@ class LeanToolchainClient:
     ) -> dict[str, str] | None:
         if not rewrites:
             return None
-        env = {"GIT_CONFIG_COUNT": str(len(rewrites))}
-        for index, (canonical_url, local_url) in enumerate(
-            sorted(rewrites.items())
-        ):
-            env[f"GIT_CONFIG_KEY_{index}"] = f"url.{local_url}.insteadOf"
-            env[f"GIT_CONFIG_VALUE_{index}"] = canonical_url
-        return env
+        parameters = " ".join(
+            LeanToolchainClient._git_config_parameter(
+                f"url.{local_url}.insteadOf={canonical_url}"
+            )
+            for canonical_url, local_url in sorted(rewrites.items())
+        )
+        inherited = os.environ.get("GIT_CONFIG_PARAMETERS", "").strip()
+        return {
+            "GIT_CONFIG_PARAMETERS": (
+                f"{inherited} {parameters}" if inherited else parameters
+            )
+        }
+
+    @staticmethod
+    def _git_config_parameter(value: str) -> str:
+        quoted = shlex.quote(value)
+        return quoted if quoted != value else f"'{value}'"
 
     def run_minimal_import_check(self, repo_root: Path, module: str, *, timeout_seconds: int | None = None) -> ToolchainLeanCheckView:
         try:
