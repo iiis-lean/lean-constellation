@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus
+from pydantic import ValidationError
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.app.config import AutomaticCheckpointAppConfig
@@ -793,18 +794,15 @@ def test_failed_preparation_child_outcome_is_recorded_in_progress_checkpoint(tmp
     assert "outcome=failed" in str(snapshots.calls[0]["label"])
 
 
-def test_legacy_content_task_state_defaults_new_progress_checkpoint_fields() -> None:
-    state = ContentNodeTaskState.model_validate(
-        {
-            "state_type": "content_node_task",
-            "position": {"phase": "waiting_child", "round_index": 0},
-            "waiting_child_kind": "node_dir_dependency",
-        }
-    )
-
-    assert state.completed_child_flow_id is None
-    assert state.completed_child_outcome is None
-    assert state.progress_checkpoint_repo_scope_captured is False
+def test_content_task_state_rejects_missing_progress_checkpoint_fields() -> None:
+    with pytest.raises(ValidationError):
+        ContentNodeTaskState.model_validate(
+            {
+                "state_type": "content_node_task",
+                "position": {"phase": "waiting_child", "round_index": 0},
+                "waiting_child_kind": "node_dir_dependency",
+            }
+        )
 
 
 def test_content_progress_snapshot_failure_fails_owning_flow(tmp_path: Path) -> None:

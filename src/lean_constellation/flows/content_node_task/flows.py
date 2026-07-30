@@ -74,9 +74,9 @@ class ContentNodeTaskState(BaseFlowState):
     waiting_child_kind: Literal["node_dir_dependency", "mathlib", "resource", "resource_curation", "decl_graph_round"] | None = None
     stage_agent_bindings_initialized: bool = False
     latest_callback_summary: str | None = None
-    completed_child_flow_id: str | None = None
-    completed_child_outcome: Literal["completed", "failed"] | None = None
-    progress_checkpoint_repo_scope_captured: bool = False
+    completed_child_flow_id: str | None
+    completed_child_outcome: Literal["completed", "failed"] | None
+    progress_checkpoint_repo_scope_captured: bool
 
 
 class ContentNodeTaskResult(LeanRenderableFlowResult):
@@ -114,7 +114,11 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
                 summary=f"Run task for content node {params.node_path}.",
                 **params.model_dump(),
             ),
-            state=ContentNodeTaskState(),
+            state=ContentNodeTaskState(
+                completed_child_flow_id=None,
+                completed_child_outcome=None,
+                progress_checkpoint_repo_scope_captured=False,
+            ),
         )
 
     def can_exit_waiting(self, ctx: FlowReadContext) -> bool:
