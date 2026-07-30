@@ -8,7 +8,9 @@ import pytest
 from tests.real.lean_test_config import write_test_lean_toolchain
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
+from lean_constellation.domain.refs import MathlibRef
 from lean_constellation.services.decl_graph import DeclState
+from lean_constellation.services.decl_graph.models import MathlibDeclDep
 from lean_constellation.services.external_clients import (
     LakeCommandClient,
     LakeCommandClientConfig,
@@ -190,3 +192,76 @@ def test_decl_file_capture_with_real_lake_and_decl_graph_provider(tmp_path: Path
     assert not admit_failure.ok
     assert admit_failure.issues[0].kind == "proof_lean_check_failed"
     assert "contains_admit" in admit_failure.issues[0].message
+
+
+@pytest.mark.real
+def test_reviewer_dependency_recapture_with_real_lake(tmp_path: Path) -> None:
+    timeout = _require_lake_and_lean()
+    repo_root = tmp_path / "DeclFileCaptureReal"
+    _write_minimal_lake_repo(repo_root)
+    runtime = _runtime(timeout)
+    round_id = _setup_decl_round(runtime, repo_root)
+    assert runtime.lean_projection.refresh_node_projection(
+        repo_root,
+        node_path=NODE_PATH,
+    ).ok
+    assert runtime.external.lake.run_lake_build(
+        repo_root,
+        timeout_seconds=timeout,
+    ).ok
+    prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+    )
+    assert prepared.ok and prepared.value is not None, prepared.issues
+    path = Path(prepared.value.path)
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "\ntheorem main_result : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert runtime.lean_projection.capture_statement_formal(
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+    ).ok
+    assert runtime.mathlib.upsert_mathlib_decl_entry(
+        repo_root,
+        name="Classical.choice",
+        module="Init.Classical",
+        kind="noncomputable def",
+        signature="{α : Sort u} → Nonempty α → α",
+    ).ok
+
+    recaptured = runtime.lean_projection.recapture_reviewer_dependency_mutation(
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        stage="statement",
+        mutate=lambda: runtime.decl_graph.add_statement_dep(
+            repo_root,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            decl_name=DECL_NAME,
+            dep=MathlibDeclDep(
+                ref=MathlibRef(
+                    name="Classical.choice",
+                    module="Init.Classical",
+                ),
+                reason="Real reviewer recapture canary.",
+            ),
+        ),
+    )
+
+    assert recaptured.ok, recaptured.issues
+    assert recaptured.value is not None
+    assert recaptured.value.formal_capture_refreshed is True
+    sync = runtime.lean_projection.check_decl_file_snapshot_sync(
+        repo_root,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        stage="statement",
+    )
+    assert sync.ok and sync.value is not None and sync.value.passed
+    assert "import Init.Classical" in path.read_text(encoding="utf-8")

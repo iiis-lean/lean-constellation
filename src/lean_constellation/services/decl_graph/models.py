@@ -646,6 +646,7 @@ class DeclDependencyMutationReceipt(_CompactMutationReceipt):
     managed_projection: DeclManagedProjectionEffect | None = None
     dependency_stage: Literal["statement", "proof"] | None = None
     mathlib_index: dict[str, object] | None = None
+    formal_capture_refreshed: bool | None = None
 
 
 class DeclView(StrictModel):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
@@ -29,7 +30,7 @@ from lean_constellation.services.lean_projection.safe_apply import (
     SafeFormalApplyComponent,
     SafeFormalApplyView,
 )
-from lean_constellation.services.decl_graph.models import DeclState
+from lean_constellation.services.decl_graph.models import DeclDependencyMutationReceipt, DeclState
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -122,6 +123,23 @@ class LeanProjectionService:
         **kwargs,
     ) -> ServiceResult[SafeFormalApplyView]:
         return self.apply_formal_code(repo_root, stage="proof", **kwargs)
+
+    def recapture_reviewer_dependency_mutation(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        stage: FormalApplyStage,
+        mutate: Callable[[], ServiceResult[DeclDependencyMutationReceipt]],
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        return self.safe_apply.recapture_reviewer_dependency_mutation(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            stage=stage,
+            mutate=mutate,
+        )
 
     def prepare_statement_formal_stage_file(
         self,

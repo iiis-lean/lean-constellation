@@ -9,8 +9,10 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from collections.abc import Callable
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.services.decl_graph.models import DeclDependencyMutationReceipt
 from lean_constellation.services.decl_graph.models import DeclState
 from lean_constellation.services.foundation import FoundationContext, ServiceResult
 from lean_constellation.services.foundation.module_layout import local_projection_path
@@ -104,6 +106,168 @@ class SafeFormalApplyComponent:
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
         return self.runtime.foundation.ok(self._digest(current.value.model_dump(mode="json")))
+
+    def recapture_reviewer_dependency_mutation(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        stage: FormalApplyStage,
+        mutate: Callable[[], ServiceResult[DeclDependencyMutationReceipt]],
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        """Apply a reviewer-only dependency repair and keep formal capture atomic."""
+
+        before_sync = self.decl_file.check_decl_file_snapshot_sync(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            stage=stage,
+        )
+        if not before_sync.ok or before_sync.value is None:
+            return self.runtime.foundation.fail(before_sync.issues)
+        if not before_sync.value.passed:
+            return self.runtime.foundation.fail(before_sync.value.issues)
+
+        current = self.decl_file.revision_provider.get_current_decl_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        path_view = self.decl_file.derive_decl_file_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            kind=current.value.kind,
+        )
+        if not path_view.ok or path_view.value is None:
+            return self.runtime.foundation.fail(path_view.issues)
+        before_unmanaged = self._read_unmanaged_source(Path(path_view.value.path))
+        if not before_unmanaged.ok or before_unmanaged.value is None:
+            return self.runtime.foundation.fail(before_unmanaged.issues)
+        revision_path = self.runtime.decl_graph.graph_store.revision_path(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+            revision=current.value.revision,
+        )
+        artifact_paths = [
+            Path(repo_root) / relpath
+            for relpath in module_artifact_relpaths(path_view.value.module)
+        ]
+        snapshot = _TreeSnapshot(
+            [revision_path, Path(path_view.value.path), *artifact_paths]
+        )
+        try:
+            warnings = [*before_sync.issues, *before_sync.value.issues]
+            mutated = mutate()
+            if not mutated.ok or mutated.value is None:
+                return self._rollback_dependency_mutation(snapshot, mutated.issues)
+            warnings.extend(mutated.issues)
+
+            after_unmanaged = self._read_unmanaged_source(Path(path_view.value.path))
+            if not after_unmanaged.ok or after_unmanaged.value is None:
+                return self._rollback_dependency_mutation(
+                    snapshot,
+                    after_unmanaged.issues,
+                )
+            if after_unmanaged.value != before_unmanaged.value:
+                return self._rollback_dependency_mutation(
+                    snapshot,
+                    [
+                        self.runtime.foundation.issue(
+                            "reviewer_dependency_unmanaged_source_changed",
+                            "Reviewer dependency repair changed Lean source outside system-managed imports and docstring regions.",
+                            object_ref=f"{node_path}:{decl_name}",
+                        )
+                    ],
+                )
+
+            after_sync = self.decl_file.check_decl_file_snapshot_sync(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                stage=stage,
+            )
+            if not after_sync.ok or after_sync.value is None:
+                return self._rollback_dependency_mutation(snapshot, after_sync.issues)
+            warnings.extend(after_sync.issues)
+            if after_sync.value.passed:
+                warnings.extend(after_sync.value.issues)
+
+            capture_refreshed = False
+            if not after_sync.value.passed:
+                blocking_issues = [
+                    issue
+                    for issue in after_sync.value.issues
+                    if issue.severity in {"error", "blocker"}
+                ]
+                if not blocking_issues or any(
+                    issue.kind != "decl_file_capture_stale"
+                    for issue in blocking_issues
+                ):
+                    return self._rollback_dependency_mutation(
+                        snapshot,
+                        after_sync.value.issues,
+                    )
+                captured = self._capture(
+                    repo_root,
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    stage=stage,
+                )
+                if not captured.ok or captured.value is None:
+                    return self._rollback_dependency_mutation(
+                        snapshot,
+                        captured.issues,
+                    )
+                warnings.extend(captured.issues)
+                capture_refreshed = True
+
+            consistency = self.runtime.validation_snapshot.check_formal_stage_consistency(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+                stage=stage,
+            )
+            if not consistency.ok or consistency.value is None:
+                return self._rollback_dependency_mutation(
+                    snapshot,
+                    consistency.issues,
+                )
+            warnings.extend(consistency.issues)
+            if not consistency.value.passed:
+                return self._rollback_dependency_mutation(
+                    snapshot,
+                    consistency.value.issues,
+                )
+            warnings.extend(consistency.value.issues)
+            receipt = (
+                mutated.value.model_copy(
+                    update={"formal_capture_refreshed": True}
+                )
+                if capture_refreshed
+                else mutated.value
+            )
+            return self.runtime.foundation.ok(
+                receipt,
+                warnings=warnings,
+            )
+        except Exception as exc:  # noqa: BLE001 - restore compound reviewer mutation.
+            return self._rollback_dependency_mutation(
+                snapshot,
+                [
+                    self.runtime.foundation.issue(
+                        "reviewer_dependency_recapture_failed",
+                        f"Reviewer dependency recapture failed: {exc}",
+                        object_ref=f"{node_path}:{decl_name}",
+                    )
+                ],
+            )
+        finally:
+            snapshot.close()
 
     def apply(
         self,
@@ -247,6 +411,36 @@ class SafeFormalApplyComponent:
                 ),
             ]
         return self.runtime.foundation.fail(issues)
+
+    def _rollback_dependency_mutation(
+        self,
+        snapshot: _TreeSnapshot,
+        issues: list,
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        failures = snapshot.restore()
+        if failures:
+            issues = [
+                *issues,
+                self.runtime.foundation.issue(
+                    "reviewer_dependency_recapture_rollback_failed",
+                    "Reviewer dependency recapture rollback did not fully restore project state.",
+                    details={"failures": "; ".join(failures)},
+                ),
+            ]
+        return self.runtime.foundation.fail(issues)
+
+    def _read_unmanaged_source(self, path: Path) -> ServiceResult[str]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_file_read_failed",
+                    f"Failed to read Decl-owned Lean file: {exc}",
+                    details={"path": str(path)},
+                )
+            )
+        return self.decl_file.managed_file.extract_unmanaged_source(text)
 
     def _write_candidate(self, path: Path, text: str) -> ServiceResult[None]:
         temp_path: Path | None = None

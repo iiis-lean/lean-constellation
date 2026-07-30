@@ -55,6 +55,21 @@ class ManagedDeclFileComponent:
             return self.runtime.foundation.fail(regions.issues)
         return self.runtime.foundation.ok(None)
 
+    def extract_unmanaged_source(self, file_text: str) -> ServiceResult[str]:
+        """Return helpers and declaration source without managed imports/docstring."""
+
+        regions = self._regions(file_text)
+        if not regions.ok or regions.value is None:
+            return self.runtime.foundation.fail(regions.issues)
+        source = file_text[regions.value[2] :]
+        marker = self.annotation.parse_target_marker(source)
+        if not marker.ok or marker.value is None:
+            return self.runtime.foundation.fail(marker.issues)
+        return self.runtime.foundation.ok(
+            source[: marker.value.docstring_start_offset]
+            + source[marker.value.docstring_end_offset :]
+        )
+
     def _regions(self, file_text: str) -> ServiceResult[tuple[int, int, int]]:
         counts = {
             MANAGED_IMPORTS_BEGIN: file_text.count(MANAGED_IMPORTS_BEGIN),

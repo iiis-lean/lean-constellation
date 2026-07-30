@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lean_constellation.domain.refs import MathlibRef
+from lean_constellation.services.decl_graph.models import MathlibDeclDep
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
 from lean_constellation.services.lean_projection.module_identity import module_artifact_relpaths
 from tests.unit.services.lean_projection.test_formal_stage_sync import (
@@ -128,3 +130,66 @@ def test_safe_statement_apply_rejects_stale_revision_without_writing(tmp_path: P
     assert not result.ok
     assert result.issues[0].kind == "formal_apply_revision_stale"
     assert path.read_bytes() == before
+
+
+def test_reviewer_dependency_recapture_rejects_and_restores_unmanaged_edit(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime()
+    round_id = _setup_theorem_round(tmp_path, runtime)
+    prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+    )
+    assert prepared.ok and prepared.value is not None
+    path = Path(prepared.value.path)
+    _write_statement_target(path)
+    assert runtime.lean_projection.capture_statement_formal(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+    ).ok
+    assert runtime.mathlib.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Nat.succ",
+        module="Mathlib.Data.Nat.Basic",
+        kind="def",
+        signature="Nat → Nat",
+    ).ok
+    before_file = path.read_bytes()
+    before_revision = _current_revision(runtime, tmp_path).model_dump(mode="json")
+
+    def mutate():
+        result = runtime.decl_graph.add_statement_dep(
+            tmp_path,
+            node_path=NODE_PATH,
+            round_id=round_id,
+            decl_name=DECL_NAME,
+            dep=MathlibDeclDep(
+                ref=MathlibRef(
+                    name="Nat.succ",
+                    module="Mathlib.Data.Nat.Basic",
+                ),
+                reason="The statement uses successor.",
+            ),
+        )
+        assert result.ok, result.issues
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\n-- unauthorized reviewer edit\n",
+            encoding="utf-8",
+        )
+        return result
+
+    result = runtime.lean_projection.recapture_reviewer_dependency_mutation(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        stage="statement",
+        mutate=mutate,
+    )
+
+    assert not result.ok
+    assert result.issues[0].kind == "reviewer_dependency_unmanaged_source_changed"
+    assert path.read_bytes() == before_file
+    assert _current_revision(runtime, tmp_path).model_dump(mode="json") == before_revision

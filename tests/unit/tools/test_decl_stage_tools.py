@@ -8,6 +8,11 @@ from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.tool_facade import ActorContext, DeclStageContextView, NodeContextView, RepoContextView, RuntimeToolContext, ToolExecutionContext
 from lean_constellation.tools import build_application_tool_specs
 from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, write_statement_formal_for_test
+from tests.unit.services.lean_projection.test_formal_stage_sync import (
+    _runtime as _formal_runtime,
+    _setup_theorem_round,
+    _write_statement_target,
+)
 from lean_constellation.tools.args import (
     DeclStageFileCheckArgs,
     MathlibDeclDependencyAddArgs,
@@ -528,7 +533,7 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
     assert {item.kind for item in stored.value.statement.deps} == {"repo_decl", "mathlib_decl"}
 
 
-def test_statement_reviewer_can_add_only_a_verified_mathlib_dependency(tmp_path: Path) -> None:
+def test_statement_nl_reviewer_can_add_only_a_verified_mathlib_dependency(tmp_path: Path) -> None:
     runtime = create_test_runtime_services()
     initialize_native_test_repo(tmp_path)
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
@@ -591,7 +596,7 @@ def test_statement_reviewer_can_add_only_a_verified_mathlib_dependency(tmp_path:
 
     reviewer_ctx = _review_ctx(
         tmp_path,
-        stage="statement_formal",
+        stage="statement_nl",
         round_id=round_record.value.round_id,
         batch_decls=["main_result"],
     )
@@ -622,6 +627,323 @@ def test_statement_reviewer_can_add_only_a_verified_mathlib_dependency(tmp_path:
     )
     assert not rejected.ok
     assert rejected.issues[0].kind == "decl_stage_dependency_repair_rejected"
+
+
+def test_statement_formal_reviewer_dependency_add_recaptures_managed_projection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _formal_runtime()
+    round_id = _setup_theorem_round(tmp_path, runtime)
+    prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert prepared.ok and prepared.value is not None
+    _write_statement_target(Path(prepared.value.path))
+    captured = runtime.lean_projection.capture_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert captured.ok, captured.issues
+    assert runtime.mathlib.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Nat.succ",
+        module="Mathlib.Data.Nat.Basic",
+        kind="def",
+        signature="Nat → Nat",
+        summary="Successor.",
+    ).ok
+
+    added = _add_statement_mathlib_dependency(
+        runtime,
+        _review_ctx(
+            tmp_path,
+            stage="statement_formal",
+            round_id=round_id,
+            batch_decls=["main_result"],
+        ),
+        MathlibDeclDependencyAddArgs(
+            decl_name="main_result",
+            name="Nat.succ",
+            module="Mathlib.Data.Nat.Basic",
+            reason="The formal statement uses successor.",
+        ),
+    )
+
+    assert added.ok, added.issues
+    assert added.value is not None
+    assert added.value.formal_capture_refreshed is True
+    sync = runtime.lean_projection.check_decl_file_snapshot_sync(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        stage="statement",
+    )
+    assert sync.ok and sync.value is not None and sync.value.passed
+    revision = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+    )
+    assert revision.ok and revision.value is not None
+    assert revision.value.statement.formal is not None
+    assert revision.value.statement.formal.code == Path(prepared.value.path).read_text(
+        encoding="utf-8"
+    )
+
+    def fail_unexpected_recapture(*args, **kwargs):
+        del args, kwargs
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "unexpected_recapture",
+                "An already-present dependency must not trigger another capture.",
+            )
+        )
+
+    monkeypatch.setattr(
+        runtime.lean_projection.safe_apply,
+        "_capture",
+        fail_unexpected_recapture,
+    )
+    already_present = _add_statement_mathlib_dependency(
+        runtime,
+        _review_ctx(
+            tmp_path,
+            stage="statement_formal",
+            round_id=round_id,
+            batch_decls=["main_result"],
+        ),
+        MathlibDeclDependencyAddArgs(
+            decl_name="main_result",
+            name="Nat.succ",
+            module="Mathlib.Data.Nat.Basic",
+            reason="The formal statement uses successor.",
+        ),
+    )
+    assert already_present.ok, already_present.issues
+    assert already_present.value is not None
+    assert already_present.value.formal_capture_refreshed is None
+
+
+def test_statement_formal_worker_dependency_add_remains_explicit_capture(
+    tmp_path: Path,
+) -> None:
+    runtime = _formal_runtime()
+    round_id = _setup_theorem_round(tmp_path, runtime)
+    prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert prepared.ok and prepared.value is not None
+    _write_statement_target(Path(prepared.value.path))
+    assert runtime.lean_projection.capture_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    ).ok
+    assert runtime.mathlib.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Nat.succ",
+        module="Mathlib.Data.Nat.Basic",
+        kind="def",
+        signature="Nat → Nat",
+        summary="Successor.",
+    ).ok
+
+    added = _add_statement_mathlib_dependency(
+        runtime,
+        _formal_ctx(
+            tmp_path,
+            stage="statement_formal",
+            round_id=round_id,
+        ),
+        MathlibDeclDependencyAddArgs(
+            decl_name="main_result",
+            name="Nat.succ",
+            module="Mathlib.Data.Nat.Basic",
+            reason="The formal statement uses successor.",
+        ),
+    )
+
+    assert added.ok, added.issues
+    assert added.value is not None
+    assert added.value.formal_capture_refreshed is None
+    sync = runtime.lean_projection.check_decl_file_snapshot_sync(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        stage="statement",
+    )
+    assert sync.ok and sync.value is not None
+    assert not sync.value.passed
+
+
+def test_statement_formal_reviewer_dependency_recapture_rolls_back_on_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _formal_runtime()
+    round_id = _setup_theorem_round(tmp_path, runtime)
+    prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert prepared.ok and prepared.value is not None
+    path = Path(prepared.value.path)
+    _write_statement_target(path)
+    assert runtime.lean_projection.capture_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    ).ok
+    assert runtime.mathlib.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="Nat.succ",
+        module="Mathlib.Data.Nat.Basic",
+        kind="def",
+        signature="Nat → Nat",
+        summary="Successor.",
+    ).ok
+    before_file = path.read_bytes()
+    before_revision = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+    )
+    assert before_revision.ok and before_revision.value is not None
+    before_revision_json = before_revision.value.model_dump(mode="json")
+
+    def fail_capture(*args, **kwargs):
+        del args, kwargs
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "injected_capture_failure",
+                "Injected capture failure.",
+            )
+        )
+
+    monkeypatch.setattr(
+        runtime.lean_projection.safe_apply,
+        "_capture",
+        fail_capture,
+    )
+    added = _add_statement_mathlib_dependency(
+        runtime,
+        _review_ctx(
+            tmp_path,
+            stage="statement_formal",
+            round_id=round_id,
+            batch_decls=["main_result"],
+        ),
+        MathlibDeclDependencyAddArgs(
+            decl_name="main_result",
+            name="Nat.succ",
+            module="Mathlib.Data.Nat.Basic",
+            reason="The formal statement uses successor.",
+        ),
+    )
+
+    assert not added.ok
+    assert {issue.kind for issue in added.issues} == {"injected_capture_failure"}
+    assert path.read_bytes() == before_file
+    after_revision = runtime.decl_graph.get_decl_revision(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        name="main_result",
+        revision=1,
+    )
+    assert after_revision.ok and after_revision.value is not None
+    assert after_revision.value.model_dump(mode="json") == before_revision_json
+
+
+def test_proof_formal_reviewer_dependency_add_recaptures_managed_projection(
+    tmp_path: Path,
+) -> None:
+    runtime = _formal_runtime()
+    round_id = _setup_theorem_round(tmp_path, runtime)
+    statement = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert statement.ok and statement.value is not None
+    _write_statement_target(Path(statement.value.path))
+    assert runtime.lean_projection.capture_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    ).ok
+    assert runtime.decl_graph.write_proof_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_id,
+        decl_name="main_result",
+        nl="Use triviality.",
+        origin=[{"kind": "unit_test"}],
+        deps=[],
+    ).ok
+    proof = runtime.lean_projection.prepare_proof_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert proof.ok and proof.value is not None
+    proof_path = Path(proof.value.path)
+    proof_path.write_text(
+        proof_path.read_text(encoding="utf-8").replace("sorry", "trivial"),
+        encoding="utf-8",
+    )
+    assert runtime.lean_projection.capture_proof_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    ).ok
+    assert runtime.mathlib.upsert_mathlib_decl_entry(
+        tmp_path,
+        name="True.intro",
+        module="Mathlib.Init.Logic",
+        kind="theorem",
+        signature="True",
+        summary="Constructor for True.",
+    ).ok
+
+    added = _add_proof_mathlib_dependencies(
+        runtime,
+        _review_ctx(
+            tmp_path,
+            stage="proof_formal",
+            round_id=round_id,
+            batch_decls=["main_result"],
+        ),
+        MathlibDeclDependenciesAddArgs(
+            decl_name="main_result",
+            dependencies=[
+                MathlibDeclDependencyInput(
+                    name="True.intro",
+                    module="Mathlib.Init.Logic",
+                    reason="The proof closes the trivial goal.",
+                )
+            ],
+        ),
+    )
+
+    assert added.ok, added.issues
+    assert added.value is not None
+    assert added.value.formal_capture_refreshed is True
+    sync = runtime.lean_projection.check_decl_file_snapshot_sync(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        stage="proof",
+    )
+    assert sync.ok and sync.value is not None and sync.value.passed
 
 
 def test_proof_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) -> None:

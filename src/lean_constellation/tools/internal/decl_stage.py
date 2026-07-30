@@ -381,6 +381,26 @@ def _add_statement_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenc
     )
     if not allowed.ok:
         return allowed
+    def add_dependencies(dependencies):
+        def mutate():
+            return _add_dependency_batch(
+                runtime,
+                ctx,
+                decl_name=args.decl_name,
+                stage="statement",
+                dependencies=dependencies,
+            )
+
+        if ctx.actor.role == "reviewer" and ctx.decl_stage is not None and ctx.decl_stage.stage == "statement_formal":
+            return runtime.lean_projection.recapture_reviewer_dependency_mutation(
+                ctx.repo_root,
+                node_path=_node(ctx),
+                decl_name=args.decl_name,
+                stage="statement",
+                mutate=mutate,
+            )
+        return mutate()
+
     return runtime.mathlib.add_decl_dependencies_transaction(
         ctx.repo_root,
         requests=[
@@ -392,13 +412,7 @@ def _add_statement_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenc
             for item in args.dependencies
         ],
         dependency_stage="statement",
-        add_dependencies=lambda dependencies: _add_dependency_batch(
-            runtime,
-            ctx,
-            decl_name=args.decl_name,
-            stage="statement",
-            dependencies=dependencies,
-        ),
+        add_dependencies=add_dependencies,
     )
 
 
@@ -649,13 +663,24 @@ def _add_proof_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenciesA
         )
         if not validation.ok:
             return validation
-        return _add_dependency_batch(
-            runtime,
-            ctx,
-            decl_name=args.decl_name,
-            stage="proof",
-            dependencies=dependencies,
-        )
+        def mutate():
+            return _add_dependency_batch(
+                runtime,
+                ctx,
+                decl_name=args.decl_name,
+                stage="proof",
+                dependencies=dependencies,
+            )
+
+        if ctx.actor.role == "reviewer" and ctx.decl_stage is not None and ctx.decl_stage.stage == "proof_formal":
+            return runtime.lean_projection.recapture_reviewer_dependency_mutation(
+                ctx.repo_root,
+                node_path=_node(ctx),
+                decl_name=args.decl_name,
+                stage="proof",
+                mutate=mutate,
+            )
+        return mutate()
 
     return runtime.mathlib.add_decl_dependencies_transaction(
         ctx.repo_root,
@@ -1400,7 +1425,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_statement_mathlib_dependency",
-            description="Exactly verify, index, and add one Mathlib declaration dependency needed by the current statement candidate.",
+            description="Exactly verify, index, and add one Mathlib declaration dependency needed by the current statement candidate. A Formal Reviewer call also rebuilds and recaptures the unchanged candidate transactionally.",
             args_model=MathlibDeclDependencyAddArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
@@ -1410,7 +1435,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_statement_mathlib_dependencies",
-            description="Exactly verify, index, and atomically add a small batch of Mathlib declaration dependencies needed by the current statement candidate.",
+            description="Exactly verify, index, and atomically add a small batch of Mathlib declaration dependencies needed by the current statement candidate. A Formal Reviewer call rebuilds and recaptures once after the batch.",
             args_model=MathlibDeclDependenciesAddArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
@@ -1510,7 +1535,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_proof_mathlib_dependency",
-            description="Exactly verify, index, and add one Mathlib declaration dependency used by the current proof.",
+            description="Exactly verify, index, and add one Mathlib declaration dependency used by the current proof. A Formal Reviewer call also rebuilds and recaptures the unchanged proof transactionally.",
             args_model=MathlibDeclDependencyAddArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
@@ -1520,7 +1545,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="add_proof_mathlib_dependencies",
-            description="Exactly verify, index, and atomically add a small batch of Mathlib declaration dependencies used by the current proof.",
+            description="Exactly verify, index, and atomically add a small batch of Mathlib declaration dependencies used by the current proof. A Formal Reviewer call rebuilds and recaptures once after the batch.",
             args_model=MathlibDeclDependenciesAddArgs,
             capability=ToolCapability.WRITE,
             result_view="decl_stage_dependency_delta",
