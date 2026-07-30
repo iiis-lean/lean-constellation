@@ -22,7 +22,7 @@
   <a href="https://github.com/xukp20/agent-runtime-kit">
     <img alt="ARK 0.3" src="https://img.shields.io/badge/ARK-0.3-0f8f88?style=flat-square">
   </a>
-  <a href="docs/ark-provider-configuration.md">
+  <a href="#agent-providers">
     <img alt="Five Agent providers" src="https://img.shields.io/badge/Agent_Providers-5-2563eb?style=flat-square">
   </a>
   <a href="https://github.com/iiis-lean/lean-mcp-toolkit">
@@ -36,9 +36,7 @@
   &middot;
   <a href="#how-it-fits-together">Architecture</a>
   &middot;
-  <a href="docs/README.md">Documentation</a>
-  &middot;
-  <a href="docs/ark-provider-configuration.md">Provider Setup</a>
+  <a href="#agent-providers">Provider Setup</a>
   &middot;
   <a href="https://github.com/xukp20/agent-runtime-kit">ARK</a>
   &middot;
@@ -109,7 +107,7 @@ runtime and tool mechanics to focused companion projects.
 
 | Project | Role in the stack | Start here |
 | --- | --- | --- |
-| **Lean Constellation** | Lean-specific repository model, AgentTypes, workflows, ToolViews, release policy, and operator surfaces | [Documentation](docs/README.md) |
+| **Lean Constellation** | Lean-specific repository model, AgentTypes, workflows, ToolViews, release policy, and operator surfaces | [Quick Start](#quick-start) |
 | **[Agent Runtime Kit](https://github.com/xukp20/agent-runtime-kit)** | Provider-neutral Agent Homes, lifecycle, Flow/Step runtime, observation, persistence, and snapshots | [Provider adapters](https://github.com/xukp20/agent-runtime-kit/blob/master/docs/provider-adapters.md) |
 | **[Lean MCP Toolkit](https://github.com/iiis-lean/lean-mcp-toolkit)** | Lean LSP, declarations, search, diagnostics, lint, build, HTTP, CLI, and MCP tools | [Tool catalog](https://github.com/iiis-lean/lean-mcp-toolkit/tree/main/docs/tool_catalog) |
 
@@ -131,6 +129,9 @@ its runtime below `<repo>/.agent_runtime`.
   semantic leases, flow trees, Agent reports, and external health checks.
 - **Stable recovery** — automatic and operator checkpoints, exact provider
   artifact manifests, index reconstruction, source recovery, and release gates.
+- **Git-backed publication** — immutable release commits and refs, exact
+  provider dependency pins, generated public API documentation, portable
+  repository/workspace exports, and explicit remote push policy.
 - **Provider choice** — Codex by default, with Claude Code, Pi, OpenAI Agents,
   and OpenCode selectable globally or per AgentType through ARK.
 
@@ -199,9 +200,9 @@ for individual AgentTypes.
 | `openai_agents` | OpenAI Agents Python SDK with durable sessions | `provider-openai-agents` extra and an application/model endpoint |
 | `opencode` | Isolated OpenCode server and session storage | Compatible OpenCode executable and environment-referenced credentials |
 
-See [ARK Agent Provider Configuration](docs/ark-provider-configuration.md) for
-global selection, AgentType overrides, endpoint modes, model identity, Home
-projection, credentials, and capability boundaries.
+Global selection uses `default_agent_provider_type`; per-AgentType
+`agent_home_overrides` can independently select the Provider, model/backend
+identity, Home projection, credentials, and Provider options.
 
 ## Runtime State and Recovery
 
@@ -218,24 +219,25 @@ older workspace.
 └── ... Lean sources
 ```
 
-Snapshots preserve application truth together with each provider's declared
-Artifact Manifest. Rebuildable indexes and scheduler queues are reconstructed
-on restore. See [Native Source and Index Recovery](docs/native-source-index-recovery.md)
-for the repository-level recovery contract.
+Snapshots preserve in-progress application truth together with each provider's
+declared Artifact Manifest. Rebuildable indexes and scheduler queues are
+reconstructed on restore. Published native releases are separate immutable Git
+commit/ref/manifest truth and do not depend on an operational checkpoint
+remaining available. Failed SourceIndex recovery uses a narrow two-phase Admin
+preview/apply contract with an exact recovery token; it is not a general Flow
+retry mechanism.
 
-## Documentation
+## Generated Interface References
 
 | Area | Entry point |
 | --- | --- |
-| Project documentation | [Lean Constellation documentation](docs/README.md) |
-| Agent providers | [ARK Agent Provider Configuration](docs/ark-provider-configuration.md) |
-| Source recovery | [Native Source and Index Recovery](docs/native-source-index-recovery.md) |
 | ARK runtime | [Agent Runtime Kit documentation](https://github.com/xukp20/agent-runtime-kit/tree/master/docs) |
 | Lean tools | [Lean MCP Toolkit documentation](https://github.com/iiis-lean/lean-mcp-toolkit/tree/main/docs) |
 | Toolkit catalog | [Lean MCP tool reference](https://github.com/iiis-lean/lean-mcp-toolkit/blob/main/docs/tool_catalog/tool_reference.md) |
 
-The CLI can export deterministic Operator, Admin, and Agent Tool/View
-references directly from the current implementation:
+Lean Constellation does not maintain a second hand-written public
+documentation tree. The CLI can export deterministic Operator, Admin, and
+Agent Tool/View references directly from the current implementation:
 
 ```bash
 lean-constellation --config lean-constellation.toml docs-export \
