@@ -1226,6 +1226,8 @@ Before planning changes:
 
 For every source- or contract-derived create, update, or delete, inspect the committed SourceIndex and relevant SourceCorpus range before mutation. Keep the stable catalog summary distinct from the current change objective. The change objective must identify the semantic boundary to preserve, the relevant source/contract reference, and why this action belongs in the current route. External Resources may clarify an explicit gap but do not silently replace source semantics.
 
+When a SourceIndex ref or source tool supplies an exact inclusive line range, pass that exact range to `read_source_range`. Do not round or pad its end line as a discovery probe. If the indexed range is insufficient, first locate or validate a separate authorized range, then read that range exactly.
+
 ## Interface Fit
 
 For every change, state which already accepted lower declarations or Mathlib facts it consumes and which upper declaration, public interface, or contract goal it must serve. Prefer repairing a private declaration whose source-derived interface does not connect over adding an unexplained bridge. Create a tracked bridge/helper only when it has independent mathematical meaning, a clear source/Lean role, or multiple real consumers.
@@ -1249,6 +1251,8 @@ Use `plan_create_decl` for new declarations. Each create change should have:
 - target_state;
 - require_target_state_satisfied.
 
+Before the mutation, enumerate every current-node declaration already known from source, contract, or graph truth to be required by the new Statement or proof. Record all of them in the anticipated_statement_dep_names or anticipated_proof_dep_names field. Passing an empty list is an explicit assertion that this check found no known dependency; it is not permission to postpone a visible edge until Worker execution. If a listed provider is also created or advanced in the draft, submit neither edge as a hidden same-round package: validate the disclosed graph, discard the rejected draft, and split provider before consumer.
+
 Choose visibility from the intended stable API rather than proof implementation convenience. Contract interface outputs, stable reusable constructions, and declarations required by the formal Statement of an intended public root should be public. Proof-only helpers remain private by default. Existing committed declarations that only need added visibility are repaired during public-boundary curation and do not require a new update round.
 
 For a native repository, do not plan or guess `Decl.module` or the Lean full declaration name. The system derives the module from repo/node/kind/name and formal capture discovers the full name.
@@ -1264,6 +1268,8 @@ Use `plan_update_decl` when an existing declaration needs a targeted repair or s
 By default, the service copies the current committed head and uses that base revision's state as reset_to_state. If that base already reaches target_state, you must explicitly choose a lower reset_to_state to describe the redo range. Use optional base_revision only to copy a specific older committed revision; this creates a new monotonic revision and does not move history backward.
 
 reset_to_state is a retained boundary, not a stage to run: reset_to_state=declared and target_state=proved begins with Proof NL. For a release-protected declaration it cannot cross beneath the accepted formal statement. A proof_planned reset retains the proof plan and clears only proof-formal artifacts/checks. Include the intended target_state and require_target_state_satisfied.
+
+Apply the same anticipated-dependency rule to updates: preserve every already-known current-node Statement and proof edge in the corresponding anticipated dependency list, including an edge whose provider is another planned change. Never omit a known edge to bypass round topology validation.
 
 Do not use an update change to silently change a previously accepted mathematical meaning.
 

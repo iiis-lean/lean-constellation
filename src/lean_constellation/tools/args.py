@@ -724,11 +724,11 @@ class DeclCreateArgs(StrictModel):
     )
     anticipated_statement_dep_names: list[str] = Field(
         default_factory=list,
-        description="Current-node declarations already known at planning time to be needed by this statement.",
+        description="Every current-node declaration already known from source, contract, or graph truth to be needed by this statement; [] explicitly asserts that none are known.",
     )
     anticipated_proof_dep_names: list[str] = Field(
         default_factory=list,
-        description="Current-node declarations already known at planning time to be needed by this proof.",
+        description="Every current-node declaration already known from source, contract, or graph truth to be needed by this proof; [] explicitly asserts that none are known.",
     )
 
 
@@ -752,11 +752,11 @@ class DeclUpdateArgs(StrictModel):
     )
     anticipated_statement_dep_names: list[str] = Field(
         default_factory=list,
-        description="Current-node declarations already known at planning time to be needed by this statement.",
+        description="Every current-node declaration already known from source, contract, or graph truth to be needed by this statement; [] explicitly asserts that none are known.",
     )
     anticipated_proof_dep_names: list[str] = Field(
         default_factory=list,
-        description="Current-node declarations already known at planning time to be needed by this proof.",
+        description="Every current-node declaration already known from source, contract, or graph truth to be needed by this proof; [] explicitly asserts that none are known.",
     )
 
 
