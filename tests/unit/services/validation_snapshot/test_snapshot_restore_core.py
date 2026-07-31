@@ -74,6 +74,42 @@ def test_lc_checkpoint_manifest_requires_explicit_optional_ark_field(tmp_path: P
     assert manifest.value.model_dump()["ark_runtime_snapshot_id"] is None
 
 
+def test_checkpoint_excludes_and_does_not_restore_repo_runtime_artifacts(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(tmp_path).ok
+    component = SnapshotRestoreComponent(runtime)
+    runtime_artifact = tmp_path / ".runtime" / "toolkit" / "calls" / "call.json"
+    runtime_artifact.parent.mkdir(parents=True)
+    runtime_artifact.write_text('{"state":"before"}\n', encoding="utf-8")
+    (tmp_path / "Main.lean").write_text("theorem checkpoint_truth : True := by trivial\n", encoding="utf-8")
+
+    created = component.create_repo_checkpoint_archive(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
+        snapshot_id="runtime_excluded_checkpoint",
+        ark_runtime_snapshot_id=None,
+    )
+
+    assert created.ok and created.value is not None
+    manifest = runtime.foundation.store.read_json(
+        Path(created.value.root) / "files_manifest.json",
+        SnapshotFilesManifest,
+    )
+    assert manifest.ok and manifest.value is not None
+    assert ".runtime" in manifest.value.excluded_top_level
+    assert not any(entry.source_relpath.startswith(".runtime/") for entry in manifest.value.entries)
+
+    runtime_artifact.write_text('{"state":"after"}\n', encoding="utf-8")
+    restored = component.restore_repo_checkpoint_snapshot(
+        tmp_path,
+        snapshot_id=created.value.snapshot_id,
+    )
+
+    assert restored.ok and restored.value is not None
+    assert runtime_artifact.read_text(encoding="utf-8") == '{"state":"after"}\n'
+    assert not any(path.startswith(".runtime/") for path in restored.value.pruned_files)
+
+
 def test_checkpoint_manifests_write_current_versions_and_warn_when_omitted(tmp_path: Path) -> None:
     runtime = make_runtime()
     component = SnapshotRestoreComponent(runtime)

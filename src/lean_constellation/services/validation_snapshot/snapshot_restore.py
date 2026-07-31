@@ -101,7 +101,7 @@ class SnapshotRestoreView(StrictModel):
 class SnapshotRestoreComponent:
     """Create, list, and restore repo stable-point checkpoint snapshots."""
 
-    _EXCLUDED_TOP_LEVEL = {".git", ".lake", ".agent_runtime", "__pycache__", ".pytest_cache"}
+    _EXCLUDED_TOP_LEVEL = {".git", ".lake", ".agent_runtime", ".runtime", "__pycache__", ".pytest_cache"}
     _EXCLUDED_CONSTELLATION_CHILDREN = {"snapshots", ".locks"}
 
     def __init__(
