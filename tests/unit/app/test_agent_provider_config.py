@@ -7,6 +7,7 @@ from lean_constellation.agents import build_agent_type_specs
 from lean_constellation.app.agent_provider_config import (
     apply_agent_home_overrides,
     build_builtin_provider_registry,
+    provider_options_from_override,
 )
 from lean_constellation.app.bootstrap import materialize_agent_home
 from lean_constellation.app.config import AgentHomeOverrideAppConfig, LeanAppConfig
@@ -40,6 +41,19 @@ def test_provider_override_drives_agent_type_and_registry(tmp_path: Path) -> Non
         "codex",
         "opencode",
     }
+
+
+def test_opencode_provider_override_resolves_auth_json_path(tmp_path: Path) -> None:
+    auth_path = tmp_path / "auth.json"
+    override = AgentHomeOverrideAppConfig(
+        provider_type="opencode",
+        provider_options={"auth_json_path": str(auth_path)},
+    )
+
+    options = provider_options_from_override("opencode", override)
+
+    assert options is not None
+    assert options.auth_json_path == auth_path
 
 
 def test_default_agent_provider_type_selects_one_provider_for_all_agents(tmp_path: Path) -> None:
@@ -97,6 +111,8 @@ def test_fresh_agent_record_uses_only_standard_schema_fields(tmp_path: Path) -> 
 
 
 def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path: Path) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"opencode-go":{"type":"api","key":"test-key"}}\n')
     specs = apply_agent_home_overrides(
         build_agent_type_specs(),
         {AGENT_TYPE: AgentHomeOverrideAppConfig(provider_type="opencode")},
@@ -118,6 +134,7 @@ def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path:
         provider_type="opencode",
         agent_type_specs=specs,
         mcp_http_base_url="http://127.0.0.1:8765",
+        auth_json_path=auth_path,
     )
 
     assert result.ok and result.value is not None
@@ -125,6 +142,9 @@ def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path:
     home_root = Path(result.value.home_root)
     assert (home_root / "opencode.json").exists()
     assert (home_root / "AGENTS.md").exists()
+    materialized_auth = home_root / ".opencode" / "auth.json"
+    assert materialized_auth.read_text() == auth_path.read_text()
+    assert materialized_auth.stat().st_mode & 0o777 == 0o600
     assert result.value.mcp_server_names == ["lc_app", "lc_submit"]
 
 

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 from agent_runtime_kit.agent.provider_contracts import BaseConfigSource, ModelBackendIdentity
+from agent_runtime_kit.agent.providers import OpenCodeHomeOptions
 from agent_runtime_kit.agent.providers.codex_home import CodexHomeOptions
 
 from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec, build_agent_type_specs
@@ -129,6 +130,20 @@ def materialize_agent_home(
                     Path(auth_json_path).expanduser()
                     if auth_json_path is not None
                     else codex_options.auth_json_path
+                ),
+            )
+        elif resolved_provider_type == "opencode":
+            if resolved_provider_options is not None and not isinstance(
+                resolved_provider_options, OpenCodeHomeOptions
+            ):
+                raise TypeError("opencode provider_options must be OpenCodeHomeOptions")
+            opencode_options = resolved_provider_options or OpenCodeHomeOptions()
+            resolved_provider_options = replace(
+                opencode_options,
+                auth_json_path=(
+                    Path(auth_json_path).expanduser()
+                    if auth_json_path is not None
+                    else opencode_options.auth_json_path
                 ),
             )
         spec = build_agent_home_bootstrap_spec(

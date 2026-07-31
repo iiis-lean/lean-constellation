@@ -161,6 +161,8 @@ def provider_options_from_override(
         options = {key: value for key, value in options.items() if value is not None}
         return OpenAIAgentsHomeOptions(**options)
     if provider_type == "opencode":
+        if "auth_json_path" in options and options["auth_json_path"] is not None:
+            options["auth_json_path"] = Path(options["auth_json_path"]).expanduser()
         return OpenCodeHomeOptions(**options)
     raise ValueError(f"unsupported Agent Home Provider: {provider_type}")
 
