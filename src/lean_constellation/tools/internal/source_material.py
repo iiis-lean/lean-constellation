@@ -358,20 +358,47 @@ def _read_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs
             ),
             key=lambda ref: (ref.start_line, ref.end_line, ref.ref_id),
         )
-        if not any(ref.start_line <= expanded_start and expanded_end <= ref.end_line for ref in refs):
+        committed_match = any(ref.start_line <= expanded_start and expanded_end <= ref.end_line for ref in refs)
+        node_ranges: list[tuple[int, int | None, str]] = []
+        if ctx.node is not None:
+            contract = runtime.node.contract.get_current_contract(ctx.repo_root, node_path=ctx.node.node_path)
+            if not contract.ok or contract.value is None:
+                return runtime.foundation.fail(contract.issues)
+            for item in [*contract.value.contract.owned_refs, *contract.value.contract.context_refs]:
+                material_ref = item.ref
+                source_ref = material_ref.ref
+                if material_ref.kind != "source" or getattr(source_ref, "path", None) != args.path:
+                    continue
+                node_ranges.append(
+                    (
+                        getattr(source_ref, "start_line", None) or 1,
+                        getattr(source_ref, "end_line", None),
+                        item.ref_id,
+                    )
+                )
+        node_match = ctx.node is None or any(
+            start_line <= expanded_start and (end_line is None or expanded_end <= end_line)
+            for start_line, end_line, _ref_id in node_ranges
+        )
+        if not committed_match or not node_match:
             return runtime.foundation.fail(
                 runtime.foundation.issue(
                     "source_range_outside_committed_index",
-                    "Requested source range must be contained in a committed SourceIndex ref for this Agent role.",
+                    "Requested source range must be contained in both committed SourceIndex truth and the current node material assignment.",
                     object_ref=f"{args.path}:{args.start_line}-{args.end_line}",
                     current=f"{expanded_start}-{expanded_end}",
-                    expected="contained in one committed SourceIndex ref",
-                    suggested_action="Use get_source_block to locate an authorized ref, then read a contained range.",
+                    expected="contained in committed SourceIndex truth and current node material refs",
+                    suggested_action="Use the current node contract and get_source_block to locate an authorized contained range.",
                     details={
                         "committed_ranges": ", ".join(
                             f"{ref.ref_id}:{ref.start_line}-{ref.end_line} ({ref.role})" for ref in refs[:20]
                         )
-                        or "none for this path"
+                        or "none for this path",
+                        "node_ranges": ", ".join(
+                            f"{ref_id}:{start_line}-{end_line if end_line is not None else '*'}"
+                            for start_line, end_line, ref_id in node_ranges[:20]
+                        )
+                        or ("not node-scoped" if ctx.node is None else "none for this path"),
                     },
                 )
             )
@@ -841,7 +868,7 @@ def build_material_tool_specs() -> list[ToolSpec]:
             description=(
                 "Read an inclusive line range from source corpus text with context_lines=0 by default. Read a SourceIndex "
                 "ref or origin at its exact bounds; downstream focused reads fail unless their expanded range is contained "
-                "in a committed SourceIndex ref."
+                "in committed SourceIndex truth and, for node-scoped Agents, the current node material assignment."
             ),
             args_model=SourceRangeArgs,
             capability=ToolCapability.READ,
