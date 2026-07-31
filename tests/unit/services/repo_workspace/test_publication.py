@@ -50,19 +50,81 @@ def test_publication_manifest_excludes_runtime_and_contains_no_absolute_paths(
 ) -> None:
     runtime, _ = _prepare_release_repo(tmp_path)
     (tmp_path / "Main.lean").write_text("theorem ok : True := by trivial\n")
+    (tmp_path / ".git" / "objects" / "aa").mkdir(parents=True)
+    (tmp_path / ".git" / "objects" / "aa" / "object").write_bytes(b"git object")
     (tmp_path / ".runtime").mkdir()
     (tmp_path / ".runtime" / "server.json").write_text(
         json.dumps({"repo_root": str(tmp_path)})
     )
+    (tmp_path / ".lean_constellation" / "snapshots").mkdir(parents=True)
+    (
+        tmp_path / ".lean_constellation" / "snapshots" / "snapshot.json"
+    ).write_text("{}\n", encoding="utf-8")
 
     manifest = runtime.repo_workspace.publication.build_manifest(tmp_path)
 
     assert manifest.ok and manifest.value is not None
+    assert manifest.value.schema_version == 2
     by_path = {entry.path: entry for entry in manifest.value.entries}
     assert by_path["Main.lean"].disposition == "include"
-    assert by_path[".runtime/server.json"].disposition == "exclude"
+    assert {
+        (entry.path, entry.recursive, entry.reason)
+        for entry in manifest.value.excluded_directories
+    } == {
+        (".git", True, "runtime_or_git_state"),
+        (
+            ".lean_constellation/snapshots",
+            True,
+            "local_checkpoint_or_lock",
+        ),
+        (".runtime", True, "runtime_or_git_state"),
+    }
+    assert not any(
+        entry.path.startswith(
+            (
+                ".git/",
+                ".lean_constellation/snapshots/",
+                ".runtime/",
+            )
+        )
+        for entry in manifest.value.entries
+    )
     payload = manifest.value.model_dump_json()
     assert str(tmp_path) not in payload
+
+
+def test_publication_manifest_is_idempotent_and_excludes_itself(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+
+    first = runtime.repo_workspace.publication.prepare_publication(tmp_path)
+    assert first.ok, first.issues
+    manifest_path = (
+        tmp_path / ".lean_constellation/publication/manifest.json"
+    )
+    first_bytes = manifest_path.read_bytes()
+
+    second = runtime.repo_workspace.publication.prepare_publication(tmp_path)
+
+    assert second.ok, second.issues
+    assert manifest_path.read_bytes() == first_bytes
+    payload = json.loads(first_bytes)
+    self_entries = [
+        entry
+        for entry in payload["entries"]
+        if entry["path"]
+        == ".lean_constellation/publication/manifest.json"
+    ]
+    assert self_entries == [
+        {
+            "disposition": "exclude",
+            "path": ".lean_constellation/publication/manifest.json",
+            "reason": "publication_manifest_self",
+            "sha256": None,
+            "size_bytes": 0,
+        }
+    ]
 
 
 def test_publication_documents_are_portable_and_managed_readme_is_preserved(

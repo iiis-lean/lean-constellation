@@ -6,6 +6,7 @@ import hashlib
 import html
 from importlib.resources import files as package_files
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 from typing import TYPE_CHECKING, Literal
@@ -55,6 +56,7 @@ _MANAGED_IGNORE_BODY = """# BEGIN Lean Constellation managed ignores
 _README_BEGIN = "<!-- BEGIN Lean Constellation: project-summary -->"
 _README_END = "<!-- END Lean Constellation: project-summary -->"
 _PUBLICATION_MARK_PATH = "docs/lean-constellation/assets/lean-constellation-mark.svg"
+_PUBLICATION_MANIFEST_PATH = ".lean_constellation/publication/manifest.json"
 _LEAN_CONSTELLATION_REPOSITORY_URL = (
     "https://github.com/iiis-lean/lean-constellation"
 )
@@ -98,10 +100,19 @@ class PublicationFileEntry(StrictModel):
     sha256: str | None = None
 
 
+class PublicationDirectoryExclusion(StrictModel):
+    path: str
+    recursive: Literal[True] = True
+    reason: str
+
+
 class RepoPublicationManifest(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     repo_key: str
     generated_at: str | None = None
+    excluded_directories: list[PublicationDirectoryExclusion] = Field(
+        default_factory=list
+    )
     entries: list[PublicationFileEntry] = Field(default_factory=list)
     included_file_count: int
     included_size_bytes: int
@@ -312,40 +323,81 @@ class RepoPublicationComponent:
         policy = self.resolve_policy(repo_root)
         if not policy.ok or policy.value is None:
             return self.runtime.foundation.fail(policy.issues)
+        excluded_directories: list[PublicationDirectoryExclusion] = []
         entries: list[PublicationFileEntry] = []
         included_size = 0
-        for path in sorted(repo_root.rglob("*")):
-            if not path.is_file() or path.is_symlink():
-                continue
-            relpath = path.relative_to(repo_root).as_posix()
-            excluded_reason = self._exclusion_reason(relpath)
-            if (
-                relpath == "lake-manifest.json"
-                and not policy.value.policy.include_lake_manifest
-            ):
-                excluded_reason = "publication_policy_excludes_lake_manifest"
-            if excluded_reason is not None:
+        for current_root, dirnames, filenames in os.walk(
+            repo_root,
+            topdown=True,
+            followlinks=False,
+        ):
+            root = Path(current_root)
+            retained_directories: list[str] = []
+            for dirname in sorted(dirnames):
+                path = root / dirname
+                if path.is_symlink():
+                    continue
+                relpath = path.relative_to(repo_root).as_posix()
+                excluded_reason = self._excluded_directory_reason(relpath)
+                if excluded_reason is not None:
+                    excluded_directories.append(
+                        PublicationDirectoryExclusion(
+                            path=relpath,
+                            reason=excluded_reason,
+                        )
+                    )
+                    continue
+                retained_directories.append(dirname)
+            dirnames[:] = retained_directories
+
+            for filename in sorted(filenames):
+                path = root / filename
+                if not path.is_file() or path.is_symlink():
+                    continue
+                relpath = path.relative_to(repo_root).as_posix()
+                excluded_reason = self._exclusion_reason(relpath)
+                if (
+                    relpath == "lake-manifest.json"
+                    and not policy.value.policy.include_lake_manifest
+                ):
+                    excluded_reason = (
+                        "publication_policy_excludes_lake_manifest"
+                    )
+                if excluded_reason is not None:
+                    if excluded_reason == "publication_manifest_self":
+                        continue
+                    entries.append(
+                        PublicationFileEntry(
+                            path=relpath,
+                            disposition="exclude",
+                            reason=excluded_reason,
+                            size_bytes=path.stat().st_size,
+                        )
+                    )
+                    continue
+                digest = self._file_digest(path)
+                size = path.stat().st_size
+                included_size += size
                 entries.append(
                     PublicationFileEntry(
                         path=relpath,
-                        disposition="exclude",
-                        reason=excluded_reason,
-                        size_bytes=path.stat().st_size,
+                        disposition="include",
+                        reason="portable_project_or_business_truth",
+                        size_bytes=size,
+                        sha256=digest,
                     )
                 )
-                continue
-            digest = self._file_digest(path)
-            size = path.stat().st_size
-            included_size += size
-            entries.append(
-                PublicationFileEntry(
-                    path=relpath,
-                    disposition="include",
-                    reason="portable_project_or_business_truth",
-                    size_bytes=size,
-                    sha256=digest,
-                )
+        entries.append(
+            PublicationFileEntry(
+                path=_PUBLICATION_MANIFEST_PATH,
+                disposition="exclude",
+                reason="publication_manifest_self",
             )
+        )
+        excluded_directories.sort(
+            key=lambda item: PurePosixPath(item.path).parts
+        )
+        entries.sort(key=lambda item: PurePosixPath(item.path).parts)
         digest_payload = [
             (entry.path, entry.size_bytes, entry.sha256)
             for entry in entries
@@ -363,6 +415,7 @@ class RepoPublicationComponent:
             RepoPublicationManifest(
                 repo_key=repo_root.name,
                 **({"generated_at": generated_at} if generated_at is not None else {}),
+                excluded_directories=excluded_directories,
                 entries=entries,
                 included_file_count=included_count,
                 included_size_bytes=included_size,
@@ -1467,7 +1520,7 @@ class RepoPublicationComponent:
         )
 
     @staticmethod
-    def _exclusion_reason(relpath: str) -> str | None:
+    def _excluded_directory_reason(relpath: str) -> str | None:
         path = PurePosixPath(relpath)
         if path.parts[0] in _EXCLUDED_TOP_LEVEL:
             return "runtime_or_git_state"
@@ -1483,6 +1536,14 @@ class RepoPublicationComponent:
             "remote_receipts",
         ):
             return "local_remote_publication_receipt"
+        return None
+
+    @classmethod
+    def _exclusion_reason(cls, relpath: str) -> str | None:
+        path = PurePosixPath(relpath)
+        directory_reason = cls._excluded_directory_reason(relpath)
+        if directory_reason is not None:
+            return directory_reason
         if path.parts[:3] == (
             ".lean_constellation",
             "publication",
@@ -1509,6 +1570,7 @@ class RepoPublicationComponent:
 __all__ = [
     "PublicApiDeclaration",
     "PublicApiDocument",
+    "PublicationDirectoryExclusion",
     "PublicationFileEntry",
     "RepoProvenanceDocument",
     "RepoPublicationComponent",
