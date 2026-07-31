@@ -146,6 +146,10 @@ def materialize_agent_home(
                     else opencode_options.auth_json_path
                 ),
             )
+            config_overrides = _opencode_scoped_config_overrides(
+                config_overrides,
+                agent_type=agent_type,
+            )
         spec = build_agent_home_bootstrap_spec(
             agent_type,
             home_id=home_id,
@@ -209,6 +213,44 @@ def materialize_agent_home(
             summary=f"Materialized Agent home {record.home_id}; manifest: {manifest_path.name}.",
         )
     )
+
+
+def _opencode_scoped_config_overrides(
+    config_overrides: dict[str, object] | None,
+    *,
+    agent_type: str,
+) -> dict[str, object]:
+    """Enforce the repository filesystem boundary for Lean Constellation OpenCode Homes."""
+
+    result = dict(config_overrides or {})
+    configured = result.get("permission")
+    if configured is None:
+        permission: dict[str, object] = {}
+    elif isinstance(configured, dict):
+        permission = dict(configured)
+    else:
+        raise TypeError("OpenCode permission override must be a mapping")
+    permission["external_directory"] = "deny"
+    result["permission"] = permission
+    configured_tools = result.get("tools")
+    if configured_tools is None:
+        tools: dict[str, object] = {}
+    elif isinstance(configured_tools, dict):
+        tools = dict(configured_tools)
+    else:
+        raise TypeError("OpenCode tools override must be a mapping")
+    tools["bash"] = False
+    if agent_type not in _OPENCODE_DIRECT_FILE_AGENT_TYPES:
+        for tool_name in ("glob", "grep", "read", "edit", "write", "apply_patch"):
+            tools[tool_name] = False
+    result["tools"] = tools
+    return result
+
+
+_OPENCODE_DIRECT_FILE_AGENT_TYPES = {
+    "StatementFormalWorkerAgent",
+    "ProofFormalWorkerAgent",
+}
 
 
 def materialize_production_agent_homes(

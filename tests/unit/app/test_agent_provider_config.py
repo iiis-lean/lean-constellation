@@ -141,11 +141,111 @@ def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path:
     assert result.value.provider_type == "opencode"
     home_root = Path(result.value.home_root)
     assert (home_root / "opencode.json").exists()
+    opencode_config = json.loads((home_root / "opencode.json").read_text(encoding="utf-8"))
+    assert opencode_config["permission"]["external_directory"] == "deny"
+    assert opencode_config["tools"] == {
+        "apply_patch": False,
+        "bash": False,
+        "edit": False,
+        "glob": False,
+        "grep": False,
+        "read": False,
+        "write": False,
+    }
     assert (home_root / "AGENTS.md").exists()
     materialized_auth = home_root / ".opencode" / "auth.json"
     assert materialized_auth.read_text() == auth_path.read_text()
     assert materialized_auth.stat().st_mode & 0o777 == 0o600
     assert result.value.mcp_server_names == ["lc_app", "lc_submit"]
+
+
+def test_opencode_home_forces_external_directory_denial(tmp_path: Path) -> None:
+    specs = apply_agent_home_overrides(
+        build_agent_type_specs(),
+        {AGENT_TYPE: AgentHomeOverrideAppConfig(provider_type="opencode")},
+    )
+    registry = build_builtin_provider_registry(
+        tmp_path / ".agent_runtime",
+        specs,
+        {AGENT_TYPE: AgentHomeOverrideAppConfig(provider_type="opencode")},
+    )
+    runtime = create_app_runtime_from_config(
+        LeanAppConfig(workspace_root=tmp_path, materialize_agent_homes=False),
+        agent_type_specs=specs,
+        provider_registry=registry,
+    )
+
+    result = materialize_agent_home(
+        runtime,
+        AGENT_TYPE,
+        provider_type="opencode",
+        agent_type_specs=specs,
+        config_overrides={
+            "permission": {
+                "external_directory": "allow",
+                "read": "allow",
+            },
+            "tools": {"bash": True, "read": True},
+        },
+    )
+
+    assert result.ok and result.value is not None
+    config = json.loads(
+        (Path(result.value.home_root) / "opencode.json").read_text(encoding="utf-8")
+    )
+    assert config["permission"] == {
+        "external_directory": "deny",
+        "read": "allow",
+    }
+    assert config["tools"] == {
+        "apply_patch": False,
+        "bash": False,
+        "edit": False,
+        "glob": False,
+        "grep": False,
+        "read": False,
+        "write": False,
+    }
+
+
+def test_opencode_formal_worker_keeps_repo_file_tools_but_not_bash(tmp_path: Path) -> None:
+    specs = apply_agent_home_overrides(
+        build_agent_type_specs(),
+        {
+            "StatementFormalWorkerAgent": AgentHomeOverrideAppConfig(
+                provider_type="opencode"
+            )
+        },
+    )
+    registry = build_builtin_provider_registry(
+        tmp_path / ".agent_runtime",
+        specs,
+        {
+            "StatementFormalWorkerAgent": AgentHomeOverrideAppConfig(
+                provider_type="opencode"
+            )
+        },
+    )
+    runtime = create_app_runtime_from_config(
+        LeanAppConfig(workspace_root=tmp_path, materialize_agent_homes=False),
+        agent_type_specs=specs,
+        provider_registry=registry,
+    )
+
+    result = materialize_agent_home(
+        runtime,
+        "StatementFormalWorkerAgent",
+        provider_type="opencode",
+        agent_type_specs=specs,
+        config_overrides={"tools": {"read": True, "edit": True}},
+    )
+
+    assert result.ok and result.value is not None
+    config = json.loads(
+        (Path(result.value.home_root) / "opencode.json").read_text(encoding="utf-8")
+    )
+    assert config["permission"]["external_directory"] == "deny"
+    assert config["tools"] == {"bash": False, "edit": True, "read": True}
 
 
 def test_repo_runtime_registry_assembles_configured_provider(tmp_path: Path) -> None:

@@ -22,6 +22,13 @@ Use the stable human-readable references exposed by tools, such as repository na
 Use semantic tools for ordinary project mutations. Do not directly edit structured metadata, generated projections, indexes, or workflow records. Edit source artifacts only when the current Agent-specific instructions assign that file responsibility; the system owns synchronization of derived state after accepted semantic changes.
 
 If a tool rejects a requested mutation, assume the requested mutation was not accepted. Read the reason, re-read any truth that may have changed, and correct the request when the repair belongs to your assigned task.""",
+    "common.filesystem_scope_contract": """## Filesystem Scope
+
+Your current working directory is the current Lean repository. Use Lean Constellation and Lean MCP tools for structured repository, source, dependency, Mathlib, workspace, and workflow truth.
+
+Do not search, glob, list, or read parent directories, sibling run directories, historical runs, checkpoint archives, or another task's workspace. Do not inspect `.agent_runtime`, `.runtime`, `.git`, `.lake`, or `.lean_constellation/snapshots` as sources of mathematical or workflow evidence. Never search a run root to recover a file that was not found in the current repository. A path printed by a tool is not authorization to traverse its parent directories.
+
+Use direct filesystem tools only for files that your Agent role explicitly owns inside the current repository. If an assigned file or required evidence is not available through the current repository or your role-filtered semantic tools, report the precise missing item through the documented workflow instead of expanding filesystem scope.""",
     "common.role_filtered_tool_discovery": """## Role-Filtered Tool Discovery
 
 Your MCP surface is already filtered for this role. Prefer the exact tool names listed in your instructions and installed skills. When discovery is necessary, restrict it to names beginning with mcp__lc_app__ or mcp__lc_submit__. Do not request or print a broad or complete ALL_TOOLS inventory, and do not use broad search terms such as skill that match unrelated global apps or plugins.

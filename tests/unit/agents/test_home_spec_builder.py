@@ -14,6 +14,7 @@ def test_home_bootstrap_spec_contains_instruction_skills_and_tool_views() -> Non
 
     assert spec.agent_type == "ContentPlanAgent"
     assert "## Content Plan Agent" in spec.developer_instructions
+    assert "## Filesystem Scope" in spec.developer_instructions
     assert "decl-round-change-planning" in spec.skill_specs
     assert spec.tool_view_config.application_view_key == "content_plan"
     assert spec.tool_view_config.submit_view_key == "content_plan_submit"
