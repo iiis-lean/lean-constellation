@@ -99,7 +99,7 @@ class RepoDependencyReleaseChange(StrictModel):
 
 
 class RepoRelease(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: int = 2
     release_id: str
     parent_release_id: str | None = None
     release_kind: RepoReleaseKind = RepoReleaseKind.SEMANTIC

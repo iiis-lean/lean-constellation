@@ -20,6 +20,11 @@ class VersionedModel(StrictModel):
     payload: str
 
 
+class SchemaVersionedModel(StrictModel):
+    schema_version: int = 3
+    payload: str
+
+
 def test_json_read_write_modes(tmp_path) -> None:
     store = make_runtime().foundation.store
     path = tmp_path / "item.json"
@@ -50,6 +55,45 @@ def test_read_json_reports_missing_and_schema_validation_errors(tmp_path) -> Non
     assert invalid_schema.issues[0].kind == "schema_validation_failed"
 
 
+def test_read_json_warns_for_compatible_missing_or_different_schema_version(tmp_path) -> None:
+    store = make_runtime().foundation.store
+    current_path = tmp_path / "current-version.json"
+    missing_path = tmp_path / "missing-version.json"
+    different_path = tmp_path / "different-version.json"
+    current_path.write_text('{"schema_version": 3, "payload": "current"}', encoding="utf-8")
+    missing_path.write_text('{"payload": "missing"}', encoding="utf-8")
+    different_path.write_text(
+        '{"schema_version": 2, "payload": "different"}',
+        encoding="utf-8",
+    )
+
+    current = store.read_json(current_path, SchemaVersionedModel)
+    missing = store.read_json(missing_path, SchemaVersionedModel)
+    different = store.read_json(different_path, SchemaVersionedModel)
+
+    assert current.ok and current.issues == []
+    assert missing.ok and missing.value == SchemaVersionedModel(payload="missing")
+    assert [issue.kind for issue in missing.issues] == ["schema_version_missing"]
+    assert different.ok
+    assert different.value == SchemaVersionedModel(schema_version=2, payload="different")
+    assert [issue.kind for issue in different.issues] == ["schema_version_mismatch"]
+    assert '"schema_version": 2' in different_path.read_text(encoding="utf-8")
+
+
+def test_read_json_still_rejects_incompatible_structure_with_version_warning(tmp_path) -> None:
+    store = make_runtime().foundation.store
+    path = tmp_path / "incompatible.json"
+    path.write_text('{"schema_version": 2, "removed_payload": "old"}', encoding="utf-8")
+
+    result = store.read_json(path, SchemaVersionedModel)
+
+    assert not result.ok
+    assert [issue.kind for issue in result.issues] == [
+        "schema_version_mismatch",
+        "schema_validation_failed",
+    ]
+
+
 def test_list_json_reports_bad_files(tmp_path) -> None:
     store = make_runtime().foundation.store
     store.write_json_atomic(tmp_path / "b.json", ExampleModel(name="b", value=2))
@@ -60,6 +104,24 @@ def test_list_json_reports_bad_files(tmp_path) -> None:
 
     assert listed.ok is False
     assert listed.issues[0].kind == "invalid_json"
+
+
+def test_list_json_preserves_compatible_schema_version_warnings(tmp_path) -> None:
+    store = make_runtime().foundation.store
+    tmp_path.joinpath("current.json").write_text(
+        '{"schema_version": 3, "payload": "current"}',
+        encoding="utf-8",
+    )
+    tmp_path.joinpath("different.json").write_text(
+        '{"schema_version": 2, "payload": "different"}',
+        encoding="utf-8",
+    )
+
+    result = store.list_json(tmp_path, SchemaVersionedModel)
+
+    assert result.ok
+    assert [value.payload for value in result.value or []] == ["current", "different"]
+    assert [issue.kind for issue in result.issues] == ["schema_version_mismatch"]
 
 
 def test_delete_json_handles_missing_ok_and_missing_error(tmp_path) -> None:

@@ -17,7 +17,7 @@ class LeanDiagnosticItem(StrictModel):
 
 
 class LeanDiagnostics(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: int = 2
     repo_file_path: str | None = None
     passed: bool
     diagnostics: list[LeanDiagnosticItem] = Field(default_factory=list)

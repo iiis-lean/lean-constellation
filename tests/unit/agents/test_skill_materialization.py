@@ -158,6 +158,15 @@ def test_coordinator_skill_inventory_and_workflow_boundaries() -> None:
         assert "Postcondition" in body or "Postconditions" in body
 
 
+def test_coordinator_exploration_skill_describes_only_current_workflow() -> None:
+    body = build_skill_specs()["coordinator-repo-exploration"].body
+
+    assert "before the first NodeTree decision" in body
+    assert "During later work" in body
+    for migration_term in ("retroactive", "restored mature", "capability became available"):
+        assert migration_term not in body
+
+
 def test_coordinator_skill_metadata_is_discoverable_and_compact() -> None:
     coordinator = get_agent_type_spec("CoordinatorAgent")
     specs = build_skill_specs()

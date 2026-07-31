@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -33,7 +33,7 @@ class WorkspaceChildRelease(StrictModel):
 
 
 class WorkspacePublicationPreview(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     workspace_key: str
     children: list[WorkspaceChildRelease]
     topological_repo_keys: list[str]
@@ -50,7 +50,7 @@ class WorkspacePublicationPreview(StrictModel):
 
 
 class WorkspaceReleaseManifest(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     workspace_key: str
     children: list[WorkspaceChildRelease]
     topological_repo_keys: list[str]
@@ -58,7 +58,7 @@ class WorkspaceReleaseManifest(StrictModel):
 
 
 class WorkspacePublicationReceipt(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     workspace_key: str
     child_release_ids: dict[str, str]
     child_commits: dict[str, str]

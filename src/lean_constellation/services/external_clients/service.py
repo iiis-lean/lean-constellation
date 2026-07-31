@@ -75,16 +75,10 @@ class ExternalClientService:
             toolkit=self.lean_mcp_toolkit,
             config=self.config.lean_toolchain,
         )
-        self.material_acquisition = material_acquisition or MaterialAcquisitionExtractionClient(self.config.material)
+        self.material = material_acquisition or MaterialAcquisitionExtractionClient(self.config.material)
         self.resource_discovery = resource_discovery or ExternalResourceDiscoveryClient(
             self.config.resource_discovery
         )
-
-    @property
-    def material(self) -> MaterialAcquisitionExtractionClient:
-        """Compatibility alias for the material acquisition client."""
-
-        return self.material_acquisition
 
     def check_external_client_health(
         self,

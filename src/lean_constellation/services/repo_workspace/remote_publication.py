@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.publication import (
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class RepoRemotePublicationPreview(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     binding: RepoRemoteBinding
     release_id: str
     commit: str

@@ -57,12 +57,14 @@ class SnapshotFileEntry(StrictModel):
 
 
 class SnapshotFilesManifest(StrictModel):
+    schema_version: int = 1
     entries: list[SnapshotFileEntry] = Field(default_factory=list)
     excluded_top_level: list[str] = Field(default_factory=list)
     summary: str
 
 
 class RepoCheckpointSnapshotManifest(StrictModel):
+    schema_version: int = 1
     snapshot_id: str
     checkpoint_kind: RepoCheckpointKind
     label: str | None = None

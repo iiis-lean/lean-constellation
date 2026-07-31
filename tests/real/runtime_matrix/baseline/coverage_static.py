@@ -82,7 +82,7 @@ def registry_fingerprint(snapshot: RegistrySnapshot | None = None) -> str:
 
 # This pin makes registry additions/removals fail until the Runtime Matrix
 # coverage declaration is consciously refreshed.
-EXPECTED_REGISTRY_FINGERPRINT = "5c7ca8f5cfed934b37640c63796eb6d56ca9680d86a1258618f7db4e57e200d8"
+EXPECTED_REGISTRY_FINGERPRINT = "e59871a18599e967ad6206d6a82f6ddd51094d003774857f9ad7665b23ececd0"
 
 
 def required_registry_tags(snapshot: RegistrySnapshot | None = None) -> set[str]:
@@ -184,13 +184,12 @@ RUNTIME_MATRIX_CASES: tuple[RuntimeMatrixCase, ...] = (
     ),
     RuntimeMatrixCase(
         case_id="repo-preparation-native-adapter-matrix",
-        summary="Native and adapter repo preparation branches, including source prepared/blocked, review rejected/approved, root interface direct ready, adapter ready, and adapter blocked.",
+        summary="Native and adapter repo preparation branches, including source prepared/blocked, review rejected/approved, root-interface child readiness, adapter ready, and adapter blocked.",
         tags=frozenset(
             {
                 "flow:native_repo_preparation",
                 "flow:adapter_repo_preparation",
                 "logic_step:native_preparation_start_step",
-                "logic_step:root_interface_direct_ready_step",
                 "logic_step:dispatch_native_coordinator_step",
                 "agent_step:source_corpus_prepare_agent_step",
                 "agent_step:source_index_builder_agent_step",

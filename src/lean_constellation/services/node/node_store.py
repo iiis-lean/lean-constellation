@@ -49,10 +49,10 @@ class NodeStore:
     def read_index(self, repo_root: Path) -> ServiceResult[NodeIndex]:
         ctx = FoundationContext(repo_root=Path(repo_root))
         path = self.runtime.foundation.layout.node_index_path(ctx)
+        if not path.exists():
+            return self.rebuild_index(repo_root)
         loaded = self.runtime.foundation.store.read_json(path, NodeIndex)
-        if loaded.ok and loaded.value is not None:
-            return loaded
-        return self.rebuild_index(repo_root)
+        return loaded
 
     def rebuild_index(self, repo_root: Path) -> ServiceResult[NodeIndex]:
         built = self.build_index(repo_root)

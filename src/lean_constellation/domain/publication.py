@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
-
 from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
@@ -119,7 +117,7 @@ class RepoPublicationBadge(StrictModel):
 class RepoPublicationPresentation(StrictModel):
     """Human-facing publication metadata, separate from runtime summaries."""
 
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     title: str | None = None
     description: str | None = None
     topics: list[str] = Field(default_factory=list)

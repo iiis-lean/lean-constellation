@@ -32,7 +32,7 @@ class SourceCorpusFileView(StrictModel):
 
 
 class SourceCorpusManifestView(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: int = 2
     relpath: str = ".lean_constellation/source"
     overview: str | None = None
     entry_path: str | None = None

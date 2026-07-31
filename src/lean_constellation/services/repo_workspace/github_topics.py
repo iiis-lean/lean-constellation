@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from pydantic import Field
@@ -27,7 +27,7 @@ _TOPIC_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,49}$")
 
 
 class RepoGitHubTopicsPreview(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     repo_key: str
     repository: str
     remote_name: str
@@ -41,7 +41,7 @@ class RepoGitHubTopicsPreview(StrictModel):
 
 
 class RepoGitHubTopicsReceipt(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     repo_key: str
     repository: str
     previous_topics: list[str] = Field(default_factory=list)

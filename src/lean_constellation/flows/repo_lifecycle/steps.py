@@ -455,22 +455,6 @@ class ExistingSourceCorpusScanStepResult(LeanRenderableStepResult):
         }
 
 
-class RootInterfaceDirectReadyStepResult(LeanRenderableStepResult):
-    result_type: Literal["root_interface_direct_ready"] = "root_interface_direct_ready"
-    outcome: Literal["ready", "blocked"]
-    protected_interface_count: int = 0
-    total_interface_count: int = 0
-    error: NativePreparationStepError | None = None
-
-    def agent_fields(self) -> dict[str, object]:
-        return {
-            "outcome": self.outcome,
-            "protected_interface_count": self.protected_interface_count,
-            "total_interface_count": self.total_interface_count,
-            "error_code": self.error.code if self.error else None,
-        }
-
-
 class HandoffGateStepResult(LeanRenderableStepResult):
     result_type: Literal["native_handoff_gate"] = "native_handoff_gate"
     outcome: Literal["passed", "blocked", "invalid_input"]
@@ -788,61 +772,6 @@ class ExistingSourceCorpusScanStep(BaseStep):
                 binary_file_count=len(manifest.files) - text_count,
                 overview=manifest.overview,
                 summary=manifest.summary,
-            )
-        )
-
-
-class RootInterfaceDirectReadyStep(BaseStep):
-    step_type: ClassVar[str] = "root_interface_direct_ready_step"
-    State: ClassVar[type[BaseStepState]] = BaseStepState
-    Result: ClassVar[type[BaseStepResult]] = RootInterfaceDirectReadyStepResult
-    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
-        "root_interface_direct_ready": RootInterfaceDirectReadyStepResult,
-    }
-
-    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
-        flow = _load_native_preparation_flow(ctx)
-        input_model = _require_native_preparation_input(flow.input)
-        repo_root = _native_repo_root(input_model)
-        node = _node(ctx)
-        gate = node.check_root_main_handoff_interfaces(repo_root)
-        listed = node.interface.list_interfaces(repo_root, node_path="Main")
-        protected_count = len(listed.value.protected_names) if listed.ok and listed.value is not None else 0
-        total_count = len(listed.value.interfaces) if listed.ok and listed.value is not None else 0
-        if not gate.ok or gate.value is None:
-            return ctx.complete_step(
-                RootInterfaceDirectReadyStepResult(
-                    outcome="blocked",
-                    protected_interface_count=protected_count,
-                    total_interface_count=total_count,
-                    summary=_issue_summary(gate.issues) or "Root interface direct ready gate failed.",
-                    error=_native_error_from_issues(
-                        gate.issues,
-                        fallback_code="root_interface_direct_ready_gate_failed",
-                        fallback_message="Root interface direct ready gate failed.",
-                    ),
-                )
-            )
-        if not gate.value.passed:
-            return ctx.complete_step(
-                RootInterfaceDirectReadyStepResult(
-                    outcome="blocked",
-                    protected_interface_count=protected_count,
-                    total_interface_count=total_count,
-                    summary=gate.value.summary or "Root interface direct ready gate failed.",
-                    error=_native_error_from_issues(
-                        gate.value.issues,
-                        fallback_code="root_interface_direct_ready_gate_failed",
-                        fallback_message=gate.value.summary or "Root interface direct ready gate failed.",
-                    ),
-                )
-            )
-        return ctx.complete_step(
-            RootInterfaceDirectReadyStepResult(
-                outcome="ready",
-                protected_interface_count=protected_count,
-                total_interface_count=total_count,
-                summary=gate.value.summary or "Root interfaces are ready.",
             )
         )
 
@@ -1503,7 +1432,6 @@ REPO_LIFECYCLE_STEP_TYPES: tuple[type[BaseStep], ...] = (
     ApplyRepoFormatChoiceStep,
     ValidateAndInitializeNativePreparationStep,
     ExistingSourceCorpusScanStep,
-    RootInterfaceDirectReadyStep,
     HandoffGateStep,
     PrepareCoordinatorDispatchStep,
     PrepareNativeLifecycleChildStep,
@@ -1539,8 +1467,6 @@ __all__ = [
     "REPO_LIFECYCLE_STEP_TYPES",
     "RepoFormatDiscoveryStepResult",
     "RequirementBootstrapStepError",
-    "RootInterfaceDirectReadyStep",
-    "RootInterfaceDirectReadyStepResult",
     "RootInterfacePrepareStepResult",
     "SourceCorpusPrepareStepResult",
     "SourceIndexBuilderStepResult",

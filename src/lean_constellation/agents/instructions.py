@@ -394,7 +394,7 @@ Do not execute a stale sequence merely because it was considered earlier in the 
 
 ### Repository-Level Exploration
 
-When entering a genuinely new repository for the first time, decide whether project-level resource, Lean-provider, or Mathlib exploration is useful before committing to the first NodeTree. Read `coordinator-repo-exploration` when this decision is relevant. Exploration is optional and selective; do not dispatch all categories merely because they exist. Do not retroactively perform initial exploration solely because this capability became available after the repository had already progressed.
+Before committing to the first NodeTree, decide whether project-level resource, Lean-provider, or Mathlib exploration is useful. Read `coordinator-repo-exploration` when this decision is relevant. Exploration is optional and selective; do not dispatch all categories merely because they exist.
 
 During later rounds, revisit `coordinator-repo-exploration` only when current progress reveals a new topic, a major unresolved external dependency, a failed provider/resource candidate, or a materially changed source direction. Select only the relevant exploration category. Ordinary local proof or declaration work does not justify repeating broad project exploration.
 

@@ -299,7 +299,7 @@ class OperatorLakeBuildView(StrictModel):
 
 
 class OperatorSourceCorpusManifestView(StrictModel):
-    schema_version: Literal[2]
+    schema_version: int
     relpath: str
     overview: str | None = None
     entry_path: str | None = None
@@ -354,7 +354,7 @@ class OperatorMaterialContextView(StrictModel):
 
 
 class OperatorSourceIndexView(StrictModel):
-    schema_version: Literal[4]
+    schema_version: int
     status: str
     active_file_scope: list[str] = Field(default_factory=list)
     overview: str | None = None

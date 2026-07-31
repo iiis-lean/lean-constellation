@@ -38,6 +38,20 @@ def test_node_store_rebuilds_index_from_truth(tmp_path: Path) -> None:
     assert runtime.foundation.layout.node_index_path(ctx).is_file()
 
 
+def test_node_store_does_not_rebuild_an_existing_invalid_index(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    ctx = FoundationContext(repo_root=tmp_path)
+    index_path = runtime.foundation.layout.node_index_path(ctx)
+    index_path.write_text('{"schema_version": 1, "removed_entries": []}', encoding="utf-8")
+
+    loaded = runtime.node.node_tree.node_store.read_index(tmp_path)
+
+    assert not loaded.ok
+    assert loaded.issues[0].kind == "schema_validation_failed"
+    assert "removed_entries" in index_path.read_text(encoding="utf-8")
+
+
 def test_delete_and_recreate_same_path_uses_new_node_id(tmp_path: Path) -> None:
     runtime = make_runtime()
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok

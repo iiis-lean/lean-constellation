@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import ClassVar, Literal
 
 from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowReadContext, FlowStepContext, StableStepTerminalContext
-from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, ChildFlowDispatchSubmission, FlowPosition, FlowStatus, utc_now_iso
+from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlowResult, BaseFlowState, ChildFlowDispatchSubmission, FlowPosition, FlowStatus, FlowStepValidationError, utc_now_iso
 from agent_runtime_kit.flow.standard_steps import (
     AgentStepIncompleteResult,
     AgentStepState,
@@ -47,8 +47,6 @@ from lean_constellation.flows.repo_lifecycle.steps import (
     PrepareCoordinatorDispatchStepResult,
     PrepareNativeLifecycleChildStep,
     PrepareNativeLifecycleChildStepResult,
-    RootInterfaceDirectReadyStep,
-    RootInterfaceDirectReadyStepResult,
     ValidateBootstrapInputStep,
     ValidateAdapterPreparationInputStep,
     ValidateAndInitializeNativePreparationStep,
@@ -63,7 +61,6 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     AdapterCatalogReadySubmission,
     RepoFormatAdapterChoiceSubmission,
     RepoFormatNativeChoiceSubmission,
-    RootInterfacePrepareReadySubmission,
     SourceCorpusBlockedSubmission,
     SourceCorpusPreparedSubmission,
 )
@@ -624,35 +621,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                     ),
                 )
             )
-        if state.position.phase == "root_interface_prepare":
-            if state.allow_interface_supplement is False:
-                return ctx.create_step(
-                    RootInterfaceDirectReadyStep(
-                        step_id=new_repo_lifecycle_step_id("root_interface_direct_ready"),
-                        flow_id=self.flow_id,
-                        scope_id=self.scope_id,
-                    )
-                )
-            from lean_constellation.flows.common.agent_steps import RootInterfacePrepareAgentStep
-
-            return ctx.create_step(
-                RootInterfacePrepareAgentStep(
-                    step_id=new_repo_lifecycle_step_id("root_interface_prepare"),
-                    flow_id=self.flow_id,
-                    scope_id=self.scope_id,
-                    state=AgentStepState(
-                        agent_role="root_interface_preparer",
-                        agent_type="RootInterfacePrepareAgent",
-                        home_id="RootInterfacePrepareAgent",
-                        create_agent_if_missing=True,
-                        bind_created_agent_to="step",
-                        variables={"repo_key": input_model.repo_key},
-                        prompt_override=_root_interface_prepare_prompt(input_model),
-                        env_overrides=_agent_env("RootInterfacePrepareAgent", "root_interface_prepare", "root_interface_prepare_submit"),
-                        workdir_override=str(repo_root),
-                    ),
-                )
-            )
         if state.position.phase == "handoff_gate":
             return ctx.create_step(
                 HandoffGateStep(
@@ -693,7 +661,12 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                     ),
                 )
             )
-        return None
+        if state.position.phase == "completed":
+            return None
+        raise FlowStepValidationError(
+            "unsupported_flow_phase: "
+            f"NativeRepoPreparationFlow does not support phase {state.position.phase!r}."
+        )
 
     def on_step_terminal(self, ctx: FlowStepContext) -> None:
         state = _require_native_preparation_state(self.state)
@@ -727,10 +700,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
                     result.error.message if result.error else result.summary,
                     result.summary,
                 )
-        elif isinstance(result, RootInterfaceDirectReadyStepResult):
-            self._consume_root_interface_direct_result(state, input_model, result)
-        elif ctx.step.step_type == "root_interface_prepare_agent_step":
-            self._consume_root_interface_agent_result(state, input_model, result, ctx.step.submission)
         elif isinstance(result, HandoffGateStepResult):
             self._consume_handoff_gate_result(state, input_model, result)
         elif isinstance(result, PrepareCoordinatorDispatchStepResult):
@@ -871,37 +840,6 @@ class NativeRepoPreparationFlow(LeanBusinessFlow):
             self._finish_native_preparation(state, input_model, "blocked", submission.reason, submission.summary)
             return
         self._finish_native_preparation(state, input_model, "blocked", "Unsupported source corpus submission.", "Unsupported source corpus submission.")
-
-    def _consume_root_interface_direct_result(
-        self,
-        state: NativeRepoPreparationState,
-        input_model: NativeRepoPreparationInput,
-        result: RootInterfaceDirectReadyStepResult,
-    ) -> None:
-        if result.outcome == "ready":
-            state.root_interface_ready = True
-            state.position = FlowPosition(phase="handoff_gate")
-            return
-        self._finish_native_preparation(state, input_model, "blocked", result.error.message if result.error else result.summary, result.summary)
-
-    def _consume_root_interface_agent_result(
-        self,
-        state: NativeRepoPreparationState,
-        input_model: NativeRepoPreparationInput,
-        result: object | None,
-        submission: object | None,
-    ) -> None:
-        if isinstance(result, AgentStepIncompleteResult) or not isinstance(submission, RootInterfacePrepareReadySubmission):
-            self._finish_native_preparation(
-                state,
-                input_model,
-                "blocked",
-                "RootInterfacePrepareAgent did not submit ready.",
-                "Root interface prepare agent did not submit ready.",
-            )
-            return
-        state.root_interface_ready = True
-        state.position = FlowPosition(phase="handoff_gate")
 
     def _consume_handoff_gate_result(
         self,
@@ -1415,15 +1353,6 @@ def _source_corpus_prepare_prompt(
             "Allowed write boundary: this directory and its descendants.",
             f"Configured logical corpus path: {logical_path}.",
             "Read the repository preparation input through tools and submit prepared or blocked.",
-        ]
-    )
-
-
-def _root_interface_prepare_prompt(input_model: NativeRepoPreparationInput) -> str:
-    return "\n".join(
-        [
-            f"Prepare root Main interfaces for native repo {input_model.repo_key}.",
-            "Use the root-interface run context, current root interfaces, and compact SourceIndex reads. Add only necessary supplement interfaces, then submit ready.",
         ]
     )
 

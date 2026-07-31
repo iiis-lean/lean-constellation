@@ -8,7 +8,7 @@ import shutil
 import tempfile
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from pydantic import Field
@@ -39,7 +39,7 @@ class DependencyReleaseMode(StrEnum):
 
 
 class RepoDependencyChangePreview(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     consumer_repo_key: str
     provider_repo_key: str
     target_provider_release_id: str
@@ -58,7 +58,7 @@ class RepoDependencyChangePreview(StrictModel):
 
 
 class RepoDependencyChangeReceipt(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     change_id: str
     change: RepoDependencyReleaseChange
     release_mode: DependencyReleaseMode

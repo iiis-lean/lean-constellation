@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
     RepoCheckpointKind,
     RepoCheckpointSnapshotManifest,
+    SnapshotFilesManifest,
     SnapshotRestoreComponent,
 )
 from tests.unit_services_helpers import make_runtime
@@ -70,3 +72,40 @@ def test_lc_checkpoint_manifest_requires_explicit_optional_ark_field(tmp_path: P
     )
     assert manifest.ok and manifest.value is not None
     assert manifest.value.model_dump()["ark_runtime_snapshot_id"] is None
+
+
+def test_checkpoint_manifests_write_current_versions_and_warn_when_omitted(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    component = SnapshotRestoreComponent(runtime)
+    created = component.create_repo_checkpoint_archive(
+        tmp_path,
+        checkpoint_kind=RepoCheckpointKind.MANUAL_TEST_STABLE_POINT,
+        snapshot_id="versioned_checkpoint",
+        ark_runtime_snapshot_id=None,
+    )
+    assert created.ok and created.value is not None
+    snapshot_root = Path(created.value.root)
+    manifest_path = snapshot_root / "snapshot.json"
+    files_path = snapshot_root / "files_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files_payload = json.loads(files_path.read_text(encoding="utf-8"))
+    assert manifest_payload["schema_version"] == 1
+    assert files_payload["schema_version"] == 1
+
+    manifest_payload.pop("schema_version")
+    files_payload.pop("schema_version")
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    files_path.write_text(json.dumps(files_payload), encoding="utf-8")
+
+    loaded_manifest = runtime.foundation.store.read_json(
+        manifest_path,
+        RepoCheckpointSnapshotManifest,
+    )
+    loaded_files = runtime.foundation.store.read_json(files_path, SnapshotFilesManifest)
+
+    assert loaded_manifest.ok and loaded_manifest.value is not None
+    assert loaded_files.ok and loaded_files.value is not None
+    assert [issue.kind for issue in loaded_manifest.issues] == ["schema_version_missing"]
+    assert [issue.kind for issue in loaded_files.issues] == ["schema_version_missing"]
+    assert "schema_version" not in json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "schema_version" not in json.loads(files_path.read_text(encoding="utf-8"))

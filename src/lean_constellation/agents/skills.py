@@ -180,7 +180,6 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
             (
                 "Exploration is optional; do not dispatch every category merely because it exists.",
                 "A local tactic failure, ordinary worker retry, or a single missing Mathlib lemma does not justify broad repository exploration.",
-                "Do not retroactively run initial exploration only because the capability appeared after a mature repository was restored.",
                 "Each Coordinator AgentStep still submits exactly one terminal action.",
             ),
         ),

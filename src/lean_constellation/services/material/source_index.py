@@ -74,7 +74,7 @@ class SourceFileIndex(StrictModel):
 
 
 class SourceIndex(StrictModel):
-    schema_version: Literal[3] = 3
+    schema_version: int = 3
     status: SourceIndexStatus = "draft"
     active_file_scope: list[str] = Field(default_factory=list)
     overview: str | None = None
@@ -152,7 +152,7 @@ class SourceFileIndexView(StrictModel):
 
 
 class SourceIndexView(StrictModel):
-    schema_version: Literal[4] = 4
+    schema_version: int = 4
     status: SourceIndexStatus = "draft"
     active_file_scope: list[str] = Field(default_factory=list)
     overview: str | None = None

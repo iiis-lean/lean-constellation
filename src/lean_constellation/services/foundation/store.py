@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -17,11 +18,15 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.foundation.result_error import (
+    IssueSeverity,
     ResultErrorComponent,
+    ServiceIssue,
     ServiceResult,
 )
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -271,17 +276,82 @@ class StoreComponent:
             return self.result.fail(
                 self.result.issue("read_failed", f"Failed to read {path}: {exc}", details={"path": str(path)})
             )
+        warnings = self._schema_version_warnings(
+            raw,
+            model_type=model_type,
+            path=path,
+        )
         try:
             value = TypeAdapter(model_type).validate_python(raw)
         except Exception as exc:  # noqa: BLE001 - pydantic raises several validation exceptions.
             return self.result.fail(
-                self.result.issue(
-                    "schema_validation_failed",
-                    f"JSON schema validation failed for {path}: {exc}",
-                    details={"path": str(path), "model_type": getattr(model_type, "__name__", str(model_type))},
-                )
+                [
+                    *warnings,
+                    self.result.issue(
+                        "schema_validation_failed",
+                        f"JSON schema validation failed for {path}: {exc}",
+                        details={"path": str(path), "model_type": getattr(model_type, "__name__", str(model_type))},
+                    ),
+                ]
             )
-        return self.result.ok(value)
+        return self.result.ok(value, warnings=warnings)
+
+    def _schema_version_warnings(
+        self,
+        raw: object,
+        *,
+        model_type: type[object],
+        path: Path,
+    ) -> list[ServiceIssue]:
+        if not isinstance(raw, dict):
+            return []
+        model_fields = getattr(model_type, "model_fields", None)
+        if not isinstance(model_fields, dict):
+            return []
+        field = model_fields.get("schema_version")
+        expected = getattr(field, "default", None)
+        if not isinstance(expected, int):
+            return []
+        if "schema_version" not in raw:
+            logger.warning(
+                "Lean Constellation JSON schema version is missing: path=%s current=%s model=%s",
+                path,
+                expected,
+                getattr(model_type, "__name__", str(model_type)),
+            )
+            return [
+                self.result.issue(
+                    "schema_version_missing",
+                    f"JSON file does not declare schema_version: {path}",
+                    severity=IssueSeverity.WARNING,
+                    object_ref=str(path),
+                    field="schema_version",
+                    expected=str(expected),
+                    suggested_action="Review and migrate this file in its task-local run root when needed.",
+                )
+            ]
+        observed = raw["schema_version"]
+        if observed == expected:
+            return []
+        logger.warning(
+            "Lean Constellation JSON schema version differs from the current model: path=%s observed=%r current=%s model=%s",
+            path,
+            observed,
+            expected,
+            getattr(model_type, "__name__", str(model_type)),
+        )
+        return [
+            self.result.issue(
+                "schema_version_mismatch",
+                f"JSON schema version differs from the current model for {path}",
+                severity=IssueSeverity.WARNING,
+                object_ref=str(path),
+                field="schema_version",
+                current=str(observed),
+                expected=str(expected),
+                suggested_action="Review structural compatibility and migrate task-local truth when needed.",
+            )
+        ]
 
     def write_json_atomic(
         self,
@@ -363,16 +433,15 @@ class StoreComponent:
         if not path.is_dir():
             return self.result.fail(self.result.issue("not_directory", f"Path is not a directory: {path}"))
         values: list[T] = []
-        issues = []
+        issues: list[ServiceIssue] = []
         for item in sorted(path.glob("*.json")):
             result = self.read_json(item, model_type)
+            issues.extend(result.issues)
             if result.ok:
                 values.append(result.value)  # type: ignore[arg-type]
-            else:
-                issues.extend(result.issues)
-        if issues:
+        if any(self.result.is_error_issue(issue) for issue in issues):
             return self.result.fail(issues)
-        return self.result.ok(values)
+        return self.result.ok(values, warnings=issues)
 
     def exists(self, path: Path) -> bool:
         return Path(path).exists()

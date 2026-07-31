@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus
+from agent_runtime_kit.flow.models import BaseFlowError, FlowPosition, FlowStatus, FlowStepValidationError
 from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -209,6 +209,24 @@ def _advance_and_run(runtime: FakeLeanFlowRuntime, flow_id: str) -> str:
     assert step_id is not None
     runtime.run_step(step_id)
     return step_id
+
+
+def test_native_preparation_rejects_retired_parent_root_interface_phase(tmp_path: Path) -> None:
+    runtime, lean_runtime, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "RetiredPhase"
+    _prepare_native_repo(lean_runtime, repo_root)
+    flow_id = _start_native(runtime, repo_root)
+    runtime.flow_service.store.update_flow_record(
+        flow_id,
+        lambda flow: setattr(
+            flow.state,
+            "position",
+            FlowPosition(phase="root_interface_prepare"),
+        ),
+    )
+
+    with pytest.raises(FlowStepValidationError, match="does not support phase"):
+        runtime.flow_service.advance_flow(flow_id)
 
 
 def _complete_child_flow(runtime: FakeLeanFlowRuntime, child_flow_id: str, result) -> None:  # noqa: ANN001

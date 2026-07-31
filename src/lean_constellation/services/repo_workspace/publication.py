@@ -107,7 +107,7 @@ class PublicationDirectoryExclusion(StrictModel):
 
 
 class RepoPublicationManifest(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: int = 2
     repo_key: str
     generated_at: str | None = None
     excluded_directories: list[PublicationDirectoryExclusion] = Field(
@@ -146,7 +146,7 @@ class RepoPublicationDependency(StrictModel):
 
 
 class PublicApiDocument(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: int = 2
     repo_key: str
     release_id: str | None = None
     completion_mode: str
@@ -157,7 +157,7 @@ class PublicApiDocument(StrictModel):
 
 
 class RepoProvenanceDocument(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = 1
     repo_key: str
     release_id: str | None = None
     semantic_manifest_digest: str | None = None

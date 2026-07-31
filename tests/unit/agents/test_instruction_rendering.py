@@ -75,6 +75,15 @@ def test_coordinator_instruction_routes_closeout_then_repeated_next_actions() ->
     assert "without becoming an exact header" in text
 
 
+def test_coordinator_exploration_instruction_describes_only_current_workflow() -> None:
+    text = render_agent_instruction("CoordinatorAgent")
+
+    assert "Before committing to the first NodeTree" in text
+    assert "During later rounds" in text
+    for migration_term in ("retroactive", "restored mature", "capability became available"):
+        assert migration_term not in text
+
+
 def test_coordinator_instruction_lists_exact_normal_submit_boundary() -> None:
     text = render_agent_instruction("CoordinatorAgent")
     expected = {
