@@ -796,8 +796,8 @@ def build_material_tool_specs() -> list[ToolSpec]:
         direct_tool(
             name="read_source_range",
             description=(
-                "Read an exact inclusive line range from source corpus text. When a SourceIndex ref, origin, or prompt "
-                "provides a range, pass its start and end unchanged with context_lines=0; do not pad or round it."
+                "Read an inclusive line range from source corpus text with context_lines=0 by default. Read a SourceIndex "
+                "ref or origin at its exact bounds; focused semantic subranges are allowed only inside the authorized range."
             ),
             args_model=SourceRangeArgs,
             capability=ToolCapability.READ,

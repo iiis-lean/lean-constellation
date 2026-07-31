@@ -131,8 +131,9 @@ def test_every_agent_uses_merged_common_fragments() -> None:
 
 def test_formal_reviewer_source_fidelity_requires_exact_ranges() -> None:
     instruction = render_agent_instruction("StatementFormalReviewerAgent")
-    assert "exact inclusive source range" in instruction
-    assert "Do not round, pad, or widen it" in instruction
+    assert "exact inclusive start and end" in instruction
+    assert "intentional semantic subrange" in instruction
+    assert "Do not cross the authorized boundary" in instruction
 
 
 def test_coordinator_public_fragments_match_native_repo_target_order() -> None:

@@ -209,8 +209,8 @@ class SourceRangeArgs(StrictModel):
         ge=0,
         le=20,
         description=(
-            "Extra context lines around the requested range. Keep 0 for an exact SourceIndex or origin range; "
-            "use a positive value only when the surrounding range is separately authorized."
+            "Extra context lines around the requested range. Keep 0 for SourceIndex/origin evidence and focused "
+            "navigation inside an authorized range; use a positive value only when the expanded range is separately authorized."
         ),
     )
 
