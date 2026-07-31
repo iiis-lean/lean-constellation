@@ -613,6 +613,24 @@ class RepoRemotePublicationInput(RepoReleaseIdInput):
     push: bool = False
 
 
+class RepoGitHubTopicsInput(StrictModel):
+    repo_root: Path
+    remote_name: str = Field(
+        default="origin",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+    expected_recovery_token: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+
+    @field_validator("repo_root", mode="before")
+    @classmethod
+    def _coerce_repo(cls, value: Any) -> Path:
+        return Path(value).expanduser()
+
+
 class RepoDependencyChangeInput(StrictModel):
     repo_root: Path
     provider_repo_key: str
@@ -1847,6 +1865,33 @@ class LeanAdminApi:
             preview=preview.value,
             expected_recovery_token=input_model.expected_recovery_token,
             push=input_model.push,
+        )
+
+    def preview_repo_github_topics(
+        self,
+        input_model: RepoGitHubTopicsInput,
+    ):  # noqa: ANN201
+        return self.runtime.repo_workspace.github_topics.preview(
+            input_model.repo_root,
+            remote_name=input_model.remote_name,
+        )
+
+    def apply_repo_github_topics(
+        self,
+        input_model: RepoGitHubTopicsInput,
+    ):  # noqa: ANN201
+        if input_model.expected_recovery_token is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "github_topics_token_required",
+                    "GitHub topics apply requires an exact preview token.",
+                    object_ref=input_model.repo_root.name,
+                )
+            )
+        return self.runtime.repo_workspace.github_topics.apply(
+            input_model.repo_root,
+            remote_name=input_model.remote_name,
+            expected_recovery_token=input_model.expected_recovery_token,
         )
 
     def preview_repo_dependency_change(

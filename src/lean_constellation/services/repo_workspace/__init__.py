@@ -41,6 +41,11 @@ from lean_constellation.services.repo_workspace.git_release import (
     GitReleaseValidationView,
     GitRepoStateView,
 )
+from lean_constellation.services.repo_workspace.github_topics import (
+    RepoGitHubTopicsComponent,
+    RepoGitHubTopicsPreview,
+    RepoGitHubTopicsReceipt,
+)
 from lean_constellation.services.repo_workspace.dependency_release import (
     DependencyReleaseMode,
     RepoDependencyChangePreview,
@@ -101,6 +106,9 @@ __all__ = [
     "GitReleaseRestoreView",
     "GitReleaseValidationView",
     "GitRepoStateView",
+    "RepoGitHubTopicsComponent",
+    "RepoGitHubTopicsPreview",
+    "RepoGitHubTopicsReceipt",
     "PublicApiDocument",
     "PublicApiDeclaration",
     "PublicationDirectoryExclusion",

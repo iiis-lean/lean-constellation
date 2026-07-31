@@ -37,6 +37,9 @@ from lean_constellation.domain.repo import (
 )
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.repo_workspace.git_release import GitReleaseComponent
+from lean_constellation.services.repo_workspace.github_topics import (
+    RepoGitHubTopicsComponent,
+)
 from lean_constellation.services.repo_workspace.dependency_release import (
     RepoDependencyReleaseComponent,
 )
@@ -106,6 +109,7 @@ class RepoWorkspaceService:
         workspace_catalog: WorkspaceCatalogComponent | None = None,
         release: RepoReleaseComponent | None = None,
         git_release: GitReleaseComponent | None = None,
+        github_topics: RepoGitHubTopicsComponent | None = None,
         publication: RepoPublicationComponent | None = None,
         dependency_release: RepoDependencyReleaseComponent | None = None,
         remote_publication: RepoRemotePublicationComponent | None = None,
@@ -119,6 +123,7 @@ class RepoWorkspaceService:
         self.metadata = metadata or RepoMetadataComponent(runtime)
         self.release = release or RepoReleaseComponent(runtime)
         self.git_release = git_release or GitReleaseComponent(runtime)
+        self.github_topics = github_topics or RepoGitHubTopicsComponent(runtime)
         self.publication = publication or RepoPublicationComponent(
             runtime,
             workspace_policy=self.workspace_config.publication,

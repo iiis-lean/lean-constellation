@@ -180,6 +180,19 @@ def build_parser() -> argparse.ArgumentParser:
     remote_apply.add_argument("release_id")
     remote_apply.add_argument("--expected-token", required=True)
     remote_apply.add_argument("--push", action="store_true")
+    github_topics_preview = sub.add_parser(
+        "repo-publication-github-topics-preview",
+        help="Preview exact GitHub topics from publication presentation.",
+    )
+    github_topics_preview.add_argument("--repo-key", required=True)
+    github_topics_preview.add_argument("--remote-name", default="origin")
+    github_topics_apply = sub.add_parser(
+        "repo-publication-github-topics-apply",
+        help="Apply and verify previewed GitHub publication topics.",
+    )
+    github_topics_apply.add_argument("--repo-key", required=True)
+    github_topics_apply.add_argument("--remote-name", default="origin")
+    github_topics_apply.add_argument("--expected-token", required=True)
     for name, help_text in (
         (
             "repo-dependency-change-preview",
@@ -595,6 +608,21 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "expected_recovery_token": args.expected_token,
                 "push": args.push,
+            },
+        ))
+    if args.command == "repo-publication-github-topics-preview":
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/publication/github-topics/preview",
+            {"remote_name": args.remote_name},
+        ))
+    if args.command == "repo-publication-github-topics-apply":
+        return _print_http_result(_request_json(
+            "POST",
+            f"{admin_base_url}/admin/repos/{args.repo_key}/publication/github-topics/apply",
+            {
+                "remote_name": args.remote_name,
+                "expected_recovery_token": args.expected_token,
             },
         ))
     if args.command in {

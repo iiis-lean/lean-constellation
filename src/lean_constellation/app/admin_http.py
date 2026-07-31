@@ -25,6 +25,7 @@ from lean_constellation.app.admin_api import (
     NativeSourceIndexRecoveryStartInput,
     RepoConfigUpdateInput,
     RepoDependencyChangeInput,
+    RepoGitHubTopicsInput,
     RepoPublicationPrepareInput,
     RepoReleaseIdInput,
     RepoReleaseOrphanCleanupInput,
@@ -722,6 +723,22 @@ def create_workspace_admin_http_routes(
             LeanAdminApi.apply_repo_remote_publication,
         )
 
+    async def repo_github_topics_preview(request: Request) -> JSONResponse:
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            RepoGitHubTopicsInput,
+            LeanAdminApi.preview_repo_github_topics,
+        )
+
+    async def repo_github_topics_apply(request: Request) -> JSONResponse:
+        return await _repo_root_semantic_model_route(
+            request,
+            registry,
+            RepoGitHubTopicsInput,
+            LeanAdminApi.apply_repo_github_topics,
+        )
+
     async def repo_dependency_change_preview(request: Request) -> JSONResponse:
         return await _repo_root_semantic_model_route(
             request,
@@ -1084,6 +1101,16 @@ def create_workspace_admin_http_routes(
         Route(
             "/admin/repos/{repo_key:str}/publication/remotes/{release_id:str}/apply",
             repo_remote_publication_apply,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/publication/github-topics/preview",
+            repo_github_topics_preview,
+            methods=["POST"],
+        ),
+        Route(
+            "/admin/repos/{repo_key:str}/publication/github-topics/apply",
+            repo_github_topics_apply,
             methods=["POST"],
         ),
         Route(

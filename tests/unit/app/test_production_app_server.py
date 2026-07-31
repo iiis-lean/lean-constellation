@@ -642,6 +642,10 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
             "/admin/repos/Provider/publication/prepare",
             json={"title": "Provider"},
         )
+        github_topics_preview = client.post(
+            "/admin/repos/Provider/publication/github-topics/preview",
+            json={},
+        )
         remote_preview = client.post(
             f"/admin/repos/Provider/publication/remotes/{release.release_id}/preview",
             json={},
@@ -669,6 +673,11 @@ def test_release_routes_list_show_and_isolate_repo_identity(tmp_path) -> None:
     assert publication_prepared.status_code == 200
     assert publication_prepared.json()["value"]["manifest_path"].endswith(
         ".lean_constellation/publication/manifest.json"
+    )
+    assert github_topics_preview.status_code == 400
+    assert (
+        github_topics_preview.json()["issues"][0]["kind"]
+        == "github_topics_not_configured"
     )
     assert remote_preview.status_code == 400
     assert (

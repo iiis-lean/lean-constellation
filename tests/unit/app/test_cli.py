@@ -517,6 +517,22 @@ def test_cli_publication_commands_preserve_explicit_policy_inputs(
     assert main([
         "--config",
         str(config_path),
+        "repo-publication-github-topics-preview",
+        "--repo-key",
+        "Provider",
+    ]) == 0
+    assert main([
+        "--config",
+        str(config_path),
+        "repo-publication-github-topics-apply",
+        "--repo-key",
+        "Provider",
+        "--expected-token",
+        "d" * 64,
+    ]) == 0
+    assert main([
+        "--config",
+        str(config_path),
         "repo-dependency-change-preview",
         "--repo-key",
         "Consumer",
@@ -551,6 +567,19 @@ def test_cli_publication_commands_preserve_explicit_policy_inputs(
             "POST",
             "http://admin.test/admin/repos/Provider/publication/remotes/release-r2/apply",
             {"expected_recovery_token": "b" * 64, "push": True},
+        ),
+        (
+            "POST",
+            "http://admin.test/admin/repos/Provider/publication/github-topics/preview",
+            {"remote_name": "origin"},
+        ),
+        (
+            "POST",
+            "http://admin.test/admin/repos/Provider/publication/github-topics/apply",
+            {
+                "remote_name": "origin",
+                "expected_recovery_token": "d" * 64,
+            },
         ),
         (
             "POST",
