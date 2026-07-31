@@ -101,7 +101,7 @@ def test_default_decl_graph_revision_provider_prepares_statement_file(tmp_path: 
     assert "theorem main_result" not in text
 
 
-def test_stage_mutation_refreshes_managed_projection_and_preserves_agent_source(tmp_path: Path) -> None:
+def test_nl_stage_mutation_defers_managed_projection_until_formal_prepare(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_round(tmp_path)
     _create_decl_with_statement(tmp_path, round_id=round_id, name="main_result")
@@ -115,6 +115,7 @@ def test_stage_mutation_refreshes_managed_projection_and_preserves_agent_source(
     path = Path(prepared.value.path)
     agent_source = "\ntheorem actualResult : True := by\n  sorry\n"
     path.write_text(path.read_text(encoding="utf-8") + agent_source, encoding="utf-8")
+    before_mutation = path.read_bytes()
 
     updated = runtime.decl_graph.set_statement_nl(
         tmp_path,
@@ -126,15 +127,21 @@ def test_stage_mutation_refreshes_managed_projection_and_preserves_agent_source(
 
     assert updated.ok and updated.value is not None, updated.issues
     assert updated.value.changed is True
-    assert updated.value.managed_projection is not None
-    assert updated.value.managed_projection.reread_required
-    assert updated.value.managed_projection.changed_files == [str(path)]
+    assert updated.value.managed_projection is None
+    assert path.read_bytes() == before_mutation
+
+    refreshed = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="main_result",
+    )
+    assert refreshed.ok and refreshed.value is not None, refreshed.issues
     current = path.read_text(encoding="utf-8")
     assert "The refreshed statement remains true." in current
     assert current.endswith(agent_source)
 
 
-def test_stage_mutation_rolls_truth_and_file_back_when_projection_refresh_fails(tmp_path: Path) -> None:
+def test_nl_truth_mutation_is_independent_of_damaged_formal_projection(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_round(tmp_path)
     _create_decl_with_statement(tmp_path, round_id=round_id, name="main_result")
@@ -152,20 +159,27 @@ def test_stage_mutation_rolls_truth_and_file_back_when_projection_refresh_fails(
     )
     path.write_text(corrupted, encoding="utf-8")
 
-    failed = runtime.decl_graph.set_statement_nl(
+    updated = runtime.decl_graph.set_statement_nl(
         tmp_path,
         node_path=NODE_PATH,
         round_id=round_id,
         decl_name="main_result",
-        nl="This mutation must be rolled back.",
+        nl="This truth remains pending until formal prepare.",
     )
 
-    assert not failed.ok
-    assert failed.issues[0].kind == "decl_managed_region_invalid"
+    assert updated.ok and updated.value is not None
+    assert updated.value.managed_projection is None
     revision = runtime.decl_graph.get_current_decl_revision(tmp_path, node_path=NODE_PATH, decl_name="main_result")
     assert revision.ok and revision.value is not None
-    assert revision.value.statement.nl.text == "main_result states True."
+    assert revision.value.statement.nl.text == "This truth remains pending until formal prepare."
     assert path.read_text(encoding="utf-8") == corrupted
+    failed_prepare = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="main_result",
+    )
+    assert not failed_prepare.ok
+    assert failed_prepare.issues[0].kind == "decl_managed_region_invalid"
 
 
 @pytest.mark.parametrize(
@@ -180,7 +194,7 @@ def test_stage_mutation_rolls_truth_and_file_back_when_projection_refresh_fails(
         "proof_mathlib_dep_add",
     ],
 )
-def test_origin_and_dependency_mutations_roll_truth_and_file_back_atomically(
+def test_nl_origins_defer_projection_while_formal_dependencies_remain_atomic(
     tmp_path: Path,
     mutation_kind: str,
 ) -> None:
@@ -333,15 +347,20 @@ def test_origin_and_dependency_mutations_roll_truth_and_file_back_atomically(
             dep=mathlib_dep,
         )
 
-    assert not failed.ok
-    assert failed.issues[0].kind == "decl_managed_region_invalid"
     after = runtime.decl_graph.get_current_decl_revision(
         tmp_path,
         node_path=NODE_PATH,
         decl_name="main_result",
     )
     assert after.ok and after.value is not None
-    assert after.value.model_dump(mode="json") == before.value.model_dump(mode="json")
+    if mutation_kind in {"statement_origin_add", "statement_origin_clear"}:
+        assert failed.ok and failed.value is not None
+        assert failed.value.managed_projection is None
+        assert after.value.model_dump(mode="json") != before.value.model_dump(mode="json")
+    else:
+        assert not failed.ok
+        assert failed.issues[0].kind == "decl_managed_region_invalid"
+        assert after.value.model_dump(mode="json") == before.value.model_dump(mode="json")
     assert path.read_text(encoding="utf-8") == corrupted
 
 

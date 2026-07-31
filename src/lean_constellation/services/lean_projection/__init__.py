@@ -50,7 +50,6 @@ from lean_constellation.services.lean_projection.repair import (
 )
 from lean_constellation.services.lean_projection.service import LeanProjectionService
 from lean_constellation.services.lean_projection.safe_apply import (
-    DependencyCaptureMode,
     FormalApplyStage,
     SafeFormalApplyComponent,
     SafeFormalApplyView,
@@ -82,7 +81,6 @@ __all__ = [
     "ModuleBuildView",
     "ModuleIdentityComponent",
     "RegisteredDeclarationIdentityView",
-    "DependencyCaptureMode",
     "FormalApplyStage",
     "SafeFormalApplyComponent",
     "SafeFormalApplyView",

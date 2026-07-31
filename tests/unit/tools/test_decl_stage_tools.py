@@ -448,6 +448,9 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
         decl_name="main_result",
     )
     assert prepared.ok, prepared.issues
+    assert prepared.value is not None
+    prepared_path = Path(prepared.value.path)
+    before_nl_metadata = prepared_path.read_bytes()
 
     origin = _add_statement_source_origin(
         runtime,
@@ -458,12 +461,8 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
     assert origin.value is not None
     assert origin.value.changed is True
     assert origin.value.added[0].kind == "source"
-    assert origin.value.managed_projection is not None
-    assert origin.value.managed_projection.model_dump(mode="json") == {
-        "stage": "statement",
-        "changed_files": [prepared.value.path],
-        "reread_required": True,
-    }
+    assert origin.value.managed_projection is None
+    assert prepared_path.read_bytes() == before_nl_metadata
 
     dep = _add_statement_repo_dependencies(
         runtime,
@@ -481,6 +480,8 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
     assert dep.ok, dep.issues
     assert dep.value is not None
     assert dep.value.added[0].ref.name == "supporting_statement"
+    assert dep.value.managed_projection is None
+    assert prepared_path.read_bytes() == before_nl_metadata
     stored = runtime.decl_graph.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert stored.ok and stored.value is not None
     assert stored.value.statement.deps[0].kind == "repo_decl"
@@ -528,9 +529,22 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
     assert mathlib.ok, mathlib.issues
     assert mathlib.value is not None
     assert mathlib.value.added[0].ref.name == "Nat.succ"
+    assert mathlib.value.managed_projection is None
+    assert prepared_path.read_bytes() == before_nl_metadata
     stored = runtime.decl_graph.get_decl_revision(tmp_path, node_path="Main.Topic.Core", name="main_result", revision=1)
     assert stored.ok and stored.value is not None
     assert {item.kind for item in stored.value.statement.deps} == {"repo_decl", "mathlib_decl"}
+
+    refreshed = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert refreshed.ok and refreshed.value is not None
+    refreshed_text = prepared_path.read_text(encoding="utf-8")
+    assert "notes.md" in refreshed_text
+    assert "supporting_statement" in refreshed_text
+    assert "Nat.succ" in refreshed_text
 
 
 def test_statement_nl_reviewer_can_add_only_a_verified_mathlib_dependency(tmp_path: Path) -> None:
@@ -783,7 +797,7 @@ def test_statement_formal_worker_dependency_add_remains_explicit_capture(
     assert not sync.value.passed
 
 
-def test_proof_nl_worker_repo_dependency_add_recaptures_existing_proof(
+def test_proof_nl_worker_repo_dependency_add_defers_projection_until_formal_prepare(
     tmp_path: Path,
 ) -> None:
     runtime = _formal_runtime()
@@ -907,22 +921,8 @@ def test_proof_nl_worker_repo_dependency_add_recaptures_existing_proof(
         decl_name="main_result",
         nl="Use proved_helper.",
     ).ok
-    proof_file = runtime.lean_projection.prepare_proof_formal_stage_file(
-        tmp_path,
-        node_path="Main.Topic.Core",
-        decl_name="main_result",
-    )
-    assert proof_file.ok and proof_file.value is not None
-    proof_path = Path(proof_file.value.path)
-    proof_path.write_text(
-        proof_path.read_text(encoding="utf-8").replace("sorry", "trivial"),
-        encoding="utf-8",
-    )
-    assert runtime.lean_projection.capture_proof_formal(
-        tmp_path,
-        node_path="Main.Topic.Core",
-        decl_name="main_result",
-    ).ok
+    statement_path = Path(statement_file.value.path)
+    before_nl_dependency = statement_path.read_bytes()
 
     added = _add_proof_repo_dependencies(
         runtime,
@@ -945,15 +945,27 @@ def test_proof_nl_worker_repo_dependency_add_recaptures_existing_proof(
 
     assert added.ok, added.issues
     assert added.value is not None
-    assert added.value.formal_capture_refreshed is True
-    sync = runtime.lean_projection.check_decl_file_snapshot_sync(
+    assert added.value.formal_capture_refreshed is None
+    assert added.value.managed_projection is None
+    assert statement_path.read_bytes() == before_nl_dependency
+    statement_sync = runtime.lean_projection.check_decl_file_snapshot_sync(
         tmp_path,
         node_path="Main.Topic.Core",
         decl_name="main_result",
-        stage="proof",
+        stage="statement",
     )
-    assert sync.ok and sync.value is not None and sync.value.passed
-    assert "proved_helper" in proof_path.read_text(encoding="utf-8")
+    assert statement_sync.ok and statement_sync.value is not None
+    assert statement_sync.value.passed
+
+    proof_file = runtime.lean_projection.prepare_proof_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert proof_file.ok and proof_file.value is not None
+    prepared_text = Path(proof_file.value.path).read_text(encoding="utf-8")
+    assert "Use proved_helper." in prepared_text
+    assert "proved_helper" in prepared_text
 
 
 def test_statement_formal_reviewer_dependency_recapture_rolls_back_on_failure(

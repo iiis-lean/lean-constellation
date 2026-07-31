@@ -441,6 +441,7 @@ def _remove_statement_dep(runtime, ctx, args: StatementDepRemoveArgs):
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
         index=args.index,
+        refresh_projection=_dependency_projection_enabled(ctx, stage="statement"),
     )
     return written
 
@@ -454,6 +455,7 @@ def _clear_statement_deps(runtime, ctx, args: StatementDepsClearArgs):
         node_path=_node(ctx),
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
+        refresh_projection=_dependency_projection_enabled(ctx, stage="statement"),
     )
     return written
 
@@ -717,6 +719,7 @@ def _add_proof_mathlib_dependency(runtime, ctx, args: MathlibDeclDependencyAddAr
 
 
 def _add_dependency_batch(runtime, ctx, *, decl_name: str, stage: str, dependencies: list[object]):
+    refresh_projection = _dependency_projection_enabled(ctx, stage=stage)
     mutation = (
         runtime.decl_graph.add_statement_dependencies(
             ctx.repo_root,
@@ -724,6 +727,7 @@ def _add_dependency_batch(runtime, ctx, *, decl_name: str, stage: str, dependenc
             round_id=_round_id(ctx),
             decl_name=decl_name,
             deps=dependencies,
+            refresh_projection=refresh_projection,
         )
         if stage == "statement"
         else runtime.decl_graph.add_proof_dependencies(
@@ -732,6 +736,7 @@ def _add_dependency_batch(runtime, ctx, *, decl_name: str, stage: str, dependenc
             round_id=_round_id(ctx),
             decl_name=decl_name,
             deps=dependencies,
+            refresh_projection=refresh_projection,
         )
     )
     return mutation
@@ -746,7 +751,6 @@ def _apply_dependency_capture_policy(
     mutate,
 ):
     stage = ctx.decl_stage.stage if ctx.decl_stage is not None else None
-    nl_stage = "statement_nl" if formal_stage == "statement" else "proof_nl"
     formal_review_stage = (
         ctx.actor.role == "reviewer"
         and stage == (
@@ -755,16 +759,20 @@ def _apply_dependency_capture_policy(
             else "proof_formal"
         )
     )
-    if stage == nl_stage or formal_review_stage:
-        return runtime.lean_projection.apply_dependency_mutation_with_capture(
+    if formal_review_stage:
+        return runtime.lean_projection.recapture_reviewer_dependency_mutation(
             ctx.repo_root,
             node_path=_node(ctx),
             decl_name=decl_name,
             stage=formal_stage,
-            capture_mode="required" if formal_review_stage else "if_present",
             mutate=mutate,
         )
     return mutate()
+
+
+def _dependency_projection_enabled(ctx, *, stage: str) -> bool:
+    current_stage = ctx.decl_stage.stage if ctx.decl_stage is not None else None
+    return current_stage != f"{stage}_nl"
 
 
 def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):
@@ -777,6 +785,7 @@ def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
         index=args.index,
+        refresh_projection=_dependency_projection_enabled(ctx, stage="proof"),
     )
     return written
 
@@ -790,6 +799,7 @@ def _clear_proof_deps(runtime, ctx, args: ProofDepsClearArgs):
         node_path=_node(ctx),
         round_id=_round_id(ctx),
         decl_name=args.decl_name,
+        refresh_projection=_dependency_projection_enabled(ctx, stage="proof"),
     )
     return written
 

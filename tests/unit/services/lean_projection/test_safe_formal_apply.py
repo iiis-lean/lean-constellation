@@ -181,12 +181,11 @@ def test_reviewer_dependency_recapture_rejects_and_restores_unmanaged_edit(
         )
         return result
 
-    result = runtime.lean_projection.apply_dependency_mutation_with_capture(
+    result = runtime.lean_projection.recapture_reviewer_dependency_mutation(
         tmp_path,
         node_path=NODE_PATH,
         decl_name=DECL_NAME,
         stage="statement",
-        capture_mode="required",
         mutate=mutate,
     )
 

@@ -114,6 +114,62 @@ def mutate_decl_with_projection(
     return runtime.foundation.fail(issues)
 
 
+def mutate_decl_truth_only(
+    runtime: LeanRuntimeServices,
+    *,
+    repo_root: Path,
+    node_path: str,
+    decl_name: str,
+    mutate: Callable[[], ServiceResult[DeclRevision]],
+    finalize: Callable[
+        [DeclRevision, DeclRevision, str | None, bool, list[str], bool],
+        T,
+    ],
+) -> ServiceResult[T]:
+    """Persist one NL-stage mutation without touching its managed Lean file."""
+
+    decl = runtime.decl_graph.decl_catalog.get_decl(
+        repo_root,
+        node_path=node_path,
+        name=decl_name,
+    )
+    if not decl.ok or decl.value is None:
+        attempted = mutate()
+        if not attempted.ok:
+            return runtime.foundation.fail(attempted.issues)
+        return runtime.foundation.fail(
+            runtime.foundation.issue(
+                "decl_truth_transaction_precondition_failed",
+                "Stage mutation unexpectedly succeeded without a readable declaration catalog entry.",
+                object_ref=f"{node_path}:{decl_name}",
+            )
+        )
+    revision_path = runtime.decl_graph.graph_store.revision_path(
+        repo_root,
+        node_path=node_path,
+        decl_name=decl_name,
+        revision=decl.value.current_revision,
+    )
+    before_revision = runtime.foundation.store.read_json(revision_path, DeclRevision)
+    if not before_revision.ok or before_revision.value is None:
+        return runtime.foundation.fail(before_revision.issues)
+
+    mutated = mutate()
+    if not mutated.ok or mutated.value is None:
+        return runtime.foundation.fail(mutated.issues)
+    return runtime.foundation.ok(
+        finalize(
+            before_revision.value,
+            mutated.value,
+            None,
+            False,
+            [],
+            False,
+        ),
+        warnings=mutated.issues,
+    )
+
+
 def _restore_projection_file(
     runtime: LeanRuntimeServices,
     *,
@@ -152,4 +208,4 @@ def _restore_projection_file(
             temp_path.unlink(missing_ok=True)
 
 
-__all__ = ["mutate_decl_with_projection"]
+__all__ = ["mutate_decl_truth_only", "mutate_decl_with_projection"]

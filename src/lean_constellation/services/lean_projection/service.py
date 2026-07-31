@@ -26,7 +26,6 @@ from lean_constellation.services.lean_projection.repair import (
     RepairDeclProvider,
 )
 from lean_constellation.services.lean_projection.safe_apply import (
-    DependencyCaptureMode,
     FormalApplyStage,
     SafeFormalApplyComponent,
     SafeFormalApplyView,
@@ -125,22 +124,20 @@ class LeanProjectionService:
     ) -> ServiceResult[SafeFormalApplyView]:
         return self.apply_formal_code(repo_root, stage="proof", **kwargs)
 
-    def apply_dependency_mutation_with_capture(
+    def recapture_reviewer_dependency_mutation(
         self,
         repo_root: Path,
         *,
         node_path: str,
         decl_name: str,
         stage: FormalApplyStage,
-        capture_mode: DependencyCaptureMode,
         mutate: Callable[[], ServiceResult[DeclDependencyMutationReceipt]],
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self.safe_apply.apply_dependency_mutation_with_capture(
+        return self.safe_apply.recapture_reviewer_dependency_mutation(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
             stage=stage,
-            capture_mode=capture_mode,
             mutate=mutate,
         )
 

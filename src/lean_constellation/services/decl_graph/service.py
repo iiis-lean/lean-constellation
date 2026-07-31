@@ -58,7 +58,10 @@ from lean_constellation.services.decl_graph.round_execution import (
     DeclDraftSpec,
     RoundDraftCreatedResult,
 )
-from lean_constellation.services.decl_graph.projection_transaction import mutate_decl_with_projection
+from lean_constellation.services.decl_graph.projection_transaction import (
+    mutate_decl_truth_only,
+    mutate_decl_with_projection,
+)
 from lean_constellation.services.decl_graph.stage_validation import (
     DeclStageValidationResult,
     validate_round_stage_candidates,
@@ -737,7 +740,7 @@ class DeclGraphService:
         origin: list[dict[str, object]] | None = None,
         deps: list[str] | None = None,
     ) -> ServiceResult[DeclStageWriteReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -754,7 +757,7 @@ class DeclGraphService:
         )
 
     def write_statement_nl_typed(self, repo_root: Path, **kwargs) -> ServiceResult[DeclStageWriteReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=kwargs["node_path"],
             decl_name=kwargs["decl_name"],
@@ -773,7 +776,7 @@ class DeclGraphService:
         decl_name: str,
         nl: str,
     ) -> ServiceResult[DeclTextMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -791,7 +794,7 @@ class DeclGraphService:
         )
 
     def add_statement_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, origin) -> ServiceResult[DeclOriginMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -806,7 +809,7 @@ class DeclGraphService:
         )
 
     def remove_statement_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclOriginMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -820,7 +823,7 @@ class DeclGraphService:
         )
 
     def clear_statement_origins(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclOriginMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -833,11 +836,21 @@ class DeclGraphService:
             ),
         )
 
-    def add_statement_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, dep) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self._mutate_stage_with_projection(
+    def add_statement_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        dep,
+        refresh_projection: bool = True,
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
+            refresh_projection=refresh_projection,
             mutate=lambda: self.stage_mutation.add_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
@@ -856,11 +869,13 @@ class DeclGraphService:
         round_id: str,
         decl_name: str,
         deps,
+        refresh_projection: bool = True,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
+            refresh_projection=refresh_projection,
             mutate=lambda: self.stage_mutation.add_statement_dependencies(
                 repo_root,
                 node_path=node_path,
@@ -877,11 +892,21 @@ class DeclGraphService:
             ),
         )
 
-    def remove_statement_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self._mutate_stage_with_projection(
+    def remove_statement_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        index: int,
+        refresh_projection: bool = True,
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
+            refresh_projection=refresh_projection,
             mutate=lambda: self.stage_mutation.remove_statement_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
@@ -891,11 +916,20 @@ class DeclGraphService:
             ),
         )
 
-    def clear_statement_deps(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self._mutate_stage_with_projection(
+    def clear_statement_deps(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        refresh_projection: bool = True,
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
+            refresh_projection=refresh_projection,
             mutate=lambda: self.stage_mutation.clear_statement_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
@@ -914,7 +948,7 @@ class DeclGraphService:
         decl_name: str,
         deps: list[str] | None = None,
     ) -> ServiceResult[DeclStageWriteReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -939,7 +973,7 @@ class DeclGraphService:
         origin: list[dict[str, object]] | None = None,
         deps: list[str] | None = None,
     ) -> ServiceResult[DeclStageWriteReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -956,7 +990,7 @@ class DeclGraphService:
         )
 
     def write_proof_nl_typed(self, repo_root: Path, **kwargs) -> ServiceResult[DeclStageWriteReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=kwargs["node_path"],
             decl_name=kwargs["decl_name"],
@@ -975,7 +1009,7 @@ class DeclGraphService:
         decl_name: str,
         nl: str,
     ) -> ServiceResult[DeclTextMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -993,7 +1027,7 @@ class DeclGraphService:
         )
 
     def add_proof_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, origin) -> ServiceResult[DeclOriginMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -1008,7 +1042,7 @@ class DeclGraphService:
         )
 
     def remove_proof_origin(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclOriginMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -1022,7 +1056,7 @@ class DeclGraphService:
         )
 
     def clear_proof_origins(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclOriginMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage_truth_only(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
@@ -1035,11 +1069,21 @@ class DeclGraphService:
             ),
         )
 
-    def add_proof_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, dep) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self._mutate_stage_with_projection(
+    def add_proof_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        dep,
+        refresh_projection: bool = True,
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
+            refresh_projection=refresh_projection,
             mutate=lambda: self.stage_mutation.add_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, dep=dep),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
@@ -1058,11 +1102,13 @@ class DeclGraphService:
         round_id: str,
         decl_name: str,
         deps,
+        refresh_projection: bool = True,
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self._mutate_stage_with_projection(
+        return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
+            refresh_projection=refresh_projection,
             mutate=lambda: self.stage_mutation.add_proof_dependencies(
                 repo_root,
                 node_path=node_path,
@@ -1079,11 +1125,21 @@ class DeclGraphService:
             ),
         )
 
-    def remove_proof_dep(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str, index: int) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self._mutate_stage_with_projection(
+    def remove_proof_dep(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        index: int,
+        refresh_projection: bool = True,
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
+            refresh_projection=refresh_projection,
             mutate=lambda: self.stage_mutation.remove_proof_dep(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name, index=index),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
@@ -1093,11 +1149,20 @@ class DeclGraphService:
             ),
         )
 
-    def clear_proof_deps(self, repo_root: Path, *, node_path: str, round_id: str, decl_name: str) -> ServiceResult[DeclDependencyMutationReceipt]:
-        return self._mutate_stage_with_projection(
+    def clear_proof_deps(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        round_id: str,
+        decl_name: str,
+        refresh_projection: bool = True,
+    ) -> ServiceResult[DeclDependencyMutationReceipt]:
+        return self._mutate_stage(
             repo_root,
             node_path=node_path,
             decl_name=decl_name,
+            refresh_projection=refresh_projection,
             mutate=lambda: self.stage_mutation.clear_proof_deps(repo_root, node_path=node_path, round_id=round_id, decl_name=decl_name),
             finalize=self._collection_mutation_receipt(
                 decl_name=decl_name,
@@ -1428,6 +1493,53 @@ class DeclGraphService:
         return mutate_decl_with_projection(
             self.runtime,
             repo_root=Path(repo_root),
+            node_path=node_path,
+            decl_name=decl_name,
+            mutate=mutate,
+            finalize=finalize,
+        )
+
+    def _mutate_stage_truth_only(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        mutate: Callable[[], ServiceResult[DeclRevision]],
+        finalize: Callable[
+            [DeclRevision, DeclRevision, str | None, bool, list[str], bool],
+            T,
+        ],
+    ) -> ServiceResult[T]:
+        return mutate_decl_truth_only(
+            self.runtime,
+            repo_root=Path(repo_root),
+            node_path=node_path,
+            decl_name=decl_name,
+            mutate=mutate,
+            finalize=finalize,
+        )
+
+    def _mutate_stage(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        refresh_projection: bool,
+        mutate: Callable[[], ServiceResult[DeclRevision]],
+        finalize: Callable[
+            [DeclRevision, DeclRevision, str | None, bool, list[str], bool],
+            T,
+        ],
+    ) -> ServiceResult[T]:
+        apply_mutation = (
+            self._mutate_stage_with_projection
+            if refresh_projection
+            else self._mutate_stage_truth_only
+        )
+        return apply_mutation(
+            repo_root,
             node_path=node_path,
             decl_name=decl_name,
             mutate=mutate,

@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 
 FormalApplyStage = Literal["statement", "proof"]
-DependencyCaptureMode = Literal["required", "if_present"]
 
 
 class SafeFormalApplyView(StrictModel):
@@ -108,17 +107,16 @@ class SafeFormalApplyComponent:
             return self.runtime.foundation.fail(current.issues)
         return self.runtime.foundation.ok(self._digest(current.value.model_dump(mode="json")))
 
-    def apply_dependency_mutation_with_capture(
+    def recapture_reviewer_dependency_mutation(
         self,
         repo_root: Path,
         *,
         node_path: str,
         decl_name: str,
         stage: FormalApplyStage,
-        capture_mode: DependencyCaptureMode,
         mutate: Callable[[], ServiceResult[DeclDependencyMutationReceipt]],
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
-        """Apply a dependency mutation and atomically preserve any required capture."""
+        """Apply a reviewer-only dependency repair and keep formal capture atomic."""
 
         current = self.decl_file.revision_provider.get_current_decl_revision(
             repo_root,
@@ -134,8 +132,6 @@ class SafeFormalApplyComponent:
         )
         formal = section.formal if section is not None else None
         if formal is None or not (formal.code or "").strip():
-            if capture_mode == "if_present":
-                return mutate()
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "formal_capture_missing",
