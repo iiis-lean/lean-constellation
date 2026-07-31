@@ -1801,6 +1801,96 @@ def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) 
     assert coverage_read[0].kind == "source_index_not_committed"
 
 
+def test_downstream_source_range_read_is_bounded_by_committed_refs(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(_source_readme_text(), encoding="utf-8")
+    (source_root / "chapter.md").write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+    assert runtime.material.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="README.md",
+        overview="Source overview.",
+        preparation_summary="Prepared source.",
+    ).ok
+    scope = runtime.material.resolve_source_scope(
+        tmp_path,
+        source_scope=SourceScope(mode="selected", selectors=["chapter.md"]),
+    )
+    assert scope.ok and scope.value is not None
+    opened = runtime.material.open_source_index_update(
+        tmp_path,
+        resolved_scope=scope.value,
+        index_policy="auto",
+    )
+    assert opened.ok and opened.value is not None
+    assert runtime.material.set_source_index_overview(tmp_path, overview="Indexed chapter.").ok
+    block = runtime.material.create_source_block(
+        tmp_path,
+        parent_id="root",
+        kind="statement",
+        title="Indexed statement",
+        summary="Lines two through four.",
+    )
+    assert block.ok and block.value is not None
+    assert runtime.material.add_source_block_ref(
+        tmp_path,
+        block_id=block.value.block_id,
+        path="chapter.md",
+        start_line=2,
+        end_line=4,
+        role="primary",
+    ).ok
+    assert runtime.material.mark_block_refs_done(tmp_path, block_id=block.value.block_id).ok
+    assert runtime.material.mark_block_links_done(tmp_path, block_id=block.value.block_id).ok
+    assert runtime.material.mark_block_completed(tmp_path, block_id=block.value.block_id).ok
+    assert runtime.material.set_file_survey_status(
+        tmp_path,
+        path="chapter.md",
+        status="surveyed",
+        summary="Surveyed.",
+    ).ok
+    assert runtime.material.set_file_indexing_status(tmp_path, path="chapter.md", status="indexed").ok
+    model = runtime.material.source_index.get_source_index_model(tmp_path)
+    assert model.ok and model.value is not None
+    gate = runtime.material.validate_source_index_update(
+        tmp_path,
+        baseline_index=None,
+        expected_baseline_digest=opened.value.baseline_digest,
+        resolved_scope=list(model.value.active_file_scope),
+        require_completed=True,
+    )
+    assert gate.ok and gate.value is not None and gate.value.gate.passed
+    assert runtime.material.commit_source_index_update(tmp_path, validated=gate.value).ok
+
+    raw = _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator")
+    inside = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="read_source_range",
+            flat_args={"path": "chapter.md", "start_line": 2, "end_line": 3},
+        )
+    )
+    outside = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="read_source_range",
+            flat_args={"path": "chapter.md", "start_line": 1, "end_line": 3},
+        )
+    )
+    expanded_outside = _unwrap_tool_failure(
+        runtime.tool_facade.invoke_agent_tool(
+            raw,
+            tool_name="read_source_range",
+            flat_args={"path": "chapter.md", "start_line": 2, "end_line": 3, "context_lines": 1},
+        )
+    )
+
+    assert "2: two" in inside["text_with_line_numbers"]
+    assert outside[0].kind == "source_range_outside_committed_index", outside[0]
+    assert expanded_outside[0].kind == "source_range_outside_committed_index", expanded_outside[0]
+
+
 @pytest.mark.parametrize(
     ("view", "agent_type", "role", "stage"),
     [

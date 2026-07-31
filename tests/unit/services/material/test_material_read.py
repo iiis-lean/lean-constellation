@@ -77,6 +77,17 @@ def test_read_source_and_resource_range_boundaries(tmp_path: Path) -> None:
     assert invalid_resource_key.issues[0].kind == "invalid_resource_key"
 
 
+def test_source_range_read_has_no_implicit_context(tmp_path: Path) -> None:
+    service = make_runtime().material
+    _prepare_source(tmp_path)
+
+    read = service.read_source_range(tmp_path, path="chapter.md", start_line=2, end_line=2)
+
+    assert read.ok and read.value is not None
+    assert read.value.before_context is None
+    assert read.value.after_context is None
+
+
 def test_search_material_text_literal_regex_limit_and_errors(tmp_path: Path) -> None:
     service = make_runtime().material
     _prepare_source(tmp_path)

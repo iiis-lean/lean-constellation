@@ -341,6 +341,49 @@ def _get_source_index_update_context(runtime, ctx: ToolExecutionContext, _args: 
     )
 
 
+def _read_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs):
+    if _requires_committed_source_index(ctx):
+        loaded = runtime.material.get_committed_source_index(ctx.repo_root)
+        if not loaded.ok or loaded.value is None:
+            return runtime.foundation.fail(loaded.issues)
+        expanded_start = max(1, args.start_line - args.context_lines)
+        expanded_end = args.end_line + args.context_lines
+        refs = sorted(
+            (
+                ref
+                for block in loaded.value.blocks.values()
+                if block.active
+                for ref in block.refs
+                if ref.path == args.path
+            ),
+            key=lambda ref: (ref.start_line, ref.end_line, ref.ref_id),
+        )
+        if not any(ref.start_line <= expanded_start and expanded_end <= ref.end_line for ref in refs):
+            return runtime.foundation.fail(
+                runtime.foundation.issue(
+                    "source_range_outside_committed_index",
+                    "Requested source range must be contained in a committed SourceIndex ref for this Agent role.",
+                    object_ref=f"{args.path}:{args.start_line}-{args.end_line}",
+                    current=f"{expanded_start}-{expanded_end}",
+                    expected="contained in one committed SourceIndex ref",
+                    suggested_action="Use get_source_block to locate an authorized ref, then read a contained range.",
+                    details={
+                        "committed_ranges": ", ".join(
+                            f"{ref.ref_id}:{ref.start_line}-{ref.end_line} ({ref.role})" for ref in refs[:20]
+                        )
+                        or "none for this path"
+                    },
+                )
+            )
+    return runtime.material.read_source_range(
+        ctx.repo_root,
+        path=args.path,
+        start_line=args.start_line,
+        end_line=args.end_line,
+        context_lines=args.context_lines,
+    )
+
+
 def _source_index_write_handler(method_name: str):
     def handler(runtime, ctx: ToolExecutionContext, args):  # noqa: ANN001
         authorized = authorize_source_index_flow_context(
@@ -793,19 +836,19 @@ def build_material_tool_specs() -> list[ToolSpec]:
             roles=roles,
             handler=_search_resource_text,
         ),
-        direct_tool(
+        handler_tool(
             name="read_source_range",
             description=(
                 "Read an inclusive line range from source corpus text with context_lines=0 by default. Read a SourceIndex "
-                "ref or origin at its exact bounds; focused semantic subranges are allowed only inside the authorized range."
+                "ref or origin at its exact bounds; downstream focused reads fail unless their expanded range is contained "
+                "in a committed SourceIndex ref."
             ),
             args_model=SourceRangeArgs,
             capability=ToolCapability.READ,
-            backing_service="material",
-            backing_method="read_source_range",
             result_view="material_range",
             groups={AppGroup.SOURCE_MATERIAL_TEXT_READ},
             roles=roles,
+            handler=_read_source_range,
         ),
         direct_tool(
             name="validate_source_range",

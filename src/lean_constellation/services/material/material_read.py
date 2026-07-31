@@ -120,7 +120,7 @@ class MaterialReadComponent:
         path: str,
         start_line: int,
         end_line: int,
-        context_lines: int = 2,
+        context_lines: int = 0,
     ) -> ServiceResult[MaterialRangeView]:
         root = self._source_root(repo_root)
         try:

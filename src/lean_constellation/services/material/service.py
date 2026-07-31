@@ -657,7 +657,7 @@ class MaterialService:
         path: str,
         start_line: int,
         end_line: int,
-        context_lines: int = 2,
+        context_lines: int = 0,
     ) -> ServiceResult[MaterialRangeView]:
         return self.material_read.read_source_range(repo_root, path=path, start_line=start_line, end_line=end_line, context_lines=context_lines)
 

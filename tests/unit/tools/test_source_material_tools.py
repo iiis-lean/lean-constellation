@@ -51,7 +51,7 @@ def test_source_range_reads_are_exact_by_default() -> None:
 
     spec = next(spec for spec in build_application_tool_specs() if spec.name == "read_source_range")
     assert "context_lines=0 by default" in spec.description
-    assert "focused semantic subranges" in spec.description
+    assert "contained in a committed SourceIndex ref" in spec.description
 
 
 def test_legacy_material_search_tool_is_not_agent_facing() -> None:
