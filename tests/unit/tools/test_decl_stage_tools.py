@@ -783,6 +783,179 @@ def test_statement_formal_worker_dependency_add_remains_explicit_capture(
     assert not sync.value.passed
 
 
+def test_proof_nl_worker_repo_dependency_add_recaptures_existing_proof(
+    tmp_path: Path,
+) -> None:
+    runtime = _formal_runtime()
+    initialize_native_test_repo(tmp_path)
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_scope_node(
+        tmp_path,
+        path="Main.Topic",
+        goal="Topic",
+        boundary="Topic boundary",
+    ).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Topic.Core",
+        goal="Core",
+        boundary="Core boundary",
+        objective="Objective",
+        success_criteria="Ready",
+    ).ok
+    strategy = runtime.decl_graph.ensure_open_strategy(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        objective="Strategy",
+    )
+    assert strategy.ok and strategy.value is not None
+    round_record = runtime.decl_graph.create_round_draft(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        strategy_id=strategy.value.strategy_id,
+        objective="Round",
+    )
+    assert round_record.ok and round_record.value is not None
+    for decl_name in ["main_result", "proved_helper"]:
+        created = runtime.decl_graph.create_decl(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            round_id=round_record.value.round_id,
+            name=decl_name,
+            kind="theorem",
+            objective=f"Create {decl_name}",
+            summary=decl_name,
+            target_state=DeclState.PROVED,
+        )
+        assert created.ok
+    assert runtime.decl_graph.start_round(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+    ).ok
+    for decl_name in ["main_result", "proved_helper"]:
+        assert runtime.decl_graph.write_statement_nl(
+            tmp_path,
+            node_path="Main.Topic.Core",
+            round_id=round_record.value.round_id,
+            decl_name=decl_name,
+            nl=f"{decl_name} states True.",
+        ).ok
+    helper_statement_file = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="proved_helper",
+    )
+    assert helper_statement_file.ok and helper_statement_file.value is not None
+    helper_path = Path(helper_statement_file.value.path)
+    helper_path.write_text(
+        helper_path.read_text(encoding="utf-8")
+        + "theorem provedHelper : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    assert runtime.lean_projection.capture_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="proved_helper",
+    ).ok
+    assert runtime.decl_graph.set_proof_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        decl_name="proved_helper",
+        nl="Trivial.",
+    ).ok
+    helper_proof_file = runtime.lean_projection.prepare_proof_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="proved_helper",
+    )
+    assert helper_proof_file.ok and helper_proof_file.value is not None
+    helper_path.write_text(
+        helper_path.read_text(encoding="utf-8").replace("sorry", "trivial"),
+        encoding="utf-8",
+    )
+    assert runtime.lean_projection.capture_proof_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="proved_helper",
+    ).ok
+    assert runtime.decl_graph.advance_stage_state(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        stage="proof_formal",
+        decl_names=["proved_helper"],
+    ).ok
+
+    statement_file = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert statement_file.ok and statement_file.value is not None
+    _write_statement_target(Path(statement_file.value.path))
+    assert runtime.lean_projection.capture_statement_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    ).ok
+    assert runtime.decl_graph.set_proof_nl(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        round_id=round_record.value.round_id,
+        decl_name="main_result",
+        nl="Use proved_helper.",
+    ).ok
+    proof_file = runtime.lean_projection.prepare_proof_formal_stage_file(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    )
+    assert proof_file.ok and proof_file.value is not None
+    proof_path = Path(proof_file.value.path)
+    proof_path.write_text(
+        proof_path.read_text(encoding="utf-8").replace("sorry", "trivial"),
+        encoding="utf-8",
+    )
+    assert runtime.lean_projection.capture_proof_formal(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+    ).ok
+
+    added = _add_proof_repo_dependencies(
+        runtime,
+        _formal_ctx(
+            tmp_path,
+            stage="proof_nl",
+            round_id=round_record.value.round_id,
+            batch_decls=["main_result"],
+        ),
+        RepoDeclDependenciesAddArgs(
+            decl_name="main_result",
+            dependencies=[
+                RepoDeclDependencyInput(
+                    name="proved_helper",
+                    reason="The route uses the proved helper.",
+                )
+            ],
+        ),
+    )
+
+    assert added.ok, added.issues
+    assert added.value is not None
+    assert added.value.formal_capture_refreshed is True
+    sync = runtime.lean_projection.check_decl_file_snapshot_sync(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        decl_name="main_result",
+        stage="proof",
+    )
+    assert sync.ok and sync.value is not None and sync.value.passed
+    assert "proved_helper" in proof_path.read_text(encoding="utf-8")
+
+
 def test_statement_formal_reviewer_dependency_recapture_rolls_back_on_failure(
     tmp_path: Path,
     monkeypatch,

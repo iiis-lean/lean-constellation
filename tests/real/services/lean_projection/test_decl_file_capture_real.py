@@ -234,11 +234,12 @@ def test_reviewer_dependency_recapture_with_real_lake(tmp_path: Path) -> None:
         signature="{α : Sort u} → Nonempty α → α",
     ).ok
 
-    recaptured = runtime.lean_projection.recapture_reviewer_dependency_mutation(
+    recaptured = runtime.lean_projection.apply_dependency_mutation_with_capture(
         repo_root,
         node_path=NODE_PATH,
         decl_name=DECL_NAME,
         stage="statement",
+        capture_mode="required",
         mutate=lambda: runtime.decl_graph.add_statement_dep(
             repo_root,
             node_path=NODE_PATH,

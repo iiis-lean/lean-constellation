@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 
 FormalApplyStage = Literal["statement", "proof"]
+DependencyCaptureMode = Literal["required", "if_present"]
 
 
 class SafeFormalApplyView(StrictModel):
@@ -107,16 +108,42 @@ class SafeFormalApplyComponent:
             return self.runtime.foundation.fail(current.issues)
         return self.runtime.foundation.ok(self._digest(current.value.model_dump(mode="json")))
 
-    def recapture_reviewer_dependency_mutation(
+    def apply_dependency_mutation_with_capture(
         self,
         repo_root: Path,
         *,
         node_path: str,
         decl_name: str,
         stage: FormalApplyStage,
+        capture_mode: DependencyCaptureMode,
         mutate: Callable[[], ServiceResult[DeclDependencyMutationReceipt]],
     ) -> ServiceResult[DeclDependencyMutationReceipt]:
-        """Apply a reviewer-only dependency repair and keep formal capture atomic."""
+        """Apply a dependency mutation and atomically preserve any required capture."""
+
+        current = self.decl_file.revision_provider.get_current_decl_revision(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        section = (
+            current.value.statement
+            if stage == "statement"
+            else current.value.proof
+        )
+        formal = section.formal if section is not None else None
+        if formal is None or not (formal.code or "").strip():
+            if capture_mode == "if_present":
+                return mutate()
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "formal_capture_missing",
+                    "Dependency mutation requires an existing formal capture.",
+                    object_ref=f"{node_path}:{decl_name}",
+                    field=f"{stage}_formal",
+                )
+            )
 
         before_sync = self.decl_file.check_decl_file_snapshot_sync(
             repo_root,
@@ -129,13 +156,6 @@ class SafeFormalApplyComponent:
         if not before_sync.value.passed:
             return self.runtime.foundation.fail(before_sync.value.issues)
 
-        current = self.decl_file.revision_provider.get_current_decl_revision(
-            repo_root,
-            node_path=node_path,
-            decl_name=decl_name,
-        )
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
         path_view = self.decl_file.derive_decl_file_path(
             repo_root,
             node_path=node_path,
@@ -178,8 +198,8 @@ class SafeFormalApplyComponent:
                     snapshot,
                     [
                         self.runtime.foundation.issue(
-                            "reviewer_dependency_unmanaged_source_changed",
-                            "Reviewer dependency repair changed Lean source outside system-managed imports and docstring regions.",
+                            "dependency_recapture_unmanaged_source_changed",
+                            "Dependency mutation changed Lean source outside system-managed imports and docstring regions.",
                             object_ref=f"{node_path}:{decl_name}",
                         )
                     ],
@@ -260,8 +280,8 @@ class SafeFormalApplyComponent:
                 snapshot,
                 [
                     self.runtime.foundation.issue(
-                        "reviewer_dependency_recapture_failed",
-                        f"Reviewer dependency recapture failed: {exc}",
+                        "dependency_recapture_failed",
+                        f"Dependency recapture failed: {exc}",
                         object_ref=f"{node_path}:{decl_name}",
                     )
                 ],
@@ -422,8 +442,8 @@ class SafeFormalApplyComponent:
             issues = [
                 *issues,
                 self.runtime.foundation.issue(
-                    "reviewer_dependency_recapture_rollback_failed",
-                    "Reviewer dependency recapture rollback did not fully restore project state.",
+                    "dependency_recapture_rollback_failed",
+                    "Dependency recapture rollback did not fully restore project state.",
                     details={"failures": "; ".join(failures)},
                 ),
             ]

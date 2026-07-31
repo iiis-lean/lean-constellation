@@ -352,12 +352,18 @@ def _add_statement_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAdd
         if not visible.ok or visible.value is None:
             return runtime.foundation.fail(visible.issues)
         resolved.append(RepoDeclDep(ref=visible.value, reason=item.reason))
-    return _add_dependency_batch(
+    return _apply_dependency_capture_policy(
         runtime,
         ctx,
         decl_name=args.decl_name,
-        stage="statement",
-        dependencies=resolved,
+        formal_stage="statement",
+        mutate=lambda: _add_dependency_batch(
+            runtime,
+            ctx,
+            decl_name=args.decl_name,
+            stage="statement",
+            dependencies=resolved,
+        ),
     )
 
 
@@ -391,15 +397,13 @@ def _add_statement_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenc
                 dependencies=dependencies,
             )
 
-        if ctx.actor.role == "reviewer" and ctx.decl_stage is not None and ctx.decl_stage.stage == "statement_formal":
-            return runtime.lean_projection.recapture_reviewer_dependency_mutation(
-                ctx.repo_root,
-                node_path=_node(ctx),
-                decl_name=args.decl_name,
-                stage="statement",
-                mutate=mutate,
-            )
-        return mutate()
+        return _apply_dependency_capture_policy(
+            runtime,
+            ctx,
+            decl_name=args.decl_name,
+            formal_stage="statement",
+            mutate=mutate,
+        )
 
     return runtime.mathlib.add_decl_dependencies_transaction(
         ctx.repo_root,
@@ -622,12 +626,18 @@ def _add_proof_repo_dependencies(runtime, ctx, args: RepoDeclDependenciesAddArgs
     )
     if not validation.ok:
         return validation
-    return _add_dependency_batch(
+    return _apply_dependency_capture_policy(
         runtime,
         ctx,
         decl_name=args.decl_name,
-        stage="proof",
-        dependencies=resolved,
+        formal_stage="proof",
+        mutate=lambda: _add_dependency_batch(
+            runtime,
+            ctx,
+            decl_name=args.decl_name,
+            stage="proof",
+            dependencies=resolved,
+        ),
     )
 
 
@@ -672,15 +682,13 @@ def _add_proof_mathlib_dependencies(runtime, ctx, args: MathlibDeclDependenciesA
                 dependencies=dependencies,
             )
 
-        if ctx.actor.role == "reviewer" and ctx.decl_stage is not None and ctx.decl_stage.stage == "proof_formal":
-            return runtime.lean_projection.recapture_reviewer_dependency_mutation(
-                ctx.repo_root,
-                node_path=_node(ctx),
-                decl_name=args.decl_name,
-                stage="proof",
-                mutate=mutate,
-            )
-        return mutate()
+        return _apply_dependency_capture_policy(
+            runtime,
+            ctx,
+            decl_name=args.decl_name,
+            formal_stage="proof",
+            mutate=mutate,
+        )
 
     return runtime.mathlib.add_decl_dependencies_transaction(
         ctx.repo_root,
@@ -727,6 +735,36 @@ def _add_dependency_batch(runtime, ctx, *, decl_name: str, stage: str, dependenc
         )
     )
     return mutation
+
+
+def _apply_dependency_capture_policy(
+    runtime,
+    ctx,
+    *,
+    decl_name: str,
+    formal_stage: str,
+    mutate,
+):
+    stage = ctx.decl_stage.stage if ctx.decl_stage is not None else None
+    nl_stage = "statement_nl" if formal_stage == "statement" else "proof_nl"
+    formal_review_stage = (
+        ctx.actor.role == "reviewer"
+        and stage == (
+            "statement_formal"
+            if formal_stage == "statement"
+            else "proof_formal"
+        )
+    )
+    if stage == nl_stage or formal_review_stage:
+        return runtime.lean_projection.apply_dependency_mutation_with_capture(
+            ctx.repo_root,
+            node_path=_node(ctx),
+            decl_name=decl_name,
+            stage=formal_stage,
+            capture_mode="required" if formal_review_stage else "if_present",
+            mutate=mutate,
+        )
+    return mutate()
 
 
 def _remove_proof_dep(runtime, ctx, args: ProofDepRemoveArgs):

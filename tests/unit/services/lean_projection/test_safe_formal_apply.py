@@ -181,15 +181,16 @@ def test_reviewer_dependency_recapture_rejects_and_restores_unmanaged_edit(
         )
         return result
 
-    result = runtime.lean_projection.recapture_reviewer_dependency_mutation(
+    result = runtime.lean_projection.apply_dependency_mutation_with_capture(
         tmp_path,
         node_path=NODE_PATH,
         decl_name=DECL_NAME,
         stage="statement",
+        capture_mode="required",
         mutate=mutate,
     )
 
     assert not result.ok
-    assert result.issues[0].kind == "reviewer_dependency_unmanaged_source_changed"
+    assert result.issues[0].kind == "dependency_recapture_unmanaged_source_changed"
     assert path.read_bytes() == before_file
     assert _current_revision(runtime, tmp_path).model_dump(mode="json") == before_revision
