@@ -795,7 +795,10 @@ def build_material_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="read_source_range",
-            description="Read a line range from source corpus text.",
+            description=(
+                "Read an exact inclusive line range from source corpus text. When a SourceIndex ref, origin, or prompt "
+                "provides a range, pass its start and end unchanged with context_lines=0; do not pad or round it."
+            ),
             args_model=SourceRangeArgs,
             capability=ToolCapability.READ,
             backing_service="material",

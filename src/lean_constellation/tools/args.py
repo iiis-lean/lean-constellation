@@ -204,7 +204,15 @@ class SourceRangeArgs(StrictModel):
     path: str = Field(description="Path relative to the source corpus root.")
     start_line: int = Field(ge=1, description="First source line to read, 1-based.")
     end_line: int = Field(ge=1, description="Last source line to read, inclusive.")
-    context_lines: int = Field(default=2, ge=0, le=20, description="Extra context lines around the requested range.")
+    context_lines: int = Field(
+        default=0,
+        ge=0,
+        le=20,
+        description=(
+            "Extra context lines around the requested range. Keep 0 for an exact SourceIndex or origin range; "
+            "use a positive value only when the surrounding range is separately authorized."
+        ),
+    )
 
 
 class SourceRangeValidateArgs(StrictModel):

@@ -203,6 +203,8 @@ Semantic content should be faithful to its evidence. When a declaration, interfa
 
 For source-derived work, the current contract and committed SourceIndex identify the required boundary and the SourceCorpus is the primary semantic evidence. Attached Resources may clarify or fill an explicit gap but must remain distinguishable from the original source. Agent-derived Lean helpers may express implementation needs, but they must not silently redefine a source-derived public statement or interface.
 
+When a committed SourceIndex ref, recorded origin, or current prompt supplies an exact inclusive source range, read that range with the same start and end and with no surrounding context. Do not round, pad, or widen it as a discovery shortcut. If adjacent text is genuinely required, first locate or validate a separate authorized range, then read that range exactly.
+
 Before creating, updating, deleting, or resetting source-derived declaration truth, the planning role must identify the supporting SourceIndex block or source range, preserve any Coordinator-owned requirement, and make the intended relation to lower dependencies and upper consumers explicit in the round change objective. Workers implement the accepted semantic target; they do not redesign it.
 
 Do not strengthen a theorem, weaken a conclusion, add hidden assumptions, drop required hypotheses, or change definitions without making the reason explicit through the appropriate workflow output.""",

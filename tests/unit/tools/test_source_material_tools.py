@@ -5,6 +5,7 @@ from lean_constellation.tools import (
     build_application_tool_groups,
     build_application_tool_views,
 )
+from lean_constellation.tools.args import SourceRangeArgs
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
 
@@ -42,6 +43,15 @@ def test_source_material_tools_are_registered() -> None:
     }
 
     assert_tools_registered(expected)
+
+
+def test_source_range_reads_are_exact_by_default() -> None:
+    args = SourceRangeArgs(path="article.tex", start_line=10, end_line=12)
+    assert args.context_lines == 0
+
+    spec = next(spec for spec in build_application_tool_specs() if spec.name == "read_source_range")
+    assert "exact inclusive line range" in spec.description
+    assert "context_lines=0" in spec.description
 
 
 def test_legacy_material_search_tool_is_not_agent_facing() -> None:

@@ -10,6 +10,7 @@ from lean_constellation.agents import (
     controlled_test_agent_type_name,
     derive_agent_type_spec,
     get_agent_type_spec,
+    render_agent_instruction,
 )
 from lean_constellation.agents.surface import build_agent_surface_reports
 from lean_constellation.agents.ark import build_ark_agent_type
@@ -126,6 +127,12 @@ def test_every_agent_uses_merged_common_fragments() -> None:
             "common.submit_contract",
         ]
         assert "common.truth_and_tool_contract" not in spec.instruction_fragment_keys
+
+
+def test_formal_reviewer_source_fidelity_requires_exact_ranges() -> None:
+    instruction = render_agent_instruction("StatementFormalReviewerAgent")
+    assert "exact inclusive source range" in instruction
+    assert "Do not round, pad, or widen it" in instruction
 
 
 def test_coordinator_public_fragments_match_native_repo_target_order() -> None:
