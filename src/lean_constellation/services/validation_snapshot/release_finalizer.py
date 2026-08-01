@@ -54,6 +54,7 @@ class CandidateReleaseGateView(StrictModel):
     base_release_id: str | None = None
     candidate_node_contract_versions: dict[str, int] = Field(default_factory=dict)
     completion_mode: RepoCompletionMode
+    build: ToolchainCommandView | None = None
     gate: GateReport
     blocking_issue_kinds: list[str] = Field(default_factory=list)
     summary: str
@@ -426,7 +427,11 @@ class RepoReleaseFinalizerComponent:
                 summary="Native Lake dependency skeleton could not be validated.",
             ))
 
-        ordinary = self.runtime.validation_snapshot.readiness_gate.check_repo_ready(repo_root, summary=summary)
+        ordinary = self.runtime.validation_snapshot.readiness_gate.check_repo_ready(
+            repo_root,
+            summary=summary,
+            include_targeted_builds=False,
+        )
         if not ordinary.ok or ordinary.value is None:
             return self.runtime.foundation.fail(ordinary.issues)
         reports.append(ordinary.value)
@@ -443,6 +448,32 @@ class RepoReleaseFinalizerComponent:
             )
         )
 
+        build = self.runtime.external.lean_toolchain.run_lake_build(repo_root)
+        if build.ok:
+            reports.append(
+                self.runtime.foundation.gate_passed(
+                    "candidate_repo_lake_build",
+                    summary=build.summary,
+                )
+            )
+        else:
+            reports.append(
+                self.runtime.foundation.gate_failed(
+                    "candidate_repo_lake_build",
+                    self.runtime.foundation.issue(
+                        "release_lake_build_failed",
+                        "The candidate repository failed the required Lake build.",
+                        object_ref=str(repo_root),
+                        details={
+                            "command": " ".join(build.command),
+                            "exit_code": str(build.exit_code),
+                            "timed_out": str(build.timed_out),
+                            "stderr": build.stderr_excerpt or build.raw_excerpt or "",
+                        },
+                    ),
+                    summary="Candidate Lake build failed.",
+                )
+            )
         gate = self.runtime.foundation.merge_gate_reports("candidate_repo_release", reports)
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
@@ -452,6 +483,7 @@ class RepoReleaseFinalizerComponent:
             base_release_id=base_release_id,
             candidate_node_contract_versions=dict(sorted(node_versions.items())),
             completion_mode=config.value.config.completion_mode,
+            build=build,
             gate=gate,
             blocking_issue_kinds=blocking,
             summary="Candidate release gate passed." if gate.passed else "Candidate release has blocking findings.",
@@ -463,19 +495,52 @@ class RepoReleaseFinalizerComponent:
         *,
         base_release_id: str | None,
         summary: str,
+        audited: CandidateReleaseGateView | None = None,
     ) -> ServiceResult[CandidateReleasePreparationView]:
-        preview = self.preview_candidate_release(
-            repo_root, base_release_id=base_release_id, summary=summary
-        )
-        if not preview.ok or preview.value is None:
-            return self.runtime.foundation.fail(preview.issues)
-        if not preview.value.gate.passed:
+        if audited is None:
+            preview = self.preview_candidate_release(
+                repo_root, base_release_id=base_release_id, summary=summary
+            )
+            if not preview.ok or preview.value is None:
+                return self.runtime.foundation.fail(preview.issues)
+            audited = preview.value
+        if audited.base_release_id != base_release_id:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "candidate_audit_context_mismatch",
+                    "Prepared release must consume the audit for the same repository baseline.",
+                    current=audited.base_release_id,
+                    expected=base_release_id,
+                )
+            )
+        if not audited.gate.passed:
             return self.runtime.foundation.ok(CandidateReleasePreparationView(
                 outcome="blocked",
-                gate=preview.value.gate,
-                blocking_issue_kinds=preview.value.blocking_issue_kinds,
-                summary=preview.value.summary,
+                gate=audited.gate,
+                blocking_issue_kinds=audited.blocking_issue_kinds,
+                summary=audited.summary,
             ))
+        build = audited.build
+        if build is None or not build.ok:
+            issue = self.runtime.foundation.issue(
+                "candidate_audit_build_missing",
+                "The authoritative candidate audit did not retain a successful Lake build result.",
+                object_ref=str(repo_root),
+            )
+            gate = self.runtime.foundation.gate_failed(
+                "candidate_repo_release",
+                issue,
+                summary="Lake build result is unavailable.",
+            )
+            return self.runtime.foundation.ok(
+                CandidateReleasePreparationView(
+                    outcome="blocked",
+                    gate=gate,
+                    build=build,
+                    blocking_issue_kinds=[issue.kind],
+                    summary="Candidate audit build result is unavailable.",
+                )
+            )
         release_id_result = self.runtime.repo_workspace.release.allocate_release_id(
             Path(repo_root)
         )
@@ -487,8 +552,8 @@ class RepoReleaseFinalizerComponent:
             parent_release_id=base_release_id,
             release_kind=RepoReleaseKind.SEMANTIC,
             validation_profile=RepoReleaseValidationProfile.SEMANTIC_FULL,
-            node_contract_versions=preview.value.candidate_node_contract_versions,
-            completion_mode=preview.value.completion_mode,
+            node_contract_versions=audited.candidate_node_contract_versions,
+            completion_mode=audited.completion_mode,
             semantic_manifest_digest=semantic_digest,
             dependency_lock_digest=self.compute_dependency_lock_digest(
                 Path(repo_root)
@@ -506,25 +571,6 @@ class RepoReleaseFinalizerComponent:
         if not publication_files.ok:
             self._refresh_publication_documents_for_current_release(Path(repo_root))
             return self.runtime.foundation.fail(publication_files.issues)
-        build = self.runtime.external.lean_toolchain.run_lake_build(Path(repo_root))
-        if not build.ok:
-            self._refresh_publication_documents_for_current_release(Path(repo_root))
-            issue = self.runtime.foundation.issue(
-                "release_lake_build_failed",
-                "The candidate repository failed the required Lake build.",
-                object_ref=str(repo_root),
-                details={
-                    "command": " ".join(build.command),
-                    "exit_code": str(build.exit_code),
-                    "timed_out": str(build.timed_out),
-                    "stderr": build.stderr_excerpt or build.raw_excerpt or "",
-                },
-            )
-            gate = self.runtime.foundation.gate_failed("candidate_repo_release", issue, summary="Lake build failed.")
-            return self.runtime.foundation.ok(CandidateReleasePreparationView(
-                outcome="blocked", gate=gate, build=build,
-                blocking_issue_kinds=[issue.kind], summary="Candidate Lake build failed."
-            ))
         git_state = self.runtime.repo_workspace.git_release.inspect_repo(Path(repo_root))
         if not git_state.ok or git_state.value is None:
             self._refresh_publication_documents_for_current_release(Path(repo_root))
@@ -544,11 +590,11 @@ class RepoReleaseFinalizerComponent:
                 else None
             ),
             build=build,
-            gate=preview.value.gate,
+            gate=audited.gate,
             summary=f"Prepared candidate release {release.release_id}.",
         )
         return self.runtime.foundation.ok(CandidateReleasePreparationView(
-            outcome="prepared", gate=preview.value.gate, build=build,
+            outcome="prepared", gate=audited.gate, build=build,
             prepared_release=prepared, summary=prepared.summary,
         ))
 

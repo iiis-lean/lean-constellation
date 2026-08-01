@@ -176,9 +176,16 @@ class ScopeCloseView(StrictModel):
 
 
 class RepoReadyNodeView(StrictModel):
-    main_scope: ScopeCloseView
-    repo_ready_gate: GateReport
-    ready_to_submit: bool
+    main_contract_version: int | None = None
+    main_contract_version_status: ContractVersionStatus | None = None
+    publication_status: str
+    release_policy: str
+    open_requirement_count: int = 0
+    active_node_count: int = 0
+    open_contract_node_paths: list[str] = Field(default_factory=list)
+    structural_gate: GateReport
+    ready_to_submit_intent: bool
+    authoritative_audit_status: Literal["runs_after_submit"] = "runs_after_submit"
     summary: str
 
 
@@ -837,21 +844,86 @@ class NodeService:
         )
 
     def get_repo_ready_node_view(self, repo_root: Path) -> ServiceResult[RepoReadyNodeView]:
-        main = self.get_scope_close_view(repo_root, scope_path="Main")
+        repo_root = Path(repo_root)
+        issues = []
+        main = self.contract.get_visible_contract(repo_root, node_path="Main")
         if not main.ok or main.value is None:
-            return self.runtime.foundation.fail(main.issues)
-        gate = self.runtime.validation_snapshot.check_repo_ready(repo_root, summary="Repo ready preflight.")
-        if not gate.ok or gate.value is None:
-            return self.runtime.foundation.fail(gate.issues)
-        ready = main.value.ready_to_commit and gate.value.passed
+            issues.append(
+                self.runtime.foundation.issue(
+                    "main_scope_not_committed",
+                    "Repo-ready intent requires a committed Main Scope contract.",
+                    object_ref="Main",
+                )
+            )
+        requirements = self.runtime.repo_workspace.requirement.list_requirements(
+            repo_root,
+            status="open",
+        )
+        if not requirements.ok or requirements.value is None:
+            return self.runtime.foundation.fail(requirements.issues)
+        if requirements.value:
+            issues.append(
+                self.runtime.foundation.issue(
+                    "open_requirements_block_repo_ready",
+                    "Open repository requirements remain before repo-ready audit.",
+                    expected="0 open requirements",
+                    current=str(len(requirements.value)),
+                )
+            )
+        nodes = self.node_tree.node_store.list_nodes(repo_root)
+        if not nodes.ok or nodes.value is None:
+            return self.runtime.foundation.fail(nodes.issues)
+        active_nodes = [node for node in nodes.value if node.lifecycle.value == "active"]
+        open_contracts = sorted(
+            node.path
+            for node in active_nodes
+            if node.open_contract_version is not None or node.active_contract_version is None
+        )
+        if open_contracts:
+            issues.append(
+                self.runtime.foundation.issue(
+                    "repo_ready_node_contracts_open",
+                    "Active nodes still have open or uncommitted contracts.",
+                    current=", ".join(open_contracts),
+                )
+            )
+        publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+        if not publication.ok or publication.value is None:
+            return self.runtime.foundation.fail(publication.issues)
+        policy = self.runtime.repo_workspace.publication.resolve_policy(repo_root)
+        if not policy.ok or policy.value is None:
+            return self.runtime.foundation.fail(policy.issues)
+        gate = (
+            self.runtime.foundation.gate_failed(
+                "repo_ready_intent_structure",
+                issues,
+                summary="Repository structure has blockers before deterministic repo-ready audit.",
+            )
+            if issues
+            else self.runtime.foundation.gate_passed(
+                "repo_ready_intent_structure",
+                summary="Repository structure is ready to request the deterministic repo-ready audit.",
+            )
+        )
         return self.runtime.foundation.ok(
             RepoReadyNodeView(
-                main_scope=main.value,
-                repo_ready_gate=gate.value,
-                ready_to_submit=ready,
-                summary=("Repo is ready to submit." if ready else "Repo ready preflight has blocking issues."),
-            ),
-            warnings=main.issues,
+                main_contract_version=(main.value.version if main.value is not None else None),
+                main_contract_version_status=(
+                    main.value.version_status if main.value is not None else None
+                ),
+                publication_status=publication.value.publication.status.value,
+                release_policy=policy.value.policy.release_policy.value,
+                open_requirement_count=len(requirements.value),
+                active_node_count=len(active_nodes),
+                open_contract_node_paths=open_contracts,
+                structural_gate=gate,
+                ready_to_submit_intent=gate.passed,
+                summary=(
+                    "Repo-ready intent may be submitted; the deterministic Step will run the authoritative audit."
+                    if gate.passed
+                    else "Resolve structural blockers before submitting repo-ready intent."
+                ),
+            )
         )
 
     def get_node_public_boundary(self, repo_root: Path, *, node_path: str) -> ServiceResult[NodeBoundaryView]:

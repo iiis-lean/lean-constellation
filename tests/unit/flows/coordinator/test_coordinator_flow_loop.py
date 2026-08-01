@@ -13,6 +13,7 @@ from lean_constellation.domain.preparation import (
     SourceCorpusMode,
 )
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoFormat, RepoPublicationStatus
+from lean_constellation.domain.publication import ReleasePolicy, RepoPublicationOverride
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
@@ -33,9 +34,13 @@ from lean_constellation.flows.repo_exploration.submissions import (
     RepoResourceDiscoverySubmission,
 )
 from lean_constellation.flows.resource_request.flows import ResourceCurationResult
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
+from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, ToolchainCommandView
 from lean_constellation.services.foundation import FoundationService
-from lean_constellation.services.validation_snapshot import RepoCheckpointKind, ValidationSnapshotService
+from lean_constellation.services.validation_snapshot import (
+    CandidateReleaseGateView,
+    RepoCheckpointKind,
+    ValidationSnapshotService,
+)
 from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 
@@ -857,6 +862,70 @@ def test_repo_ready_submission_prepares_and_publishes_native_release(
     retried = runtime.flow_service.get_flow(flow_id)
     assert retried.status is FlowStatus.COMPLETED
     assert retried.error is None
+
+
+def test_manual_repo_ready_policy_still_runs_authoritative_audit_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    repo_root.mkdir(parents=True)
+    assert lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    assert lean_runtime.repo_workspace.metadata.update_repo_config(
+        repo_root,
+        publication=RepoPublicationOverride(release_policy=ReleasePolicy.MANUAL),
+    ).ok
+    flow_id = _start_coordinator(runtime, repo_root)
+    calls = 0
+
+    def audit(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return lean_runtime.foundation.ok(
+            CandidateReleaseGateView(
+                base_release_id=None,
+                completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                build=ToolchainCommandView(
+                    ok=True,
+                    command=["lake", "build"],
+                    summary="built",
+                    exit_code=0,
+                ),
+                gate=lean_runtime.foundation.gate_passed(
+                    "candidate_repo_release",
+                    summary="passed",
+                ),
+                summary="Candidate release gate passed.",
+            )
+        )
+
+    monkeypatch.setattr(
+        lean_runtime.validation_snapshot,
+        "preview_candidate_release",
+        audit,
+    )
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoReadySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_ready",
+            tool_name="submit_repo_ready",
+            repo_key="Repo",
+            summary="Repository is ready for operator review.",
+        )
+    )
+
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert calls == 1
+    assert flow.status is FlowStatus.COMPLETED
+    assert flow.result.outcome == "repo_ready"
+    assert lean_runtime.repo_workspace.release.list_releases(repo_root).value == []
+    publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+    assert publication.ok and publication.value is not None
+    assert publication.value.publication.status == RepoPublicationStatus.DEVELOPING
 
 
 def test_repo_ready_gate_rejection_uses_internal_callback_prompt_not_stale_dispatch(tmp_path: Path) -> None:

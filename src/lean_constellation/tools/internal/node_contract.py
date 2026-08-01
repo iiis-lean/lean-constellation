@@ -754,40 +754,10 @@ def _get_repo_ready_node_view(runtime, ctx, args: NoArgs):
     owner = _coordinator_release_context(runtime, ctx)
     if not owner.ok or owner.value is None:
         return runtime.foundation.fail(owner.issues)
-    ready_view = runtime.validation_snapshot.get_repo_ready_view(ctx.repo_root)
+    ready_view = runtime.node.get_repo_ready_node_view(ctx.repo_root)
     if not ready_view.ok or ready_view.value is None:
         return runtime.foundation.fail(ready_view.issues)
-    flow_id, base_release_id = owner.value
-    from lean_constellation.flows.coordinator.release_runtime import check_repo_release_runtime_closeout
-
-    runtime_closeout = check_repo_release_runtime_closeout(
-        runtime,
-        ctx.repo_root,
-        owner_flow_id=flow_id,
-        phase="submission_preview",
-        allowed_agent_id=ctx.runtime.agent_id,
-    )
-    if not runtime_closeout.ok or runtime_closeout.value is None:
-        return runtime.foundation.fail(runtime_closeout.issues)
-    if not runtime_closeout.value.passed:
-        return runtime.foundation.fail(runtime_closeout.value.issues)
-    preview = runtime.validation_snapshot.preview_candidate_release(
-        ctx.repo_root,
-        base_release_id=base_release_id,
-        summary="Repository release candidate preview.",
-    )
-    if not preview.ok or preview.value is None:
-        return runtime.foundation.fail(preview.issues)
-    return runtime.foundation.ok(
-        {
-            "repo_readiness": ready_view.value.model_dump(mode="json"),
-            "candidate_gate": preview.value.gate.model_dump(mode="json"),
-            "blocking_issue_kinds": list(preview.value.blocking_issue_kinds),
-            "ready": bool(preview.value.gate.passed),
-            "summary": preview.value.summary,
-        },
-        warnings=ready_view.issues,
-    )
+    return ready_view
 
 
 def _content_task_results_for_callback(runtime, ctx):
@@ -1278,7 +1248,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="get_repo_ready_node_view",
-            description="Preview whether the current repository state is a valid release candidate and return its blocking findings.",
+            description="Read the lightweight structural repo-ready intent view; the authoritative projection/build/release audit runs only after submit_repo_ready.",
             args_model=NoArgs,
             capability=ToolCapability.READ,
             result_view="repo_release_candidate_readiness",

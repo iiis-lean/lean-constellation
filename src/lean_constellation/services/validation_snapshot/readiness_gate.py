@@ -589,7 +589,13 @@ class ReadinessGateComponent:
             warnings=close.issues,
         )
 
-    def check_repo_ready(self, repo_root: Path, *, summary: str) -> ServiceResult[GateReport]:
+    def check_repo_ready(
+        self,
+        repo_root: Path,
+        *,
+        summary: str,
+        include_targeted_builds: bool = True,
+    ) -> ServiceResult[GateReport]:
         reports: list[GateReport] = []
         issues = []
         repo_root = Path(repo_root)
@@ -655,9 +661,16 @@ class ReadinessGateComponent:
 
         refreshed_boundary, interfaces_ready = self._refresh_node_boundary(repo_root, node_path="Main")
         reports.extend(refreshed_boundary)
-        if interfaces_ready:
+        if include_targeted_builds and interfaces_ready:
             reports.append(self._build_node_interfaces_gate(repo_root, node_path="Main"))
-        reports.append(self._build_module_gate(repo_root, module=native_project_name(repo_root), gate_name="repo_public_module_build"))
+        if include_targeted_builds:
+            reports.append(
+                self._build_module_gate(
+                    repo_root,
+                    module=native_project_name(repo_root),
+                    gate_name="repo_public_module_build",
+                )
+            )
 
         source = self.consistency.check_source_corpus_consistency(repo_root)
         if source.ok and source.value is not None:

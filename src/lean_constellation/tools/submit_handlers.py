@@ -1087,7 +1087,6 @@ def submit_repo_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoR
         getattr(flow_input, "repo_root", "")
     ) != str(ctx.repo_root):
         return _fail(runtime, "coordinator_flow_context_invalid", "Current Flow does not own this repository-ready submission.")
-    run_context = getattr(flow_input, "run_context", None)
     from lean_constellation.flows.coordinator.release_runtime import check_repo_release_runtime_closeout
 
     runtime_closeout = check_repo_release_runtime_closeout(
@@ -1102,23 +1101,12 @@ def submit_repo_ready(runtime: Any, ctx: ToolExecutionContext, args: SubmitRepoR
     passed = _gate_or_fail(runtime, runtime_closeout.value)
     if not passed.ok:
         return runtime.foundation.fail(passed.issues)
-    preview = runtime.validation_snapshot.preview_candidate_release(
-        ctx.repo_root,
-        base_release_id=getattr(run_context, "base_release_id", None),
-        summary=args.summary,
-    )
-    if not preview.ok or preview.value is None:
-        return runtime.foundation.fail(preview.issues)
-    passed = _gate_or_fail(runtime, preview.value.gate)
-    if not passed.ok:
-        return runtime.foundation.fail(passed.issues)
     return _prepared(
         runtime,
         CoordinatorRepoReadySubmission(**_base_kwargs(ctx, tool_name="submit_repo_ready", summary=args.summary)),
         agent_view={
-            "gate": preview.value.gate.model_dump(mode="json"),
-            "blocking_issue_kinds": list(preview.value.blocking_issue_kinds),
-            "summary": preview.value.summary,
+            "audit_status": "pending",
+            "summary": "Repo-ready intent accepted; the deterministic Coordinator Step owns the authoritative audit.",
         },
     )
 

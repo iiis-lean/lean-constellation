@@ -535,21 +535,6 @@ class MarkCoordinatorRepoReadyStep(BaseStep):
                     summary=message,
                 )
             )
-        if (
-            publication_policy.value.policy.release_policy
-            == ReleasePolicy.MANUAL
-        ):
-            return ctx.complete_step(
-                MarkCoordinatorRepoReadyStepResult(
-                    outcome="ready_marked",
-                    repo_key=input_model.repo_key,
-                    repo_summary=self.repo_summary,
-                    summary=(
-                        "Repository work completed; publication policy defers "
-                        "Semantic Release to an explicit operator action."
-                    ),
-                )
-            )
         runtime_closeout = check_repo_release_runtime_closeout(
             validation_snapshot.runtime,
             repo_root,
@@ -567,10 +552,59 @@ class MarkCoordinatorRepoReadyStep(BaseStep):
                 error_message=message,
                 summary=message,
             ))
+        audited = validation_snapshot.preview_candidate_release(
+            repo_root,
+            base_release_id=base_release_id,
+            summary=self.repo_summary,
+        )
+        if not audited.ok or audited.value is None:
+            code, message = _first_issue(
+                audited.issues,
+                fallback_code="repo_release_audit_failed",
+            )
+            return ctx.complete_step(
+                MarkCoordinatorRepoReadyStepResult(
+                    outcome="candidate_blocked",
+                    repo_key=input_model.repo_key,
+                    repo_summary=self.repo_summary,
+                    error_code=code,
+                    error_message=message,
+                    summary=message,
+                )
+            )
+        if not audited.value.gate.passed:
+            code, message = _first_issue(
+                audited.value.gate.issues,
+                fallback_code="repo_release_candidate_blocked",
+            )
+            return ctx.complete_step(
+                MarkCoordinatorRepoReadyStepResult(
+                    outcome="candidate_blocked",
+                    repo_key=input_model.repo_key,
+                    repo_summary=self.repo_summary,
+                    error_code=code,
+                    error_message=message,
+                    blocking_issue_kinds=list(audited.value.blocking_issue_kinds),
+                    summary=audited.value.summary or message,
+                )
+            )
+        if publication_policy.value.policy.release_policy == ReleasePolicy.MANUAL:
+            return ctx.complete_step(
+                MarkCoordinatorRepoReadyStepResult(
+                    outcome="ready_marked",
+                    repo_key=input_model.repo_key,
+                    repo_summary=self.repo_summary,
+                    summary=(
+                        "Repository passed the authoritative repo-ready audit; publication policy defers "
+                        "Semantic Release to an explicit operator action."
+                    ),
+                )
+            )
         prepared = validation_snapshot.prepare_candidate_release(
             repo_root,
             base_release_id=base_release_id,
             summary=self.repo_summary,
+            audited=audited.value,
         )
         if not prepared.ok or prepared.value is None:
             code, message = _first_issue(prepared.issues, fallback_code="repo_release_prepare_failed")

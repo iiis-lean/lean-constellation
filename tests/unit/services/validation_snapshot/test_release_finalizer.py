@@ -377,14 +377,7 @@ def test_lake_build_failure_does_not_allocate_release_truth(tmp_path: Path, monk
     preview = CandidateReleaseGateView(
         candidate_node_contract_versions=prepared.release.node_contract_versions,
         completion_mode=RepoCompletionMode.GRAPH_DECLARED,
-        gate=runtime.foundation.gate_passed("candidate_repo_release", summary="passed"),
-        summary="passed",
-    )
-    monkeypatch.setattr(finalizer, "preview_candidate_release", lambda *args, **kwargs: runtime.foundation.ok(preview))
-    monkeypatch.setattr(
-        runtime.external.lean_toolchain,
-        "run_lake_build",
-        lambda repo_root: ToolchainCommandView(
+        build=ToolchainCommandView(
             ok=False,
             command=["lake", "build"],
             summary="failed",
@@ -392,8 +385,18 @@ def test_lake_build_failure_does_not_allocate_release_truth(tmp_path: Path, monk
             stderr_excerpt="compile error",
             issue_code="lake_build_failed",
         ),
+        gate=runtime.foundation.gate_failed(
+            "candidate_repo_release",
+            runtime.foundation.issue(
+                "release_lake_build_failed",
+                "The candidate repository failed the required Lake build.",
+            ),
+            summary="failed",
+        ),
+        blocking_issue_kinds=["release_lake_build_failed"],
+        summary="failed",
     )
-
+    monkeypatch.setattr(finalizer, "preview_candidate_release", lambda *args, **kwargs: runtime.foundation.ok(preview))
     result = finalizer.prepare_candidate_release(
         tmp_path, base_release_id=None, summary="candidate"
     )
@@ -407,6 +410,18 @@ def test_candidate_gate_aggregates_non_main_contract_tree_and_material_findings(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     runtime, _ = _prepare_release_repo(tmp_path)
+    build_targets: list[str | None] = []
+    original_build = runtime.external.lean_toolchain.run_lake_build
+
+    def record_build(repo_root, target=None, **kwargs):  # noqa: ANN001
+        build_targets.append(target)
+        return original_build(repo_root, target=target, **kwargs)
+
+    monkeypatch.setattr(
+        runtime.external.lean_toolchain,
+        "run_lake_build",
+        record_build,
+    )
     assert runtime.repo_workspace.metadata.set_repo_format(
         tmp_path, repo_format=RepoFormat.NATIVE, reason="candidate test"
     ).ok
@@ -459,6 +474,7 @@ def test_candidate_gate_aggregates_non_main_contract_tree_and_material_findings(
     )
 
     assert preview.ok and preview.value is not None and not preview.value.gate.passed
+    assert build_targets == [None]
     kinds = set(preview.value.blocking_issue_kinds)
     assert "node_dep_target_missing" in kinds
     assert "node_dep_external_lake_dependency_missing" in kinds

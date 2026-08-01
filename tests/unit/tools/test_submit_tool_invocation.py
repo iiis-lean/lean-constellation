@@ -84,7 +84,7 @@ def test_successful_submit_records_typed_submission(tmp_path: Path) -> None:
     "coordinator_phase",
     ["coordinator_agent", "coordinator_callback", "coordinator_requirement_resume"],
 )
-def test_repo_ready_submit_only_records_candidate_intent_after_preview(
+def test_repo_ready_submit_only_records_candidate_intent_without_heavy_preview(
     tmp_path: Path,
     coordinator_phase: str,
 ) -> None:
@@ -140,13 +140,7 @@ def test_repo_ready_submit_only_records_candidate_intent_after_preview(
     assert result.ok and result.value is not None and result.value.ok
     assert len(gateway.accepted) == 1
     assert gateway.accepted[0].submission_type == "coordinator_repo_ready"
-    assert calls == [
-        {
-            "repo_root": tmp_path,
-            "base_release_id": "release-base",
-            "summary": "Publish the current candidate.",
-        }
-    ]
+    assert calls == []
 
 
 def test_repo_ready_submit_rejects_nonterminal_repo_runtime(tmp_path: Path) -> None:

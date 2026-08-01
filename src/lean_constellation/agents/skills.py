@@ -927,12 +927,12 @@ Use this Skill only when all expected Content work is reconciled, required Scope
 2. Call `get_scope_close_view` for Main and any relevant unverified Scope.
 3. Check Main interfaces and exports against protected root contracts.
 4. Treat Main as the root Scope, not as a separate repository-only boundary. Call `inspect_public_statement_closure` with `boundary=scope` and `scope_path=Main`. Every selected Main export's current-repository formal Statement dependencies must be public in their Content nodes and exported through every intervening Scope through Main. Use `promote_public_statement_closure` only for an add-only repair of already-ready declarations. The same operation applies to any other Scope and stops at that Scope rather than propagating to its parent.
-5. Call `get_repo_ready_node_view`. It previews the authoritative candidate release gate across active contract heads, DeclGraphs, files/projections, compatibility, target policy, public Statement closure, and build preconditions; inspect every reported issue.
-6. If the deterministic view is not ready, repair only the owning semantic state and return to the next-action loop.
+5. Call `get_repo_ready_node_view`. It is a lightweight structural intent view: it checks committed Main/active contracts/open requirements/publication policy but deliberately performs no projection mutation or Lean build.
+6. If the structural view has blockers, repair only the owning semantic state and return to the next-action loop. Do not poll for a hidden heavy preview.
 
 ## Submit
 
-Call `submit_repo_ready` only when the preview passes. This submit expresses candidate intent only; the following deterministic Flow step owns build, checkpoint, release creation, and publication. If rejected, use the returned issues to repair current truth and re-run the readiness view. If accepted, stop immediately.
+Call `submit_repo_ready` when the structural intent view is clear. This submit expresses candidate intent only; the following deterministic Flow step owns the single authoritative closure/projection/build/candidate audit. Audit failure returns a candidate-blocked callback to this same Coordinator session. Audit success marks ready under manual policy or continues Release under on-completion policy. If the submit is rejected, repair its immediate runtime/ownership issue; if accepted, stop immediately.
 
 ## Postcondition
 

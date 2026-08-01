@@ -224,10 +224,18 @@ class ValidationSnapshotService:
         return self.admin_repair.run_full_audit(repo_root)
 
     def prepare_candidate_release(
-        self, repo_root: Path, *, base_release_id: str | None, summary: str
+        self,
+        repo_root: Path,
+        *,
+        base_release_id: str | None,
+        summary: str,
+        audited: CandidateReleaseGateView | None = None,
     ) -> ServiceResult[CandidateReleasePreparationView]:
         return self.release_finalizer.prepare_candidate_release(
-            repo_root, base_release_id=base_release_id, summary=summary
+            repo_root,
+            base_release_id=base_release_id,
+            summary=summary,
+            audited=audited,
         )
 
     def preview_candidate_release(

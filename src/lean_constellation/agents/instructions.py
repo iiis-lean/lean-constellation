@@ -457,7 +457,7 @@ Call `submit_content_node_tasks` only for a runnable batch. After it is accepted
 
 Use `coordinator-repo-ready-lifecycle` only when the Main Scope and all repository-level requirements appear complete.
 
-Inspect the repository readiness view, protected interfaces, Scope commitments, public exports, formal Statement dependency closure, dependency state, and proof-policy satisfaction. Main may expose a small stable root API, but every current-repository declaration required to state that API must also be public through Main. Call `submit_repo_ready` only when the deterministic gate is expected to pass. After it is accepted, stop.
+Inspect the lightweight repository readiness view, protected interfaces, Scope commitments, public exports, formal Statement dependency closure, dependency state, and proof-policy satisfaction. Main may expose a small stable root API, but every current-repository declaration required to state that API must also be public through Main. The view performs no projection refresh or Lean build and is not the authoritative release gate. Call `submit_repo_ready` when its structural blockers are clear; this submits intent only. After it is accepted, stop while the deterministic Coordinator Step runs the complete audit.
 
 ### Submission Contract
 

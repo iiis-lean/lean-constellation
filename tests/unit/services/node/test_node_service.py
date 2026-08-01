@@ -105,6 +105,41 @@ def test_node_service_content_admission_batch_and_commit_wrappers(tmp_path: Path
     assert committed.value.status.value == "committed"
 
 
+def test_repo_ready_node_view_is_structural_and_does_not_run_heavy_audit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_preparation_input(tmp_path)
+    runtime = make_runtime()
+    assert runtime.node.ensure_native_root_main_contract(tmp_path).ok
+    assert runtime.node.commit_scope_contract(
+        tmp_path,
+        scope_path="Main",
+        summary="Main is structurally complete.",
+    ).ok
+    monkeypatch.setattr(
+        runtime.validation_snapshot,
+        "check_repo_ready",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("heavy repo audit must not run in the Agent-facing view")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.external.lean_toolchain,
+        "run_lake_build",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Lean build must not run in the Agent-facing view")
+        ),
+    )
+
+    view = runtime.node.get_repo_ready_node_view(tmp_path)
+
+    assert view.ok and view.value is not None
+    assert view.value.ready_to_submit_intent is True
+    assert view.value.authoritative_audit_status == "runs_after_submit"
+    assert view.value.structural_gate.passed is True
+
+
 def test_node_service_get_public_boundary_for_content_and_scope(tmp_path: Path) -> None:
     _write_preparation_input(tmp_path)
     runtime = make_runtime()
