@@ -12,6 +12,7 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
+from lean_constellation.services.validation_snapshot.readiness_gate import ContentNodeCompletionGateView
 
 
 PreparationKind = Literal["node_dir_dependency", "mathlib", "resource"]
@@ -176,6 +177,20 @@ class ContentTaskAdmissionStepResult(LeanRenderableStepResult):
         }
 
 
+class ContentCompletionAuditStepResult(LeanRenderableStepResult):
+    result_type: Literal["content_completion_audit"] = "content_completion_audit"
+    outcome: Literal["passed", "failed"]
+    completion: ContentNodeCompletionGateView | None = None
+    reason: str | None = None
+
+    def agent_fields(self) -> dict[str, object]:
+        return {
+            "outcome": self.outcome,
+            "completion": self.completion.model_dump(mode="json") if self.completion is not None else None,
+            "reason": self.reason,
+        }
+
+
 class ContentProgressCheckpointStepResult(LeanRenderableStepResult):
     result_type: Literal["content_progress_checkpoint"] = "content_progress_checkpoint"
     outcome: Literal["checkpoint_ready", "blocked"]
@@ -308,6 +323,50 @@ class ContentProgressCheckpointStep(BaseStep):
         )
 
 
+class ContentCompletionAuditStep(BaseStep):
+    step_type: ClassVar[str] = "content_completion_audit_step"
+    State: ClassVar[type[BaseStepState]] = BaseStepState
+    Result: ClassVar[type[BaseStepResult]] = ContentCompletionAuditStepResult
+    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
+        "content_completion_audit": ContentCompletionAuditStepResult,
+    }
+
+    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
+        flow = _load_content_node_task_flow(ctx)
+        input_model = _require_content_node_task_input(flow.input)
+        repo_root = _repo_root(input_model)
+        if repo_root is None:
+            return ctx.complete_step(
+                ContentCompletionAuditStepResult(
+                    outcome="failed",
+                    reason="Content completion audit requires repo_path in Flow input.",
+                    summary="Content completion audit cannot run without repo_path.",
+                )
+            )
+        audited = _validation_snapshot(ctx).check_content_node_completion(
+            repo_root,
+            node_path=input_model.node_path,
+        )
+        if not audited.ok or audited.value is None:
+            reason = _first_issue_message(audited.issues, "Content completion audit failed.")
+            return ctx.complete_step(
+                ContentCompletionAuditStepResult(
+                    outcome="failed",
+                    reason=reason,
+                    summary=reason,
+                )
+            )
+        passed = audited.value.gate.passed
+        return ctx.complete_step(
+            ContentCompletionAuditStepResult(
+                outcome="passed" if passed else "failed",
+                completion=audited.value,
+                reason=None if passed else audited.value.summary,
+                summary=audited.value.summary,
+            )
+        )
+
+
 class EnsureDeclStageAgentsStep(BaseStep):
     step_type: ClassVar[str] = "ensure_decl_stage_agents_step"
     State: ClassVar[type[BaseStepState]] = BaseStepState
@@ -407,6 +466,13 @@ def _node(ctx: StepRunContext):
     return node
 
 
+def _validation_snapshot(ctx: StepRunContext):
+    service = getattr(ctx.app, "validation_snapshot", None)
+    if service is None:
+        raise FlowStepValidationError("Lean validation_snapshot service is not registered in app services.")
+    return service
+
+
 def _first_issue_message(issues: list[object], fallback: str) -> str:
     if issues:
         issue = issues[0]
@@ -416,6 +482,7 @@ def _first_issue_message(issues: list[object], fallback: str) -> str:
 
 CONTENT_NODE_TASK_STEP_TYPES: tuple[type[BaseStep], ...] = (
     ContentTaskAdmissionStep,
+    ContentCompletionAuditStep,
     ContentProgressCheckpointStep,
     EnsureDeclStageAgentsStep,
 )

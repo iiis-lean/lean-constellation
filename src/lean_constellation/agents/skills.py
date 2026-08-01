@@ -1436,11 +1436,11 @@ For each required interface, read the actual bound public declaration and compar
 
 ## Ready
 
-Before ready, call `check_current_content_node_completion`. Use the returned gate report as the authority for whether the current node satisfies its contract, public Statement closure, proof-policy requirements, dependency identities, managed-file synchronization, interfaces, and unresolved callback requirements. The deterministic gate refreshes the node boundary and builds its `Interfaces` module so every current public declaration is checked through the actual import surface and standard artifacts are generated.
+Use `check_current_content_node_completion` when you need a detailed diagnostic report for the contract, public Statement closure, proof policy, dependency identities, managed projection, interfaces, or unresolved callbacks. Do not poll the same heavy report repeatedly before ready.
 
-Call `submit_content_node_ready` only when the current tools show the node satisfies its contract. After an accepted ready submit, stop.
+Call `submit_content_node_ready` when current truth appears complete. The submit records intent; a deterministic closeout Step then runs the authoritative completion audit exactly once. After an accepted ready submit, stop. If that audit fails, the next callback includes its structured report; repair within your authority or choose blocked/failed.
 
-If `check_current_content_node_completion` rejects readiness, do not force ready. Fix issues within your authority, run another round, dispatch allowed preparation, or choose blocked/failed when appropriate.
+If a diagnostic check or deterministic completion callback rejects readiness, do not force ready. Fix issues within your authority, run another round, dispatch allowed preparation, or choose blocked/failed when appropriate.
 
 ## Blocked
 

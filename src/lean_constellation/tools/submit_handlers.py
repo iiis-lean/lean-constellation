@@ -1195,16 +1195,13 @@ def submit_content_node_ready(runtime: Any, ctx: ToolExecutionContext, args: Sub
     round_gate = _require_no_pending_decl_round(runtime, ctx)
     if not round_gate.ok:
         return runtime.foundation.fail(round_gate.issues)
-    completion = runtime.validation_snapshot.check_content_node_completion(ctx.repo_root, node_path=node.value)
-    if not completion.ok or completion.value is None:
-        return runtime.foundation.fail(completion.issues)
-    passed = _gate_or_fail(runtime, completion.value.gate)
-    if not passed.ok:
-        return runtime.foundation.fail(passed.issues)
     return _prepared(
         runtime,
         ContentNodeReadySubmission(**_base_kwargs(ctx, tool_name="submit_content_node_ready", summary=args.summary)),
-        agent_view={"completion": completion.value.model_dump(mode="json")},
+        agent_view={
+            "completion_intent": "accepted",
+            "next_step": "deterministic_content_completion_audit",
+        },
     )
 
 

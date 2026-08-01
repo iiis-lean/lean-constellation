@@ -8,6 +8,7 @@ from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus
 from pydantic import ValidationError
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.repo import ProofAvailability
 from lean_constellation.app.config import AutomaticCheckpointAppConfig
 from lean_constellation.flows.common.flow_requests import build_decl_round_request, build_preparation_recon_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
@@ -25,6 +26,7 @@ from lean_constellation.flows.content_node_task.submissions import (
     ContentResourceRequestSubmission,
 )
 from lean_constellation.flows.resource_request.flows import ResourceCurationResult
+from lean_constellation.services.validation_snapshot.readiness_gate import ContentNodeCompletionGateView
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
 
@@ -609,14 +611,72 @@ def test_content_node_task_decl_round_dispatch_ensures_stage_agents(tmp_path: Pa
     )
     runtime.run_step(callback_step_id)
     flow = runtime.flow_service.get_flow(flow_id)
-    assert flow.status is FlowStatus.COMPLETED
-    assert flow.result.outcome == "ready"
+    assert flow.state.position.phase == "completion_audit"
+
+    _advance_and_run(runtime, flow_id)
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.RUNNING
+    assert flow.state.position.phase == "callback_plan_agent"
+    assert flow.result is None
+    audit_steps = runtime.flow_service.store.list_steps(
+        flow_id=flow_id,
+        step_type="content_completion_audit_step",
+    )
+    assert len(audit_steps) == 1
+    assert audit_steps[0].result.outcome == "failed"
     callback_prompt = runtime.agent_service.start_records[-1].prompt or ""
     assert callback_prompt.index("decl-round-closeout") < callback_prompt.index(
         "content-plan-completion-policy"
     )
     assert "decl-strategy-planning" in callback_prompt
     assert "reassess whether the strategy still explains the next round" in callback_prompt
+
+
+def test_content_ready_intent_completes_only_after_deterministic_audit(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    _prepare_content_repo(lean_runtime, repo_root)
+
+    def passed_completion(repo_root_arg: Path, *, node_path: str):
+        del repo_root_arg
+        gate = lean_runtime.foundation.gate_passed(
+            "content_node_completion",
+            summary="Deterministic completion audit passed.",
+        )
+        return lean_runtime.foundation.ok(
+            ContentNodeCompletionGateView(
+                node_path=node_path,
+                target_proof_availability=ProofAvailability.PROVED,
+                gate=gate,
+                ready_to_submit=True,
+                summary="Deterministic completion audit passed.",
+            )
+        )
+
+    lean_runtime.validation_snapshot.check_content_node_completion = passed_completion
+    flow_id = _start_content_task(runtime, repo_root)
+    _advance_and_run(runtime, flow_id)
+    runtime.agent_service.queue_submission(
+        ContentNodeReadySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="content_node_ready",
+            tool_name="submit_content_node_ready",
+            repo_key=repo_root.name,
+            node_path="Main.Core",
+            summary="Content ready intent.",
+        )
+    )
+
+    _advance_and_run(runtime, flow_id)
+    pending = runtime.flow_service.get_flow(flow_id)
+    assert pending.status is FlowStatus.RUNNING
+    assert pending.state.position.phase == "completion_audit"
+
+    _advance_and_run(runtime, flow_id)
+    completed = runtime.flow_service.get_flow(flow_id)
+    assert completed.status is FlowStatus.COMPLETED
+    assert completed.result.outcome == "ready"
+    assert completed.result.summary == "Content ready intent."
 
 
 def test_content_progress_checkpoints_run_before_callback_and_narrow_later_scope(tmp_path: Path) -> None:

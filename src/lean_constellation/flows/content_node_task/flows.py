@@ -17,6 +17,8 @@ from lean_constellation.flows.content_node_task.decl_round.submissions import De
 from lean_constellation.flows.content_node_task.context_brief import build_content_plan_context_brief
 from lean_constellation.flows.content_node_task.preparation.common import content_node_workdir
 from lean_constellation.flows.content_node_task.steps import (
+    ContentCompletionAuditStep,
+    ContentCompletionAuditStepResult,
     ContentPlanStepResult,
     ContentProgressCheckpointStep,
     ContentProgressCheckpointStepResult,
@@ -77,6 +79,7 @@ class ContentNodeTaskState(BaseFlowState):
     completed_child_flow_id: str | None
     completed_child_outcome: Literal["completed", "failed"] | None
     progress_checkpoint_repo_scope_captured: bool
+    pending_completion_summary: str | None = None
 
 
 class ContentNodeTaskResult(LeanRenderableFlowResult):
@@ -174,6 +177,14 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             return ctx.create_step(
                 _content_plan_agent_step(ctx, self, input_model, state, callback=True)
             )
+        if state.position.phase == "completion_audit":
+            return ctx.create_step(
+                ContentCompletionAuditStep(
+                    step_id=new_content_step_id("content_completion_audit"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                )
+            )
         if state.position.phase == "after_child_terminal_checkpoint":
             checkpoint = _content_progress_checkpoint_step(self, input_model, state)
             if checkpoint is None:
@@ -208,6 +219,8 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             self._consume_admission_result(state, input_model, result)
         elif ctx.step.step_type == "content_plan_agent_step":
             self._consume_plan_result(state, input_model, result, ctx.step.submission, ctx.step.step_id)
+        elif isinstance(result, ContentCompletionAuditStepResult):
+            self._consume_completion_audit_result(state, input_model, result)
         elif isinstance(result, EnsureDeclStageAgentsStepResult):
             self._consume_stage_agents_result(state, input_model, result)
         elif isinstance(result, ContentProgressCheckpointStepResult):
@@ -363,12 +376,31 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
         )
         if result.outcome in {"ready", "blocked", "failed"} and terminal_submission_matches:
             reason = result.completion.reason if result.completion else None
+            if result.outcome == "ready":
+                state.pending_completion_summary = result.summary
+                state.position = FlowPosition(phase="completion_audit", round_index=state.decl_round_count)
+                return
             self._finish_content_task(input_model, result.outcome, reason, result.summary)
             return
         self._fail_content_task(
             "content_plan_agent_submission_mismatch",
             "ContentPlanAgent result did not match its accepted submission.",
         )
+
+    def _consume_completion_audit_result(
+        self,
+        state: ContentNodeTaskState,
+        input_model: ContentNodeTaskInput,
+        result: ContentCompletionAuditStepResult,
+    ) -> None:
+        if result.outcome == "passed":
+            summary = state.pending_completion_summary or result.summary
+            state.pending_completion_summary = None
+            self._finish_content_task(input_model, "ready", None, summary)
+            return
+        state.latest_callback_summary = result.summary or result.reason or "Content completion audit failed."
+        state.pending_completion_summary = None
+        state.position = FlowPosition(phase="callback_plan_agent", round_index=state.decl_round_count)
 
     def _consume_stage_agents_result(
         self,
