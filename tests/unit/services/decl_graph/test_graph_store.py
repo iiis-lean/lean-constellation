@@ -87,7 +87,10 @@ def test_decl_graph_reports_corrupt_index_schema(tmp_path: Path) -> None:
     result = runtime.decl_graph.get_decl_graph_index(tmp_path, node_path="Main.Topic.Core")
 
     assert not result.ok
-    assert result.issues[0].kind == "schema_validation_failed"
+    assert [issue.kind for issue in result.issues] == [
+        "schema_version_missing",
+        "schema_validation_failed",
+    ]
 
 
 def test_rebuild_decl_graph_index_scans_stable_sorted_store(tmp_path: Path) -> None:

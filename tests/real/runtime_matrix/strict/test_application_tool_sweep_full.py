@@ -696,9 +696,11 @@ def test_strict_implemented_application_tool_cases_execute_with_evidence(
         {},
         runtime_context=repo_ready_ctx,
         recorder=evidence_recorder,
-        assertion_summary="Repo ready node view returned readiness gates.",
+        assertion_summary="Repo ready node view returned lightweight structural status.",
     )
-    assert "candidate_gate" in repo_ready.value
+    assert repo_ready.value["authoritative_audit_status"] == "runs_after_submit"
+    assert "structural_gate" in repo_ready.value
+    assert "candidate_gate" not in repo_ready.value
 
     admission = call_tool_with_evidence(
         server,
