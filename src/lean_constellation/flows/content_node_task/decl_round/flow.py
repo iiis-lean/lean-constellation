@@ -258,10 +258,24 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
         state = _require_decl_round_state(self.state)
         input_model = _require_decl_round_input(self.input)
         if ctx.step.error is not None:
+            recording_issues = _record_failed_step_execution_result(
+                ctx,
+                input_model=input_model,
+                step_id=ctx.step.step_id,
+                message=ctx.step.error.message,
+            )
             self.error = BaseFlowError(
                 error_type="decl_round_step_failed",
                 message=ctx.step.error.message,
-                details={"step_type": ctx.step.step_type, **ctx.step.error.details},
+                details={
+                    "step_type": ctx.step.step_type,
+                    **ctx.step.error.details,
+                    **(
+                        {"round_execution_recording_issues": recording_issues}
+                        if recording_issues
+                        else {}
+                    ),
+                },
             )
             super().on_step_terminal(ctx)
             return
@@ -450,6 +464,36 @@ class DeclGraphRoundFlow(LeanBusinessFlow):
             summary=result.summary or reason or f"DeclGraph round {result.flow_outcome}.",
         )
         state.position = FlowPosition(phase="completed")
+
+
+def _record_failed_step_execution_result(
+    ctx: FlowStepContext,
+    *,
+    input_model: DeclGraphRoundInput,
+    step_id: str,
+    message: str,
+) -> list[str]:
+    repo_root = Path(input_model.repo_path) if input_model.repo_path else None
+    service = getattr(ctx.app, "decl_graph", None)
+    if repo_root is None or service is None:
+        return ["Decl round failure could not record execution truth without repo_path and decl_graph service."]
+    reason = f"Step {step_id} failed before DeclGraph round completion: {message}"
+    try:
+        recorded = service.record_round_execution_result(
+            repo_root,
+            node_path=input_model.node_path,
+            round_id=input_model.round_id,
+            outcome="failed",
+            reason=reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return [f"Decl round failure could not record execution truth: {exc}"]
+    if recorded.ok:
+        return []
+    return [
+        str(getattr(issue, "message", None) or getattr(issue, "summary", None) or issue)
+        for issue in recorded.issues
+    ]
 
 
 def _advance_to_next_stage(state: DeclGraphRoundState) -> None:
