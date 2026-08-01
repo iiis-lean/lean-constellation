@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lean_constellation.domain.repo_release import (
+    DeclAvailabilityEntry,
+    DeclAvailabilityIndex,
     DeclReleaseStatusView,
     ReleasedDeclProtectionView,
     RepoRelease,
@@ -41,6 +44,70 @@ class RepoReleaseComponent:
 
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
+        self._decl_availability_cache: OrderedDict[
+            tuple[str, str], DeclAvailabilityIndex | None
+        ] = OrderedDict()
+        self._decl_availability_cache_size = 16
+
+    def get_decl_availability_index(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str,
+    ) -> ServiceResult[DeclAvailabilityIndex | None]:
+        """Read an optional Release sidecar; any miss falls back to live recursion."""
+
+        repo_root = Path(repo_root).resolve()
+        key = (str(repo_root), release_id)
+        if key in self._decl_availability_cache:
+            value = self._decl_availability_cache.pop(key)
+            self._decl_availability_cache[key] = value
+            return self.runtime.foundation.ok(value)
+        relative_path = self.runtime.foundation.layout.release_decl_availability_path(
+            FoundationContext(repo_root=repo_root),
+            release_id,
+        ).relative_to(repo_root).as_posix()
+        captured = self.runtime.repo_workspace.git_release.read_release_file(
+            repo_root,
+            release_id=release_id,
+            relative_path=relative_path,
+        )
+        value: DeclAvailabilityIndex | None = None
+        if captured.ok and captured.value is not None:
+            try:
+                value = DeclAvailabilityIndex.model_validate_json(captured.value)
+            except ValueError:
+                value = None
+        self._decl_availability_cache[key] = value
+        while len(self._decl_availability_cache) > self._decl_availability_cache_size:
+            self._decl_availability_cache.popitem(last=False)
+        return self.runtime.foundation.ok(value)
+
+    def lookup_decl_availability(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str,
+        node_path: str,
+        decl_name: str,
+        revision: int,
+    ) -> ServiceResult[DeclAvailabilityEntry | None]:
+        index = self.get_decl_availability_index(repo_root, release_id=release_id)
+        if not index.ok or index.value is None:
+            return self.runtime.foundation.ok(None)
+        return self.runtime.foundation.ok(
+            next(
+                (
+                    entry
+                    for entry in index.value.entries
+                    if entry.node == node_path
+                    and entry.name == decl_name
+                    and entry.revision == revision
+                    and entry.main_export
+                ),
+                None,
+            )
+        )
 
     def allocate_release_id(self, repo_root: Path) -> ServiceResult[str]:
         root = self.runtime.foundation.layout.releases_root(FoundationContext(repo_root=Path(repo_root)))

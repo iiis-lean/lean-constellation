@@ -10,7 +10,7 @@ from pydantic import Field, field_validator, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import RepoCompletionMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 
 
 _SAFE_RELEASE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -175,6 +175,19 @@ class RepoRelease(StrictModel):
             if self.dependency_change is None:
                 raise ValueError("dependency maintenance releases require dependency_change")
         return self
+
+
+class DeclAvailabilityEntry(StrictModel):
+    node: str
+    name: str
+    revision: int
+    decl_state: DeclStateValue
+    availability: ProofAvailability
+    main_export: bool = False
+
+
+class DeclAvailabilityIndex(StrictModel):
+    entries: list[DeclAvailabilityEntry] = Field(default_factory=list)
 
 
 class RepoReleaseView(StrictModel):

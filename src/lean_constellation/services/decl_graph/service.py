@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar
 
@@ -1384,6 +1384,21 @@ class DeclGraphService:
             node_path=node_path,
             decl_name=decl_name,
             target_proof_availability=target_proof_availability,
+        )
+
+    def check_decl_proof_policy_batch(
+        self,
+        repo_root: Path,
+        *,
+        roots: Sequence[tuple[str, str, ProofAvailability]],
+        provider_target_override: ProofAvailability | None = None,
+        round_overlay: dict[str, tuple[Decl, DeclRevision]] | None = None,
+    ) -> ServiceResult[list[DeclReadinessReport]]:
+        return self.readiness.check_decl_proof_policy_batch(
+            repo_root,
+            roots=roots,
+            provider_target_override=provider_target_override,
+            round_overlay=round_overlay,
         )
 
     def check_round_decl_ready(

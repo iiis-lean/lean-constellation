@@ -590,6 +590,42 @@ class GitReleaseComponent:
             )
         return self.runtime.foundation.ok(release)
 
+    def read_release_file(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str,
+        relative_path: str,
+    ) -> ServiceResult[str]:
+        """Read one regular path from an immutable Release commit."""
+
+        repo_root = Path(repo_root).resolve()
+        path = PurePosixPath(relative_path)
+        if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "git_release_path_invalid",
+                    "Release file path must be a safe repository-relative path.",
+                    object_ref=relative_path,
+                )
+            )
+        resolved = self.resolve_release_commit(repo_root, release_id=release_id)
+        if not resolved.ok or resolved.value is None:
+            return self.runtime.foundation.fail(resolved.issues)
+        captured = self._run(
+            ["show", f"{resolved.value}:{path.as_posix()}"],
+            cwd=repo_root,
+        )
+        if not captured.ok:
+            return self._command_failure(
+                "git_release_file_missing",
+                "Release commit does not contain the requested file.",
+                repo_root,
+                captured,
+                object_ref=path.as_posix(),
+            )
+        return self.runtime.foundation.ok(captured.stdout_excerpt or "")
+
     def preview_restore_release(
         self,
         repo_root: Path,

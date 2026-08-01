@@ -9,6 +9,7 @@ from tests.unit_services_helpers import initialize_native_test_repo, make_runtim
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
+from lean_constellation.domain.repo_release import DeclAvailabilityEntry
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.decl_graph.models import RepoDeclDep
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
@@ -563,6 +564,85 @@ def test_content_completion_accepts_stable_declared_provider_dependency(tmp_path
     assert completion.ok and completion.value is not None
     assert completion.value.ready_to_submit is True
     assert completion.value.target_proof_availability == ProofAvailability.PROVED
+
+
+def test_external_readiness_stops_at_sufficient_release_availability_entry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer, provider = _setup_stable_declared_provider_consumer(tmp_path)
+    provider_decl = runtime.decl_graph.get_decl(provider, node_path=NODE_PATH, name="main_result")
+    assert provider_decl.ok and provider_decl.value is not None
+    original_current = runtime.decl_graph.readiness._current_decl_and_revision
+
+    def current_without_provider_recursion(repo_root: Path, *, node_path: str, decl_name: str):
+        assert Path(repo_root).resolve() != provider.resolve()
+        return original_current(repo_root, node_path=node_path, decl_name=decl_name)
+
+    monkeypatch.setattr(
+        runtime.repo_workspace.release,
+        "lookup_decl_availability",
+        lambda *args, **kwargs: runtime.foundation.ok(
+            DeclAvailabilityEntry(
+                node=NODE_PATH,
+                name="main_result",
+                revision=provider_decl.value.current_revision,
+                decl_state="declared",
+                availability=ProofAvailability.DECLARED,
+                main_export=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph.readiness,
+        "_current_decl_and_revision",
+        current_without_provider_recursion,
+    )
+
+    report = runtime.decl_graph.check_decl_proof_policy_satisfied(
+        consumer,
+        node_path=NODE_PATH,
+        decl_name="consumer_result",
+    )
+
+    assert report.ok and report.value is not None
+    assert report.value.ready is True
+
+
+def test_external_readiness_falls_back_when_release_availability_entry_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, consumer, provider = _setup_stable_declared_provider_consumer(tmp_path)
+    original_current = runtime.decl_graph.readiness._current_decl_and_revision
+    provider_reads = 0
+
+    def counted_current(repo_root: Path, *, node_path: str, decl_name: str):
+        nonlocal provider_reads
+        if Path(repo_root).resolve() == provider.resolve():
+            provider_reads += 1
+        return original_current(repo_root, node_path=node_path, decl_name=decl_name)
+
+    monkeypatch.setattr(
+        runtime.repo_workspace.release,
+        "lookup_decl_availability",
+        lambda *args, **kwargs: runtime.foundation.ok(None),
+    )
+    monkeypatch.setattr(
+        runtime.decl_graph.readiness,
+        "_current_decl_and_revision",
+        counted_current,
+    )
+
+    report = runtime.decl_graph.check_decl_proof_policy_satisfied(
+        consumer,
+        node_path=NODE_PATH,
+        decl_name="consumer_result",
+    )
+
+    assert report.ok and report.value is not None
+    assert report.value.ready is True
+    assert provider_reads == 1
 
 
 def test_content_completion_rejects_unexported_external_expected_decl(tmp_path: Path) -> None:

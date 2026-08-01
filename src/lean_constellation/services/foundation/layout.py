@@ -130,6 +130,12 @@ class LayoutComponent:
     def release_path(self, ctx: FoundationContext, release_id: str) -> Path:
         return self.releases_root(ctx) / f"{self.ensure_safe_key(release_id)}.json"
 
+    def release_artifacts_dir(self, ctx: FoundationContext, release_id: str) -> Path:
+        return self.releases_root(ctx) / self.ensure_safe_key(release_id)
+
+    def release_decl_availability_path(self, ctx: FoundationContext, release_id: str) -> Path:
+        return self.release_artifacts_dir(ctx, release_id) / "decl_availability.json"
+
     def repo_locks_root(self, ctx: FoundationContext) -> Path:
         return self.constellation_root(ctx) / ".locks"
 

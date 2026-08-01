@@ -341,8 +341,14 @@ class ReadinessGateComponent:
         active_names = self.runtime.decl_graph.list_active_decl_names(repo_root, node_path=node_path)
         if not active_names.ok or active_names.value is None:
             return self.runtime.foundation.fail(active_names.issues)
+        local_readiness = self.runtime.decl_graph.check_decl_proof_policy_batch(
+            repo_root,
+            roots=[(node_path, decl_name, target) for decl_name in active_names.value],
+        )
+        if not local_readiness.ok or local_readiness.value is None:
+            return self.runtime.foundation.fail(local_readiness.issues)
         local_policy_issues = []
-        for decl_name in active_names.value:
+        for decl_name, policy_report in zip(active_names.value, local_readiness.value, strict=True):
             revision = self.runtime.decl_graph.get_current_decl_revision(
                 repo_root,
                 node_path=node_path,
@@ -352,21 +358,13 @@ class ReadinessGateComponent:
                 local_policy_issues.extend(revision.issues)
                 continue
             stage = "proof" if target == ProofAvailability.PROVED and is_theorem_like(revision.value.kind) else "statement"
-            policy = self.runtime.decl_graph.check_decl_proof_policy_satisfied(
-                repo_root,
-                node_path=node_path,
-                decl_name=decl_name,
-                target_proof_availability=target,
-            )
-            if not policy.ok or policy.value is None:
-                local_policy_issues.extend(policy.issues)
-            elif not policy.value.ready:
+            if not policy_report.ready:
                 local_policy_issues.append(
                     self.runtime.foundation.issue(
                         "content_decl_proof_policy_unsatisfied",
                         f"Declaration does not satisfy current proof availability policy: {decl_name}",
                         object_ref=f"{node_path}:{decl_name}",
-                        details={"target_proof_availability": target.value, "summary": policy.value.summary},
+                        details={"target_proof_availability": target.value, "summary": policy_report.summary},
                     )
                 )
             formal = self.consistency.check_formal_stage_consistency(

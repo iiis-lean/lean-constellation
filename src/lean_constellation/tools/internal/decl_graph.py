@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import RepoFormat
+from lean_constellation.domain.repo import RepoFormat, proof_availability_for_completion_mode
 from lean_constellation.tools.args import (
     ChangeSummaryArgs,
     DeclCreateArgs,
@@ -116,19 +116,29 @@ def _promote_public_statement_closure(runtime, ctx, args: RepoPublicStatementClo
     )
 
 
-def _decl_satisfaction(runtime, repo_root, *, node_path: str, decl_name: str):
-    report = runtime.decl_graph.check_decl_proof_policy_satisfied(repo_root, node_path=node_path, decl_name=decl_name)
-    if not report.ok or report.value is None:
-        return report
-    return runtime.foundation.ok(report.value)
+def _decl_list_items(runtime, repo_root, views) -> list[dict[str, object]]:
+    config = runtime.repo_workspace.metadata.get_repo_config(repo_root)
+    reports = None
+    if config.ok and config.value is not None:
+        target = proof_availability_for_completion_mode(config.value.config.completion_mode)
+        batch = runtime.decl_graph.check_decl_proof_policy_batch(
+            repo_root,
+            roots=[(view.node_path, view.name, target) for view in views],
+        )
+        if batch.ok and batch.value is not None:
+            reports = batch.value
+    return [
+        _decl_list_item(
+            runtime,
+            repo_root,
+            view,
+            proof_policy_satisfied=reports[index].ready if reports is not None else False,
+        )
+        for index, view in enumerate(views)
+    ]
 
 
-def _decl_list_item(runtime, repo_root, view) -> dict[str, object]:
-    report = _decl_satisfaction(runtime, repo_root, node_path=view.node_path, decl_name=view.name)
-    if not report.ok or report.value is None:
-        proof_policy_satisfied = False
-    else:
-        proof_policy_satisfied = report.value.ready
+def _decl_list_item(runtime, repo_root, view, *, proof_policy_satisfied: bool) -> dict[str, object]:
     release = runtime.repo_workspace.release.get_decl_release_status(
         repo_root, node_path=view.node_path, decl_name=view.name
     )
@@ -617,14 +627,14 @@ def _list_current_node_decls(runtime, ctx, args: NoArgs):
     views = runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=_node(ctx))
     if not views.ok or views.value is None:
         return runtime.foundation.fail(views.issues)
-    return runtime.foundation.ok([_decl_list_item(runtime, ctx.repo_root, item) for item in views.value], warnings=views.issues)
+    return runtime.foundation.ok(_decl_list_items(runtime, ctx.repo_root, views.value), warnings=views.issues)
 
 
 def _list_node_decls(runtime, ctx, args: NodeDeclListArgs):
     views = runtime.decl_graph.list_decl_views(ctx.repo_root, node_path=args.node_path)
     if not views.ok or views.value is None:
         return runtime.foundation.fail(views.issues)
-    return runtime.foundation.ok([_decl_list_item(runtime, ctx.repo_root, item) for item in views.value], warnings=views.issues)
+    return runtime.foundation.ok(_decl_list_items(runtime, ctx.repo_root, views.value), warnings=views.issues)
 
 
 def _inspect_current_node_decl(runtime, ctx, args: DeclInspectArgs):

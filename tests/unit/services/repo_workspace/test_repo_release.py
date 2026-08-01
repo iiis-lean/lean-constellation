@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from lean_constellation.domain.refs import DeclRef
-from lean_constellation.domain.repo import RepoCompletionMode, RepoPublicationState, RepoPublicationStatus
-from lean_constellation.domain.repo_release import RepoRelease
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoPublicationState, RepoPublicationStatus
+from lean_constellation.domain.repo_release import DeclAvailabilityEntry, DeclAvailabilityIndex, RepoRelease
 from lean_constellation.services.decl_graph.models import (
     Decl,
     DeclFormalSection,
@@ -18,6 +18,75 @@ from lean_constellation.services.decl_graph.models import (
 from lean_constellation.services.foundation import FoundationContext, WriteMode
 from lean_constellation.services.node import NodeContractStatus
 from tests.unit_services_helpers import lean_check_payload, make_runtime, publish_native_provider_release
+
+
+def test_release_decl_availability_reader_is_optional_and_lru_cached(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = make_runtime()
+    payload = DeclAvailabilityIndex(
+        entries=[
+            DeclAvailabilityEntry(
+                node="Main.Topic.Core",
+                name="result",
+                revision=2,
+                decl_state="proved",
+                availability=ProofAvailability.PROVED,
+                main_export=True,
+            )
+        ]
+    ).model_dump_json()
+    reads = 0
+
+    def read_release_file(*args, **kwargs):
+        nonlocal reads
+        reads += 1
+        return runtime.foundation.ok(payload)
+
+    monkeypatch.setattr(runtime.repo_workspace.git_release, "read_release_file", read_release_file)
+
+    first = runtime.repo_workspace.release.lookup_decl_availability(
+        tmp_path,
+        release_id="release_test",
+        node_path="Main.Topic.Core",
+        decl_name="result",
+        revision=2,
+    )
+    second = runtime.repo_workspace.release.lookup_decl_availability(
+        tmp_path,
+        release_id="release_test",
+        node_path="Main.Topic.Core",
+        decl_name="result",
+        revision=2,
+    )
+
+    assert first.ok and first.value is not None
+    assert second.ok and second.value == first.value
+    assert reads == 1
+
+
+def test_release_decl_availability_reader_treats_invalid_sidecar_as_miss(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = make_runtime()
+    monkeypatch.setattr(
+        runtime.repo_workspace.git_release,
+        "read_release_file",
+        lambda *args, **kwargs: runtime.foundation.ok("{not-json"),
+    )
+
+    loaded = runtime.repo_workspace.release.lookup_decl_availability(
+        tmp_path,
+        release_id="release_test",
+        node_path="Main.Topic.Core",
+        decl_name="result",
+        revision=1,
+    )
+
+    assert loaded.ok
+    assert loaded.value is None
 
 
 def _write_decl(

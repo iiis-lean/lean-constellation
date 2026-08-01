@@ -259,6 +259,54 @@ def test_theorem_ready_recurses_through_ready_dependencies(tmp_path: Path) -> No
     assert report.value.blocker is None
 
 
+def test_batch_readiness_evaluates_shared_exact_state_once(tmp_path: Path, monkeypatch) -> None:
+    _create_content_node(tmp_path)
+    round_id = _create_round_draft(tmp_path)
+    _create_decl(tmp_path, round_id=round_id, name="shared")
+    _create_decl(tmp_path, round_id=round_id, name="left", public=True)
+    _create_decl(tmp_path, round_id=round_id, name="right", public=True)
+    _start_round(tmp_path, round_id)
+    _prove_theorem(tmp_path, round_id=round_id, name="shared")
+    _prove_theorem(tmp_path, round_id=round_id, name="left", deps=["shared"])
+    _prove_theorem(tmp_path, round_id=round_id, name="right", deps=["shared"])
+    _publish_committed_heads(tmp_path, ["shared", "left", "right"])
+
+    runtime = make_runtime()
+    readiness = runtime.decl_graph.readiness
+    original = readiness._current_decl_and_revision
+    calls: dict[str, int] = {}
+
+    def counted_current(repo_root: Path, *, node_path: str, decl_name: str):
+        calls[decl_name] = calls.get(decl_name, 0) + 1
+        return original(repo_root, node_path=node_path, decl_name=decl_name)
+
+    monkeypatch.setattr(readiness, "_current_decl_and_revision", counted_current)
+    batch = runtime.decl_graph.check_decl_proof_policy_batch(
+        tmp_path,
+        roots=[
+            (NODE_PATH, "left", ProofAvailability.PROVED),
+            (NODE_PATH, "right", ProofAvailability.PROVED),
+        ],
+    )
+
+    assert batch.ok and batch.value is not None
+    assert [report.ready for report in batch.value] == [True, True]
+    assert calls == {"left": 1, "shared": 1, "right": 1}
+
+    batch_dump = [report.model_dump(mode="json") for report in batch.value]
+    separate = [
+        runtime.decl_graph.check_decl_proof_policy_satisfied(
+            tmp_path,
+            node_path=NODE_PATH,
+            decl_name=name,
+            target_proof_availability=ProofAvailability.PROVED,
+        )
+        for name in ("left", "right")
+    ]
+    assert all(result.ok and result.value is not None for result in separate)
+    assert batch_dump == [result.value.model_dump(mode="json") for result in separate if result.value is not None]
+
+
 def test_definition_declared_with_statement_check_is_ready(tmp_path: Path) -> None:
     _create_content_node(tmp_path)
     round_id = _create_round_draft(tmp_path)
