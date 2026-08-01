@@ -89,6 +89,42 @@ def test_release_decl_availability_reader_treats_invalid_sidecar_as_miss(
     assert loaded.value is None
 
 
+def test_release_decl_availability_writer_uses_one_batch_and_marks_main_exports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    batch_calls = 0
+    original_batch = runtime.decl_graph.readiness.check_decl_proof_policy_batch
+
+    def count_batch(*args, **kwargs):
+        nonlocal batch_calls
+        batch_calls += 1
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime.decl_graph.readiness,
+        "check_decl_proof_policy_batch",
+        count_batch,
+    )
+
+    built = runtime.decl_graph.build_release_decl_availability_index(tmp_path)
+
+    assert built.ok and built.value is not None
+    assert batch_calls == 1
+    assert [(entry.node, entry.name) for entry in built.value.entries] == [
+        ("Main.Foundation.Defs", "ProofHelper"),
+        ("Main.Foundation.Defs", "Support"),
+        ("Main.Results", "PublicResult"),
+    ]
+    assert all(entry.availability == ProofAvailability.PROVED for entry in built.value.entries)
+    assert {
+        (entry.node, entry.name)
+        for entry in built.value.entries
+        if entry.main_export
+    } == {("Main.Results", "PublicResult")}
+
+
 def _write_decl(
     repo_root: Path,
     *,

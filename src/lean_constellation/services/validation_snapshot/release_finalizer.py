@@ -24,6 +24,7 @@ from lean_constellation.domain.repo import (
     proof_availability_satisfies,
 )
 from lean_constellation.domain.repo_release import (
+    DeclAvailabilityIndex,
     RepoRelease,
     RepoReleaseKind,
     RepoReleaseView,
@@ -54,6 +55,9 @@ class CandidateReleaseGateView(StrictModel):
     base_release_id: str | None = None
     candidate_node_contract_versions: dict[str, int] = Field(default_factory=dict)
     completion_mode: RepoCompletionMode
+    decl_availability_index: DeclAvailabilityIndex = Field(
+        default_factory=DeclAvailabilityIndex
+    )
     build: ToolchainCommandView | None = None
     gate: GateReport
     blocking_issue_kinds: list[str] = Field(default_factory=list)
@@ -448,6 +452,12 @@ class RepoReleaseFinalizerComponent:
             )
         )
 
+        availability_index = self.runtime.decl_graph.build_release_decl_availability_index(
+            repo_root
+        )
+        if not availability_index.ok or availability_index.value is None:
+            return self.runtime.foundation.fail(availability_index.issues)
+
         build = self.runtime.external.lean_toolchain.run_lake_build(repo_root)
         if build.ok:
             reports.append(
@@ -483,6 +493,7 @@ class RepoReleaseFinalizerComponent:
             base_release_id=base_release_id,
             candidate_node_contract_versions=dict(sorted(node_versions.items())),
             completion_mode=config.value.config.completion_mode,
+            decl_availability_index=availability_index.value,
             build=build,
             gate=gate,
             blocking_issue_kinds=blocking,
@@ -571,6 +582,16 @@ class RepoReleaseFinalizerComponent:
         if not publication_files.ok:
             self._refresh_publication_documents_for_current_release(Path(repo_root))
             return self.runtime.foundation.fail(publication_files.issues)
+        availability_written = (
+            self.runtime.repo_workspace.release.write_decl_availability_index(
+                Path(repo_root),
+                release_id=release.release_id,
+                index=audited.decl_availability_index,
+            )
+        )
+        if not availability_written.ok:
+            self._refresh_publication_documents_for_current_release(Path(repo_root))
+            return self.runtime.foundation.fail(availability_written.issues)
         git_state = self.runtime.repo_workspace.git_release.inspect_repo(Path(repo_root))
         if not git_state.ok or git_state.value is None:
             self._refresh_publication_documents_for_current_release(Path(repo_root))

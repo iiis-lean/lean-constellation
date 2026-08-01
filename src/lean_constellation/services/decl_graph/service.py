@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, TypeVar
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo_release import DeclAvailabilityIndex
 from lean_constellation.services.decl_graph.graph_store import GraphStoreComponent
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
@@ -1400,6 +1401,12 @@ class DeclGraphService:
             provider_target_override=provider_target_override,
             round_overlay=round_overlay,
         )
+
+    def build_release_decl_availability_index(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[DeclAvailabilityIndex]:
+        return self.readiness.build_release_decl_availability_index(repo_root)
 
     def check_round_decl_ready(
         self,

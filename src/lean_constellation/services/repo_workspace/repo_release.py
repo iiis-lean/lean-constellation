@@ -109,6 +109,30 @@ class RepoReleaseComponent:
             )
         )
 
+    def write_decl_availability_index(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str,
+        index: DeclAvailabilityIndex,
+    ) -> ServiceResult[Path]:
+        path = self.runtime.foundation.layout.release_decl_availability_path(
+            FoundationContext(repo_root=Path(repo_root)),
+            release_id,
+        )
+        written = self.runtime.foundation.store.write_json_atomic(
+            path,
+            index,
+            mode=WriteMode.CREATE_ONLY,
+        )
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        self._decl_availability_cache.pop(
+            (str(Path(repo_root).resolve()), release_id),
+            None,
+        )
+        return self.runtime.foundation.ok(path)
+
     def allocate_release_id(self, repo_root: Path) -> ServiceResult[str]:
         root = self.runtime.foundation.layout.releases_root(FoundationContext(repo_root=Path(repo_root)))
         existing = {path.stem for path in root.glob("*.json")} if root.exists() else set()

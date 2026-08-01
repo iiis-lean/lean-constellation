@@ -419,6 +419,20 @@ class RepoDependencyReleaseComponent:
         )
         if not publication_files.ok:
             return self.runtime.foundation.fail(publication_files.issues)
+        availability_index = self.runtime.decl_graph.build_release_decl_availability_index(
+            repo_root
+        )
+        if not availability_index.ok or availability_index.value is None:
+            return self.runtime.foundation.fail(availability_index.issues)
+        availability_written = (
+            self.runtime.repo_workspace.release.write_decl_availability_index(
+                repo_root,
+                release_id=release.release_id,
+                index=availability_index.value,
+            )
+        )
+        if not availability_written.ok:
+            return self.runtime.foundation.fail(availability_written.issues)
         target_publication = RepoPublicationState(
             status=RepoPublicationStatus.STABLE,
             latest_release_id=release.release_id,

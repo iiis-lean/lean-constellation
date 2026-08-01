@@ -238,6 +238,8 @@ class ResolvedDeclRefView(StrictModel):
 
 
 __all__ = [
+    "DeclAvailabilityEntry",
+    "DeclAvailabilityIndex",
     "DeclReleaseStatusView",
     "DeclStateValue",
     "ReleasedDeclProtectionView",

@@ -13,6 +13,10 @@ from lean_constellation.domain.repo import (
     proof_availability_satisfies,
     RepoFormat,
 )
+from lean_constellation.domain.repo_release import (
+    DeclAvailabilityEntry,
+    DeclAvailabilityIndex,
+)
 from lean_constellation.domain.lean_check import compact_lean_check
 from lean_constellation.services.decl_graph.decl_catalog import DeclCatalogComponent
 from lean_constellation.services.decl_graph.dependency import DeclDependencyComponent
@@ -155,6 +159,92 @@ class DeclReadinessComponent:
                 return self.runtime.foundation.fail(report.issues)
             reports.append(report.value)
         return self.runtime.foundation.ok(reports)
+
+    def build_release_decl_availability_index(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[DeclAvailabilityIndex]:
+        """Derive a conservative Release lookup sidecar in one batch traversal."""
+
+        repo_root = Path(repo_root)
+        nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
+        if not nodes.ok or nodes.value is None:
+            return self.runtime.foundation.fail(nodes.issues)
+        declarations: list[Decl] = []
+        revisions: dict[tuple[str, str], DeclRevision] = {}
+        for node in sorted(nodes.value, key=lambda item: item.path):
+            if node.kind.value != "content" or node.lifecycle.value != "active":
+                continue
+            listed = self.decl_catalog.list_decls(repo_root, node_path=node.path)
+            if not listed.ok or listed.value is None:
+                return self.runtime.foundation.fail(listed.issues)
+            for decl in listed.value:
+                if decl.lifecycle != DeclLifecycle.ACTIVE:
+                    continue
+                revision = self.decl_catalog.get_decl_revision(
+                    repo_root,
+                    node_path=decl.node_path,
+                    name=decl.name,
+                    revision=decl.current_revision,
+                )
+                if not revision.ok or revision.value is None:
+                    return self.runtime.foundation.fail(revision.issues)
+                if revision.value.status != DeclRevisionStatus.COMMITTED:
+                    continue
+                declarations.append(decl)
+                revisions[(decl.node_path, decl.name)] = revision.value
+        roots = [
+            (decl.node_path, decl.name, target)
+            for decl in declarations
+            for target in (ProofAvailability.DECLARED, ProofAvailability.PROVED)
+        ]
+        checked = self.check_decl_proof_policy_batch(repo_root, roots=roots)
+        if not checked.ok or checked.value is None:
+            return self.runtime.foundation.fail(checked.issues)
+        reports = {
+            (report.node_path, report.decl_name, report.required_availability): report
+            for report in checked.value
+        }
+        main_contract = self.runtime.node.contract.get_visible_contract(
+            repo_root,
+            node_path="Main",
+        )
+        if not main_contract.ok or main_contract.value is None:
+            return self.runtime.foundation.fail(main_contract.issues)
+        exported = {
+            (ref.node, ref.name, ref.revision)
+            for ref in main_contract.value.contract.exports
+        }
+        entries: list[DeclAvailabilityEntry] = []
+        for decl in sorted(declarations, key=lambda item: (item.node_path, item.name)):
+            revision = revisions[(decl.node_path, decl.name)]
+            proved = reports[(decl.node_path, decl.name, ProofAvailability.PROVED)]
+            declared = reports[(decl.node_path, decl.name, ProofAvailability.DECLARED)]
+            availability = (
+                ProofAvailability.PROVED
+                if proved.ready
+                else ProofAvailability.DECLARED
+                if declared.ready
+                else None
+            )
+            if availability is None:
+                continue
+            entries.append(
+                DeclAvailabilityEntry(
+                    node=decl.node_path,
+                    name=decl.name,
+                    revision=revision.revision,
+                    decl_state=revision.state.value,
+                    availability=availability,
+                    main_export=(
+                        decl.node_path,
+                        decl.name,
+                        revision.revision,
+                    )
+                    in exported,
+                )
+            )
+        return self.runtime.foundation.ok(DeclAvailabilityIndex(entries=entries))
 
     def check_round_decl_ready(
         self,

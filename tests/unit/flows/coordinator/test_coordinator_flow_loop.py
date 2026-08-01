@@ -13,6 +13,7 @@ from lean_constellation.domain.preparation import (
     SourceCorpusMode,
 )
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoFormat, RepoPublicationStatus
+from lean_constellation.domain.repo_release import DeclAvailabilityIndex
 from lean_constellation.domain.publication import ReleasePolicy, RepoPublicationOverride
 from lean_constellation.domain.repo_run import RepoRunContext, RepoRunSpec, SourceScope
 from lean_constellation.flows.common.flow_requests import build_content_node_task_request, build_resource_curation_request
@@ -35,7 +36,7 @@ from lean_constellation.flows.repo_exploration.submissions import (
 )
 from lean_constellation.flows.resource_request.flows import ResourceCurationResult
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, ToolchainCommandView
-from lean_constellation.services.foundation import FoundationService
+from lean_constellation.services.foundation import FoundationContext, FoundationService
 from lean_constellation.services.validation_snapshot import (
     CandidateReleaseGateView,
     RepoCheckpointKind,
@@ -847,6 +848,17 @@ def test_repo_ready_submission_prepares_and_publishes_native_release(
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.STABLE
     assert publication.value.publication.latest_release_id == flow.result.prepared_release.release.release_id
+    relative_index = lean_runtime.foundation.layout.release_decl_availability_path(
+        FoundationContext(repo_root=repo_root),
+        flow.result.prepared_release.release.release_id,
+    ).relative_to(repo_root).as_posix()
+    captured_index = lean_runtime.repo_workspace.git_release.read_release_file(
+        repo_root,
+        release_id=flow.result.prepared_release.release.release_id,
+        relative_path=relative_index,
+    )
+    assert captured_index.ok and captured_index.value is not None
+    assert DeclAvailabilityIndex.model_validate_json(captured_index.value).entries == []
     model = lean_runtime.repo_workspace.metadata.get_repo_model(repo_root)
     assert model.ok and model.value.summary is None
 

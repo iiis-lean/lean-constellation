@@ -5,6 +5,7 @@ from pathlib import Path
 
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
 from lean_constellation.domain.repo_release import (
+    DeclAvailabilityIndex,
     RepoDependencyChangeKind,
     RepoRelease,
     RepoReleaseKind,
@@ -174,6 +175,17 @@ def test_locator_rebind_dependency_maintenance_release(
         consumer, release=latest.value.release
     )
     assert validated.ok, validated.issues
+    relative_index = runtime.foundation.layout.release_decl_availability_path(
+        FoundationContext(repo_root=consumer),
+        latest.value.release.release_id,
+    ).relative_to(consumer).as_posix()
+    captured_index = runtime.repo_workspace.git_release.read_release_file(
+        consumer,
+        release_id=latest.value.release.release_id,
+        relative_path=relative_index,
+    )
+    assert captured_index.ok and captured_index.value is not None
+    assert DeclAvailabilityIndex.model_validate_json(captured_index.value).entries == []
     assert runtime.repo_workspace.git_release.list_worktree_changes(consumer).value == []
 
 
