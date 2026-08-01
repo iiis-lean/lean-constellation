@@ -122,6 +122,7 @@ class RepoPublicationManifest(StrictModel):
 
 class PublicApiDeclaration(StrictModel):
     name: str
+    revision: int
     kind: str
     node_path: str
     module: str
@@ -146,13 +147,30 @@ class RepoPublicationDependency(StrictModel):
 
 
 class PublicApiDocument(StrictModel):
-    schema_version: int = 2
+    schema_version: int = 3
     repo_key: str
     release_id: str | None = None
     completion_mode: str
     proof_availability: str
     dependencies: list[RepoPublicationDependency] = Field(default_factory=list)
     declarations: list[PublicApiDeclaration] = Field(default_factory=list)
+    summary: str
+
+
+class PublicBoundaryDeclaration(StrictModel):
+    declaration: PublicApiDeclaration
+    exported_scope_paths: list[str] = Field(default_factory=list)
+    main_export: bool = False
+
+
+class PublicBoundariesDocument(StrictModel):
+    schema_version: int = 1
+    repo_key: str
+    release_id: str | None = None
+    completion_mode: str
+    proof_availability: str
+    dependencies: list[RepoPublicationDependency] = Field(default_factory=list)
+    declarations: list[PublicBoundaryDeclaration] = Field(default_factory=list)
     summary: str
 
 
@@ -176,7 +194,9 @@ class RepoPublicationPreparationView(StrictModel):
     readme_path: str
     public_api_markdown_path: str
     public_api_json_path: str
-    public_api_declarations_dir: str
+    declarations_dir: str
+    public_boundaries_markdown_path: str
+    public_boundaries_json_path: str
     provenance_path: str
     gitignore_path: str
     topics: list[str] = Field(default_factory=list)
@@ -447,6 +467,32 @@ class RepoPublicationComponent:
         *,
         release_id: str | None = None,
     ) -> ServiceResult[PublicApiDocument]:
+        documents = self._render_public_documents(
+            Path(repo_root), release_id=release_id
+        )
+        if not documents.ok or documents.value is None:
+            return self.runtime.foundation.fail(documents.issues)
+        return self.runtime.foundation.ok(documents.value[0])
+
+    def render_public_boundaries(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str | None = None,
+    ) -> ServiceResult[PublicBoundariesDocument]:
+        documents = self._render_public_documents(
+            Path(repo_root), release_id=release_id
+        )
+        if not documents.ok or documents.value is None:
+            return self.runtime.foundation.fail(documents.issues)
+        return self.runtime.foundation.ok(documents.value[1])
+
+    def _render_public_documents(
+        self,
+        repo_root: Path,
+        *,
+        release_id: str | None,
+    ) -> ServiceResult[tuple[PublicApiDocument, PublicBoundariesDocument]]:
         repo_root = Path(repo_root)
         publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
         if not publication.ok or publication.value is None:
@@ -520,6 +566,7 @@ class RepoPublicationComponent:
             declarations.append(
                 PublicApiDeclaration(
                     name=ref.name,
+                    revision=resolved_revision,
                     kind=str(decl.value.kind),
                     node_path=ref.node,
                     module=decl.value.module or ref.node,
@@ -548,25 +595,95 @@ class RepoPublicationComponent:
                     summary=decl.value.summary,
                 )
             )
-        return self.runtime.foundation.ok(
-            PublicApiDocument(
-                repo_key=repo_root.name,
-                release_id=(
-                    release_id
-                    if release_id is not None
-                    else publication.value.publication.latest_release_id
-                ),
-                completion_mode=config.value.config.completion_mode.value,
-                proof_availability=proof_availability_for_completion_mode(
-                    config.value.config.completion_mode
-                ).value,
-                dependencies=dependencies.value,
-                declarations=sorted(
-                    declarations, key=lambda item: (item.node_path, item.name)
-                ),
-                summary=f"Exported {len(declarations)} public declarations.",
+        declarations.sort(key=lambda item: (item.node_path, item.name, item.revision))
+        by_key = {
+            (item.node_path, item.name, item.revision): item
+            for item in declarations
+        }
+        scope_exports: dict[tuple[str, str, int], list[str]] = {}
+        for node in tree.value.nodes:
+            if node.kind.value != "scope":
+                continue
+            contract = self.runtime.node.contract.get_visible_contract(
+                repo_root, node_path=node.path
             )
+            if not contract.ok or contract.value is None:
+                return self.runtime.foundation.fail(contract.issues)
+            for ref in contract.value.contract.exports:
+                key = (ref.node, ref.name, ref.revision)
+                if key not in by_key:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "publication_scope_export_not_public",
+                            "Scope export is not an exact ready Content public declaration.",
+                            object_ref=f"{node.path}:{ref.node}.{ref.name}@{ref.revision}",
+                        )
+                    )
+                scope_exports.setdefault(key, []).append(node.path)
+        main_contract = self.runtime.node.contract.get_visible_contract(
+            repo_root, node_path="Main"
         )
+        if not main_contract.ok or main_contract.value is None:
+            return self.runtime.foundation.fail(main_contract.issues)
+        main_keys = {
+            (ref.node, ref.name, ref.revision)
+            for ref in main_contract.value.contract.exports
+        }
+        api_declarations = [by_key[key] for key in sorted(main_keys)]
+        resolved_release_id = (
+            release_id
+            if release_id is not None
+            else publication.value.publication.latest_release_id
+        )
+        completion_mode = config.value.config.completion_mode.value
+        proof_availability = proof_availability_for_completion_mode(
+            config.value.config.completion_mode
+        ).value
+        api = PublicApiDocument(
+            repo_key=repo_root.name,
+            release_id=resolved_release_id,
+            completion_mode=completion_mode,
+            proof_availability=proof_availability,
+            dependencies=dependencies.value,
+            declarations=api_declarations,
+            summary=f"Exported {len(api_declarations)} Main declarations.",
+        )
+        boundaries = PublicBoundariesDocument(
+            repo_key=repo_root.name,
+            release_id=resolved_release_id,
+            completion_mode=completion_mode,
+            proof_availability=proof_availability,
+            dependencies=dependencies.value,
+            declarations=[
+                PublicBoundaryDeclaration(
+                    declaration=declaration,
+                    exported_scope_paths=sorted(
+                        scope_exports.get(
+                            (
+                                declaration.node_path,
+                                declaration.name,
+                                declaration.revision,
+                            ),
+                            [],
+                        ),
+                        key=lambda value: (value.count("."), value),
+                        reverse=True,
+                    ),
+                    main_export=(
+                        declaration.node_path,
+                        declaration.name,
+                        declaration.revision,
+                    )
+                    in main_keys,
+                )
+                for declaration in declarations
+            ],
+            summary=(
+                f"Catalogued {len(declarations)} Content public declarations; "
+                f"{len(api_declarations)} are exported through Main."
+            ),
+        )
+        return self.runtime.foundation.ok((api, boundaries))
 
     def prepare_publication(
         self,
@@ -617,9 +734,12 @@ class RepoPublicationComponent:
         gitignore = self.refresh_managed_gitignore(repo_root)
         if not gitignore.ok:
             return self.runtime.foundation.fail(gitignore.issues)
-        api = self.render_public_api(repo_root, release_id=release_id)
-        if not api.ok or api.value is None:
-            return self.runtime.foundation.fail(api.issues)
+        public_documents = self._render_public_documents(
+            repo_root, release_id=release_id
+        )
+        if not public_documents.ok or public_documents.value is None:
+            return self.runtime.foundation.fail(public_documents.issues)
+        api, boundaries = public_documents.value
         provenance = self._build_provenance(
             repo_root,
             release_id=release_id,
@@ -630,7 +750,7 @@ class RepoPublicationComponent:
             return self.runtime.foundation.fail(provenance.issues)
         readme_text = self._render_readme_block(
             repo_root,
-            api=api.value,
+            api=api,
             presentation=presentation_value,
         )
         readme_path = repo_root / "README.md"
@@ -664,34 +784,88 @@ class RepoPublicationComponent:
         written.extend(templates.value)
         api_json_path = docs_root / "public-api.json"
         api_md_path = docs_root / "PUBLIC_API.md"
-        api_declarations_root = docs_root / "public-api"
-        api_declarations_root.mkdir(parents=True, exist_ok=True)
+        boundaries_json_path = docs_root / "public-boundaries.json"
+        boundaries_md_path = docs_root / "PUBLIC_BOUNDARIES.md"
+        declarations_root = docs_root / "declarations"
+        declarations_root.mkdir(parents=True, exist_ok=True)
+        legacy_declarations_root = docs_root / "public-api"
+        if legacy_declarations_root.is_dir():
+            for legacy_page in legacy_declarations_root.glob("*.md"):
+                legacy_page.unlink()
+            try:
+                legacy_declarations_root.rmdir()
+            except OSError:
+                pass
+        assets_root = docs_root / "assets"
+        api_svg_path = assets_root / "public-api.svg"
+        boundaries_svg_path = assets_root / "public-boundaries.svg"
         provenance_path = docs_root / "provenance.json"
-        stale_pages = self._stale_public_api_pages(
-            api_json_path,
-            declarations_root=api_declarations_root,
-            current=api.value.declarations,
+        publication_tree = self.runtime.node.node_tree.get_node_tree(repo_root)
+        if not publication_tree.ok or publication_tree.value is None:
+            return self.runtime.foundation.fail(publication_tree.issues)
+        stale_pages = self._stale_declaration_pages(
+            declarations_root=declarations_root,
+            current=[item.declaration for item in boundaries.declarations],
         )
         for stale_page in stale_pages:
             stale_page.unlink()
         for path, value in (
-            (api_json_path, api.value),
+            (api_json_path, api),
+            (boundaries_json_path, boundaries),
             (provenance_path, provenance.value),
         ):
             result = self.runtime.foundation.store.write_json_atomic(path, value)
             if not result.ok:
                 return self.runtime.foundation.fail(result.issues)
             written.append(path.relative_to(repo_root).as_posix())
-        api_md_path.write_text(self._render_public_api_markdown(api.value), encoding="utf-8")
+        api_svg_path.write_text(
+            self._render_public_boundary_svg(
+                tree=publication_tree.value,
+                declarations=api.declarations,
+                propagation={
+                    (item.declaration.node_path, item.declaration.name): item.exported_scope_paths
+                    for item in boundaries.declarations
+                    if item.main_export
+                },
+                title="Repository Public API",
+            ),
+            encoding="utf-8",
+        )
+        boundaries_svg_path.write_text(
+            self._render_public_boundary_svg(
+                tree=publication_tree.value,
+                declarations=[item.declaration for item in boundaries.declarations],
+                propagation={
+                    (item.declaration.node_path, item.declaration.name): item.exported_scope_paths
+                    for item in boundaries.declarations
+                },
+                title="Repository Public Boundaries",
+            ),
+            encoding="utf-8",
+        )
+        written.extend(
+            [
+                api_svg_path.relative_to(repo_root).as_posix(),
+                boundaries_svg_path.relative_to(repo_root).as_posix(),
+            ]
+        )
+        api_md_path.write_text(self._render_public_api_markdown(api), encoding="utf-8")
         written.append(api_md_path.relative_to(repo_root).as_posix())
-        for declaration in api.value.declarations:
+        boundaries_md_path.write_text(
+            self._render_public_boundaries_markdown(boundaries),
+            encoding="utf-8",
+        )
+        written.append(boundaries_md_path.relative_to(repo_root).as_posix())
+        for declaration in [
+            item.declaration for item in boundaries.declarations
+        ]:
             declaration_path = (
-                api_declarations_root
+                declarations_root
                 / f"{self._public_api_slug(declaration)}.md"
             )
             declaration_path.write_text(
                 self._render_public_api_declaration_markdown(
-                    api.value,
+                    api,
                     declaration=declaration,
                 ),
                 encoding="utf-8",
@@ -724,7 +898,13 @@ class RepoPublicationComponent:
                 readme_path="README.md",
                 public_api_markdown_path=api_md_path.relative_to(repo_root).as_posix(),
                 public_api_json_path=api_json_path.relative_to(repo_root).as_posix(),
-                public_api_declarations_dir=api_declarations_root.relative_to(
+                declarations_dir=declarations_root.relative_to(
+                    repo_root
+                ).as_posix(),
+                public_boundaries_markdown_path=boundaries_md_path.relative_to(
+                    repo_root
+                ).as_posix(),
+                public_boundaries_json_path=boundaries_json_path.relative_to(
                     repo_root
                 ).as_posix(),
                 provenance_path=provenance_path.relative_to(repo_root).as_posix(),
@@ -932,9 +1112,7 @@ class RepoPublicationComponent:
             "each declaration page lists the complete direct dependency set. "
             "Mathlib and non-public project dependencies are not shown.",
             "",
-            "```mermaid",
-            *cls._render_public_api_mermaid(declarations),
-            "```",
+            "![Public API dependency graph](assets/public-api.svg)",
             "",
             "## Declarations",
             "",
@@ -949,7 +1127,7 @@ class RepoPublicationComponent:
                     (
                         "[`"
                         + decl.name
-                        + "`](public-api/"
+                        + "`](declarations/"
                         + cls._public_api_slug(decl)
                         + ".md)"
                     ),
@@ -962,6 +1140,327 @@ class RepoPublicationComponent:
         )
         return "\n".join(lines).rstrip() + "\n"
 
+    @classmethod
+    def _render_public_boundaries_markdown(
+        cls,
+        value: PublicBoundariesDocument,
+    ) -> str:
+        declarations = cls._ordered_public_api_declarations(
+            [item.declaration for item in value.declarations]
+        )
+        by_key = {
+            (item.declaration.node_path, item.declaration.name): item
+            for item in value.declarations
+        }
+        lines = [
+            "# Public Boundaries",
+            "",
+            "This catalog shows every Content-public declaration and how it is "
+            "selectively propagated through Scope boundaries. Only declarations "
+            "exported through `Main` belong to the repository Public API.",
+            "",
+            f"- Content-public declarations: `{len(declarations)}`",
+            f"- Main exports: `{sum(item.main_export for item in value.declarations)}`",
+            "",
+            "## Boundary graph",
+            "",
+            "Solid gray arrows are Statement dependencies; dashed amber arrows "
+            "are Proof dependencies. Blue paths show export propagation through "
+            "Scope boundaries, and an outward arrow marks a Main export.",
+            "",
+            "![Repository public boundary graph](assets/public-boundaries.svg)",
+            "",
+            "## Declarations",
+            "",
+            "| Node | Declaration | Kind | Status | Exported through | Main API |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for declaration in declarations:
+            boundary = by_key[(declaration.node_path, declaration.name)]
+            exported = (
+                ", ".join(f"`{item}`" for item in boundary.exported_scope_paths)
+                or "—"
+            )
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        f"`{declaration.node_path}`",
+                        (
+                            "[`"
+                            + declaration.name
+                            + "`](declarations/"
+                            + cls._public_api_slug(declaration)
+                            + ".md)"
+                        ),
+                        f"`{declaration.kind}`",
+                        f"`{declaration.state}`",
+                        exported,
+                        "yes" if boundary.main_export else "no",
+                    ]
+                )
+                + " |"
+            )
+        return "\n".join(lines).rstrip() + "\n"
+
+    @classmethod
+    def _render_public_boundary_svg(
+        cls,
+        *,
+        tree: object,
+        declarations: list[PublicApiDeclaration],
+        propagation: dict[tuple[str, str], list[str]],
+        title: str,
+    ) -> str:
+        """Render one deterministic nested Scope/Content declaration graph."""
+
+        ordered = cls._ordered_public_api_declarations(declarations)
+        if not ordered:
+            return (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="760" height="160" '
+                'viewBox="0 0 760 160" role="img">\n'
+                f'  <title>{html.escape(title)}</title>\n'
+                '  <rect width="760" height="160" fill="#ffffff"/>\n'
+                f'  <text x="28" y="42" font-family="ui-sans-serif, system-ui" '
+                f'font-size="20" font-weight="700" fill="#102a43">{html.escape(title)}</text>\n'
+                '  <text x="28" y="86" font-family="ui-sans-serif, system-ui" '
+                'font-size="14" fill="#627d98">No exported declarations.</text>\n'
+                '</svg>\n'
+            )
+        by_content: dict[str, list[PublicApiDeclaration]] = {}
+        for declaration in ordered:
+            by_content.setdefault(declaration.node_path, []).append(declaration)
+        nodes = {getattr(item, "path"): item for item in getattr(tree, "nodes")}
+        relevant: set[str] = set(by_content)
+        for content_path in by_content:
+            parent = getattr(nodes.get(content_path), "parent_path", None)
+            while parent is not None:
+                relevant.add(parent)
+                parent = getattr(nodes.get(parent), "parent_path", None)
+        relevant.add("Main")
+        children: dict[str, list[str]] = {path: [] for path in relevant}
+        for path in relevant:
+            if path == "Main":
+                continue
+            parent = getattr(nodes.get(path), "parent_path", None)
+            if parent in relevant:
+                children[parent].append(path)
+        declaration_rank = {
+            (item.node_path, item.name): index for index, item in enumerate(ordered)
+        }
+
+        def subtree_rank(path: str) -> tuple[int, str]:
+            ranks = [
+                declaration_rank[(item.node_path, item.name)]
+                for content_path, items in by_content.items()
+                if content_path == path or content_path.startswith(path + ".")
+                for item in items
+            ]
+            return (min(ranks) if ranks else len(ordered), path)
+
+        for values in children.values():
+            values.sort(key=subtree_rank)
+        sizes: dict[str, tuple[float, float]] = {}
+        header = 34.0
+        padding = 18.0
+        gap = 14.0
+        decl_height = 46.0
+
+        def measure(path: str) -> tuple[float, float]:
+            if path in by_content:
+                label_width = max(
+                    [len(path) * 7.8]
+                    + [len(item.name) * 8.4 for item in by_content[path]]
+                )
+                value = (
+                    max(330.0, min(760.0, label_width + 58.0)),
+                    header
+                    + padding
+                    + len(by_content[path]) * decl_height
+                    + max(0, len(by_content[path]) - 1) * 8.0
+                    + padding,
+                )
+            else:
+                child_sizes = [measure(child) for child in children.get(path, [])]
+                value = (
+                    max(
+                        380.0,
+                        len(path) * 7.4 + 62.0,
+                        max((width for width, _ in child_sizes), default=280.0)
+                        + 116.0,
+                    ),
+                    header
+                    + padding
+                    + sum(height for _, height in child_sizes)
+                    + max(0, len(child_sizes) - 1) * gap
+                    + padding,
+                )
+            sizes[path] = value
+            return value
+
+        root_width, root_height = measure("Main")
+        node_boxes: dict[str, tuple[float, float, float, float]] = {}
+        decl_boxes: dict[tuple[str, str], tuple[float, float, float, float]] = {}
+        left_margin = 104.0
+        top_margin = 70.0
+
+        def place(path: str, x: float, y: float) -> None:
+            width, height = sizes[path]
+            node_boxes[path] = (x, y, width, height)
+            if path in by_content:
+                decl_y = y + header + padding
+                for declaration in by_content[path]:
+                    decl_boxes[(path, declaration.name)] = (
+                        x + padding,
+                        decl_y,
+                        width - 2 * padding,
+                        decl_height,
+                    )
+                    decl_y += decl_height + 8.0
+                return
+            child_y = y + header + padding
+            for child in children.get(path, []):
+                place(child, x + padding, child_y)
+                child_y += sizes[child][1] + gap
+
+        place("Main", left_margin, top_margin)
+        canvas_width = root_width + left_margin + 155.0
+        canvas_height = root_height + top_margin + 72.0
+        svg: list[str] = [
+            (
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_width:.0f}" '
+                f'height="{canvas_height:.0f}" viewBox="0 0 {canvas_width:.0f} '
+                f'{canvas_height:.0f}" role="img">'
+            ),
+            f"  <title>{html.escape(title)}</title>",
+            "  <defs>",
+            '    <marker id="dep-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#829ab1"/></marker>',
+            '    <marker id="proof-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b7791f"/></marker>',
+            '    <marker id="export-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#087ea4"/></marker>',
+            "  </defs>",
+            f'  <rect width="{canvas_width:.0f}" height="{canvas_height:.0f}" fill="#ffffff"/>',
+            f'  <text x="{left_margin:.0f}" y="34" font-family="ui-sans-serif, system-ui" font-size="21" font-weight="700" fill="#102a43">{html.escape(title)}</text>',
+        ]
+        dependency_lines: list[str] = []
+        for consumer, provider, kind in cls._transitively_reduced_public_dependency_edges(
+            declarations
+        ):
+            consumer_box = decl_boxes.get(consumer)
+            provider_box = decl_boxes.get(provider)
+            if consumer_box is None or provider_box is None:
+                continue
+            cx, cy, _, ch = consumer_box
+            px, py, _, ph = provider_box
+            lane_seed = hashlib.sha256(
+                repr((consumer, provider)).encode("utf-8")
+            ).digest()[0]
+            lane_x = 34.0 + (lane_seed % 4) * 12.0
+            dash = ' stroke-dasharray="7 5"' if kind == "Proof" else ""
+            color = "#b7791f" if kind == "Proof" else "#829ab1"
+            marker = "proof-arrow" if kind == "Proof" else "dep-arrow"
+            dependency_lines.append(
+                f'    <path d="M {cx:.1f} {cy + ch / 2:.1f} H {lane_x:.1f} V '
+                f'{py + ph / 2:.1f} H {px - 5:.1f}" stroke="{color}" '
+                f'stroke-width="1.5"{dash} marker-end="url(#{marker})"/>'
+            )
+        svg.append('  <g id="boundaries">')
+        for path, (x, y, width, height) in sorted(
+            node_boxes.items(), key=lambda item: (item[0].count("."), item[0])
+        ):
+            is_content = path in by_content
+            fill = "#f8fbfd" if is_content else "#f3f8fb"
+            stroke = "#9fb3c8" if is_content else "#486581"
+            label = "Content" if is_content else "Scope"
+            svg.extend(
+                [
+                    f'    <rect data-node="{html.escape(path, quote=True)}" x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{height:.1f}" rx="8" fill="{fill}" stroke="{stroke}" stroke-width="1.4"/>',
+                    f'    <text x="{x + 14:.1f}" y="{y + 22:.1f}" font-family="ui-sans-serif, system-ui" font-size="13" font-weight="700" fill="#243b53">{html.escape(path)}</text>',
+                    f'    <text x="{x + width - 14:.1f}" y="{y + 22:.1f}" text-anchor="end" font-family="ui-sans-serif, system-ui" font-size="10" letter-spacing="0.7" fill="#627d98">{label}</text>',
+                ]
+            )
+        svg.append("  </g>")
+        svg.append('  <g id="declarations">')
+        for declaration in ordered:
+            x, y, width, height = decl_boxes[
+                (declaration.node_path, declaration.name)
+            ]
+            state_color = "#0f8f88" if declaration.proof_available else "#2563eb"
+            svg.extend(
+                [
+                    f'    <rect data-declaration="{html.escape(declaration.node_path + "." + declaration.name, quote=True)}" x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{height:.1f}" rx="6" fill="#ffffff" stroke="#bcccdc"/>',
+                    f'    <rect x="{x:.1f}" y="{y:.1f}" width="5" height="{height:.1f}" rx="2.5" fill="{state_color}"/>',
+                    f'    <text x="{x + 16:.1f}" y="{y + 20:.1f}" font-family="ui-monospace, SFMono-Regular, monospace" font-size="12.5" font-weight="600" fill="#102a43">{html.escape(declaration.name)}</text>',
+                    f'    <text x="{x + 16:.1f}" y="{y + 36:.1f}" font-family="ui-sans-serif, system-ui" font-size="10.5" fill="#627d98">{html.escape(declaration.kind)} · {html.escape(declaration.state)}</text>',
+                ]
+            )
+        svg.append("  </g>")
+        svg.append('  <g id="dependencies" fill="none" stroke-linecap="round">')
+        svg.extend(dependency_lines)
+        svg.append("  </g>")
+        svg.append('  <g id="exports" fill="none" stroke="#087ea4" stroke-width="1.8">')
+        main_export_keys = [
+            (declaration.node_path, declaration.name)
+            for declaration in ordered
+            if "Main"
+            in propagation.get((declaration.node_path, declaration.name), [])
+        ]
+        main_export_rank = {
+            key: index for index, key in enumerate(main_export_keys)
+        }
+        for index, declaration in enumerate(ordered):
+            key = (declaration.node_path, declaration.name)
+            exported_scopes = propagation.get(key, [])
+            if not exported_scopes:
+                continue
+            x, y, width, height = decl_boxes[key]
+            points = [(x + width, y + height / 2)]
+            for scope_path in sorted(
+                exported_scopes,
+                key=lambda value: (value.count("."), value),
+                reverse=True,
+            ):
+                scope_box = node_boxes.get(scope_path)
+                if scope_box is None:
+                    continue
+                sx, sy, sw, _ = scope_box
+                target_x = sx + sw - 22.0 - (index % 4) * 8.0
+                points.append((target_x, points[-1][1]))
+                target_y = (
+                    sy + 24.0 + main_export_rank[key] * 11.0
+                    if scope_path == "Main"
+                    else sy + 17.0 + (index % 4) * 3.0
+                )
+                points.append((target_x, target_y))
+            path_data = "M " + " L ".join(
+                f"{point_x:.1f} {point_y:.1f}" for point_x, point_y in points
+            )
+            svg.append(f'    <path d="{path_data}" opacity="0.78"/>')
+            svg.append(
+                f'    <circle cx="{x + width:.1f}" cy="{y + height / 2:.1f}" r="3.2" fill="#087ea4" stroke="none"/>'
+            )
+            if "Main" in exported_scopes:
+                main_x, main_y, main_width, _ = node_boxes["Main"]
+                end_y = main_y + 24.0 + main_export_rank[key] * 11.0
+                svg.append(
+                    f'    <path d="M {main_x + main_width - 22.0 - (index % 4) * 8.0:.1f} '
+                    f'{end_y:.1f} H {canvas_width - 28.0:.1f}" '
+                    'marker-end="url(#export-arrow)"/>'
+                )
+        if main_export_keys:
+            svg.append(
+                f'    <text x="{canvas_width - 30.0:.1f}" y="{top_margin - 10.0:.1f}" text-anchor="end" '
+                'font-family="ui-sans-serif, system-ui" font-size="10" fill="#087ea4" stroke="none">external API</text>'
+            )
+        svg.extend(
+            [
+                "  </g>",
+                f'  <text x="{left_margin:.0f}" y="{canvas_height - 24:.0f}" font-family="ui-sans-serif, system-ui" font-size="10.5" fill="#829ab1">Solid: Statement dependency · dashed: Proof dependency · blue: Scope export propagation</text>',
+                "</svg>",
+                "",
+            ]
+        )
+        return "\n".join(svg)
+
     @staticmethod
     def _render_public_api_declaration_markdown(
         value: PublicApiDocument,
@@ -969,7 +1468,8 @@ class RepoPublicationComponent:
         declaration: PublicApiDeclaration,
     ) -> str:
         lines = [
-            "[← Public API index](../PUBLIC_API.md)",
+            "[← Public API](../PUBLIC_API.md) · "
+            "[Public boundaries](../PUBLIC_BOUNDARIES.md)",
             "",
             f"# `{declaration.name}`",
             "",
@@ -1139,73 +1639,6 @@ class RepoPublicationComponent:
         return ordered
 
     @classmethod
-    def _render_public_api_mermaid(
-        cls,
-        declarations: list[PublicApiDeclaration],
-    ) -> list[str]:
-        by_key = {
-            (item.node_path, item.name): item
-            for item in declarations
-        }
-        identifiers = {
-            key: f"d{index}"
-            for index, key in enumerate(by_key)
-        }
-        lines = [
-            (
-                '%%{init: {"flowchart": {"defaultRenderer": "elk", '
-                '"nodeSpacing": 24, "rankSpacing": 36}}}%%'
-            ),
-            "flowchart TB",
-        ]
-        for node_index, node_path in enumerate(
-            dict.fromkeys(item.node_path for item in declarations)
-        ):
-            lines.append(
-                f'  subgraph n{node_index}["{html.escape(node_path, quote=True)}"]'
-            )
-            lines.append("    direction TB")
-            for declaration in (
-                item for item in declarations if item.node_path == node_path
-            ):
-                key = (declaration.node_path, declaration.name)
-                label = cls._mermaid_declaration_label(declaration)
-                lines.append(f'    {identifiers[key]}["{label}"]')
-            lines.append("  end")
-        for (
-            consumer,
-            provider,
-            dependency_kind,
-        ) in cls._transitively_reduced_public_dependency_edges(declarations):
-            if consumer not in identifiers or provider not in identifiers:
-                continue
-            connector = "-->" if dependency_kind == "Statement" else "-.->"
-            lines.append(
-                f"  {identifiers[consumer]} {connector} {identifiers[provider]}"
-            )
-        return lines
-
-    @staticmethod
-    def _mermaid_declaration_label(
-        declaration: PublicApiDeclaration,
-    ) -> str:
-        words = declaration.name.split("_")
-        label_lines: list[str] = []
-        current = ""
-        for word in words:
-            candidate = word if not current else f"{current}_{word}"
-            if current and len(candidate) > 30:
-                label_lines.append(current)
-                current = word
-            else:
-                current = candidate
-        if current:
-            label_lines.append(current)
-        return "<br/>".join(
-            html.escape(line, quote=True) for line in label_lines
-        )
-
-    @classmethod
     def _transitively_reduced_public_dependency_edges(
         cls,
         declarations: list[PublicApiDeclaration],
@@ -1263,40 +1696,21 @@ class RepoPublicationComponent:
         return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
 
     @classmethod
-    def _stale_public_api_pages(
+    def _stale_declaration_pages(
         cls,
-        api_json_path: Path,
         *,
         declarations_root: Path,
         current: list[PublicApiDeclaration],
     ) -> list[Path]:
-        if not api_json_path.exists():
-            return []
-        try:
-            payload = json.loads(api_json_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
         current_names = {
             f"{cls._public_api_slug(item)}.md"
             for item in current
         }
-        stale: list[Path] = []
-        for item in payload.get("declarations", []):
-            node_path = item.get("node_path")
-            name = item.get("name")
-            if not isinstance(node_path, str) or not isinstance(name, str):
-                continue
-            filename = (
-                cls._public_api_slug_from_values(
-                    node_path=node_path,
-                    name=name,
-                )
-                + ".md"
-            )
-            path = declarations_root / filename
-            if filename not in current_names and path.is_file():
-                stale.append(path)
-        return stale
+        return [
+            path
+            for path in declarations_root.glob("*.md")
+            if path.name not in current_names
+        ]
 
     @classmethod
     def _render_readme_block(
@@ -1380,7 +1794,9 @@ class RepoPublicationComponent:
                 "",
                 "Browse the [Public API index](docs/lean-constellation/PUBLIC_API.md) "
                 "for the dependency graph, declaration index, final Lean code, "
-                "dependencies, and sources.",
+                "dependencies, and sources. The "
+                "[public boundary catalog](docs/lean-constellation/PUBLIC_BOUNDARIES.md) "
+                "documents internal Content-public declarations and Scope propagation.",
             ]
         )
         lines.extend(
@@ -1570,6 +1986,8 @@ class RepoPublicationComponent:
 __all__ = [
     "PublicApiDeclaration",
     "PublicApiDocument",
+    "PublicBoundariesDocument",
+    "PublicBoundaryDeclaration",
     "PublicationDirectoryExclusion",
     "PublicationFileEntry",
     "RepoProvenanceDocument",

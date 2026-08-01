@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from xml.etree import ElementTree
 
 from lean_constellation.domain.publication import (
     PushPolicy,
@@ -12,6 +13,7 @@ from lean_constellation.domain.publication import (
     RepoPublicationPresentation,
     WorkspacePublicationPolicy,
 )
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import WorkspaceConfig
 from lean_constellation.services.repo_workspace.publication import (
     PublicApiDocument,
@@ -22,6 +24,7 @@ from tests.unit_services_helpers import make_runtime
 from tests.unit.services.repo_workspace.test_repo_release import (
     _prepare_release_repo,
     _release,
+    _set_contract_exports,
 )
 
 
@@ -167,9 +170,14 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert "Generated with <strong>Lean Constellation</strong>" in readme_text
     assert "Formalizes a public result." in readme_text
     assert "Internal release migration summary." not in readme_text
-    assert "This repository exports **3 public declarations**" in readme_text
+    assert "This repository exports **1 public declarations**" in readme_text
     assert (
         "[Public API index](docs/lean-constellation/PUBLIC_API.md)"
+        in readme_text
+    )
+    assert (
+        "[public boundary catalog]"
+        "(docs/lean-constellation/PUBLIC_BOUNDARIES.md)"
         in readme_text
     )
     assert "| Declaration | Kind | Node | Status |" not in readme_text
@@ -206,11 +214,7 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     api = json.loads(
         (tmp_path / "docs/lean-constellation/public-api.json").read_text()
     )
-    assert {item["name"] for item in api["declarations"]} == {
-        "ProofHelper",
-        "PublicResult",
-        "Support",
-    }
+    assert {item["name"] for item in api["declarations"]} == {"PublicResult"}
     public_result = next(
         item for item in api["declarations"] if item["name"] == "PublicResult"
     )
@@ -228,16 +232,41 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
         tmp_path / "docs/lean-constellation/PUBLIC_API.md"
     ).read_text()
     assert "## Dependency graph" in api_markdown
-    assert "flowchart TB" in api_markdown
-    assert " --> " in api_markdown
-    assert " -.-> " in api_markdown
+    assert "assets/public-api.svg" in api_markdown
     assert "Transitively implied edges are omitted" in api_markdown
     assert "| Node | Declaration | Kind | Status |" in api_markdown
     assert "theorem PublicResult" not in api_markdown
     assert "sorry" not in api_markdown
+    assert "Support" not in api_markdown
+    boundaries = json.loads(
+        (
+            tmp_path / "docs/lean-constellation/public-boundaries.json"
+        ).read_text()
+    )
+    assert {
+        item["declaration"]["name"] for item in boundaries["declarations"]
+    } == {"ProofHelper", "PublicResult", "Support"}
+    boundary_public_result = next(
+        item
+        for item in boundaries["declarations"]
+        if item["declaration"]["name"] == "PublicResult"
+    )
+    assert boundary_public_result["main_export"] is True
+    assert boundary_public_result["exported_scope_paths"] == ["Main"]
+    assert all(
+        not item["main_export"]
+        for item in boundaries["declarations"]
+        if item["declaration"]["name"] != "PublicResult"
+    )
+    boundaries_markdown = (
+        tmp_path / "docs/lean-constellation/PUBLIC_BOUNDARIES.md"
+    ).read_text()
+    assert "assets/public-boundaries.svg" in boundaries_markdown
+    assert "ProofHelper" in boundaries_markdown
+    assert "Support" in boundaries_markdown
     declaration_pages = sorted(
         (
-            tmp_path / "docs/lean-constellation/public-api"
+            tmp_path / "docs/lean-constellation/declarations"
         ).glob("*.md")
     )
     assert len(declaration_pages) == 3
@@ -251,24 +280,17 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert "theorem PublicResult" in public_result_markdown
     assert "trivial" in public_result_markdown
     assert "sorry" not in public_result_markdown
-    assert api_markdown.index("PublicResult") < api_markdown.index("Support")
-    assert prepared.value.public_api_declarations_dir == (
-        "docs/lean-constellation/public-api"
+    assert prepared.value.declarations_dir == (
+        "docs/lean-constellation/declarations"
+    )
+    assert prepared.value.public_boundaries_markdown_path == (
+        "docs/lean-constellation/PUBLIC_BOUNDARIES.md"
     )
     stale_page = (
         tmp_path
-        / "docs/lean-constellation/public-api/legacy-node-oldresult.md"
+        / "docs/lean-constellation/declarations/legacy-node-oldresult.md"
     )
     stale_page.write_text("obsolete\n")
-    api_payload = json.loads(
-        (tmp_path / "docs/lean-constellation/public-api.json").read_text()
-    )
-    api_payload["declarations"].append(
-        {"node_path": "Legacy.Node", "name": "OldResult"}
-    )
-    (
-        tmp_path / "docs/lean-constellation/public-api.json"
-    ).write_text(json.dumps(api_payload))
     refreshed = runtime.repo_workspace.publication.prepare_publication(tmp_path)
     assert refreshed.ok, refreshed.issues
     assert not stale_page.exists()
@@ -297,6 +319,27 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
         tmp_path / ".lean_constellation/publication/manifest.json",
     ):
         assert str(tmp_path) not in path.read_text(encoding="utf-8")
+    for name in ("public-api.svg", "public-boundaries.svg"):
+        svg_path = tmp_path / "docs/lean-constellation/assets" / name
+        root = ElementTree.fromstring(svg_path.read_text(encoding="utf-8"))
+        declaration_rects = [
+            element
+            for element in root.iter("{http://www.w3.org/2000/svg}rect")
+            if "data-declaration" in element.attrib
+        ]
+        boxes = [
+            tuple(float(element.attrib[key]) for key in ("x", "y", "width", "height"))
+            for element in declaration_rects
+        ]
+        assert len(boxes) == (1 if name == "public-api.svg" else 3)
+        for index, (x1, y1, width1, height1) in enumerate(boxes):
+            for x2, y2, width2, height2 in boxes[index + 1 :]:
+                assert (
+                    x1 + width1 <= x2
+                    or x2 + width2 <= x1
+                    or y1 + height1 <= y2
+                    or y2 + height2 <= y1
+                )
 
 
 def test_publication_status_badge_uses_proof_availability_and_flat_square(
@@ -331,6 +374,56 @@ def test_publication_status_badge_uses_proof_availability_and_flat_square(
             "label=Lean&message=4.32.0&color=6b4fbb&style=flat-square"
             in rendered
         )
+
+
+def test_publication_tracks_scope_export_propagation_to_main(
+    tmp_path: Path,
+) -> None:
+    runtime, _ = _prepare_release_repo(tmp_path)
+    support = DeclRef(
+        node="Main.Foundation.Defs", name="Support", revision=1
+    )
+    public_result = DeclRef(
+        node="Main.Results", name="PublicResult", revision=1
+    )
+    _set_contract_exports(
+        runtime,
+        tmp_path,
+        node_path="Main.Foundation",
+        exports=[support],
+    )
+    _set_contract_exports(
+        runtime,
+        tmp_path,
+        node_path="Main",
+        exports=[public_result, support],
+    )
+
+    prepared = runtime.repo_workspace.publication.prepare_publication(tmp_path)
+
+    assert prepared.ok, prepared.issues
+    api = json.loads(
+        (tmp_path / "docs/lean-constellation/public-api.json").read_text()
+    )
+    assert [item["name"] for item in api["declarations"]] == [
+        "Support",
+        "PublicResult",
+    ]
+    boundaries = json.loads(
+        (
+            tmp_path / "docs/lean-constellation/public-boundaries.json"
+        ).read_text()
+    )
+    support_boundary = next(
+        item
+        for item in boundaries["declarations"]
+        if item["declaration"]["name"] == "Support"
+    )
+    assert support_boundary["exported_scope_paths"] == [
+        "Main.Foundation",
+        "Main",
+    ]
+    assert support_boundary["main_export"] is True
 
 
 def test_repo_publication_override_wins_over_workspace_defaults(
@@ -446,6 +539,7 @@ def test_public_dependency_graph_is_consumer_first_and_transitively_reduced() ->
     ) -> PublicApiDeclaration:
         return PublicApiDeclaration(
             name=name,
+            revision=1,
             kind="theorem",
             node_path="Main.Results",
             module=f"Example.{name}",
