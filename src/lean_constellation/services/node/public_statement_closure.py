@@ -33,9 +33,8 @@ if TYPE_CHECKING:
 
 
 class PublicStatementClosureBoundary(StrEnum):
-    NODE = "node"
+    CONTENT = "content"
     SCOPE = "scope"
-    REPO = "repo"
 
 
 class PublicStatementClosureDecl(StrictModel):
@@ -140,7 +139,7 @@ class PublicStatementClosureComponent:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
 
-    def inspect_node(
+    def inspect_content(
         self,
         repo_root: Path,
         *,
@@ -154,7 +153,7 @@ class PublicStatementClosureComponent:
             Path(repo_root),
             roots=roots.value,
             options=_InspectionOptions(
-                boundary=PublicStatementClosureBoundary.NODE,
+                boundary=PublicStatementClosureBoundary.CONTENT,
                 node_path=node_path,
                 visible_contracts=False,
             ),
@@ -165,13 +164,20 @@ class PublicStatementClosureComponent:
         repo_root: Path,
         *,
         scope_path: str,
+        roots: list[DeclRef] | None = None,
+        visible: bool = False,
     ) -> ServiceResult[PublicStatementClosureReport]:
-        roots = self._scope_roots(Path(repo_root), scope_path=scope_path, visible=False)
-        if not roots.ok or roots.value is None:
-            return self.runtime.foundation.fail(roots.issues)
+        selected = self._scope_roots(
+            Path(repo_root),
+            scope_path=scope_path,
+            roots=roots,
+            visible=visible,
+        )
+        if not selected.ok or selected.value is None:
+            return self.runtime.foundation.fail(selected.issues)
         return self._inspect(
             Path(repo_root),
-            roots=roots.value,
+            roots=selected.value,
             options=_InspectionOptions(
                 boundary=PublicStatementClosureBoundary.SCOPE,
                 node_path=scope_path,
@@ -179,27 +185,8 @@ class PublicStatementClosureComponent:
             ),
         )
 
-    def inspect_repo(
-        self,
-        repo_root: Path,
-        *,
-        roots: list[DeclRef] | None = None,
-    ) -> ServiceResult[PublicStatementClosureReport]:
-        selected = self._repo_roots(Path(repo_root), roots=roots, visible=False)
-        if not selected.ok or selected.value is None:
-            return self.runtime.foundation.fail(selected.issues)
-        return self._inspect(
-            Path(repo_root),
-            roots=selected.value,
-            options=_InspectionOptions(
-                boundary=PublicStatementClosureBoundary.REPO,
-                node_path="Main",
-                visible_contracts=False,
-            ),
-        )
-
-    def check_node(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
-        report = self.inspect_node(repo_root, node_path=node_path)
+    def check_content(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
+        report = self.inspect_content(repo_root, node_path=node_path)
         if not report.ok or report.value is None:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed(
@@ -210,8 +197,14 @@ class PublicStatementClosureComponent:
             )
         return self._gate("content_public_statement_closure", report)
 
-    def check_scope(self, repo_root: Path, *, scope_path: str) -> ServiceResult[GateReport]:
-        report = self.inspect_scope(repo_root, scope_path=scope_path)
+    def check_scope(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        visible: bool = False,
+    ) -> ServiceResult[GateReport]:
+        report = self.inspect_scope(repo_root, scope_path=scope_path, visible=visible)
         if not report.ok or report.value is None:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed(
@@ -222,35 +215,14 @@ class PublicStatementClosureComponent:
             )
         return self._gate("scope_public_statement_closure", report)
 
-    def check_repo(self, repo_root: Path) -> ServiceResult[GateReport]:
-        roots = self._repo_roots(Path(repo_root), roots=None, visible=True)
-        if not roots.ok or roots.value is None:
-            return self.runtime.foundation.ok(
-                self.runtime.foundation.gate_failed(
-                    "repo_public_statement_closure",
-                    roots.issues,
-                    summary="Public statement closure could not be inspected.",
-                )
-            )
-        report = self._inspect(
-            Path(repo_root),
-            roots=roots.value,
-            options=_InspectionOptions(
-                boundary=PublicStatementClosureBoundary.REPO,
-                node_path="Main",
-                visible_contracts=True,
-            ),
-        )
-        return self._gate("repo_public_statement_closure", report)
-
-    def promote_decl_public(
+    def promote_content_decl_public(
         self,
         repo_root: Path,
         *,
         node_path: str,
         decl_name: str,
     ) -> ServiceResult[PublicStatementPromotionReceipt]:
-        inspected = self.inspect_node(
+        inspected = self.inspect_content(
             Path(repo_root),
             node_path=node_path,
             root_decl_names=[decl_name],
@@ -265,7 +237,7 @@ class PublicStatementClosureComponent:
         if not selected:
             return self.runtime.foundation.ok(
                 PublicStatementPromotionReceipt(
-                    boundary=PublicStatementClosureBoundary.NODE,
+                    boundary=PublicStatementClosureBoundary.CONTENT,
                     node_path=node_path,
                     changed=False,
                     report=inspected.value,
@@ -274,26 +246,26 @@ class PublicStatementClosureComponent:
             )
         return self._apply(
             Path(repo_root),
-            boundary=PublicStatementClosureBoundary.NODE,
+            boundary=PublicStatementClosureBoundary.CONTENT,
             node_path=node_path,
             promoted=selected,
             export_additions={},
             allow_incomplete=True,
-            reinspect=lambda: self.inspect_node(
+            reinspect=lambda: self.inspect_content(
                 Path(repo_root),
                 node_path=node_path,
                 root_decl_names=[decl_name],
             ),
         )
 
-    def promote_node_closure(
+    def promote_content_closure(
         self,
         repo_root: Path,
         *,
         node_path: str,
         root_decl_names: list[str] | None = None,
     ) -> ServiceResult[PublicStatementPromotionReceipt]:
-        inspected = self.inspect_node(
+        inspected = self.inspect_content(
             Path(repo_root),
             node_path=node_path,
             root_decl_names=root_decl_names,
@@ -308,24 +280,29 @@ class PublicStatementClosureComponent:
         ]
         return self._apply(
             Path(repo_root),
-            boundary=PublicStatementClosureBoundary.NODE,
+            boundary=PublicStatementClosureBoundary.CONTENT,
             node_path=node_path,
             promoted=promoted,
             export_additions={},
-            reinspect=lambda: self.inspect_node(
+            reinspect=lambda: self.inspect_content(
                 Path(repo_root),
                 node_path=node_path,
                 root_decl_names=root_decl_names,
             ),
         )
 
-    def promote_repo_closure(
+    def promote_scope_closure(
         self,
         repo_root: Path,
         *,
+        scope_path: str,
         roots: list[DeclRef] | None = None,
     ) -> ServiceResult[PublicStatementPromotionReceipt]:
-        inspected = self.inspect_repo(Path(repo_root), roots=roots)
+        inspected = self.inspect_scope(
+            Path(repo_root),
+            scope_path=scope_path,
+            roots=roots,
+        )
         if not inspected.ok or inspected.value is None:
             return self.runtime.foundation.fail(inspected.issues)
         unsafe = self._unsafe_issues(inspected.value)
@@ -333,11 +310,15 @@ class PublicStatementClosureComponent:
             return self.runtime.foundation.fail(unsafe)
         return self._apply(
             Path(repo_root),
-            boundary=PublicStatementClosureBoundary.REPO,
-            node_path="Main",
+            boundary=PublicStatementClosureBoundary.SCOPE,
+            node_path=scope_path,
             promoted=inspected.value.required_public_promotions,
             export_additions=inspected.value.required_export_additions,
-            reinspect=lambda: self.inspect_repo(Path(repo_root), roots=roots),
+            reinspect=lambda: self.inspect_scope(
+                Path(repo_root),
+                scope_path=scope_path,
+                roots=roots,
+            ),
         )
 
     def _inspect(
@@ -511,10 +492,23 @@ class PublicStatementClosureComponent:
         }
         preflight_issues: list[ServiceIssue] = []
         for ref in promoted:
-            ready = self._promotion_ready(repo_root, ref)
-            if not ready.ok or ready.value is None:
-                preflight_issues.extend(ready.issues)
-            elif not ready.value:
+            loaded = self._load_current_decl(repo_root, ref)
+            if not loaded.ok or loaded.value is None:
+                preflight_issues.extend(loaded.issues)
+        config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
+        if not config.ok or config.value is None:
+            preflight_issues.extend(config.issues)
+        if preflight_issues:
+            return self.runtime.foundation.fail(self._unique_issues(preflight_issues))
+        target = proof_availability_for_completion_mode(config.value.config.completion_mode)
+        readiness = self.runtime.decl_graph.check_decl_proof_policy_batch(
+            repo_root,
+            roots=[(ref.node, ref.name, target) for ref in promoted],
+        )
+        if not readiness.ok or readiness.value is None:
+            return self.runtime.foundation.fail(readiness.issues)
+        for ref, report in zip(promoted, readiness.value, strict=True):
+            if not report.ready:
                 preflight_issues.append(
                     self.runtime.foundation.issue(
                         "public_statement_promotion_not_ready",
@@ -698,6 +692,7 @@ class PublicStatementClosureComponent:
         repo_root: Path,
         *,
         scope_path: str,
+        roots: list[DeclRef] | None,
         visible: bool,
     ) -> ServiceResult[list[DeclRef]]:
         contract = (
@@ -715,30 +710,76 @@ class PublicStatementClosureComponent:
                     object_ref=scope_path,
                 )
             )
-        return self.runtime.foundation.ok(list(contract.value.contract.exports))
-
-    def _repo_roots(
-        self,
-        repo_root: Path,
-        *,
-        roots: list[DeclRef] | None,
-        visible: bool,
-    ) -> ServiceResult[list[DeclRef]]:
-        main = self._scope_roots(repo_root, scope_path="Main", visible=visible)
-        if not main.ok or main.value is None:
-            return self.runtime.foundation.fail(main.issues)
-        selected = list(main.value)
+        selected = list(contract.value.contract.exports)
+        root_issues: list[ServiceIssue] = []
         for root in roots or []:
             if root.repo is not None:
-                return self.runtime.foundation.fail(
+                root_issues.append(
                     self.runtime.foundation.issue(
                         "public_statement_root_cross_repo",
-                        "Repository closure roots must belong to the current repository.",
+                        "Scope closure roots must belong to the current repository.",
                         object_ref=f"{root.repo}:{root.node}:{root.name}",
                     )
                 )
+                continue
+            visible_from_child = self._scope_root_visible_from_direct_child(
+                repo_root,
+                scope_path=scope_path,
+                ref=root,
+                visible=visible,
+            )
+            if not visible_from_child.ok:
+                root_issues.extend(visible_from_child.issues)
+                continue
+            if not visible_from_child.value:
+                root_issues.append(
+                    self.runtime.foundation.issue(
+                        "public_statement_scope_root_not_child_public",
+                        "A Scope closure root must already be public through one direct child boundary.",
+                        object_ref=f"{root.node}:{root.name}",
+                        details={"scope_path": scope_path},
+                    )
+                )
+                continue
             selected.append(self._current_ref(repo_root, root))
+        if root_issues:
+            return self.runtime.foundation.fail(self._unique_issues(root_issues))
         return self.runtime.foundation.ok(self._unique_refs(selected))
+
+    def _scope_root_visible_from_direct_child(
+        self,
+        repo_root: Path,
+        *,
+        scope_path: str,
+        ref: DeclRef,
+        visible: bool,
+    ) -> ServiceResult[bool]:
+        children = self.runtime.node.node_tree.list_children(repo_root, scope_path=scope_path)
+        if not children.ok or children.value is None:
+            return self.runtime.foundation.fail(children.issues)
+        child = next(
+            (
+                candidate
+                for candidate in children.value
+                if ref.node == candidate.path or ref.node.startswith(f"{candidate.path}.")
+            ),
+            None,
+        )
+        if child is None:
+            return self.runtime.foundation.ok(False)
+        if child.kind == NodeKind.SCOPE:
+            return self._scope_exports_ref(
+                repo_root,
+                scope_path=child.path,
+                ref=self._current_ref(repo_root, ref),
+                visible=visible,
+            )
+        if ref.node != child.path:
+            return self.runtime.foundation.ok(False)
+        loaded = self._load_current_decl(repo_root, ref)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        return self.runtime.foundation.ok(loaded.value[0].public)
 
     def _load_current_decl(
         self,
@@ -789,19 +830,6 @@ class PublicStatementClosureComponent:
             )
         )
 
-    def _promotion_ready(self, repo_root: Path, ref: DeclRef) -> ServiceResult[bool]:
-        loaded = self._load_current_decl(repo_root, ref)
-        if not loaded.ok or loaded.value is None:
-            return self.runtime.foundation.fail(loaded.issues)
-        ready = self.runtime.decl_graph.check_decl_proof_policy_satisfied(
-            repo_root,
-            node_path=ref.node,
-            decl_name=ref.name,
-        )
-        if not ready.ok or ready.value is None:
-            return self.runtime.foundation.fail(ready.issues)
-        return self.runtime.foundation.ok(ready.value.ready)
-
     def _external_public(self, repo_root: Path, ref: DeclRef) -> bool:
         if ref.repo is None:
             return False
@@ -826,7 +854,7 @@ class PublicStatementClosureComponent:
         provider_node: str,
         options: _InspectionOptions,
     ) -> list[str]:
-        if options.boundary == PublicStatementClosureBoundary.NODE:
+        if options.boundary == PublicStatementClosureBoundary.CONTENT:
             return []
         boundary = options.node_path or "Main"
         if provider_node == boundary or not provider_node.startswith(f"{boundary}."):

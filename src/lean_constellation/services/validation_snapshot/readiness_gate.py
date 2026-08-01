@@ -400,7 +400,7 @@ class ReadinessGateComponent:
             )
         )
 
-        public_closure = self.node.public_statement_closure.check_node(
+        public_closure = self.node.public_statement_closure.check_content(
             repo_root,
             node_path=node_path,
         )
@@ -639,7 +639,11 @@ class ReadinessGateComponent:
             return self.runtime.foundation.fail(statement_contracts.issues)
         reports.append(statement_contracts.value)
 
-        public_closure = self.node.public_statement_closure.check_repo(repo_root)
+        public_closure = self.node.public_statement_closure.check_scope(
+            repo_root,
+            scope_path="Main",
+            visible=True,
+        )
         if not public_closure.ok or public_closure.value is None:
             return self.runtime.foundation.fail(public_closure.issues)
         reports.append(public_closure.value)

@@ -443,7 +443,7 @@ That Skill may direct you to read `scope-export-interface-curation` when detaile
 
 Use `commit_scope_contract` only after required child boundaries, exports, interface bindings, projection state, and Scope readiness checks are stable. After a Scope commit, return to the next-action loop.
 
-A small stable public API must still be formally usable. Before closing a Scope or Main, inspect its public Statement dependency closure. Every current-repository declaration named by a public declaration's formal Statement must be public in its owning Content node and exported through the enclosing Scope chain. Proof-only dependencies and local proof helpers do not become public automatically. Use visibility promotion only for already-ready declarations; it does not replace missing Content work.
+A small stable public API must still be formally usable. Treat Main as the root Scope and use the same Scope closure workflow at every level. Before closing a Scope, inspect its public Statement dependency closure. Existing exports and any explicitly selected direct-child public roots are closure roots. Every current-repository declaration named by a root's formal Statement must be public in its owning Content node and exported through the enclosing Scope chain up to that Scope, but not beyond it. Proof-only dependencies and local proof helpers do not become public automatically. Use visibility promotion only for already-ready declarations; it does not replace missing Content work.
 
 ### Content Task Dispatch
 

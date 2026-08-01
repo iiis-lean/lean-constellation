@@ -430,7 +430,11 @@ class RepoReleaseFinalizerComponent:
         if not ordinary.ok or ordinary.value is None:
             return self.runtime.foundation.fail(ordinary.issues)
         reports.append(ordinary.value)
-        public_closure = self.runtime.node.public_statement_closure.check_repo(repo_root)
+        public_closure = self.runtime.node.public_statement_closure.check_scope(
+            repo_root,
+            scope_path="Main",
+            visible=True,
+        )
         if not public_closure.ok or public_closure.value is None:
             return self.runtime.foundation.fail(public_closure.issues)
         reports.append(

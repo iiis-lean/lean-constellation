@@ -403,7 +403,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Preserve historical public export chains as compatible anchors; append new exports without silently replacing a released boundary.",
                 "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
                 "Inspect the Scope or repository formal Statement closure. Every current-repository declaration required to state a selected public root must be public and exported through each enclosing Scope.",
-                "Use `promote_decl_public` for one reviewed declaration or `promote_public_statement_closure` for an add-only closure repair. Do not promote proof-only helpers automatically.",
+                "Use `promote_content_decl_public` for one reviewed Content declaration or `promote_public_statement_closure` for an add-only Content/Scope closure repair. Do not promote proof-only helpers automatically.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
                 "Use `get_scope_close_view` to confirm exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
             ),
@@ -926,7 +926,7 @@ Use this Skill only when all expected Content work is reconciled, required Scope
 1. Re-read `get_current_repo_run_context`, `get_preparation_input`, `get_node_tree`, and current Lake dependencies. Confirm the bound release baseline still matches current truth.
 2. Call `get_scope_close_view` for Main and any relevant unverified Scope.
 3. Check Main interfaces and exports against protected root contracts.
-4. Call `inspect_public_statement_closure` with the repository boundary. Every Main root's current-repository formal Statement dependencies must be public in their Content nodes and exported through Main. Use `promote_public_statement_closure` only for an add-only repair of already-ready declarations.
+4. Treat Main as the root Scope, not as a separate repository-only boundary. Call `inspect_public_statement_closure` with `boundary=scope` and `scope_path=Main`. Every selected Main export's current-repository formal Statement dependencies must be public in their Content nodes and exported through every intervening Scope through Main. Use `promote_public_statement_closure` only for an add-only repair of already-ready declarations. The same operation applies to any other Scope and stops at that Scope rather than propagating to its parent.
 5. Call `get_repo_ready_node_view`. It previews the authoritative candidate release gate across active contract heads, DeclGraphs, files/projections, compatibility, target policy, public Statement closure, and build preconditions; inspect every reported issue.
 6. If the deterministic view is not ready, repair only the owning semantic state and return to the next-action loop.
 

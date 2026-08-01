@@ -842,13 +842,17 @@ class PublicStatementRootInput(StrictModel):
     decl_name: str = Field(description="Declaration name in that Content node.")
 
 
-class RepoPublicStatementClosureArgs(StrictModel):
-    boundary: Literal["node", "repo"] = Field(
-        description="Inspect or repair one Content node boundary or the repository Main boundary.",
+class PublicStatementBoundaryArgs(StrictModel):
+    boundary: Literal["content", "scope"] = Field(
+        description="Inspect or repair one Content public boundary or one Scope export boundary.",
     )
-    node_path: str | None = Field(
+    content_node_path: str | None = Field(
         default=None,
-        description="Content node path; required only when boundary is node.",
+        description="Content node path; required only when boundary is content.",
+    )
+    scope_path: str | None = Field(
+        default=None,
+        description="Scope node path; required only when boundary is scope. Main is the repository boundary.",
     )
     roots: list[PublicStatementRootInput] = Field(
         default_factory=list,
@@ -856,16 +860,20 @@ class RepoPublicStatementClosureArgs(StrictModel):
     )
 
     @model_validator(mode="after")
-    def _boundary_matches_node_path(self) -> "RepoPublicStatementClosureArgs":
-        if self.boundary == "node" and not (self.node_path or "").strip():
-            raise ValueError("node_path is required when boundary=node")
-        if self.boundary == "repo" and self.node_path is not None:
-            raise ValueError("node_path must be omitted when boundary=repo")
-        if self.boundary == "node" and any(
-            root.node_path != self.node_path for root in self.roots
+    def _boundary_matches_path(self) -> "PublicStatementBoundaryArgs":
+        if self.boundary == "content" and not (self.content_node_path or "").strip():
+            raise ValueError("content_node_path is required when boundary=content")
+        if self.boundary == "scope" and not (self.scope_path or "").strip():
+            raise ValueError("scope_path is required when boundary=scope")
+        if self.boundary == "content" and self.scope_path is not None:
+            raise ValueError("scope_path must be omitted when boundary=content")
+        if self.boundary == "scope" and self.content_node_path is not None:
+            raise ValueError("content_node_path must be omitted when boundary=scope")
+        if self.boundary == "content" and any(
+            root.node_path != self.content_node_path for root in self.roots
         ):
             raise ValueError(
-                "Every root node_path must match node_path when boundary=node"
+                "Every root node_path must match content_node_path when boundary=content"
             )
         return self
 

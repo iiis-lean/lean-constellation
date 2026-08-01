@@ -153,7 +153,7 @@ def test_node_closure_reports_and_promotes_private_statement_dependency(
     )
     runtime = make_runtime()
 
-    before = runtime.node.public_statement_closure.inspect_node(
+    before = runtime.node.public_statement_closure.inspect_content(
         tmp_path,
         node_path=NODE_PATH,
     )
@@ -166,7 +166,7 @@ def test_node_closure_reports_and_promotes_private_statement_dependency(
         issue.kind for issue in before.value.issues
     } == {"public_statement_decl_not_public"}
 
-    promoted = runtime.node.public_statement_closure.promote_node_closure(
+    promoted = runtime.node.public_statement_closure.promote_content_closure(
         tmp_path,
         node_path=NODE_PATH,
     )
@@ -177,7 +177,7 @@ def test_node_closure_reports_and_promotes_private_statement_dependency(
     ]
     assert promoted.value.report.closure_complete is True
 
-    replay = runtime.node.public_statement_closure.promote_node_closure(
+    replay = runtime.node.public_statement_closure.promote_content_closure(
         tmp_path,
         node_path=NODE_PATH,
     )
@@ -215,7 +215,7 @@ def test_content_commit_rejects_private_public_statement_dependency(
     } == {"public_statement_decl_not_public"}
 
 
-def test_repo_closure_adds_statement_dependency_to_scope_chain(
+def test_main_scope_closure_adds_statement_dependency_to_scope_chain(
     tmp_path: Path,
 ) -> None:
     round_id = _prepare_repo(tmp_path)
@@ -264,7 +264,10 @@ def test_repo_closure_adds_statement_dependency_to_scope_chain(
         "public_statement_export_missing",
     }
 
-    before = runtime.node.public_statement_closure.inspect_repo(tmp_path)
+    before = runtime.node.public_statement_closure.inspect_scope(
+        tmp_path,
+        scope_path="Main",
+    )
     assert before.ok and before.value is not None
     assert before.value.closure_complete is False
     assert [ref.name for ref in before.value.required_public_promotions] == [
@@ -275,8 +278,9 @@ def test_repo_closure_adds_statement_dependency_to_scope_chain(
         "Main.Topic",
     }
 
-    promoted = runtime.node.public_statement_closure.promote_repo_closure(
-        tmp_path
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main",
     )
     assert promoted.ok and promoted.value is not None
     assert promoted.value.report.closure_complete is True
@@ -291,6 +295,88 @@ def test_repo_closure_adds_statement_dependency_to_scope_chain(
             "Family",
             "MainResult",
         }
+
+
+def test_scope_explicit_root_adds_existing_boundary_and_stops_at_target_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="Family",
+        public=False,
+    )
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+        statement_deps=["Family"],
+    )
+    runtime = make_runtime()
+    batch_calls = 0
+    original_batch = runtime.decl_graph.check_decl_proof_policy_batch
+
+    def count_batch(*args, **kwargs):
+        nonlocal batch_calls
+        batch_calls += 1
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime.decl_graph,
+        "check_decl_proof_policy_batch",
+        count_batch,
+    )
+    promoted = runtime.node.public_statement_closure.promote_scope_closure(
+        tmp_path,
+        scope_path="Main.Topic",
+        roots=[DeclRef(node=NODE_PATH, name="MainResult")],
+    )
+
+    assert promoted.ok and promoted.value is not None
+    assert batch_calls == 1
+    assert [ref.name for ref in promoted.value.promoted_declarations] == ["Family"]
+    assert set(promoted.value.added_exports) == {"Main.Topic"}
+    topic_exports = runtime.node.export.list_scope_exports(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+    main_exports = runtime.node.export.list_scope_exports(
+        tmp_path,
+        scope_path="Main",
+    )
+    assert topic_exports.ok and topic_exports.value is not None
+    assert {item.ref.name for item in topic_exports.value} == {
+        "Family",
+        "MainResult",
+    }
+    assert main_exports.ok and main_exports.value == []
+
+
+def test_scope_explicit_root_must_be_visible_from_a_direct_child_boundary(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="MainResult",
+        public=True,
+    )
+    runtime = make_runtime()
+
+    inspected = runtime.node.public_statement_closure.inspect_scope(
+        tmp_path,
+        scope_path="Main",
+        roots=[DeclRef(node=NODE_PATH, name="MainResult")],
+    )
+
+    assert not inspected.ok
+    assert {issue.kind for issue in inspected.issues} == {
+        "public_statement_scope_root_not_child_public"
+    }
 
 
 def test_node_closure_ignores_proof_only_dependencies_and_handles_cycles(
@@ -319,7 +405,7 @@ def test_node_closure_ignores_proof_only_dependencies_and_handles_cycles(
         statement_deps=["CycleA"],
     )
 
-    inspected = make_runtime().node.public_statement_closure.inspect_node(
+    inspected = make_runtime().node.public_statement_closure.inspect_content(
         tmp_path,
         node_path=NODE_PATH,
     )
@@ -370,7 +456,7 @@ def test_node_closure_promotion_rolls_back_on_projection_failure(
         "refresh_interfaces",
         fail_refresh,
     )
-    promoted = runtime.node.public_statement_closure.promote_node_closure(
+    promoted = runtime.node.public_statement_closure.promote_content_closure(
         tmp_path,
         node_path=NODE_PATH,
     )

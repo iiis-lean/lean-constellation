@@ -409,7 +409,7 @@ class NodeService:
             return self.runtime.foundation.fail(identities.issues)
         if not identities.value.passed:
             return self.runtime.foundation.fail(identities.value.issues)
-        closure = self.public_statement_closure.check_node(
+        closure = self.public_statement_closure.check_content(
             repo_root,
             node_path=node_path,
         )

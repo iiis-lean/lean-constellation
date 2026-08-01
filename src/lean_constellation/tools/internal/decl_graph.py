@@ -22,7 +22,7 @@ from lean_constellation.tools.args import (
     NoArgs,
     RepoPublicDeclInspectArgs,
     RepoPublicDeclListArgs,
-    RepoPublicStatementClosureArgs,
+    PublicStatementBoundaryArgs,
     PublicStatementClosureArgs,
     RoundDraftArgs,
     RoundDiscardArgs,
@@ -51,7 +51,7 @@ def _actor_role(ctx) -> str:
     return role.value if hasattr(role, "value") else str(role)
 
 
-def _closure_roots(args: RepoPublicStatementClosureArgs) -> list[DeclRef]:
+def _closure_roots(args: PublicStatementBoundaryArgs) -> list[DeclRef]:
     return [
         DeclRef(node=root.node_path, name=root.decl_name)
         for root in args.roots
@@ -59,7 +59,7 @@ def _closure_roots(args: RepoPublicStatementClosureArgs) -> list[DeclRef]:
 
 
 def _inspect_current_node_public_statement_closure(runtime, ctx, args: PublicStatementClosureArgs):
-    return runtime.node.public_statement_closure.inspect_node(
+    return runtime.node.public_statement_closure.inspect_content(
         ctx.repo_root,
         node_path=_node(ctx),
         root_decl_names=args.root_decl_names or None,
@@ -67,7 +67,7 @@ def _inspect_current_node_public_statement_closure(runtime, ctx, args: PublicSta
 
 
 def _promote_current_decl_public(runtime, ctx, args: DeclNameArgs):
-    return runtime.node.public_statement_closure.promote_decl_public(
+    return runtime.node.public_statement_closure.promote_content_decl_public(
         ctx.repo_root,
         node_path=_node(ctx),
         decl_name=args.decl_name,
@@ -75,43 +75,45 @@ def _promote_current_decl_public(runtime, ctx, args: DeclNameArgs):
 
 
 def _promote_current_node_public_statement_closure(runtime, ctx, args: PublicStatementClosureArgs):
-    return runtime.node.public_statement_closure.promote_node_closure(
+    return runtime.node.public_statement_closure.promote_content_closure(
         ctx.repo_root,
         node_path=_node(ctx),
         root_decl_names=args.root_decl_names or None,
     )
 
 
-def _inspect_public_statement_closure(runtime, ctx, args: RepoPublicStatementClosureArgs):
-    if args.boundary == "node":
-        return runtime.node.public_statement_closure.inspect_node(
+def _inspect_public_statement_closure(runtime, ctx, args: PublicStatementBoundaryArgs):
+    if args.boundary == "content":
+        return runtime.node.public_statement_closure.inspect_content(
             ctx.repo_root,
-            node_path=args.node_path or "",
+            node_path=args.content_node_path or "",
             root_decl_names=[root.decl_name for root in args.roots] or None,
         )
-    return runtime.node.public_statement_closure.inspect_repo(
+    return runtime.node.public_statement_closure.inspect_scope(
         ctx.repo_root,
+        scope_path=args.scope_path or "",
         roots=_closure_roots(args) or None,
     )
 
 
-def _promote_decl_public(runtime, ctx, args: NodeDeclPromotionArgs):
-    return runtime.node.public_statement_closure.promote_decl_public(
+def _promote_content_decl_public(runtime, ctx, args: NodeDeclPromotionArgs):
+    return runtime.node.public_statement_closure.promote_content_decl_public(
         ctx.repo_root,
         node_path=args.node_path,
         decl_name=args.decl_name,
     )
 
 
-def _promote_public_statement_closure(runtime, ctx, args: RepoPublicStatementClosureArgs):
-    if args.boundary == "node":
-        return runtime.node.public_statement_closure.promote_node_closure(
+def _promote_public_statement_closure(runtime, ctx, args: PublicStatementBoundaryArgs):
+    if args.boundary == "content":
+        return runtime.node.public_statement_closure.promote_content_closure(
             ctx.repo_root,
-            node_path=args.node_path or "",
+            node_path=args.content_node_path or "",
             root_decl_names=[root.decl_name for root in args.roots] or None,
         )
-    return runtime.node.public_statement_closure.promote_repo_closure(
+    return runtime.node.public_statement_closure.promote_scope_closure(
         ctx.repo_root,
+        scope_path=args.scope_path or "",
         roots=_closure_roots(args) or None,
     )
 
@@ -1228,8 +1230,8 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="inspect_public_statement_closure",
-            description="Inspect formal Statement dependency visibility for one current-repository Content node or the repository Main boundary.",
-            args_model=RepoPublicStatementClosureArgs,
+            description="Inspect formal Statement dependency visibility for one Content boundary or one Scope boundary; use scope_path=Main for the repository API.",
+            args_model=PublicStatementBoundaryArgs,
             capability=ToolCapability.READ,
             result_view="public_statement_closure",
             groups={AppGroup.REPO_PUBLIC_CLOSURE_READ},
@@ -1238,20 +1240,20 @@ def build_tool_specs() -> list[ToolSpec]:
             required_context={"repo"},
         ),
         handler_tool(
-            name="promote_decl_public",
+            name="promote_content_decl_public",
             description="Add public visibility to one ready declaration in a selected current-repository Content node.",
             args_model=NodeDeclPromotionArgs,
             capability=ToolCapability.WRITE,
             result_view="public_statement_promotion_receipt",
             groups={AppGroup.REPO_PUBLIC_VISIBILITY_WRITE},
             roles={"coordinator", "admin"},
-            handler=_promote_decl_public,
+            handler=_promote_content_decl_public,
             required_context={"repo"},
         ),
         handler_tool(
             name="promote_public_statement_closure",
-            description="Atomically repair formal Statement dependency visibility for one Content node or the repository Main boundary.",
-            args_model=RepoPublicStatementClosureArgs,
+            description="Atomically repair formal Statement dependency visibility for one Content boundary or one Scope boundary, including Main.",
+            args_model=PublicStatementBoundaryArgs,
             capability=ToolCapability.WRITE,
             result_view="public_statement_promotion_receipt",
             groups={AppGroup.REPO_PUBLIC_VISIBILITY_WRITE},
