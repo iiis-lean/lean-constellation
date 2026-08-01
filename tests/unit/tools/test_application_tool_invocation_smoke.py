@@ -1801,7 +1801,7 @@ def test_coordinator_source_index_read_requires_committed_index(tmp_path: Path) 
     assert coverage_read[0].kind == "source_index_not_committed"
 
 
-def test_node_source_range_read_intersects_global_and_node_refs(tmp_path: Path) -> None:
+def test_source_range_read_uses_role_appropriate_node_material_boundary(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
@@ -1906,27 +1906,61 @@ def test_node_source_range_read_intersects_global_and_node_refs(tmp_path: Path) 
         role="plan",
         node_path="Main.Topic",
     )
-    inside = _unwrap_tool_result(
+    plan_outside_node_material = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="read_source_range",
-            flat_args={"path": "chapter.md", "start_line": 2, "end_line": 3},
+            flat_args={"path": "chapter.md", "start_line": 1, "end_line": 5},
         )
     )
-    outside = _unwrap_tool_failure(
+    recon_outside_node_material = _unwrap_tool_result(
+        runtime.tool_facade.invoke_agent_tool(
+            _raw(
+                tmp_path,
+                view="resource_recon",
+                agent_type="ResourceReconAgent",
+                role="worker",
+                node_path="Main.Topic",
+            ),
+            tool_name="read_source_range",
+            flat_args={"path": "chapter.md", "start_line": 1, "end_line": 5},
+        )
+    )
+    plan_outside_committed_index = _unwrap_tool_failure(
         runtime.tool_facade.invoke_agent_tool(
             raw,
             tool_name="read_source_range",
-            flat_args={"path": "chapter.md", "start_line": 1, "end_line": 3},
+            flat_args={"path": "chapter.md", "start_line": 1, "end_line": 6},
         )
     )
-    expanded_outside = _unwrap_tool_failure(
-        runtime.tool_facade.invoke_agent_tool(
-            raw,
-            tool_name="read_source_range",
-            flat_args={"path": "chapter.md", "start_line": 2, "end_line": 3, "context_lines": 1},
+    downstream_results = []
+    for view, agent_type, role in (
+        ("statement_nl_worker", "StatementNLWorkerAgent", "worker"),
+        ("statement_nl_reviewer", "StatementNLReviewerAgent", "reviewer"),
+    ):
+        downstream_raw = _raw(
+            tmp_path,
+            view=view,
+            agent_type=agent_type,
+            role=role,
+            node_path="Main.Topic",
+            stage="statement_nl",
         )
-    )
+        inside = _unwrap_tool_result(
+            runtime.tool_facade.invoke_agent_tool(
+                downstream_raw,
+                tool_name="read_source_range",
+                flat_args={"path": "chapter.md", "start_line": 2, "end_line": 3},
+            )
+        )
+        outside = _unwrap_tool_failure(
+            runtime.tool_facade.invoke_agent_tool(
+                downstream_raw,
+                tool_name="read_source_range",
+                flat_args={"path": "chapter.md", "start_line": 1, "end_line": 3},
+            )
+        )
+        downstream_results.append((inside, outside))
     repo_level = _unwrap_tool_result(
         runtime.tool_facade.invoke_agent_tool(
             _raw(tmp_path, view="native_repo_coordinator", agent_type="CoordinatorAgent", role="coordinator"),
@@ -1935,9 +1969,12 @@ def test_node_source_range_read_intersects_global_and_node_refs(tmp_path: Path) 
         )
     )
 
-    assert "2: two" in inside["text_with_line_numbers"]
-    assert outside[0].kind == "source_range_outside_committed_index", outside[0]
-    assert expanded_outside[0].kind == "source_range_outside_committed_index", expanded_outside[0]
+    assert "1: one" in plan_outside_node_material["text_with_line_numbers"]
+    assert "1: one" in recon_outside_node_material["text_with_line_numbers"]
+    assert plan_outside_committed_index[0].kind == "source_range_outside_committed_index"
+    for inside, outside in downstream_results:
+        assert "2: two" in inside["text_with_line_numbers"]
+        assert outside[0].kind == "source_range_outside_committed_index"
     assert "1: one" in repo_level["text_with_line_numbers"]
 
 

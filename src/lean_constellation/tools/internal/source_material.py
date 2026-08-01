@@ -58,6 +58,11 @@ _COMMITTED_SOURCE_INDEX_VIEWS = {
     AppView.REPO_MATHLIB_RECON.value,
 }
 
+_NODE_MATERIAL_DISCOVERY_VIEWS = {
+    AppView.CONTENT_PLAN.value,
+    AppView.RESOURCE_RECON.value,
+}
+
 
 class SourceBlockAgentView(StrictModel):
     block_id: str
@@ -360,7 +365,10 @@ def _read_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs
         )
         committed_match = any(ref.start_line <= expanded_start and expanded_end <= ref.end_line for ref in refs)
         node_ranges: list[tuple[int, int | None, str]] = []
-        if ctx.node is not None:
+        require_node_material = (
+            ctx.node is not None and ctx.endpoint_view_key not in _NODE_MATERIAL_DISCOVERY_VIEWS
+        )
+        if require_node_material:
             contract = runtime.node.contract.get_current_contract(ctx.repo_root, node_path=ctx.node.node_path)
             if not contract.ok or contract.value is None:
                 return runtime.foundation.fail(contract.issues)
@@ -376,7 +384,7 @@ def _read_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs
                         item.ref_id,
                     )
                 )
-        node_match = ctx.node is None or any(
+        node_match = not require_node_material or any(
             start_line <= expanded_start and (end_line is None or expanded_end <= end_line)
             for start_line, end_line, _ref_id in node_ranges
         )
@@ -398,7 +406,11 @@ def _read_source_range(runtime, ctx: ToolExecutionContext, args: SourceRangeArgs
                             f"{ref_id}:{start_line}-{end_line if end_line is not None else '*'}"
                             for start_line, end_line, ref_id in node_ranges[:20]
                         )
-                        or ("not node-scoped" if ctx.node is None else "none for this path"),
+                        or (
+                            "not required for this repository/source-discovery view"
+                            if not require_node_material
+                            else "none for this path"
+                        ),
                     },
                 )
             )
@@ -868,7 +880,9 @@ def build_material_tool_specs() -> list[ToolSpec]:
             description=(
                 "Read an inclusive line range from source corpus text with context_lines=0 by default. Read a SourceIndex "
                 "ref or origin at its exact bounds; downstream focused reads fail unless their expanded range is contained "
-                "in committed SourceIndex truth and, for node-scoped Agents, the current node material assignment."
+                "in committed SourceIndex truth. ContentPlan and ResourceRecon may inspect any committed range before "
+                "attaching useful evidence to the current NodeContract; other node-scoped Agents are additionally limited "
+                "to the current node material assignment."
             ),
             args_model=SourceRangeArgs,
             capability=ToolCapability.READ,
