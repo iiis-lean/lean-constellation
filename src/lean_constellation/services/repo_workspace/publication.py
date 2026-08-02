@@ -32,6 +32,10 @@ from lean_constellation.services.foundation import (
     ServiceResult,
     WriteMode,
 )
+from lean_constellation.services.repo_workspace.publication_graph import (
+    PublicationGraphvizUnavailable,
+    render_publication_graph_svg,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -1106,13 +1110,14 @@ class RepoPublicationComponent:
             "",
             "## Dependency graph",
             "",
-            "Consumers appear above the public declarations they depend on. "
-            "Solid arrows are Statement dependencies; dashed arrows are Proof "
+            "Arrows run from each consumer to the public declarations it depends "
+            "on. Solid arrows are Statement dependencies; dashed arrows are Proof "
             "dependencies. Transitively implied edges are omitted for readability; "
             "each declaration page lists the complete direct dependency set. "
             "Mathlib and non-public project dependencies are not shown.",
             "",
-            "![Public API dependency graph](assets/public-api.svg)",
+            "[![Public API dependency graph](assets/public-api.svg)]"
+            "(assets/public-api.svg)",
             "",
             "## Declarations",
             "",
@@ -1165,10 +1170,11 @@ class RepoPublicationComponent:
             "## Boundary graph",
             "",
             "Solid gray arrows are Statement dependencies; dashed amber arrows "
-            "are Proof dependencies. Blue paths show export propagation through "
-            "Scope boundaries, and an outward arrow marks a Main export.",
+            "are Proof dependencies. A thick teal declaration frame marks a Main "
+            "export; compact upward labels record intermediate Scope exports.",
             "",
-            "![Repository public boundary graph](assets/public-boundaries.svg)",
+            "[![Repository public boundary graph](assets/public-boundaries.svg)]"
+            "(assets/public-boundaries.svg)",
             "",
             "## Declarations",
             "",
@@ -1205,6 +1211,41 @@ class RepoPublicationComponent:
 
     @classmethod
     def _render_public_boundary_svg(
+        cls,
+        *,
+        tree: object,
+        declarations: list[PublicApiDeclaration],
+        propagation: dict[tuple[str, str], list[str]],
+        title: str,
+    ) -> str:
+        try:
+            return render_publication_graph_svg(
+                tree=tree,
+                declarations=declarations,
+                propagation=propagation,
+                dependency_edges=cls._transitively_reduced_public_dependency_edges(
+                    declarations
+                ),
+                declaration_links={
+                    (declaration.node_path, declaration.name): (
+                        "../declarations/"
+                        + cls._public_api_slug(declaration)
+                        + ".md"
+                    )
+                    for declaration in declarations
+                },
+                title=title,
+            )
+        except (PublicationGraphvizUnavailable, OSError):
+            return cls._render_public_boundary_svg_legacy(
+                tree=tree,
+                declarations=declarations,
+                propagation=propagation,
+                title=title,
+            )
+
+    @classmethod
+    def _render_public_boundary_svg_legacy(
         cls,
         *,
         tree: object,

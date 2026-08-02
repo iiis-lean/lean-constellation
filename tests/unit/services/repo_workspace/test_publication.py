@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from xml.etree import ElementTree
 
 from lean_constellation.domain.publication import (
@@ -322,24 +323,34 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     for name in ("public-api.svg", "public-boundaries.svg"):
         svg_path = tmp_path / "docs/lean-constellation/assets" / name
         root = ElementTree.fromstring(svg_path.read_text(encoding="utf-8"))
-        declaration_rects = [
+        declaration_groups = [
             element
-            for element in root.iter("{http://www.w3.org/2000/svg}rect")
-            if "data-declaration" in element.attrib
+            for element in root.iter("{http://www.w3.org/2000/svg}g")
+            if element.attrib.get("class") == "node"
+            and element.attrib.get("id", "").startswith("decl-")
         ]
-        boxes = [
-            tuple(float(element.attrib[key]) for key in ("x", "y", "width", "height"))
-            for element in declaration_rects
+        dependency_groups = [
+            element
+            for element in root.iter("{http://www.w3.org/2000/svg}g")
+            if element.attrib.get("class") == "edge"
+            and element.attrib.get("id", "").startswith("dependency-")
         ]
-        assert len(boxes) == (1 if name == "public-api.svg" else 3)
-        for index, (x1, y1, width1, height1) in enumerate(boxes):
-            for x2, y2, width2, height2 in boxes[index + 1 :]:
-                assert (
-                    x1 + width1 <= x2
-                    or x2 + width2 <= x1
-                    or y1 + height1 <= y2
-                    or y2 + height2 <= y1
-                )
+        assert len(declaration_groups) == (1 if name == "public-api.svg" else 3)
+        assert all(
+            group.find("{http://www.w3.org/2000/svg}polygon") is not None
+            for group in dependency_groups
+        )
+        for group in dependency_groups:
+            edge_title = group.find("{http://www.w3.org/2000/svg}title")
+            assert edge_title is not None and edge_title.text is not None
+            consumer_endpoint, provider_endpoint = edge_title.text.split("->", 1)
+            assert consumer_endpoint.endswith(":e")
+            assert provider_endpoint.endswith(":w")
+        svg_text = svg_path.read_text(encoding="utf-8")
+        assert "Lean Constellation layout:" in svg_text
+        assert "external API" not in svg_text
+        assert "solid gray: Statement dependency" not in svg_text
+        assert "Repository Public" not in "".join(root.itertext())
 
 
 def test_publication_status_badge_uses_proof_availability_and_flat_square(
@@ -577,3 +588,88 @@ def test_public_dependency_graph_is_consumer_first_and_transitively_reduced() ->
         ("Top", "Middle", "Statement"),
         ("Middle", "Base", "Statement"),
     }
+
+
+def test_public_dependency_graph_recursively_nests_scope_and_content_nodes() -> None:
+    tree = SimpleNamespace(
+        nodes=[
+            SimpleNamespace(path="Main", parent_path=None),
+            SimpleNamespace(path="Main.Algebra", parent_path="Main"),
+            SimpleNamespace(
+                path="Main.Algebra.Core",
+                parent_path="Main.Algebra",
+            ),
+            SimpleNamespace(
+                path="Main.Algebra.Results",
+                parent_path="Main.Algebra",
+            ),
+            SimpleNamespace(path="Main.Top", parent_path="Main"),
+        ]
+    )
+
+    def declaration(
+        name: str,
+        *,
+        node_path: str,
+        statement_dependencies: list[str] | None = None,
+        proof_dependencies: list[str] | None = None,
+    ) -> PublicApiDeclaration:
+        return PublicApiDeclaration(
+            name=name,
+            revision=1,
+            kind="theorem",
+            node_path=node_path,
+            module=f"Example.{name}",
+            state="proved",
+            status="committed",
+            proof_available=True,
+            statement_dependencies=statement_dependencies or [],
+            proof_dependencies=proof_dependencies or [],
+        )
+
+    declarations = [
+        declaration("Base", node_path="Main.Algebra.Core"),
+        declaration(
+            "Middle",
+            node_path="Main.Algebra.Results",
+            statement_dependencies=["current repo:Main.Algebra.Core.Base"],
+        ),
+        declaration(
+            "Final",
+            node_path="Main.Top",
+            proof_dependencies=["current repo:Main.Algebra.Results.Middle"],
+        ),
+    ]
+    svg = RepoPublicationComponent._render_public_boundary_svg(
+        tree=tree,
+        declarations=declarations,
+        propagation={
+            ("Main.Algebra.Core", "Base"): ["Main.Algebra", "Main"],
+            ("Main.Algebra.Results", "Middle"): ["Main.Algebra", "Main"],
+            ("Main.Top", "Final"): ["Main"],
+        },
+        title="Nested public boundary fixture",
+    )
+
+    root = ElementTree.fromstring(svg[svg.index("<svg") :])
+    namespace = {"svg": "http://www.w3.org/2000/svg"}
+    group_ids = {
+        group.attrib.get("id")
+        for group in root.findall(".//svg:g", namespace)
+    }
+    assert {
+        "node-Main",
+        "node-Main-Algebra",
+        "node-Main-Algebra-Core",
+        "node-Main-Algebra-Results",
+        "node-Main-Top",
+    }.issubset(group_ids)
+    assert sum(
+        identifier is not None and identifier.startswith("decl-")
+        for identifier in group_ids
+    ) == 3
+    assert "external API" not in svg
+    assert "solid gray: Statement dependency" not in svg
+    assert "Nested public boundary fixture" not in "".join(root.itertext())
+    assert "stroke-width=\"3\"" in svg
+    assert "Lean Constellation layout:" in svg
