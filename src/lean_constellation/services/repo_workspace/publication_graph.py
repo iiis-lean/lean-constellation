@@ -37,7 +37,7 @@ class PublicationTreeLike(Protocol):
 class _LayoutCandidate:
     svg: str
     direction: Literal["TB", "LR"]
-    spacing: Literal["standard", "compact", "balanced"]
+    spacing: Literal["dense", "compact", "balanced"]
     routing: Literal["spline"]
     hierarchy: Literal["nested", "content"]
     wrap_chars: int
@@ -73,10 +73,11 @@ def render_publication_graph_svg(
     configurations: tuple[
         tuple[
             Literal["TB", "LR"],
-            Literal["standard", "compact", "balanced"],
+            Literal["dense", "compact", "balanced"],
         ],
         ...,
     ] = (
+        ("LR", "dense"),
         ("LR", "compact"),
         ("LR", "balanced"),
     )
@@ -170,6 +171,7 @@ def render_publication_graph_svg(
                                 height=height,
                                 declaration_count=len(declarations),
                                 direction=direction,
+                                spacing=spacing,
                                 routing=routing,
                                 hierarchy=hierarchy,
                                 wrap_chars=wrap_chars,
@@ -207,7 +209,7 @@ def _render_dot_source(
     dependency_edges: list[tuple[DeclarationKey, DeclarationKey, DependencyKind]],
     declaration_links: dict[DeclarationKey, str],
     direction: Literal["TB", "LR"],
-    spacing: Literal["standard", "compact", "balanced"],
+    spacing: Literal["dense", "compact", "balanced"],
     routing: Literal["spline"],
     hierarchy: Literal["nested", "content"],
     wrap_chars: int,
@@ -245,10 +247,14 @@ def _render_dot_source(
 
     if direction == "TB":
         node_separation, rank_separation = "0.36", "0.58"
+    elif spacing == "dense":
+        node_separation, rank_separation = "0.50", "0.66"
     elif spacing == "balanced":
         node_separation, rank_separation = "1.55", "0.68"
     else:
         node_separation, rank_separation = "1.05", "0.82"
+    cluster_margin_base = 12 if spacing == "dense" else 18
+    cluster_margin_step = 1 if spacing == "dense" else 2
 
     lines = [
         "digraph PublicationGraph {",
@@ -266,17 +272,19 @@ def _render_dot_source(
         f"    nodesep={node_separation},",
         f"    ranksep={rank_separation},",
         "    fontname=Arial,",
-        "    charset=\"UTF-8\",",
+        '    charset="UTF-8",',
         "  ];",
         '  node [shape=plain, fontname="Arial"];',
         (
             '  edge [color="#5f7f9f", penwidth=1.5, arrowsize=1.08, '
-            'arrowhead=vee, '
+            "arrowhead=vee, "
             'fontname="Arial"];'
         ),
     ]
 
-    def render_declaration(declaration: PublicationDeclarationLike, indent: str) -> None:
+    def render_declaration(
+        declaration: PublicationDeclarationLike, indent: str
+    ) -> None:
         key = (declaration.node_path, declaration.name)
         main_export = "Main" in propagation.get(key, [])
         exported_scopes = [
@@ -301,9 +309,7 @@ def _render_dot_source(
                     'target="_top"',
                 ]
             )
-        lines.append(
-            f"{indent}{declaration_ids[key]} [{', '.join(attributes)}];"
-        )
+        lines.append(f"{indent}{declaration_ids[key]} [{', '.join(attributes)}];")
 
     def render_cluster(path: str, depth: int, indent: str) -> None:
         is_content = path in by_content
@@ -327,10 +333,10 @@ def _render_dot_source(
                 f"{indent}  color={_dot_quote(color)};",
                 f"{indent}  fillcolor={_dot_quote(fill)};",
                 f"{indent}  penwidth={penwidth};",
-                f"{indent}  style=\"rounded,filled\";",
-                f"{indent}  fontcolor=\"#243b53\";",
+                f'{indent}  style="rounded,filled";',
+                f'{indent}  fontcolor="#243b53";',
                 f"{indent}  fontsize=11;",
-                f"{indent}  margin={18 + min(depth, 3) * 2};",
+                f"{indent}  margin={cluster_margin_base + min(depth, 3) * cluster_margin_step};",
                 f"{indent}  labeljust=l;",
             ]
         )
@@ -426,9 +432,7 @@ def _declaration_label(
         max(len(line) for line in name_lines) * 7 + 20,
         len(declaration.kind + declaration.state) * 5 + 42,
     )
-    name_html = '<BR ALIGN="LEFT"/>'.join(
-        html.escape(line) for line in name_lines
-    )
+    name_html = '<BR ALIGN="LEFT"/>'.join(html.escape(line) for line in name_lines)
     annotations: list[str] = []
     if exported_scopes:
         annotations.append(
@@ -453,7 +457,7 @@ def _declaration_label(
         f'<TR><TD PORT="meta" WIDTH="{content_width}" ALIGN="LEFT" '
         'BALIGN="LEFT">'
         f'<FONT POINT-SIZE="8" COLOR="#627d98">{html.escape(declaration.kind)} / '
-        f'{html.escape(declaration.state)}</FONT>{annotation_html}'
+        f"{html.escape(declaration.state)}</FONT>{annotation_html}"
         "</TD></TR></TABLE></TD>"
         '<TD PORT="out_top" WIDTH="1" HEIGHT="8"></TD></TR>'
         f'<TR><TD PORT="in_upper" WIDTH="5" HEIGHT="8" BGCOLOR="{state_color}"></TD>'
@@ -537,6 +541,7 @@ def _candidate_score(
     height: float,
     declaration_count: int,
     direction: Literal["TB", "LR"],
+    spacing: Literal["dense", "compact", "balanced"],
     routing: Literal["spline"],
     hierarchy: Literal["nested", "content"],
     wrap_chars: int,
@@ -549,20 +554,68 @@ def _candidate_score(
     elif ratio < 0.85:
         aspect_penalty += (0.85 - ratio) * 95.0
     scale_penalty = math.sqrt(width * height) / max(declaration_count, 1) * 0.12
+    density = _declaration_area_ratio(svg, width=width, height=height)
+    density_penalty = (
+        180.0
+        if density is None or density <= 0.0
+        else abs(math.log(density / 0.11)) * 180.0
+    )
     hierarchy_penalty = 42.0 if hierarchy == "content" else 0.0
     direction_penalty = 3.0 if direction == "LR" else 0.0
+    spacing_penalty = 55.0 if spacing == "balanced" and declaration_count >= 8 else 0.0
     wrap_penalty = 1.0 if wrap_chars == 64 else 0.0
     routing_penalty = 0.0
-    edge_penalty = _edge_route_penalty(svg, direction=direction)
+    # Directional ports already enforce the hard right-to-left routing contract.
+    # Treat control-point backtracking as a tie-breaker so it cannot outweigh a
+    # materially denser card layout.
+    edge_penalty = _edge_route_penalty(svg, direction=direction) * 0.2
     return (
         aspect_penalty
         + scale_penalty
+        + density_penalty
         + hierarchy_penalty
         + direction_penalty
+        + spacing_penalty
         + wrap_penalty
         + routing_penalty
         + edge_penalty
     )
+
+
+def _declaration_area_ratio(
+    value: str,
+    *,
+    width: float,
+    height: float,
+) -> float | None:
+    """Measure declaration-card occupancy independently of label dimensions."""
+
+    if width <= 0.0 or height <= 0.0:
+        return None
+    area = 0.0
+    count = 0
+    for match in re.finditer(
+        r'<g id="decl(?:&#45;|-)[^"]+" class="node">(.*?)</g>',
+        value,
+        flags=re.DOTALL,
+    ):
+        polygon = re.search(r'<polygon[^>]+points="([^"]+)"', match.group(1))
+        if polygon is None:
+            continue
+        coordinates = [
+            tuple(float(component) for component in point.split(",", 1))
+            for point in polygon.group(1).split()
+            if "," in point
+        ]
+        if not coordinates:
+            continue
+        x_values = [coordinate[0] for coordinate in coordinates]
+        y_values = [coordinate[1] for coordinate in coordinates]
+        area += (max(x_values) - min(x_values)) * (max(y_values) - min(y_values))
+        count += 1
+    if count == 0:
+        return None
+    return area / (width * height)
 
 
 def _edge_route_penalty(value: str, *, direction: Literal["TB", "LR"]) -> float:
