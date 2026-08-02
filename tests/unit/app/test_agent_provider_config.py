@@ -7,6 +7,7 @@ from lean_constellation.agents import build_agent_type_specs
 from lean_constellation.app.agent_provider_config import (
     apply_agent_home_overrides,
     build_builtin_provider_registry,
+    model_identity_from_override,
     provider_options_from_override,
 )
 from lean_constellation.app.bootstrap import materialize_agent_home
@@ -113,14 +114,21 @@ def test_fresh_agent_record_uses_only_standard_schema_fields(tmp_path: Path) -> 
 def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path: Path) -> None:
     auth_path = tmp_path / "auth.json"
     auth_path.write_text('{"opencode-go":{"type":"api","key":"test-key"}}\n')
+    override = AgentHomeOverrideAppConfig(
+        provider_type="opencode",
+        model="deepseek-v4-flash",
+        api_provider="opencode-go",
+        api_mode="chat_completions",
+        model_reasoning_effort="max",
+    )
     specs = apply_agent_home_overrides(
         build_agent_type_specs(),
-        {AGENT_TYPE: AgentHomeOverrideAppConfig(provider_type="opencode")},
+        {AGENT_TYPE: override},
     )
     registry = build_builtin_provider_registry(
         tmp_path / ".agent_runtime",
         specs,
-        {AGENT_TYPE: AgentHomeOverrideAppConfig(provider_type="opencode")},
+        {AGENT_TYPE: override},
     )
     runtime = create_app_runtime_from_config(
         LeanAppConfig(workspace_root=tmp_path, materialize_agent_homes=False),
@@ -132,6 +140,7 @@ def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path:
         runtime,
         AGENT_TYPE,
         provider_type="opencode",
+        model_config=model_identity_from_override(override),
         agent_type_specs=specs,
         mcp_http_base_url="http://127.0.0.1:8765",
         auth_json_path=auth_path,
@@ -139,6 +148,8 @@ def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path:
 
     assert result.ok and result.value is not None
     assert result.value.provider_type == "opencode"
+    assert result.value.effective_model == "deepseek-v4-flash"
+    assert result.value.effective_reasoning_effort == "max"
     home_root = Path(result.value.home_root)
     assert (home_root / "opencode.json").exists()
     opencode_config = json.loads((home_root / "opencode.json").read_text(encoding="utf-8"))
@@ -157,6 +168,10 @@ def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path:
     assert materialized_auth.read_text() == auth_path.read_text()
     assert materialized_auth.stat().st_mode & 0o777 == 0o600
     assert result.value.mcp_server_names == ["lc_app", "lc_submit"]
+    manifest = json.loads(
+        (home_root / ".agents" / "lean_constellation_home.json").read_text(encoding="utf-8")
+    )
+    assert manifest["effective_reasoning_effort"] == "max"
 
 
 def test_opencode_home_forces_external_directory_denial(tmp_path: Path) -> None:
