@@ -82,7 +82,14 @@ def _require_real_codex() -> Path:
 
 
 def _write_noninteractive_codex_base_config(config_home: Path, tmp_path: Path) -> Path:
-    source = config_home / "config.toml"
+    configured_source = os.environ.get("LEAN_CONSTELLATION_CODEX_BASE_CONFIG_PATH")
+    source = (
+        Path(configured_source).expanduser()
+        if configured_source
+        else config_home / "config.toml"
+    )
+    if not source.is_file():
+        pytest.skip(f"Codex base config does not exist: {source}")
     target = tmp_path / "codex_noninteractive_config.toml"
     blocked_prefixes = ("approval_policy", "approvals_reviewer", "notify")
     lines: list[str] = []

@@ -9,7 +9,12 @@ from lean_constellation.domain.repo_run import SourceScope
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
-from tests.real.runtime_matrix.scripted_provider import ScriptedMcpProvider, install_scripted_provider, schedule_until
+from tests.real.runtime_matrix.scripted_provider import (
+    ScriptedMcpProvider,
+    initial_exploration_no_findings_scripts,
+    install_scripted_provider,
+    schedule_until,
+)
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
@@ -23,11 +28,20 @@ def test_strict_native_repo_continuation_reuses_stable_release_and_hands_off(
     ws.prepare_provider_ready_repo()
     provider = ScriptedMcpProvider(
         ws.runtime,
-        {"CoordinatorAgent": [("submit_repo_ready", {"summary": "Publish strict continuation baseline."})]},
+        {
+            **initial_exploration_no_findings_scripts(),
+            "CoordinatorAgent": [("submit_repo_ready", {"summary": "Publish strict continuation baseline."})],
+        },
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(ws.runtime, provider)
-    ws.create_home("CoordinatorAgent", provider_type="scripted")
+    ws.create_homes(
+        "CoordinatorAgent",
+        "RepoResourceDiscoveryAgent",
+        "RepoLeanProviderDiscoveryAgent",
+        "RepoMathlibReconAgent",
+        provider_type="scripted",
+    )
     unwrap(ws.admin.resume_runtime())
     release_flow_id = ws.runtime.ark.flow_service.start_flow(
         FlowRequest(

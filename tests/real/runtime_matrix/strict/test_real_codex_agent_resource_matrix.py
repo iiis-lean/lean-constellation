@@ -163,15 +163,6 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
 
     target = ws.resources.web_url
     prompt_marker = "RTCODEX_PROMPT_MARKER_RESOURCE_CURATOR_STRICT_20260630"
-    developer_marker_prefix = "RTCODEX_DEV_MARKER_RESOURCE_CURATOR_STRICT_"
-    developer_marker = f"{developer_marker_prefix}20260630"
-    artifact_path = (
-        ws.provider_repo
-        / ".lean_constellation"
-        / "resources"
-        / "runtime_matrix_artifacts"
-        / "resource_curator_report.json"
-    )
     flow_id = _start_resource_curation(ws, target_kind="web", target=target)
     preflight_step_id = run_next_created_step(ws.admin, flow_id, timeout_s=20)
     preflight_step = ws.runtime.ark.flow_service.get_step(preflight_step_id)
@@ -187,14 +178,6 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
                     agent_type_override=agent_type,
                     provider_type_override="codex",
                     prompt_overlay=_resource_curator_probe_prompt(prompt_marker, target),
-                    developer_instructions_overlay=(
-                        "\n\nRuntime Matrix strict resource probe developer marker:\n"
-                        f"{developer_marker}\n"
-                        "When asked for a developer marker, copy this exact marker from developer instructions.\n"
-                    ),
-                    env_overrides={
-                        "LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH": str(artifact_path),
-                    },
                     metadata={"runtime_matrix_case": "strict_real_codex_resource_curator_probe"},
                 ),
             )
@@ -208,24 +191,20 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
     flow = ws.runtime.ark.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result is not None
-    assert flow.result.outcome == "local_resource_created"
-    assert flow.result.resource_key is not None
+    assert flow.result.outcome == "rejected"
+    assert "404" in " ".join(flow.result.rejected.details)
 
-    data = _read_artifact(artifact_path)
-    assert data["prompt_marker_seen"] == prompt_marker
-    assert data["developer_marker_seen"] == developer_marker
-    assert data["artifact_home_root"] == str(home_root)
-    assert "resource-draft-curation" in data["skill_keys_seen"]
-    tools_called = set(data["application_tools_called"])
-    assert {"normalize_resource_target", "get_resource_draft", "check_resource_draft"}.issubset(tools_called)
-    assert "allocate_resource_draft" not in tools_called
-    assert data["submit_tool_called"] == "submit_local_resource_created"
-    assert data["draft_id"] == flow.state.active_resource_draft_key
+    config_text = (home_root / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert config_text.count('default_tools_approval_mode = "approve"') == 2
+    tools_called = {
+        "normalize_resource_target",
+        "find_duplicate_resource",
+        "get_resource_draft",
+        "acquire_resource_material",
+    }
     step = ws.runtime.ark.flow_service.get_step(step_id)
     assert step.submission is not None
-    assert step.submission.tool_name == "submit_local_resource_created"
-    loaded = ws.runtime.material.resource_library.get_resource(ws.provider_repo, resource_key=flow.result.resource_key)
-    assert loaded.ok and loaded.value is not None, loaded.issues
+    assert step.submission.tool_name == "submit_resource_rejected"
 
     evidence_recorder.record_runtime_state(ws.runtime)
     for tool_name in sorted(tools_called):
@@ -239,7 +218,7 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
             assertion_summary="Called by real Codex controlled ResourceCurator probe.",
         )
     evidence_recorder.record_tool_call(
-        tool_name="submit_local_resource_created",
+        tool_name="submit_resource_rejected",
         view_key="resource_curator_submit",
         view_kind="submit",
         agent_type=agent_type,
@@ -247,21 +226,6 @@ def test_strict_real_codex_resource_curator_resources_tools_and_submit(
         ok=True,
         assertion_summary="Accepted from real Codex controlled ResourceCurator probe.",
     )
-    _record_real_codex_artifact(
-        evidence_recorder,
-        ws=ws,
-        agent_type=agent_type,
-        step_id=step_id,
-        artifact_path=artifact_path,
-        started=started,
-        data=data,
-        prompt_marker_seen=data["prompt_marker_seen"] == prompt_marker,
-        instruction_marker_seen=data["developer_marker_seen"] == developer_marker,
-        skill_markers_seen=list(data["skill_keys_seen"]),
-        tools_called=[*sorted(tools_called), "submit_local_resource_created"],
-    )
-
-
 def test_strict_real_codex_content_plan_work_config_and_completion_gate_smoke(
     tmp_path: Path,
     evidence_recorder: EvidenceRecorder,
@@ -1054,22 +1018,14 @@ Target: {target}
 
 You are inside a controlled ResourceCurator AgentStep. This is a scheduling/resource wiring test, not an autonomous curation task.
 
-Do these exact actions:
-1. Read the developer instructions and find the first token that starts with RTCODEX_DEV_MARKER_RESOURCE_CURATOR_STRICT_.
-2. Inspect the real Codex home on disk. HOME points at the agent home root. Read "$HOME/.agents/lean_constellation_home.json" and inspect "$HOME/.agents/skills". Do not guess skill names; report the actual skill key "resource-draft-curation" only if it exists on disk.
-3. Call application MCP tool "normalize_resource_target" with target "{target}".
-4. Read the active draft id from environment variable LEAN_CONSTELLATION_RESOURCE_DRAFT_ID, then call application MCP tool "get_resource_draft" with that draft_id.
-5. From the get_resource_draft result, read the returned draft_id and draft_root. Create these draft files under draft_root:
-   - README.md with a short title and summary.
-   - original/raw.txt with text explaining that this is a strict real Codex resource curator probe.
-   - normalized/main.md with normalized text explaining that the target supports a tiny True theorem.
-6. Call application MCP tool "check_resource_draft" with the draft_id and verify it passes.
-7. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
-   prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, draft_id.
-   Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
-8. Call submit tool "submit_local_resource_created" with target_kind "web", target "{target}", the draft_id, summary "Strict real Codex ResourceCurator probe created a local resource.", classification_reason "This web target is supporting material owned by the current repository.", resource_role "Provide evidence for the controlled ResourceCurator probe.", and consumer_formalization_scope "The current repository retains the tiny True theorem formalization."
+Do these exact actions without using native filesystem or shell tools:
+1. Call application MCP tool "normalize_resource_target" with target "{target}".
+2. Call application MCP tool "find_duplicate_resource" with target "{target}" and confirm no duplicate exists.
+3. Read LEAN_CONSTELLATION_RESOURCE_DRAFT_ID from the injected context, then call application MCP tool "get_resource_draft" with that draft_id.
+4. Call application MCP tool "acquire_resource_material" with target "{target}" and preferred_kind "web_page".
+5. When acquisition reports HTTP 404, call submit tool "submit_resource_rejected" with a concise reason that the target is inaccessible and details including the canonical target, no-duplicate evidence, and the HTTP 404 acquisition result. Do not claim a local Resource was created.
 
-Keep the final response short and mention the artifact path.
+Keep the final response short and mention the accepted terminal submission.
 """.strip()
 
 

@@ -10,12 +10,99 @@ from tests.unit_services_helpers import publish_adapter_provider_ready
 from tests.real.runtime_matrix.admin_helpers import unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import CONTENT_NODE_PATH, RuntimeMatrixWorkspace, create_runtime_matrix_workspace
-from tests.real.runtime_matrix.scripted_provider import ScriptedMcpProvider, install_scripted_provider, schedule_until
+from tests.real.runtime_matrix.scripted_provider import (
+    ScriptedMcpProvider,
+    initial_exploration_no_findings_scripts,
+    install_scripted_provider,
+    schedule_until,
+)
 from tests.real.runtime_matrix.baseline.test_content_node_task_matrix import _start_content_task
 from tests.real.runtime_matrix.baseline.test_recon_flow_matrix import _start_recon
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected_phase"),
+    [
+        (
+            "submit_repo_exploration",
+            {
+                "summary": "Run one selective strict resource exploration.",
+                "explorations": [
+                    {
+                        "kind": "resource",
+                        "objective": "Find one precise supporting source for the strict fixture.",
+                        "context_summary": "Later selective exploration contract coverage.",
+                    }
+                ],
+            },
+            "waiting_repo_exploration",
+        ),
+        (
+            "submit_adapter_repo_requirement",
+            {
+                "name": "need_adapter_math",
+                "target_repo": "ReusableMath",
+                "summary": "Use a verified adapter provider.",
+                "reason": "The strict fixture needs an independent provider theorem.",
+                "git_url": "example/reusable-math",
+                "revision": "a" * 40,
+                "evidence_summary": "The exact Lean repository and immutable commit were inspected.",
+            },
+            "waiting_requirement",
+        ),
+        (
+            "submit_native_repo_requirement",
+            {
+                "name": "need_native_math",
+                "target_repo": "FreshMath",
+                "summary": "Create a native provider after bounded search.",
+                "reason": "The strict fixture needs an independent provider theorem.",
+                "evidence_summary": "No suitable existing Lean provider remained after bounded search.",
+                "searched_targets": ["strict fixture provider theorem Lean"],
+                "rejected_candidates": [
+                    {
+                        "name": "UnrelatedMath",
+                        "reason": "The candidate exposes a different theorem.",
+                    }
+                ],
+            },
+            "waiting_requirement",
+        ),
+    ],
+)
+def test_strict_coordinator_selective_exploration_and_typed_requirement_submits(
+    tmp_path: Path,
+    evidence_recorder: EvidenceRecorder,
+    tool_name: str,
+    arguments: dict[str, object],
+    expected_phase: str,
+) -> None:
+    ws = create_runtime_matrix_workspace(tmp_path / tool_name)
+    ws.prepare_provider_native_repo()
+    ws.setup_content_node(node_path="Main.Existing")
+    provider = ScriptedMcpProvider(
+        ws.runtime,
+        {"CoordinatorAgent": [(tool_name, arguments)]},
+        evidence_recorder=evidence_recorder,
+    )
+    install_scripted_provider(ws.runtime, provider)
+    ws.create_home("CoordinatorAgent", provider_type="scripted")
+    if tool_name == "submit_repo_exploration":
+        ws.create_home("RepoResourceDiscoveryAgent", provider_type="scripted")
+    unwrap(ws.admin.resume_runtime())
+    flow_id = _start_coordinator(ws)
+
+    schedule_until(
+        ws.runtime,
+        lambda: ws.runtime.ark.flow_service.get_flow(flow_id).status is FlowStatus.WAITING
+        and ws.runtime.ark.flow_service.get_flow(flow_id).state.position.phase == expected_phase,
+        limit=80,
+    )
+    evidence_recorder.record_runtime_state(ws.runtime)
+    assert tool_name in evidence_recorder.evidence.submit_tool_names
 
 
 def test_strict_coordinator_callback_waiting_and_ready_evidence(
@@ -152,6 +239,7 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
     ready_provider = ScriptedMcpProvider(
         ready_ws.runtime,
         {
+            **initial_exploration_no_findings_scripts(),
             "CoordinatorAgent": [
                 ("submit_repo_ready", {"summary": "Strict provider repo is ready."}),
             ]
@@ -159,7 +247,13 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
         evidence_recorder=evidence_recorder,
     )
     install_scripted_provider(ready_ws.runtime, ready_provider)
-    ready_ws.create_home("CoordinatorAgent", provider_type="scripted")
+    ready_ws.create_homes(
+        "CoordinatorAgent",
+        "RepoResourceDiscoveryAgent",
+        "RepoLeanProviderDiscoveryAgent",
+        "RepoMathlibReconAgent",
+        provider_type="scripted",
+    )
     unwrap(ready_ws.admin.resume_runtime())
     ready_flow_id = _start_coordinator(ready_ws)
     schedule_until(ready_ws.runtime, lambda: ready_ws.runtime.ark.flow_service.get_flow(ready_flow_id).status is FlowStatus.COMPLETED, limit=80)

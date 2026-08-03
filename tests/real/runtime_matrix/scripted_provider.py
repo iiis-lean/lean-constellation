@@ -70,6 +70,40 @@ from lean_constellation.mcp import create_mcp_server
 PROVIDER_TYPE = "scripted"
 
 
+def initial_exploration_no_findings_scripts() -> dict[str, list[Any]]:
+    """Return one current-schema terminal action for each fixed initial explorer."""
+
+    return {
+        "RepoResourceDiscoveryAgent": [
+            (
+                "submit_repo_resource_discovery_result",
+                {
+                    "outcome": "no_useful_findings",
+                    "summary": "Strict Runtime Matrix found no additional resource candidate.",
+                },
+            )
+        ],
+        "RepoLeanProviderDiscoveryAgent": [
+            (
+                "submit_repo_lean_provider_discovery_result",
+                {
+                    "outcome": "no_useful_findings",
+                    "summary": "Strict Runtime Matrix found no additional Lean provider candidate.",
+                },
+            )
+        ],
+        "RepoMathlibReconAgent": [
+            (
+                "submit_repo_mathlib_recon_result",
+                {
+                    "outcome": "no_useful_findings",
+                    "summary": "Strict Runtime Matrix found no additional Mathlib entry.",
+                },
+            )
+        ],
+    }
+
+
 class ScriptedHomeRenderer:
     provider_type = PROVIDER_TYPE
 

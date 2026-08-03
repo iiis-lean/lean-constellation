@@ -57,7 +57,7 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         tool_name="submit_adapter_repo_choice",
         arguments={
             "git_url": "https://github.com/example/runtime-matrix-upstream.git",
-            "revision": "HEAD",
+            "revision": "a" * 40,
             "package_name": "runtime_matrix_upstream",
             "likely_import_module": "RuntimeMatrixUpstream",
             "evidence_summary": "Strict matrix fixture uses a remote GitHub Lean candidate.",
@@ -244,6 +244,8 @@ def test_strict_resource_curation_input_kinds_and_preflight_duplicate_evidence(
 
 
 def _prepare_repo_format_branch(ws: RuntimeMatrixWorkspace, recorder: EvidenceRecorder):
+    from lean_constellation.domain.preparation import AutoProviderRoute
+
     ws.create_home("RepoFormatDiscoveryControlledTestAgent")
     ws.write_bootstrap_preparation(ws.provider_repo)
     started = unwrap(
@@ -257,6 +259,7 @@ def _prepare_repo_format_branch(ws: RuntimeMatrixWorkspace, recorder: EvidenceRe
                     "repo_root": str(ws.provider_repo),
                     "workspace_root": str(ws.workspace_root),
                     "requirement_refs": ["Consumer:need_provider"],
+                    "resolved_provider_route": AutoProviderRoute().model_dump(mode="json"),
                 },
             ),
             repo_root=str(ws.provider_repo),
