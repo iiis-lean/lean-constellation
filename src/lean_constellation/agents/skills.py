@@ -269,9 +269,11 @@ Classification is advisory evidence for the caller's next action, not permission
             "Find importable Lean repository candidates for one repository-level mathematical objective.",
             (
                 "Read existing providers, requirements, and dependencies before remote search.",
-                "Search GitHub broadly, then probe a small number of relevant candidates for Lean toolchain, Lake project, package, modules, license, and exact declaration evidence.",
-                "Resolve any direct-adapter recommendation to an immutable commit and verify its subdirectory and relevant Lean evidence.",
+                "Search GitHub broadly without relying only on `language:lean`; admit a bounded candidate when metadata topics/languages, lean-toolchain, Lake/leanpkg manifest, Lean files, or README package evidence supports it.",
+                "Probe only a small relevant pool, then use repository tree/code/file reads to verify project root, package, import module, and exact declaration evidence.",
+                "Resolve any direct-adapter recommendation to the probe's immutable commit; require a verified package, import module, relevant interface, concrete Lean evidence, and no unresolved evidence gap.",
                 "Use generic_requirement when the candidate is plausible but not exact enough for direct adaptation; use ignore for unsuitable candidates.",
+                "Route official Mathlib evidence to RepoMathlibRecon instead of returning it as an adapter/provider candidate.",
                 "Submit the bounded candidate set once, then stop.",
             ),
             (

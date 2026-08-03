@@ -32,6 +32,8 @@ class GitHubRepoCandidate(StrictModel):
     ssh_url: str | None = None
     default_branch: str | None = None
     description: str | None = None
+    primary_language: str | None = None
+    languages: list[str] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
     stars: int | None = None
     pushed_at: str | None = None
@@ -63,6 +65,7 @@ class GitHubRepositoryTreeView(StrictModel):
     path_prefix: str | None = None
     entries: list[GitHubTreeEntry] = Field(default_factory=list)
     truncated: bool = False
+    revision_issue_code: str | None = None
     summary: str | None = None
     issue_code: str | None = None
 
@@ -104,6 +107,15 @@ class GitHubLeanRepoProbeView(StrictModel):
     is_lean_project: bool
     has_lakefile: bool
     has_lean_toolchain: bool
+    has_lean_manifest: bool = False
+    has_lean_files: bool = False
+    primary_language: str | None = None
+    languages: list[str] = Field(default_factory=list)
+    topics: list[str] = Field(default_factory=list)
+    lean_signals: list[str] = Field(default_factory=list)
+    lean_file_paths: list[str] = Field(default_factory=list)
+    is_mathlib_repository: bool = False
+    adapter_candidate: bool = False
     lakefile_paths: list[str] = Field(default_factory=list)
     lean_toolchain_paths: list[str] = Field(default_factory=list)
     candidate_subdirs: list[str] = Field(default_factory=list)
@@ -174,6 +186,7 @@ class GitHubRepoClient:
     def search_repositories(self, query: str, limit: int = 10) -> GitHubRepoSearchResult:
         if limit < 1:
             raise ValueError("limit must be >= 1")
+        limit = min(limit, 100)
         command = [
             self.config.gh_bin,
             "search",
@@ -182,7 +195,7 @@ class GitHubRepoClient:
             "--limit",
             str(limit),
             "--json",
-            "fullName,url,description,stargazersCount,pushedAt,defaultBranch",
+            "fullName,url,description,stargazersCount,pushedAt,defaultBranch,language",
         ]
         result = self.runner.run(
             command,
@@ -214,7 +227,7 @@ class GitHubRepoClient:
             "view",
             owner_repo,
             "--json",
-            "nameWithOwner,url,description,stargazerCount,pushedAt,defaultBranchRef,repositoryTopics,licenseInfo",
+            "nameWithOwner,url,description,stargazerCount,pushedAt,defaultBranchRef,repositoryTopics,licenseInfo,primaryLanguage,languages",
         ]
         result = self.runner.run(
             command,
@@ -258,6 +271,10 @@ class GitHubRepoClient:
         html_url = self.normalize_github_url(git_url)
         owner_repo = self._owner_repo_from_url(html_url)
         effective_revision = revision or self.inspect_repository(html_url).default_branch or "HEAD"
+        resolved_revision, revision_issue_code = self._resolve_remote_revision(
+            owner_repo,
+            effective_revision,
+        )
         endpoint = f"repos/{owner_repo}/git/trees/{quote(effective_revision, safe='')}"
         command = [self.config.gh_bin, "api", endpoint]
         if recursive:
@@ -323,13 +340,50 @@ class GitHubRepoClient:
         return GitHubRepositoryTreeView(
             git_url=html_url,
             revision=revision,
-            resolved_revision=str(payload.get("sha")) if isinstance(payload, dict) and payload.get("sha") else None,
+            resolved_revision=resolved_revision,
             recursive=recursive,
             path_prefix=prefix,
             entries=entries,
             truncated=truncated,
-            summary=f"Read {len(entries)} remote tree entries from {owner_repo}.",
+            revision_issue_code=revision_issue_code,
+            summary=(
+                f"Read {len(entries)} remote tree entries from {owner_repo}."
+                + (
+                    " Immutable commit resolution was unavailable."
+                    if revision_issue_code
+                    else ""
+                )
+            ),
         )
+
+    def _resolve_remote_revision(
+        self,
+        owner_repo: str,
+        revision: str,
+    ) -> tuple[str | None, str | None]:
+        endpoint = f"repos/{owner_repo}/commits/{quote(revision, safe='')}"
+        result = self.runner.run(
+            [self.config.gh_bin, "api", endpoint, "--jq", ".sha"],
+            cwd=Path.cwd(),
+            timeout_seconds=self.config.timeout_seconds,
+            stdout_excerpt_chars=200,
+            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
+        )
+        if not result.ok:
+            return None, result.issue_code or "github_revision_resolve_failed"
+        raw = (result.stdout_excerpt or "").strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = raw
+        sha = (
+            str(payload.get("sha") or "")
+            if isinstance(payload, dict)
+            else str(payload)
+        )
+        if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", sha) is None:
+            return None, "github_revision_not_immutable"
+        return sha.lower(), None
 
     def read_repository_file(
         self,
@@ -466,7 +520,12 @@ class GitHubRepoClient:
         max_tree_entries: int = 5000,
         max_file_chars: int = 20000,
     ) -> GitHubLeanRepoProbeView:
+        if max_tree_entries < 1 or max_file_chars < 1:
+            raise ValueError("probe limits must be >= 1")
+        max_tree_entries = min(max_tree_entries, 5000)
+        max_file_chars = min(max_file_chars, 50000)
         html_url = self.normalize_github_url(git_url)
+        metadata = self.inspect_repository(html_url)
         try:
             requested_subdir = self._normalize_optional_repo_path(subdir)
         except ValueError as exc:
@@ -482,7 +541,13 @@ class GitHubRepoClient:
                 known_risks=["invalid_github_path"],
                 summary=str(exc),
             )
-        tree = self.list_repository_tree(html_url, revision=revision, recursive=True, limit=max_tree_entries)
+        effective_revision = revision or metadata.default_branch or "HEAD"
+        tree = self.list_repository_tree(
+            html_url,
+            revision=effective_revision,
+            recursive=True,
+            limit=max_tree_entries,
+        )
         if tree.issue_code:
             return GitHubLeanRepoProbeView(
                 git_url=git_url,
@@ -499,17 +564,35 @@ class GitHubRepoClient:
             )
         paths = [entry.path for entry in tree.entries]
         lakefile_paths = sorted(path for path in paths if Path(path).name in {"lakefile.lean", "lakefile.toml"})
+        leanpkg_paths = sorted(path for path in paths if Path(path).name == "leanpkg.toml")
         toolchain_paths = sorted(path for path in paths if Path(path).name == "lean-toolchain")
-        candidate_subdirs = sorted({"" if str(Path(path).parent) == "." else str(Path(path).parent) for path in lakefile_paths})
+        project_markers = [*lakefile_paths, *leanpkg_paths] or toolchain_paths
+        candidate_subdirs = sorted(
+            {
+                "" if str(Path(path).parent) == "." else str(Path(path).parent)
+                for path in project_markers
+            }
+        )
         candidate_subdirs = ["" if value in {".", ""} else value for value in candidate_subdirs]
         selected_subdir = requested_subdir
         if selected_subdir is None and candidate_subdirs:
             selected_subdir = "" if "" in candidate_subdirs else candidate_subdirs[0]
         scoped_lakefiles = [path for path in lakefile_paths if self._path_in_subdir(path, selected_subdir)]
-        scoped_toolchains = [path for path in toolchain_paths if self._path_in_subdir(path, selected_subdir)]
+        scoped_leanpkg = [path for path in leanpkg_paths if self._path_in_subdir(path, selected_subdir)]
+        scoped_toolchains = [
+            path
+            for path in toolchain_paths
+            if self._marker_applies_to_subdir(path, selected_subdir)
+        ]
+        prefix = (selected_subdir.rstrip("/") + "/") if selected_subdir else ""
+        scoped_lean_files = sorted(
+            path
+            for path in paths
+            if path.endswith(".lean") and (not prefix or path.startswith(prefix))
+        )
         lakefile_path = scoped_lakefiles[0] if scoped_lakefiles else None
         lakefile_view = (
-            self.read_repository_file(html_url, lakefile_path, revision=revision, max_chars=max_file_chars)
+            self.read_repository_file(html_url, lakefile_path, revision=effective_revision, max_chars=max_file_chars)
             if lakefile_path
             else None
         )
@@ -517,26 +600,77 @@ class GitHubRepoClient:
         package_name = self._package_name_from_lakefile_text(lakefile_text or "")
         toolchain_path = scoped_toolchains[0] if scoped_toolchains else None
         toolchain_view = (
-            self.read_repository_file(html_url, toolchain_path, revision=revision, max_chars=1000)
+            self.read_repository_file(html_url, toolchain_path, revision=effective_revision, max_chars=1000)
             if toolchain_path
             else None
         )
-        readme = self._read_readme_evidence(html_url, paths, revision=revision, subdir=selected_subdir, max_chars=min(max_file_chars, 4000))
+        readme = self._read_readme_evidence(
+            html_url,
+            paths,
+            revision=effective_revision,
+            subdir=selected_subdir,
+            max_chars=min(max_file_chars, 4000),
+        )
         likely_modules = self._likely_import_modules(paths=paths, selected_subdir=selected_subdir, package_name=package_name)
+        lean_topics = {
+            "lean",
+            "lean4",
+            "mathlib",
+            "formalization",
+            "formal-methods",
+            "theorem-proving",
+        }
+        languages = list(dict.fromkeys(metadata.languages))
+        if metadata.primary_language and metadata.primary_language not in languages:
+            languages.insert(0, metadata.primary_language)
+        signals: list[str] = []
+        if any(language.casefold() == "lean" for language in languages):
+            signals.append("metadata:language=Lean")
+        signals.extend(
+            f"metadata:topic={topic}"
+            for topic in metadata.topics
+            if topic.casefold() in lean_topics
+        )
+        signals.extend(f"path:{path}" for path in scoped_lakefiles)
+        signals.extend(f"path:{path}" for path in scoped_leanpkg)
+        signals.extend(f"path:{path}" for path in scoped_toolchains)
+        if scoped_lean_files:
+            signals.append(f"tree:lean_files={len(scoped_lean_files)}")
+        if readme and re.search(r"\b(lean\s*4|lean4|lake|mathlib|formalization|theorem prover)\b", readme, re.IGNORECASE):
+            signals.append("readme:lean_or_lake_package")
+        signals = list(dict.fromkeys(signals))
         risks: list[str] = []
         if tree.truncated:
             risks.append("Remote repository tree was truncated; candidate evidence may be incomplete.")
+        if tree.revision_issue_code:
+            risks.append(
+                f"Immutable commit resolution failed: {tree.revision_issue_code}."
+            )
         if not scoped_toolchains:
             risks.append("No lean-toolchain was found under the selected Lean project scope.")
+        if not scoped_lakefiles:
+            risks.append("No Lake manifest was found under the selected Lean project scope.")
         if not likely_modules:
             risks.append("No likely import module was inferred from remote tree evidence.")
-        is_lean_project = bool(scoped_lakefiles)
+        is_lean_project = bool(signals)
+        owner_repo = self._owner_repo_from_url(html_url).casefold()
+        is_mathlib_repository = owner_repo in {
+            "leanprover-community/mathlib",
+            "leanprover-community/mathlib4",
+        }
+        if is_mathlib_repository:
+            risks.append(
+                "Official Mathlib is the platform dependency and is not an adapter/provider candidate."
+            )
         if is_lean_project:
-            evidence_summary = f"Remote probe found {Path(lakefile_path or '').name} in {selected_subdir or 'repo root'}."
+            evidence_summary = (
+                f"Remote probe found {len(signals)} independent Lean candidate signal(s) "
+                f"in {selected_subdir or 'repo root'}."
+            )
             if package_name:
                 evidence_summary += f" Package appears to be {package_name}."
         else:
-            evidence_summary = "Remote probe did not find a Lean lakefile in the requested scope."
+            evidence_summary = "Remote probe did not find a Lean language, topic, project marker, source file, or README signal."
         return GitHubLeanRepoProbeView(
             git_url=git_url,
             normalized_git_url=html_url,
@@ -546,6 +680,15 @@ class GitHubRepoClient:
             is_lean_project=is_lean_project,
             has_lakefile=bool(scoped_lakefiles),
             has_lean_toolchain=bool(scoped_toolchains),
+            has_lean_manifest=bool(scoped_lakefiles or scoped_leanpkg),
+            has_lean_files=bool(scoped_lean_files),
+            primary_language=metadata.primary_language,
+            languages=languages,
+            topics=metadata.topics,
+            lean_signals=signals,
+            lean_file_paths=scoped_lean_files[:100],
+            is_mathlib_repository=is_mathlib_repository,
+            adapter_candidate=is_lean_project and not is_mathlib_repository,
             lakefile_paths=scoped_lakefiles,
             lean_toolchain_paths=scoped_toolchains,
             candidate_subdirs=candidate_subdirs,
@@ -719,6 +862,27 @@ class GitHubRepoClient:
                         topics.append(str(name))
                 elif topic:
                     topics.append(str(topic))
+        language_names: list[str] = []
+        primary_language_raw = item.get("primaryLanguage") or item.get("language")
+        if isinstance(primary_language_raw, dict):
+            raw_name = primary_language_raw.get("name")
+            primary_language = str(raw_name) if raw_name else None
+        elif primary_language_raw:
+            primary_language = str(primary_language_raw)
+        else:
+            primary_language = None
+        languages_raw = item.get("languages") or []
+        if isinstance(languages_raw, list):
+            for language in languages_raw:
+                if isinstance(language, dict):
+                    raw_name = language.get("name")
+                    if raw_name:
+                        language_names.append(str(raw_name))
+                elif language:
+                    language_names.append(str(language))
+        if primary_language:
+            language_names.insert(0, primary_language)
+        language_names = list(dict.fromkeys(language_names))
         default_branch = item.get("defaultBranch")
         if not default_branch and isinstance(item.get("defaultBranchRef"), dict):
             default_branch = item["defaultBranchRef"].get("name")  # type: ignore[index]
@@ -736,6 +900,8 @@ class GitHubRepoClient:
             clone_url=f"{html_url}.git",
             default_branch=str(default_branch) if default_branch else None,
             description=str(item.get("description")) if item.get("description") is not None else None,
+            primary_language=primary_language,
+            languages=language_names,
             topics=topics,
             stars=int(item.get("stargazersCount") or item.get("stargazerCount") or 0),
             pushed_at=str(item.get("pushedAt")) if item.get("pushedAt") is not None else None,
@@ -785,6 +951,14 @@ class GitHubRepoClient:
         if not subdir:
             return "/" not in path or str(Path(path).parent) == "."
         return path == subdir or path.startswith(subdir.rstrip("/") + "/")
+
+    @staticmethod
+    def _marker_applies_to_subdir(path: str, subdir: str | None) -> bool:
+        parent = Path(path).parent.as_posix()
+        parent = "" if parent == "." else parent
+        if not subdir:
+            return parent == ""
+        return parent == "" or subdir == parent or subdir.startswith(parent.rstrip("/") + "/")
 
     def _package_name_from_lakefile_text(self, text: str) -> str | None:
         if not text:

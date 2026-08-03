@@ -112,3 +112,45 @@ def test_admin_verifies_direct_adapter_route_before_creating_provider_shell(
     flow = provider_runtime.ark.flow_service.get_flow(result.value.flow_id)
     assert isinstance(flow.input.resolved_provider_route, AdapterProviderRoute)
     assert flow.input.verified_adapter_route is not None
+
+
+def test_admin_rejects_official_mathlib_as_adapter_provider(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    registry = RepoRuntimeRegistry(
+        LeanAppConfig(workspace_root=tmp_path, materialize_agent_homes=False)
+    )
+    runtime = registry.workspace_runtime()
+    route = AdapterProviderRoute(
+        git_url="https://github.com/leanprover-community/mathlib4",
+        revision="a" * 40,
+        package_name="mathlib",
+        likely_import_module="Mathlib",
+        evidence_summary="Platform Mathlib fixture.",
+    )
+    monkeypatch.setattr(
+        runtime.external.github_repo,
+        "probe_github_lean_repo_candidate",
+        lambda *args, **kwargs: GitHubLeanRepoProbeView(
+            git_url=route.git_url,
+            normalized_git_url=route.git_url,
+            requested_revision=route.revision,
+            resolved_revision=route.revision,
+            is_lean_project=True,
+            has_lakefile=True,
+            has_lean_toolchain=True,
+            is_mathlib_repository=True,
+            adapter_candidate=False,
+            evidence_summary="Official Mathlib.",
+        ),
+    )
+
+    result = LeanAdminApi(
+        runtime,
+        workspace_root=tmp_path,
+        repo_runtime_registry=registry,
+    )._verify_requirement_adapter_route(route)
+
+    assert not result.ok
+    assert result.issues[0].kind == "adapter_provider_route_mathlib_forbidden"

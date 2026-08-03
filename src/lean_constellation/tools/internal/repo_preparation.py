@@ -53,6 +53,8 @@ class GitHubRepoCandidateAgentView(StrictModel):
     canonical_https_locator: str
     default_branch: str | None = None
     description: str | None = None
+    primary_language: str | None = None
+    languages: list[str] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
     stars: int | None = None
     pushed_at: str | None = None
@@ -144,6 +146,8 @@ def _github_candidate_agent_view(value) -> GitHubRepoCandidateAgentView:
         canonical_https_locator=value.html_url,
         default_branch=value.default_branch,
         description=value.description,
+        primary_language=value.primary_language,
+        languages=value.languages,
         topics=value.topics,
         stars=value.stars,
         pushed_at=value.pushed_at,
@@ -618,7 +622,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="search_github_lean_repositories",
-            description="Search candidate GitHub Lean repositories with one canonical HTTPS locator per result.",
+            description="Run a bounded GitHub repository search and return canonical locators plus language metadata. Do not rely on language:lean alone; probe relevant results for structural evidence.",
             args_model=QueryLimitArgs,
             capability=ToolCapability.READ,
             result_view="github_repo_candidate_list",
@@ -642,7 +646,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="probe_github_lean_repo_candidate",
-            description="Probe a GitHub repository remotely for Lean/Lake project evidence without cloning it.",
+            description="Probe a GitHub repository remotely without cloning, combining language/topics, toolchain, Lake/leanpkg, Lean-tree, README, and immutable commit evidence; official Mathlib is marked non-adapter.",
             args_model=GitHubLeanRepoProbeArgs,
             capability=ToolCapability.READ,
             backing_service="external",

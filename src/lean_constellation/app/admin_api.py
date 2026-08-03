@@ -1357,12 +1357,21 @@ class LeanAdminApi:
             revision=route.revision,
             subdir=route.subdir,
         )
-        if not probe.is_lean_project:
+        if probe.is_mathlib_repository:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_provider_route_mathlib_forbidden",
+                    "Official Mathlib is the platform dependency and cannot be prepared as an adapter provider.",
+                    object_ref=route.git_url,
+                    field="provider_route",
+                )
+            )
+        if not probe.is_lean_project or not probe.has_lakefile:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "adapter_provider_route_probe_failed",
                     probe.summary
-                    or "The confirmed adapter route did not probe as a Lean project.",
+                    or "The confirmed adapter route did not probe as a Lean Lake project.",
                     object_ref=route.git_url,
                     field="provider_route",
                     details={

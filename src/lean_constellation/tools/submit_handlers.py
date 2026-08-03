@@ -575,6 +575,16 @@ def submit_repo_lean_provider_discovery_result(
             data["git_url"] = runtime.external.github_repo.normalize_github_url(candidate.git_url)
         except ValueError as exc:
             return _fail(runtime, "git_url_invalid", str(exc), field="git_url")
+        if candidate.recommendation == "direct_adapter_requirement" and data["git_url"].lower() in {
+            "https://github.com/leanprover-community/mathlib",
+            "https://github.com/leanprover-community/mathlib4",
+        }:
+            return _fail(
+                runtime,
+                "mathlib_provider_candidate_forbidden",
+                "Mathlib is the platform dependency and must be handled by RepoMathlibRecon.",
+                field="git_url",
+            )
         candidates.append(data)
     return _prepared(
         runtime,

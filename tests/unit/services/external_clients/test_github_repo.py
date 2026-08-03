@@ -30,6 +30,7 @@ class FakeRunner:
                             "description": "mathlib",
                             "stargazersCount": 1,
                             "defaultBranch": "master",
+                            "language": "Lean",
                         }
                     ]
                 ),
@@ -47,9 +48,20 @@ class FakeRunner:
                         "description": "repo",
                         "stargazerCount": 2,
                         "defaultBranchRef": {"name": "main"},
+                        "primaryLanguage": {"name": "Lean"},
+                        "languages": [{"name": "Lean"}, {"name": "Shell"}],
+                        "repositoryTopics": [{"name": "formalization"}],
                         "licenseInfo": {"spdxId": "MIT", "name": "MIT License"},
                     }
                 ),
+            )
+        if command[:2] == ["gh", "api"] and "/commits/" in command[2]:
+            return ExternalCommandResult(
+                ok=True,
+                command=command,
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=json.dumps({"sha": "a" * 40}),
             )
         if command[:2] == ["gh", "api"] and "/git/trees/" in command[2]:
             return ExternalCommandResult(
@@ -120,6 +132,83 @@ class FakeRunner:
         return ExternalCommandResult(ok=True, command=command, cwd=str(cwd), exit_code=0)
 
 
+class SignalProbeRunner:
+    def __init__(
+        self,
+        *,
+        full_name: str,
+        primary_language: str | None,
+        topics: list[str],
+        paths: list[str],
+    ) -> None:
+        self.full_name = full_name
+        self.primary_language = primary_language
+        self.topics = topics
+        self.paths = paths
+
+    def run(self, command, *, cwd: Path, timeout_seconds: int, stdout_excerpt_chars: int, stderr_excerpt_chars: int):
+        command = list(command)
+        if command[:3] == ["gh", "repo", "view"]:
+            return ExternalCommandResult(
+                ok=True,
+                command=command,
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=json.dumps(
+                    {
+                        "nameWithOwner": self.full_name,
+                        "url": f"https://github.com/{self.full_name}",
+                        "defaultBranchRef": {"name": "main"},
+                        "primaryLanguage": (
+                            {"name": self.primary_language}
+                            if self.primary_language
+                            else None
+                        ),
+                        "languages": (
+                            [{"name": self.primary_language}]
+                            if self.primary_language
+                            else []
+                        ),
+                        "repositoryTopics": [
+                            {"name": topic} for topic in self.topics
+                        ],
+                    }
+                ),
+            )
+        if command[:2] == ["gh", "api"] and "/commits/" in command[2]:
+            return ExternalCommandResult(
+                ok=True,
+                command=command,
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=json.dumps({"sha": "c" * 40}),
+            )
+        if command[:2] == ["gh", "api"] and "/git/trees/" in command[2]:
+            return ExternalCommandResult(
+                ok=True,
+                command=command,
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=json.dumps(
+                    {
+                        "sha": "tree-sha",
+                        "truncated": False,
+                        "tree": [
+                            {"path": path, "type": "blob", "sha": f"sha-{index}"}
+                            for index, path in enumerate(self.paths)
+                        ],
+                    }
+                ),
+            )
+        return ExternalCommandResult(
+            ok=True,
+            command=command,
+            cwd=str(cwd),
+            exit_code=0,
+            stdout_excerpt="{}",
+        )
+
+
 def test_normalize_github_url_formats() -> None:
     client = GitHubRepoClient()
 
@@ -129,16 +218,26 @@ def test_normalize_github_url_formats() -> None:
 
 
 def test_search_and_inspect_use_gh_json() -> None:
-    client = GitHubRepoClient(runner=FakeRunner())
+    runner = FakeRunner()
+    client = GitHubRepoClient(runner=runner)
 
     search = client.search_repositories("lean fixed point", limit=5)
+    client.search_repositories("broad formalization", limit=1000)
     inspected = client.inspect_repository("owner/repo")
 
     assert search.ok is True
     assert search.candidates[0].full_name == "leanprover-community/mathlib4"
+    assert search.candidates[0].primary_language == "Lean"
     assert inspected.full_name == "owner/repo"
     assert inspected.default_branch == "main"
+    assert inspected.languages == ["Lean", "Shell"]
     assert inspected.license_spdx_id == "MIT"
+    broad_search = next(
+        call
+        for call in runner.calls
+        if call[:4] == ["gh", "search", "repos", "broad formalization"]
+    )
+    assert broad_search[broad_search.index("--limit") + 1] == "100"
 
 
 def test_remote_tree_file_and_code_search_use_github_api() -> None:
@@ -180,12 +279,57 @@ def test_remote_lean_probe_extracts_lake_evidence_without_checkout() -> None:
     assert probe.package_name == "Foo"
     assert probe.has_lakefile is True
     assert probe.has_lean_toolchain is True
+    assert probe.resolved_revision == "a" * 40
+    assert probe.adapter_candidate is True
+    assert "metadata:language=Lean" in probe.lean_signals
     assert probe.candidate_subdirs == ["", "nested"]
     assert "Foo" in probe.likely_import_modules
     assert "Lean project" in (probe.readme_evidence or "")
     assert nested.package_name == "Nested"
     assert nested.selected_subdir == "nested"
     assert not any(call[:2] == ["git", "clone"] for call in runner.calls)
+
+
+@pytest.mark.parametrize(
+    ("full_name", "primary_language", "topics", "paths", "expected_signal", "adapter_candidate"),
+    [
+        ("owner/language", "Lean", [], [], "metadata:language=Lean", True),
+        ("owner/topics", "Python", ["formalization"], [], "metadata:topic=formalization", True),
+        ("owner/toolchain", "Python", [], ["lean-toolchain"], "path:lean-toolchain", True),
+        ("owner/source-tree", "Python", [], ["Proof/Main.lean"], "tree:lean_files=1", True),
+        ("owner/not-lean", "Python", [], ["main.py"], None, False),
+        (
+            "leanprover-community/mathlib4",
+            "Lean",
+            ["mathlib"],
+            ["lakefile.lean", "Mathlib/Algebra.lean"],
+            "metadata:language=Lean",
+            False,
+        ),
+    ],
+)
+def test_remote_lean_probe_uses_multiple_signals_and_excludes_mathlib(
+    full_name: str,
+    primary_language: str | None,
+    topics: list[str],
+    paths: list[str],
+    expected_signal: str | None,
+    adapter_candidate: bool,
+) -> None:
+    probe = GitHubRepoClient(
+        runner=SignalProbeRunner(
+            full_name=full_name,
+            primary_language=primary_language,
+            topics=topics,
+            paths=paths,
+        )
+    ).probe_github_lean_repo_candidate(full_name)
+
+    assert probe.is_lean_project is (expected_signal is not None)
+    if expected_signal is not None:
+        assert expected_signal in probe.lean_signals
+    assert probe.adapter_candidate is adapter_candidate
+    assert probe.is_mathlib_repository is full_name.startswith("leanprover-community/mathlib")
 
 
 def test_remote_lean_probe_handles_no_lakefile_and_truncated_tree() -> None:
@@ -210,6 +354,14 @@ def test_remote_lean_probe_handles_no_lakefile_and_truncated_tree() -> None:
                             "defaultBranchRef": {"name": "main"},
                         }
                     ),
+                )
+            if command[:2] == ["gh", "api"] and "/commits/" in command[2]:
+                return ExternalCommandResult(
+                    ok=True,
+                    command=command,
+                    cwd=str(cwd),
+                    exit_code=0,
+                    stdout_excerpt=json.dumps({"sha": "b" * 40}),
                 )
             if command[:2] == ["gh", "api"] and "/git/trees/" in command[2]:
                 return ExternalCommandResult(
@@ -252,6 +404,36 @@ def test_remote_lean_probe_handles_no_lakefile_and_truncated_tree() -> None:
     assert any("truncated" in risk for risk in truncated.known_risks)
 
 
+def test_remote_lean_probe_keeps_structure_but_withholds_unresolved_commit() -> None:
+    class RevisionFailureRunner(FakeRunner):
+        def run(self, command, *, cwd: Path, timeout_seconds: int, stdout_excerpt_chars: int, stderr_excerpt_chars: int):
+            command = list(command)
+            if command[:2] == ["gh", "api"] and "/commits/" in command[2]:
+                return ExternalCommandResult(
+                    ok=False,
+                    command=command,
+                    cwd=str(cwd),
+                    exit_code=1,
+                    summary="commit lookup failed",
+                    issue_code="commit_lookup_failed",
+                )
+            return super().run(
+                command,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                stdout_excerpt_chars=stdout_excerpt_chars,
+                stderr_excerpt_chars=stderr_excerpt_chars,
+            )
+
+    probe = GitHubRepoClient(
+        runner=RevisionFailureRunner()
+    ).probe_github_lean_repo_candidate("owner/repo")
+
+    assert probe.is_lean_project is True
+    assert probe.resolved_revision is None
+    assert any("commit_lookup_failed" in risk for risk in probe.known_risks)
+
+
 def test_search_reports_command_failure_invalid_json_and_bad_limit() -> None:
     class FailureRunner:
         def run(self, command, *, cwd: Path, timeout_seconds: int, stdout_excerpt_chars: int, stderr_excerpt_chars: int):
@@ -277,6 +459,11 @@ def test_search_reports_command_failure_invalid_json_and_bad_limit() -> None:
     assert invalid.issue_code == "invalid_json"
     with pytest.raises(ValueError, match="limit"):
         GitHubRepoClient(runner=FakeRunner()).search_repositories("lean", limit=0)
+    with pytest.raises(ValueError, match="probe limits"):
+        GitHubRepoClient(runner=FakeRunner()).probe_github_lean_repo_candidate(
+            "owner/repo",
+            max_tree_entries=0,
+        )
 
 
 def test_inspect_repository_falls_back_on_command_failure_and_invalid_json() -> None:

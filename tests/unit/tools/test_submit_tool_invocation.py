@@ -220,6 +220,48 @@ def test_terminal_submit_summary_is_stripped_and_cannot_be_blank(tmp_path: Path)
     assert gateway.accepted[0].summary == "Use native repo."
 
 
+def test_lean_provider_submit_rejects_mathlib_after_url_normalization(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="repo_lean_provider_discovery_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="repo_lean_provider_discovery_submit",
+                role="worker",
+                agent_type="RepoLeanProviderDiscoveryAgent",
+            ),
+        ),
+        tool_name="submit_repo_lean_provider_discovery_result",
+        flat_args={
+            "outcome": "completed",
+            "summary": "Found only platform Mathlib.",
+            "candidates": [
+                {
+                    "git_url": "git@github.com:leanprover-community/mathlib4.git",
+                    "resolved_revision": "a" * 40,
+                    "package_name": "mathlib",
+                    "likely_import_modules": ["Mathlib"],
+                    "relevant_interfaces": ["Mathlib.Combinatorics.SimpleGraph"],
+                    "lean_evidence": ["Mathlib/Combinatorics/SimpleGraph/Basic.lean"],
+                    "adapter_feasibility": "ready",
+                    "gaps": [],
+                    "risks": [],
+                    "recommendation": "direct_adapter_requirement",
+                }
+            ],
+        },
+    )
+
+    assert result.ok and result.value is not None
+    assert result.value.ok is False
+    assert result.value.issues[0].kind == "mathlib_provider_candidate_forbidden"
+    assert gateway.accepted == []
+
+
 def test_node_dir_dependency_recon_completed_rejects_blank_summary(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
