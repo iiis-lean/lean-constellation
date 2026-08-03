@@ -52,6 +52,7 @@ from lean_constellation.services.external_clients.material_acquisition import (
     MaterialAcquisitionExtractionClient,
     MaterialTarget,
     ReadableTextValidationView,
+    ResolvedArtifactKindView,
 )
 from lean_constellation.services.external_clients.process import ExternalCommandResult
 from lean_constellation.services.external_clients.service import ExternalClientConfig, ExternalClientService
@@ -101,6 +102,7 @@ __all__ = [
     "MaterialTarget",
     "MathlibSearchResult",
     "ReadableTextValidationView",
+    "ResolvedArtifactKindView",
     "SorryAxiomScanResult",
     "ToolkitCatalogResult",
     "ToolkitCallResult",

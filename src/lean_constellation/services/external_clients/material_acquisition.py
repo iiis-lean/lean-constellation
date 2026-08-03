@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import html
 import mimetypes
@@ -99,6 +100,24 @@ class ReadableTextValidationView(StrictModel):
     non_ascii_ratio: float = 0.0
 
 
+class ResolvedArtifactKindView(StrictModel):
+    kind: Literal[
+        "pdf",
+        "html",
+        "tex_source_archive",
+        "plain_text",
+        "directory",
+        "unknown_binary",
+    ]
+    extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None
+    compatible: bool = True
+    evidence: list[str] = Field(default_factory=list)
+    mime_type: str | None = None
+    suffix: str | None = None
+    summary: str
+    issue_code: str | None = None
+
+
 class MaterialAcquisitionExtractionClient:
     def __init__(
         self,
@@ -125,13 +144,147 @@ class MaterialAcquisitionExtractionClient:
             return MaterialTarget(kind="local_dir", value=str(path))
         return MaterialTarget(kind="local_file", value=str(path))
 
+    def resolve_artifact_kind(
+        self,
+        path: Path,
+        *,
+        acquisition_kind: str | None = None,
+        mime_type: str | None = None,
+        requested_extraction_kind: Literal[
+            "pdf_text",
+            "html_main_text",
+            "tex_source",
+            "text_normalize",
+        ]
+        | None = None,
+    ) -> ResolvedArtifactKindView:
+        path = Path(path)
+        suffix = self._compound_suffix(path)
+        normalized_mime = mime_type.split(";", 1)[0].strip().lower() if mime_type else None
+        evidence: list[str] = []
+        if path.is_dir():
+            kind: Literal["pdf", "html", "tex_source_archive", "plain_text", "directory", "unknown_binary"] = "directory"
+            evidence.append("path:directory")
+        elif not path.exists() or not path.is_file():
+            return ResolvedArtifactKindView(
+                kind="unknown_binary",
+                compatible=False,
+                evidence=["path:missing"],
+                mime_type=normalized_mime,
+                suffix=suffix or None,
+                summary="Artifact is missing or is not a regular file.",
+                issue_code="material_artifact_missing",
+            )
+        else:
+            data = self._read_prefix(path, 1024 * 1024)
+            prefix = data[:8192]
+            strict_text = self._strict_text_from_bytes(data)
+            lower_prefix = strict_text[:8192].lstrip().lower() if strict_text is not None else ""
+            if prefix.startswith(b"%PDF-"):
+                kind = "pdf"
+                evidence.append("magic:pdf")
+            elif prefix.startswith(b"\x1f\x8b") or tarfile.is_tarfile(path) or zipfile.is_zipfile(path):
+                kind = "tex_source_archive"
+                evidence.append("magic:archive")
+            elif lower_prefix.startswith("<!doctype html") or lower_prefix.startswith("<html") or "<html" in lower_prefix[:512]:
+                kind = "html"
+                evidence.append("magic:html")
+            elif acquisition_kind == "arxiv_source" and strict_text is not None:
+                kind = "tex_source_archive"
+                evidence.append("acquisition:arxiv_source_text")
+            elif normalized_mime in {"text/html", "application/xhtml+xml"} and strict_text is not None:
+                kind = "html"
+                evidence.append(f"mime:{normalized_mime}")
+            elif suffix in {".html", ".htm"} and strict_text is not None:
+                kind = "html"
+                evidence.append(f"suffix:{suffix}")
+            elif strict_text is not None:
+                kind = "plain_text"
+                evidence.append("content:strict_utf8_text")
+            else:
+                kind = "unknown_binary"
+                evidence.append("content:unknown_binary")
+
+            if acquisition_kind:
+                evidence.append(f"acquisition:{acquisition_kind}")
+            if normalized_mime:
+                evidence.append(f"mime:{normalized_mime}")
+            if suffix:
+                evidence.append(f"suffix:{suffix}")
+
+            reliable_conflict = (
+                (
+                    acquisition_kind == "arxiv_source"
+                    and kind not in {"tex_source_archive", "unknown_binary"}
+                )
+                or (acquisition_kind == "arxiv_pdf" and kind not in {"pdf", "unknown_binary"})
+                or (normalized_mime == "application/pdf" and kind not in {"pdf", "unknown_binary"})
+                or (
+                    normalized_mime
+                    in {
+                        "application/gzip",
+                        "application/x-gzip",
+                        "application/x-tar",
+                        "application/zip",
+                    }
+                    and kind not in {"tex_source_archive", "unknown_binary"}
+                )
+                or (
+                    suffix in {".pdf", ".gz", ".tgz", ".tar", ".tar.gz", ".zip"}
+                    and kind == "plain_text"
+                )
+            )
+            if reliable_conflict:
+                return ResolvedArtifactKindView(
+                    kind="unknown_binary",
+                    compatible=False,
+                    evidence=evidence,
+                    mime_type=normalized_mime,
+                    suffix=suffix or None,
+                    summary="Artifact acquisition metadata conflicts with reliable file content.",
+                    issue_code="material_artifact_kind_conflict",
+                )
+
+        suggested = self._extraction_kind_for_resolved(
+            kind,
+            acquisition_kind=acquisition_kind,
+            suffix=suffix,
+        )
+        compatible = requested_extraction_kind is None or requested_extraction_kind == suggested
+        if kind == "plain_text" and requested_extraction_kind == "tex_source" and (
+            acquisition_kind == "arxiv_source" or suffix == ".tex"
+        ):
+            compatible = True
+        if kind == "unknown_binary":
+            compatible = False
+        return ResolvedArtifactKindView(
+            kind=kind,
+            extraction_kind=requested_extraction_kind or suggested,
+            compatible=compatible,
+            evidence=evidence,
+            mime_type=normalized_mime,
+            suffix=suffix or None,
+            summary=(
+                f"Resolved artifact as {kind}."
+                if compatible
+                else f"Requested extraction {requested_extraction_kind or '<automatic>'} is incompatible with {kind}."
+            ),
+            issue_code=None if compatible else "material_extraction_kind_mismatch",
+        )
+
     def fetch_arxiv_source(self, arxiv_id: str, version: str | None, temp_root: Path | None = None, output_root: Path | None = None) -> AcquiredArtifactResult:
         output_root = self._output_root(temp_root, output_root)
         target = MaterialTarget(kind="arxiv", value=arxiv_id, version=version)
         locator = f"{arxiv_id}{version or ''}"
         url = f"https://arxiv.org/e-print/{locator}"
         path = output_root / "original" / f"{self._safe_name(locator)}-source"
-        return self._download_artifact(target, url, path, "Fetched arXiv source")
+        return self._download_artifact(
+            target,
+            url,
+            path,
+            "Fetched arXiv source",
+            artifact_kind="arxiv_source",
+        )
 
     def fetch_arxiv_pdf(self, arxiv_id: str, version: str | None, temp_root: Path | None = None, output_root: Path | None = None) -> AcquiredArtifactResult:
         output_root = self._output_root(temp_root, output_root)
@@ -139,7 +292,13 @@ class MaterialAcquisitionExtractionClient:
         locator = f"{arxiv_id}{version or ''}"
         url = f"https://arxiv.org/pdf/{locator}.pdf"
         path = output_root / "original" / f"{self._safe_name(locator)}.pdf"
-        return self._download_artifact(target, url, path, "Fetched arXiv PDF")
+        return self._download_artifact(
+            target,
+            url,
+            path,
+            "Fetched arXiv PDF",
+            artifact_kind="arxiv_pdf",
+        )
 
     def fetch_web_page(self, url: str, temp_root: Path | None = None, output_root: Path | None = None) -> AcquiredArtifactResult:
         output_root = self._output_root(temp_root, output_root)
@@ -147,7 +306,13 @@ class MaterialAcquisitionExtractionClient:
         parsed = urlparse(url)
         name = self._safe_name(parsed.netloc + parsed.path) or "page"
         path = output_root / "original" / f"{name}.html"
-        return self._download_artifact(target, url, path, "Fetched web page")
+        return self._download_artifact(
+            target,
+            url,
+            path,
+            "Fetched web page",
+            artifact_kind="web_page",
+        )
 
     def import_local_file(self, path: Path | None = None, temp_root: Path | None = None, *, source_path: Path | None = None, output_root: Path | None = None) -> AcquiredArtifactResult:
         if source_path is None and path is None:
@@ -205,6 +370,15 @@ class MaterialAcquisitionExtractionClient:
         output_root = self._output_root(temp_root, output_root)
         if not pdf.exists():
             return self._extraction_failed(pdf, "missing_pdf", f"PDF file not found: {pdf}")
+        resolution = self.resolve_artifact_kind(pdf, requested_extraction_kind="pdf_text")
+        if not resolution.compatible:
+            return self._extraction_failed(
+                pdf,
+                resolution.issue_code or "material_extraction_kind_mismatch",
+                resolution.summary,
+                output_root=output_root,
+                material_kind=resolution.kind,
+            )
         dest = output_root / "normalized" / f"{pdf.stem}.txt"
         safety_issue = self._ensure_output_path(output_root, dest)
         if safety_issue is not None:
@@ -218,12 +392,44 @@ class MaterialAcquisitionExtractionClient:
             return self._extraction_failed(pdf, "pdf_extract_failed", completed.stderr[: self.config.stdout_excerpt_chars])
         return self._extracted_ok(pdf, [dest], dest, "Extracted PDF text")
 
-    def extract_web_main_text(self, artifact: Path | None = None, temp_root: Path | None = None, *, html_path: Path | None = None, output_root: Path | None = None) -> ExtractedMaterialResult:
+    def extract_web_main_text(
+        self,
+        artifact: Path | None = None,
+        temp_root: Path | None = None,
+        *,
+        html_path: Path | None = None,
+        output_root: Path | None = None,
+        acquisition_kind: str | None = None,
+        mime_type: str | None = None,
+    ) -> ExtractedMaterialResult:
         html_path = Path(html_path or artifact)  # type: ignore[arg-type]
         output_root = self._output_root(temp_root, output_root)
         if not html_path.exists():
             return self._extraction_failed(html_path, "missing_html", f"HTML file not found: {html_path}")
-        text = html_path.read_text(encoding="utf-8", errors="replace")
+        resolution = self.resolve_artifact_kind(
+            html_path,
+            acquisition_kind=acquisition_kind,
+            mime_type=mime_type,
+            requested_extraction_kind="html_main_text",
+        )
+        if not resolution.compatible:
+            return self._extraction_failed(
+                html_path,
+                resolution.issue_code or "material_extraction_kind_mismatch",
+                resolution.summary,
+                output_root=output_root,
+                material_kind=resolution.kind,
+            )
+        try:
+            text = html_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            return self._extraction_failed(
+                html_path,
+                "material_text_decode_failed",
+                f"HTML is not strict UTF-8: {exc}",
+                output_root=output_root,
+                material_kind="html",
+            )
         clean = self._html_to_text(text)
         dest = output_root / "normalized" / f"{html_path.stem}.md"
         safety_issue = self._ensure_output_path(output_root, dest)
@@ -238,6 +444,19 @@ class MaterialAcquisitionExtractionClient:
         output_root = self._output_root(temp_root, output_root)
         if not source.exists():
             return self._extraction_failed(source, "missing_arxiv_source", f"arXiv source not found: {source}")
+        resolution = self.resolve_artifact_kind(
+            source,
+            acquisition_kind="arxiv_source",
+            requested_extraction_kind="tex_source",
+        )
+        if not resolution.compatible:
+            return self._extraction_failed(
+                source,
+                resolution.issue_code or "material_extraction_kind_mismatch",
+                resolution.summary,
+                output_root=output_root,
+                material_kind=resolution.kind,
+            )
         extracted_root = output_root / "normalized" / f"{source.stem}-tex"
         safety_issue = self._ensure_output_path(output_root, extracted_root)
         if safety_issue is not None:
@@ -254,6 +473,10 @@ class MaterialAcquisitionExtractionClient:
             elif zipfile.is_zipfile(source):
                 with zipfile.ZipFile(source) as archive:
                     self._extract_zip_safely(archive, extracted_root)
+            elif source.is_file() and self._read_prefix(source, 2) == b"\x1f\x8b":
+                destination = extracted_root / f"{source.stem or 'source'}.tex"
+                with gzip.open(source, "rb") as source_handle, destination.open("wb") as destination_handle:
+                    shutil.copyfileobj(source_handle, destination_handle)
             elif source.suffix == ".tex":
                 shutil.copy2(source, extracted_root / source.name)
             else:
@@ -269,8 +492,35 @@ class MaterialAcquisitionExtractionClient:
         input_path = Path(input_path)
         if not input_path.exists():
             return self._extraction_failed(input_path, "missing_text", f"Text file not found: {input_path}")
-        text = input_path.read_text(encoding="utf-8", errors="replace")
         output_root = self._output_root(None, output_root)
+        resolution = self.resolve_artifact_kind(input_path, requested_extraction_kind="text_normalize")
+        if not resolution.compatible:
+            return self._extraction_failed(
+                input_path,
+                resolution.issue_code or "material_text_not_plain",
+                resolution.summary,
+                output_root=output_root,
+                material_kind=resolution.kind,
+            )
+        try:
+            text = input_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            return self._extraction_failed(
+                input_path,
+                "material_text_decode_failed",
+                f"Text is not strict UTF-8: {exc}",
+                output_root=output_root,
+                material_kind="text",
+            )
+        input_validation = self._validate_text_value(input_path, text)
+        if not input_validation.ok:
+            return self._extraction_failed(
+                input_path,
+                input_validation.issue_code or "material_text_not_readable",
+                input_validation.summary,
+                output_root=output_root,
+                material_kind="text",
+            )
         dest = output_root / "normalized" / f"{input_path.stem}.txt"
         safety_issue = self._ensure_output_path(output_root, dest)
         if safety_issue is not None:
@@ -283,28 +533,72 @@ class MaterialAcquisitionExtractionClient:
         path = Path(path)
         if not path.exists():
             return ReadableTextValidationView(ok=False, path=str(path), summary="Text file is missing", issue_code="missing_text")
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if not text.strip():
-            return ReadableTextValidationView(ok=False, path=str(path), summary="Text file is empty", issue_code="empty_text")
-        line_count = len(text.splitlines())
-        non_ascii = sum(1 for char in text if ord(char) > 127)
-        ratio = non_ascii / max(len(text), 1)
-        if "\ufffd" in text:
-            return ReadableTextValidationView(ok=False, path=str(path), summary="Text contains replacement characters", issue_code="decode_replacement", line_count=line_count, non_ascii_ratio=ratio)
-        return ReadableTextValidationView(ok=True, path=str(path), summary="Text is readable", line_count=line_count, non_ascii_ratio=ratio)
+        if path.is_symlink() or not path.is_file():
+            return ReadableTextValidationView(
+                ok=False,
+                path=str(path),
+                summary="Text path must be a regular non-symlink file",
+                issue_code="invalid_text_path",
+            )
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            return ReadableTextValidationView(
+                ok=False,
+                path=str(path),
+                summary=f"Text is not strict UTF-8: {exc}",
+                issue_code="material_text_decode_failed",
+            )
+        validation = self._validate_text_value(path, text)
+        if not validation.ok:
+            return validation
+        resolution = self.resolve_artifact_kind(path)
+        if resolution.kind != "plain_text":
+            return ReadableTextValidationView(
+                ok=False,
+                path=str(path),
+                summary=f"Canonical text cannot use resolved kind {resolution.kind}.",
+                issue_code="material_text_not_plain",
+                line_count=validation.line_count,
+                non_ascii_ratio=validation.non_ascii_ratio,
+            )
+        return validation
 
-    def _download_artifact(self, target: MaterialTarget, url: str, path: Path, summary: str) -> AcquiredArtifactResult:
+    def _download_artifact(
+        self,
+        target: MaterialTarget,
+        url: str,
+        path: Path,
+        summary: str,
+        *,
+        artifact_kind: str | None = None,
+    ) -> AcquiredArtifactResult:
         output_root = path.parents[1] if len(path.parents) > 1 else path.parent
         output_root = self._output_root(None, output_root)
         path = output_root / path.relative_to(output_root)
         safety_issue = self._ensure_output_path(output_root, path)
         if safety_issue is not None:
-            return self._acquired_failed(target, output_root, "artifact_path_escape", safety_issue, artifact_kind=self._artifact_kind_for_path(path), source_url=url)
+            return self._acquired_failed(
+                target,
+                output_root,
+                "artifact_path_escape",
+                safety_issue,
+                artifact_kind=artifact_kind or self._artifact_kind_for_path(path),
+                source_url=url,
+            )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             response_headers = self._downloader(url, path, {"User-Agent": self.config.user_agent}, self.config.network_timeout_seconds)
         except Exception as exc:  # noqa: BLE001 - external boundary.
-            return self._acquired_failed(target, output_root, "download_failed", f"Download failed: {exc}", artifact_kind=self._artifact_kind_for_path(path), source_url=url, metadata={"url": url})
+            return self._acquired_failed(
+                target,
+                output_root,
+                "download_failed",
+                f"Download failed: {exc}",
+                artifact_kind=artifact_kind or self._artifact_kind_for_path(path),
+                source_url=url,
+                metadata={"url": url},
+            )
         metadata = {"url": url}
         if response_headers:
             metadata["headers_summary"] = self._headers_summary(response_headers)
@@ -315,7 +609,7 @@ class MaterialAcquisitionExtractionClient:
             primary=path,
             metadata=metadata,
             summary=summary,
-            artifact_kind=self._artifact_kind_for_path(path),
+            artifact_kind=artifact_kind or self._artifact_kind_for_path(path),
             source_url=url,
             mime_type=self._mime_type_for_path(path, response_headers),
         )
@@ -378,11 +672,121 @@ class MaterialAcquisitionExtractionClient:
             return None
         with_document = []
         for path in tex_files:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
             if "\\begin{document}" in text:
                 with_document.append(path)
         candidates = with_document or tex_files
         return max(candidates, key=lambda item: item.stat().st_size)
+
+    @staticmethod
+    def _compound_suffix(path: Path) -> str:
+        suffixes = [suffix.lower() for suffix in path.suffixes]
+        if suffixes[-2:] == [".tar", ".gz"]:
+            return ".tar.gz"
+        return suffixes[-1] if suffixes else ""
+
+    @staticmethod
+    def _read_prefix(path: Path, limit: int) -> bytes:
+        with path.open("rb") as handle:
+            return handle.read(limit)
+
+    @staticmethod
+    def _strict_text_from_bytes(data: bytes) -> str | None:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if not text.strip() or "\ufffd" in text or "\x00" in text:
+            return None
+        control_count = sum(
+            1
+            for char in text
+            if ord(char) < 32 and char not in {"\n", "\r", "\t"}
+        )
+        if control_count / max(len(text), 1) > 0.02:
+            return None
+        return text
+
+    @staticmethod
+    def _extraction_kind_for_resolved(
+        kind: Literal[
+            "pdf",
+            "html",
+            "tex_source_archive",
+            "plain_text",
+            "directory",
+            "unknown_binary",
+        ],
+        *,
+        acquisition_kind: str | None,
+        suffix: str,
+    ) -> Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None:
+        if kind == "pdf":
+            return "pdf_text"
+        if kind == "html":
+            return "html_main_text"
+        if kind in {"tex_source_archive", "directory"}:
+            return "tex_source"
+        if kind == "plain_text":
+            return "tex_source" if acquisition_kind == "arxiv_source" or suffix == ".tex" else "text_normalize"
+        return None
+
+    @staticmethod
+    def _validate_text_value(path: Path, text: str) -> ReadableTextValidationView:
+        line_count = len(text.splitlines())
+        non_ascii = sum(1 for char in text if ord(char) > 127)
+        ratio = non_ascii / max(len(text), 1)
+        if not text.strip():
+            return ReadableTextValidationView(
+                ok=False,
+                path=str(path),
+                summary="Text file is empty",
+                issue_code="empty_text",
+                line_count=line_count,
+                non_ascii_ratio=ratio,
+            )
+        if "\ufffd" in text:
+            return ReadableTextValidationView(
+                ok=False,
+                path=str(path),
+                summary="Text contains replacement characters",
+                issue_code="decode_replacement",
+                line_count=line_count,
+                non_ascii_ratio=ratio,
+            )
+        if "\x00" in text:
+            return ReadableTextValidationView(
+                ok=False,
+                path=str(path),
+                summary="Text contains NUL bytes",
+                issue_code="nul_text",
+                line_count=line_count,
+                non_ascii_ratio=ratio,
+            )
+        control_count = sum(
+            1
+            for char in text
+            if ord(char) < 32 and char not in {"\n", "\r", "\t"}
+        )
+        if control_count / max(len(text), 1) > 0.02:
+            return ReadableTextValidationView(
+                ok=False,
+                path=str(path),
+                summary="Text contains too many binary control characters",
+                issue_code="binary_control_text",
+                line_count=line_count,
+                non_ascii_ratio=ratio,
+            )
+        return ReadableTextValidationView(
+            ok=True,
+            path=str(path),
+            summary="Text is readable",
+            line_count=line_count,
+            non_ascii_ratio=ratio,
+        )
 
     def _safe_archive_target(self, root: Path, member_name: str) -> Path:
         member_path = Path(member_name)
@@ -430,9 +834,23 @@ class MaterialAcquisitionExtractionClient:
             safety_issue = self._paths_inside(output_root, [*extracted, *([primary] if primary else [])])
             if safety_issue is not None:
                 return self._extraction_failed(source, "artifact_path_escape", safety_issue, output_root=output_root)
-        preview = None
-        if primary and primary.exists() and primary.is_file():
-            preview = primary.read_text(encoding="utf-8", errors="replace")[: self.config.text_preview_chars]
+        if primary is None or not primary.exists() or not primary.is_file():
+            return self._extraction_failed(
+                source,
+                "extracted_readable_entry_missing",
+                "Extraction did not produce a canonical readable entry.",
+                output_root=output_root,
+            )
+        validation = self.validate_readable_text(primary)
+        if not validation.ok:
+            return self._extraction_failed(
+                source,
+                validation.issue_code or "extracted_text_not_readable",
+                validation.summary,
+                output_root=output_root,
+                material_kind=self._material_kind_for_primary(primary),
+            )
+        preview = primary.read_text(encoding="utf-8")[: self.config.text_preview_chars]
         material_kind = self._material_kind_for_primary(primary)
         mime_type = self._mime_type_for_path(primary) if primary else None
         artifact_view = AcquiredArtifactView(

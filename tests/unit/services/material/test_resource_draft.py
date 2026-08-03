@@ -1,8 +1,10 @@
+import hashlib
+import json
 from pathlib import Path
 
 from tests.unit_services_helpers import make_runtime
 
-from lean_constellation.services.material import ResourceDraft, ResourceDraftStatus
+from lean_constellation.services.material import ResourceDraft, ResourceDraftStatus, ResourceMaterialManifest
 
 
 def _write_valid_draft_files(draft_root: Path, *, text: str = "alpha\nbeta theorem\n") -> None:
@@ -36,7 +38,7 @@ def test_allocate_resource_draft_creates_metadata_and_work_dirs(tmp_path: Path) 
     assert Path(draft.value.metadata_path).is_file()
 
 
-def test_check_resource_draft_requires_readme_or_manifest_and_normalized_artifact(tmp_path: Path) -> None:
+def test_check_resource_draft_requires_readme_manifest_and_normalized_artifact(tmp_path: Path) -> None:
     service = make_runtime().material
     draft = service.allocate_resource_draft(tmp_path, target="https://example.com/missing")
     assert draft.ok and draft.value is not None
@@ -46,7 +48,7 @@ def test_check_resource_draft_requires_readme_or_manifest_and_normalized_artifac
     assert missing.ok and missing.value is not None
     assert missing.value.passed is False
     issue_kinds = {issue.kind for issue in missing.value.issues}
-    assert "resource_draft_readme_or_manifest_missing" in issue_kinds
+    assert "resource_draft_readme_missing" in issue_kinds
     assert "resource_draft_normalized_artifact_missing" in issue_kinds
 
     _write_valid_draft_files(Path(draft.value.draft_root))
@@ -54,6 +56,7 @@ def test_check_resource_draft_requires_readme_or_manifest_and_normalized_artifac
 
     assert passed.ok and passed.value is not None
     assert passed.value.passed is True
+    assert Path(draft.value.manifest_path).is_file()
     reloaded = _load_draft(tmp_path, draft.value.metadata_path)
     assert reloaded.status == ResourceDraftStatus.CHECKED
     assert reloaded.checked_at is not None
@@ -115,3 +118,96 @@ def test_invalid_or_abandoned_draft_cannot_be_finalized(tmp_path: Path) -> None:
 
     assert not finalized.ok
     assert finalized.issues[0].kind == "resource_draft_abandoned"
+
+
+def test_resource_manifest_requires_explicit_canonical_when_outputs_are_ambiguous(tmp_path: Path) -> None:
+    service = make_runtime().material
+    draft = service.allocate_resource_draft(tmp_path, target="https://example.com/ambiguous")
+    assert draft.ok and draft.value is not None
+    root = Path(draft.value.draft_root)
+    (root / "README.md").write_text("# Ambiguous\n", encoding="utf-8")
+    (root / "normalized" / "a.md").write_text("first entry\n", encoding="utf-8")
+    (root / "normalized" / "b.md").write_text("selected entry\n", encoding="utf-8")
+
+    ambiguous = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
+    selected = service.refresh_resource_draft_manifest(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        canonical_normalized_entry="normalized/b.md",
+    )
+    checked = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
+    finalized = service.finalize_resource_draft(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        summary="Selected explicit canonical entry.",
+    )
+
+    assert ambiguous.ok and ambiguous.value is not None and not ambiguous.value.passed
+    assert "resource_manifest_canonical_entry_ambiguous" in {
+        issue.kind for issue in ambiguous.value.issues
+    }
+    assert selected.ok and selected.value is not None
+    assert selected.value.canonical_normalized_entry == "normalized/b.md"
+    assert checked.ok and checked.value is not None and checked.value.passed
+    assert finalized.ok and finalized.value is not None
+    assert finalized.value.resource.normalized_entry == "normalized/b.md"
+    assert finalized.value.resource.content_hash == hashlib.sha256(b"selected entry\n").hexdigest()
+
+
+def test_resource_manifest_rejects_old_schema_and_binary_normalized_entry(tmp_path: Path) -> None:
+    service = make_runtime().material
+    old = service.allocate_resource_draft(tmp_path, target="https://example.com/old-manifest")
+    assert old.ok and old.value is not None
+    old_root = Path(old.value.draft_root)
+    (old_root / "README.md").write_text("# Old\n", encoding="utf-8")
+    (old_root / "normalized" / "main.md").write_text("readable\n", encoding="utf-8")
+    Path(old.value.manifest_path).write_text(json.dumps({"normalized_entry": "normalized/main.md"}), encoding="utf-8")
+
+    old_checked = service.check_resource_draft(tmp_path, draft_id=old.value.draft.draft_id)
+
+    binary = service.allocate_resource_draft(tmp_path, target="https://example.com/binary")
+    assert binary.ok and binary.value is not None
+    binary_root = Path(binary.value.draft_root)
+    (binary_root / "README.md").write_text("# Binary\n", encoding="utf-8")
+    (binary_root / "normalized" / "paper.txt").write_bytes(b"%PDF-1.4\nfixture")
+    binary_checked = service.check_resource_draft(tmp_path, draft_id=binary.value.draft.draft_id)
+
+    assert old_checked.ok and old_checked.value is not None and not old_checked.value.passed
+    assert any(issue.kind == "schema_version_missing" for issue in old_checked.value.issues)
+    assert binary_checked.ok and binary_checked.value is not None and not binary_checked.value.passed
+    assert "resource_draft_normalized_artifact_missing" in {
+        issue.kind for issue in binary_checked.value.issues
+    }
+
+
+def test_resource_manifest_records_file_truth_and_matches_final_metadata(tmp_path: Path) -> None:
+    service = make_runtime().material
+    draft = service.allocate_resource_draft(tmp_path, target="https://example.com/truth")
+    assert draft.ok and draft.value is not None
+    _write_valid_draft_files(Path(draft.value.draft_root), text="canonical bytes\n")
+
+    refreshed = service.refresh_resource_draft_manifest(tmp_path, draft_id=draft.value.draft.draft_id)
+    finalized = service.finalize_resource_draft(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        summary="Manifest truth.",
+    )
+
+    assert refreshed.ok and refreshed.value is not None
+    assert {item.path for item in refreshed.value.files} == {
+        "README.md",
+        "normalized/main.md",
+        "original/raw.txt",
+    }
+    assert finalized.ok and finalized.value is not None
+    manifest_loaded = make_runtime().foundation.store.read_json(
+        Path(finalized.value.resource_root) / "manifest.json", ResourceMaterialManifest
+    )
+    assert manifest_loaded.ok and manifest_loaded.value is not None
+    canonical = next(
+        item
+        for item in manifest_loaded.value.files
+        if item.path == manifest_loaded.value.canonical_normalized_entry
+    )
+    assert finalized.value.resource.normalized_entry == manifest_loaded.value.canonical_normalized_entry
+    assert finalized.value.resource.content_hash == canonical.sha256

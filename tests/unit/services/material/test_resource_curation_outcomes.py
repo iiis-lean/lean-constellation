@@ -154,7 +154,7 @@ def test_resource_curation_submit_outcome_gates(tmp_path: Path) -> None:
     )
     assert not not_ready.ok
     assert {issue.kind for issue in not_ready.issues} >= {
-        "resource_draft_readme_or_manifest_missing",
+        "resource_draft_readme_missing",
         "resource_draft_normalized_artifact_missing",
     }
 

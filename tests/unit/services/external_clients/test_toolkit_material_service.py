@@ -453,6 +453,8 @@ def test_material_arxiv_downloaders_and_local_file_errors(tmp_path) -> None:
 
     assert source.ok is True
     assert pdf.ok is True
+    assert source.artifact_kind == "arxiv_source"
+    assert pdf.artifact_kind == "arxiv_pdf"
     assert calls == ["https://arxiv.org/e-print/2401.00001v2", "https://arxiv.org/pdf/2401.00001.pdf"]
     assert missing_arg.ok is False
     assert missing_arg.issue_code == "missing_local_file_path"
@@ -469,7 +471,7 @@ def test_material_import_local_dir_and_pdf_extract_branches(tmp_path, monkeypatc
     imported = client.import_local_dir(source_path=local_dir, output_root=tmp_path / "dir-draft")
 
     pdf = tmp_path / "paper.pdf"
-    pdf.write_bytes(b"%PDF")
+    pdf.write_bytes(b"%PDF-1.4\nfixture")
 
     def fake_run_success(command, text: bool, stdout, stderr, check: bool):
         Path(command[-1]).write_text("extracted text", encoding="utf-8")

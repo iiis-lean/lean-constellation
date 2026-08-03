@@ -26,6 +26,7 @@ from lean_constellation.services.material.resource_library import (
     ResourceDuplicateView,
     ResourceLibraryComponent,
     ResourceMetadataInput,
+    ResourceMaterialManifest,
     ResourceSummaryView,
     ResourceTarget,
     ResourceTargetView,
@@ -179,8 +180,16 @@ class MaterialService:
         *,
         artifact_ref: str,
         extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None,
+        acquisition_kind: str | None = None,
+        mime_type: str | None = None,
     ) -> ServiceResult[SourceExtractionView]:
-        return self.source_corpus.extract_source_artifact(repo_root, artifact_ref=artifact_ref, extraction_kind=extraction_kind)
+        return self.source_corpus.extract_source_artifact(
+            repo_root,
+            artifact_ref=artifact_ref,
+            extraction_kind=extraction_kind,
+            acquisition_kind=acquisition_kind,
+            mime_type=mime_type,
+        )
 
     def import_source_material(
         self,
@@ -221,8 +230,17 @@ class MaterialService:
         draft_id: str,
         artifact_ref: str,
         extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None,
+        acquisition_kind: str | None = None,
+        mime_type: str | None = None,
     ) -> ServiceResult[SourceExtractionView]:
-        return self.resource_curation.extract_resource_artifact(repo_root, draft_id=draft_id, artifact_ref=artifact_ref, extraction_kind=extraction_kind)
+        return self.resource_curation.extract_resource_artifact(
+            repo_root,
+            draft_id=draft_id,
+            artifact_ref=artifact_ref,
+            extraction_kind=extraction_kind,
+            acquisition_kind=acquisition_kind,
+            mime_type=mime_type,
+        )
 
     def normalize_resource_text_material(self, repo_root: Path, *, draft_id: str, material_ref: str) -> ServiceResult[SourceExtractionView]:
         return self.resource_curation.normalize_resource_text_material(repo_root, draft_id=draft_id, material_ref=material_ref)
@@ -502,6 +520,19 @@ class MaterialService:
 
     def check_resource_draft(self, repo_root: Path, *, draft_id: str) -> ServiceResult[GateReport]:
         return self.resource_library.check_resource_draft(repo_root, draft_id=draft_id)
+
+    def refresh_resource_draft_manifest(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        canonical_normalized_entry: str | None = None,
+    ) -> ServiceResult[ResourceMaterialManifest]:
+        return self.resource_library.refresh_resource_draft_manifest(
+            repo_root,
+            draft_id=draft_id,
+            canonical_normalized_entry=canonical_normalized_entry,
+        )
 
     def get_resource_draft(self, repo_root: Path, *, draft_id: str) -> ServiceResult[ResourceDraftView]:
         return self.resource_library.get_resource_draft(repo_root, draft_id=draft_id)

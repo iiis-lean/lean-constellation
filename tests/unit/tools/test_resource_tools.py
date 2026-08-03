@@ -18,6 +18,7 @@ def test_resource_tools_are_registered() -> None:
         "extract_resource_artifact",
         "import_resource_material",
         "normalize_resource_text_material",
+        "refresh_resource_draft_manifest",
         "read_resource_range",
         "search_resource_text",
         "list_resources",
@@ -37,7 +38,13 @@ def test_resource_groups_expose_expected_tools() -> None:
     )
     assert_group_contains(
         "resource_acquisition",
-        {"acquire_resource_material", "extract_resource_artifact", "import_resource_material", "normalize_resource_text_material"},
+        {
+            "acquire_resource_material",
+            "extract_resource_artifact",
+            "import_resource_material",
+            "normalize_resource_text_material",
+            "refresh_resource_draft_manifest",
+        },
     )
     assert_group_contains("resource_library_read", {"read_resource_range", "search_resource_text", "list_resources", "get_resource"})
     assert_group_contains("resource_draft_current_read", {"get_resource_draft", "check_resource_draft"})
@@ -50,6 +57,7 @@ def test_resource_acquisition_schemas_use_resource_draft_language() -> None:
         "extract_resource_artifact",
         "import_resource_material",
         "normalize_resource_text_material",
+        "refresh_resource_draft_manifest",
     }:
         schema_text = str(specs[tool_name].args_model.model_json_schema())
         assert "Source draft" not in schema_text
@@ -71,6 +79,12 @@ def test_resource_result_views_use_logical_agent_projections() -> None:
         "normalize_resource_text_material",
     }:
         assert specs[name].result_view == "resource_extraction_handles"
+    assert specs["refresh_resource_draft_manifest"].result_view == "resource_material_manifest"
+
+    extraction_schema = specs["extract_resource_artifact"].args_model.model_json_schema()
+    assert {"artifact_ref", "acquisition_kind", "mime_type", "extraction_kind"} <= set(
+        extraction_schema["properties"]
+    )
 
 
 def _resource_raw(repo_root: Path, *, flow_id: str = "flow_resource") -> RawToolCallContext:
@@ -143,6 +157,36 @@ def test_resource_acquisition_writes_active_draft_not_source_corpus(tmp_path: Pa
     assert normalized.ok and normalized.value is not None and normalized.value.ok is True
     assert normalized.value.value["primary_material_ref"] == "normalized/raw.txt"
     draft_root = Path(draft.value.draft_root)
+    manifest = runtime.material.refresh_resource_draft_manifest(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+    )
+    assert manifest.ok and manifest.value is not None
+    assert manifest.value.extraction_relations[0].source_artifact_path == "original/raw.txt"
+    assert manifest.value.extraction_relations[0].normalized_paths == ["normalized/raw.txt"]
     assert (draft_root / "original" / "raw.txt").is_file()
     assert (draft_root / "normalized" / "raw.txt").is_file()
+    assert (draft_root / "manifest.json").is_file()
     assert not (tmp_path / ".lean_constellation" / "source" / "original" / "raw.txt").exists()
+
+
+def test_resource_manifest_tool_selects_explicit_canonical_entry(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    draft = runtime.material.allocate_resource_draft(tmp_path, target="https://example.com/manifest")
+    assert draft.ok and draft.value is not None
+    runtime.ark.flow_service = _FakeResourceFlowService(
+        flow_id="flow_resource",
+        draft_id=draft.value.draft.draft_id,
+    )
+    root = Path(draft.value.draft_root)
+    (root / "normalized" / "a.md").write_text("A\n", encoding="utf-8")
+    (root / "normalized" / "b.md").write_text("B\n", encoding="utf-8")
+
+    refreshed = runtime.tool_facade.invoke_agent_tool(
+        _resource_raw(tmp_path),
+        tool_name="refresh_resource_draft_manifest",
+        flat_args={"canonical_normalized_entry": "normalized/b.md"},
+    )
+
+    assert refreshed.ok and refreshed.value is not None and refreshed.value.ok
+    assert refreshed.value.value["canonical_normalized_entry"] == "normalized/b.md"

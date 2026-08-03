@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult, WriteMode
@@ -88,6 +88,55 @@ class ResourceDraftView(StrictModel):
     original_dir: str
     normalized_dir: str
     summary: str
+
+
+class ResourceMaterialFileView(StrictModel):
+    path: str
+    category: Literal["original", "normalized", "assets", "supplementary"]
+    size_bytes: int = Field(ge=0)
+    sha256: str = Field(min_length=64, max_length=64)
+    resolved_kind: Literal[
+        "pdf",
+        "html",
+        "tex_source_archive",
+        "plain_text",
+        "directory",
+        "unknown_binary",
+    ]
+    readable_kind: Literal["plain_text", "markdown", "tex_source"] | None = None
+
+
+class ResourceExtractionRelationView(StrictModel):
+    source_artifact_path: str
+    normalized_paths: list[str] = Field(min_length=1)
+    extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"]
+
+
+class ResourceMaterialManifest(StrictModel):
+    manifest_kind: Literal["resource_material_manifest"] = "resource_material_manifest"
+    schema_version: Literal[1] = 1
+    readme_path: Literal["README.md"] = "README.md"
+    canonical_normalized_entry: str
+    files: list[ResourceMaterialFileView] = Field(min_length=1)
+    extraction_relations: list[ResourceExtractionRelationView] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_canonical_entry(self):
+        paths = [item.path for item in self.files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("resource material manifest file paths must be unique")
+        matching = [item for item in self.files if item.path == self.canonical_normalized_entry]
+        if len(matching) != 1:
+            raise ValueError("canonical_normalized_entry must identify exactly one manifest file")
+        canonical = matching[0]
+        if canonical.category != "normalized" or canonical.resolved_kind != "plain_text" or canonical.readable_kind is None:
+            raise ValueError("canonical_normalized_entry must be validated readable normalized text")
+        for relation in self.extraction_relations:
+            if relation.source_artifact_path not in paths:
+                raise ValueError("extraction relation source_artifact_path must identify a manifest file")
+            if any(path not in paths for path in relation.normalized_paths):
+                raise ValueError("extraction relation normalized_paths must identify manifest files")
+        return self
 
 
 class ResourceSummaryView(StrictModel):
@@ -233,6 +282,23 @@ class ResourceLibraryComponent:
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
         draft = loaded.value
+        refreshed = self.refresh_resource_draft_manifest(repo_root, draft_id=draft_id)
+        if not refreshed.ok or refreshed.value is None:
+            issues = [*refreshed.issues, *self._draft_gate_issues(repo_root, draft)]
+            deduplicated = []
+            seen = set()
+            for issue in issues:
+                key = (issue.kind, issue.object_ref, issue.field)
+                if key not in seen:
+                    seen.add(key)
+                    deduplicated.append(issue)
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "resource_draft_check",
+                    deduplicated,
+                    summary=f"{len(deduplicated)} resource draft checks failed.",
+                )
+            )
         issues = self._draft_gate_issues(repo_root, draft)
         if issues:
             return self.runtime.foundation.ok(
@@ -255,6 +321,27 @@ class ResourceLibraryComponent:
                 return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(
             self.runtime.foundation.gate_passed("resource_draft_check", summary="Resource draft checks passed.")
+        )
+
+    def refresh_resource_draft_manifest(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+        canonical_normalized_entry: str | None = None,
+        source_artifact_ref: str | None = None,
+        extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None,
+        relation_normalized_paths: list[str] | None = None,
+    ) -> ServiceResult[ResourceMaterialManifest]:
+        loaded = self._load_draft(repo_root, draft_id=draft_id)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        return self._refresh_material_manifest(
+            self._draft_root(repo_root, draft_id),
+            canonical_normalized_entry=canonical_normalized_entry,
+            source_artifact_ref=source_artifact_ref,
+            extraction_kind=extraction_kind,
+            relation_normalized_paths=relation_normalized_paths,
         )
 
     def resource_key_for_target(self, target: ResourceTarget | ResourceTargetView | str) -> ServiceResult[str]:
@@ -283,11 +370,10 @@ class ResourceLibraryComponent:
                 self.runtime.foundation.issue("resource_duplicate", duplicate.value.summary, object_ref=duplicate.value.resource_key)
             )
         draft_root = self._draft_root(repo_root, draft.draft_id)
-        entry = self._choose_normalized_entry(draft_root / "normalized")
-        if entry is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue("resource_not_readable", "Resource draft has no readable normalized text.", object_ref=str(draft_root))
-            )
+        manifest = self._load_material_manifest(draft_root)
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        entry = draft_root / manifest.value.canonical_normalized_entry
         resource_key = self._resource_key(draft.target)
         ctx = FoundationContext(repo_root=Path(repo_root))
         dest = self.runtime.foundation.layout.resource_dir(ctx, resource_key)
@@ -297,6 +383,19 @@ class ResourceLibraryComponent:
         draft.finalized_at = utc_now_iso()
         draft.resource_key = resource_key
         draft.summary = summary.strip()
+        canonical_file = next(
+            item
+            for item in manifest.value.files
+            if item.path == manifest.value.canonical_normalized_entry
+        )
+        if self._hash_file(entry) != canonical_file.sha256:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_manifest_content_changed",
+                    "Canonical normalized bytes changed after the draft gate.",
+                    object_ref=manifest.value.canonical_normalized_entry,
+                )
+            )
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(draft_root, dest)
@@ -310,6 +409,15 @@ class ResourceLibraryComponent:
                 )
             )
         dest_entry = dest / entry.relative_to(draft_root)
+        if self._hash_file(dest_entry) != canonical_file.sha256:
+            shutil.rmtree(dest, ignore_errors=True)
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_manifest_content_changed",
+                    "Canonical normalized bytes changed after the draft gate.",
+                    object_ref=manifest.value.canonical_normalized_entry,
+                )
+            )
         resource = ResourceMetadata(
             resource_key=resource_key,
             target=draft.target,
@@ -317,7 +425,7 @@ class ResourceLibraryComponent:
             source_url=draft.target.target if draft.target.kind == "web_url" else None,
             notes=summary.strip(),
             normalized_entry=dest_entry.relative_to(dest).as_posix(),
-            content_hash=self._hash_file(dest_entry),
+            content_hash=canonical_file.sha256,
         )
         resource_write = self.runtime.foundation.store.write_json_atomic(
             self.runtime.foundation.layout.resource_metadata_path(ctx, resource_key),
@@ -381,17 +489,10 @@ class ResourceLibraryComponent:
         loaded = self._load_draft(repo_root, draft_id=draft_id)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
-        draft_root = self._draft_root(repo_root, draft_id)
-        entry = self._choose_normalized_entry(draft_root / "normalized")
-        if entry is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "resource_not_readable",
-                    "Resource draft has no readable normalized text.",
-                    object_ref=str(draft_root),
-                )
-            )
-        return self.runtime.foundation.ok(entry.relative_to(draft_root).as_posix())
+        manifest = self._load_material_manifest(self._draft_root(repo_root, draft_id))
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        return self.runtime.foundation.ok(manifest.value.canonical_normalized_entry)
 
     def register_local_resource(
         self,
@@ -415,16 +516,13 @@ class ResourceLibraryComponent:
                 )
             )
         temp_dir = Path(temp_dir)
-        normalized_root = temp_dir / "normalized"
-        entry = self._choose_normalized_entry(normalized_root if normalized_root.exists() else temp_dir)
-        if entry is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "resource_not_readable",
-                    "Resource temp directory has no readable normalized text.",
-                    object_ref=str(temp_dir),
-                )
-            )
+        manifest = self._refresh_material_manifest(
+            temp_dir,
+            missing_entry_issue_kind="resource_not_readable",
+        )
+        if not manifest.ok or manifest.value is None:
+            return self.runtime.foundation.fail(manifest.issues)
+        entry = temp_dir / manifest.value.canonical_normalized_entry
         resource_key = self._resource_key(target_model)
         ctx = FoundationContext(repo_root=Path(repo_root))
         dest = self.runtime.foundation.layout.resource_dir(ctx, resource_key)
@@ -442,7 +540,11 @@ class ResourceLibraryComponent:
             source_url=metadata.source_url,
             notes=metadata.notes,
             normalized_entry=dest_entry.relative_to(dest).as_posix(),
-            content_hash=self._hash_file(dest_entry),
+            content_hash=next(
+                item.sha256
+                for item in manifest.value.files
+                if item.path == manifest.value.canonical_normalized_entry
+            ),
         )
         write = self.runtime.foundation.store.write_json_atomic(
             self.runtime.foundation.layout.resource_metadata_path(ctx, resource_key),
@@ -616,6 +718,201 @@ class ResourceLibraryComponent:
             summary=draft.summary,
         )
 
+    def _load_material_manifest(self, root: Path) -> ServiceResult[ResourceMaterialManifest]:
+        path = root / "manifest.json"
+        if not path.is_file():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_manifest_missing",
+                    "Resource material manifest is missing.",
+                    object_ref=str(path),
+                )
+            )
+        loaded = self.runtime.foundation.store.read_json(path, ResourceMaterialManifest)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        return self.runtime.foundation.ok(loaded.value)
+
+    def _refresh_material_manifest(
+        self,
+        root: Path,
+        *,
+        canonical_normalized_entry: str | None = None,
+        source_artifact_ref: str | None = None,
+        extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None,
+        relation_normalized_paths: list[str] | None = None,
+        missing_entry_issue_kind: str = "resource_draft_normalized_artifact_missing",
+    ) -> ServiceResult[ResourceMaterialManifest]:
+        root = Path(root).expanduser().resolve(strict=False)
+        if not root.is_dir():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_material_root_missing",
+                    "Resource material root is missing.",
+                    object_ref=str(root),
+                )
+            )
+        existing: ResourceMaterialManifest | None = None
+        manifest_path = root / "manifest.json"
+        if manifest_path.exists():
+            loaded = self._load_material_manifest(root)
+            if not loaded.ok or loaded.value is None:
+                return self.runtime.foundation.fail(loaded.issues)
+            existing = loaded.value
+
+        file_views: list[ResourceMaterialFileView] = []
+        readable_normalized: list[str] = []
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.name in {"draft.json", "manifest.json", "resource.json"}:
+                continue
+            if path.is_symlink():
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "resource_draft_symlink_forbidden",
+                        "Resource material must not contain symlinks.",
+                        object_ref=str(path),
+                    )
+                )
+            relative = path.relative_to(root).as_posix()
+            resolution = self.runtime.external.material.resolve_artifact_kind(path)
+            category = self._material_category(relative, resolved_kind=resolution.kind)
+            readable_kind = None
+            if resolution.kind == "plain_text":
+                validation = self.runtime.external.material.validate_readable_text(path)
+                if validation.ok:
+                    readable_kind = self._readable_kind(path)
+                    if category == "normalized":
+                        readable_normalized.append(relative)
+            file_views.append(
+                ResourceMaterialFileView(
+                    path=relative,
+                    category=category,
+                    size_bytes=path.stat().st_size,
+                    sha256=self._hash_file(path),
+                    resolved_kind=resolution.kind,
+                    readable_kind=readable_kind,
+                )
+            )
+
+        canonical = canonical_normalized_entry or (
+            existing.canonical_normalized_entry if existing is not None else None
+        )
+        if canonical is not None:
+            try:
+                canonical = self.runtime.foundation.layout.ensure_relative_path(canonical)
+            except ValueError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "resource_manifest_canonical_entry_invalid",
+                        str(exc),
+                        object_ref=canonical,
+                    )
+                )
+            if canonical not in readable_normalized:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "resource_manifest_canonical_entry_invalid",
+                        "Canonical entry must identify validated readable text under normalized/.",
+                        object_ref=canonical,
+                    )
+                )
+        elif len(readable_normalized) == 1:
+            canonical = readable_normalized[0]
+        elif not readable_normalized:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    missing_entry_issue_kind,
+                    "Resource material requires a validated readable normalized entry.",
+                    object_ref=str(root / "normalized"),
+                )
+            )
+        else:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_manifest_canonical_entry_ambiguous",
+                    "Multiple readable normalized files require an explicit canonical_normalized_entry.",
+                    object_ref=str(root / "normalized"),
+                    details={"candidates": readable_normalized},
+                )
+            )
+
+        relations = list(existing.extraction_relations) if existing is not None else []
+        if source_artifact_ref is not None or extraction_kind is not None:
+            if source_artifact_ref is None or extraction_kind is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "resource_manifest_extraction_relation_incomplete",
+                        "source_artifact_ref and extraction_kind must be provided together.",
+                    )
+                )
+            try:
+                source_ref = self.runtime.foundation.layout.ensure_relative_path(source_artifact_ref)
+            except ValueError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "resource_manifest_source_ref_invalid",
+                        str(exc),
+                        object_ref=source_artifact_ref,
+                    )
+                )
+            relations = [
+                item
+                for item in relations
+                if not (
+                    item.source_artifact_path == source_ref
+                    and item.extraction_kind == extraction_kind
+                )
+            ]
+            normalized_paths = relation_normalized_paths or [canonical]
+            try:
+                normalized_paths = sorted(
+                    {
+                        self.runtime.foundation.layout.ensure_relative_path(path)
+                        for path in normalized_paths
+                    }
+                )
+            except ValueError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "resource_manifest_normalized_ref_invalid",
+                        str(exc),
+                    )
+                )
+            if canonical not in normalized_paths:
+                normalized_paths.append(canonical)
+                normalized_paths.sort()
+            relations.append(
+                ResourceExtractionRelationView(
+                    source_artifact_path=source_ref,
+                    normalized_paths=normalized_paths,
+                    extraction_kind=extraction_kind,
+                )
+            )
+        manifest_file_paths = {item.path for item in file_views}
+        relations = [
+            item
+            for item in relations
+            if item.source_artifact_path in manifest_file_paths
+            and all(path in manifest_file_paths for path in item.normalized_paths)
+        ]
+        manifest = ResourceMaterialManifest(
+            canonical_normalized_entry=canonical,
+            files=sorted(file_views, key=lambda item: item.path),
+            extraction_relations=sorted(
+                relations,
+                key=lambda item: (
+                    item.source_artifact_path,
+                    item.extraction_kind,
+                    tuple(item.normalized_paths),
+                ),
+            ),
+        )
+        mode = WriteMode.UPDATE_EXISTING if manifest_path.exists() else WriteMode.CREATE_ONLY
+        written = self.runtime.foundation.store.write_json_atomic(manifest_path, manifest, mode=mode)
+        if not written.ok:
+            return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(manifest)
+
     def _draft_gate_issues(self, repo_root: Path, draft: ResourceDraft) -> list[ServiceIssue]:
         issues = []
         draft_root = self._draft_root(repo_root, draft.draft_id)
@@ -639,23 +936,59 @@ class ResourceLibraryComponent:
                 issues.append(self.runtime.foundation.issue("resource_draft_path_escape", str(exc), object_ref=str(path)))
             if path.is_symlink():
                 issues.append(self.runtime.foundation.issue("resource_draft_symlink_forbidden", "Resource draft must not contain symlinks.", object_ref=str(path)))
-        if not (draft_root / "README.md").is_file() and not (draft_root / "manifest.json").is_file():
+        if not (draft_root / "README.md").is_file():
             issues.append(
                 self.runtime.foundation.issue(
-                    "resource_draft_readme_or_manifest_missing",
-                    "Resource draft requires README.md or manifest.json.",
+                    "resource_draft_readme_missing",
+                    "Resource draft requires README.md.",
                     object_ref=str(draft_root),
                 )
             )
-        normalized_entry = self._choose_normalized_entry(draft_root / "normalized")
-        if normalized_entry is None:
+        manifest = self._load_material_manifest(draft_root)
+        if not manifest.ok or manifest.value is None:
+            issues.extend(manifest.issues)
+            return issues
+        canonical = draft_root / manifest.value.canonical_normalized_entry
+        try:
+            self.runtime.foundation.layout.assert_within(draft_root / "normalized", canonical)
+        except ValueError as exc:
             issues.append(
                 self.runtime.foundation.issue(
-                    "resource_draft_normalized_artifact_missing",
-                    "Resource draft requires at least one readable non-empty normalized text artifact.",
-                    object_ref=str(draft_root / "normalized"),
+                    "resource_manifest_canonical_entry_invalid",
+                    str(exc),
+                    object_ref=manifest.value.canonical_normalized_entry,
                 )
             )
+            return issues
+        validation = self.runtime.external.material.validate_readable_text(canonical)
+        if not validation.ok:
+            issues.append(
+                self.runtime.foundation.issue(
+                    validation.issue_code or "resource_manifest_canonical_entry_unreadable",
+                    validation.summary,
+                    object_ref=manifest.value.canonical_normalized_entry,
+                )
+            )
+        for item in manifest.value.files:
+            path = draft_root / item.path
+            if not path.is_file() or self._hash_file(path) != item.sha256:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "resource_manifest_file_mismatch",
+                        "Resource manifest file metadata does not match current bytes.",
+                        object_ref=item.path,
+                    )
+                )
+            if item.category == "normalized" and (
+                item.resolved_kind != "plain_text" or item.readable_kind is None
+            ):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "resource_normalized_artifact_not_readable_text",
+                        "Every normalized artifact must be validated readable text.",
+                        object_ref=item.path,
+                    )
+                )
         return issues
 
     @staticmethod
@@ -667,16 +1000,33 @@ class ResourceLibraryComponent:
         return f"{scheme}://{netloc}{path}"
 
     @staticmethod
-    def _choose_normalized_entry(root: Path) -> Path | None:
-        candidates = [path for path in sorted(root.rglob("*")) if path.is_file()]
-        for path in candidates:
-            try:
-                text = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            if text.strip():
-                return path
-        return None
+    def _material_category(
+        path: str,
+        *,
+        resolved_kind: Literal[
+            "pdf",
+            "html",
+            "tex_source_archive",
+            "plain_text",
+            "directory",
+            "unknown_binary",
+        ],
+    ) -> Literal["original", "normalized", "assets", "supplementary"]:
+        first = Path(path).parts[0] if Path(path).parts else ""
+        if first == "normalized" and resolved_kind != "plain_text":
+            return "assets"
+        if first in {"original", "normalized", "assets"}:
+            return first  # type: ignore[return-value]
+        return "supplementary"
+
+    @staticmethod
+    def _readable_kind(path: Path) -> Literal["plain_text", "markdown", "tex_source"]:
+        suffix = path.suffix.lower()
+        if suffix in {".md", ".markdown"}:
+            return "markdown"
+        if suffix == ".tex":
+            return "tex_source"
+        return "plain_text"
 
     @staticmethod
     def _hash_file(path: Path) -> str:

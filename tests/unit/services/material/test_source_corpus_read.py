@@ -4,9 +4,10 @@ from pathlib import Path
 
 from lean_constellation.services.external_clients import (
     AcquiredArtifactResult,
-    ExternalClientService,
     ExtractedMaterialResult,
+    MaterialAcquisitionExtractionClient,
     MaterialTarget,
+    ResolvedArtifactKindView,
 )
 from lean_constellation.services.material import MaterialService
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -25,6 +26,36 @@ class FakeMaterialClient:
         if path.is_dir():
             return MaterialTarget(kind="local_dir", value=str(path))
         return MaterialTarget(kind="local_file", value=str(path))
+
+    def resolve_artifact_kind(
+        self,
+        path: Path,
+        *,
+        acquisition_kind: str | None = None,
+        mime_type: str | None = None,
+        requested_extraction_kind: str | None = None,
+    ) -> ResolvedArtifactKindView:
+        del acquisition_kind, mime_type
+        suffix = path.suffix.lower()
+        if path.is_dir() or suffix in {".tex", ".tar", ".gz", ".tgz", ".zip"}:
+            kind, automatic = "tex_source_archive", "tex_source"
+        elif suffix == ".pdf":
+            kind, automatic = "pdf", "pdf_text"
+        elif suffix in {".html", ".htm"}:
+            kind, automatic = "html", "html_main_text"
+        else:
+            kind, automatic = "plain_text", "text_normalize"
+        compatible = requested_extraction_kind is None or requested_extraction_kind == automatic
+        return ResolvedArtifactKindView(
+            kind=kind,  # type: ignore[arg-type]
+            extraction_kind=(requested_extraction_kind or automatic),  # type: ignore[arg-type]
+            compatible=compatible,
+            summary=f"Resolved fake artifact as {kind}.",
+            issue_code=None if compatible else "material_extraction_kind_mismatch",
+        )
+
+    def validate_readable_text(self, path: Path):
+        return MaterialAcquisitionExtractionClient().validate_readable_text(path)
 
     def fetch_arxiv_source(self, arxiv_id: str, version: str | None, *, output_root: Path) -> AcquiredArtifactResult:
         self.calls.append(("fetch_arxiv_source", arxiv_id))
@@ -62,7 +93,14 @@ class FakeMaterialClient:
         self.calls.append(("extract_pdf_text", str(pdf_path)))
         return self._extracted(pdf_path, output_root / "normalized" / f"{pdf_path.stem}.txt", "PDF text")
 
-    def extract_web_main_text(self, *, html_path: Path, output_root: Path) -> ExtractedMaterialResult:
+    def extract_web_main_text(
+        self,
+        *,
+        html_path: Path,
+        output_root: Path,
+        acquisition_kind: str | None = None,
+        mime_type: str | None = None,
+    ) -> ExtractedMaterialResult:
         self.calls.append(("extract_web_main_text", str(html_path)))
         return self._extracted(html_path, output_root / "normalized" / f"{html_path.stem}.md", "HTML text")
 
@@ -96,6 +134,11 @@ class FakeMaterialClient:
             target=MaterialTarget(kind=kind, value=value, version=version),  # type: ignore[arg-type]
             artifact_paths=[str(path)],
             primary_artifact_path=str(path),
+            artifact_kind={
+                ".pdf": "arxiv_pdf",
+                ".html": "web_page",
+                ".tar": "arxiv_source",
+            }.get(path.suffix.lower(), "local_file"),
             metadata={"provider": "fake"},
             content_hash="fake-hash",
             summary=summary,
@@ -304,6 +347,19 @@ def test_source_corpus_gate_accepts_explained_single_file_entry(tmp_path: Path) 
     assert gate.value.passed
 
 
+def test_source_corpus_gate_rejects_pdf_magic_renamed_as_text_entry(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_bytes(b"%PDF-1.4\nfixture")
+    service = make_runtime().material
+
+    gate = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert gate.ok and gate.value is not None
+    assert not gate.value.passed
+    assert "source_corpus_entry_not_readable" in {issue.kind for issue in gate.value.issues}
+
+
 def test_material_service_uses_injected_fake_provider_for_acquire_and_extract(tmp_path: Path) -> None:
     service, fake = _fake_material_service()
 
@@ -311,11 +367,19 @@ def test_material_service_uses_injected_fake_provider_for_acquire_and_extract(tm
     assert acquired.ok
     assert acquired.value is not None
     assert acquired.value.primary_artifact_ref == "original/page.html"
+    assert acquired.value.acquisition_kind == "web_page"
 
-    extracted = service.extract_source_artifact(tmp_path, artifact_ref="original/page.html", extraction_kind="html_main_text")
+    extracted = service.extract_source_artifact(
+        tmp_path,
+        artifact_ref="original/page.html",
+        acquisition_kind=acquired.value.acquisition_kind,
+        mime_type=acquired.value.mime_type,
+    )
     assert extracted.ok
     assert extracted.value is not None
     assert extracted.value.primary_material_ref == "normalized/page.md"
+    assert extracted.value.resolved_artifact_kind == "html"
+    assert extracted.value.extraction_kind == "html_main_text"
     assert [call[0] for call in fake.calls] == ["fetch_web_page", "extract_web_main_text"]
 
 

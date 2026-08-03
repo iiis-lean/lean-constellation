@@ -139,6 +139,14 @@ class SourceMaterialAcquireArgs(StrictModel):
 
 class SourceArtifactExtractArgs(StrictModel):
     artifact_ref: str = Field(description="Artifact reference returned by acquire_source_material.")
+    acquisition_kind: str | None = Field(
+        default=None,
+        description="Typed acquisition kind returned with the artifact; pass it through unchanged.",
+    )
+    mime_type: str | None = Field(
+        default=None,
+        description="Response MIME returned with the artifact; pass it through unchanged when available.",
+    )
     extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = Field(
         default=None,
         description="Optional extraction kind override.",
@@ -164,6 +172,14 @@ class ResourceMaterialAcquireArgs(StrictModel):
 
 class ResourceArtifactExtractArgs(StrictModel):
     artifact_ref: str = Field(description="Artifact reference returned by acquire_resource_material.")
+    acquisition_kind: str | None = Field(
+        default=None,
+        description="Typed acquisition kind returned with the artifact; pass it through unchanged.",
+    )
+    mime_type: str | None = Field(
+        default=None,
+        description="Response MIME returned with the artifact; pass it through unchanged when available.",
+    )
     extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = Field(
         default=None,
         description="Optional extraction kind override for resource draft normalization.",
@@ -177,6 +193,13 @@ class ResourceMaterialImportArgs(StrictModel):
 
 class ResourceMaterialNormalizeArgs(StrictModel):
     material_ref: str = Field(description="Resource draft material reference to normalize into readable text.")
+
+
+class ResourceManifestRefreshArgs(StrictModel):
+    canonical_normalized_entry: str | None = Field(
+        default=None,
+        description="Explicit resource draft normalized/... entry to select when more than one validated readable output exists.",
+    )
 
 
 class TextSearchArgs(StrictModel):

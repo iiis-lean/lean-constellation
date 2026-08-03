@@ -475,9 +475,11 @@ Classification is advisory evidence for the caller's next action, not permission
             (
                 "Acquire resource targets with `acquire_resource_material` or import local files with `import_resource_material`.",
                 "Extract readable text or project files with `extract_resource_artifact` when the artifact is a PDF, HTML page, TeX archive, or similar container.",
+                "Pass the acquisition kind and MIME returned by acquisition through to extraction; do not guess from the filename.",
                 "Normalize readable text with `normalize_resource_text_material` before draft checking.",
                 "Treat acquisition and extraction outputs as intermediate material; place canonical originals under `original/` and readable text under `normalized/`.",
                 "Maintain `README.md` with source, access notes, reading order, extraction limits, and why the local resource is useful.",
+                "Use `refresh_resource_draft_manifest` only when multiple validated normalized outputs require an explicit canonical entry; ordinary successful extraction refreshes it automatically.",
             ),
             (
                 "Do not write SourceCorpus files from resource curation.",
@@ -600,6 +602,7 @@ Then stop using this Skill and return to the caller's next-action loop in the sa
                 "Inspect the current system-created resource draft with `get_resource_draft` before local resource work.",
                 "Place originals in `original/`, readable text in `normalized/`, and notes in predictable locations using resource acquisition tools.",
                 "Write README content that identifies source, license or access notes, extraction limits, and reading order.",
+                "Ensure the deterministic manifest names the intended canonical normalized entry; use `refresh_resource_draft_manifest` to resolve multiple readable outputs.",
                 "Run `check_resource_draft` and repair failures within your authority.",
                 "Call `submit_local_resource_created` only after the draft is coherent.",
             ),

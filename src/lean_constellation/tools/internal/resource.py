@@ -17,6 +17,7 @@ from lean_constellation.tools.args import (
     ResourceListArgs,
     ResourceMaterialAcquireArgs,
     ResourceMaterialImportArgs,
+    ResourceManifestRefreshArgs,
     ResourceMaterialNormalizeArgs,
     ResourceRangeArgs,
     ResourceTargetArgs,
@@ -52,7 +53,7 @@ class ResourceDraftAgentView(StrictModel):
     title_hint: str | None = None
     resource_key: str | None = None
     logical_files: list[str] = Field(
-        default_factory=lambda: ["README.md", "original/", "normalized/"]
+        default_factory=lambda: ["README.md", "manifest.json", "original/", "normalized/", "assets/"]
     )
     summary: str
 
@@ -62,6 +63,8 @@ class ResourceAcquisitionAgentView(StrictModel):
     target: str
     artifact_refs: list[str] = Field(default_factory=list)
     primary_artifact_ref: str | None = None
+    acquisition_kind: str | None = None
+    mime_type: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     summary: str
     issue_code: str | None = None
@@ -72,10 +75,19 @@ class ResourceExtractionAgentView(StrictModel):
     artifact_ref: str
     material_refs: list[str] = Field(default_factory=list)
     primary_material_ref: str | None = None
+    resolved_artifact_kind: str
+    extraction_kind: str
     preview: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     summary: str
     issue_code: str | None = None
+
+
+class ResourceManifestAgentView(StrictModel):
+    canonical_normalized_entry: str
+    file_paths: list[str] = Field(default_factory=list)
+    extraction_relation_count: int
+    summary: str
 
 
 def _material_context(runtime, ctx, args: MaterialContextArgs):
@@ -154,6 +166,8 @@ def _resource_acquisition_agent_view(value) -> ResourceAcquisitionAgentView:
         target=value.target,
         artifact_refs=value.artifact_refs,
         primary_artifact_ref=value.primary_artifact_ref,
+        acquisition_kind=value.acquisition_kind,
+        mime_type=value.mime_type,
         metadata=_agent_metadata(value.metadata),
         summary=value.summary,
         issue_code=value.issue_code,
@@ -166,6 +180,8 @@ def _resource_extraction_agent_view(value) -> ResourceExtractionAgentView:
         artifact_ref=value.artifact_ref,
         material_refs=value.material_refs,
         primary_material_ref=value.primary_material_ref,
+        resolved_artifact_kind=value.resolved_artifact_kind,
+        extraction_kind=value.extraction_kind,
         preview=value.preview,
         metadata=_agent_metadata(value.metadata),
         summary=value.summary,
@@ -260,6 +276,8 @@ def _extract_resource_artifact(runtime, ctx: ToolExecutionContext, args: Resourc
         draft_id=draft_id.value,
         artifact_ref=args.artifact_ref,
         extraction_kind=args.extraction_kind,
+        acquisition_kind=args.acquisition_kind,
+        mime_type=args.mime_type,
     )
     if not extracted.ok or extracted.value is None:
         return runtime.foundation.fail(extracted.issues)
@@ -298,6 +316,29 @@ def _normalize_resource_text_material(runtime, ctx: ToolExecutionContext, args: 
         return runtime.foundation.fail(normalized.issues)
     return runtime.foundation.ok(
         _resource_extraction_agent_view(normalized.value), warnings=normalized.issues
+    )
+
+
+def _refresh_resource_draft_manifest(runtime, ctx: ToolExecutionContext, args: ResourceManifestRefreshArgs):
+    draft_id = _active_resource_draft_id(runtime, ctx)
+    if not draft_id.ok or draft_id.value is None:
+        return draft_id
+    refreshed = runtime.material.refresh_resource_draft_manifest(
+        ctx.repo_root,
+        draft_id=draft_id.value,
+        canonical_normalized_entry=args.canonical_normalized_entry,
+    )
+    if not refreshed.ok or refreshed.value is None:
+        return runtime.foundation.fail(refreshed.issues)
+    manifest = refreshed.value
+    return runtime.foundation.ok(
+        ResourceManifestAgentView(
+            canonical_normalized_entry=manifest.canonical_normalized_entry,
+            file_paths=[item.path for item in manifest.files],
+            extraction_relation_count=len(manifest.extraction_relations),
+            summary="Refreshed the deterministic resource material manifest.",
+        ),
+        warnings=refreshed.issues,
     )
 
 
@@ -374,7 +415,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="extract_resource_artifact",
-            description="Extract readable text or project files from an active resource draft artifact into the resource draft normalized area.",
+            description="Resolve an active draft artifact from acquisition truth, MIME, magic, and suffix, then run the compatible extractor into normalized material. Pass acquisition_kind and mime_type through from acquire_resource_material.",
             args_model=ResourceArtifactExtractArgs,
             capability=ToolCapability.WRITE,
             result_view="resource_extraction_handles",
@@ -401,6 +442,16 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.RESOURCE_ACQUISITION},
             roles=curator_roles,
             handler=_normalize_resource_text_material,
+        ),
+        handler_tool(
+            name="refresh_resource_draft_manifest",
+            description="Deterministically classify active draft files, validate readable normalized outputs, and write the current resource manifest. Supply canonical_normalized_entry only to resolve multiple validated outputs.",
+            args_model=ResourceManifestRefreshArgs,
+            capability=ToolCapability.WRITE,
+            result_view="resource_material_manifest",
+            groups={AppGroup.RESOURCE_ACQUISITION},
+            roles=curator_roles,
+            handler=_refresh_resource_draft_manifest,
         ),
         direct_tool(
             name="read_resource_range",

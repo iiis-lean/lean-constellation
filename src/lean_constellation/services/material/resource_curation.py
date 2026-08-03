@@ -28,6 +28,8 @@ class ResourceArtifactView(StrictModel):
     target: ResourceTargetView
     artifact_paths: list[str] = Field(default_factory=list)
     primary_artifact_path: str | None = None
+    acquisition_kind: str | None = None
+    mime_type: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     content_hash: str | None = None
     summary: str
@@ -39,6 +41,15 @@ class ResourceExtractedMaterialView(StrictModel):
     source_artifact_path: str
     extracted_paths: list[str] = Field(default_factory=list)
     primary_text_path: str | None = None
+    resolved_artifact_kind: Literal[
+        "pdf",
+        "html",
+        "tex_source_archive",
+        "plain_text",
+        "directory",
+        "unknown_binary",
+    ]
+    extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"]
     preview: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     summary: str
@@ -158,17 +169,39 @@ class ResourceCurationComponent:
         if not artifact.primary_artifact_path:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("resource_artifact_missing", "Acquired artifact has no primary artifact path."))
         source = Path(artifact.primary_artifact_path)
-        if artifact.target.kind == "arxiv":
-            result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=source, output_root=Path(temp_root))
-        elif source.suffix.lower() == ".pdf":
+        acquisition_kind = artifact.acquisition_kind or ("arxiv_source" if artifact.target.kind == "arxiv" else None)
+        resolution = self.runtime.external.material.resolve_artifact_kind(
+            source,
+            acquisition_kind=acquisition_kind,
+            mime_type=artifact.mime_type,
+        )
+        if not resolution.compatible or resolution.extraction_kind is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    resolution.issue_code or "resource_artifact_kind_unknown",
+                    resolution.summary,
+                    object_ref=str(source),
+                    details={"evidence": resolution.evidence},
+                )
+            )
+        if resolution.extraction_kind == "pdf_text":
             result = self.runtime.external.material.extract_pdf_text(pdf_path=source, output_root=Path(temp_root))
-        elif source.suffix.lower() in {".html", ".htm"}:
-            result = self.runtime.external.material.extract_web_main_text(html_path=source, output_root=Path(temp_root))
-        elif source.is_dir():
+        elif resolution.extraction_kind == "html_main_text":
+            result = self.runtime.external.material.extract_web_main_text(
+                html_path=source,
+                output_root=Path(temp_root),
+                acquisition_kind=acquisition_kind,
+                mime_type=artifact.mime_type,
+            )
+        elif resolution.extraction_kind == "tex_source":
             result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=source, output_root=Path(temp_root))
         else:
             result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=Path(temp_root))
-        view = self._extracted_view(result)
+        view = self._extracted_view(
+            result,
+            resolved_artifact_kind=resolution.kind,
+            extraction_kind=resolution.extraction_kind,
+        )
         if not result.ok:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(result.issue_code or "resource_extraction_failed", result.summary or "Resource extraction failed."))
         return self.runtime.foundation.ok(view)
@@ -671,6 +704,8 @@ class ResourceCurationComponent:
         draft_id: str,
         artifact_ref: str,
         extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None,
+        acquisition_kind: str | None = None,
+        mime_type: str | None = None,
     ) -> ServiceResult[SourceExtractionView]:
         draft_root = self._active_draft_root(repo_root, draft_id)
         if not draft_root.ok or draft_root.value is None:
@@ -684,21 +719,68 @@ class ResourceCurationComponent:
         ensured = self.runtime.foundation.store.ensure_dir(normalized_root)
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
-        if extraction_kind is None:
-            extraction_kind = self._guess_extraction_kind(artifact)
+        resolution = self.runtime.external.material.resolve_artifact_kind(
+            artifact,
+            acquisition_kind=acquisition_kind,
+            mime_type=mime_type,
+            requested_extraction_kind=extraction_kind,
+        )
+        if not resolution.compatible or resolution.extraction_kind is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    resolution.issue_code or "resource_artifact_kind_unknown",
+                    resolution.summary,
+                    object_ref=artifact_ref,
+                    details={"evidence": resolution.evidence},
+                )
+            )
+        extraction_kind = resolution.extraction_kind
         if extraction_kind == "pdf_text":
             result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=root)
         elif extraction_kind == "html_main_text":
-            result = self.runtime.external.material.extract_web_main_text(html_path=artifact, output_root=root)
+            result = self.runtime.external.material.extract_web_main_text(
+                html_path=artifact,
+                output_root=root,
+                acquisition_kind=acquisition_kind,
+                mime_type=mime_type,
+            )
         elif extraction_kind == "tex_source":
             result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=root)
         else:
             result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=root)
-        view = self._source_extraction_view(artifact_ref, result, root)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(result.issue_code or "resource_extraction_failed", result.summary or "Resource extraction failed")
             )
+        if result.primary_text_path is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_extracted_entry_missing",
+                    "Resource extraction did not return a canonical readable entry.",
+                    object_ref=artifact_ref,
+                )
+            )
+        canonical = self._rel_or_abs(root, Path(result.primary_text_path))
+        refreshed = self.resource_library.refresh_resource_draft_manifest(
+            repo_root,
+            draft_id=draft_id,
+            canonical_normalized_entry=canonical,
+            source_artifact_ref=artifact_ref,
+            extraction_kind=extraction_kind,
+            relation_normalized_paths=[
+                self._rel_or_abs(root, Path(path))
+                for path in result.extracted_paths
+            ],
+        )
+        if not refreshed.ok:
+            return self.runtime.foundation.fail(refreshed.issues)
+        view = self._source_extraction_view(
+            artifact_ref,
+            result,
+            root,
+            resolved_artifact_kind=resolution.kind,
+            extraction_kind=extraction_kind,
+        )
         return self.runtime.foundation.ok(view)
 
     def normalize_resource_text_material(self, repo_root: Path, *, draft_id: str, material_ref: str) -> ServiceResult[SourceExtractionView]:
@@ -715,11 +797,36 @@ class ResourceCurationComponent:
         if not ensured.ok:
             return self.runtime.foundation.fail(ensured.issues)
         result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=root)
-        view = self._source_extraction_view(material_ref, result, root)
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(result.issue_code or "resource_text_normalization_failed", result.summary or "Resource text normalization failed")
             )
+        if result.primary_text_path is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_extracted_entry_missing",
+                    "Resource normalization did not return a canonical readable entry.",
+                    object_ref=material_ref,
+                )
+            )
+        canonical = self._rel_or_abs(root, Path(result.primary_text_path))
+        refreshed = self.resource_library.refresh_resource_draft_manifest(
+            repo_root,
+            draft_id=draft_id,
+            canonical_normalized_entry=canonical,
+            source_artifact_ref=material_ref,
+            extraction_kind="text_normalize",
+            relation_normalized_paths=[canonical],
+        )
+        if not refreshed.ok:
+            return self.runtime.foundation.fail(refreshed.issues)
+        view = self._source_extraction_view(
+            material_ref,
+            result,
+            root,
+            resolved_artifact_kind="plain_text",
+            extraction_kind="text_normalize",
+        )
         return self.runtime.foundation.ok(view)
 
     def curate_local_resource(
@@ -760,6 +867,8 @@ class ResourceCurationComponent:
             target=target,
             artifact_paths=result.artifact_paths,
             primary_artifact_path=result.primary_artifact_path,
+            acquisition_kind=result.artifact_kind,
+            mime_type=result.mime_type,
             metadata=result.metadata,
             content_hash=result.content_hash,
             summary=result.summary or "",
@@ -767,12 +876,26 @@ class ResourceCurationComponent:
         )
 
     @staticmethod
-    def _extracted_view(result: ExtractedMaterialResult) -> ResourceExtractedMaterialView:
+    def _extracted_view(
+        result: ExtractedMaterialResult,
+        *,
+        resolved_artifact_kind: Literal[
+            "pdf",
+            "html",
+            "tex_source_archive",
+            "plain_text",
+            "directory",
+            "unknown_binary",
+        ],
+        extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"],
+    ) -> ResourceExtractedMaterialView:
         return ResourceExtractedMaterialView(
             ok=result.ok,
             source_artifact_path=result.source_artifact_path,
             extracted_paths=result.extracted_paths,
             primary_text_path=result.primary_text_path,
+            resolved_artifact_kind=resolved_artifact_kind,
+            extraction_kind=extraction_kind,
             preview=result.text_preview,
             metadata=result.metadata,
             summary=result.summary or "",
@@ -785,18 +908,37 @@ class ResourceCurationComponent:
             target=target,
             artifact_refs=[self._rel_or_abs(root, Path(path)) for path in result.artifact_paths],
             primary_artifact_ref=self._rel_or_abs(root, Path(result.primary_artifact_path)) if result.primary_artifact_path else None,
+            acquisition_kind=result.artifact_kind,
+            mime_type=result.mime_type,
             metadata=result.metadata,
             content_hash=result.content_hash,
             summary=result.summary or "",
             issue_code=result.issue_code,
         )
 
-    def _source_extraction_view(self, artifact_ref: str, result: ExtractedMaterialResult, root: Path) -> SourceExtractionView:
+    def _source_extraction_view(
+        self,
+        artifact_ref: str,
+        result: ExtractedMaterialResult,
+        root: Path,
+        *,
+        resolved_artifact_kind: Literal[
+            "pdf",
+            "html",
+            "tex_source_archive",
+            "plain_text",
+            "directory",
+            "unknown_binary",
+        ],
+        extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"],
+    ) -> SourceExtractionView:
         return SourceExtractionView(
             ok=result.ok,
             artifact_ref=artifact_ref,
             material_refs=[self._rel_or_abs(root, Path(path)) for path in result.extracted_paths],
             primary_material_ref=self._rel_or_abs(root, Path(result.primary_text_path)) if result.primary_text_path else None,
+            resolved_artifact_kind=resolved_artifact_kind,
+            extraction_kind=extraction_kind,
             preview=result.text_preview,
             metadata=result.metadata,
             summary=result.summary or "",
@@ -836,16 +978,6 @@ class ResourceCurationComponent:
                 sanitized = f"resource_{sanitized}"
             return self.runtime.foundation.layout.ensure_safe_key(sanitized)
 
-    @staticmethod
-    def _guess_extraction_kind(path: Path) -> Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"]:
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            return "pdf_text"
-        if suffix in {".html", ".htm"}:
-            return "html_main_text"
-        if suffix in {".tex", ".gz", ".zip", ".tar"}:
-            return "tex_source"
-        return "text_normalize"
 
     @staticmethod
     def _preferred_kind_mismatch(

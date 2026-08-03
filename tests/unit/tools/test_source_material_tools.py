@@ -94,6 +94,15 @@ def test_source_material_groups_expose_expected_tools() -> None:
     assert_group_contains("source_material_text_read", {"search_source_text", "read_source_range", "validate_source_range", "preview_source_ref"})
 
 
+def test_source_extraction_schema_preserves_typed_acquisition_truth() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+    schema = specs["extract_source_artifact"].args_model.model_json_schema()
+
+    assert {"artifact_ref", "acquisition_kind", "mime_type", "extraction_kind"} <= set(
+        schema["properties"]
+    )
+
+
 def test_source_index_update_context_is_limited_to_build_review_roles() -> None:
     specs = {spec.name: spec for spec in build_application_tool_specs()}
 

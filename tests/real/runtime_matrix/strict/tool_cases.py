@@ -155,6 +155,15 @@ IMPLEMENTED_TOOL_CASES: dict[str, ToolCase] = {
         agent_type="ResourceCuratorAgent",
         restore_policy="checkpoint",
     ),
+    "refresh_resource_draft_manifest": ToolCase(
+        tool_name="refresh_resource_draft_manifest",
+        status="implemented",
+        category="resource_acquisition_write",
+        reason="Checkpointed deterministic resource manifest refresh covered by strict ToolSweep runner.",
+        view_key="resource_curator",
+        agent_type="ResourceCuratorAgent",
+        restore_policy="checkpoint",
+    ),
     "search_mathlib_index": ToolCase(
         tool_name="search_mathlib_index",
         status="implemented",

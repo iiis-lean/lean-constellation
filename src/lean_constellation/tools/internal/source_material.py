@@ -173,6 +173,8 @@ class SourceAcquisitionAgentView(StrictModel):
     target: str
     artifact_refs: list[str] = Field(default_factory=list)
     primary_artifact_ref: str | None = None
+    acquisition_kind: str | None = None
+    mime_type: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     summary: str
     issue_code: str | None = None
@@ -183,6 +185,8 @@ class SourceExtractionAgentView(StrictModel):
     artifact_ref: str
     material_refs: list[str] = Field(default_factory=list)
     primary_material_ref: str | None = None
+    resolved_artifact_kind: str
+    extraction_kind: str
     preview: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     summary: str
@@ -976,6 +980,8 @@ def _source_acquisition_agent_view(value) -> SourceAcquisitionAgentView:
         target=value.target,
         artifact_refs=value.artifact_refs,
         primary_artifact_ref=value.primary_artifact_ref,
+        acquisition_kind=value.acquisition_kind,
+        mime_type=value.mime_type,
         metadata=_agent_metadata(value.metadata),
         summary=value.summary,
         issue_code=value.issue_code,
@@ -988,6 +994,8 @@ def _source_extraction_agent_view(value) -> SourceExtractionAgentView:
         artifact_ref=value.artifact_ref,
         material_refs=value.material_refs,
         primary_material_ref=value.primary_material_ref,
+        resolved_artifact_kind=value.resolved_artifact_kind,
+        extraction_kind=value.extraction_kind,
         preview=value.preview,
         metadata=_agent_metadata(value.metadata),
         summary=value.summary,
@@ -1079,7 +1087,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="extract_source_artifact",
-            description="Extract readable text from an acquired source artifact.",
+            description="Resolve an acquired source artifact from acquisition truth, MIME, magic, and suffix, then run the compatible extractor. Pass acquisition_kind and mime_type through from acquire_source_material.",
             args_model=SourceArtifactExtractArgs,
             capability=ToolCapability.WRITE,
             result_view="source_extraction_handles",

@@ -27,9 +27,9 @@ def test_strict_tool_case_table_declares_every_application_tool() -> None:
     cases = build_tool_cases()
 
     assert set(cases) == registered
-    assert len(cases) == 259
-    assert len(implemented_tool_cases()) == 203
-    assert len(pending_tool_cases()) == 56
+    assert len(cases) == 262
+    assert len(implemented_tool_cases()) == 204
+    assert len(pending_tool_cases()) == 58
     assert all(case.reason for case in cases.values())
     assert all(case.status != "implemented" for case in pending_tool_cases().values())
 
@@ -1607,6 +1607,17 @@ def _run_local_acquisition_tool_sweep(ws: RuntimeMatrixWorkspace, server: Any, r
         assertion_summary="Local resource normalization produced readable text in the active draft.",
     )
     assert normalized_resource.value["primary_material_ref"] == "normalized/strict_resource_import.txt"
+
+    refreshed_manifest = call_tool_with_evidence(
+        server,
+        "resource_curator",
+        "refresh_resource_draft_manifest",
+        {"canonical_normalized_entry": "normalized/strict_resource_import.txt"},
+        runtime_context=resource_ctx,
+        recorder=recorder,
+        assertion_summary="Resource material manifest selected the validated canonical entry.",
+    )
+    assert refreshed_manifest.value["canonical_normalized_entry"] == "normalized/strict_resource_import.txt"
 
     restore_with_evidence(
         ws.admin,

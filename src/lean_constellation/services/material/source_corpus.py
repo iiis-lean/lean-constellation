@@ -46,6 +46,8 @@ class SourceAcquisitionView(StrictModel):
     target: str
     artifact_refs: list[str] = Field(default_factory=list)
     primary_artifact_ref: str | None = None
+    acquisition_kind: str | None = None
+    mime_type: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     content_hash: str | None = None
     summary: str
@@ -57,6 +59,15 @@ class SourceExtractionView(StrictModel):
     artifact_ref: str
     material_refs: list[str] = Field(default_factory=list)
     primary_material_ref: str | None = None
+    resolved_artifact_kind: Literal[
+        "pdf",
+        "html",
+        "tex_source_archive",
+        "plain_text",
+        "directory",
+        "unknown_binary",
+    ]
+    extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"]
     preview: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
     summary: str
@@ -448,23 +459,50 @@ class SourceCorpusComponent:
         *,
         artifact_ref: str,
         extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"] | None = None,
+        acquisition_kind: str | None = None,
+        mime_type: str | None = None,
     ) -> ServiceResult[SourceExtractionView]:
         root = self._source_root(repo_root)
         try:
             artifact = self._resolve_inside(root, artifact_ref)
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_artifact_ref_invalid", str(exc)))
-        if extraction_kind is None:
-            extraction_kind = self._guess_extraction_kind(artifact)
+        resolution = self.runtime.external.material.resolve_artifact_kind(
+            artifact,
+            acquisition_kind=acquisition_kind,
+            mime_type=mime_type,
+            requested_extraction_kind=extraction_kind,
+        )
+        if not resolution.compatible or resolution.extraction_kind is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    resolution.issue_code or "source_artifact_kind_unknown",
+                    resolution.summary,
+                    object_ref=artifact_ref,
+                    details={"evidence": resolution.evidence},
+                )
+            )
+        extraction_kind = resolution.extraction_kind
         if extraction_kind == "pdf_text":
             result = self.runtime.external.material.extract_pdf_text(pdf_path=artifact, output_root=root)
         elif extraction_kind == "html_main_text":
-            result = self.runtime.external.material.extract_web_main_text(html_path=artifact, output_root=root)
+            result = self.runtime.external.material.extract_web_main_text(
+                html_path=artifact,
+                output_root=root,
+                acquisition_kind=acquisition_kind,
+                mime_type=mime_type,
+            )
         elif extraction_kind == "tex_source":
             result = self.runtime.external.material.extract_arxiv_tex(source_root_or_archive=artifact, output_root=root)
         else:
             result = self.runtime.external.material.normalize_text_material(input_path=artifact, output_root=root)
-        view = self._extraction_view(artifact_ref, result, root)
+        view = self._extraction_view(
+            artifact_ref,
+            result,
+            root,
+            resolved_artifact_kind=resolution.kind,
+            extraction_kind=extraction_kind,
+        )
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(result.issue_code or "source_extraction_failed", result.summary or "Source extraction failed")
@@ -509,7 +547,13 @@ class SourceCorpusComponent:
         except ValueError as exc:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("source_material_ref_invalid", str(exc)))
         result = self.runtime.external.material.normalize_text_material(input_path=source, output_root=root)
-        view = self._extraction_view(material_ref, result, root)
+        view = self._extraction_view(
+            material_ref,
+            result,
+            root,
+            resolved_artifact_kind="plain_text",
+            extraction_kind="text_normalize",
+        )
         if not result.ok:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(result.issue_code or "text_normalization_failed", result.summary or "Text normalization failed")
@@ -841,17 +885,9 @@ class SourceCorpusComponent:
             sha256=self._hash_file(path),
         )
 
-    @staticmethod
-    def _readable_line_count(path: Path) -> tuple[bool, int]:
-        try:
-            data = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            return False, 0
-        except OSError:
-            return False, 0
-        if "\x00" in data:
-            return False, 0
-        return True, len(data.splitlines())
+    def _readable_line_count(self, path: Path) -> tuple[bool, int]:
+        validation = self.runtime.external.material.validate_readable_text(path)
+        return validation.ok, validation.line_count if validation.ok else 0
 
     @staticmethod
     def _line_count(path: Path) -> int:
@@ -956,17 +992,6 @@ class SourceCorpusComponent:
         return path
 
     @staticmethod
-    def _guess_extraction_kind(path: Path) -> Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"]:
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            return "pdf_text"
-        if suffix in {".html", ".htm"}:
-            return "html_main_text"
-        if suffix in {".tex", ".gz", ".zip", ".tar"}:
-            return "tex_source"
-        return "text_normalize"
-
-    @staticmethod
     def _preferred_kind_mismatch(
         preferred_kind: Literal["arxiv_source", "arxiv_pdf", "web_page", "local_file", "local_dir"] | None,
         target_kind: str,
@@ -1000,18 +1025,37 @@ class SourceCorpusComponent:
             target=target,
             artifact_refs=[self._rel_or_abs(root, Path(path)) for path in result.artifact_paths],
             primary_artifact_ref=self._rel_or_abs(root, Path(result.primary_artifact_path)) if result.primary_artifact_path else None,
+            acquisition_kind=result.artifact_kind,
+            mime_type=result.mime_type,
             metadata=result.metadata,
             content_hash=result.content_hash,
             summary=result.summary or "",
             issue_code=result.issue_code,
         )
 
-    def _extraction_view(self, artifact_ref: str, result: ExtractedMaterialResult, root: Path) -> SourceExtractionView:
+    def _extraction_view(
+        self,
+        artifact_ref: str,
+        result: ExtractedMaterialResult,
+        root: Path,
+        *,
+        resolved_artifact_kind: Literal[
+            "pdf",
+            "html",
+            "tex_source_archive",
+            "plain_text",
+            "directory",
+            "unknown_binary",
+        ],
+        extraction_kind: Literal["pdf_text", "html_main_text", "tex_source", "text_normalize"],
+    ) -> SourceExtractionView:
         return SourceExtractionView(
             ok=result.ok,
             artifact_ref=artifact_ref,
             material_refs=[self._rel_or_abs(root, Path(path)) for path in result.extracted_paths],
             primary_material_ref=self._rel_or_abs(root, Path(result.primary_text_path)) if result.primary_text_path else None,
+            resolved_artifact_kind=resolved_artifact_kind,
+            extraction_kind=extraction_kind,
             preview=result.text_preview,
             metadata=result.metadata,
             summary=result.summary or "",

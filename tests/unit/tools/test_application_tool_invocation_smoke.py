@@ -2103,7 +2103,13 @@ def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: P
         )
     )
     assert draft["target"]["canonical_locator"] == "https://example.com/resource"
-    assert draft["logical_files"] == ["README.md", "original/", "normalized/"]
+    assert draft["logical_files"] == [
+        "README.md",
+        "manifest.json",
+        "original/",
+        "normalized/",
+        "assets/",
+    ]
     assert "draft_root" not in draft
 
     module = _unwrap_tool_result(
