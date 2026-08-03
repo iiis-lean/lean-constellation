@@ -37,6 +37,7 @@ class ToolFacadeService:
         backing_services: dict[str, Any] | None = None,
         agent_skill_keys: Mapping[str, Sequence[str]] | None = None,
         agent_type_permission_names: Callable[[str], set[str]] | None = None,
+        agent_type_capabilities: Callable[[str], set[str]] | None = None,
     ) -> None:
         self.runtime = runtime
         self.tool_view = tool_view or ToolViewComponent(
@@ -55,6 +56,7 @@ class ToolFacadeService:
         self.permission_guard = permission_guard or PermissionGuardComponent(
             runtime,
             tool_view=self.tool_view,
+            agent_type_capabilities=agent_type_capabilities,
         )
         self.submit_submission = submit_submission or SubmitSubmissionComponent(
             runtime,

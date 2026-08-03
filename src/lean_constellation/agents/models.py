@@ -36,6 +36,7 @@ class AgentTypeSpec(StrictModel):
     instruction_fragment_keys: list[str] = Field(default_factory=list)
     specific_instruction_key: str
     skill_keys: list[str] = Field(default_factory=list)
+    capabilities: set[str] = Field(default_factory=set)
     application_tool_view_key: str
     submit_tool_view_key: str
     tool_view_agent_aliases: list[str] = Field(default_factory=list)
@@ -70,6 +71,11 @@ class AgentTypeSpec(StrictModel):
             seen.add(value)
             result.append(value)
         return result
+
+    @field_validator("capabilities")
+    @classmethod
+    def _normalize_capabilities(cls, values: set[str]) -> set[str]:
+        return {value for item in values if (value := str(item).strip())}
 
     @field_validator("extends_agent_type")
     @classmethod
@@ -129,6 +135,7 @@ class AgentHomeBootstrapSpec(StrictModel):
     home_id: str
     developer_instructions: str
     skill_specs: dict[str, SkillSpec] = Field(default_factory=dict)
+    capabilities: set[str] = Field(default_factory=set)
     tool_view_config: AgentToolViewConfig
     fixed_env: dict[str, str] = Field(default_factory=dict)
     required_env: set[str] = Field(default_factory=set)

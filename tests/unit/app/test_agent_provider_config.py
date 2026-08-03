@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tomllib
+
+import pytest
 
 from lean_constellation.agents import build_agent_type_specs
 from lean_constellation.app.agent_provider_config import (
@@ -161,6 +164,8 @@ def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path:
         "glob": False,
         "grep": False,
         "read": False,
+        "webfetch": True,
+        "websearch": True,
         "write": False,
     }
     assert (home_root / "AGENTS.md").exists()
@@ -219,6 +224,8 @@ def test_opencode_home_forces_external_directory_denial(tmp_path: Path) -> None:
         "glob": False,
         "grep": False,
         "read": False,
+        "webfetch": True,
+        "websearch": True,
         "write": False,
     }
 
@@ -260,7 +267,91 @@ def test_opencode_formal_worker_keeps_repo_file_tools_but_not_bash(tmp_path: Pat
         (Path(result.value.home_root) / "opencode.json").read_text(encoding="utf-8")
     )
     assert config["permission"]["external_directory"] == "deny"
-    assert config["tools"] == {"bash": False, "edit": True, "read": True}
+    assert config["tools"] == {
+        "apply_patch": True,
+        "bash": False,
+        "edit": True,
+        "glob": True,
+        "grep": True,
+        "read": True,
+        "webfetch": False,
+        "websearch": False,
+        "write": True,
+    }
+
+
+@pytest.mark.parametrize("agent_type", ["SourceCorpusPrepareAgent", "ResourceCuratorAgent"])
+def test_opencode_material_agents_receive_scoped_file_and_web_capabilities(
+    tmp_path: Path,
+    agent_type: str,
+) -> None:
+    specs = apply_agent_home_overrides(
+        build_agent_type_specs(),
+        {agent_type: AgentHomeOverrideAppConfig(provider_type="opencode")},
+    )
+    registry = build_builtin_provider_registry(
+        tmp_path / ".agent_runtime",
+        specs,
+        {agent_type: AgentHomeOverrideAppConfig(provider_type="opencode")},
+    )
+    runtime = create_app_runtime_from_config(
+        LeanAppConfig(workspace_root=tmp_path, materialize_agent_homes=False),
+        agent_type_specs=specs,
+        provider_registry=registry,
+    )
+
+    result = materialize_agent_home(
+        runtime,
+        agent_type,
+        provider_type="opencode",
+        agent_type_specs=specs,
+    )
+
+    assert result.ok and result.value is not None
+    config = json.loads(
+        (Path(result.value.home_root) / "opencode.json").read_text(encoding="utf-8")
+    )
+    assert config["permission"]["external_directory"] == "deny"
+    assert config["tools"] == {
+        "apply_patch": True,
+        "bash": False,
+        "edit": True,
+        "glob": True,
+        "grep": True,
+        "read": True,
+        "webfetch": True,
+        "websearch": True,
+        "write": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("agent_type", "sandbox_mode", "web_search"),
+    [
+        ("CoordinatorAgent", "read-only", "live"),
+        ("ContentPlanAgent", "read-only", "disabled"),
+        ("ResourceCuratorAgent", "workspace-write", "live"),
+        ("ProofFormalWorkerAgent", "workspace-write", "disabled"),
+    ],
+)
+def test_codex_home_projects_agent_capability_policy(
+    tmp_path: Path,
+    agent_type: str,
+    sandbox_mode: str,
+    web_search: str,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime")
+
+    result = materialize_agent_home(runtime, agent_type, provider_type="codex")
+
+    assert result.ok and result.value is not None
+    config = tomllib.loads(
+        (Path(result.value.home_root) / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert config["sandbox_mode"] == sandbox_mode
+    assert config["web_search"] == web_search
 
 
 def test_repo_runtime_registry_assembles_configured_provider(tmp_path: Path) -> None:

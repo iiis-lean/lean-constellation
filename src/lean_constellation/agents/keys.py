@@ -46,6 +46,20 @@ class SkillKey(StrEnum):
     LEAN_PROOF_FORMALIZATION = "lean-proof-formalization"
 
 
+class AgentCapabilityKey(StrEnum):
+    REPO_SEMANTIC_READ = "repo_semantic_read"
+    REPO_SEMANTIC_WRITE = "repo_semantic_write"
+    SOURCE_ROOT_FILE_READ_WRITE = "source_root_file_read_write"
+    RESOURCE_DRAFT_FILE_READ_WRITE = "resource_draft_file_read_write"
+    DECL_OWNED_LEAN_FILE_READ_WRITE = "decl_owned_lean_file_read_write"
+    GITHUB_REMOTE_SEARCH_READ = "github_remote_search_read"
+    GENERAL_WEB_READ = "general_web_read"
+    RESOURCE_ACQUISITION = "resource_acquisition"
+    MATHLIB_SEARCH_READ = "mathlib_search_read"
+    MATHLIB_INDEX_WRITE = "mathlib_index_write"
+    REQUIREMENT_SUBMIT = "requirement_submit"
+
+
 class ProductionAgentTypeKey(StrEnum):
     REPO_FORMAT_DISCOVERY = "RepoFormatDiscoveryAgent"
     SOURCE_CORPUS_PREPARE = "SourceCorpusPrepareAgent"
@@ -73,6 +87,7 @@ class ProductionAgentTypeKey(StrEnum):
 
 
 __all__ = [
+    "AgentCapabilityKey",
     "ProductionAgentTypeKey",
     "SkillKey",
 ]

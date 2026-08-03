@@ -72,6 +72,8 @@ def _assert_surface_tools_allow_role(agent_type: str, role: str) -> None:
 
 def test_agent_surface_reports_cover_every_production_agent() -> None:
     reports = build_agent_surface_reports()
+    application_specs = {tool.name: tool for tool in build_application_tool_specs()}
+    submit_specs = {tool.name: tool for tool in build_submit_tool_specs()}
 
     assert set(reports) == {spec.agent_type for spec in build_agent_type_specs()}
     assert set(reports) == set(EXPECTED_SURFACE_COUNTS)
@@ -85,6 +87,12 @@ def test_agent_surface_reports_cover_every_production_agent() -> None:
             len(report.skills),
         ) == expected
         assert report.missing_skill_required_groups == {}
+        assert report.capabilities
+        for tool in report.application_tools:
+            assert set(tool.required_agent_capabilities) <= set(report.capabilities)
+            assert report.role in application_specs[tool.name].allowed_roles
+        for tool in report.submit_tools:
+            assert report.role in submit_specs[tool.name].allowed_roles
         names = sorted(tool.name for tool in report.application_tools)
         assert sha256("\n".join(names).encode()).hexdigest() == EXPECTED_APPLICATION_SURFACE_HASHES[agent_type]
 
@@ -220,6 +228,27 @@ def test_repo_format_discovery_surface_matches_remote_only_design() -> None:
         "checkout_repository",
         "probe_lean_repo",
     }.isdisjoint(tools)
+    _assert_surface_tools_allow_role("RepoFormatDiscoveryAgent", "coordinator")
+
+
+def test_repo_lean_provider_discovery_surface_is_worker_callable() -> None:
+    report = build_agent_surface_reports()["RepoLeanProviderDiscoveryAgent"]
+    github_tools = {
+        tool.name
+        for tool in report.application_tools
+        if "github_remote_search_read" in tool.required_agent_capabilities
+    }
+
+    assert github_tools == {
+        "search_github_lean_repositories",
+        "inspect_github_lean_repository",
+        "probe_github_lean_repo_candidate",
+        "get_github_repository",
+        "list_github_repository_tree",
+        "read_github_repository_file",
+        "search_github_code",
+    }
+    _assert_surface_tools_allow_role("RepoLeanProviderDiscoveryAgent", "worker")
 
 
 def test_coordinator_surface_matches_specific_agent_refactor() -> None:

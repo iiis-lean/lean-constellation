@@ -15,7 +15,12 @@ from agent_runtime_kit.agent.provider_contracts import BaseConfigSource, ModelBa
 from agent_runtime_kit.agent.providers import OpenCodeHomeOptions
 from agent_runtime_kit.agent.providers.codex_home import CodexHomeOptions
 
-from lean_constellation.agents import AgentHomeBootstrapSpec, build_agent_home_bootstrap_spec, build_agent_type_specs
+from lean_constellation.agents import (
+    AgentHomeBootstrapSpec,
+    build_agent_home_bootstrap_spec,
+    build_agent_type_specs,
+    get_agent_type_spec,
+)
 from lean_constellation.app.agent_provider_config import (
     model_identity_from_override,
     provider_options_from_override,
@@ -112,11 +117,9 @@ def materialize_agent_home(
     """Materialize one AgentType home through ARK HomeService."""
 
     try:
-        resolved_provider_type = provider_type or next(
-            item.home_type
-            for item in (agent_type_specs or build_agent_type_specs())
-            if item.agent_type == agent_type
-        )
+        resolved_specs = list(agent_type_specs or build_agent_type_specs())
+        resolved_agent_spec = get_agent_type_spec(agent_type, specs=resolved_specs)
+        resolved_provider_type = provider_type or resolved_agent_spec.home_type
         resolved_provider_options = provider_options
         if resolved_provider_type == "codex":
             if resolved_provider_options is not None and not isinstance(
@@ -131,6 +134,10 @@ def materialize_agent_home(
                     if auth_json_path is not None
                     else codex_options.auth_json_path
                 ),
+            )
+            config_overrides = _codex_scoped_config_overrides(
+                config_overrides,
+                capabilities=resolved_agent_spec.capabilities,
             )
         elif resolved_provider_type == "opencode":
             if resolved_provider_options is not None and not isinstance(
@@ -148,7 +155,7 @@ def materialize_agent_home(
             )
             config_overrides = _opencode_scoped_config_overrides(
                 config_overrides,
-                agent_type=agent_type,
+                capabilities=resolved_agent_spec.capabilities,
             )
         spec = build_agent_home_bootstrap_spec(
             agent_type,
@@ -218,7 +225,7 @@ def materialize_agent_home(
 def _opencode_scoped_config_overrides(
     config_overrides: dict[str, object] | None,
     *,
-    agent_type: str,
+    capabilities: set[str],
 ) -> dict[str, object]:
     """Enforce the repository filesystem boundary for Lean Constellation OpenCode Homes."""
 
@@ -240,16 +247,37 @@ def _opencode_scoped_config_overrides(
     else:
         raise TypeError("OpenCode tools override must be a mapping")
     tools["bash"] = False
-    if agent_type not in _OPENCODE_DIRECT_FILE_AGENT_TYPES:
-        for tool_name in ("glob", "grep", "read", "edit", "write", "apply_patch"):
-            tools[tool_name] = False
+    direct_file_access = bool(capabilities & _DIRECT_FILE_CAPABILITIES)
+    for tool_name in ("glob", "grep", "read", "edit", "write", "apply_patch"):
+        tools[tool_name] = direct_file_access
+    general_web = "general_web_read" in capabilities
+    tools["webfetch"] = general_web
+    tools["websearch"] = general_web
     result["tools"] = tools
     return result
 
 
-_OPENCODE_DIRECT_FILE_AGENT_TYPES = {
-    "StatementFormalWorkerAgent",
-    "ProofFormalWorkerAgent",
+def _codex_scoped_config_overrides(
+    config_overrides: dict[str, object] | None,
+    *,
+    capabilities: set[str],
+) -> dict[str, object]:
+    result = dict(config_overrides or {})
+    result["sandbox_mode"] = (
+        "workspace-write"
+        if capabilities & _DIRECT_FILE_CAPABILITIES
+        else "read-only"
+    )
+    result["web_search"] = (
+        "live" if "general_web_read" in capabilities else "disabled"
+    )
+    return result
+
+
+_DIRECT_FILE_CAPABILITIES = {
+    "source_root_file_read_write",
+    "resource_draft_file_read_write",
+    "decl_owned_lean_file_read_write",
 }
 
 
@@ -435,6 +463,7 @@ def _write_agent_home_manifest(
         "mcp_transport": _mcp_transport_summary(spec),
         "mcp_server_specs": [_mcp_server_manifest(server) for server in spec.mcp_servers],
         "skill_keys": sorted(spec.skill_specs),
+        "capabilities": sorted(spec.capabilities),
         "effective_model": effective_model,
         "effective_reasoning_effort": effective_reasoning_effort,
     }

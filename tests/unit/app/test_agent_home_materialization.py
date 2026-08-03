@@ -42,6 +42,18 @@ def test_agent_home_materialization_writes_instruction_skills_and_mcp_config(tmp
     assert manifest["tool_view_config"]["submit_view_key"] == "source_corpus_prepare_submit"
     assert manifest["mcp_transport"] == "http"
     assert len(manifest["mcp_server_specs"]) == 2
+    assert manifest["capabilities"] == sorted(
+        {
+            "general_web_read",
+            "repo_semantic_read",
+            "repo_semantic_write",
+            "resource_acquisition",
+            "source_root_file_read_write",
+        }
+    )
+    assert manifest["fixed_env"]["LEAN_CONSTELLATION_AGENT_CAPABILITIES"] == ",".join(
+        manifest["capabilities"]
+    )
 
 
 def test_agent_home_materialization_supports_base_config_and_auth_reference(tmp_path: Path) -> None:

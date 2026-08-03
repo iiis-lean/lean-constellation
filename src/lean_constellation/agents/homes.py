@@ -99,6 +99,7 @@ def build_agent_home_bootstrap_spec(
         "LEAN_CONSTELLATION_CONTEXT_SCOPE": spec.context_scope,
         "LEAN_CONSTELLATION_APPLICATION_TOOL_VIEW": spec.application_tool_view_key,
         "LEAN_CONSTELLATION_SUBMIT_TOOL_VIEW": spec.submit_tool_view_key,
+        "LEAN_CONSTELLATION_AGENT_CAPABILITIES": ",".join(sorted(spec.capabilities)),
     }
     if spec.stage:
         env["LEAN_CONSTELLATION_STAGE"] = spec.stage
@@ -185,6 +186,7 @@ def build_agent_home_bootstrap_spec(
         home_id=resolved_home_id,
         developer_instructions=developer_instructions,
         skill_specs=skill_specs,
+        capabilities=set(spec.capabilities),
         tool_view_config=AgentToolViewConfig(
             application_view_key=spec.application_tool_view_key,
             submit_view_key=spec.submit_tool_view_key,

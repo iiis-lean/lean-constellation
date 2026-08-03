@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,9 @@ class PermissionIssueCode(StrEnum):
     DECL_STAGE_MUTATION_REJECTED = "decl_stage_mutation_rejected"
     REVIEW_ONLY_REJECTED = "review_only_rejected"
     ADMIN_REQUIRED = "admin_required"
+    AGENT_CAPABILITY_CONTEXT_MISSING = "agent_capability_context_missing"
+    AGENT_CAPABILITY_RESOLUTION_FAILED = "agent_capability_resolution_failed"
+    AGENT_CAPABILITY_REQUIRED = "agent_capability_required"
     SUBMISSION_ALREADY_ACCEPTED = "submission_already_accepted"
 
 
@@ -54,9 +58,11 @@ class PermissionGuardComponent:
         runtime: LeanRuntimeServices,
         *,
         tool_view: ToolViewComponent,
+        agent_type_capabilities: Callable[[str], set[str]] | None = None,
     ) -> None:
         self.runtime = runtime
         self.tool_view = tool_view
+        self._agent_type_capabilities = agent_type_capabilities or (lambda agent_type: set())
 
     def assert_tool_allowed(self, ctx: ToolExecutionContext, *, tool_name: str) -> ServiceResult[None]:
         endpoint = self.assert_endpoint_view_allowed(ctx)
@@ -88,6 +94,38 @@ class PermissionGuardComponent:
                     expected=",".join(sorted(spec.allowed_roles)),
                 )
             )
+        if spec.required_agent_capabilities and ctx.actor.role != "admin":
+            if not ctx.actor.agent_type:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        PermissionIssueCode.AGENT_CAPABILITY_CONTEXT_MISSING.value,
+                        "Tool requires an AgentType capability but the current actor has no AgentType.",
+                        object_ref=tool_name,
+                        expected=",".join(sorted(spec.required_agent_capabilities)),
+                    )
+                )
+            try:
+                available = self._agent_type_capabilities(ctx.actor.agent_type)
+            except Exception as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        PermissionIssueCode.AGENT_CAPABILITY_RESOLUTION_FAILED.value,
+                        "Current AgentType capabilities could not be resolved.",
+                        object_ref=ctx.actor.agent_type,
+                        details={"error": str(exc)},
+                    )
+                )
+            missing = spec.required_agent_capabilities - set(available)
+            if missing:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        PermissionIssueCode.AGENT_CAPABILITY_REQUIRED.value,
+                        "Current AgentType lacks a capability required by this tool.",
+                        object_ref=tool_name,
+                        current=",".join(sorted(available)),
+                        expected=",".join(sorted(spec.required_agent_capabilities)),
+                    )
+                )
         if ctx.has_successful_submission and spec.capability in {
             ToolCapability.WRITE,
             ToolCapability.SUBMIT,

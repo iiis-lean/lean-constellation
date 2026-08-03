@@ -30,6 +30,7 @@ def direct_tool(
     result_view: str,
     groups: set[StringKey],
     roles: set[str],
+    required_agent_capabilities: set[str] | None = None,
     backing_component: str | None = None,
     required_context: set[str] | None = None,
 ) -> ToolSpec:
@@ -45,6 +46,7 @@ def direct_tool(
         required_context={"repo"} if required_context is None else required_context,
         tool_groups=key_set(groups),
         allowed_roles=set(roles),
+        required_agent_capabilities=set(required_agent_capabilities or ()),
     )
 
 
@@ -57,6 +59,7 @@ def handler_tool(
     result_view: str,
     groups: set[StringKey],
     roles: set[str],
+    required_agent_capabilities: set[str] | None = None,
     handler: ToolHandler,
     backing_service: str = "handler",
     backing_method: str = "handler",
@@ -73,6 +76,7 @@ def handler_tool(
         required_context={"repo"} if required_context is None else required_context,
         tool_groups=key_set(groups),
         allowed_roles=set(roles),
+        required_agent_capabilities=set(required_agent_capabilities or ()),
         backing_handler=handler,
     )
 
@@ -85,6 +89,7 @@ def submit_handler_tool(
     result_view: str,
     groups: set[StringKey],
     roles: set[str],
+    required_agent_capabilities: set[str] | None = None,
     handler: ToolHandler,
     submit_behavior: SubmitBehavior,
     backing_service: str = "submit_handler",
@@ -102,6 +107,7 @@ def submit_handler_tool(
         required_context={"repo"} if required_context is None else required_context,
         tool_groups=key_set(groups),
         allowed_roles=set(roles),
+        required_agent_capabilities=set(required_agent_capabilities or ()),
         submit_behavior=submit_behavior,
         backing_handler=handler,
     )

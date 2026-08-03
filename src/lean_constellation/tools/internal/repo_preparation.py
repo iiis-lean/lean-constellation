@@ -489,7 +489,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_method="get_repo_completion_policy",
             result_view="repo_completion_policy",
             groups={AppGroup.REPO_COMPLETION_POLICY_READ},
-            roles={"coordinator", "plan", "admin"},
+            roles={"coordinator", "plan", "worker", "admin"},
         ),
         handler_tool(
             name="get_current_repo_run_context",
@@ -530,7 +530,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="workspace_coordinator_overview",
             groups={AppGroup.WORKSPACE_OVERVIEW_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
             handler=_inspect_workspace_for_coordinator,
         ),
         handler_tool(
@@ -540,7 +540,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="workspace_repo_overviews",
             groups={AppGroup.WORKSPACE_PROVIDER_CATALOG_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
             handler=_list_ready_provider_repos,
         ),
         handler_tool(
@@ -550,7 +550,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="requirement_group_overviews",
             groups={AppGroup.WORKSPACE_REQUIREMENT_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
             handler=_list_open_requirement_groups,
         ),
         handler_tool(
@@ -580,7 +580,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="requirement_group_detail",
             groups={AppGroup.WORKSPACE_REQUIREMENT_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
             handler=_get_requirement_group,
         ),
         handler_tool(
@@ -590,7 +590,7 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="requirement_detail",
             groups={AppGroup.WORKSPACE_REQUIREMENT_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
             handler=_get_current_repo_requirement,
         ),
         direct_tool(
@@ -603,7 +603,7 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_method="list_current_lake_dependency_repos",
             result_view="lake_dependencies",
             groups={AppGroup.LAKE_DEPENDENCY_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
         ),
         direct_tool(
             name="attach_ready_workspace_repo_dependency",
@@ -623,7 +623,8 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="github_repo_candidate_list",
             groups={AppGroup.UPSTREAM_REPO_SEARCH},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
+            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
             handler=_search_github_lean_repositories,
         ),
@@ -634,7 +635,8 @@ def build_tool_specs() -> list[ToolSpec]:
             capability=ToolCapability.READ,
             result_view="github_repo_candidate_detail",
             groups={AppGroup.UPSTREAM_REPO_SEARCH},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
+            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
             handler=_inspect_github_lean_repository,
         ),
@@ -648,7 +650,8 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_method="probe_github_lean_repo_candidate",
             result_view="github_lean_repo_probe",
             groups={AppGroup.UPSTREAM_REPO_SEARCH},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
+            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
         direct_tool(
@@ -661,7 +664,8 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_method="get_repository",
             result_view="github_repository",
             groups={AppGroup.GITHUB_REPOSITORY_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
+            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
         direct_tool(
@@ -674,7 +678,8 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_method="list_repository_tree",
             result_view="github_repository_tree",
             groups={AppGroup.GITHUB_REPOSITORY_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
+            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
         direct_tool(
@@ -687,7 +692,8 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_method="read_repository_file",
             result_view="github_repository_file",
             groups={AppGroup.GITHUB_REPOSITORY_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
+            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
         direct_tool(
@@ -700,7 +706,8 @@ def build_tool_specs() -> list[ToolSpec]:
             backing_method="search_code",
             result_view="github_code_search",
             groups={AppGroup.GITHUB_REPOSITORY_READ},
-            roles={"coordinator", "admin"},
+            roles={"worker", "coordinator", "admin"},
+            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
     ]
