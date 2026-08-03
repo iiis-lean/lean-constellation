@@ -18,6 +18,8 @@ def test_fake_runtime_starts_registered_business_flow(tmp_path) -> None:
             "repo_key": "Repo",
             "target_kind": "web",
             "target": "https://example.com/source",
+            "requested_use": "supporting_material",
+            "consumer_need": "Need supporting source context.",
             "requested_by": "content_plan",
             "context_summary": "Need source.",
         },
@@ -38,6 +40,8 @@ def test_fake_agent_service_accepts_queued_submission_during_step_run(tmp_path) 
             "repo_key": "Repo",
             "target_kind": "web",
             "target": "https://example.com/source",
+            "requested_use": "supporting_material",
+            "consumer_need": "Need supporting source context.",
         },
         scope_id="repo:Repo",
     )

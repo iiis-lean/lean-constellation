@@ -20,6 +20,8 @@ class ResourceCurationParams(_StrictParams):
     target_kind: Literal["web", "arxiv", "local_file", "local_dir"]
     target: str
     arxiv_version: str | None = None
+    requested_use: Literal["supporting_material", "formal_dependency", "unknown"]
+    consumer_need: str
     requested_by: str | None = None
     context_summary: str | None = None
 
@@ -53,6 +55,8 @@ def test_flow_request_builders_preserve_business_params() -> None:
         target_kind="arxiv",
         target="2501.12345",
         arxiv_version="v2",
+        requested_use="formal_dependency",
+        consumer_need="Need the external theorem API.",
         requested_by="plan",
         context_summary="Need proof.",
     )
@@ -80,6 +84,8 @@ def test_flow_request_builder_params_validate_against_child_flow_input_models() 
         target_kind="arxiv",
         target="2501.12345",
         arxiv_version="v2",
+        requested_use="formal_dependency",
+        consumer_need="Need the external theorem API.",
         requested_by="plan",
         context_summary="Need proof.",
     )

@@ -93,7 +93,13 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         flow_id=resource_flow_id,
         agent_step_id=resource_agent_step_id,
         tool_name="submit_local_resource_created",
-        arguments={"summary": "Strict local resource.", "draft_id": local_draft_id},
+        arguments={
+            "summary": "Strict local resource.",
+            "draft_id": local_draft_id,
+            "classification_reason": "The fixture is supporting material for this repository.",
+            "resource_role": "Provide strict resource branch evidence.",
+            "consumer_formalization_scope": "The current repository retains the formal theorem work.",
+        },
         expected_outcome="local_resource_created",
     )
     restore_with_evidence(
@@ -114,6 +120,10 @@ def test_strict_repo_format_and_resource_branches_emit_actual_evidence(
         arguments={
             "reason": "Strict external provider branch.",
             "source_description": "Strict web-accessible provider.",
+            "classification_reason": "The target represents an independent reusable provider scope.",
+            "relation_to_current_repo_or_node": "The current node consumes the provider theorem.",
+            "consumer_need": "A reusable theorem exposed through a stable provider interface.",
+            "provider_scope": "Own and prove the reusable theorem independently.",
             "suggested_repo_name": "strict_web_provider",
             "required_interfaces_hint": "Expose the reusable theorem.",
         },
@@ -352,6 +362,8 @@ def _start_resource_flow(ws: RuntimeMatrixWorkspace, *, target_kind: str, target
                     "target_kind": target_kind,
                     "target": target,
                     "requested_by": "content_plan",
+                    "requested_use": "supporting_material",
+                    "consumer_need": "Deterministic material for strict resource branch coverage.",
                     "context_summary": "Strict Runtime Matrix resource branch coverage.",
                     "node_path": "Main.Core",
                 },

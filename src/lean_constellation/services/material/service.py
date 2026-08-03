@@ -540,12 +540,18 @@ class MaterialService:
         target: ResourceTargetView,
         draft_id: str,
         summary: str,
+        classification_reason: str,
+        resource_role: str,
+        consumer_formalization_scope: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         return self.resource_curation.submit_local_resource_created(
             repo_root,
             target=target,
             draft_id=draft_id,
             summary=summary,
+            classification_reason=classification_reason,
+            resource_role=resource_role,
+            consumer_formalization_scope=consumer_formalization_scope,
         )
 
     def check_local_resource_created(
@@ -555,12 +561,18 @@ class MaterialService:
         target: ResourceTargetView,
         draft_id: str,
         summary: str,
+        classification_reason: str,
+        resource_role: str,
+        consumer_formalization_scope: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         return self.resource_curation.check_local_resource_created(
             repo_root,
             target=target,
             draft_id=draft_id,
             summary=summary,
+            classification_reason=classification_reason,
+            resource_role=resource_role,
+            consumer_formalization_scope=consumer_formalization_scope,
         )
 
     def submit_external_repo_required(
@@ -570,16 +582,26 @@ class MaterialService:
         target: ResourceTargetView,
         reason: str,
         source_description: str,
+        classification_reason: str,
+        relation_to_current_repo_or_node: str,
+        consumer_need: str,
+        provider_scope: str,
         suggested_repo_name: str | None = None,
         required_interfaces_hint: str | None = None,
+        existing_lean_repo_signal: str | None = None,
     ) -> ServiceResult[ResourceCurationResultView]:
         return self.resource_curation.submit_external_repo_required(
             repo_root,
             target=target,
             reason=reason,
             source_description=source_description,
+            classification_reason=classification_reason,
+            relation_to_current_repo_or_node=relation_to_current_repo_or_node,
+            consumer_need=consumer_need,
+            provider_scope=provider_scope,
             suggested_repo_name=suggested_repo_name,
             required_interfaces_hint=required_interfaces_hint,
+            existing_lean_repo_signal=existing_lean_repo_signal,
         )
 
     def submit_resource_rejected(

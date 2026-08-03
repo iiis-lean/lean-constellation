@@ -28,4 +28,6 @@ class ResourceReconRequestResourceSubmission(LeanDispatchSubmission):
     target_kind: Literal["web", "arxiv", "local_file", "local_dir"]
     target: str
     arxiv_version: str | None = None
+    requested_use: Literal["supporting_material", "formal_dependency", "unknown"]
+    consumer_need: str
     context_summary: str | None = None

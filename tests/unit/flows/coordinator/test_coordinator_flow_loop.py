@@ -504,7 +504,9 @@ def test_repo_exploration_ensures_agents_dispatches_atomic_batch_and_callbacks(
                     relevance="Supports the target identity.",
                     support_expected="The exact combinatorial lemma.",
                     reliability="Published source.",
-                    recommendation="request",
+                    recommended_handling="local_resource",
+                    classification_reason="This paper is supporting evidence for the consumer proof.",
+                    consumer_need="The exact combinatorial lemma.",
                 )
             ],
             summary="One useful paper.",
@@ -574,6 +576,8 @@ def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
             repo_key="Repo",
             target_kind="arxiv",
             target="2501.12345",
+            requested_use="supporting_material",
+            consumer_need="Need the paper's supporting lemma.",
             requests=[
                 build_resource_curation_request(
                     scope_id="repo:Repo",
@@ -581,6 +585,8 @@ def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
                     repo_root=str(repo_root),
                     target_kind="arxiv",
                     target="2501.12345",
+                    requested_use="supporting_material",
+                    consumer_need="Need the paper's supporting lemma.",
                     requested_by="coordinator",
                 )
             ],

@@ -962,11 +962,15 @@ def test_direct_resource_curation_does_not_create_preparation_checkpoint(tmp_pat
             node_path="Main.Core",
             target_kind="local_file",
             target="notes.md",
+            requested_use="supporting_material",
+            consumer_need="Need the supporting note.",
             requests=[
                 build_resource_curation_request(
                     scope_id="repo:Repo:node:Main.Core",
                     target_kind="local_file",
                     target="notes.md",
+                    requested_use="supporting_material",
+                    consumer_need="Need the supporting note.",
                     repo_key="Repo",
                     repo_root=str(repo_root),
                     node_path="Main.Core",

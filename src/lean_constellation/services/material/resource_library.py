@@ -372,6 +372,27 @@ class ResourceLibraryComponent:
             return self.runtime.foundation.fail(loaded.issues)
         return self.runtime.foundation.ok(self._draft_view(repo_root, loaded.value))
 
+    def get_resource_draft_normalized_entry(
+        self,
+        repo_root: Path,
+        *,
+        draft_id: str,
+    ) -> ServiceResult[str]:
+        loaded = self._load_draft(repo_root, draft_id=draft_id)
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        draft_root = self._draft_root(repo_root, draft_id)
+        entry = self._choose_normalized_entry(draft_root / "normalized")
+        if entry is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "resource_not_readable",
+                    "Resource draft has no readable normalized text.",
+                    object_ref=str(draft_root),
+                )
+            )
+        return self.runtime.foundation.ok(entry.relative_to(draft_root).as_posix())
+
     def register_local_resource(
         self,
         repo_root: Path,

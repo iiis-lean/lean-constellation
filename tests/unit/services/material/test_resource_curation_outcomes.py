@@ -69,6 +69,9 @@ def test_resource_curation_submit_outcome_happy_paths(tmp_path: Path) -> None:
         target=local_target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Created a curated local resource.",
+        classification_reason="This file is supporting material.",
+        resource_role="Background reference.",
+        consumer_formalization_scope="The current repo proves the target theorem.",
     )
     assert local.ok and local.value is not None
     assert local.value.kind == "local_resource_created"
@@ -82,6 +85,10 @@ def test_resource_curation_submit_outcome_happy_paths(tmp_path: Path) -> None:
         target=target.value,
         reason="The target is a full upstream project rather than a small resource.",
         source_description="A web-accessible upstream project with many Lean files.",
+        classification_reason="The target is an independent reusable formal project.",
+        relation_to_current_repo_or_node="The consumer imports its fixed point theorem.",
+        consumer_need="A stable fixed point theorem API.",
+        provider_scope="Own the upstream project's reusable formal theory.",
         suggested_repo_name="project_resource",
         required_interfaces_hint="Expose the main fixed point theorem.",
     )
@@ -141,6 +148,9 @@ def test_resource_curation_submit_outcome_gates(tmp_path: Path) -> None:
         target=first_target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Try too early.",
+        classification_reason="Supporting material.",
+        resource_role="Background.",
+        consumer_formalization_scope="Current repo owns formalization.",
     )
     assert not not_ready.ok
     assert {issue.kind for issue in not_ready.issues} >= {
@@ -154,6 +164,9 @@ def test_resource_curation_submit_outcome_gates(tmp_path: Path) -> None:
         target=second_target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Wrong request.",
+        classification_reason="Supporting material.",
+        resource_role="Background.",
+        consumer_formalization_scope="Current repo owns formalization.",
     )
     assert not mismatch.ok
     assert mismatch.issues[0].kind == "resource_request_target_mismatch"
@@ -163,18 +176,30 @@ def test_resource_curation_submit_outcome_gates(tmp_path: Path) -> None:
         target=first_target.value,
         reason=" ",
         source_description="A project.",
+        classification_reason="Independent project.",
+        relation_to_current_repo_or_node="Consumer dependency.",
+        consumer_need="Main theorem.",
+        provider_scope="Own the project theory.",
     )
     missing_external_description = service.resource_curation.submit_external_repo_required(
         tmp_path,
         target=first_target.value,
         reason="Needs provider repo.",
         source_description=" ",
+        classification_reason="Independent project.",
+        relation_to_current_repo_or_node="Consumer dependency.",
+        consumer_need="Main theorem.",
+        provider_scope="Own the project theory.",
     )
     invalid_repo_hint = service.resource_curation.submit_external_repo_required(
         tmp_path,
         target=first_target.value,
         reason="Needs provider repo.",
         source_description="A project.",
+        classification_reason="Independent project.",
+        relation_to_current_repo_or_node="Consumer dependency.",
+        consumer_need="Main theorem.",
+        provider_scope="Own the project theory.",
         suggested_repo_name="../bad",
     )
     missing_rejected_reason = service.resource_curation.submit_resource_rejected(

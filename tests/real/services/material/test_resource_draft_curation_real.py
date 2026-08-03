@@ -110,6 +110,9 @@ def test_material_resource_curation_submit_outcomes_real_local_and_duplicate(tmp
         target=prepared_target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Created through ResourceCurator local submit gate.",
+        classification_reason="The local fixture is supporting material for this repository.",
+        resource_role="Provide deterministic real material-service coverage.",
+        consumer_formalization_scope="The current repository retains all formal theorem ownership.",
     )
     assert local_result.ok and local_result.value is not None
     assert local_result.value.kind == "local_resource_created"

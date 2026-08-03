@@ -288,6 +288,8 @@ def _resource_request(
         target_kind=args.target_kind,
         target=args.target,
         arxiv_version=args.arxiv_version,
+        requested_use=args.requested_use,
+        consumer_need=args.consumer_need,
         requested_by=ctx.actor.role,
         context_summary=args.context_summary,
         repo_key=ctx.repo.repo_key,
@@ -299,6 +301,8 @@ def _resource_request(
         target_kind=args.target_kind,
         target=args.target,
         arxiv_version=args.arxiv_version,
+        requested_use=args.requested_use,
+        consumer_need=args.consumer_need,
         context_summary=args.context_summary,
     )
     return _prepared(
@@ -716,6 +720,9 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
         target=normalized_target,
         draft_id=args.draft_id,
         summary=args.summary,
+        classification_reason=args.classification_reason,
+        resource_role=args.resource_role,
+        consumer_formalization_scope=args.consumer_formalization_scope,
     )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
@@ -732,6 +739,12 @@ def submit_local_resource_created(runtime: Any, ctx: ToolExecutionContext, args:
             arxiv_version=request_target.arxiv_version,
             draft_id=args.draft_id,
             resource_key=gate.value.resource_key,
+            classification_reason=gate.value.classification_reason or args.classification_reason,
+            resource_role=gate.value.resource_role or args.resource_role,
+            consumer_formalization_scope=(
+                gate.value.consumer_formalization_scope
+                or args.consumer_formalization_scope
+            ),
         ),
         agent_view=gate.value.model_dump(mode="json"),
     )
@@ -747,8 +760,13 @@ def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args:
         target=normalized_target,
         reason=args.reason,
         source_description=args.source_description,
+        classification_reason=args.classification_reason,
+        relation_to_current_repo_or_node=args.relation_to_current_repo_or_node,
+        consumer_need=args.consumer_need,
+        provider_scope=args.provider_scope,
         suggested_repo_name=args.suggested_repo_name,
         required_interfaces_hint=args.required_interfaces_hint,
+        existing_lean_repo_signal=args.existing_lean_repo_signal,
     )
     if not gate.ok or gate.value is None:
         return runtime.foundation.fail(gate.issues)
@@ -761,8 +779,16 @@ def submit_external_repo_required(runtime: Any, ctx: ToolExecutionContext, args:
             arxiv_version=request_target.arxiv_version,
             reason=args.reason,
             source_description=args.source_description,
+            classification_reason=gate.value.classification_reason or args.classification_reason,
+            relation_to_current_repo_or_node=(
+                gate.value.relation_to_current_repo_or_node
+                or args.relation_to_current_repo_or_node
+            ),
+            consumer_need=gate.value.consumer_need or args.consumer_need,
+            provider_scope=gate.value.provider_scope or args.provider_scope,
             suggested_repo_name=args.suggested_repo_name,
             required_interfaces_hint=args.required_interfaces_hint,
+            existing_lean_repo_signal=gate.value.existing_lean_repo_signal,
         ),
         agent_view=gate.value.model_dump(mode="json"),
     )

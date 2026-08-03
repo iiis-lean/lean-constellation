@@ -42,6 +42,8 @@ class ResourceCallerContextInput(BaseModel):
 
     caller_kind: ResourceCallerKind = "other"
     node_path: str | None = None
+    requested_use: Literal["supporting_material", "formal_dependency", "unknown"]
+    consumer_need: str
     purpose_hint: str | None = None
 
 
@@ -51,6 +53,8 @@ class ResourceCurationParams(LeanFlowParams):
     target_kind: ResourceTargetKind
     target: str
     arxiv_version: str | None = None
+    requested_use: Literal["supporting_material", "formal_dependency", "unknown"]
+    consumer_need: str
     requested_by: str | None = None
     context_summary: str | None = None
     node_path: str | None = None
@@ -72,6 +76,8 @@ class ResourceCurationInput(LeanRenderableFlowInput):
             "target_kind": self.target.kind,
             "caller_kind": self.caller_context.caller_kind,
             "node_path": self.caller_context.node_path,
+            "requested_use": self.caller_context.requested_use,
+            "consumer_need": self.caller_context.consumer_need,
             "purpose_hint": self.caller_context.purpose_hint,
         }
 
@@ -145,6 +151,8 @@ class ResourceCurationFlow(LeanBusinessFlow):
                 caller_context=ResourceCallerContextInput(
                     caller_kind=caller_kind,
                     node_path=params.node_path,
+                    requested_use=params.requested_use,
+                    consumer_need=params.consumer_need,
                     purpose_hint=params.context_summary,
                 ),
             ),
@@ -288,6 +296,9 @@ class ResourceCurationFlow(LeanBusinessFlow):
                 target=normalized_target.value,
                 draft_id=submission.draft_id,
                 summary=submission.summary or result.summary or "Curated local resource.",
+                classification_reason=submission.classification_reason,
+                resource_role=submission.resource_role,
+                consumer_formalization_scope=submission.consumer_formalization_scope,
             )
             if not finalized.ok or finalized.value is None or not finalized.value.resource_key:
                 rejected = ResourceRejectedResultView(reason=finalized.issues[0].message if finalized.issues else "Local resource finalize failed.")
@@ -297,6 +308,13 @@ class ResourceCurationFlow(LeanBusinessFlow):
                 resource_key=finalized.value.resource_key,
                 resource_ref_summary=f"Resource {finalized.value.resource_key}",
                 locator_summary=f"{submission.target_kind}:{submission.target}",
+                normalized_entry=finalized.value.normalized_entry,
+                classification_reason=finalized.value.classification_reason or submission.classification_reason,
+                resource_role=finalized.value.resource_role or submission.resource_role,
+                consumer_formalization_scope=(
+                    finalized.value.consumer_formalization_scope
+                    or submission.consumer_formalization_scope
+                ),
             )
             self.result = ResourceCurationResult(
                 outcome="local_resource_created",
@@ -364,12 +382,15 @@ def _resource_curator_prompt(input_model: ResourceCurationInput, state: Resource
     parts = [
         f"Curate the explicit resource target {input_model.target.kind}: {input_model.target.target}.",
         f"Caller kind: {input_model.caller_context.caller_kind}.",
+        "Read and apply $material-boundary-classification before choosing a terminal ownership outcome.",
         "Current working directory: the active resource draft.",
         "Allowed write boundary: this directory and its descendants.",
         "Logical files: README.md, original/, normalized/.",
     ]
     if input_model.caller_context.node_path:
         parts.append(f"Caller node: {input_model.caller_context.node_path}.")
+    parts.append(f"Requested use: {input_model.caller_context.requested_use}.")
+    parts.append(f"Consumer need: {input_model.caller_context.consumer_need}.")
     if input_model.caller_context.purpose_hint:
         parts.append(f"Purpose: {input_model.caller_context.purpose_hint}.")
     if state.normalized_target_summary:

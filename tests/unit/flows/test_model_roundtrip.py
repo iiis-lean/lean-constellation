@@ -51,6 +51,8 @@ FLOW_PARAMS = {
         "target_kind": "arxiv",
         "target": "2501.12345",
         "arxiv_version": "v2",
+        "requested_use": "supporting_material",
+        "consumer_need": "Need the cited lemma source.",
         "requested_by": "content_plan",
         "context_summary": "Need source.",
         "node_path": "Main.Core",

@@ -674,7 +674,11 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         context_scope="resource_request",
         agent_step_type="resource_curator_agent_step",
         fragments=[*BLOCKED_FRAGMENTS, "resource.resource_library_context"],
-        skills=[SkillKey.RESOURCE_MATERIAL_ACQUISITION, SkillKey.RESOURCE_DRAFT_CURATION],
+        skills=[
+            SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION,
+            SkillKey.RESOURCE_MATERIAL_ACQUISITION,
+            SkillKey.RESOURCE_DRAFT_CURATION,
+        ],
         app_view=AppView.RESOURCE_CURATOR,
         submit_view=SubmitView.RESOURCE_CURATOR_SUBMIT,
         aliases=["ResourceCurator", "resource_curator"],
@@ -693,7 +697,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
             "resource.resource_library_context",
             "quality.source_fidelity",
         ],
-        skills=[SkillKey.REPO_RESOURCE_DISCOVERY],
+        skills=[SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION, SkillKey.REPO_RESOURCE_DISCOVERY],
         app_view=AppView.REPO_RESOURCE_DISCOVERY,
         submit_view=SubmitView.REPO_RESOURCE_DISCOVERY_SUBMIT,
         aliases=["RepoResourceDiscovery", "repo_resource_discovery"],
@@ -765,6 +769,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         skills=[
             SkillKey.COORDINATOR_COMPLETION_POLICY,
             SkillKey.COORDINATOR_REPO_EXPLORATION,
+            SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION,
             SkillKey.COORDINATOR_CONTENT_RESULT_CLOSEOUT,
             SkillKey.RESOURCE_RESULT_CLOSEOUT,
             SkillKey.COORDINATOR_REQUIREMENT_RESULT_CLOSEOUT,
@@ -808,6 +813,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION,
             SkillKey.VISIBLE_NODE_DEPENDENCY_RECON,
             SkillKey.MATHLIB_INDEX_FIRST_RECON,
             SkillKey.MATHLIB_SEMANTIC_SEARCH_NAVIGATION,
@@ -885,6 +891,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         ],
         skills=[
             SkillKey.CONTENT_CONTRACT_READING,
+            SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION,
             SkillKey.EXTERNAL_RESOURCE_DISCOVERY,
             SkillKey.RESOURCE_REQUEST_SUBMISSION,
             SkillKey.RESOURCE_RESULT_CLOSEOUT,

@@ -72,6 +72,8 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                     payload[key] = 0
                 elif key in {"target_kind"}:
                     payload[key] = "web"
+                elif key == "requested_use":
+                    payload[key] = "supporting_material"
                 elif key in {"existing_kind"}:
                     payload[key] = "source"
                 elif key in {"recon_kind"}:

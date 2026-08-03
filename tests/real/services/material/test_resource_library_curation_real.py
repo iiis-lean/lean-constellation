@@ -64,7 +64,13 @@ def test_material_resource_library_curation_real_local_file(tmp_path: Path) -> N
     resource_key = curated.value.resource.resource_key
     assert (repo_root / ".lean_constellation" / "resources" / "items" / resource_key / "resource.json").exists()
 
-    curator_result = service.resource_curation.build_curator_result(decision.value, resource=curated.value)
+    curator_result = service.resource_curation.build_curator_result(
+        decision.value,
+        resource=curated.value,
+        classification_reason="The fixture is supporting material for this repository.",
+        resource_role="Provide deterministic ResourceLibrary coverage.",
+        consumer_formalization_scope="The current repository retains all formal theorem ownership.",
+    )
     assert curator_result.ok
     assert curator_result.value is not None
     assert curator_result.value.kind == "local_resource_created"
@@ -126,7 +132,13 @@ def test_material_resource_curation_real_external_repo_and_rejection_decisions(t
     assert external_decision.value is not None
     assert external_decision.value.decision == "external_repo_required"
 
-    external_result = service.resource_curation.build_curator_result(external_decision.value)
+    external_result = service.resource_curation.build_curator_result(
+        external_decision.value,
+        classification_reason="The directory fixture represents an independent provider boundary.",
+        relation_to_current_repo_or_node="The current repository consumes the provider output.",
+        consumer_need="A stable reusable interface backed by the external directory.",
+        provider_scope="Own the independent formalization represented by the directory.",
+    )
     assert external_result.ok
     assert external_result.value is not None
     assert external_result.value.kind == "external_repo_required"

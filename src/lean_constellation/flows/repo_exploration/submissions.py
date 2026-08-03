@@ -24,7 +24,19 @@ class RepoResourceCandidate(StrictModel):
     support_expected: str
     reliability: str
     risks_or_gaps: list[str] = Field(default_factory=list)
-    recommendation: Literal["request", "inspect_later", "ignore"]
+    recommended_handling: Literal[
+        "local_resource",
+        "provider_requirement",
+        "inspect_later",
+        "ignore",
+    ]
+    classification_reason: str
+    consumer_need: str
+    suggested_repo_name: str | None = None
+    provider_scope: str | None = None
+    required_interfaces_hint: str | None = None
+    existing_lean_repo_signal: str | None = None
+    lean_provider_search_recommended: bool = False
 
 
 class RepoLeanProviderCandidate(StrictModel):

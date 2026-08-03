@@ -207,6 +207,8 @@ def test_content_plan_agent_step_dispatch_and_completion_results(tmp_path: Path)
             node_path="Main.Core",
             target_kind="web",
             target="https://example.com/source",
+            requested_use="supporting_material",
+            consumer_need="Need the supporting source.",
             requests=[
                 build_resource_curation_request(
                     scope_id="repo:Repo:node:Main.Core",
@@ -215,6 +217,8 @@ def test_content_plan_agent_step_dispatch_and_completion_results(tmp_path: Path)
                     node_path="Main.Core",
                     target_kind="web",
                     target="https://example.com/source",
+                    requested_use="supporting_material",
+                    consumer_need="Need the supporting source.",
                     requested_by="content_plan",
                 )
             ],
@@ -401,6 +405,8 @@ def test_recon_agent_step_business_results(tmp_path: Path) -> None:
             node_path="Main.Core",
             target_kind="arxiv",
             target="2501.12345",
+            requested_use="supporting_material",
+            consumer_need="Need the supporting theorem.",
             requests=[
                 build_resource_curation_request(
                     scope_id="repo:Repo:node:Main.Core",
@@ -409,6 +415,8 @@ def test_recon_agent_step_business_results(tmp_path: Path) -> None:
                     node_path="Main.Core",
                     target_kind="arxiv",
                     target="2501.12345",
+                    requested_use="supporting_material",
+                    consumer_need="Need the supporting theorem.",
                     requested_by="resource_recon",
                 )
             ],

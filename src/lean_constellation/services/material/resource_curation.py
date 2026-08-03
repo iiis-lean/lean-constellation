@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.external_clients import AcquiredArtifactResult, ExtractedMaterialResult
@@ -64,8 +64,39 @@ class ResourceCurationResultView(StrictModel):
     suggested_repo_name: str | None = None
     source_description: str | None = None
     required_interfaces_hint: str | None = None
+    normalized_entry: str | None = None
+    classification_reason: str | None = None
+    resource_role: str | None = None
+    consumer_formalization_scope: str | None = None
+    relation_to_current_repo_or_node: str | None = None
+    consumer_need: str | None = None
+    provider_scope: str | None = None
+    existing_lean_repo_signal: str | None = None
     reason: str | None = None
     summary: str
+
+    @model_validator(mode="after")
+    def _validate_boundary_fields(self):
+        if self.kind == "local_resource_created":
+            required = {
+                "normalized_entry": self.normalized_entry,
+                "classification_reason": self.classification_reason,
+                "resource_role": self.resource_role,
+                "consumer_formalization_scope": self.consumer_formalization_scope,
+            }
+        elif self.kind == "external_repo_required":
+            required = {
+                "classification_reason": self.classification_reason,
+                "relation_to_current_repo_or_node": self.relation_to_current_repo_or_node,
+                "consumer_need": self.consumer_need,
+                "provider_scope": self.provider_scope,
+            }
+        else:
+            required = {}
+        missing = [field for field, value in required.items() if not value or not value.strip()]
+        if missing:
+            raise ValueError(f"{self.kind} requires boundary fields: {', '.join(missing)}")
+        return self
 
 
 class ResourceCurationComponent:
@@ -219,6 +250,13 @@ class ResourceCurationComponent:
         decision: ResourceCurationDecisionView,
         *,
         resource: ResourceView | None = None,
+        classification_reason: str | None = None,
+        resource_role: str | None = None,
+        consumer_formalization_scope: str | None = None,
+        relation_to_current_repo_or_node: str | None = None,
+        consumer_need: str | None = None,
+        provider_scope: str | None = None,
+        existing_lean_repo_signal: str | None = None,
     ) -> ServiceResult[ResourceCurationResultView]:
         if decision.decision == "duplicate":
             return self.runtime.foundation.ok(
@@ -232,10 +270,23 @@ class ResourceCurationComponent:
                 )
             )
         if decision.decision == "external_repo_required":
+            boundary_fields = self._required_external_boundary_fields(
+                classification_reason=classification_reason or "",
+                relation_to_current_repo_or_node=relation_to_current_repo_or_node or "",
+                consumer_need=consumer_need or "",
+                provider_scope=provider_scope or "",
+            )
+            if not boundary_fields.ok or boundary_fields.value is None:
+                return self.runtime.foundation.fail(boundary_fields.issues)
             return self.runtime.foundation.ok(
                 ResourceCurationResultView(
                     kind="external_repo_required",
                     target=decision.target,
+                    classification_reason=boundary_fields.value[0],
+                    relation_to_current_repo_or_node=boundary_fields.value[1],
+                    consumer_need=boundary_fields.value[2],
+                    provider_scope=boundary_fields.value[3],
+                    existing_lean_repo_signal=existing_lean_repo_signal,
                     reason=decision.reason,
                     summary=decision.summary,
                 )
@@ -253,11 +304,22 @@ class ResourceCurationComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("resource_required", "Local resource result requires a registered resource.")
             )
+        boundary_fields = self._required_boundary_fields(
+            classification_reason=classification_reason or "",
+            resource_role=resource_role or "",
+            consumer_formalization_scope=consumer_formalization_scope or "",
+        )
+        if not boundary_fields.ok or boundary_fields.value is None:
+            return self.runtime.foundation.fail(boundary_fields.issues)
         return self.runtime.foundation.ok(
             ResourceCurationResultView(
                 kind="local_resource_created",
                 target=decision.target,
                 resource_key=resource.resource.resource_key,
+                normalized_entry=resource.resource.normalized_entry,
+                classification_reason=boundary_fields.value[0],
+                resource_role=boundary_fields.value[1],
+                consumer_formalization_scope=boundary_fields.value[2],
                 reason=decision.reason,
                 summary=f"Created local resource {resource.resource.resource_key}.",
             )
@@ -331,12 +393,18 @@ class ResourceCurationComponent:
         target: ResourceTargetView,
         draft_id: str,
         summary: str,
+        classification_reason: str,
+        resource_role: str,
+        consumer_formalization_scope: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         checked = self.check_local_resource_created(
             repo_root,
             target=target,
             draft_id=draft_id,
             summary=summary,
+            classification_reason=classification_reason,
+            resource_role=resource_role,
+            consumer_formalization_scope=consumer_formalization_scope,
         )
         if not checked.ok or checked.value is None:
             return self.runtime.foundation.fail(checked.issues)
@@ -348,6 +416,10 @@ class ResourceCurationComponent:
                 kind="local_resource_created",
                 target=target,
                 resource_key=finalized.value.resource.resource_key,
+                normalized_entry=finalized.value.resource.normalized_entry,
+                classification_reason=classification_reason.strip(),
+                resource_role=resource_role.strip(),
+                consumer_formalization_scope=consumer_formalization_scope.strip(),
                 reason="Target was curated into the local resource library.",
                 summary=summary.strip(),
             )
@@ -360,10 +432,20 @@ class ResourceCurationComponent:
         target: ResourceTargetView,
         draft_id: str,
         summary: str,
+        classification_reason: str,
+        resource_role: str,
+        consumer_formalization_scope: str,
     ) -> ServiceResult[ResourceCurationResultView]:
         text = self._required_text(summary, field="summary", issue_kind="resource_local_summary_required")
         if not text.ok or text.value is None:
             return self.runtime.foundation.fail(text.issues)
+        boundary_fields = self._required_boundary_fields(
+            classification_reason=classification_reason,
+            resource_role=resource_role,
+            consumer_formalization_scope=consumer_formalization_scope,
+        )
+        if not boundary_fields.ok or boundary_fields.value is None:
+            return self.runtime.foundation.fail(boundary_fields.issues)
         draft = self.resource_library.get_resource_draft(repo_root, draft_id=draft_id)
         if not draft.ok or draft.value is None:
             return self.runtime.foundation.fail(draft.issues)
@@ -394,11 +476,21 @@ class ResourceCurationComponent:
         resource_key = self.resource_library.resource_key_for_target(draft.value.draft.target)
         if not resource_key.ok or resource_key.value is None:
             return self.runtime.foundation.fail(resource_key.issues)
+        normalized_entry = self.resource_library.get_resource_draft_normalized_entry(
+            repo_root,
+            draft_id=draft_id,
+        )
+        if not normalized_entry.ok or normalized_entry.value is None:
+            return self.runtime.foundation.fail(normalized_entry.issues)
         return self.runtime.foundation.ok(
             ResourceCurationResultView(
                 kind="local_resource_created",
                 target=target,
                 resource_key=resource_key.value,
+                normalized_entry=normalized_entry.value,
+                classification_reason=boundary_fields.value[0],
+                resource_role=boundary_fields.value[1],
+                consumer_formalization_scope=boundary_fields.value[2],
                 reason="Target was curated into the local resource library.",
                 summary=text.value,
             )
@@ -411,8 +503,13 @@ class ResourceCurationComponent:
         target: ResourceTargetView,
         reason: str,
         source_description: str,
+        classification_reason: str,
+        relation_to_current_repo_or_node: str,
+        consumer_need: str,
+        provider_scope: str,
         suggested_repo_name: str | None = None,
         required_interfaces_hint: str | None = None,
+        existing_lean_repo_signal: str | None = None,
     ) -> ServiceResult[ResourceCurationResultView]:
         del repo_root
         reason_text = self._required_text(reason, field="reason", issue_kind="resource_external_reason_required")
@@ -425,6 +522,14 @@ class ResourceCurationComponent:
         )
         if not source_text.ok or source_text.value is None:
             return self.runtime.foundation.fail(source_text.issues)
+        boundary_fields = self._required_external_boundary_fields(
+            classification_reason=classification_reason,
+            relation_to_current_repo_or_node=relation_to_current_repo_or_node,
+            consumer_need=consumer_need,
+            provider_scope=provider_scope,
+        )
+        if not boundary_fields.ok or boundary_fields.value is None:
+            return self.runtime.foundation.fail(boundary_fields.issues)
         repo_hint = suggested_repo_name.strip() if suggested_repo_name and suggested_repo_name.strip() else None
         if repo_hint is not None:
             try:
@@ -440,6 +545,15 @@ class ResourceCurationComponent:
                 suggested_repo_name=repo_hint,
                 source_description=source_text.value,
                 required_interfaces_hint=required_interfaces_hint.strip() if required_interfaces_hint and required_interfaces_hint.strip() else None,
+                classification_reason=boundary_fields.value[0],
+                relation_to_current_repo_or_node=boundary_fields.value[1],
+                consumer_need=boundary_fields.value[2],
+                provider_scope=boundary_fields.value[3],
+                existing_lean_repo_signal=(
+                    existing_lean_repo_signal.strip()
+                    if existing_lean_repo_signal and existing_lean_repo_signal.strip()
+                    else None
+                ),
                 reason=reason_text.value,
                 summary=f"Resource target requires an external provider repo: {reason_text.value}",
             )
@@ -770,3 +884,51 @@ class ResourceCurationComponent:
         if not isinstance(value, str) or not value.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue(issue_kind, f"{field} is required.", field=field))
         return self.runtime.foundation.ok(value.strip())
+
+    def _required_boundary_fields(
+        self,
+        *,
+        classification_reason: str,
+        resource_role: str,
+        consumer_formalization_scope: str,
+    ) -> ServiceResult[tuple[str, str, str]]:
+        values = []
+        for field, value in (
+            ("classification_reason", classification_reason),
+            ("resource_role", resource_role),
+            ("consumer_formalization_scope", consumer_formalization_scope),
+        ):
+            checked = self._required_text(
+                value,
+                field=field,
+                issue_kind=f"resource_local_{field}_required",
+            )
+            if not checked.ok or checked.value is None:
+                return self.runtime.foundation.fail(checked.issues)
+            values.append(checked.value)
+        return self.runtime.foundation.ok((values[0], values[1], values[2]))
+
+    def _required_external_boundary_fields(
+        self,
+        *,
+        classification_reason: str,
+        relation_to_current_repo_or_node: str,
+        consumer_need: str,
+        provider_scope: str,
+    ) -> ServiceResult[tuple[str, str, str, str]]:
+        values = []
+        for field, value in (
+            ("classification_reason", classification_reason),
+            ("relation_to_current_repo_or_node", relation_to_current_repo_or_node),
+            ("consumer_need", consumer_need),
+            ("provider_scope", provider_scope),
+        ):
+            checked = self._required_text(
+                value,
+                field=field,
+                issue_kind=f"resource_external_{field}_required",
+            )
+            if not checked.ok or checked.value is None:
+                return self.runtime.foundation.fail(checked.issues)
+            values.append(checked.value)
+        return self.runtime.foundation.ok((values[0], values[1], values[2], values[3]))

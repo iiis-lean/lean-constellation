@@ -27,6 +27,10 @@ class LocalResourceCreatedResultView(StrictModel):
     resource_key: str
     resource_ref_summary: str
     locator_summary: str
+    normalized_entry: str | None = None
+    classification_reason: str
+    resource_role: str
+    consumer_formalization_scope: str
     preview: str | None = None
 
 
@@ -34,9 +38,13 @@ class ExternalRepoRequiredResultView(StrictModel):
     reason: str
     source_description: str
     source_locator: str
+    classification_reason: str
+    relation_to_current_repo_or_node: str
+    consumer_need: str
+    provider_scope: str
     suggested_repo_name: str | None = None
     required_interfaces_hint: str | None = None
-    relation_to_current_repo_or_node: str | None = None
+    existing_lean_repo_signal: str | None = None
 
 
 class ResourceRejectedResultView(StrictModel):

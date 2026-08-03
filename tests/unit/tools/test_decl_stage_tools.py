@@ -379,6 +379,9 @@ def _create_local_resource(runtime, repo_root: Path) -> str:
         target=target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Curated proof resource.",
+        classification_reason="This file is supporting proof material.",
+        resource_role="Proof background.",
+        consumer_formalization_scope="The current repo owns the formal proof.",
     )
     assert promoted.ok and promoted.value is not None
     assert promoted.value.resource_key is not None

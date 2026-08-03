@@ -43,6 +43,8 @@ def test_coordinator_content_resource_requirement_callback_matrix(
                         "summary": "Curate a web source after content callback.",
                         "target_kind": "web",
                         "target": ws.resources.web_url,
+                        "requested_use": "supporting_material",
+                        "consumer_need": "Deterministic web evidence for the coordinator callback.",
                         "context_summary": "Need deterministic resource callback.",
                     },
                 ),

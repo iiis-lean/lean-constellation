@@ -123,6 +123,8 @@ def test_resource_recon_request_resource_callback_branch(
                         "summary": "Request missing web resource.",
                         "target_kind": "web",
                         "target": ws.resources.web_url,
+                        "requested_use": "supporting_material",
+                        "consumer_need": "Deterministic web evidence for resource reconciliation.",
                         "context_summary": "Runtime Matrix resource recon callback.",
                     },
                 ),

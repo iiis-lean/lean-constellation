@@ -176,6 +176,8 @@ def test_resource_recon_flow_supports_multiple_resource_request_callbacks(
             node_path="Main.Core",
             target_kind="arxiv",
             target="2501.12345",
+            requested_use="supporting_material",
+            consumer_need="Need the supporting theorem.",
             requests=[
                 build_resource_curation_request(
                     scope_id="repo:Repo:node:Main.Core",
@@ -184,6 +186,8 @@ def test_resource_recon_flow_supports_multiple_resource_request_callbacks(
                     node_path="Main.Core",
                     target_kind="arxiv",
                     target="2501.12345",
+                    requested_use="supporting_material",
+                    consumer_need="Need the supporting theorem.",
                     requested_by="resource_recon",
                 )
             ],
@@ -219,6 +223,8 @@ def test_resource_recon_flow_supports_multiple_resource_request_callbacks(
             node_path="Main.Core",
             target_kind="web",
             target="https://example.com/supporting-note",
+            requested_use="supporting_material",
+            consumer_need="Need the explanatory note.",
             requests=[
                 build_resource_curation_request(
                     scope_id="repo:Repo:node:Main.Core",
@@ -227,6 +233,8 @@ def test_resource_recon_flow_supports_multiple_resource_request_callbacks(
                     node_path="Main.Core",
                     target_kind="web",
                     target="https://example.com/supporting-note",
+                    requested_use="supporting_material",
+                    consumer_need="Need the explanatory note.",
                     requested_by="resource_recon",
                 )
             ],
@@ -304,6 +312,8 @@ def test_resource_recon_flow_rejects_repeated_resource_request(
             node_path="Main.Core",
             target_kind="arxiv",
             target="2501.12345",
+            requested_use="supporting_material",
+            consumer_need="Need the supporting theorem.",
             requests=[
                 build_resource_curation_request(
                     scope_id="repo:Repo:node:Main.Core",
@@ -312,6 +322,8 @@ def test_resource_recon_flow_rejects_repeated_resource_request(
                     node_path="Main.Core",
                     target_kind="arxiv",
                     target="2501.12345",
+                    requested_use="supporting_material",
+                    consumer_need="Need the supporting theorem.",
                     requested_by="resource_recon",
                 )
             ],

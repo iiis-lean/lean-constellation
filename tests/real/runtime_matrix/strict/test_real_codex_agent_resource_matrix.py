@@ -1067,7 +1067,7 @@ Do these exact actions:
 7. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
    prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, application_tools_called, submit_tool_called, draft_id.
    Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
-8. Call submit tool "submit_local_resource_created" with target_kind "web", target "{target}", the draft_id, and summary "Strict real Codex ResourceCurator probe created a local resource."
+8. Call submit tool "submit_local_resource_created" with target_kind "web", target "{target}", the draft_id, summary "Strict real Codex ResourceCurator probe created a local resource.", classification_reason "This web target is supporting material owned by the current repository.", resource_role "Provide evidence for the controlled ResourceCurator probe.", and consumer_formalization_scope "The current repository retains the tiny True theorem formalization."
 
 Keep the final response short and mention the artifact path.
 """.strip()
@@ -1405,6 +1405,8 @@ def _start_resource_curation(ws: RuntimeMatrixWorkspace, *, target_kind: str, ta
                 "target_kind": target_kind,
                 "target": target,
                 "requested_by": "content_plan",
+                "requested_use": "supporting_material",
+                "consumer_need": "Readable evidence for the strict real Codex ResourceCurator probe.",
                 "context_summary": "Strict Runtime Matrix real Codex ResourceCurator resource test.",
                 "node_path": "Main.Core",
             },

@@ -95,6 +95,10 @@ class SubmitResourceRequestArgs(SummarySubmitArgs):
     target_kind: Literal["web", "arxiv", "local_file", "local_dir"] = Field(description="Kind of resource target.")
     target: str = Field(description="URL, arXiv id, or local path.")
     arxiv_version: str | None = Field(default=None, description="Optional arXiv version.")
+    requested_use: Literal["supporting_material", "formal_dependency", "unknown"] = Field(
+        description="Requested ownership use; formal_dependency must not be silently curated as a local Resource."
+    )
+    consumer_need: str = Field(description="Concrete statement, construction, evidence, or API the caller needs.")
     context_summary: str | None = Field(default=None, description="Why this resource is needed.")
 
 
@@ -111,13 +115,26 @@ class SubmitResourceDuplicateArgs(StrictModel):
 class SubmitLocalResourceCreatedArgs(SummarySubmitArgs):
     arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the finalized target.")
     draft_id: str = Field(description="Resource draft id to finalize.")
+    classification_reason: str = Field(description="Why this target is supporting material owned by the current repo.")
+    resource_role: str = Field(description="Narrow role the finalized Resource serves for the current repo.")
+    consumer_formalization_scope: str = Field(
+        description="What mathematical formalization responsibility remains in the current repo."
+    )
 
 
 class SubmitExternalRepoRequiredArgs(ReasonSubmitArgs):
     arxiv_version: str | None = Field(default=None, description="Optional arXiv version for the external provider target.")
     source_description: str = Field(description="Source description to pass to a provider repo requirement.")
+    classification_reason: str = Field(description="Why this target belongs to an independent provider boundary.")
+    relation_to_current_repo_or_node: str = Field(description="How the provider result will be consumed here.")
+    consumer_need: str = Field(description="Concrete provider capability required by the consumer.")
+    provider_scope: str = Field(description="Independent mathematical responsibility the provider should own.")
     suggested_repo_name: str | None = Field(default=None, description="Optional suggested provider repo key for the external requirement.")
     required_interfaces_hint: str | None = Field(default=None, description="Optional description of interfaces the external provider repo should expose.")
+    existing_lean_repo_signal: str | None = Field(
+        default=None,
+        description="Evidence for or against an existing Lean implementation.",
+    )
 
 
 class SubmitResourceRejectedArgs(ReasonSubmitArgs):
@@ -251,7 +268,22 @@ class RepoResourceCandidateArg(StrictModel):
     support_expected: str = Field(description="Mathematical statement, construction, or evidence expected from this resource.")
     reliability: str = Field(description="Source reliability assessment.")
     risks_or_gaps: list[str] = Field(default_factory=list, description="Known uncertainty, missing access, or scope gaps.")
-    recommendation: Literal["request", "inspect_later", "ignore"] = Field(description="Recommended Coordinator handling.")
+    recommended_handling: Literal[
+        "local_resource",
+        "provider_requirement",
+        "inspect_later",
+        "ignore",
+    ] = Field(description="Recommended material ownership handling.")
+    classification_reason: str = Field(description="Why this ownership classification fits the candidate.")
+    consumer_need: str = Field(description="Concrete statement, construction, evidence, or API the consumer needs.")
+    suggested_repo_name: str | None = Field(default=None, description="Optional provider repo key suggestion.")
+    provider_scope: str | None = Field(default=None, description="Independent provider responsibility when recommended.")
+    required_interfaces_hint: str | None = Field(default=None, description="Minimal provider API hint when recommended.")
+    existing_lean_repo_signal: str | None = Field(default=None, description="Evidence for an existing Lean implementation.")
+    lean_provider_search_recommended: bool = Field(
+        default=False,
+        description="Whether RepoLeanProviderDiscovery should inspect existing Lean candidates.",
+    )
 
 
 class SubmitRepoResourceDiscoveryResultArgs(SummarySubmitArgs):
@@ -263,10 +295,14 @@ class SubmitRepoResourceDiscoveryResultArgs(SummarySubmitArgs):
         if self.outcome == "no_useful_findings" and self.candidates:
             raise ValueError("no_useful_findings may not include resource candidates")
         for candidate in self.candidates:
-            if candidate.recommendation == "request" and (
+            if candidate.recommended_handling == "local_resource" and (
                 not candidate.canonical_locator.strip() or not candidate.source_urls
             ):
-                raise ValueError("request candidates require a canonical locator and source URL")
+                raise ValueError("local_resource candidates require a canonical locator and source URL")
+            if candidate.recommended_handling == "provider_requirement" and (
+                not candidate.provider_scope or not candidate.provider_scope.strip()
+            ):
+                raise ValueError("provider_requirement candidates require provider_scope")
         return self
 
 

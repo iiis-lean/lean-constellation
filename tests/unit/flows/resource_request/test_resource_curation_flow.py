@@ -32,6 +32,8 @@ def _start_resource_flow(runtime: FakeLeanFlowRuntime, repo_root: Path, *, targe
             "repo_root": str(repo_root),
             "target_kind": target_kind,
             "target": target,
+            "requested_use": "supporting_material",
+            "consumer_need": "Need the source as supporting evidence.",
             "requested_by": "content_plan",
             "context_summary": "Need stable material.",
             "node_path": "Main.Core",
@@ -62,6 +64,9 @@ def _create_local_resource(lean_runtime, repo_root: Path, *, target_kind: str, t
         target=normalized_target.value,
         draft_id=draft.value.draft.draft_id,
         summary="Curated local resource.",
+        classification_reason="The note is supporting material.",
+        resource_role="Background theorem note.",
+        consumer_formalization_scope="This repo proves its own theorem.",
     )
     assert promoted.ok and promoted.value is not None
     assert promoted.value.resource_key is not None
@@ -140,6 +145,9 @@ def test_resource_curation_local_resource_created_result(tmp_path: Path) -> None
             target_kind="local_file",
             target=str(target_file),
             draft_id=draft_id,
+            classification_reason="The note is supporting material.",
+            resource_role="Background theorem note.",
+            consumer_formalization_scope="This repo proves its own theorem.",
             summary="Curated local resource.",
         )
     )
@@ -171,6 +179,10 @@ def test_resource_curation_external_repo_required_result_does_not_create_resourc
             target=target,
             reason="The paper should be a reusable provider repo.",
             source_description="A paper-scale source.",
+            classification_reason="The paper defines an independent reusable theory.",
+            relation_to_current_repo_or_node="The consumer needs one public theorem.",
+            consumer_need="A stable statement of the main theorem.",
+            provider_scope="Formalize the paper's reusable theory.",
             suggested_repo_name="provider_paper",
             summary="Needs provider repo.",
         )

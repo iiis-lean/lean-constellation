@@ -39,6 +39,8 @@ def _start_resource_flow(admin: LeanAdminApi) -> str:
                 "repo_key": "Repo",
                 "target_kind": "web",
                 "target": "https://example.com/source",
+                "requested_use": "supporting_material",
+                "consumer_need": "Need supporting source context.",
             },
             enqueue=False,
         )

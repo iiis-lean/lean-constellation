@@ -78,6 +78,8 @@ def test_resource_request_submit_injects_runtime_repo_context(tmp_path: Path) ->
         flat_args={
             "target_kind": "web",
             "target": "https://example.com/source",
+            "requested_use": "supporting_material",
+            "consumer_need": "Need theorem background.",
             "context_summary": "Need background.",
             "summary": "Request resource curation.",
         },
@@ -170,6 +172,10 @@ def test_resource_curator_external_submit_rejects_removed_target_fields(tmp_path
             "target_kind": "web",
             "target": "https://example.com/other",
             "source_description": "Reusable source.",
+            "classification_reason": "Independent theory.",
+            "relation_to_current_repo_or_node": "Consumer dependency.",
+            "consumer_need": "Main theorem API.",
+            "provider_scope": "Own the reusable theory.",
         },
     )
 
@@ -188,7 +194,13 @@ def test_resource_curator_local_submit_rejects_non_active_draft_before_gateway(t
     result = runtime.tool_facade.invoke_agent_tool(
         _resource_curator_raw(tmp_path),
         tool_name="submit_local_resource_created",
-        flat_args={"summary": "Promote draft.", "draft_id": "draft_other"},
+        flat_args={
+            "summary": "Promote draft.",
+            "draft_id": "draft_other",
+            "classification_reason": "Supporting material.",
+            "resource_role": "Background.",
+            "consumer_formalization_scope": "Current repo owns the proof.",
+        },
     )
 
     assert result.ok and result.value is not None
@@ -214,7 +226,13 @@ def test_resource_curator_local_submit_validates_active_draft_without_finalizing
     result = runtime.tool_facade.invoke_agent_tool(
         _resource_curator_raw(tmp_path),
         tool_name="submit_local_resource_created",
-        flat_args={"summary": "Promote active draft.", "draft_id": draft.value.draft.draft_id},
+        flat_args={
+            "summary": "Promote active draft.",
+            "draft_id": draft.value.draft.draft_id,
+            "classification_reason": "Supporting material.",
+            "resource_role": "Background.",
+            "consumer_formalization_scope": "Current repo owns the proof.",
+        },
     )
 
     assert result.ok and result.value is not None
@@ -247,7 +265,13 @@ def test_resource_curator_local_submit_gateway_missing_does_not_finalize_draft(t
     result = runtime.tool_facade.invoke_agent_tool(
         _resource_curator_raw(tmp_path),
         tool_name="submit_local_resource_created",
-        flat_args={"summary": "Promote active draft.", "draft_id": draft.value.draft.draft_id},
+        flat_args={
+            "summary": "Promote active draft.",
+            "draft_id": draft.value.draft.draft_id,
+            "classification_reason": "Supporting material.",
+            "resource_role": "Background.",
+            "consumer_formalization_scope": "Current repo owns the proof.",
+        },
     )
 
     assert result.ok and result.value is not None

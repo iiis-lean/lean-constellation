@@ -59,7 +59,11 @@ def test_repo_preparation_control_stays_outside_agent_registry() -> None:
         "mark_requirement_result_observed",
         "attach_requirement_provider_dependency",
     }.isdisjoint(specs)
-    assert specs["get_current_repo_requirement"].allowed_roles == {"coordinator", "admin"}
+    assert specs["get_current_repo_requirement"].allowed_roles == {
+        "worker",
+        "coordinator",
+        "admin",
+    }
     assert specs["get_current_repo_run_context"].allowed_roles == {"coordinator", "admin"}
 
 

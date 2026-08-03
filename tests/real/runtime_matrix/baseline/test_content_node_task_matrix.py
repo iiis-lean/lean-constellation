@@ -118,6 +118,8 @@ def test_content_node_task_resource_dispatch_callback_branch(
                         "summary": "Dispatch content resource request.",
                         "target_kind": "web",
                         "target": ws.resources.web_url,
+                        "requested_use": "supporting_material",
+                        "consumer_need": "Deterministic web evidence for the content node.",
                         "context_summary": "Runtime Matrix content resource branch.",
                     },
                 ),

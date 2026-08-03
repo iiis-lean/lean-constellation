@@ -43,12 +43,20 @@ def test_nested_resource_input_rendering_shows_business_context() -> None:
     text = ResourceCurationInput(
         repo_key="Repo",
         target=ResourceTargetInput(kind="web", target="https://example.com/paper"),
-        caller_context=ResourceCallerContextInput(caller_kind="content_plan", node_path="Main.Core", purpose_hint="Need lemma source."),
+        caller_context=ResourceCallerContextInput(
+            caller_kind="content_plan",
+            node_path="Main.Core",
+            requested_use="supporting_material",
+            consumer_need="Need the cited lemma source.",
+            purpose_hint="Need lemma source.",
+        ),
     ).render_for_agent(_ctx())
 
     assert "Curate resource https://example.com/paper" in text
     assert "Caller Kind: content_plan" in text
     assert "Node Path: Main.Core" in text
+    assert "Requested Use: supporting_material" in text
+    assert "Consumer Need: Need the cited lemma source." in text
 
 
 def test_content_node_task_result_rendering_shows_terminal_outcome() -> None:

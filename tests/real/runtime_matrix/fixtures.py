@@ -319,6 +319,9 @@ class RuntimeMatrixWorkspace:
             target=prepared_target.value,
             draft_id=draft_id,
             summary="Runtime Matrix duplicate fixture resource.",
+            classification_reason="The fixture is supporting evidence owned by the current repository.",
+            resource_role="Provide deterministic duplicate-detection coverage.",
+            consumer_formalization_scope="The current repository retains all formal theorem ownership.",
         )
         assert promoted.ok and promoted.value is not None, promoted.issues
         assert promoted.value.resource_key is not None

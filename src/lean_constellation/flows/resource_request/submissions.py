@@ -28,6 +28,9 @@ class LocalResourceCreatedSubmission(LeanBaseSubmission):
     arxiv_version: str | None = None
     draft_id: str
     resource_key: str | None = None
+    classification_reason: str
+    resource_role: str
+    consumer_formalization_scope: str
 
 
 class ExternalRepoRequiredSubmission(LeanBaseSubmission):
@@ -37,8 +40,13 @@ class ExternalRepoRequiredSubmission(LeanBaseSubmission):
     arxiv_version: str | None = None
     reason: str
     source_description: str
+    classification_reason: str
+    relation_to_current_repo_or_node: str
+    consumer_need: str
+    provider_scope: str
     suggested_repo_name: str | None = None
     required_interfaces_hint: str | None = None
+    existing_lean_repo_signal: str | None = None
 
 
 class ResourceRejectedSubmission(LeanBaseSubmission):

@@ -208,7 +208,7 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Read current source and registered Resource truth first so existing material is not suggested again.",
                 "Search broadly with bounded metadata, then inspect only promising canonical candidates and use theorem search for precise statement-level evidence.",
                 "Record a canonical locator, source URLs, concrete mathematical relevance, expected support, reliability, and remaining risks for every recommended candidate.",
-                "Recommend request only when the target is precise and useful; otherwise use inspect_later or ignore.",
+                "Read `material-boundary-classification` before classifying each candidate. Recommend local_resource only for supporting material owned here; use provider_requirement for an independent formal theory boundary, inspect_later for unresolved ownership, or ignore.",
                 "Submit completed, no_useful_findings, or incomplete once, then stop.",
             ),
             (
@@ -217,6 +217,33 @@ SKILL_DEFINITIONS: dict[str, LeanSkillDefinition] = {
                 "Do not return full HTML, PDF, TeX, or unbounded abstracts.",
             ),
         ),
+    ),
+    SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION.value: LeanSkillDefinition(
+        name="material-boundary-classification",
+        description="Use when classifying a material target as local supporting material or an independent provider responsibility.",
+        group="resource",
+        source_design_doc="dev_docs/implementation/four_case_exploration_material_followups",
+        body="""# Material Boundary Classification
+
+Use this Skill before recommending, requesting, or closing out an external material target.
+
+## Classify Ownership
+
+Choose exactly one current handling:
+
+- local resource: supporting explanation, examples, data, background, or proof guidance whose mathematical formalization remains owned by the current repo;
+- provider requirement: a separately nameable and reusable theorem or theory package that should expose a small stable Lean API to this consumer;
+- inspect later: locator, scope, ownership, or Lean evidence is still insufficient;
+- ignore: duplicate, irrelevant, inaccessible, or unreliable for the current objective.
+
+Record the concrete consumer need and a classification reason. For a provider boundary, also state provider scope, minimal required interfaces, any existing-Lean signal, and whether focused Lean-provider discovery is warranted. For a local Resource, state its narrow resource role and what formalization responsibility remains in this repo.
+
+## Preserve One Canonical Owner
+
+Do not place an entire independent theory in a consumer Resource while also requesting a provider for the same responsibility. A narrow excerpt is allowed only for a genuinely different supporting use that is explained in the Resource README and does not reassign provider proof ownership.
+
+Classification is advisory evidence for the caller's next action, not permission to create a Resource or requirement from this Skill. Use only the role-appropriate submit or lifecycle Skill after classification is complete.
+""",
     ),
     SkillKey.REPO_LEAN_PROVIDER_DISCOVERY.value: LeanSkillDefinition(
         name="repo-lean-provider-discovery",
@@ -496,7 +523,7 @@ Do not treat search snippets as curated evidence, and do not request a broad res
         source_design_doc="dev_docs/design/agents/skill_bundles",
         body="""# Resource Request Submission
 
-Use this Skill after the caller has identified one precise paper, webpage, or local target that should remain supporting material rather than become an independent Lean repository.
+Use this Skill after the caller has identified one precise paper, webpage, or local target and has applied `material-boundary-classification`.
 
 ## Preflight
 
@@ -507,7 +534,7 @@ Use this Skill after the caller has identified one precise paper, webpage, or lo
 
 ## Submit
 
-Call `submit_resource_request` only when the target is explicit, narrow, trustworthy enough to curate, and accompanied by a concrete mathematical reason.
+Call `submit_resource_request` only when the target is explicit, narrow, trustworthy enough to inspect, and accompanied by requested use, a concrete consumer need, and a concise context summary. Use supporting material for a local-Resource candidate, formal dependency for a provider-shaped need that Curator must confirm, and unknown only when acquisition is necessary to resolve ownership.
 
 If the submit is rejected, read the returned issues, repair the target or reason within the same AgentStep, and repeat the preflight against current truth.
 
@@ -543,8 +570,8 @@ Call `get_material_context` first. Use `get_resource` when a returned Resource k
 Handle exactly the outcome that was returned:
 
 - For a duplicate, verify the existing source or Resource reference and use that stable reference when it supports the current work.
-- For a local Resource, verify the finalized Resource and record it through the caller's role-appropriate semantic material mutation when it belongs to the caller's contract.
-- For an external repository result, do not treat the target as a Resource. A Coordinator may return to its provider-dependency action; a node-scoped caller must carry the need to its own Coordinator-facing blocked or completion boundary.
+- For a local Resource, verify the finalized Resource, canonical entry, classification reason, resource role, and remaining consumer formalization scope. Record it through the caller's role-appropriate semantic material mutation only when that ownership matches current truth.
+- For an external repository result, verify its consumer need, provider scope, required-interface hint, current-repo relation, and existing-Lean signal. Do not treat the target as a Resource. A Coordinator may return to its provider-dependency action; a node-scoped caller must carry the need to its own Coordinator-facing blocked or completion boundary.
 - For a rejected result, record the reason as an unresolved direction when relevant, but never use the rejected target as evidence.
 
 Do not name caller-private material-write tools in this shared procedure. Apply only mutations authorized by the current role and Instruction.

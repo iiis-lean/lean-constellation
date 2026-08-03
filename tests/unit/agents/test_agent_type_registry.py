@@ -48,6 +48,7 @@ EXPECTED_AGENT_TYPES = {
 EXPECTED_COORDINATOR_SKILLS = [
     "coordinator-completion-policy",
     "coordinator-repo-exploration",
+    "material-boundary-classification",
     "coordinator-content-result-closeout",
     "resource-result-closeout",
     "coordinator-requirement-result-closeout",
@@ -240,6 +241,7 @@ def test_agent_skill_mapping_reuses_shared_skills() -> None:
     for agent_type in ("CoordinatorAgent", "ContentPlanAgent", "ResourceReconAgent"):
         assert "resource-request-submission" in mapping[agent_type]
         assert "resource-result-closeout" in mapping[agent_type]
+        assert "material-boundary-classification" in mapping[agent_type]
     for removed in (
         "coordinator-content-task-lifecycle",
         "coordinator-repo-requirement-lifecycle",

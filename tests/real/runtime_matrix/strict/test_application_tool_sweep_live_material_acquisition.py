@@ -140,6 +140,8 @@ def _start_resource_curation(ws: RuntimeMatrixWorkspace, *, target_kind: str, ta
                 "target_kind": target_kind,
                 "target": target,
                 "requested_by": "strict_live_material_acquisition",
+                "requested_use": "supporting_material",
+                "consumer_need": "Readable material for the strict live acquisition probe.",
                 "context_summary": "Strict live material acquisition active draft setup.",
                 "node_path": "Main.Core",
             },

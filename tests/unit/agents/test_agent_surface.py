@@ -13,15 +13,15 @@ EXPECTED_SURFACE_COUNTS = {
     "SourceIndexReviewerAgent": (5, 14, 1, 1, 0),
     "RootInterfacePrepareAgent": (7, 15, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
-    "ResourceCuratorAgent": (8, 24, 1, 4, 2),
-    "RepoResourceDiscoveryAgent": (9, 22, 1, 1, 1),
+    "ResourceCuratorAgent": (8, 24, 1, 4, 3),
+    "RepoResourceDiscoveryAgent": (9, 22, 1, 1, 2),
     "RepoLeanProviderDiscoveryAgent": (11, 26, 1, 1, 1),
     "RepoMathlibReconAgent": (9, 27, 1, 1, 4),
-    "CoordinatorAgent": (40, 92, 2, 7, 18),
-    "ContentPlanAgent": (34, 86, 3, 6, 16),
+    "CoordinatorAgent": (40, 92, 2, 7, 19),
+    "ContentPlanAgent": (34, 86, 3, 6, 17),
     "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
-    "ResourceReconAgent": (8, 22, 2, 3, 4),
+    "ResourceReconAgent": (8, 22, 2, 3, 5),
     "StatementNLWorkerAgent": (19, 51, 1, 2, 4),
     "StatementNLReviewerAgent": (18, 43, 1, 1, 2),
     "StatementFormalWorkerAgent": (24, 53, 1, 2, 7),
@@ -257,7 +257,7 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
 
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
-    assert len(report.skills) == 18
+    assert len(report.skills) == 19
     assert len(report.application_group_keys) == 40
     assert len(report.application_tools) == 92
     assert "read_visible_decl_lean_file" in tools

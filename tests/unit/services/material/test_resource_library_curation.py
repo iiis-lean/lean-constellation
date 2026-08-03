@@ -220,7 +220,13 @@ def test_resource_curation_local_file_and_external_decisions(tmp_path: Path) -> 
     )
     assert curated.ok
     assert curated.value is not None
-    result = service.resource_curation.build_curator_result(decision.value, resource=curated.value)
+    result = service.resource_curation.build_curator_result(
+        decision.value,
+        resource=curated.value,
+        classification_reason="This is supporting material.",
+        resource_role="Background reference.",
+        consumer_formalization_scope="The current repo owns the theorem proof.",
+    )
     assert result.ok
     assert result.value is not None
     assert result.value.kind == "local_resource_created"
@@ -377,7 +383,13 @@ def test_resource_curation_result_branches_and_curate_failure(tmp_path: Path) ->
     assert dir_target.ok and dir_target.value is not None
     external_decision = service.resource_curation.decide_local_or_external(target=dir_target.value, duplicate=None)
     assert external_decision.ok and external_decision.value is not None
-    external_result = service.resource_curation.build_curator_result(external_decision.value)
+    external_result = service.resource_curation.build_curator_result(
+        external_decision.value,
+        classification_reason="The directory is an independent formal project.",
+        relation_to_current_repo_or_node="The consumer imports its public theorem.",
+        consumer_need="A stable public theorem API.",
+        provider_scope="Own the directory's reusable formal theory.",
+    )
 
     duplicate_view = service.resource_library.find_duplicate_resource(tmp_path, target=target.value)
     assert duplicate_view.ok and duplicate_view.value is not None

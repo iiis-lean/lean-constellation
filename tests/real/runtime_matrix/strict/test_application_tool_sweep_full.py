@@ -1633,6 +1633,8 @@ def _start_resource_curation_for_tool_sweep(ws: RuntimeMatrixWorkspace, *, targe
                 "target_kind": target_kind,
                 "target": target,
                 "requested_by": "strict_tool_sweep",
+                "requested_use": "supporting_material",
+                "consumer_need": "Readable material for strict application-tool coverage.",
                 "context_summary": "Strict ToolSweep active resource draft setup.",
                 "node_path": "Main.Core",
             },

@@ -339,6 +339,9 @@ class ResourceCuratorAgentStep(AgentStep):
                 resource_key=resource_key,
                 resource_ref_summary=f"Resource {resource_key}",
                 locator_summary=f"{submission.target_kind}:{submission.target}",
+                classification_reason=submission.classification_reason,
+                resource_role=submission.resource_role,
+                consumer_formalization_scope=submission.consumer_formalization_scope,
             )
             return ResourceCuratorStepResult(
                 outcome="local_resource_created",
@@ -352,8 +355,13 @@ class ResourceCuratorAgentStep(AgentStep):
                 reason=submission.reason,
                 source_description=submission.source_description,
                 source_locator=f"{submission.target_kind}:{submission.target}",
+                classification_reason=submission.classification_reason,
+                relation_to_current_repo_or_node=submission.relation_to_current_repo_or_node,
+                consumer_need=submission.consumer_need,
+                provider_scope=submission.provider_scope,
                 suggested_repo_name=submission.suggested_repo_name,
                 required_interfaces_hint=submission.required_interfaces_hint,
+                existing_lean_repo_signal=submission.existing_lean_repo_signal,
             )
             return ResourceCuratorStepResult(
                 outcome="external_repo_required",
@@ -429,8 +437,8 @@ class CoordinatorAgentStep(AgentStep):
         ):
             guidance = (
                 "Required Skill re-entry for this turn: read and apply "
-                "$coordinator-repo-exploration first, then re-read the current Coordinator mode Skill. "
-                "Consume only this exploration batch. Preflight any resource candidate before requesting it; "
+                "$coordinator-repo-exploration and $material-boundary-classification first, then re-read the current Coordinator mode Skill. "
+                "Consume only this exploration batch. Honor or explicitly rebut each recommended material ownership; preflight any local-resource candidate before requesting it; "
                 "use a direct adapter requirement only for exact immutable verified Lean evidence; do not "
                 "repeat MathlibIndex writes already completed by recon. Submit exactly one next move."
             )
@@ -583,6 +591,8 @@ class ContentPlanAgentStep(AgentStep):
                     target_kind=submission.target_kind,
                     target=submission.target,
                     arxiv_version=submission.arxiv_version,
+                    requested_use=submission.requested_use,
+                    consumer_need=submission.consumer_need,
                     context_summary=submission.context_summary,
                     request_count=len(submission.requests),
                 ),
@@ -751,6 +761,8 @@ class ResourceReconAgentStep(AgentStep):
                     target_kind=submission.target_kind,
                     target=submission.target,
                     arxiv_version=submission.arxiv_version,
+                    requested_use=submission.requested_use,
+                    consumer_need=submission.consumer_need,
                     context_summary=submission.context_summary,
                     request_count=len(submission.requests),
                 ),

@@ -92,6 +92,8 @@ def test_coordinator_agent_step_dispatch_results(tmp_path: Path) -> None:
             repo_key="Repo",
             target_kind="arxiv",
             target="2501.12345",
+            requested_use="supporting_material",
+            consumer_need="Need the supporting theorem.",
             requests=[
                 build_resource_curation_request(
                     scope_id="repo:Repo",
@@ -99,6 +101,8 @@ def test_coordinator_agent_step_dispatch_results(tmp_path: Path) -> None:
                     repo_root=str(tmp_path / "Repo"),
                     target_kind="arxiv",
                     target="2501.12345",
+                    requested_use="supporting_material",
+                    consumer_need="Need the supporting theorem.",
                     requested_by="coordinator",
                 )
             ],

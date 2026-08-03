@@ -50,6 +50,13 @@ def instantiate_submission(cls, **overrides):
         "recon_kind": "mathlib",
         "objective": "Objective",
         "context_summary": "Context",
+        "requested_use": "supporting_material",
+        "consumer_need": "Need the cited supporting lemma.",
+        "classification_reason": "This is supporting material, not an independent formal package.",
+        "resource_role": "Background for the current proof.",
+        "consumer_formalization_scope": "The current repo still formalizes the target theorem.",
+        "relation_to_current_repo_or_node": "Supplies one dependency to Main.Core.",
+        "provider_scope": "Own and prove the reusable external theorem package.",
         "explorations": [
             {
                 "kind": "resource",

@@ -21,6 +21,8 @@ def build_resource_curation_request(
     target_kind: Literal["web", "arxiv", "local_file", "local_dir"],
     target: str,
     arxiv_version: str | None = None,
+    requested_use: Literal["supporting_material", "formal_dependency", "unknown"],
+    consumer_need: str,
     requested_by: str | None = None,
     context_summary: str | None = None,
     repo_key: str | None = None,
@@ -31,6 +33,8 @@ def build_resource_curation_request(
         "target_kind": target_kind,
         "target": target,
         "arxiv_version": arxiv_version,
+        "requested_use": requested_use,
+        "consumer_need": consumer_need,
         "requested_by": requested_by,
         "context_summary": context_summary,
     }
