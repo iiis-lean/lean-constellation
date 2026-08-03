@@ -8,6 +8,7 @@ from lean_constellation.services import LeanProviderOverrides, create_test_runti
 from lean_constellation.services.tool_facade import SubmitBehavior
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.tools import register_submit_tooling
+from tests.unit_services_helpers import valid_resource_readme
 from tests.unit.tools._submit_family_helpers import assert_submit_tools, submit_specs
 
 
@@ -217,7 +218,7 @@ def test_resource_curator_local_submit_validates_active_draft_without_finalizing
     draft = runtime.material.allocate_resource_draft(tmp_path, target=target.value, title_hint="Current")
     assert draft.ok and draft.value is not None, draft.issues
     draft_root = Path(draft.value.draft_root)
-    (draft_root / "README.md").write_text("# Current\n\nCurated resource.\n", encoding="utf-8")
+    (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
     (draft_root / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
     (draft_root / "normalized" / "main.md").write_text("normalized resource text\n", encoding="utf-8")
     runtime.ark.flow_service = FakeResourceFlowService(active_draft_id=draft.value.draft.draft_id)
@@ -256,7 +257,7 @@ def test_resource_curator_local_submit_gateway_missing_does_not_finalize_draft(t
     draft = runtime.material.allocate_resource_draft(tmp_path, target=target.value, title_hint="Current")
     assert draft.ok and draft.value is not None, draft.issues
     draft_root = Path(draft.value.draft_root)
-    (draft_root / "README.md").write_text("# Current\n\nCurated resource.\n", encoding="utf-8")
+    (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
     (draft_root / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
     (draft_root / "normalized" / "main.md").write_text("normalized resource text\n", encoding="utf-8")
     runtime.ark.flow_service = FakeResourceFlowService(active_draft_id=draft.value.draft.draft_id)

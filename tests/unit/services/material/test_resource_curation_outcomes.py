@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, valid_resource_readme
 
 from lean_constellation.services.material import ResourceDraftStatus, ResourceMetadataInput
 
 
 def _write_draft_files(draft_root: Path) -> None:
-    (draft_root / "README.md").write_text("# Curated resource\n\nReadable resource.", encoding="utf-8")
+    (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
     (draft_root / "original" / "raw.txt").write_text("raw\n", encoding="utf-8")
     (draft_root / "normalized" / "main.md").write_text("line one\nline two theorem\n", encoding="utf-8")
 

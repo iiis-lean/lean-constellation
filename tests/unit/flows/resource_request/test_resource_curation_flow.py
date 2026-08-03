@@ -11,7 +11,7 @@ from lean_constellation.flows.resource_request.submissions import (
     LocalResourceCreatedSubmission,
     ResourceDuplicateSubmission,
 )
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, valid_resource_readme
 
 
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
@@ -57,7 +57,12 @@ def _create_local_resource(lean_runtime, repo_root: Path, *, target_kind: str, t
     assert normalized_target.ok and normalized_target.value is not None
     draft = lean_runtime.material.allocate_resource_draft(repo_root, target=normalized_target.value)
     assert draft.ok and draft.value is not None
-    Path(draft.value.readme_path).write_text("Resource notes.\n", encoding="utf-8")
+    Path(draft.value.readme_path).write_text(
+        valid_resource_readme(
+            original_ref="Original unavailable: this fixture is normalized-only.",
+        ),
+        encoding="utf-8",
+    )
     Path(draft.value.normalized_dir, "main.md").write_text("Normalized theorem background.\n", encoding="utf-8")
     promoted = lean_runtime.material.resource_curation.submit_local_resource_created(
         repo_root,
@@ -74,7 +79,7 @@ def _create_local_resource(lean_runtime, repo_root: Path, *, target_kind: str, t
 
 
 def _write_draft_files(draft_root: Path) -> None:
-    (draft_root / "README.md").write_text("# Resource\n\nCurated resource notes.\n", encoding="utf-8")
+    (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
     (draft_root / "original" / "raw.txt").write_text("raw resource text\n", encoding="utf-8")
     (draft_root / "normalized" / "main.md").write_text("normalized resource text\n", encoding="utf-8")
 
@@ -169,6 +174,9 @@ def test_resource_curation_external_repo_required_result_does_not_create_resourc
     flow_id = _start_resource_flow(runtime, repo_root, target_kind="arxiv", target=target)
 
     _advance_and_run(runtime, flow_id)
+    allocated_flow = runtime.flow_service.get_flow(flow_id)
+    draft_id = allocated_flow.state.active_resource_draft_key
+    assert draft_id is not None
     runtime.agent_service.queue_submission(
         ExternalRepoRequiredSubmission(
             submission_id=new_submission_id("sub"),
@@ -196,3 +204,7 @@ def test_resource_curation_external_repo_required_result_does_not_create_resourc
     assert flow.result.external_repo is not None
     assert flow.result.external_repo.suggested_repo_name == "provider_paper"
     assert lean_runtime.material.resource_library.list_resources(repo_root).value == []
+    abandoned = lean_runtime.material.get_resource_draft(repo_root, draft_id=draft_id)
+    assert abandoned.ok and abandoned.value is not None
+    assert str(abandoned.value.draft.status) == "abandoned"
+    assert flow.state.active_resource_draft_key is None

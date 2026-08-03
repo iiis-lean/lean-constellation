@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from enum import StrEnum
 from pathlib import Path
@@ -58,11 +59,16 @@ class ResourceDraftStatus(StrEnum):
 
 
 class ResourceDraft(StrictModel):
+    schema_version: Literal[1] = 1
     draft_id: str
     status: ResourceDraftStatus = ResourceDraftStatus.ALLOCATED
     target: ResourceTarget
     resource_kind: str | None = None
     title_hint: str | None = None
+    requested_use: Literal["supporting_material", "formal_dependency", "unknown"] | None = None
+    consumer_need: str | None = None
+    caller_kind: str | None = None
+    purpose_hint: str | None = None
     allocated_at: str = Field(default_factory=utc_now_iso)
     checked_at: str | None = None
     finalized_at: str | None = None
@@ -229,6 +235,10 @@ class ResourceLibraryComponent:
         target: str | ResourceTarget | ResourceTargetView,
         resource_kind: str | None = None,
         title_hint: str | None = None,
+        requested_use: Literal["supporting_material", "formal_dependency", "unknown"] | None = None,
+        consumer_need: str | None = None,
+        caller_kind: str | None = None,
+        purpose_hint: str | None = None,
         allow_duplicate: bool = False,
     ) -> ServiceResult[ResourceDraftView]:
         normalized = self._coerce_target_model(target)
@@ -257,6 +267,10 @@ class ResourceLibraryComponent:
             target=normalized.value,
             resource_kind=resource_kind.strip() if resource_kind else normalized.value.kind,
             title_hint=title_hint.strip() if title_hint else None,
+            requested_use=requested_use,
+            consumer_need=consumer_need.strip() if consumer_need and consumer_need.strip() else None,
+            caller_kind=caller_kind.strip() if caller_kind and caller_kind.strip() else None,
+            purpose_hint=purpose_hint.strip() if purpose_hint and purpose_hint.strip() else None,
             summary=f"Allocated resource draft for {normalized.value.canonical_locator}.",
         )
         draft_root = drafts_root / draft.draft_id
@@ -702,6 +716,13 @@ class ResourceLibraryComponent:
         loaded = self.runtime.foundation.store.read_json(path, ResourceDraft)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
+        schema_issues = [
+            issue
+            for issue in loaded.issues
+            if issue.kind in {"schema_version_missing", "schema_version_mismatch"}
+        ]
+        if schema_issues:
+            return self.runtime.foundation.fail([self._as_schema_error(issue) for issue in schema_issues])
         return self.runtime.foundation.ok(loaded.value)
 
     def _draft_view(self, repo_root: Path, draft: ResourceDraft) -> ResourceDraftView:
@@ -731,6 +752,13 @@ class ResourceLibraryComponent:
         loaded = self.runtime.foundation.store.read_json(path, ResourceMaterialManifest)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
+        schema_issues = [
+            issue
+            for issue in loaded.issues
+            if issue.kind in {"schema_version_missing", "schema_version_mismatch"}
+        ]
+        if schema_issues:
+            return self.runtime.foundation.fail([self._as_schema_error(issue) for issue in schema_issues])
         return self.runtime.foundation.ok(loaded.value)
 
     def _refresh_material_manifest(
@@ -914,7 +942,7 @@ class ResourceLibraryComponent:
         return self.runtime.foundation.ok(manifest)
 
     def _draft_gate_issues(self, repo_root: Path, draft: ResourceDraft) -> list[ServiceIssue]:
-        issues = []
+        issues: list[ServiceIssue] = []
         draft_root = self._draft_root(repo_root, draft.draft_id)
         if draft.status == ResourceDraftStatus.FINALIZED:
             issues.append(
@@ -936,6 +964,24 @@ class ResourceLibraryComponent:
                 issues.append(self.runtime.foundation.issue("resource_draft_path_escape", str(exc), object_ref=str(path)))
             if path.is_symlink():
                 issues.append(self.runtime.foundation.issue("resource_draft_symlink_forbidden", "Resource draft must not contain symlinks.", object_ref=str(path)))
+            relative = path.relative_to(draft_root)
+            if self._is_forbidden_draft_artifact(relative):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "resource_draft_artifact_forbidden",
+                        "Resource drafts must not retain runtime, cache, credential, or interpreter artifacts.",
+                        object_ref=relative.as_posix(),
+                    )
+                )
+        if draft.requested_use == "formal_dependency":
+            issues.append(
+                self.runtime.foundation.issue(
+                    "resource_local_ownership_mismatch",
+                    "A formal dependency must use an external provider repository rather than a local Resource.",
+                    object_ref=draft.draft_id,
+                    field="requested_use",
+                )
+            )
         if not (draft_root / "README.md").is_file():
             issues.append(
                 self.runtime.foundation.issue(
@@ -969,6 +1015,16 @@ class ResourceLibraryComponent:
                     object_ref=manifest.value.canonical_normalized_entry,
                 )
             )
+        else:
+            canonical_text = canonical.read_text(encoding="utf-8")
+            if self._normalized_truth_is_contaminated(canonical_text):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "resource_normalized_truth_contaminated",
+                        "Canonical normalized material contains an agent-generated summary, formalization plan, or newly proposed proof marker.",
+                        object_ref=manifest.value.canonical_normalized_entry,
+                    )
+                )
         for item in manifest.value.files:
             path = draft_root / item.path
             if not path.is_file() or self._hash_file(path) != item.sha256:
@@ -989,7 +1045,133 @@ class ResourceLibraryComponent:
                         object_ref=item.path,
                     )
                 )
+        issues.extend(self._resource_readme_issues(draft_root, manifest.value))
         return issues
+
+    def _resource_readme_issues(
+        self,
+        draft_root: Path,
+        manifest: ResourceMaterialManifest,
+    ) -> list[ServiceIssue]:
+        readme_path = draft_root / "README.md"
+        validation = self.runtime.external.material.validate_readable_text(readme_path)
+        if not validation.ok:
+            return [
+                self.runtime.foundation.issue(
+                    validation.issue_code or "resource_draft_readme_unreadable",
+                    validation.summary,
+                    object_ref="README.md",
+                )
+            ]
+        text = readme_path.read_text(encoding="utf-8")
+        lower = text.lower()
+        requirements = {
+            "resource_readme_identity_missing": (
+                (r"\btitle\s*:", r"\bauthors?\s*:", r"\b(?:version|date)\s*:"),
+                "README must identify the title, author or authors, and version or date.",
+            ),
+            "resource_readme_provenance_missing": (
+                (r"\b(?:source|provenance)\b", r"\b(?:canonical locator|doi|arxiv|url)\s*:"),
+                "README must record source provenance and a canonical locator.",
+            ),
+            "resource_readme_access_missing": (
+                (r"\blicen[cs]e\b", r"\baccess\b"),
+                "README must record license and access conditions.",
+            ),
+            "resource_readme_material_map_missing": (
+                (r"\boriginal(?:/|\b)", r"\bnormalized(?:/|\b)"),
+                "README must map original and normalized material.",
+            ),
+            "resource_readme_reading_order_missing": (
+                (r"\breading order\b", re.escape(manifest.canonical_normalized_entry.lower())),
+                "README must give a reading order and name the canonical normalized entry.",
+            ),
+            "resource_readme_scope_missing": (
+                (r"\b(?:selected|included) scope\b", r"\bconsumer need\b"),
+                "README must state selected scope and the consumer need.",
+            ),
+            "resource_readme_limits_missing": (
+                (r"\b(?:extraction|ocr)\b", r"\bcorrections?\b", r"\blimits?\b"),
+                "README must state extraction or OCR limits and correction status.",
+            ),
+            "resource_readme_ownership_missing": (
+                (
+                    r"\bsupporting material\b",
+                    r"\b(?:consumer|current repo(?:sitory)?)\b.{0,100}\bformalization responsibility\b",
+                    r"\bnot (?:a )?provider\b",
+                ),
+                "README must preserve supporting-material ownership and the consumer's formalization responsibility.",
+            ),
+        }
+        issues: list[ServiceIssue] = []
+        for kind, (patterns, message) in requirements.items():
+            if not all(re.search(pattern, lower, flags=re.DOTALL) for pattern in patterns):
+                issues.append(self.runtime.foundation.issue(kind, message, object_ref="README.md"))
+
+        has_original = any(item.category == "original" for item in manifest.files)
+        original_missing_reason = re.search(
+            r"\boriginal\b.{0,160}\b(?:unavailable|missing|not available|not retained|not provided|access[- ]restricted)\b",
+            lower,
+            flags=re.DOTALL,
+        )
+        if not has_original and original_missing_reason is None:
+            issues.append(
+                self.runtime.foundation.issue(
+                    "resource_readme_original_missing_reason_required",
+                    "README must explain why no original artifact is retained.",
+                    object_ref="README.md",
+                )
+            )
+
+        correction_values = re.findall(
+            r"(?i)\bcorrections?\s*:\s*([^\n]+)",
+            lower,
+        )
+        no_correction_values = {"none", "no", "not required", "n/a"}
+        if any(value.rstrip(".").strip() not in no_correction_values for value in correction_values):
+            has_ledger = any(
+                item.category == "supplementary"
+                and re.search(r"(?:correction|ledger)", Path(item.path).name, flags=re.IGNORECASE)
+                for item in manifest.files
+            )
+            if not has_ledger:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "resource_correction_ledger_missing",
+                        "Declared corrections require a supplementary correction ledger.",
+                        object_ref="README.md",
+                    )
+                )
+        return issues
+
+    @staticmethod
+    def _is_forbidden_draft_artifact(relative: Path) -> bool:
+        forbidden_parts = {".git", ".agent_runtime", ".codex", ".cache", "__pycache__"}
+        if any(part in forbidden_parts for part in relative.parts):
+            return True
+        name = relative.name.lower()
+        return name == "auth.json" or name == ".env" or name.startswith(".env.") or relative.suffix.lower() == ".pyc"
+
+    @staticmethod
+    def _normalized_truth_is_contaminated(text: str) -> bool:
+        markers = (
+            r"(?im)^\s*#{0,3}\s*(?:agent[- ]generated|generated|condensed) summary\b",
+            r"(?im)^\s*#{0,3}\s*formalization plan\b",
+            r"(?im)^\s*#{0,3}\s*(?:proposed|new) proof\b",
+        )
+        return any(re.search(marker, text) for marker in markers)
+
+    def _as_schema_error(self, issue: ServiceIssue) -> ServiceIssue:
+        return self.runtime.foundation.issue(
+            issue.kind,
+            issue.message,
+            object_ref=issue.object_ref,
+            field=issue.field,
+            current=issue.current,
+            expected=issue.expected,
+            suggested_action=issue.suggested_action,
+            details=issue.details,
+        )
 
     @staticmethod
     def _canonical_url(value: str) -> str:

@@ -508,6 +508,10 @@ class MaterialService:
         target: str | ResourceTarget | ResourceTargetView,
         resource_kind: str | None = None,
         title_hint: str | None = None,
+        requested_use: Literal["supporting_material", "formal_dependency", "unknown"] | None = None,
+        consumer_need: str | None = None,
+        caller_kind: str | None = None,
+        purpose_hint: str | None = None,
         allow_duplicate: bool = False,
     ) -> ServiceResult[ResourceDraftView]:
         return self.resource_library.allocate_resource_draft(
@@ -515,6 +519,10 @@ class MaterialService:
             target=target,
             resource_kind=resource_kind,
             title_hint=title_hint,
+            requested_use=requested_use,
+            consumer_need=consumer_need,
+            caller_kind=caller_kind,
+            purpose_hint=purpose_hint,
             allow_duplicate=allow_duplicate,
         )
 

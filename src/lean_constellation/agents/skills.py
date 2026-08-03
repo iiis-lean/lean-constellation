@@ -245,6 +245,28 @@ Do not place an entire independent theory in a consumer Resource while also requ
 Classification is advisory evidence for the caller's next action, not permission to create a Resource or requirement from this Skill. Use only the role-appropriate submit or lifecycle Skill after classification is complete.
 """,
     ),
+    SkillKey.FAITHFUL_MATERIAL_PRESERVATION.value: LeanSkillDefinition(
+        name="faithful-material-preservation",
+        description="Use when converting acquired source or resource artifacts into durable readable material without changing their truth.",
+        group="resource",
+        source_design_doc="dev_docs/implementation/four_case_exploration_material_followups",
+        body="""# Faithful Material Preservation
+
+Use this Skill whenever acquired material is copied, extracted, normalized, or organized into durable SourceCorpus or Resource content.
+
+## Preserve Source Truth
+
+Keep the acquired original when access permits. Produce normalized text by mechanical decoding, extraction, line-ending cleanup, or faithful structural organization. Preserve the source's claims, hierarchy, notation, assumptions, attribution, and relevant surrounding context. A normalized entry is source truth for downstream range reads; it is not an agent summary, commentary, formalization plan, or newly proposed proof.
+
+When only a range, section, appendix, or selected file is retained, record the exact included scope and what was omitted. Never present a partial extraction as the complete work. Keep figures, tables, appendices, source archives, or other supporting artifacts under their declared logical locations when they materially affect interpretation.
+
+## Record Mechanical Intervention
+
+Record canonical provenance, version or date, license and access conditions, acquisition route, original-to-normalized mapping, reading order, extraction or OCR limits, and unreadable regions. If text is corrected beyond mechanical normalization, preserve the original wording and add a separate correction ledger that identifies every change and reason.
+
+Deterministic manifests and checks verify paths, bytes, readability, and required records. They do not certify mathematical fidelity. Before declaring material ready, compare the normalized entry against the retained original or canonical source and repair omissions, invented connective prose, or altered mathematical meaning.
+""",
+    ),
     SkillKey.REPO_LEAN_PROVIDER_DISCOVERY.value: LeanSkillDefinition(
         name="repo-lean-provider-discovery",
         description="Discover and verify existing Lean repositories that may serve as independent providers.",
@@ -478,9 +500,9 @@ Classification is advisory evidence for the caller's next action, not permission
                 "Acquire resource targets with `acquire_resource_material` or import local files with `import_resource_material`.",
                 "Extract readable text or project files with `extract_resource_artifact` when the artifact is a PDF, HTML page, TeX archive, or similar container.",
                 "Pass the acquisition kind and MIME returned by acquisition through to extraction; do not guess from the filename.",
-                "Normalize readable text with `normalize_resource_text_material` before draft checking.",
-                "Treat acquisition and extraction outputs as intermediate material; place canonical originals under `original/` and readable text under `normalized/`.",
-                "Maintain `README.md` with source, access notes, reading order, extraction limits, and why the local resource is useful.",
+                "Apply `faithful-material-preservation` before normalizing readable text with `normalize_resource_text_material`.",
+                "Treat acquisition and extraction outputs as intermediate material; place canonical originals under `original/`, faithful readable text under `normalized/`, and auxiliary material under `assets/` or `supplementary/`.",
+                "Maintain `README.md` with identity, provenance, license/access, material mapping, reading order, selected scope, consumer need, extraction limits, correction status, and ownership.",
                 "Use `refresh_resource_draft_manifest` only when multiple validated normalized outputs require an explicit canonical entry; ordinary successful extraction refreshes it automatically.",
             ),
             (
@@ -602,14 +624,16 @@ Then stop using this Skill and return to the caller's next-action loop in the sa
             "Use this skill for local Resource draft layout, README requirements, normalized text requirements, draft checks, and local_resource_created submit readiness.",
             (
                 "Inspect the current system-created resource draft with `get_resource_draft` before local resource work.",
-                "Place originals in `original/`, readable text in `normalized/`, and notes in predictable locations using resource acquisition tools.",
-                "Write README content that identifies source, license or access notes, extraction limits, and reading order.",
+                "Apply `faithful-material-preservation`; place originals in `original/`, faithful readable text in `normalized/`, and auxiliary files in `assets/` or `supplementary/`.",
+                "Write README content that identifies title, authors, version/date, source provenance and canonical locator, license/access, original-to-normalized mapping, canonical reading order, selected scope and consumer need, extraction/OCR limits, correction status, and supporting-material ownership.",
+                "If no original is retained, state the exact reason. If any correction is made, add a supplementary correction ledger.",
                 "Ensure the deterministic manifest names the intended canonical normalized entry; use `refresh_resource_draft_manifest` to resolve multiple readable outputs.",
                 "Run `check_resource_draft` and repair failures within your authority.",
                 "Call `submit_local_resource_created` only after the draft is coherent.",
             ),
             (
                 "Do not use this skill for duplicate, external-repo-required, or rejected outcomes.",
+                "Do not submit a local Resource when the request context says formal_dependency; choose external_repo_required.",
                 "Do not attach the resource to a content node from the curator role.",
             ),
         ),

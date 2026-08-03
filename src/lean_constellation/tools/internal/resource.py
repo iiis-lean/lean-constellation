@@ -51,9 +51,25 @@ class ResourceDraftAgentView(StrictModel):
     target: ResourceTarget
     resource_kind: str | None = None
     title_hint: str | None = None
+    requested_use: str | None = None
+    consumer_need: str | None = None
+    caller_kind: str | None = None
+    purpose_hint: str | None = None
     resource_key: str | None = None
     logical_files: list[str] = Field(
-        default_factory=lambda: ["README.md", "manifest.json", "original/", "normalized/", "assets/"]
+        default_factory=lambda: ["README.md", "manifest.json", "original/", "normalized/", "assets/", "supplementary/"]
+    )
+    readme_required_sections: list[str] = Field(
+        default_factory=lambda: [
+            "bibliographic identity",
+            "source provenance and canonical locator",
+            "license and access",
+            "original-to-normalized material map",
+            "canonical reading order",
+            "selected scope and consumer need",
+            "extraction/OCR limits and correction status",
+            "supporting-material ownership",
+        ]
     )
     summary: str
 
@@ -155,6 +171,10 @@ def _resource_draft_agent_view(value) -> ResourceDraftAgentView:
         target=draft.target,
         resource_kind=draft.resource_kind,
         title_hint=draft.title_hint,
+        requested_use=draft.requested_use,
+        consumer_need=draft.consumer_need,
+        caller_kind=draft.caller_kind,
+        purpose_hint=draft.purpose_hint,
         resource_key=draft.resource_key,
         summary=draft.summary,
     )
@@ -435,7 +455,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="normalize_resource_text_material",
-            description="Normalize a resource draft material reference into readable text for README summaries, resource notes, and downstream line-range reads.",
+            description="Mechanically normalize a resource draft material reference into faithful readable text for downstream line-range reads; never replace source truth with a summary, formalization plan, or new proof.",
             args_model=ResourceMaterialNormalizeArgs,
             capability=ToolCapability.WRITE,
             result_view="resource_extraction_handles",
@@ -498,7 +518,7 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="check_resource_draft",
-            description="Validate that a resource draft has coherent metadata, readable normalized material, and required README content before local-resource submit.",
+            description="Validate coherent metadata, faithful readable normalized material, provenance, scope, limitations, correction ledger, ownership, and required README content before local-resource submit.",
             args_model=DraftIdArgs,
             capability=ToolCapability.READ,
             backing_service="material",

@@ -189,6 +189,10 @@ class ResourceCurationPreflightStep(BaseStep):
             target=normalized,
             resource_kind=normalized.kind,
             title_hint=normalized.target,
+            requested_use=input_model.caller_context.requested_use,
+            consumer_need=input_model.caller_context.consumer_need,
+            caller_kind=input_model.caller_context.caller_kind,
+            purpose_hint=input_model.caller_context.purpose_hint,
             allow_duplicate=True,
         )
         if not draft.ok or draft.value is None:

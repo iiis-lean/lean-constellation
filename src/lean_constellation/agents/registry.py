@@ -676,6 +676,7 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         fragments=[*BLOCKED_FRAGMENTS, "resource.resource_library_context"],
         skills=[
             SkillKey.MATERIAL_BOUNDARY_CLASSIFICATION,
+            SkillKey.FAITHFUL_MATERIAL_PRESERVATION,
             SkillKey.RESOURCE_MATERIAL_ACQUISITION,
             SkillKey.RESOURCE_DRAFT_CURATION,
         ],

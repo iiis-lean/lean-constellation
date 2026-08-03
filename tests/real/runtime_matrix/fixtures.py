@@ -12,6 +12,7 @@ import pytest
 
 from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
 from tests.real.lean_test_config import write_test_lean_toolchain
+from tests.unit_services_helpers import valid_resource_readme
 
 from lean_constellation.app import LeanAdminApi, create_test_control_runtime_services
 from lean_constellation.domain.interface import DeclInterface, DeclKind
@@ -647,7 +648,10 @@ def _write_resource_fixture(resource_root: Path) -> ResourceFixture:
 
 
 def _write_resource_draft_files(draft_root: Path, text: str) -> None:
-    (draft_root / "README.md").write_text("# Runtime Matrix resource\n\nCreated by test fixture.\n", encoding="utf-8")
+    (draft_root / "README.md").write_text(
+        valid_resource_readme(title="Runtime Matrix resource"),
+        encoding="utf-8",
+    )
     (draft_root / "original" / "raw.txt").parent.mkdir(parents=True, exist_ok=True)
     (draft_root / "original" / "raw.txt").write_text(text, encoding="utf-8")
     (draft_root / "normalized" / "main.md").parent.mkdir(parents=True, exist_ok=True)

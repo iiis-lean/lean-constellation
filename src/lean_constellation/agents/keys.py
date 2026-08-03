@@ -16,6 +16,7 @@ class SkillKey(StrEnum):
     RESOURCE_REQUEST_SUBMISSION = "resource-request-submission"
     RESOURCE_RESULT_CLOSEOUT = "resource-result-closeout"
     MATERIAL_BOUNDARY_CLASSIFICATION = "material-boundary-classification"
+    FAITHFUL_MATERIAL_PRESERVATION = "faithful-material-preservation"
     RESOURCE_DRAFT_CURATION = "resource-draft-curation"
     COORDINATOR_REPO_EXPLORATION = "coordinator-repo-exploration"
     REPO_RESOURCE_DISCOVERY = "repo-resource-discovery"

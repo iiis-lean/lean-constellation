@@ -383,9 +383,10 @@ def _resource_curator_prompt(input_model: ResourceCurationInput, state: Resource
         f"Curate the explicit resource target {input_model.target.kind}: {input_model.target.target}.",
         f"Caller kind: {input_model.caller_context.caller_kind}.",
         "Read and apply $material-boundary-classification before choosing a terminal ownership outcome.",
+        "For local curation, read and apply $faithful-material-preservation and $resource-draft-curation.",
         "Current working directory: the active resource draft.",
         "Allowed write boundary: this directory and its descendants.",
-        "Logical files: README.md, original/, normalized/.",
+        "Logical files: README.md, original/, normalized/, assets/, supplementary/; manifest.json is service-generated.",
     ]
     if input_model.caller_context.node_path:
         parts.append(f"Caller node: {input_model.caller_context.node_path}.")

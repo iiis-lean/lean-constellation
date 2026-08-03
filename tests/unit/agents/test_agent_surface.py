@@ -13,7 +13,7 @@ EXPECTED_SURFACE_COUNTS = {
     "SourceIndexReviewerAgent": (5, 14, 1, 1, 0),
     "RootInterfacePrepareAgent": (7, 15, 1, 1, 0),
     "AdapterDeclCatalogAgent": (12, 39, 1, 2, 0),
-    "ResourceCuratorAgent": (8, 25, 1, 4, 3),
+    "ResourceCuratorAgent": (8, 25, 1, 4, 4),
     "RepoResourceDiscoveryAgent": (9, 22, 1, 1, 2),
     "RepoLeanProviderDiscoveryAgent": (11, 26, 1, 1, 1),
     "RepoMathlibReconAgent": (9, 27, 1, 1, 4),

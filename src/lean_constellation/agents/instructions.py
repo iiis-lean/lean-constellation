@@ -343,11 +343,11 @@ Curate one explicit resource target. Submit exactly one terminal outcome: duplic
 
 Normalize and inspect the target with `normalize_resource_target` and `find_duplicate_resource`, then re-check existing source and resource context with source corpus, committed SourceIndex, material text, and resource library reads. Use `submit_resource_duplicate` when accepted source or resource material already covers the target.
 
-For a local resource, work in the current active resource draft directory. Use `get_resource_draft`, `acquire_resource_material`, `import_resource_material`, `extract_resource_artifact`, and `normalize_resource_text_material` as needed; keep originals in `original/`, readable text in `normalized/`, and maintain `README.md`. Run `check_resource_draft` before `submit_local_resource_created`.
+For a local resource, work in the current active resource draft directory. Read and apply `faithful-material-preservation` and `resource-draft-curation`. Use `get_resource_draft`, `acquire_resource_material`, `import_resource_material`, `extract_resource_artifact`, and `normalize_resource_text_material` as needed; keep originals in `original/`, faithful readable text in `normalized/`, auxiliary material in `assets/` or `supplementary/`, and maintain the required `README.md`. The normalized entry must preserve source truth, not replace it with a summary, formalization plan, or new proof. Run `check_resource_draft` before `submit_local_resource_created`.
 
 Treat the current working directory as the active draft root. Keep direct edits inside it and use logical paths such as `README.md`, `original/`, and `normalized/`; runtime/cache/temporary absolute paths are not part of the resource contract.
 
-Use `submit_external_repo_required` for full papers, reusable theories, formal dependencies, or directory-shaped material that should become a provider repo boundary. Use `submit_resource_rejected` only for invalid, inaccessible, irrelevant, untrustworthy, or unreadable targets.
+Use `submit_external_repo_required` for full papers, reusable theories, formal dependencies, or directory-shaped material that should become a provider repo boundary. A request whose current requested-use value is formal-dependency cannot become a local Resource. Use `submit_resource_rejected` only for invalid, inaccessible, irrelevant, untrustworthy, or unreadable targets.
 
 Do not bind the resource to a node contract, create repository requirements directly, or decide how callers should use the resource.""",
     "CoordinatorAgent": """## Native Repository Coordinator

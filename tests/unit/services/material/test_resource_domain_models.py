@@ -1,13 +1,13 @@
 import json
 from pathlib import Path
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, valid_resource_readme
 
 from lean_constellation.services.material import ResourceMetadata, ResourceMetadataInput, ResourceTargetView
 
 
 def _write_valid_draft_files(draft_root: Path, *, text: str = "alpha\nbeta theorem\n") -> None:
-    (draft_root / "README.md").write_text("# Draft resource\n\nCurated material.", encoding="utf-8")
+    (draft_root / "README.md").write_text(valid_resource_readme(), encoding="utf-8")
     (draft_root / "original" / "raw.txt").write_text("raw material\n", encoding="utf-8")
     (draft_root / "normalized" / "main.md").write_text(text, encoding="utf-8")
 

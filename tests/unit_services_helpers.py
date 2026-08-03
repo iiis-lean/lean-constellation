@@ -397,3 +397,48 @@ def make_runtime(
         native_lake_project_config=native_lake_project_config,
         workspace_config=workspace_config,
     )
+
+
+def valid_resource_readme(
+    *,
+    canonical_entry: str = "normalized/main.md",
+    original_ref: str = "original/raw.txt",
+    title: str = "Curated resource fixture",
+) -> str:
+    """Return a complete current-schema Resource README fixture."""
+
+    return f"""# {title}
+
+Title: {title}
+Authors: Fixture Author
+Version/date: 2026-08-03
+
+## Source provenance
+
+Canonical locator: https://example.com/resource-fixture
+Source: deterministic test fixture.
+
+## License and access
+
+License: test fixture terms. Access: local and unrestricted.
+
+## Material map
+
+`{original_ref}` maps to `{canonical_entry}`.
+
+## Reading order
+
+Read `{canonical_entry}` first; it is the canonical normalized entry.
+
+## Selected scope and consumer need
+
+Selected scope: the complete fixture text. Consumer need: deterministic supporting evidence.
+
+## Extraction limits and corrections
+
+Extraction limits: none. Corrections: none.
+
+## Ownership
+
+Supporting material only. The current repository retains formalization responsibility; this is not a provider.
+"""

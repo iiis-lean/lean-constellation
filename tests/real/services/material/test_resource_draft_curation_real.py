@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import make_runtime, valid_resource_readme
 
 from lean_constellation.services.material import ResourceDraftStatus
 
@@ -38,7 +38,10 @@ def test_material_resource_draft_curation_real_lifecycle(tmp_path: Path) -> None
     assert draft.value.draft.status == ResourceDraftStatus.ALLOCATED
 
     (draft_root / "README.md").write_text(
-        "# Draft curation fixture\n\nCurated from a local markdown source.\n",
+        valid_resource_readme(
+            original_ref="original/draft-source.md",
+            title="Draft curation fixture",
+        ),
         encoding="utf-8",
     )
     (draft_root / "original" / "draft-source.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
@@ -101,7 +104,13 @@ def test_material_resource_curation_submit_outcomes_real_local_and_duplicate(tmp
     )
     assert draft.ok and draft.value is not None
     draft_root = Path(draft.value.draft_root)
-    (draft_root / "README.md").write_text("# Outcome resource\n\nCreated through submit gate.\n", encoding="utf-8")
+    (draft_root / "README.md").write_text(
+        valid_resource_readme(
+            original_ref="original/outcome-source.md",
+            title="Outcome resource",
+        ),
+        encoding="utf-8",
+    )
     (draft_root / "original" / "outcome-source.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
     (draft_root / "normalized" / "main.md").write_text(local_source.read_text(encoding="utf-8"), encoding="utf-8")
 

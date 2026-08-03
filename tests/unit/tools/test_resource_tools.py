@@ -132,6 +132,32 @@ def test_resource_acquisition_requires_active_resource_draft(tmp_path: Path) -> 
     assert result.value.issues[0].kind == "resource_active_draft_missing"
 
 
+def test_resource_draft_view_exposes_request_context_and_readme_contract(tmp_path: Path) -> None:
+    runtime = create_test_runtime_services(register_application_tools=True)
+    draft = runtime.material.allocate_resource_draft(
+        tmp_path,
+        target="https://example.com/context",
+        requested_use="supporting_material",
+        consumer_need="Need a faithful selected section.",
+        caller_kind="content_plan",
+        purpose_hint="Resolve one proof-background question.",
+    )
+    assert draft.ok and draft.value is not None
+
+    loaded = runtime.tool_facade.invoke_agent_tool(
+        _resource_raw(tmp_path),
+        tool_name="get_resource_draft",
+        flat_args={"draft_id": draft.value.draft.draft_id},
+    )
+
+    assert loaded.ok and loaded.value is not None and loaded.value.ok
+    assert loaded.value.value["requested_use"] == "supporting_material"
+    assert loaded.value.value["consumer_need"] == "Need a faithful selected section."
+    assert loaded.value.value["caller_kind"] == "content_plan"
+    assert "supplementary/" in loaded.value.value["logical_files"]
+    assert "supporting-material ownership" in loaded.value.value["readme_required_sections"]
+
+
 def test_resource_acquisition_writes_active_draft_not_source_corpus(tmp_path: Path) -> None:
     runtime = create_test_runtime_services(register_application_tools=True)
     target = runtime.material.normalize_resource_target("https://example.com/resource")
