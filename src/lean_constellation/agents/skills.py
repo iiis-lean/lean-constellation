@@ -454,7 +454,7 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
                 "Preserve historical public export chains as compatible anchors; append new exports without silently replacing a released boundary.",
                 "Choose exports that belong to the scope public view and write them with `add_scope_export` or `remove_scope_export`.",
                 "Inspect the Scope or repository formal Statement closure. Every current-repository declaration required to state a selected public root must be public and exported through each enclosing Scope.",
-                "Use `promote_content_decl_public` for one reviewed Content declaration or `promote_public_statement_closure` for an add-only Content/Scope closure repair. Do not promote proof-only helpers automatically.",
+                "Use `revise_content_decl_visibility` with the observed visibility and an audit reason for one reviewed Content declaration, or `promote_public_statement_closure` for an add-only Content/Scope closure repair. Before making a declaration private, remove or revise every interface, Scope/Main export, public Statement consumer, contract dependency, and stable Release boundary that still requires it. Proof-only helpers may remain private.",
                 "Bind interfaces only to declarations that satisfy their meaning with `bind_node_interface`.",
                 "Use `get_scope_close_view` to confirm exports, interface bindings, child readiness, and projection/readiness checks are stable before commit.",
             ),
@@ -1466,11 +1466,11 @@ Proof-only dependencies and local proof helpers remain private unless they are i
 
 1. Read current public declarations and call `inspect_current_node_public_statement_closure`.
 2. Inspect each reported private formal Statement prerequisite.
-3. If one already-ready declaration was intentionally selected as public API, call `promote_current_decl_public`.
+3. If one already-ready declaration needs a deliberate visibility change, call `revise_current_decl_visibility` with the visibility you just observed, the requested visibility, and a concrete reason.
 4. For a complete add-only local repair, call `promote_current_node_public_statement_closure`.
 5. Reinspect before the Content completion gate.
 
-Visibility promotion changes no declaration code, revision, proof, or contract dependency. It cannot repair unfinished work.
+Visibility revision changes no declaration code, Decl revision, proof, round, or contract dependency. Making a declaration private is allowed only after deterministic gates confirm that no interface, Scope/Main export, public Statement consumer, contract dependency, or stable Release boundary still requires it. A proof-only helper can be made private when no other boundary requires it. This operation cannot repair unfinished work and never silently removes exports or bindings.
 
 ## Boundary
 
@@ -1511,7 +1511,7 @@ This is ContentPlan closeout work. Do not treat an unbound current-node interfac
 
 Before the readiness gate, call `inspect_current_node_public_statement_closure`. Every public declaration must expose every same-node declaration named by its formal Statement dependencies. Proof-only dependencies remain private unless independently selected as stable API.
 
-Use `promote_current_decl_public` for one reviewed declaration or `promote_current_node_public_statement_closure` for a complete add-only local repair. If another node's required declaration is not already public through its boundary, report a precise Coordinator blocker instead of expanding authority.
+Use `revise_current_decl_visibility` with the visibility you just observed and a concrete reason for one reviewed declaration, or `promote_current_node_public_statement_closure` for a complete add-only local repair. A visibility revision creates no Decl round or revision and never silently removes an interface or export. If another node's required declaration is not already public through its boundary, report a precise Coordinator blocker instead of expanding authority.
 
 ## Interface Semantic Fit
 

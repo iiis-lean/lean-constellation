@@ -901,8 +901,26 @@ class PublicStatementBoundaryArgs(StrictModel):
         return self
 
 
-class NodeDeclPromotionArgs(NodePathArgs):
+class CurrentDeclVisibilityRevisionArgs(StrictModel):
+    decl_name: str = Field(description="Declaration name in the current Content node.")
+    expected_current_visibility: Literal["public", "private"] = Field(
+        description="Compare-and-swap expectation for the declaration's current visibility."
+    )
+    new_visibility: Literal["public", "private"] = Field(
+        description="Requested declaration visibility."
+    )
+    reason: str = Field(min_length=1, description="Concrete audit reason for this visibility revision.")
+
+
+class NodeDeclVisibilityRevisionArgs(NodePathArgs):
     decl_name: str = Field(description="Declaration name in the selected current-repository Content node.")
+    expected_current_visibility: Literal["public", "private"] = Field(
+        description="Compare-and-swap expectation for the declaration's current visibility."
+    )
+    new_visibility: Literal["public", "private"] = Field(
+        description="Requested declaration visibility."
+    )
+    reason: str = Field(min_length=1, description="Concrete audit reason for this visibility revision.")
 
 
 class DeclReadyArgs(DeclNameArgs):

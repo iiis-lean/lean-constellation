@@ -43,8 +43,8 @@ EXPECTED_APPLICATION_SURFACE_HASHES = {
     "RepoResourceDiscoveryAgent": "584c9be44a4d3a2961e637051397256a5981b852ff6d040a275492f01bdd7b2b",
     "RepoLeanProviderDiscoveryAgent": "6b96a0a54252dbf0b96206840c36ae53d949bddc773de6d41213d90c7bce86ef",
     "RepoMathlibReconAgent": "a1d340246bf1f84b698a235569af62f913d3f2229f81f09859dab90151515e39",
-    "CoordinatorAgent": "d5cfc301d6f7e722907be382f033e777c46a5847f1545c04b9105372bfa872b6",
-    "ContentPlanAgent": "722a4a93cdb04fe40d753dfb1c6f0a13b20744594ded9759adada64cdacd1663",
+    "CoordinatorAgent": "eaeb814ee0d2180de452e8b0783d6c3437556714a2d3f930341d891c839d004c",
+    "ContentPlanAgent": "64d118d8cea0a9e90e1fc970d028510f5ebd8409ff02f59f8b2ac600ca04af4b",
     "NodeDirDependencyReconAgent": "78424e9c83a6d31e464f5bcfaa583279a967ed718f7783ed820bd5ea5419709c",
     "MathlibReconAgent": "2106d09b06fa7140322909262cdb5a533b4ba881b13bb74ee1932e714a000220",
     "ResourceReconAgent": "02a24ca89792c62f0048e410363e3cbe50f3adb1e07c1ba853dbdacb50ed97b8",
@@ -462,7 +462,7 @@ def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
         "list_node_public_decls",
         "inspect_node_public_decl",
         "inspect_public_statement_closure",
-        "promote_content_decl_public",
+        "revise_content_decl_visibility",
         "promote_public_statement_closure",
     } <= coordinator_tools
     assert "list_current_node_public_decls" not in coordinator_tools
@@ -471,11 +471,11 @@ def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
     assert "bind_current_node_interface" in content_plan_tools
     assert {
         "inspect_current_node_public_statement_closure",
-        "promote_current_decl_public",
+        "revise_current_decl_visibility",
         "promote_current_node_public_statement_closure",
     } <= content_plan_tools
     assert {
-        "promote_content_decl_public",
+        "revise_content_decl_visibility",
         "promote_public_statement_closure",
     }.isdisjoint(content_plan_tools)
     assert "bind_node_interface" not in content_plan_tools
@@ -486,9 +486,9 @@ def test_coordinator_surface_uses_path_based_read_and_write_tools() -> None:
         if agent_type in {"CoordinatorAgent", "ContentPlanAgent"}:
             continue
         assert {
-            "promote_content_decl_public",
+            "revise_content_decl_visibility",
             "promote_public_statement_closure",
-            "promote_current_decl_public",
+            "revise_current_decl_visibility",
             "promote_current_node_public_statement_closure",
         }.isdisjoint({tool.name for tool in report.application_tools})
 

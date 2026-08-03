@@ -4,7 +4,11 @@ import pytest
 from pydantic import ValidationError
 
 from lean_constellation.tools import build_application_tool_specs
-from lean_constellation.tools.args import DeclUpdateArgs
+from lean_constellation.tools.args import (
+    CurrentDeclVisibilityRevisionArgs,
+    DeclUpdateArgs,
+    NodeDeclVisibilityRevisionArgs,
+)
 
 from tests.unit.tools._family_helpers import assert_group_contains, assert_tools_registered
 
@@ -162,3 +166,53 @@ def test_cross_node_decl_tool_descriptions_are_actor_neutral() -> None:
     }
 
     assert {name: specs[name].description for name in expected} == expected
+
+
+def test_visibility_revision_tools_replace_single_promotion_tools() -> None:
+    specs = {spec.name: spec for spec in build_application_tool_specs()}
+
+    assert "revise_current_decl_visibility" in specs
+    assert "revise_content_decl_visibility" in specs
+    assert "promote_current_decl_public" not in specs
+    assert "promote_content_decl_public" not in specs
+    assert "promote_current_node_public_statement_closure" in specs
+    assert "promote_public_statement_closure" in specs
+    for name in ("revise_current_decl_visibility", "revise_content_decl_visibility"):
+        assert "Compare-and-swap" in specs[name].description
+        assert "audit reason" in specs[name].description
+        assert "never removed" in specs[name].description
+        assert "automatically" in specs[name].description
+        assert specs[name].result_view == "decl_visibility_revision_receipt"
+
+
+def test_visibility_revision_args_require_cas_and_reason() -> None:
+    current = CurrentDeclVisibilityRevisionArgs.model_validate(
+        {
+            "decl_name": "helper",
+            "expected_current_visibility": "public",
+            "new_visibility": "private",
+            "reason": "Proof-only helper.",
+        }
+    )
+    selected = NodeDeclVisibilityRevisionArgs.model_validate(
+        {**current.model_dump(), "node_path": "Main.Topic.Core"}
+    )
+
+    assert selected.node_path == "Main.Topic.Core"
+    with pytest.raises(ValidationError):
+        CurrentDeclVisibilityRevisionArgs.model_validate(
+            {
+                "decl_name": "helper",
+                "expected_current_visibility": "public",
+                "new_visibility": "private",
+            }
+        )
+    with pytest.raises(ValidationError):
+        CurrentDeclVisibilityRevisionArgs.model_validate(
+            {
+                "decl_name": "helper",
+                "expected_current_visibility": "stale",
+                "new_visibility": "private",
+                "reason": "Invalid CAS.",
+            }
+        )

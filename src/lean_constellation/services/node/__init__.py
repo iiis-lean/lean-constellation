@@ -76,6 +76,7 @@ from lean_constellation.services.node.public_decl_access import (
     VisibleNodeAccessView,
 )
 from lean_constellation.services.node.public_statement_closure import (
+    DeclVisibilityRevisionReceipt,
     PublicStatementClosureBoundary,
     PublicStatementClosureComponent,
     PublicStatementClosureDecl,
@@ -103,6 +104,7 @@ __all__ = [
     "ContentTaskFinalizeInput",
     "ContentTaskFinalizeView",
     "ContentTaskOutcome",
+    "DeclVisibilityRevisionReceipt",
     "ContentTaskReadyGateProvider",
     "ContentTaskResultView",
     "CurrentNodeContractView",

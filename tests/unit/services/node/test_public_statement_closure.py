@@ -469,3 +469,314 @@ def test_node_closure_promotion_rolls_back_on_projection_failure(
     )
     assert restored.ok and restored.value is not None
     assert restored.value.public is False
+
+
+def test_visibility_revision_promotes_and_replays_without_new_revision(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Helper", public=False)
+    runtime = make_runtime()
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Helper",
+        expected_current_visibility="private",
+        new_visibility="public",
+        reason="Expose the reusable construction.",
+    )
+    replay = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Helper",
+        expected_current_visibility="public",
+        new_visibility="public",
+        reason="Confirm the reviewed public boundary.",
+    )
+
+    assert revised.ok and revised.value is not None
+    assert revised.value.changed is True
+    assert revised.value.old_visibility == "private"
+    assert revised.value.new_visibility == "public"
+    assert revised.value.gate_reports[0].passed is True
+    assert replay.ok and replay.value is not None
+    assert replay.value.changed is False
+    decl = runtime.decl_graph.get_decl(tmp_path, node_path=NODE_PATH, name="Helper")
+    assert decl.ok and decl.value is not None
+    assert decl.value.public is True
+    assert decl.value.current_revision == 1
+
+
+def test_visibility_revision_demotes_proof_only_helper(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="ProofHelper", public=True)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="PublicResult",
+        public=True,
+        proof_deps=["ProofHelper"],
+    )
+    runtime = make_runtime()
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="ProofHelper",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="The declaration is used only by a proof implementation.",
+    )
+
+    assert revised.ok and revised.value is not None
+    assert revised.value.changed is True
+    assert revised.value.gate_reports[0].passed is True
+    decl = runtime.decl_graph.get_decl(tmp_path, node_path=NODE_PATH, name="ProofHelper")
+    assert decl.ok and decl.value is not None and decl.value.public is False
+    assert decl.value.current_revision == 1
+
+
+def test_visibility_revision_rejects_stale_cas_without_mutation(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Helper", public=True)
+    runtime = make_runtime()
+    path = runtime.decl_graph.graph_store.decl_record_path(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Helper",
+    )
+    before = path.read_bytes()
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Helper",
+        expected_current_visibility="private",
+        new_visibility="public",
+        reason="Based on a stale inspection.",
+    )
+
+    assert not revised.ok
+    assert [issue.kind for issue in revised.issues] == ["decl_visibility_cas_mismatch"]
+    assert path.read_bytes() == before
+
+
+def test_visibility_revision_rejects_interface_binding(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="PublicResult", public=True)
+    runtime = make_runtime()
+    assert runtime.node.interface.add_interface(
+        tmp_path,
+        node_path=NODE_PATH,
+        name="public_result",
+        kind="definition",
+        summary="Expose the public result.",
+        actor="coordinator",
+    ).ok
+    assert runtime.node.interface.bind_interface_to_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        interface_name="public_result",
+        decl_name="PublicResult",
+    ).ok
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="PublicResult",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="Incorrectly classify an interface output as private.",
+    )
+
+    assert not revised.ok
+    assert "decl_visibility_interface_required" in {issue.kind for issue in revised.issues}
+
+
+def test_visibility_revision_rejects_scope_and_main_exports(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="PublicResult", public=True)
+    runtime = make_runtime()
+    assert runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node=NODE_PATH,
+        decl_name="PublicResult",
+    ).ok
+
+    scope_revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="PublicResult",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="Attempt to bypass the Scope export boundary.",
+    )
+    assert not scope_revised.ok
+    assert "decl_visibility_scope_export_required" in {
+        issue.kind for issue in scope_revised.issues
+    }
+
+    assert runtime.node.export.add_scope_export(
+        tmp_path,
+        scope_path="Main",
+        decl_node=NODE_PATH,
+        decl_name="PublicResult",
+    ).ok
+    main_revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="PublicResult",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="Attempt to bypass the Main API.",
+    )
+    assert not main_revised.ok
+    assert "decl_visibility_main_api_required" in {
+        issue.kind for issue in main_revised.issues
+    }
+
+
+def test_visibility_revision_rejects_public_statement_consumer(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Support", public=True)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="PublicResult",
+        public=True,
+        statement_deps=["Support"],
+    )
+    runtime = make_runtime()
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Support",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="Attempt to hide a public Statement prerequisite.",
+    )
+
+    assert not revised.ok
+    assert "decl_visibility_public_statement_required" in {
+        issue.kind for issue in revised.issues
+    }
+
+
+def test_visibility_revision_rejects_release_protected_decl(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="ReleasedResult", public=True)
+    runtime = make_runtime()
+    monkeypatch.setattr(
+        runtime.repo_workspace.release,
+        "get_decl_release_status",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            type("ReleaseStatus", (), {"release_protected": True})()
+        ),
+    )
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="ReleasedResult",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="Attempt to rewrite a stable Release boundary.",
+    )
+
+    assert not revised.ok
+    assert "decl_visibility_release_protected" in {
+        issue.kind for issue in revised.issues
+    }
+
+
+def test_visibility_revision_rolls_back_incomplete_promotion(
+    tmp_path: Path,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="PrivateSupport", public=False)
+    _seed_definition(
+        tmp_path,
+        round_id=round_id,
+        name="CandidateRoot",
+        public=False,
+        statement_deps=["PrivateSupport"],
+    )
+    runtime = make_runtime()
+
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="CandidateRoot",
+        expected_current_visibility="private",
+        new_visibility="public",
+        reason="Try the single-declaration path instead of closure repair.",
+    )
+
+    assert not revised.ok
+    assert "public_statement_decl_not_public" in {issue.kind for issue in revised.issues}
+    restored = runtime.decl_graph.get_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        name="CandidateRoot",
+    )
+    assert restored.ok and restored.value is not None
+    assert restored.value.public is False
+
+
+def test_visibility_demotion_rolls_back_on_projection_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    round_id = _prepare_repo(tmp_path)
+    _seed_definition(tmp_path, round_id=round_id, name="Helper", public=True)
+    runtime = make_runtime()
+
+    def fail_refresh(*_args, **_kwargs):
+        return ServiceResult(
+            ok=False,
+            issues=[
+                runtime.foundation.issue(
+                    "test_projection_failure",
+                    "Injected projection failure.",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        runtime.lean_projection.node_projection,
+        "refresh_interfaces",
+        fail_refresh,
+    )
+    revised = runtime.node.public_statement_closure.revise_content_decl_visibility(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name="Helper",
+        expected_current_visibility="public",
+        new_visibility="private",
+        reason="Demote an internal helper.",
+    )
+
+    assert not revised.ok
+    restored = runtime.decl_graph.get_decl(
+        tmp_path,
+        node_path=NODE_PATH,
+        name="Helper",
+    )
+    assert restored.ok and restored.value is not None
+    assert restored.value.public is True

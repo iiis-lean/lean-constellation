@@ -194,6 +194,9 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "Never omit a known dependency to make validation pass" in text
     assert "check_current_content_node_completion" in text
     assert "bind_current_node_interface" in text
+    assert "visibility just observed" in text
+    assert "creates a Decl round or revision" in text
+    assert "never silently removes" in text
     assert "Interface binding is part of ContentPlan closeout" in text
     assert "submit_content_node_ready" in text
     assert "Do not replace NodeDirDependencyReconFlow, MathlibReconFlow, or ResourceReconFlow" in text

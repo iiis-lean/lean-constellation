@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
@@ -71,6 +71,18 @@ class PublicStatementPromotionReceipt(StrictModel):
     promoted_declarations: list[DeclRef] = Field(default_factory=list)
     added_exports: dict[str, list[DeclRef]] = Field(default_factory=dict)
     report: PublicStatementClosureReport
+    summary: str
+
+
+class DeclVisibilityRevisionReceipt(StrictModel):
+    node_path: str
+    decl_name: str
+    old_visibility: Literal["public", "private"]
+    new_visibility: Literal["public", "private"]
+    reason: str
+    changed: bool
+    refreshed_objects: list[str] = Field(default_factory=list)
+    gate_reports: list[GateReport] = Field(default_factory=list)
     summary: str
 
 
@@ -250,13 +262,233 @@ class PublicStatementClosureComponent:
             node_path=node_path,
             promoted=selected,
             export_additions={},
-            allow_incomplete=True,
             reinspect=lambda: self.inspect_content(
                 Path(repo_root),
                 node_path=node_path,
-                root_decl_names=[decl_name],
             ),
         )
+
+    def revise_content_decl_visibility(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+        expected_current_visibility: Literal["public", "private"],
+        new_visibility: Literal["public", "private"],
+        reason: str,
+    ) -> ServiceResult[DeclVisibilityRevisionReceipt]:
+        repo_root = Path(repo_root)
+        if expected_current_visibility not in {"public", "private"} or new_visibility not in {"public", "private"}:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_visibility_invalid",
+                    "Declaration visibility must be public or private.",
+                    object_ref=f"{node_path}:{decl_name}",
+                )
+            )
+        if not reason.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_visibility_reason_required",
+                    "Visibility revision requires an audit reason.",
+                    field="reason",
+                )
+            )
+        loaded = self._load_current_decl(repo_root, DeclRef(node=node_path, name=decl_name))
+        if not loaded.ok or loaded.value is None:
+            return self.runtime.foundation.fail(loaded.issues)
+        decl, _ = loaded.value
+        current = "public" if decl.public else "private"
+        if current != expected_current_visibility:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "decl_visibility_cas_mismatch",
+                    "Declaration visibility changed since the caller inspected it.",
+                    object_ref=f"{node_path}:{decl_name}",
+                    current=current,
+                    expected=expected_current_visibility,
+                )
+            )
+        if current == new_visibility:
+            closure = self.check_content(repo_root, node_path=node_path)
+            if not closure.ok or closure.value is None:
+                return self.runtime.foundation.fail(closure.issues)
+            return self.runtime.foundation.ok(
+                DeclVisibilityRevisionReceipt(
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    old_visibility=current,
+                    new_visibility=new_visibility,
+                    reason=reason.strip(),
+                    changed=False,
+                    gate_reports=[closure.value],
+                    summary=f"{node_path}:{decl_name} visibility is already {current}.",
+                )
+            )
+        if new_visibility == "public":
+            promoted = self.promote_content_decl_public(
+                repo_root,
+                node_path=node_path,
+                decl_name=decl_name,
+            )
+            if not promoted.ok or promoted.value is None:
+                return self.runtime.foundation.fail(promoted.issues)
+            closure = self.check_content(repo_root, node_path=node_path)
+            if not closure.ok or closure.value is None:
+                return self.runtime.foundation.fail(closure.issues)
+            return self.runtime.foundation.ok(
+                DeclVisibilityRevisionReceipt(
+                    node_path=node_path,
+                    decl_name=decl_name,
+                    old_visibility=current,
+                    new_visibility=new_visibility,
+                    reason=reason.strip(),
+                    changed=promoted.value.changed,
+                    refreshed_objects=[f"interfaces:{node_path}", "node_index"],
+                    gate_reports=[closure.value],
+                    summary=f"Revised {node_path}:{decl_name} visibility from private to public.",
+                )
+            )
+
+        blockers = self._visibility_demotion_issues(repo_root, node_path=node_path, decl_name=decl_name)
+        if blockers:
+            return self.runtime.foundation.fail(blockers)
+        ctx = FoundationContext(repo_root=repo_root)
+        snapshot = _PathSnapshot(
+            [
+                self.runtime.foundation.layout.nodes_root(ctx),
+                self.runtime.foundation.layout.node_index_path(ctx),
+                self.runtime.foundation.layout.interfaces_path(ctx, node_path),
+            ]
+        )
+        mutation_issues: list[ServiceIssue] = []
+        with self.runtime.foundation.store.mutation("revise_decl_visibility") as mutation:
+            decl.public = False
+            decl.updated_at = utc_now_iso()
+            mutation.stage_json(
+                self.runtime.decl_graph.graph_store.decl_record_path(
+                    repo_root,
+                    node_path=node_path,
+                    decl_name=decl_name,
+                ),
+                decl,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            committed = mutation.commit()
+        if not committed.ok:
+            mutation_issues.extend(committed.issues)
+        if not mutation_issues:
+            refreshed = self.runtime.lean_projection.node_projection.refresh_interfaces(
+                repo_root,
+                node_path=node_path,
+            )
+            if not refreshed.ok:
+                mutation_issues.extend(refreshed.issues)
+        if not mutation_issues:
+            rebuilt = self.runtime.node.node_tree.node_store.rebuild_index(repo_root)
+            if not rebuilt.ok:
+                mutation_issues.extend(rebuilt.issues)
+        gate_reports: list[GateReport] = []
+        if not mutation_issues:
+            closure = self.check_content(repo_root, node_path=node_path)
+            if not closure.ok or closure.value is None:
+                mutation_issues.extend(closure.issues)
+            else:
+                gate_reports.append(closure.value)
+                if not closure.value.passed:
+                    mutation_issues.extend(closure.value.issues)
+        if mutation_issues:
+            rollback_errors = snapshot.restore()
+            if rollback_errors:
+                mutation_issues.append(
+                    self.runtime.foundation.issue(
+                        "decl_visibility_rollback_failed",
+                        "Visibility revision failed and rollback was incomplete.",
+                        details={"errors": rollback_errors},
+                    )
+                )
+            return self.runtime.foundation.fail(self._unique_issues(mutation_issues))
+        return self.runtime.foundation.ok(
+            DeclVisibilityRevisionReceipt(
+                node_path=node_path,
+                decl_name=decl_name,
+                old_visibility=current,
+                new_visibility=new_visibility,
+                reason=reason.strip(),
+                changed=True,
+                refreshed_objects=[f"interfaces:{node_path}", "node_index"],
+                gate_reports=gate_reports,
+                summary=f"Revised {node_path}:{decl_name} visibility from public to private.",
+            )
+        )
+
+    def _visibility_demotion_issues(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        decl_name: str,
+    ) -> list[ServiceIssue]:
+        issues: list[ServiceIssue] = []
+        release = self.runtime.repo_workspace.release.get_decl_release_status(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+        if not release.ok or release.value is None:
+            issues.extend(release.issues)
+        elif release.value.release_protected:
+            issues.append(
+                self.runtime.foundation.issue(
+                    "decl_visibility_release_protected",
+                    "A declaration protected by the current Release cannot be made private.",
+                    object_ref=f"{node_path}:{decl_name}",
+                )
+            )
+        inbound = self.runtime.decl_graph.release_guard.current_inbound_refs(
+            repo_root,
+            node_path=node_path,
+            decl_name=decl_name,
+        )
+        if not inbound.ok or inbound.value is None:
+            issues.extend(inbound.issues)
+            return self._unique_issues(issues)
+        for ref in inbound.value:
+            if ref.endswith(":proof"):
+                continue
+            if ":contract:" in ref:
+                if ref.endswith(":interfaces"):
+                    kind = "decl_visibility_interface_required"
+                    message = "A current interface binding requires this declaration to remain public."
+                elif ref.endswith(":exports"):
+                    kind = "decl_visibility_main_api_required" if ":Main:exports" in ref else "decl_visibility_scope_export_required"
+                    message = "A current Scope or Main export requires this declaration to remain public."
+                else:
+                    kind = "decl_visibility_consumer_required"
+                    message = "A current node contract dependency requires this declaration's public boundary."
+                issues.append(self.runtime.foundation.issue(kind, message, object_ref=ref))
+                continue
+            if ref.endswith(":statement"):
+                parts = ref.split(":")
+                if len(parts) != 5:
+                    continue
+                consumer = self.runtime.decl_graph.get_decl(
+                    repo_root,
+                    node_path=parts[2],
+                    name=parts[3],
+                )
+                if not consumer.ok or consumer.value is None:
+                    issues.extend(consumer.issues)
+                elif consumer.value.public:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "decl_visibility_public_statement_required",
+                            "Another public declaration requires this declaration in its formal Statement closure.",
+                            object_ref=ref,
+                        )
+                    )
+        return self._unique_issues(issues)
 
     def promote_content_closure(
         self,
@@ -483,7 +715,6 @@ class PublicStatementClosureComponent:
         promoted: list[DeclRef],
         export_additions: dict[str, list[DeclRef]],
         reinspect,
-        allow_incomplete: bool = False,
     ) -> ServiceResult[PublicStatementPromotionReceipt]:
         promoted = sorted(self._unique_refs(promoted), key=self._ref_sort_key)
         export_additions = {
@@ -612,7 +843,7 @@ class PublicStatementClosureComponent:
                     )
                 )
             return self.runtime.foundation.fail(issues)
-        if not report.value.closure_complete and not allow_incomplete:
+        if not report.value.closure_complete:
             rollback_errors = snapshot.restore()
             issues = list(report.value.issues)
             if rollback_errors:
@@ -981,6 +1212,7 @@ class PublicStatementClosureComponent:
 
 
 __all__ = [
+    "DeclVisibilityRevisionReceipt",
     "PublicStatementClosureBoundary",
     "PublicStatementClosureComponent",
     "PublicStatementClosureDecl",

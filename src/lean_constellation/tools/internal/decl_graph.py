@@ -7,6 +7,7 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoFormat, proof_availability_for_completion_mode
 from lean_constellation.tools.args import (
     ChangeSummaryArgs,
+    CurrentDeclVisibilityRevisionArgs,
     DeclCreateArgs,
     DeclDeleteArgs,
     DeclFormalReadArgs,
@@ -15,7 +16,7 @@ from lean_constellation.tools.args import (
     DeclNamesArgs,
     NodeDeclInspectArgs,
     NodeDeclListArgs,
-    NodeDeclPromotionArgs,
+    NodeDeclVisibilityRevisionArgs,
     DeclUpdateArgs,
     NodePublicDeclInspectArgs,
     NodePublicDeclListArgs,
@@ -66,11 +67,14 @@ def _inspect_current_node_public_statement_closure(runtime, ctx, args: PublicSta
     )
 
 
-def _promote_current_decl_public(runtime, ctx, args: DeclNameArgs):
-    return runtime.node.public_statement_closure.promote_content_decl_public(
+def _revise_current_decl_visibility(runtime, ctx, args: CurrentDeclVisibilityRevisionArgs):
+    return runtime.node.public_statement_closure.revise_content_decl_visibility(
         ctx.repo_root,
         node_path=_node(ctx),
         decl_name=args.decl_name,
+        expected_current_visibility=args.expected_current_visibility,
+        new_visibility=args.new_visibility,
+        reason=args.reason,
     )
 
 
@@ -96,11 +100,14 @@ def _inspect_public_statement_closure(runtime, ctx, args: PublicStatementBoundar
     )
 
 
-def _promote_content_decl_public(runtime, ctx, args: NodeDeclPromotionArgs):
-    return runtime.node.public_statement_closure.promote_content_decl_public(
+def _revise_content_decl_visibility(runtime, ctx, args: NodeDeclVisibilityRevisionArgs):
+    return runtime.node.public_statement_closure.revise_content_decl_visibility(
         ctx.repo_root,
         node_path=args.node_path,
         decl_name=args.decl_name,
+        expected_current_visibility=args.expected_current_visibility,
+        new_visibility=args.new_visibility,
+        reason=args.reason,
     )
 
 
@@ -1198,14 +1205,14 @@ def build_tool_specs() -> list[ToolSpec]:
             handler=_inspect_current_node_public_statement_closure,
         ),
         handler_tool(
-            name="promote_current_decl_public",
-            description="Add public visibility to one ready declaration in the current Content node.",
-            args_model=DeclNameArgs,
+            name="revise_current_decl_visibility",
+            description="Compare-and-swap one current Content declaration between public and private visibility with deterministic boundary gates and an audit reason; interfaces and exports are never removed automatically.",
+            args_model=CurrentDeclVisibilityRevisionArgs,
             capability=ToolCapability.WRITE,
-            result_view="public_statement_promotion_receipt",
+            result_view="decl_visibility_revision_receipt",
             groups={AppGroup.CURRENT_NODE_PUBLIC_VISIBILITY_WRITE},
             roles=plan_roles,
-            handler=_promote_current_decl_public,
+            handler=_revise_current_decl_visibility,
         ),
         handler_tool(
             name="promote_current_node_public_statement_closure",
@@ -1240,14 +1247,14 @@ def build_tool_specs() -> list[ToolSpec]:
             required_context={"repo"},
         ),
         handler_tool(
-            name="promote_content_decl_public",
-            description="Add public visibility to one ready declaration in a selected current-repository Content node.",
-            args_model=NodeDeclPromotionArgs,
+            name="revise_content_decl_visibility",
+            description="Compare-and-swap one selected current-repository Content declaration between public and private visibility with deterministic boundary gates and an audit reason; interfaces and exports are never removed automatically.",
+            args_model=NodeDeclVisibilityRevisionArgs,
             capability=ToolCapability.WRITE,
-            result_view="public_statement_promotion_receipt",
+            result_view="decl_visibility_revision_receipt",
             groups={AppGroup.REPO_PUBLIC_VISIBILITY_WRITE},
             roles={"coordinator", "admin"},
-            handler=_promote_content_decl_public,
+            handler=_revise_content_decl_visibility,
             required_context={"repo"},
         ),
         handler_tool(
