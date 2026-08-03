@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "lean-constellation"
 version = "0.1.0"
 description = "Multi-repository coordination runtime for Lean formalization workflows."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2", "agent-runtime-kit>=0.3.0", "mcp>=1"]
 classifiers = [
@@ -15,6 +17,11 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/iiis-lean/lean-constellation"
+Repository = "https://github.com/iiis-lean/lean-constellation"
+Issues = "https://github.com/iiis-lean/lean-constellation/issues"
 
 [project.scripts]
 lean-constellation = "lean_constellation.app.cli:main"

@@ -150,7 +150,7 @@ Create a local `lean-constellation.toml`:
 ```toml
 workspace_root = "/path/to/lean-workspace"
 default_agent_provider_type = "codex"
-codex_config_home = "/root/.codex"
+codex_config_home = "~/.codex"
 
 # Inspect the workspace before allowing scheduler advancement.
 server_start_paused = true
@@ -243,6 +243,10 @@ Agent Tool/View references directly from the current implementation:
 lean-constellation --config lean-constellation.toml docs-export \
   --output-dir generated-docs --surface all --format all
 ```
+
+## License
+
+Lean Constellation is released under the [MIT License](LICENSE).
 
 ## Development Status
 
