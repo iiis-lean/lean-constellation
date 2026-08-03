@@ -115,6 +115,14 @@ def _prepare_repo(
         "Theorem B.\n",
         encoding="utf-8",
     )
+    (source_root / "README.md").write_text(
+        "Source provenance: local test fixture.\n"
+        "Reading order: read source.md as the main material.\n"
+        "Main material: source.md contains Definition A and Theorem B.\n"
+        "Known gaps and extraction limits: no known gaps.\n"
+        "Corrections: none.\nSource boundary: complete fixture; omitted: none.\n",
+        encoding="utf-8",
+    )
     assert runtime.material.submit_source_corpus_prepared(
         repo_root,
         entry_path="source.md",

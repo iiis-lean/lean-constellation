@@ -589,7 +589,11 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
         context_scope="repo",
         agent_step_type="source_corpus_prepare_agent_step",
         fragments=[*BLOCKED_FRAGMENTS, "repo.native_repo_context", "source.source_corpus_context"],
-        skills=[SkillKey.SOURCE_MATERIAL_ACQUISITION],
+        skills=[
+            SkillKey.FAITHFUL_MATERIAL_PRESERVATION,
+            SkillKey.SOURCE_MATERIAL_ACQUISITION,
+            SkillKey.SOURCE_CORPUS_FAITHFUL_PREPARATION,
+        ],
         app_view=AppView.SOURCE_CORPUS_PREPARE,
         submit_view=SubmitView.SOURCE_CORPUS_PREPARE_SUBMIT,
         aliases=["SourceCorpusPrepare", "source_corpus_prepare"],

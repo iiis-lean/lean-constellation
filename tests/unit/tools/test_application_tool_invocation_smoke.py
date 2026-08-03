@@ -2109,6 +2109,7 @@ def test_resource_draft_read_and_mathlib_write_tools_invoke_services(tmp_path: P
         "original/",
         "normalized/",
         "assets/",
+        "supplementary/",
     ]
     assert "draft_root" not in draft
 

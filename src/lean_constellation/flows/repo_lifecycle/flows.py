@@ -1352,6 +1352,8 @@ def _source_corpus_prepare_prompt(
             "Current working directory: the source corpus root.",
             "Allowed write boundary: this directory and its descendants.",
             f"Configured logical corpus path: {logical_path}.",
+            "Read and apply $faithful-material-preservation and $source-corpus-faithful-preparation.",
+            "Preserve author structure; do not create summaries, solutions, formal targets, expected proofs, or audit hints.",
             "Read the repository preparation input through tools and submit prepared or blocked.",
         ]
     )

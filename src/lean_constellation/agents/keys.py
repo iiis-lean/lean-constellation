@@ -11,6 +11,7 @@ class SkillKey(StrEnum):
     VISIBLE_NODE_DEPENDENCY_RECON = "visible-node-dependency-recon"
     SCOPE_EXPORT_INTERFACE_CURATION = "scope-export-interface-curation"
     SOURCE_MATERIAL_ACQUISITION = "source-material-acquisition"
+    SOURCE_CORPUS_FAITHFUL_PREPARATION = "source-corpus-faithful-preparation"
     RESOURCE_MATERIAL_ACQUISITION = "resource-material-acquisition"
     EXTERNAL_RESOURCE_DISCOVERY = "external-resource-discovery"
     RESOURCE_REQUEST_SUBMISSION = "resource-request-submission"

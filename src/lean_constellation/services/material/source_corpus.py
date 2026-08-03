@@ -17,7 +17,7 @@ from lean_constellation.services.external_clients import (
     AcquiredArtifactResult,
     ExtractedMaterialResult,
 )
-from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceResult
+from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -32,7 +32,7 @@ class SourceCorpusFileView(StrictModel):
 
 
 class SourceCorpusManifestView(StrictModel):
-    schema_version: int = 2
+    schema_version: Literal[2] = 2
     relpath: str = ".lean_constellation/source"
     overview: str | None = None
     entry_path: str | None = None
@@ -136,6 +136,9 @@ class SourceCorpusComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue("source_corpus_missing", f"Source corpus directory does not exist: {root}")
             )
+        tree_issues = self._source_tree_issues(root)
+        if tree_issues:
+            return self.runtime.foundation.fail(tree_issues)
         files = [self._file_view(root, item) for item in sorted(root.rglob("*")) if item.is_file()]
         default_entry = entry_path or self._default_entry(root, files)
         manifest = SourceCorpusManifestView(
@@ -573,7 +576,7 @@ class SourceCorpusComponent:
             return self.runtime.foundation.ok(self.runtime.foundation.gate_failed("source_corpus_draft", scan.issues, summary="Source corpus scan failed."))
         manifest = scan.value
         root = self.runtime.foundation.layout.source_corpus_root(FoundationContext(repo_root=Path(repo_root)), relpath)
-        issues = []
+        issues: list[ServiceIssue] = []
         if not manifest.files:
             issues.append(self.runtime.foundation.issue("source_corpus_empty", "Source corpus contains no files."))
         readable = [item for item in manifest.files if item.readable_text and item.line_count > 0]
@@ -630,6 +633,80 @@ class SourceCorpusComponent:
                         field="entry_path",
                     )
                 )
+        readme = root / "README.md"
+        if not readme.is_file():
+            issues.append(
+                self.runtime.foundation.issue(
+                    "source_corpus_readme_missing",
+                    "SourceCorpus requires a root README.md that records provenance, layout, scope, and extraction limits.",
+                    object_ref="README.md",
+                )
+            )
+            readme_text = ""
+        else:
+            readme_validation = self.runtime.external.material.validate_readable_text(readme)
+            if not readme_validation.ok:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        readme_validation.issue_code or "source_corpus_readme_unreadable",
+                        readme_validation.summary,
+                        object_ref="README.md",
+                    )
+                )
+                readme_text = ""
+            else:
+                readme_text = readme.read_text(encoding="utf-8")
+        if readme_text:
+            if any(item.path.startswith("original/") for item in manifest.files) and not re.search(
+                r"\boriginal\b.{0,160}\b(?:extract|transcri|normaliz|map|correspond|preserv)",
+                readme_text,
+                flags=re.IGNORECASE | re.DOTALL,
+            ):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_original_mapping_missing",
+                        "README must explain how retained original artifacts relate to readable or extracted material.",
+                        object_ref="README.md",
+                    )
+                )
+            partial_files = [
+                item.path
+                for item in manifest.files
+                if re.search(r"(?:partial|excerpt|selected|transcript)", Path(item.path).stem, flags=re.IGNORECASE)
+            ]
+            if partial_files and not re.search(
+                r"\b(?:selected scope|included scope|source boundary|omitted)\b",
+                readme_text,
+                flags=re.IGNORECASE,
+            ):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_partial_scope_missing",
+                        "README must identify the exact selected scope and omitted material for partial extraction files.",
+                        object_ref="README.md",
+                        details={"partial_files": partial_files},
+                    )
+                )
+            correction_values = re.findall(
+                r"(?i)\bcorrections?\s*:\s*([^\n]+)",
+                readme_text,
+            )
+            no_correction_values = {"none", "no", "not required", "n/a"}
+            if any(value.rstrip(".").strip().lower() not in no_correction_values for value in correction_values):
+                has_ledger = any(
+                    item.path.startswith("supplementary/")
+                    and re.search(r"(?:correction|ledger)", Path(item.path).name, flags=re.IGNORECASE)
+                    for item in manifest.files
+                )
+                if not has_ledger:
+                    issues.append(
+                        self.runtime.foundation.issue(
+                            "source_corpus_correction_ledger_missing",
+                            "Declared corrections require a supplementary correction ledger.",
+                            object_ref="README.md",
+                        )
+                    )
+        issues.extend(self._source_contamination_issues(root, manifest))
         if entry and not entry_path and entry_view is not None and not self._is_canonical_entry(entry):
             issues.append(
                 self.runtime.foundation.issue(
@@ -755,7 +832,17 @@ class SourceCorpusComponent:
     def get_source_corpus_manifest(self, repo_root: Path) -> ServiceResult[SourceCorpusManifestView]:
         path = self._manifest_path(repo_root)
         if path.exists():
-            return self.runtime.foundation.store.read_json(path, SourceCorpusManifestView)
+            loaded = self.runtime.foundation.store.read_json(path, SourceCorpusManifestView)
+            if not loaded.ok or loaded.value is None:
+                return self.runtime.foundation.fail(loaded.issues)
+            schema_issues = [
+                issue
+                for issue in loaded.issues
+                if issue.kind in {"schema_version_missing", "schema_version_mismatch"}
+            ]
+            if schema_issues:
+                return self.runtime.foundation.fail([self._as_schema_error(issue) for issue in schema_issues])
+            return loaded
         return self.scan_source_corpus(repo_root, relpath=self._source_relpath(repo_root))
 
     def refresh_source_corpus_manifest(self, repo_root: Path) -> ServiceResult[SourceCorpusManifestView]:
@@ -984,6 +1071,102 @@ class SourceCorpusComponent:
             return path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return ""
+
+    def _source_tree_issues(self, root: Path) -> list[ServiceIssue]:
+        issues: list[ServiceIssue] = []
+        for path in root.rglob("*"):
+            relative = path.relative_to(root)
+            if path.is_symlink():
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_symlink_forbidden",
+                        "SourceCorpus must not contain symbolic links.",
+                        object_ref=relative.as_posix(),
+                    )
+                )
+            if self._is_forbidden_source_artifact(relative):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_artifact_forbidden",
+                        "SourceCorpus must not contain runtime, cache, credential, or hidden control artifacts.",
+                        object_ref=relative.as_posix(),
+                    )
+                )
+        return issues
+
+    def _source_contamination_issues(
+        self,
+        root: Path,
+        manifest: SourceCorpusManifestView,
+    ) -> list[ServiceIssue]:
+        issues: list[ServiceIssue] = []
+        artificial_solution_roots = {"solution.tex", "solution.lean", "solution.md"}
+        for item in manifest.files:
+            relative = Path(item.path)
+            if relative.name.lower() in artificial_solution_roots and (
+                len(relative.parts) == 1 or relative.parts[0] in {"main", "supplementary", "normalized"}
+            ):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_artificial_solution_forbidden",
+                        "Agent-authored solution artifacts are not SourceCorpus truth.",
+                        object_ref=item.path,
+                    )
+                )
+            if not item.readable_text:
+                continue
+            text = self._read_source_text(root / item.path)
+            if any(
+                re.search(marker, text)
+                for marker in (
+                    r"(?im)^\s*#{0,3}\s*(?:agent[- ]generated|generated|condensed) summary\b",
+                    r"(?im)^\s*#{0,3}\s*(?:expected )?formal(?:ization)? (?:target|plan)\b",
+                    r"(?im)^\s*#{0,3}\s*(?:proposed|expected|new) (?:solution|proof)\b",
+                    r"(?im)^\s*#{0,3}\s*expected node tree\b",
+                )
+            ):
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "source_corpus_truth_contaminated",
+                        "SourceCorpus contains generated summary, expected formalization, solution, proof, or node-tree markers.",
+                        object_ref=item.path,
+                    )
+                )
+        return issues
+
+    @staticmethod
+    def _is_forbidden_source_artifact(relative: Path) -> bool:
+        forbidden_parts = {".git", ".agent_runtime", ".codex", ".cache", "__pycache__"}
+        if any(part in forbidden_parts for part in relative.parts):
+            return True
+        name = relative.name.lower()
+        forbidden_names = {
+            "formal_target.lean",
+            "expected_answer.md",
+            "expected_proof.md",
+            "expected_node_tree.md",
+            "audit_hint.md",
+            "lean_probe.lean",
+            "auth.json",
+        }
+        return (
+            name in forbidden_names
+            or name == ".env"
+            or name.startswith(".env.")
+            or relative.suffix.lower() == ".pyc"
+        )
+
+    def _as_schema_error(self, issue: ServiceIssue) -> ServiceIssue:
+        return self.runtime.foundation.issue(
+            issue.kind,
+            issue.message,
+            object_ref=issue.object_ref,
+            field=issue.field,
+            current=issue.current,
+            expected=issue.expected,
+            suggested_action=issue.suggested_action,
+            details=issue.details,
+        )
 
     def _resolve_inside(self, root: Path, ref: str) -> Path:
         relative = self.runtime.foundation.layout.ensure_relative_path(ref)

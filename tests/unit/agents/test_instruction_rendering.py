@@ -411,3 +411,11 @@ def test_runtime_instruction_tool_refs_are_visible_to_each_agent() -> None:
         visible = {tool.name for tool in report.application_tools} | {tool.name for tool in report.submit_tools}
 
         assert refs <= visible, spec.agent_type
+
+
+def test_source_reviewer_routes_corpus_fidelity_blocker_outside_builder_authority() -> None:
+    text = render_agent_instruction("SourceIndexReviewerAgent")
+
+    assert "source_corpus_fidelity_blocker:" in text
+    assert "do not modify source files" in text
+    assert "separately authorized SourceCorpus repair" in text

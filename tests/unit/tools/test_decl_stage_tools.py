@@ -7,7 +7,12 @@ from lean_constellation.services import create_test_runtime_services
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.tool_facade import ActorContext, DeclStageContextView, NodeContextView, RepoContextView, RuntimeToolContext, ToolExecutionContext
 from lean_constellation.tools import build_application_tool_specs
-from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, write_statement_formal_for_test
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    valid_resource_readme,
+    write_statement_formal_for_test,
+)
 from tests.unit.services.lean_projection.test_formal_stage_sync import (
     _runtime as _formal_runtime,
     _setup_theorem_round,
@@ -372,7 +377,12 @@ def _create_local_resource(runtime, repo_root: Path) -> str:
     assert target.ok and target.value is not None
     draft = runtime.material.allocate_resource_draft(repo_root, target=target.value)
     assert draft.ok and draft.value is not None
-    Path(draft.value.readme_path).write_text("Resource notes.\n", encoding="utf-8")
+    Path(draft.value.readme_path).write_text(
+        valid_resource_readme(
+            original_ref="Original unavailable: this fixture supplies normalized proof support only.",
+        ),
+        encoding="utf-8",
+    )
     Path(draft.value.normalized_dir, "main.md").write_text("Proof route support.\n", encoding="utf-8")
     promoted = runtime.material.submit_local_resource_created(
         repo_root,

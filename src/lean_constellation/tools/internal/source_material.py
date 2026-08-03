@@ -1066,7 +1066,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="check_source_corpus_draft",
-            description="Validate source corpus draft structure and entry file.",
+            description="Validate SourceCorpus README/entry, faithful structure, original mapping, partial scope, correction ledger, contamination, and path/runtime safety.",
             args_model=SourceCorpusCheckArgs,
             capability=ToolCapability.READ,
             backing_service="material",
@@ -1107,7 +1107,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="normalize_source_text_material",
-            description="Normalize a source draft material reference into readable text.",
+            description="Mechanically normalize a source material reference into faithful readable text; never replace source truth with a summary, solution, formalization plan, or new proof.",
             args_model=SourceMaterialNormalizeArgs,
             capability=ToolCapability.WRITE,
             result_view="source_extraction_handles",

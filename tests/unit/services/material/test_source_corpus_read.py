@@ -1,3 +1,5 @@
+import json
+
 from tests.unit_services_helpers import make_runtime
 
 from pathlib import Path
@@ -170,7 +172,9 @@ def _source_entry_text(*, main_path: str = "notes/section.md") -> str:
         "Source provenance: imported from local markdown source material.\n"
         f"Reading order: start with this entry, then read `{main_path}` as the main material.\n"
         f"Main material: `{main_path}` contains the formal background used for indexing.\n"
+        "Original mapping: retained originals are preserved and mechanically normalized or extracted.\n"
         "Known gaps and extraction limits: no missing source sections are known in this fixture.\n"
+        "Corrections: none.\nSource boundary: complete fixture; omitted: none.\n"
     )
 
 
@@ -191,6 +195,10 @@ def test_source_acquisition_uses_current_preparation_relpath(tmp_path: Path) -> 
 
     imported = runtime.material.import_source_material(tmp_path, source_path=str(local), as_name="raw.md")
     normalized = runtime.material.normalize_source_text_material(tmp_path, material_ref="original/raw.md")
+    (tmp_path / "custom_sources" / "README.md").write_text(
+        _source_entry_text(main_path="normalized/raw.txt"),
+        encoding="utf-8",
+    )
     gate = runtime.material.check_source_corpus_draft(tmp_path, entry_path="original/raw.md")
 
     assert imported.ok and imported.value is not None, imported.issues
@@ -337,6 +345,10 @@ def test_source_corpus_gate_accepts_explained_single_file_entry(tmp_path: Path) 
         "Reading order: read this main material from top to bottom.\n"
         "Main theorem statement and proof outline.\n"
         "Known gaps and extraction limits: no missing source sections are known.\n",
+        encoding="utf-8",
+    )
+    (source_root / "README.md").write_text(
+        _source_entry_text(main_path="paper.md"),
         encoding="utf-8",
     )
     service = make_runtime().material
@@ -571,3 +583,135 @@ def test_check_target_in_source_corpus_matches_path_and_sha(tmp_path: Path) -> N
     assert by_sha.value.duplicate
     assert absent.ok and absent.value is not None
     assert not absent.value.duplicate
+
+
+def test_source_corpus_preserves_author_tex_tree_without_artificial_main_layout(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    article = source_root / "article"
+    article.mkdir(parents=True)
+    (source_root / "README.md").write_text(_source_entry_text(main_path="article/paper.tex"), encoding="utf-8")
+    (article / "paper.tex").write_text(
+        "\\section{Main result}\n\\begin{theorem}A faithful theorem.\\end{theorem}\n",
+        encoding="utf-8",
+    )
+    (article / "macros.tex").write_text("\\newcommand{\\A}{A}\n", encoding="utf-8")
+    (article / "refs.bib").write_text("@article{fixture,title={Fixture}}\n", encoding="utf-8")
+
+    gate = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert gate.ok and gate.value is not None and gate.value.passed
+    assert not (source_root / "main").exists()
+
+
+def test_source_corpus_pdf_transcription_retains_structure_and_page_mapping(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    (source_root / "original").mkdir(parents=True)
+    (source_root / "transcription").mkdir()
+    (source_root / "README.md").write_text(
+        _source_entry_text(main_path="transcription/paper.md").replace(
+            "Original mapping:",
+            "Original PDF page mapping: original/paper.pdf is preserved; Original mapping:",
+        ),
+        encoding="utf-8",
+    )
+    (source_root / "original" / "paper.pdf").write_bytes(b"%PDF-1.4\nfixture")
+    transcription = (
+        "# Section 2 (PDF page 3)\n\n"
+        "## Theorem 2.1\nAssume h. Then conclusion C.\n\n"
+        "Equation (2.4): `x + y = z`.\n\n"
+        "Proof. First step; second step.\n"
+    )
+    (source_root / "transcription" / "paper.md").write_text(transcription, encoding="utf-8")
+
+    gate = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert gate.ok and gate.value is not None and gate.value.passed
+    assert (source_root / "transcription" / "paper.md").read_text(encoding="utf-8") == transcription
+
+
+def test_source_corpus_rejects_generated_summary_solution_and_hidden_formal_target(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(_source_entry_text(main_path="summary.md"), encoding="utf-8")
+    (source_root / "summary.md").write_text("# Generated summary\nAssumption h was silently removed.\n", encoding="utf-8")
+    (source_root / "solution.tex").write_text("% Proposed agent solution\n", encoding="utf-8")
+    (source_root / "formal_target.lean").write_text("theorem expected : True := by trivial\n", encoding="utf-8")
+
+    gate = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
+
+    assert gate.ok and gate.value is not None and not gate.value.passed
+    kinds = {issue.kind for issue in gate.value.issues}
+    assert "source_corpus_artifact_forbidden" in kinds
+
+    (source_root / "formal_target.lean").unlink()
+    contaminated = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
+    assert contaminated.ok and contaminated.value is not None and not contaminated.value.passed
+    assert {"source_corpus_truth_contaminated", "source_corpus_artificial_solution_forbidden"} <= {
+        issue.kind for issue in contaminated.value.issues
+    }
+
+
+def test_source_corpus_partial_extraction_and_corrections_require_records(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    readme = _source_entry_text(main_path="selected_excerpt.md").replace(
+        "Corrections: none.",
+        "Corrections: repaired OCR symbol on line 2.",
+    ).replace("Source boundary: complete fixture; omitted: none.\n", "")
+    (source_root / "README.md").write_text(readme, encoding="utf-8")
+    (source_root / "selected_excerpt.md").write_text("selected source text\n", encoding="utf-8")
+    service = make_runtime().material
+
+    rejected = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
+    assert rejected.ok and rejected.value is not None and not rejected.value.passed
+    assert {"source_corpus_partial_scope_missing", "source_corpus_correction_ledger_missing"} <= {
+        issue.kind for issue in rejected.value.issues
+    }
+
+    (source_root / "README.md").write_text(
+        readme + "Selected scope: Section 2 only. Omitted: all other sections.\n",
+        encoding="utf-8",
+    )
+    (source_root / "supplementary").mkdir()
+    (source_root / "supplementary" / "correction-ledger.md").write_text(
+        "Line 2: OCR symbol x corrected to y using the PDF.\n",
+        encoding="utf-8",
+    )
+    passed = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
+    assert passed.ok and passed.value is not None and passed.value.passed
+
+
+def test_source_corpus_rejects_runtime_artifacts_symlinks_and_old_manifest_schema(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text(_source_entry_text(), encoding="utf-8")
+    (source_root / "notes").mkdir()
+    (source_root / "notes" / "section.md").write_text("source text\n", encoding="utf-8")
+    (source_root / ".cache").mkdir()
+    (source_root / ".cache" / "session.json").write_text("{}\n", encoding="utf-8")
+    (source_root / "linked.md").symlink_to(source_root / "notes" / "section.md")
+    service = make_runtime().material
+
+    unsafe = service.check_source_corpus_draft(tmp_path, entry_path="README.md")
+    assert unsafe.ok and unsafe.value is not None and not unsafe.value.passed
+    assert {"source_corpus_artifact_forbidden", "source_corpus_symlink_forbidden"} <= {
+        issue.kind for issue in unsafe.value.issues
+    }
+
+    (source_root / "linked.md").unlink()
+    (source_root / ".cache" / "session.json").unlink()
+    (source_root / ".cache").rmdir()
+    prepared = service.submit_source_corpus_prepared(
+        tmp_path,
+        entry_path="README.md",
+        overview="Current source corpus.",
+        preparation_summary="Prepared current source corpus.",
+    )
+    assert prepared.ok
+    manifest_path = tmp_path / ".lean_constellation" / "source_corpus" / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload.pop("schema_version")
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    old = service.source_corpus.get_source_corpus_manifest(tmp_path)
+    assert not old.ok
+    assert any(issue.kind == "schema_version_missing" for issue in old.issues)
