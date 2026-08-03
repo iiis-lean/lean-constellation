@@ -67,10 +67,8 @@ def test_coordinator_instruction_routes_closeout_then_repeated_next_actions() ->
     assert "resource-request-handling" not in text
     assert "attach_requirement_provider_dependency" not in text
     assert "authoritative private consumer declaration" in text
-    assert "continue the current Content node" in text
-    assert "reuse an existing Content node" in text
-    assert "create a new ordinary Content node" in text
-    assert "repair an existing interface or proof route" in text
+    assert "owns the current-node, existing-node, coherent-package" in text
+    assert "declaration-count threshold" in text
     assert "consumer anchor" in text
     assert "without becoming an exact header" in text
 
@@ -78,8 +76,10 @@ def test_coordinator_instruction_routes_closeout_then_repeated_next_actions() ->
 def test_coordinator_exploration_instruction_describes_only_current_workflow() -> None:
     text = render_agent_instruction("CoordinatorAgent")
 
-    assert "Before committing to the first NodeTree" in text
-    assert "During later rounds" in text
+    assert "The Flow owns one fixed resource, Lean-provider, and Mathlib exploration batch" in text
+    assert "do not submit another batch merely to reconcile the initial callback" in text
+    assert "Later exploration is optional and selective" in text
+    assert "Exploration is optional and selective" not in text
     for migration_term in ("retroactive", "restored mature", "capability became available"):
         assert migration_term not in text
 
@@ -185,25 +185,34 @@ def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> Non
     assert "get_current_repo_completion_policy" in text
     assert "content-plan-completion-policy" in text
     assert "submit_content_preparation_recon" in text
-    assert "write_decl_change_summary" in text
+    assert "decl-round-closeout" in text
     assert "mark_decl_round_terminal" in text
-    assert "validate_decl_round_draft" in text
-    assert "discard_decl_round_draft" in text
+    assert "decl-round-change-planning" in text
     assert "submit_current_decl_round" in text
     assert "anticipated_statement_dep_names" in text
     assert "Never omit a known dependency to make validation pass" in text
-    assert "check_current_content_node_completion" in text
-    assert "bind_current_node_interface" in text
+    assert "current-node-public-boundary-curation" in text
+    assert "content-node-completion-decision" in text
     assert "visibility just observed" in text
-    assert "creates a Decl round or revision" in text
+    assert "creates no Decl round or revision" in text
     assert "never silently removes" in text
-    assert "Interface binding is part of ContentPlan closeout" in text
-    assert "submit_content_node_ready" in text
+    assert "Interface binding is ContentPlan closeout" in text
     assert "Do not replace NodeDirDependencyReconFlow, MathlibReconFlow, or ResourceReconFlow" in text
-    assert "consumer-side formal goal" in text
-    assert "existing declarations checked and their mismatches" in text
-    assert "you do not decide or create the repository node tree" in text
-    assert "statement hint" in text
+    assert "faithfully carry the evidence recorded by `decl-round-closeout`" in text
+    assert "you do not decide the repository node tree" in text
+    assert "interface fit and binding" in text
+
+
+def test_bottom_up_policy_instruction_is_navigation_not_a_duplicate_decision_tree() -> None:
+    coordinator = render_agent_instruction("CoordinatorAgent")
+    content = render_agent_instruction("ContentPlanAgent")
+
+    assert "bottom-up Source-visible dependency-frontier check" in coordinator
+    assert "Mathlib/existing-boundary/local-helper/coherent-package classification" in content
+    assert "No declaration-count cutoff" not in content
+    assert "layered definitions or lemmas" not in content
+    assert len(coordinator) <= 29_000
+    assert len(content) <= 27_000
 
 
 def test_decl_worker_instructions_preserve_precise_blocker_evidence() -> None:

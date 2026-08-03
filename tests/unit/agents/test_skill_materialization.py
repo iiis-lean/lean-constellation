@@ -161,7 +161,10 @@ def test_coordinator_skill_inventory_and_workflow_boundaries() -> None:
 def test_coordinator_exploration_skill_describes_only_current_workflow() -> None:
     body = build_skill_specs()["coordinator-repo-exploration"].body
 
-    assert "before the first NodeTree decision" in body
+    assert "Flow-owned initial exploration batch" in body
+    assert "consume all resource, Lean-provider, and Mathlib outcomes" in body
+    assert "retain useful findings even when another category was incomplete" in body
+    assert "Do not submit another exploration batch" in body
     assert "During later work" in body
     for migration_term in ("retroactive", "restored mature", "capability became available"):
         assert migration_term not in body
@@ -278,7 +281,7 @@ def test_content_plan_specialized_skills_spell_out_operational_flow() -> None:
     assert "graph_declared:" in completion_policy
     assert "graph_proved:" in completion_policy
     assert "Do not plan proof-only" in completion_policy
-    assert "build bottom-up by default" in completion_policy
+    assert "graph_proved: build bottom-up" in completion_policy
 
 
 def test_decl_stage_common_skills_keep_stage_specific_tools_out_of_shared_skill() -> None:
@@ -353,7 +356,7 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
     completion = specs["content-node-completion-decision"].body
     assert "## Interface Semantic Fit" in completion
     assert "structured multiline reason" in completion
-    assert "existing declarations checked and each concrete mismatch" in completion
+    assert "checked Mathlib/current-node/provider declarations" in closeout
     assert "do not create or decide the repository node tree" in completion
 
     result_closeout = specs["coordinator-content-result-closeout"].body
@@ -372,7 +375,7 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
         assert expected in decomposition
 
     readiness = specs["coordinator-dependency-readiness"].body
-    assert "prefer bottom-up readiness" in readiness
+    assert "derive the Source-visible dependency frontier" in readiness
     assert "assumptions, parameter and index representation, and conclusion direction" in readiness
 
     dispatch = specs["coordinator-content-task-dispatch"].body
@@ -383,7 +386,7 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
     round_planning = specs["decl-round-change-planning"].body
     assert "consumer-side shape" in strategy
     assert "consumer-side Lean shape" in round_planning
-    assert "do not grow the round or strategy indefinitely" in round_planning
+    assert "Do not grow the round or strategy indefinitely" in round_planning
 
     native_text = "\n".join(
         specs[key].body
@@ -420,5 +423,54 @@ def test_coordinator_completion_policy_spells_out_node_tree_policy() -> None:
     assert "graph_declared:" in completion_policy
     assert "graph_proved:" in completion_policy
     assert "smallest stable node subtree" in completion_policy
-    assert "complete\n  declaration graph" in completion_policy
+    assert "complete declaration\n  graph" in completion_policy
     assert "complete proof graph" in completion_policy
+
+
+def test_bottom_up_completion_and_lean_gap_policy_has_single_owned_decisions() -> None:
+    specs = build_skill_specs()
+    coordinator_policy = specs["coordinator-completion-policy"].body
+    readiness = specs["coordinator-dependency-readiness"].body
+    content_policy = specs["content-plan-completion-policy"].body
+    strategy = specs["decl-strategy-planning"].body
+    round_planning = specs["decl-round-change-planning"].body
+    closeout = specs["decl-round-closeout"].body
+    decomposition = specs["coordinator-node-decomposition"].body
+
+    assert "Source-visible dependency frontier" in coordinator_policy
+    assert "ready to the required state, visible through the consumer boundary" in readiness
+    assert "do not over-raise the target to proved" in readiness
+    assert "declared parent may be an intentional intermediate round" in content_policy
+    assert "terminal Content result" in content_policy
+
+    for expected in (
+        "If Mathlib already supplies",
+        "current repository node or attached provider already supplies",
+        "Keep a small helper in this Content node",
+        "Report blocked for Coordinator ownership",
+        "No declaration-count cutoff",
+        "provider-before-consumer rounds",
+    ):
+        assert expected in strategy
+    assert "layered definitions or lemmas" in strategy
+    assert "new Source/Resource/provider responsibility" in strategy
+    assert "core representation, index discipline, typeclass design, or proof architecture" in strategy
+    assert "follow the strategy's Lean-emergent gap classification" in round_planning
+
+    for expected in (
+        "affected declaration and revision",
+        "checked Mathlib/current-node/provider declarations",
+        "dependency frontier and consumers",
+        "why the gap appears local or package-shaped",
+        "recommended repair, new-node, or provider branch",
+    ):
+        assert expected in closeout
+
+    assert "Declaration count is context, never a mechanical split threshold" in decomposition
+    assert "layered definitions or lemmas" in decomposition
+    assert strategy.count("Keep a small helper in this Content node") == 1
+    assert all(
+        "Keep a small helper in this Content node" not in specs[key].body
+        for key in specs
+        if key != "decl-strategy-planning"
+    )
