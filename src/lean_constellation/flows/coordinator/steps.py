@@ -11,14 +11,19 @@ from agent_runtime_kit.flow.models import BaseStep, BaseStepResult, BaseStepStat
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.mathlib import MathlibIndex
 from lean_constellation.flows.common.checkpoint_policy import repo_flow_boundary_checkpoints_enabled
 from lean_constellation.domain.preparation import (
     ProviderRoute,
     RepoDependencyRequirementStatus,
 )
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import ProofAvailability, RepoFormat, RepoPublicationStatus
 from lean_constellation.domain.publication import ReleasePolicy
 from lean_constellation.flows.common.rendering import LeanRenderableStepResult
+from lean_constellation.flows.coordinator.submissions import (
+    RepoExplorationKind,
+    RepoExplorationSpec,
+)
 from lean_constellation.services.validation_snapshot.release_finalizer import PreparedRepoReleaseView
 
 
@@ -37,6 +42,43 @@ class CoordinatorResourceRequestResultView(StrictModel):
 
 class CoordinatorRepoExplorationResultView(StrictModel):
     kinds: list[Literal["resource", "lean_provider", "mathlib"]] = Field(default_factory=list)
+
+
+class InitialRepoExplorationContextView(StrictModel):
+    run_objective: str
+    completion_mode: str
+    source_overview: str | None = None
+    source_file_count: int = 0
+    source_block_count: int = 0
+    protected_root_interfaces: list[str] = Field(default_factory=list)
+    resource_count: int = 0
+    ready_provider_repos: list[str] = Field(default_factory=list)
+    requirement_count: int = 0
+    lake_dependencies: list[str] = Field(default_factory=list)
+    mathlib_module_count: int = 0
+    mathlib_decl_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class InitialRepoExplorationPlanStepResult(LeanRenderableStepResult):
+    result_type: Literal["initial_repo_exploration_plan"] = "initial_repo_exploration_plan"
+    outcome: Literal["planned", "not_required", "blocked"]
+    plan_id: str | None = None
+    explorations: list[RepoExplorationSpec] = Field(default_factory=list)
+    context: InitialRepoExplorationContextView | None = None
+    reason: str | None = None
+    issue_code: str | None = None
+
+    def agent_fields(self) -> dict[str, object]:
+        return {
+            "outcome": self.outcome,
+            "plan_id": self.plan_id,
+            "exploration_kinds": [spec.kind.value for spec in self.explorations],
+            "context": self.context.model_dump(mode="json") if self.context is not None else None,
+            "reason": self.reason,
+            "issue_code": self.issue_code,
+        }
 
 
 class CoordinatorRepoRequirementResultView(StrictModel):
@@ -262,8 +304,14 @@ class EnsureRepoExplorationAgentsStep(BaseStep):
             raise FlowStepValidationError("repo exploration ensure requires a source Coordinator step")
         source_step = ctx.ark.flow_service.get_step(source_step_id)
         submission = source_step.submission
-        if not isinstance(submission, CoordinatorRepoExplorationSubmission):
-            raise FlowStepValidationError("repo exploration ensure source submission is invalid")
+        if isinstance(source_step.result, InitialRepoExplorationPlanStepResult):
+            if source_step.result.outcome != "planned":
+                raise FlowStepValidationError("initial repo exploration source plan is not dispatchable")
+            explorations = source_step.result.explorations
+        elif isinstance(submission, CoordinatorRepoExplorationSubmission):
+            explorations = submission.explorations
+        else:
+            raise FlowStepValidationError("repo exploration ensure source is neither a deterministic plan nor a Coordinator submission")
         agent_service = ctx.ark.agent_service
         if agent_service is None:
             raise FlowStepValidationError("ark.agent_service is not registered")
@@ -271,7 +319,7 @@ class EnsureRepoExplorationAgentsStep(BaseStep):
         created: list[str] = []
         reused: list[str] = []
         bindings: dict[str, str] = {}
-        for spec in submission.explorations:
+        for spec in explorations:
             role, agent_type = self.ROLE_BY_KIND[spec.kind.value]
             agent_id = flow.agent_bindings.get(role)
             if agent_id is None:
@@ -308,6 +356,156 @@ class EnsureRepoExplorationAgentsStep(BaseStep):
                 created_roles=created,
                 reused_roles=reused,
                 summary="Requested repository exploration Agent roles are ready.",
+            )
+        )
+
+
+class InitialRepoExplorationPlanStep(BaseStep):
+    step_type: ClassVar[str] = "initial_repo_exploration_plan_step"
+    State: ClassVar[type[BaseStepState]] = BaseStepState
+    Result: ClassVar[type[BaseStepResult]] = InitialRepoExplorationPlanStepResult
+    Results: ClassVar[dict[str, type[BaseStepResult]]] = {
+        "initial_repo_exploration_plan": InitialRepoExplorationPlanStepResult,
+    }
+
+    def run(self, ctx: StepRunContext) -> StepTerminalReceipt:
+        flow = _load_native_coordinator_flow(ctx)
+        input_model = _require_native_coordinator_input(flow.input)
+        repo_root = _repo_root(input_model)
+        if repo_root is None:
+            return ctx.complete_step(
+                InitialRepoExplorationPlanStepResult(
+                    outcome="blocked",
+                    issue_code="repo_root_missing",
+                    reason="Initial repository exploration requires repo_root.",
+                    summary="Initial repository exploration planning is blocked without repo_root.",
+                )
+            )
+        repo_workspace = _repo_workspace(ctx)
+        repo_format = repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            code, message = _first_issue(repo_format.issues, fallback_code="repo_format_invalid")
+            return ctx.complete_step(
+                InitialRepoExplorationPlanStepResult(
+                    outcome="blocked",
+                    issue_code=code,
+                    reason=message,
+                    summary="Initial repository exploration could not read repository format truth.",
+                )
+            )
+        if repo_format.value.repo_format is not RepoFormat.NATIVE:
+            return ctx.complete_step(
+                InitialRepoExplorationPlanStepResult(
+                    outcome="not_required",
+                    reason="Initial exploration applies only after native repository preparation.",
+                    summary="Initial repository exploration is not required for this repository format.",
+                )
+            )
+        if _has_terminal_initial_repo_exploration(ctx, flow):
+            return ctx.complete_step(
+                InitialRepoExplorationPlanStepResult(
+                    outcome="not_required",
+                    reason="A terminal initial exploration batch already exists for this repository scope.",
+                    summary="Initial repository exploration was already completed.",
+                )
+            )
+        nodes = ctx.app.node.node_tree.node_store.list_nodes(repo_root)
+        requirements = repo_workspace.requirement.list_requirements(repo_root)
+        latest_release = repo_workspace.release.get_latest_release(repo_root)
+        publication = repo_workspace.metadata.get_repo_publication(repo_root)
+        for loaded, fallback in (
+            (nodes, "node_truth_invalid"),
+            (requirements, "requirement_truth_invalid"),
+            (publication, "publication_truth_invalid"),
+        ):
+            if not loaded.ok or loaded.value is None:
+                code, message = _first_issue(loaded.issues, fallback_code=fallback)
+                return ctx.complete_step(
+                    InitialRepoExplorationPlanStepResult(
+                        outcome="blocked",
+                        issue_code=code,
+                        reason=message,
+                        summary="Initial repository exploration could not verify the fresh repository boundary.",
+                    )
+                )
+        if not latest_release.ok:
+            code, message = _first_issue(latest_release.issues, fallback_code="release_truth_invalid")
+            return ctx.complete_step(
+                InitialRepoExplorationPlanStepResult(
+                    outcome="blocked",
+                    issue_code=code,
+                    reason=message,
+                    summary="Initial repository exploration could not verify Release truth.",
+                )
+            )
+        business_nodes = [node.path for node in nodes.value if node.path != "Main"]
+        root_closed = any(
+            node.path == "Main" and getattr(node.lifecycle, "value", node.lifecycle) != "active"
+            for node in nodes.value
+        )
+        repo_ready = (
+            latest_release.value is not None
+            or publication.value.publication.status is RepoPublicationStatus.STABLE
+        )
+        if business_nodes or root_closed or requirements.value or repo_ready:
+            reasons = []
+            if business_nodes:
+                reasons.append(f"business nodes: {', '.join(business_nodes[:5])}")
+            if root_closed:
+                reasons.append("Main lifecycle is already terminal")
+            if requirements.value:
+                reasons.append(f"requirements: {len(requirements.value)}")
+            if repo_ready:
+                reasons.append("repository release/publication truth exists")
+            return ctx.complete_step(
+                InitialRepoExplorationPlanStepResult(
+                    outcome="not_required",
+                    reason="; ".join(reasons),
+                    summary="Repository business truth is already beyond the initial preparation boundary.",
+                )
+            )
+
+        context = _initial_repo_exploration_context(
+            ctx,
+            input_model=input_model,
+            repo_root=repo_root,
+            requirement_count=len(requirements.value),
+        )
+        objective = _bounded_text(context.run_objective, limit=240)
+        context_summary = context.summary
+        explorations = [
+            RepoExplorationSpec(
+                kind=RepoExplorationKind.RESOURCE,
+                objective=(
+                    "Find authoritative external material not already covered by current Source/Resources that can support "
+                    f"the main definitions, results, or proof route for: {objective}"
+                ),
+                context_summary=context_summary,
+            ),
+            RepoExplorationSpec(
+                kind=RepoExplorationKind.LEAN_PROVIDER,
+                objective=(
+                    "Find and verify Lean 4/Lake repositories that may directly provide relevant definitions, theorems, "
+                    f"or an adapter/provider route for: {objective}"
+                ),
+                context_summary=context_summary,
+            ),
+            RepoExplorationSpec(
+                kind=RepoExplorationKind.MATHLIB,
+                objective=(
+                    "Verify repository-level Mathlib modules and declarations needed by the project theme, including "
+                    f"the main representation constraints for: {objective}"
+                ),
+                context_summary=context_summary,
+            ),
+        ]
+        return ctx.complete_step(
+            InitialRepoExplorationPlanStepResult(
+                outcome="planned",
+                plan_id=f"initial_repo_exploration_plan_{uuid.uuid4().hex}",
+                explorations=explorations,
+                context=context,
+                summary="Planned the fixed resource, Lean-provider, and Mathlib initial exploration batch.",
             )
         )
 
@@ -771,7 +969,163 @@ def _first_issue(issues: list[object], *, fallback_code: str) -> tuple[str, str]
     return fallback_code, fallback_code
 
 
+def _has_terminal_initial_repo_exploration(ctx: StepRunContext, current_flow) -> bool:  # noqa: ANN001
+    flow_service = ctx.ark.flow_service
+    if flow_service is None:
+        return False
+    candidates = [
+        flow
+        for flow in flow_service.list_flows()
+        if flow.flow_type == "native_repo_coordinator"
+        and flow.scope_id == current_flow.scope_id
+    ]
+    for flow in candidates:
+        planned = False
+        for step_id in flow.step_ids:
+            step = flow_service.get_step(step_id)
+            if (
+                isinstance(step.result, InitialRepoExplorationPlanStepResult)
+                and step.result.outcome == "planned"
+            ):
+                planned = True
+                continue
+            if (
+                planned
+                and isinstance(step.result, CoordinatorContentBatchSnapshotStepResult)
+                and step.result.checkpoint_kind == "after_repo_exploration_terminal"
+                and step.result.outcome in {"snapshot_created", "skipped"}
+            ):
+                return True
+    return False
+
+
+def _initial_repo_exploration_context(
+    ctx: StepRunContext,
+    *,
+    input_model,
+    repo_root: Path,
+    requirement_count: int,
+) -> InitialRepoExplorationContextView:
+    warnings: list[str] = []
+
+    def record(label: str, result) -> None:  # noqa: ANN001
+        if not result.ok:
+            code, _ = _first_issue(result.issues, fallback_code=f"{label}_unavailable")
+            warnings.append(code)
+
+    config = ctx.app.repo_workspace.metadata.get_repo_config(repo_root)
+    record("repo_config", config)
+    completion_mode = (
+        config.value.config.completion_mode.value
+        if config.ok and config.value is not None
+        else "unknown"
+    )
+    run_objective = (
+        input_model.run_context.run_spec.run_objective
+        if input_model.run_context is not None
+        else input_model.start_reason
+        or f"Complete native repository {input_model.repo_key or repo_root.name}."
+    )
+
+    manifest = ctx.app.material.source_corpus.get_source_corpus_manifest(repo_root)
+    record("source_corpus", manifest)
+    source_file_count = len(manifest.value.files) if manifest.ok and manifest.value is not None else 0
+    source_overview = manifest.value.overview if manifest.ok and manifest.value is not None else None
+
+    source_index = ctx.app.material.source_index.get_source_index_overview(
+        repo_root,
+        require_committed=True,
+    )
+    record("source_index", source_index)
+    source_block_count = (
+        source_index.value.block_count
+        if source_index.ok and source_index.value is not None
+        else 0
+    )
+    if source_overview is None and source_index.ok and source_index.value is not None:
+        source_overview = source_index.value.overview
+
+    interfaces = ctx.app.node.interface.list_interfaces(repo_root, node_path="Main")
+    record("root_interfaces", interfaces)
+    protected_root_interfaces = (
+        list(interfaces.value.protected_names)
+        if interfaces.ok and interfaces.value is not None
+        else []
+    )
+
+    resources = ctx.app.material.resource_library.list_resources(repo_root)
+    record("resources", resources)
+    resource_count = len(resources.value) if resources.ok and resources.value is not None else 0
+
+    providers = ctx.app.repo_workspace.workspace_catalog.list_ready_provider_repos(
+        repo_root.parent,
+        current_repo=repo_root.name,
+    )
+    record("providers", providers)
+    ready_provider_repos = (
+        [item.repo_key for item in providers.value]
+        if providers.ok and providers.value is not None
+        else []
+    )
+
+    lake = ctx.app.repo_workspace.lake_dependency.parse_lake_dependencies(repo_root)
+    record("lake_dependencies", lake)
+    lake_dependencies = (
+        [item.name for item in lake.value.dependencies]
+        if lake.ok and lake.value is not None
+        else []
+    )
+
+    mathlib_path = ctx.app.mathlib.mathlib_index.index_path(repo_root)
+    if mathlib_path.exists():
+        mathlib = ctx.app.foundation.store.read_json(mathlib_path, MathlibIndex)
+        record("mathlib_index", mathlib)
+    else:
+        mathlib = ctx.app.foundation.ok(MathlibIndex())
+    mathlib_module_count = len(mathlib.value.modules) if mathlib.ok and mathlib.value is not None else 0
+    mathlib_decl_count = len(mathlib.value.declarations) if mathlib.ok and mathlib.value is not None else 0
+
+    summary = " | ".join(
+        [
+            f"objective={_bounded_text(run_objective, limit=180)}",
+            f"completion={completion_mode}",
+            f"source_files={source_file_count}",
+            f"source_blocks={source_block_count}",
+            f"root_interfaces={','.join(protected_root_interfaces[:8]) or 'none'}",
+            f"resources={resource_count}",
+            f"providers={','.join(ready_provider_repos[:8]) or 'none'}",
+            f"requirements={requirement_count}",
+            f"lake_deps={','.join(lake_dependencies[:8]) or 'none'}",
+            f"mathlib={mathlib_module_count} modules/{mathlib_decl_count} decls",
+        ]
+    )
+    return InitialRepoExplorationContextView(
+        run_objective=run_objective,
+        completion_mode=completion_mode,
+        source_overview=_bounded_text(source_overview, limit=400) if source_overview else None,
+        source_file_count=source_file_count,
+        source_block_count=source_block_count,
+        protected_root_interfaces=protected_root_interfaces,
+        resource_count=resource_count,
+        ready_provider_repos=ready_provider_repos,
+        requirement_count=requirement_count,
+        lake_dependencies=lake_dependencies,
+        mathlib_module_count=mathlib_module_count,
+        mathlib_decl_count=mathlib_decl_count,
+        warnings=sorted(set(warnings)),
+        summary=_bounded_text(summary, limit=1200),
+    )
+
+
+def _bounded_text(value: str, *, limit: int) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: max(0, limit - 3)].rstrip()}..."
+
+
 COORDINATOR_STEP_TYPES: tuple[type[BaseStep], ...] = (
+    InitialRepoExplorationPlanStep,
     CoordinatorContentBatchSnapshotStep,
     EnsureRepoExplorationAgentsStep,
     CoordinatorRequirementResumeGateStep,

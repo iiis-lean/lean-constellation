@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar, Literal
 
 from agent_runtime_kit.flow.contexts import FlowBuildContext, FlowContext, FlowReadContext, FlowStepContext, StableStepTerminalContext
@@ -10,6 +11,7 @@ from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, Age
 from pydantic import Field
 
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
+from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.domain.repo_run import RepoRunContext
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.checkpoint_policy import record_checkpoint_skip_summary, repo_flow_boundary_checkpoints_enabled
@@ -29,6 +31,8 @@ from lean_constellation.flows.coordinator.steps import (
     CoordinatorContentBatchSnapshotStepResult,
     EnsureRepoExplorationAgentsStep,
     EnsureRepoExplorationAgentsStepResult,
+    InitialRepoExplorationPlanStep,
+    InitialRepoExplorationPlanStepResult,
     CoordinatorRequirementResumeGateStep,
     CoordinatorRequirementResumeGateStepResult,
     CoordinatorStepResult,
@@ -124,13 +128,18 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
     @classmethod
     def build_from_request(cls, ctx: FlowBuildContext) -> "NativeRepoCoordinatorFlow":
         params = NativeRepoCoordinatorParams.model_validate(ctx.params)
+        initial_phase = (
+            "initial_repo_exploration_plan"
+            if _native_repo_may_need_initial_exploration(ctx, params.repo_root)
+            else "coordinator_agent"
+        )
         return cls._build(
             ctx,
             input_model=NativeRepoCoordinatorInput(
                 summary=params.start_reason or "Start native repo coordination.",
                 **params.model_dump(),
             ),
-            state=NativeRepoCoordinatorState(),
+            state=NativeRepoCoordinatorState(position=FlowPosition(phase=initial_phase)),
         )
 
     def can_exit_waiting(self, ctx: FlowReadContext) -> bool:
@@ -189,6 +198,14 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
     def create_next_step(self, ctx: FlowContext) -> str | None:
         state = _require_native_coordinator_state(self.state)
         input_model = _require_native_coordinator_input(self.input)
+        if state.position.phase == "initial_repo_exploration_plan":
+            return ctx.create_step(
+                InitialRepoExplorationPlanStep(
+                    step_id=new_coordinator_step_id("initial_repo_exploration_plan"),
+                    flow_id=self.flow_id,
+                    scope_id=self.scope_id,
+                )
+            )
         if state.position.phase == "coordinator_agent":
             return ctx.create_step(_coordinator_agent_step(ctx, self, input_model, state, callback=False))
         if state.position.phase == "coordinator_callback":
@@ -308,7 +325,9 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             return
 
         result = ctx.step.result
-        if ctx.step.step_type == "coordinator_agent_step":
+        if isinstance(result, InitialRepoExplorationPlanStepResult):
+            self._consume_initial_repo_exploration_plan(state, result, ctx.step.step_id)
+        elif ctx.step.step_type == "coordinator_agent_step":
             self._consume_coordinator_agent_result(ctx, state, result, ctx.step.submission, ctx.step.step_id)
         elif isinstance(result, CoordinatorRequirementResumeGateStepResult):
             self._consume_requirement_resume_gate_result(state, result)
@@ -398,6 +417,29 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
 
         if ctx.step.step_type != "coordinator_agent_step":
             return
+        if _is_initial_repo_exploration_callback(ctx):
+            if not repo_flow_boundary_checkpoints_enabled(ctx.app):
+                record_checkpoint_skip_summary(
+                    ctx,
+                    "Initial exploration callback checkpoint skipped because repo flow-boundary checkpoints are disabled.",
+                )
+            else:
+                input_model = _require_native_coordinator_input(self.input)
+                repo_root = _coordinator_repo_root(input_model)
+                if repo_root is None:
+                    _mark_flow_failed_from_stable_snapshot(
+                        ctx,
+                        "initial_repo_exploration_callback_snapshot_failed",
+                        [ValueError("Initial exploration callback snapshot requires repo_root in Flow input.")],
+                    )
+                    return
+                _record_stable_repo_snapshot(
+                    ctx,
+                    repo_root,
+                    checkpoint_kind="after_initial_repo_exploration_callback",
+                    label=f"after initial exploration callback for {input_model.repo_key or repo_root.name}",
+                    failure_type="initial_repo_exploration_callback_snapshot_failed",
+                )
         if not isinstance(result, CoordinatorStepResult) or result.outcome != "repo_requirement":
             return
         state = _require_native_coordinator_state(self.state)
@@ -533,6 +575,26 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
             return
         self._fail_coordinator("coordinator_agent_submission_mismatch", "CoordinatorAgent result did not match its accepted submission.")
 
+    def _consume_initial_repo_exploration_plan(
+        self,
+        state: NativeRepoCoordinatorState,
+        result: InitialRepoExplorationPlanStepResult,
+        step_id: str,
+    ) -> None:
+        if result.outcome == "not_required":
+            state.position = FlowPosition(phase="coordinator_agent")
+            return
+        if result.outcome != "planned" or not result.plan_id or len(result.explorations) != 3:
+            self._fail_coordinator(
+                result.issue_code or "initial_repo_exploration_plan_invalid",
+                result.reason or result.summary or "Initial repository exploration planning failed.",
+            )
+            return
+        state.pending_dispatch_source_step_id = step_id
+        state.pending_dispatch_source_submission_id = result.plan_id
+        state.pending_dispatch_kind = "repo_exploration"
+        state.position = FlowPosition(phase="ensure_repo_exploration_agents")
+
     def _consume_requirement_resume_gate_result(
         self,
         state: NativeRepoCoordinatorState,
@@ -644,6 +706,62 @@ class NativeRepoCoordinatorFlow(LeanBusinessFlow):
 
 
 COORDINATOR_FLOW_TYPES: tuple[type[LeanBusinessFlow], ...] = (NativeRepoCoordinatorFlow,)
+
+
+def _native_repo_may_need_initial_exploration(
+    ctx: FlowBuildContext,
+    repo_root: str | None,
+) -> bool:
+    if not repo_root:
+        return False
+    repo_workspace = getattr(ctx.app, "repo_workspace", None)
+    if repo_workspace is None:
+        return False
+    repo_format = repo_workspace.metadata.get_repo_format(Path(repo_root))
+    if not (
+        repo_format.ok
+        and repo_format.value is not None
+        and repo_format.value.repo_format is RepoFormat.NATIVE
+    ):
+        return False
+    root = Path(repo_root)
+    node_service = getattr(ctx.app, "node", None)
+    if node_service is None:
+        return True
+    nodes = node_service.node_tree.node_store.list_nodes(root)
+    requirements = repo_workspace.requirement.list_requirements(root)
+    latest_release = repo_workspace.release.get_latest_release(root)
+    publication = repo_workspace.metadata.get_repo_publication(root)
+    if not all(result.ok and result.value is not None for result in (nodes, requirements, publication)) or not latest_release.ok:
+        return True
+    if any(
+        node.path != "Main"
+        or (node.path == "Main" and getattr(node.lifecycle, "value", node.lifecycle) != "active")
+        for node in nodes.value
+    ):
+        return False
+    return not (
+        requirements.value
+        or latest_release.value is not None
+        or publication.value.publication.status.value == "stable"
+    )
+
+
+def _is_initial_repo_exploration_callback(ctx: StableStepTerminalContext) -> bool:
+    state = ctx.step.state
+    if not isinstance(state, AgentStepState) or state.callback_dispatch_step_id is None:
+        return False
+    flow_service = ctx.ark.flow_service
+    if flow_service is None:
+        return False
+    dispatch = flow_service.get_step(state.callback_dispatch_step_id)
+    if not isinstance(dispatch.state, DispatchStepState):
+        return False
+    source = flow_service.get_step(dispatch.state.source_step_id)
+    return bool(
+        isinstance(source.result, InitialRepoExplorationPlanStepResult)
+        and source.result.outcome == "planned"
+    )
 
 
 def _record_stable_repo_snapshot(
@@ -895,9 +1013,15 @@ def _repo_exploration_dispatch_step(
         raise TypeError("ark.flow_service is not registered")
     source_step = flow_service.get_step(source_step_id)
     submission = source_step.submission
-    if not isinstance(submission, CoordinatorRepoExplorationSubmission):
+    if isinstance(source_step.result, InitialRepoExplorationPlanStepResult):
+        if source_step.result.outcome != "planned":
+            raise TypeError("initial repo exploration dispatch source plan is not dispatchable")
+        explorations = source_step.result.explorations
+    elif isinstance(submission, CoordinatorRepoExplorationSubmission):
+        explorations = submission.explorations
+    else:
         raise TypeError(
-            "repo exploration dispatch expected CoordinatorRepoExplorationSubmission"
+            "repo exploration dispatch expected a deterministic initial plan or CoordinatorRepoExplorationSubmission"
         )
     input_model = _require_native_coordinator_input(flow.input)
     repo_root = _coordinator_repo_root(input_model)
@@ -909,7 +1033,7 @@ def _repo_exploration_dispatch_step(
         "mathlib": "repo_mathlib_recon",
     }
     requests = []
-    for spec in submission.explorations:
+    for spec in explorations:
         role = role_by_kind[spec.kind.value]
         agent_id = flow.agent_bindings.get(role)
         if not agent_id:

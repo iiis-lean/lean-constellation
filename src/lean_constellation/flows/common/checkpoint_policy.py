@@ -11,6 +11,9 @@ REPO_FLOW_BOUNDARY_CHECKPOINT_KINDS = frozenset(
         "after_content_task_batch_terminal",
         "before_resource_request_dispatch",
         "after_resource_request_terminal",
+        "before_repo_exploration_dispatch",
+        "after_repo_exploration_terminal",
+        "after_initial_repo_exploration_callback",
     }
 )
 

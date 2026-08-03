@@ -38,6 +38,7 @@ class RepoCheckpointKind(StrEnum):
     AFTER_RESOURCE_REQUEST_TERMINAL = "after_resource_request_terminal"
     BEFORE_REPO_EXPLORATION_DISPATCH = "before_repo_exploration_dispatch"
     AFTER_REPO_EXPLORATION_TERMINAL = "after_repo_exploration_terminal"
+    AFTER_INITIAL_REPO_EXPLORATION_CALLBACK = "after_initial_repo_exploration_callback"
     AFTER_CONTENT_PREPARATION_TERMINAL = "after_content_preparation_terminal"
     AFTER_CONTENT_DECL_ROUND_TERMINAL = "after_content_decl_round_terminal"
     MANUAL_TEST_STABLE_POINT = "manual_test_stable_point"
@@ -180,6 +181,11 @@ class SnapshotRestoreComponent:
                 checkpoint_kind=RepoCheckpointKind.AFTER_REPO_EXPLORATION_TERMINAL,
                 gate_name="after_repo_exploration_terminal_stable_point",
                 summary="A repository exploration batch has reached terminal flow states.",
+            ),
+            RepoCheckpointKind.AFTER_INITIAL_REPO_EXPLORATION_CALLBACK: RepoCheckpointPolicy(
+                checkpoint_kind=RepoCheckpointKind.AFTER_INITIAL_REPO_EXPLORATION_CALLBACK,
+                gate_name="after_initial_repo_exploration_callback_stable_point",
+                summary="The first Coordinator business callback has consumed the terminal initial exploration batch.",
             ),
             RepoCheckpointKind.AFTER_CONTENT_PREPARATION_TERMINAL: RepoCheckpointPolicy(
                 checkpoint_kind=RepoCheckpointKind.AFTER_CONTENT_PREPARATION_TERMINAL,

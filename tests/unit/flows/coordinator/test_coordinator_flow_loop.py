@@ -30,6 +30,7 @@ from lean_constellation.flows.coordinator.submissions import (
     RepoExplorationSpec,
 )
 from lean_constellation.flows.repo_exploration.submissions import (
+    RepoLeanProviderDiscoverySubmission,
     RepoMathlibReconSubmission,
     RepoResourceCandidate,
     RepoResourceDiscoverySubmission,
@@ -42,7 +43,7 @@ from lean_constellation.services.validation_snapshot import (
     RepoCheckpointKind,
     ValidationSnapshotService,
 )
-from tests.unit_services_helpers import make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import initialize_native_test_repo, make_runtime, publish_native_provider_release
 
 
 class FakeLakeClient:
@@ -219,6 +220,61 @@ def _complete_child_flow(runtime: FakeLeanFlowRuntime, child_flow_id: str, resul
             setattr(flow, "current_step_id", None),
         ),
     )
+
+
+def _complete_initial_exploration(runtime: FakeLeanFlowRuntime, flow_id: str):
+    plan_step_id = _advance_and_run(runtime, flow_id)
+    plan = runtime.flow_service.get_step(plan_step_id).result
+    assert plan.outcome == "planned"
+    assert [spec.kind.value for spec in plan.explorations] == [
+        "resource",
+        "lean_provider",
+        "mathlib",
+    ]
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+    dispatch_step_id = _advance_and_run(runtime, flow_id)
+    children = runtime.flow_service.store.list_child_flows(
+        parent_flow_id=flow_id,
+        parent_dispatch_step_id=dispatch_step_id,
+    )
+    assert [child.flow_type for child in children] == [
+        "repo_resource_discovery",
+        "repo_lean_provider_discovery",
+        "repo_mathlib_recon",
+    ]
+    submissions = [
+        RepoResourceDiscoverySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="repo_resource_discovery_result",
+            tool_name="submit_repo_resource_discovery_result",
+            repo_key="Repo",
+            outcome="no_useful_findings",
+            summary="No additional resource candidate.",
+        ),
+        RepoLeanProviderDiscoverySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="repo_lean_provider_discovery_result",
+            tool_name="submit_repo_lean_provider_discovery_result",
+            repo_key="Repo",
+            outcome="incomplete",
+            summary="Lean provider search ended with bounded incomplete evidence.",
+        ),
+        RepoMathlibReconSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="repo_mathlib_recon_result",
+            tool_name="submit_repo_mathlib_recon_result",
+            repo_key="Repo",
+            outcome="no_useful_findings",
+            summary="No additional Mathlib entry.",
+        ),
+    ]
+    for child, submission in zip(children, submissions, strict=True):
+        runtime.agent_service.queue_submission(submission)
+        _advance_and_run(runtime, child.flow_id)
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "coordinator_callback"
+    return plan, dispatch_step_id, children
 
 
 def _prepare_requirement_resume_gate(runtime: FakeLeanFlowRuntime, lean_runtime, repo_root: Path):
@@ -563,6 +619,86 @@ def test_repo_exploration_ensures_agents_dispatches_atomic_batch_and_callbacks(
     assert second_ensure.reused_roles == ["repo_mathlib_recon"]
 
 
+def test_fresh_native_repo_runs_fixed_initial_exploration_before_coordinator_turn(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, runtime_stability, ark_snapshot = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    initialize_native_test_repo(repo_root, project_name="Repo")
+    assert lean_runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    flow_id = _start_coordinator(runtime, repo_root)
+
+    plan, dispatch_step_id, children = _complete_initial_exploration(runtime, flow_id)
+
+    assert plan.context.completion_mode == "graph_proved"
+    assert plan.context.source_file_count == 0
+    assert plan.context.requirement_count == 0
+    assert plan.plan_id.startswith("initial_repo_exploration_plan_")
+    dispatch = runtime.flow_service.get_step(dispatch_step_id)
+    assert dispatch.state.source_submission_id == plan.plan_id
+    assert all(
+        runtime.flow_service.get_flow(child.flow_id).status is FlowStatus.COMPLETED
+        for child in children
+    )
+    assert [
+        runtime.flow_service.get_flow(child.flow_id).result.outcome
+        for child in children
+    ] == ["no_useful_findings", "incomplete", "no_useful_findings"]
+    assert runtime_stability.calls == [
+        (RepoCheckpointKind.BEFORE_REPO_EXPLORATION_DISPATCH, []),
+        (RepoCheckpointKind.AFTER_REPO_EXPLORATION_TERMINAL, []),
+    ]
+    assert len(ark_snapshot.created) == 2
+
+    second_flow_id = _start_coordinator(runtime, repo_root)
+    second_plan_step_id = _advance_and_run(runtime, second_flow_id)
+    second_plan = runtime.flow_service.get_step(second_plan_step_id).result
+    assert second_plan.outcome == "not_required"
+    assert "already completed" in second_plan.summary
+    assert runtime.flow_service.get_flow(second_flow_id).state.position.phase == "coordinator_agent"
+
+    runtime.agent_service.queue_submission(
+        CoordinatorRepoRequirementSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="coordinator_repo_requirement",
+            tool_name="submit_repo_requirement",
+            repo_key="Repo",
+            requirement_name="initial_provider_req",
+            target_repo="InitialProvider",
+            provider_route=AutoProviderRoute(),
+            reason="Act on the classified initial exploration frontier.",
+            summary="Wait for the selected provider route.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    assert runtime.flow_service.get_flow(flow_id).state.position.phase == "waiting_requirement"
+    assert "fixed initial resource, Lean-provider, and Mathlib exploration batch" in (
+        runtime.agent_service.start_records[-1].prompt or ""
+    )
+    assert runtime_stability.calls[-2:] == [
+        (RepoCheckpointKind.AFTER_INITIAL_REPO_EXPLORATION_CALLBACK, []),
+        (RepoCheckpointKind.COORDINATOR_REQUIREMENT_WAITING, []),
+    ]
+    assert len(ark_snapshot.created) == 4
+
+
+def test_existing_business_node_skips_initial_exploration_plan(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, _, _ = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "Repo"
+    initialize_native_test_repo(repo_root, project_name="Repo")
+    _ensure_main_core_node(lean_runtime, repo_root)
+
+    flow_id = _start_coordinator(runtime, repo_root)
+    flow = runtime.flow_service.get_flow(flow_id)
+
+    assert flow.state.position.phase == "coordinator_agent"
+    first_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert first_step_id is not None
+    assert runtime.flow_service.get_step(first_step_id).step_type == "coordinator_agent_step"
+
+
 def test_resource_request_dispatch_waiting_and_callback(tmp_path: Path) -> None:
     runtime, _, runtime_stability, ark_snapshot = _runtime(tmp_path)
     repo_root = tmp_path / "workspace" / "Repo"
@@ -821,6 +957,7 @@ def test_repo_ready_submission_prepares_and_publishes_native_release(
     assert committed.ok
     assert lean_runtime.lean_projection.refresh_node_projection(repo_root, node_path="Main").ok
     flow_id = _start_coordinator(runtime, repo_root)
+    _complete_initial_exploration(runtime, flow_id)
 
     runtime.agent_service.queue_submission(
         CoordinatorRepoReadySubmission(

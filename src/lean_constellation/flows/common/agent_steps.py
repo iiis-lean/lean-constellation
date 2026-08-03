@@ -62,6 +62,7 @@ from lean_constellation.flows.coordinator.steps import (
     CoordinatorRepoRequirementResultView,
     CoordinatorResourceRequestResultView,
     CoordinatorStepResult,
+    InitialRepoExplorationPlanStepResult,
 )
 from lean_constellation.flows.repo_lifecycle.submissions import (
     AdapterCatalogBlockedSubmission,
@@ -435,13 +436,22 @@ class CoordinatorAgentStep(AgentStep):
             }
             for child in children
         ):
-            guidance = (
-                "Required Skill re-entry for this turn: read and apply "
-                "$coordinator-repo-exploration and $material-boundary-classification first, then re-read the current Coordinator mode Skill. "
-                "Consume only this exploration batch. Honor or explicitly rebut each recommended material ownership; preflight any local-resource candidate before requesting it; "
-                "use a direct adapter requirement only for exact immutable verified Lean evidence; do not "
-                "repeat MathlibIndex writes already completed by recon. Submit exactly one next move."
-            )
+            if _is_initial_repo_exploration_callback(self, ctx):
+                guidance = (
+                    "This is the fixed initial resource, Lean-provider, and Mathlib exploration batch completed before the first Coordinator business decision. "
+                    "Required Skill re-entry for this turn: read and apply $coordinator-repo-exploration and "
+                    "$material-boundary-classification first, then re-read the current Coordinator mode Skill. "
+                    "Classify every child outcome, including no-useful-findings or incomplete results, and handle or explicitly decline each useful recommendation before choosing one normal next move. "
+                    "Honor or explicitly rebut material ownership; preflight local-resource candidates; use a direct adapter requirement only for exact immutable verified Lean evidence; and do not repeat MathlibIndex writes already completed by recon."
+                )
+            else:
+                guidance = (
+                    "Required Skill re-entry for this turn: read and apply "
+                    "$coordinator-repo-exploration and $material-boundary-classification first, then re-read the current Coordinator mode Skill. "
+                    "Consume only this exploration batch. Honor or explicitly rebut each recommended material ownership; preflight any local-resource candidate before requesting it; "
+                    "use a direct adapter requirement only for exact immutable verified Lean evidence; do not "
+                    "repeat MathlibIndex writes already completed by recon. Submit exactly one next move."
+                )
         else:
             guidance = _coordinator_content_callback_guidance(children)
         return f"{base}\n\nCurrent callback routing:\n{guidance}"
@@ -895,6 +905,23 @@ def _callback_child_flows(step: AgentStep, ctx) -> list[object]:  # noqa: ANN001
         for child in children
         if getattr(child, "child_flow_id", None)
     ]
+
+
+def _is_initial_repo_exploration_callback(step: AgentStep, ctx) -> bool:  # noqa: ANN001
+    latest = step._latest_agent_step(ctx)
+    state = step._agent_step_state(latest)
+    dispatch_step_id = state.callback_dispatch_step_id
+    if dispatch_step_id is None:
+        return False
+    dispatch = step._flow_service(ctx).get_step(dispatch_step_id)
+    source_step_id = getattr(dispatch.state, "source_step_id", None)
+    if source_step_id is None:
+        return False
+    source = step._flow_service(ctx).get_step(source_step_id)
+    return bool(
+        isinstance(source.result, InitialRepoExplorationPlanStepResult)
+        and source.result.outcome == "planned"
+    )
 
 
 def _content_plan_callback_guidance(
