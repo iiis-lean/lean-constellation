@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from time import perf_counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -56,6 +57,7 @@ class RoundStageGateView(StrictModel):
     issue_code: str | None = None
     issue_message: str | None = None
     affected_decl_names: list[str] = Field(default_factory=list)
+    timings_ms: dict[str, float] = Field(default_factory=dict)
     summary: str
 
 
@@ -210,6 +212,12 @@ class DeclRoundExecutionComponent:
         retry_count: int = 0,
         max_retries: int = 2,
     ) -> ServiceResult[RoundStageGateView]:
+        timings_ms: dict[str, float] = {}
+
+        def with_timings(view: RoundStageGateView) -> RoundStageGateView:
+            return view.model_copy(update={"timings_ms": dict(timings_ms)})
+
+        review_started = perf_counter()
         context_issue = self._review_context_issue(
             review,
             node_path=node_path,
@@ -217,17 +225,20 @@ class DeclRoundExecutionComponent:
             stage=stage,
             targets=target_decl_names,
         )
+        timings_ms["review_context"] = round((perf_counter() - review_started) * 1000, 3)
 
         if context_issue is not None:
-            return self.runtime.foundation.ok(self._failed(stage, context_issue, target_decl_names))
+            return self.runtime.foundation.ok(with_timings(self._failed(stage, context_issue, target_decl_names)))
         if review.outcome == "incomplete":
-            return self.runtime.foundation.ok(self._failed(stage, review.incomplete_reason or "Reviewer did not submit a result.", target_decl_names))
+            return self.runtime.foundation.ok(
+                with_timings(self._failed(stage, review.incomplete_reason or "Reviewer did not submit a result.", target_decl_names))
+            )
         if review.outcome == "rejected":
             rejected = sorted(set(review.failed_decl_names) | set(review.missing_decl_names)) or list(target_decl_names)
             next_retry = retry_count + 1
             if retry_count < max_retries:
                 return self.runtime.foundation.ok(
-                    RoundStageGateView(
+                    with_timings(RoundStageGateView(
                         outcome="retry_worker",
                         stage=stage,
                         rejected_decl_names=rejected,
@@ -235,10 +246,10 @@ class DeclRoundExecutionComponent:
                         retry_remaining=max(max_retries - next_retry, 0),
                         feedback_summary=review.summary,
                         summary=f"{stage} review rejected; retry {next_retry} is available.",
-                    )
+                    ))
                 )
             return self.runtime.foundation.ok(
-                RoundStageGateView(
+                with_timings(RoundStageGateView(
                     outcome="failed",
                     stage=stage,
                     rejected_decl_names=rejected,
@@ -249,9 +260,10 @@ class DeclRoundExecutionComponent:
                     issue_message=review.summary or f"{stage} review retry budget exhausted.",
                     affected_decl_names=rejected,
                     summary=f"{stage} review retry budget exhausted.",
-                )
+                ))
             )
 
+        validation_started = perf_counter()
         validation = self._validate_stage(
             repo_root,
             node_path=node_path,
@@ -259,29 +271,35 @@ class DeclRoundExecutionComponent:
             stage=stage,
             targets=target_decl_names,
         )
+        timings_ms["stage_candidate_validation"] = round((perf_counter() - validation_started) * 1000, 3)
+        if validation.value is not None:
+            for name, duration in validation.value.timings_ms.items():
+                timings_ms[f"stage_candidate_validation.{name}"] = duration
         if not validation.ok or validation.value is None:
             return self.runtime.foundation.ok(
-                self._failed(stage, self._issue_message(validation.issues, "Stage validation failed."), target_decl_names)
+                with_timings(self._failed(stage, self._issue_message(validation.issues, "Stage validation failed."), target_decl_names))
             )
         if not validation.value.passed:
             return self.runtime.foundation.ok(
-                self._failed(
+                with_timings(self._failed(
                     stage,
                     self._issue_message(validation.value.issues, validation.value.summary),
                     target_decl_names,
-                )
+                ))
             )
+        audit_started = perf_counter()
         audit = self.runtime.validation_snapshot.run_round_local_audit(
             repo_root,
             node_path=node_path,
             round_id=round_id,
             stage=stage,
         )
+        timings_ms["round_local_audit"] = round((perf_counter() - audit_started) * 1000, 3)
         if not audit.ok or audit.value is None:
             return self.runtime.foundation.fail(audit.issues)
         if not audit.value.passed:
             return self.runtime.foundation.ok(
-                RoundStageGateView(
+                with_timings(RoundStageGateView(
                     outcome="blocked",
                     stage=stage,
                     rejected_decl_names=list(target_decl_names),
@@ -292,8 +310,9 @@ class DeclRoundExecutionComponent:
                     issue_message=audit.value.summary,
                     affected_decl_names=list(target_decl_names),
                     summary=audit.value.summary,
-                )
+                ))
             )
+        mutation_started = perf_counter()
         advanced = self.graph.advance_stage_state(
             repo_root,
             node_path=node_path,
@@ -301,10 +320,11 @@ class DeclRoundExecutionComponent:
             stage=stage,
             decl_names=list(target_decl_names),
         )
+        timings_ms["stage_state_mutation"] = round((perf_counter() - mutation_started) * 1000, 3)
         if not advanced.ok or advanced.value is None:
             return self.runtime.foundation.fail(advanced.issues)
         return self.runtime.foundation.ok(
-            RoundStageGateView(
+            with_timings(RoundStageGateView(
                 outcome="stage_passed",
                 stage=stage,
                 advanced_decl_names=list(advanced.value),
@@ -312,7 +332,7 @@ class DeclRoundExecutionComponent:
                 retry_remaining=max(max_retries - retry_count, 0),
                 audit_summary=audit.value.summary,
                 summary=f"{stage} passed for {len(target_decl_names)} declarations.",
-            )
+            ))
         )
 
     def final_audit(self, repo_root: Path, *, node_path: str, round_id: str) -> ServiceResult[RoundFinalAuditResult]:

@@ -207,6 +207,7 @@ class StageGateAndAuditStepResult(LeanRenderableStepResult):
     retry_remaining: int = 0
     audit_summary: str | None = None
     feedback_summary: str | None = None
+    timings_ms: dict[str, float] = Field(default_factory=dict)
     error: RoundTerminalReason | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -219,6 +220,7 @@ class StageGateAndAuditStepResult(LeanRenderableStepResult):
             "retry_remaining": self.retry_remaining,
             "audit_summary": self.audit_summary,
             "feedback_summary": self.feedback_summary,
+            "timings_ms": dict(self.timings_ms),
             "error": self.error.message if self.error else None,
         }
 
@@ -545,6 +547,7 @@ class StageGateAndAuditStep(BaseStep):
                 retry_remaining=view.retry_remaining,
                 audit_summary=view.audit_summary,
                 feedback_summary=view.feedback_summary,
+                timings_ms=dict(view.timings_ms),
                 error=error,
                 summary=view.summary,
             )

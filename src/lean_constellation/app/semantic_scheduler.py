@@ -147,6 +147,7 @@ def _build_logic_policy(runtime, request: RuntimeSemanticAdvanceInput) -> Schedu
         decide=decide,
         max_flow_advances=request.safety.max_flow_advances,
         max_step_starts=request.safety.max_step_starts,
+        idle_grace_s=0.2,
     )
 
 
@@ -172,6 +173,7 @@ def _build_agent_policy(runtime, request: RuntimeSemanticAdvanceInput) -> Schedu
         decide=decide,
         max_flow_advances=0,
         max_step_starts=max(2, request.safety.max_step_starts),
+        idle_grace_s=0.2,
     )
 
 
@@ -235,6 +237,7 @@ def _build_content_plan_policy(runtime, request: RuntimeSemanticAdvanceInput) ->
         decide=decide,
         max_flow_advances=request.safety.max_flow_advances,
         max_step_starts=request.safety.max_step_starts,
+        idle_grace_s=0.2,
     )
 
 
@@ -265,7 +268,7 @@ def _build_content_child_policy(runtime, request: RuntimeSemanticAdvanceInput) -
             return SchedulerRunDecision(action="pause", reason=f"content_task_terminal:{task.flow_id}")
         current_state = _content_state(current)
         if current_state.position.phase == "callback_plan_agent":
-            return SchedulerRunDecision(action="pause", reason=f"content_child_closed:{task.flow_id}")
+            return SchedulerRunDecision(action="pause", reason=f"waiting_for_parent_callback:{task.flow_id}")
         return SchedulerRunDecision()
 
     return SchedulerSemanticRunPolicy(
@@ -275,6 +278,7 @@ def _build_content_child_policy(runtime, request: RuntimeSemanticAdvanceInput) -
         decide=decide,
         max_flow_advances=request.safety.max_flow_advances,
         max_step_starts=request.safety.max_step_starts,
+        idle_grace_s=0.2,
     )
 
 
@@ -319,6 +323,7 @@ def _build_content_task_policy(runtime, request: RuntimeSemanticAdvanceInput) ->
         decide=decide,
         max_flow_advances=request.safety.max_flow_advances,
         max_step_starts=request.safety.max_step_starts,
+        idle_grace_s=0.2,
     )
 
 

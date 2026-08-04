@@ -14,6 +14,8 @@ from tests.real.runtime_matrix.scripted_provider import ScriptedMcpProvider, ins
 def test_admin_api_reads_agent_trace_views(tmp_path: Path) -> None:
     runtime, agent_id = _runtime_with_scripted_session(tmp_path)
     admin = LeanAdminApi(runtime)
+    report_root = Path(runtime.ark.agent_service.get_default_trace_report_paths(agent_id).reports_root)
+    assert not report_root.exists()
 
     turns = admin.list_agent_turns(agent_id)
     latest_response = admin.get_latest_agent_response_text(agent_id)
@@ -24,6 +26,7 @@ def test_admin_api_reads_agent_trace_views(tmp_path: Path) -> None:
     assert latest_response.ok and latest_response.value == "CoordinatorAgent called replace_fixture"
     assert tool_call.ok and tool_call.value["tool_name"] == "replace_fixture"
     assert report.ok and report.value["turns"][0]["result"]["final_text"] == latest_response.value
+    assert not report_root.exists()
 
 
 def test_cli_agent_trace_commands_use_admin_http(tmp_path: Path, monkeypatch, capsys) -> None:

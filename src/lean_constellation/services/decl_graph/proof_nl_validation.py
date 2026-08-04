@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from lean_constellation.services.decl_graph.availability_policy import is_theorem_like
@@ -25,6 +26,8 @@ def validate_proof_nl_candidate(
     node_path: str,
     round_id: str,
     decl_name: str,
+    timing_sink: dict[str, float] | None = None,
+    visibility_cache: dict[tuple[str, str], object] | None = None,
 ) -> ServiceResult[None]:
     loaded = _round_decl_and_revision(
         runtime,
@@ -62,6 +65,7 @@ def validate_proof_nl_candidate(
             )
         )
     if revision.proof is not None and revision.proof.nl is not None:
+        origin_started = perf_counter()
         for origin in revision.proof.nl.origin:
             origin_validation = validate_proof_origin_ref(
                 runtime,
@@ -71,6 +75,8 @@ def validate_proof_nl_candidate(
             )
             if not origin_validation.ok:
                 issues.extend(origin_validation.issues)
+        _record_timing(timing_sink, "nl_origin", origin_started)
+    dependencies_started = perf_counter()
     dependencies = validate_proof_deps(
         runtime,
         repo_root,
@@ -78,7 +84,9 @@ def validate_proof_nl_candidate(
         round_id=round_id,
         decl_name=decl_name,
         deps=revision.proof.deps if revision.proof is not None else [],
+        visibility_cache=visibility_cache,
     )
+    _record_timing(timing_sink, "dependency_visibility_readiness", dependencies_started)
     if not dependencies.ok:
         issues.extend(dependencies.issues)
     if issues:
@@ -94,6 +102,8 @@ def validate_proof_deps(
     round_id: str | None,
     decl_name: str,
     deps: Sequence[DeclDep],
+    visible_dependencies: set[tuple[str, str, str]] | None = None,
+    visibility_cache: dict[tuple[str, str], object] | None = None,
 ) -> ServiceResult[None]:
     round_refs = _round_refs(runtime, repo_root, node_path=node_path, round_id=round_id)
     if not round_refs.ok or round_refs.value is None:
@@ -107,6 +117,8 @@ def validate_proof_deps(
             round_refs.value,
             dep,
             decl_name,
+            visible_dependencies,
+            visibility_cache,
         )
         if issue is not None:
             issues.append(issue)
@@ -212,6 +224,8 @@ def _validate_proof_dep(
     round_refs: dict[str, int],
     dep: DeclDep,
     decl_name: str,
+    visible_dependencies: set[tuple[str, str, str]] | None = None,
+    visibility_cache: dict[tuple[str, str], object] | None = None,
 ):
     if isinstance(dep, MathlibDeclDep):
         entry = runtime.mathlib.get_mathlib_decl_entry(repo_root, name=dep.ref.name)
@@ -241,12 +255,25 @@ def _validate_proof_dep(
     dep_node = _effective_node(dep.ref.node, node_path=node_path)
     if dep.ref.repo:
         repo_key = runtime.foundation.layout.ensure_safe_key(dep.ref.repo)
-        public = runtime.node.public_decl_access.list_repo_public_decls(
-            repo_root,
-            repo_key=repo_key,
-            actor_role="worker",
-            current_node_path=node_path,
-        )
+        if visible_dependencies is not None:
+            if ("repo", repo_key, dep_name) not in visible_dependencies:
+                return runtime.foundation.issue(
+                    "proof_dep_not_visible",
+                    f"Proof dependency is not visible on provider repo public interface: {dep_name}.",
+                    object_ref=dep_name,
+                )
+            return None
+        cache_key = ("repo", repo_key)
+        public = visibility_cache.get(cache_key) if visibility_cache is not None else None
+        if public is None:
+            public = runtime.node.public_decl_access.list_repo_public_decls(
+                repo_root,
+                repo_key=repo_key,
+                actor_role="worker",
+                current_node_path=node_path,
+            )
+            if visibility_cache is not None:
+                visibility_cache[cache_key] = public
         if not public.ok or public.value is None or not any(item.ref.name == dep_name for item in public.value):
             return runtime.foundation.issue(
                 "proof_dep_not_visible",
@@ -255,12 +282,25 @@ def _validate_proof_dep(
             )
         return None
     if dep_node != node_path:
-        public = runtime.node.public_decl_access.list_node_public_decls(
-            repo_root,
-            node_path=dep_node,
-            actor_role="worker",
-            current_node_path=node_path,
-        )
+        if visible_dependencies is not None:
+            if ("node", dep_node, dep_name) not in visible_dependencies:
+                return runtime.foundation.issue(
+                    "proof_dep_not_visible",
+                    f"Proof dependency is not visible on provider node public interface: {dep_name}.",
+                    object_ref=dep_name,
+                )
+            return None
+        cache_key = ("node", dep_node)
+        public = visibility_cache.get(cache_key) if visibility_cache is not None else None
+        if public is None:
+            public = runtime.node.public_decl_access.list_node_public_decls(
+                repo_root,
+                node_path=dep_node,
+                actor_role="worker",
+                current_node_path=node_path,
+            )
+            if visibility_cache is not None:
+                visibility_cache[cache_key] = public
         if not public.ok or public.value is None or not any(item.ref.name == dep_name for item in public.value):
             return runtime.foundation.issue(
                 "proof_dep_not_visible",
@@ -362,6 +402,11 @@ def _source_origin_ref_exists(index, ref: str) -> bool:
         for block in getattr(index, "blocks", {}).values()
         for block_ref in getattr(block, "refs", [])
     )
+
+
+def _record_timing(sink: dict[str, float] | None, key: str, started: float) -> None:
+    if sink is not None:
+        sink[key] = sink.get(key, 0.0) + round((perf_counter() - started) * 1000, 3)
 
 
 def _effective_node(dep_node: str, *, node_path: str) -> str:

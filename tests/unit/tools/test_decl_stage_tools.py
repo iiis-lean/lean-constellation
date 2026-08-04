@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from lean_constellation.flows.content_node_task.decl_round.steps import DeclStageReviewerStepState
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import create_test_runtime_services
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.tool_facade import ActorContext, DeclStageContextView, NodeContextView, RepoContextView, RuntimeToolContext, ToolExecutionContext
@@ -55,6 +57,8 @@ from lean_constellation.tools.internal.decl_stage import (
     _record_statement_nl_review_rejected,
     _add_proof_mathlib_dependencies,
     _add_proof_repo_dependencies,
+    _assert_proof_decl_dep_visible,
+    _resolve_proof_decl_deps_batch,
     _add_proof_resource_origin,
     _add_proof_source_origin,
     _add_statement_mathlib_dependencies,
@@ -116,6 +120,85 @@ def test_decl_stage_tools_are_registered() -> None:
     }
 
     assert_tools_registered(expected)
+
+
+def test_proof_dependency_batch_reads_each_provider_public_list_once() -> None:
+    class _Result:
+        def __init__(self, *, ok: bool, value=None, issues=None) -> None:  # noqa: ANN001
+            self.ok = ok
+            self.value = value
+            self.issues = list(issues or [])
+
+    class _Foundation:
+        class _Layout:
+            @staticmethod
+            def ensure_safe_key(value: str) -> str:
+                return value
+
+        layout = _Layout()
+
+        @staticmethod
+        def ok(value=None, **_kwargs):  # noqa: ANN001
+            return _Result(ok=True, value=value)
+
+        @staticmethod
+        def fail(issues):  # noqa: ANN001
+            return _Result(ok=False, issues=issues)
+
+        @staticmethod
+        def issue(*_args, **_kwargs):  # noqa: ANN001
+            return SimpleNamespace()
+
+    class _PublicAccess:
+        def __init__(self) -> None:
+            self.repo_calls = 0
+
+        def list_repo_public_decls(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+            self.repo_calls += 1
+            return _Result(
+                ok=True,
+                value=[SimpleNamespace(ref=DeclRef(repo="Provider", node="Main", name=name, revision=1)) for name in ("HelperA", "HelperB")],
+            )
+
+    public_access = _PublicAccess()
+    runtime = SimpleNamespace(
+        foundation=_Foundation(),
+        node=SimpleNamespace(public_decl_access=public_access),
+    )
+    ctx = SimpleNamespace(
+        repo_root=Path("/tmp/repo"),
+        node=SimpleNamespace(node_path="Main.Topic"),
+        actor=SimpleNamespace(role="worker"),
+    )
+    dependencies = [
+        SimpleNamespace(repository="Provider", node=None, name="HelperA", revision=None, reason=None),
+        SimpleNamespace(repository="Provider", node=None, name="HelperB", revision=None, reason=None),
+    ]
+
+    result = _resolve_proof_decl_deps_batch(runtime, ctx, dependencies)
+
+    assert result.ok
+    assert result.value is not None
+    resolved, visible = result.value
+    assert [dep.ref.name for dep in resolved] == ["HelperA", "HelperB"]
+    assert public_access.repo_calls == 1
+    assert visible == {("repo", "Provider", "HelperA"), ("repo", "Provider", "HelperB")}
+
+    public_access.repo_calls = 0
+    legacy_refs = [
+        _assert_proof_decl_dep_visible(
+            runtime,
+            ctx,
+            decl_name="Target",
+            dep_name=item.name,
+            dep_node=item.node,
+            dep_repo=item.repository,
+            revision=item.revision,
+        ).value
+        for item in dependencies
+    ]
+    assert [ref.name for ref in legacy_refs] == [dep.ref.name for dep in resolved]
+    assert public_access.repo_calls == 2
 
 
 def test_decl_stage_projection_reset_delete_tools_are_not_application_specs() -> None:

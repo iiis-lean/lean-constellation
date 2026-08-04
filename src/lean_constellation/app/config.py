@@ -138,7 +138,7 @@ class AutomaticCheckpointAppConfig(StrictModel):
 
 
 class AgentTraceReportAppConfig(StrictModel):
-    persistence: Literal["disabled", "latest_only", "latest_and_turns"] = "latest_only"
+    persistence: Literal["disabled", "latest_only", "latest_and_turns"] = "disabled"
     include_in_snapshots: bool = False
 
 

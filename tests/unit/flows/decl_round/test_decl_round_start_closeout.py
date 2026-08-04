@@ -668,6 +668,15 @@ def _run_stage(
     gate_step_id = advance_and_run(runtime, flow_id)
     gate_step = runtime.flow_service.get_step(gate_step_id)
     assert gate_step.result.outcome == "stage_passed"
+    assert set(gate_step.result.timings_ms) == {
+        "review_context",
+        "stage_candidate_validation",
+        "stage_candidate_validation.nl_origin",
+        "stage_candidate_validation.formal_sync_consistency",
+        "stage_candidate_validation.dependency_visibility_readiness",
+        "round_local_audit",
+        "stage_state_mutation",
+    }
 
 
 def _expected_node_workdir(repo_root: Path) -> str:

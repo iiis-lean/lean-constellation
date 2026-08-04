@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -31,6 +32,7 @@ class DeclStageValidationResult(StrictModel):
     checked_revision_refs: list[DeclRevisionRef] = Field(default_factory=list)
     passed: bool
     issues: list[ServiceIssue] = Field(default_factory=list)
+    timings_ms: dict[str, float] = Field(default_factory=dict)
     summary: str
 
 
@@ -56,6 +58,12 @@ def validate_round_stage_candidates(
     refs_by_name = {ref.decl_name: ref for ref in round_record.value.revision_refs}
     checked_refs: list[DeclRevisionRef] = []
     issues: list[ServiceIssue] = []
+    timings_ms: dict[str, float] = {
+        "nl_origin": 0.0,
+        "formal_sync_consistency": 0.0,
+        "dependency_visibility_readiness": 0.0,
+    }
+    visibility_cache: dict[tuple[str, str], object] = {}
     for decl_name in target_decl_names:
         ref = refs_by_name.get(decl_name)
         if ref is None:
@@ -86,6 +94,8 @@ def validate_round_stage_candidates(
                 node_path=node_path,
                 round_id=round_id,
                 decl_name=decl_name,
+                timing_sink=timings_ms,
+                visibility_cache=visibility_cache,
             )
         elif stage_value == DeclStage.PROOF_NL:
             checked = validate_proof_nl_candidate(
@@ -94,6 +104,8 @@ def validate_round_stage_candidates(
                 node_path=node_path,
                 round_id=round_id,
                 decl_name=decl_name,
+                timing_sink=timings_ms,
+                visibility_cache=visibility_cache,
             )
         else:
             formal_stage = "statement" if stage_value == DeclStage.STATEMENT_FORMAL else "proof"
@@ -105,6 +117,8 @@ def validate_round_stage_candidates(
                 decl_name=decl_name,
                 formal_stage=formal_stage,
                 revision=revision,
+                timing_sink=timings_ms,
+                visibility_cache=visibility_cache,
             )
         if not checked.ok:
             issues.extend(checked.issues)
@@ -116,6 +130,7 @@ def validate_round_stage_candidates(
             checked_revision_refs=checked_refs,
             passed=passed,
             issues=issues,
+            timings_ms={key: round(value, 3) for key, value in timings_ms.items()},
             summary=(
                 f"{stage_value.value} validation passed for {len(checked_refs)} declarations."
                 if passed
@@ -134,6 +149,8 @@ def _validate_formal_candidate(
     decl_name: str,
     formal_stage: str,
     revision,
+    timing_sink: dict[str, float] | None = None,
+    visibility_cache: dict[tuple[str, str], object] | None = None,
 ) -> ServiceResult[None]:
     section = revision.statement if formal_stage == "statement" else revision.proof
     formal = section.formal if section is not None else None
@@ -162,6 +179,7 @@ def _validate_formal_candidate(
                 object_ref=decl_name,
             )
         )
+    sync_started = perf_counter()
     sync = runtime.lean_projection.check_decl_file_snapshot_sync(
         repo_root,
         node_path=node_path,
@@ -172,6 +190,8 @@ def _validate_formal_candidate(
         issues.extend(sync.issues)
     elif not sync.value.passed:
         issues.extend(sync.value.issues)
+    _record_timing(timing_sink, "formal_sync_consistency", sync_started)
+    consistency_started = perf_counter()
     consistency = runtime.decl_graph.check_formal_stage_consistency(
         repo_root,
         node_path=node_path,
@@ -182,6 +202,8 @@ def _validate_formal_candidate(
         issues.extend(consistency.issues)
     elif not consistency.value.passed:
         issues.extend(consistency.value.issues)
+    _record_timing(timing_sink, "formal_sync_consistency", consistency_started)
+    dependencies_started = perf_counter()
     deps = section.deps if section is not None else []
     dependency_check = (
         validate_statement_deps(
@@ -191,6 +213,7 @@ def _validate_formal_candidate(
             round_id=round_id,
             decl_name=decl_name,
             deps=deps,
+            visibility_cache=visibility_cache,
         )
         if formal_stage == "statement"
         else validate_proof_deps(
@@ -200,13 +223,20 @@ def _validate_formal_candidate(
             round_id=round_id,
             decl_name=decl_name,
             deps=deps,
+            visibility_cache=visibility_cache,
         )
     )
     if not dependency_check.ok:
         issues.extend(dependency_check.issues)
+    _record_timing(timing_sink, "dependency_visibility_readiness", dependencies_started)
     if issues:
         return runtime.foundation.fail(issues)
     return runtime.foundation.ok(None)
+
+
+def _record_timing(sink: dict[str, float] | None, key: str, started: float) -> None:
+    if sink is not None:
+        sink[key] = sink.get(key, 0.0) + round((perf_counter() - started) * 1000, 3)
 
 
 __all__ = ["DeclStageValidationResult", "validate_round_stage_candidates"]

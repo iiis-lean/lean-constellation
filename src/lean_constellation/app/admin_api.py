@@ -3733,8 +3733,8 @@ class LeanAdminApi:
         def build(agent_service):
             def default_payload(report, paths, *, rebuilt: bool):
                 report_path = getattr(paths, "latest_json_path", None) if format == "json" else getattr(paths, "latest_markdown_path", None)
-                if isinstance(report, dict):
-                    payload = dict(report)
+                payload = dict(report) if isinstance(report, dict) else to_jsonable(report)
+                if isinstance(payload, dict):
                     payload["agent_id"] = agent_id
                     payload["report_path"] = report_path
                     payload["rebuilt"] = rebuilt
@@ -3747,25 +3747,16 @@ class LeanAdminApi:
                 }
 
             if output_path is None:
-                if rebuild or artifact_path is not None:
-                    if hasattr(agent_service, "export_default_trace_reports"):
-                        paths = agent_service.export_default_trace_reports(
-                            agent_id,
-                            artifact_path=artifact_path,
-                        )
-                        report = agent_service.read_default_trace_report(agent_id, format=format)
-                        return default_payload(report, paths, rebuilt=True)
-                if hasattr(agent_service, "read_default_trace_report"):
+                # A read/query request must not create a derived report as a
+                # side effect. Existing materialized reports remain readable;
+                # otherwise build the report in memory from canonical traces.
+                if not rebuild and artifact_path is None and hasattr(agent_service, "read_default_trace_report"):
                     report = agent_service.read_default_trace_report(agent_id, format=format)
                     if report is not None:
                         paths = agent_service.get_default_trace_report_paths(agent_id)
                         return default_payload(report, paths, rebuilt=False)
-                if hasattr(agent_service, "export_default_trace_reports"):
-                    paths = agent_service.export_default_trace_reports(agent_id)
-                    report = agent_service.read_default_trace_report(agent_id, format=format)
-                    return default_payload(report, paths, rebuilt=True)
-            if output_path is None:
-                return agent_service.build_trace_report(agent_id, artifact_path=artifact_path)
+                report = agent_service.build_trace_report(agent_id, artifact_path=artifact_path)
+                return default_payload(report, None, rebuilt=bool(rebuild or artifact_path is not None))
             report = agent_service.export_trace_report(
                 agent_id,
                 output_path=output_path,

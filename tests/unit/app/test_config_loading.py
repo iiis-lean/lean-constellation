@@ -14,7 +14,7 @@ def test_checkpoint_and_trace_report_config_defaults(tmp_path) -> None:
 
     assert config.automatic_checkpoints.repo_flow_boundaries_enabled is True
     assert config.automatic_checkpoints.content_task_progress_enabled is False
-    assert config.agent_trace_reports.persistence == "latest_only"
+    assert config.agent_trace_reports.persistence == "disabled"
     assert config.agent_trace_reports.include_in_snapshots is False
     assert config.codex_force_full_access is False
 

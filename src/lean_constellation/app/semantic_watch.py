@@ -292,12 +292,28 @@ class SemanticWatcher:
                 summary=progress.get("summary", "Loaded ContentTask progress."),
             )
 
+        normal_boundary_reason = bool(
+            isinstance(reason, str)
+            and any(
+                reason.startswith(prefix)
+                for prefix in (
+                    "agent_step_created:",
+                    "agent_step_terminal:",
+                    "content_plan_step_terminal:",
+                    "content_child_closed:",
+                    "waiting_for_parent_callback:",
+                    "content_task_terminal:",
+                    "content_task_batch_checkpointed:",
+                    "coordinator_terminal:",
+                )
+            )
+        )
         failed_reason = reason in {
             "runtime_failure",
             "semantic_safety_cap_exhausted",
             "no_runnable_candidate",
             "run_control_cleared",
-        }
+        } or (reason is not None and not normal_boundary_reason and reason.startswith("runtime_failure:"))
         failed_progress = progress is not None and progress.get("task_status") in {"failed", "blocked"}
         exit_code = 1 if failed_reason or failed_progress else 0
         self._emit(
