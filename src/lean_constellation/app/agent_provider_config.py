@@ -28,6 +28,77 @@ from lean_constellation.app.config import AgentHomeOverrideAppConfig
 DEFAULT_OPENAI_AGENTS_FACTORY_REF = "lean_constellation/default"
 
 
+CODEX_NATIVE_WEB_AGENT_TYPES = frozenset(
+    {
+        "RepoFormatDiscoveryAgent",
+        "SourceCorpusPrepareAgent",
+        "ResourceCuratorAgent",
+        "RepoResourceDiscoveryAgent",
+        "RepoLeanProviderDiscoveryAgent",
+        "CoordinatorAgent",
+    }
+)
+CODEX_NATIVE_FILE_AGENT_TYPES = frozenset(
+    {
+        "SourceCorpusPrepareAgent",
+        "ResourceCuratorAgent",
+        "StatementFormalWorkerAgent",
+        "ProofFormalWorkerAgent",
+    }
+)
+OPENCODE_NATIVE_WEB_AGENT_TYPES = frozenset(
+    {
+        "RepoFormatDiscoveryAgent",
+        "SourceCorpusPrepareAgent",
+        "ResourceCuratorAgent",
+        "RepoResourceDiscoveryAgent",
+        "RepoLeanProviderDiscoveryAgent",
+        "CoordinatorAgent",
+    }
+)
+OPENCODE_NATIVE_FILE_AGENT_TYPES = frozenset(
+    {
+        "SourceCorpusPrepareAgent",
+        "ResourceCuratorAgent",
+        "StatementFormalWorkerAgent",
+        "ProofFormalWorkerAgent",
+    }
+)
+
+
+def codex_native_config_defaults(permission_names: set[str]) -> dict[str, object]:
+    """Return Codex-native defaults for one AgentType permission lineage."""
+
+    return {
+        "sandbox_mode": (
+            "workspace-write"
+            if permission_names & CODEX_NATIVE_FILE_AGENT_TYPES
+            else "read-only"
+        ),
+        "web_search": (
+            "live" if permission_names & CODEX_NATIVE_WEB_AGENT_TYPES else "disabled"
+        ),
+    }
+
+
+def opencode_native_tool_defaults(permission_names: set[str]) -> dict[str, bool]:
+    """Return OpenCode-native tool defaults for one AgentType permission lineage."""
+
+    direct_file_access = bool(permission_names & OPENCODE_NATIVE_FILE_AGENT_TYPES)
+    general_web = bool(permission_names & OPENCODE_NATIVE_WEB_AGENT_TYPES)
+    return {
+        "bash": False,
+        "glob": direct_file_access,
+        "grep": direct_file_access,
+        "read": direct_file_access,
+        "edit": direct_file_access,
+        "write": direct_file_access,
+        "apply_patch": direct_file_access,
+        "webfetch": general_web,
+        "websearch": general_web,
+    }
+
+
 def apply_agent_home_overrides(
     specs: Sequence[AgentTypeSpec],
     overrides: Mapping[str, AgentHomeOverrideAppConfig] | None,
@@ -182,9 +253,15 @@ def _build_default_openai_agent(context: Any) -> object:
 
 
 __all__ = [
+    "CODEX_NATIVE_FILE_AGENT_TYPES",
+    "CODEX_NATIVE_WEB_AGENT_TYPES",
     "DEFAULT_OPENAI_AGENTS_FACTORY_REF",
+    "OPENCODE_NATIVE_FILE_AGENT_TYPES",
+    "OPENCODE_NATIVE_WEB_AGENT_TYPES",
     "apply_agent_home_overrides",
     "build_builtin_provider_registry",
+    "codex_native_config_defaults",
     "model_identity_from_override",
+    "opencode_native_tool_defaults",
     "provider_options_from_override",
 ]

@@ -649,6 +649,7 @@ class RepoRuntimeRegistry:
             shared_elan_home=self.config.shared_elan_home,
             agent_type_specs=self.agent_type_specs,
             agent_home_overrides=self.config.agent_home_overrides,
+            codex_force_full_access=self.config.codex_force_full_access,
         )
         if result.ok and result.value is not None:
             record.agent_homes = result.value

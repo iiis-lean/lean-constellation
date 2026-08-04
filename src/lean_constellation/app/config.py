@@ -30,6 +30,7 @@ class LeanAppConfigView(StrictModel):
     codex_config_home: str | None = None
     codex_base_config_configured: bool = False
     codex_auth_configured: bool = False
+    codex_force_full_access: bool
     shared_elan_home: str | None = None
     max_concurrent_flow_advances: int
     max_concurrent_steps: int
@@ -218,6 +219,7 @@ class LeanAppConfig(StrictModel):
     codex_config_home: Path | None = None
     codex_base_config_path: Path | None = None
     codex_auth_json_path: Path | None = None
+    codex_force_full_access: bool = False
     shared_elan_home: Path | None = None
     max_concurrent_flow_advances: int = 1
     max_concurrent_steps: int = 1
@@ -328,6 +330,7 @@ class LeanAppConfig(StrictModel):
             codex_config_home=str(self.codex_config_home) if self.codex_config_home else None,
             codex_base_config_configured=self.codex_base_config_path is not None,
             codex_auth_configured=self.codex_auth_json_path is not None,
+            codex_force_full_access=self.codex_force_full_access,
             shared_elan_home=str(self.shared_elan_home) if self.shared_elan_home else None,
             max_concurrent_flow_advances=self.max_concurrent_flow_advances,
             max_concurrent_steps=self.max_concurrent_steps,
@@ -383,6 +386,7 @@ def _apply_env(data: dict[str, Any], env: Mapping[str, str]) -> None:
         "default_agent_provider_type": "LEAN_CONSTELLATION_DEFAULT_AGENT_PROVIDER_TYPE",
         "codex_base_config_path": "LEAN_CONSTELLATION_CODEX_BASE_CONFIG_PATH",
         "codex_auth_json_path": "LEAN_CONSTELLATION_CODEX_AUTH_JSON_PATH",
+        "codex_force_full_access": "LEAN_CONSTELLATION_CODEX_FORCE_FULL_ACCESS",
         "shared_elan_home": "LEAN_CONSTELLATION_SHARED_ELAN_HOME",
         "mcp_http_host": "LEAN_CONSTELLATION_MCP_HTTP_HOST",
         "mcp_http_port": "LEAN_CONSTELLATION_MCP_HTTP_PORT",

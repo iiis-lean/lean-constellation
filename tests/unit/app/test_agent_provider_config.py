@@ -6,7 +6,11 @@ import tomllib
 
 import pytest
 
-from lean_constellation.agents import build_agent_type_specs
+from lean_constellation.agents import (
+    build_agent_type_specs,
+    build_controlled_test_agent_type_specs,
+    controlled_test_agent_type_name,
+)
 from lean_constellation.app.agent_provider_config import (
     apply_agent_home_overrides,
     build_builtin_provider_registry,
@@ -21,6 +25,20 @@ from lean_constellation.app.repo_runtime_registry import RepoRuntimeRegistry
 
 
 AGENT_TYPE = "RepoFormatDiscoveryAgent"
+WEB_AGENT_TYPES = {
+    "RepoFormatDiscoveryAgent",
+    "SourceCorpusPrepareAgent",
+    "ResourceCuratorAgent",
+    "RepoResourceDiscoveryAgent",
+    "RepoLeanProviderDiscoveryAgent",
+    "CoordinatorAgent",
+}
+DIRECT_FILE_AGENT_TYPES = {
+    "SourceCorpusPrepareAgent",
+    "ResourceCuratorAgent",
+    "StatementFormalWorkerAgent",
+    "ProofFormalWorkerAgent",
+}
 
 
 def test_provider_override_drives_agent_type_and_registry(tmp_path: Path) -> None:
@@ -147,6 +165,7 @@ def test_opencode_home_materialization_uses_provider_neutral_resources(tmp_path:
         agent_type_specs=specs,
         mcp_http_base_url="http://127.0.0.1:8765",
         auth_json_path=auth_path,
+        codex_force_full_access=True,
     )
 
     assert result.ok and result.value is not None
@@ -281,7 +300,7 @@ def test_opencode_formal_worker_keeps_repo_file_tools_but_not_bash(tmp_path: Pat
 
 
 @pytest.mark.parametrize("agent_type", ["SourceCorpusPrepareAgent", "ResourceCuratorAgent"])
-def test_opencode_material_agents_receive_scoped_file_and_web_capabilities(
+def test_opencode_material_agents_receive_scoped_native_file_and_web_access(
     tmp_path: Path,
     agent_type: str,
 ) -> None:
@@ -334,7 +353,7 @@ def test_opencode_material_agents_receive_scoped_file_and_web_capabilities(
         ("ProofFormalWorkerAgent", "workspace-write", "disabled"),
     ],
 )
-def test_codex_home_projects_agent_capability_policy(
+def test_codex_home_projects_provider_native_policy(
     tmp_path: Path,
     agent_type: str,
     sandbox_mode: str,
@@ -352,6 +371,104 @@ def test_codex_home_projects_agent_capability_policy(
     )
     assert config["sandbox_mode"] == sandbox_mode
     assert config["web_search"] == web_search
+
+
+def test_codex_agent_override_wins_native_defaults_and_global_full_access_wins_sandbox(
+    tmp_path: Path,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime")
+    base_config = tmp_path / "base_config.toml"
+    base_config.write_text(
+        'model = "base-model"\nsandbox_mode = "read-only"\nweb_search = "disabled"\n',
+        encoding="utf-8",
+    )
+
+    result = materialize_agent_home(
+        runtime,
+        "ContentPlanAgent",
+        provider_type="codex",
+        base_config_path=base_config,
+        config_overrides={
+            "model": "agent-model",
+            "sandbox_mode": "workspace-write",
+            "web_search": "live",
+        },
+        codex_force_full_access=True,
+    )
+
+    assert result.ok and result.value is not None
+    config = tomllib.loads(
+        (Path(result.value.home_root) / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert config["sandbox_mode"] == "danger-full-access"
+    assert config["web_search"] == "live"
+    assert config["model"] == "agent-model"
+
+
+@pytest.mark.parametrize("agent_type", [spec.agent_type for spec in build_agent_type_specs()])
+@pytest.mark.parametrize("force_full_access", [False, True])
+def test_every_codex_agent_has_expected_native_policy_and_global_override(
+    tmp_path: Path,
+    agent_type: str,
+    force_full_access: bool,
+) -> None:
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".agent_runtime")
+
+    result = materialize_agent_home(
+        runtime,
+        agent_type,
+        provider_type="codex",
+        codex_force_full_access=force_full_access,
+    )
+
+    assert result.ok and result.value is not None
+    config = tomllib.loads(
+        (Path(result.value.home_root) / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    expected_sandbox = (
+        "danger-full-access"
+        if force_full_access
+        else "workspace-write"
+        if agent_type in DIRECT_FILE_AGENT_TYPES
+        else "read-only"
+    )
+    assert config["sandbox_mode"] == expected_sandbox
+    assert config["web_search"] == (
+        "live" if agent_type in WEB_AGENT_TYPES else "disabled"
+    )
+
+
+def test_derived_controlled_codex_agent_inherits_base_native_policy(tmp_path: Path) -> None:
+    base_agent_type = "ResourceCuratorAgent"
+    specs = [
+        *build_agent_type_specs(),
+        *build_controlled_test_agent_type_specs(base_agent_types=[base_agent_type]),
+    ]
+    agent_type = controlled_test_agent_type_name(base_agent_type)
+    runtime = create_app_runtime_services(
+        runtime_root=tmp_path / ".agent_runtime",
+        agent_type_specs=specs,
+    )
+
+    result = materialize_agent_home(
+        runtime,
+        agent_type,
+        provider_type="codex",
+        agent_type_specs=specs,
+    )
+
+    assert result.ok and result.value is not None
+    config = tomllib.loads(
+        (Path(result.value.home_root) / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert config["sandbox_mode"] == "workspace-write"
+    assert config["web_search"] == "live"
 
 
 def test_repo_runtime_registry_assembles_configured_provider(tmp_path: Path) -> None:

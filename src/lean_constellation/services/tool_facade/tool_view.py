@@ -44,7 +44,6 @@ class ToolSpec(StrictModel):
     required_context: set[str] = Field(default_factory=set)
     tool_groups: set[str] = Field(default_factory=set)
     allowed_roles: set[ActorRole] = Field(default_factory=set)
-    required_agent_capabilities: set[str] = Field(default_factory=set)
     submit_behavior: SubmitBehavior = SubmitBehavior.NONE
     toolkit_proxy_name: str | None = None
     backing_handler: ToolHandler | None = Field(default=None, exclude=True)
@@ -80,7 +79,6 @@ class ToolSpecView(StrictModel):
     required_context: list[str] = Field(default_factory=list)
     tool_groups: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
-    required_agent_capabilities: list[str] = Field(default_factory=list)
     submit_behavior: SubmitBehavior = SubmitBehavior.NONE
 
 
@@ -442,6 +440,5 @@ class ToolViewComponent:
             required_context=sorted(spec.required_context),
             tool_groups=sorted(spec.tool_groups),
             allowed_roles=sorted(spec.allowed_roles),
-            required_agent_capabilities=sorted(spec.required_agent_capabilities),
             submit_behavior=spec.submit_behavior,
         )

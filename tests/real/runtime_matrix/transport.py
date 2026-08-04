@@ -60,6 +60,21 @@ def stdio_compare_enabled(env: dict[str, str] | None = None) -> bool:
     return source.get("LEAN_CONSTELLATION_RUN_MCP_STDIO_COMPARE") == "1"
 
 
+def codex_force_full_access_enabled(env: dict[str, str] | None = None) -> bool:
+    """Read the LC app-level Codex Home override used by real test helpers."""
+
+    source = os.environ if env is None else env
+    raw = str(source.get("LEAN_CONSTELLATION_CODEX_FORCE_FULL_ACCESS", "false"))
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(
+        "LEAN_CONSTELLATION_CODEX_FORCE_FULL_ACCESS must be a boolean value"
+    )
+
+
 def selected_mcp_transports(
     env: dict[str, str] | None = None,
     *,
@@ -123,6 +138,7 @@ __all__ = [
     "MCP_TRANSPORT_MODES",
     "MCP_TRANSPORTS",
     "RuntimeMcpHttpTestServer",
+    "codex_force_full_access_enabled",
     "ensure_runtime_mcp_http_server",
     "requested_mcp_transport_mode",
     "selected_mcp_transports",

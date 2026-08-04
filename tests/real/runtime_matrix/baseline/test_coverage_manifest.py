@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.real, pytest.mark.slow]
 def test_runtime_matrix_registry_fingerprint_is_pinned() -> None:
     snapshot = current_registry_snapshot()
     assert len(snapshot.flows) == 16
-    assert len(snapshot.logic_steps) == 42
+    assert len(snapshot.logic_steps) == 43
     assert len(snapshot.agent_steps) == 14
     assert len(snapshot.agent_types) == 23
     assert len(snapshot.application_tools) == 262

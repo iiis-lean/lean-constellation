@@ -87,9 +87,7 @@ def test_agent_surface_reports_cover_every_production_agent() -> None:
             len(report.skills),
         ) == expected
         assert report.missing_skill_required_groups == {}
-        assert report.capabilities
         for tool in report.application_tools:
-            assert set(tool.required_agent_capabilities) <= set(report.capabilities)
             assert report.role in application_specs[tool.name].allowed_roles
         for tool in report.submit_tools:
             assert report.role in submit_specs[tool.name].allowed_roles
@@ -234,12 +232,6 @@ def test_repo_format_discovery_surface_matches_remote_only_design() -> None:
 def test_repo_lean_provider_discovery_surface_is_worker_callable() -> None:
     report = build_agent_surface_reports()["RepoLeanProviderDiscoveryAgent"]
     github_tools = {
-        tool.name
-        for tool in report.application_tools
-        if "github_remote_search_read" in tool.required_agent_capabilities
-    }
-
-    assert github_tools == {
         "search_github_lean_repositories",
         "inspect_github_lean_repository",
         "probe_github_lean_repo_candidate",
@@ -248,6 +240,14 @@ def test_repo_lean_provider_discovery_surface_is_worker_callable() -> None:
         "read_github_repository_file",
         "search_github_code",
     }
+    assert github_tools <= {tool.name for tool in report.application_tools}
+    all_reports = build_agent_surface_reports()
+    for agent_type, candidate in all_reports.items():
+        visible = {tool.name for tool in candidate.application_tools}
+        if agent_type in {"RepoFormatDiscoveryAgent", "RepoLeanProviderDiscoveryAgent"}:
+            assert github_tools <= visible
+        else:
+            assert github_tools.isdisjoint(visible)
     _assert_surface_tools_allow_role("RepoLeanProviderDiscoveryAgent", "worker")
 
 

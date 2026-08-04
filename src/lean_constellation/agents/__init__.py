@@ -2,7 +2,7 @@
 
 from lean_constellation.agents.homes import build_agent_home_bootstrap_spec, build_all_agent_home_bootstrap_specs
 from lean_constellation.agents.instructions import build_instruction_service, render_agent_instruction
-from lean_constellation.agents.keys import AgentCapabilityKey, ProductionAgentTypeKey, SkillKey
+from lean_constellation.agents.keys import ProductionAgentTypeKey, SkillKey
 from lean_constellation.agents.models import (
     AgentHomeBootstrapSpec,
     AgentResourceIssue,
@@ -13,7 +13,6 @@ from lean_constellation.agents.models import (
 from lean_constellation.agents.registry import (
     AGENT_TYPE_SPECS,
     agent_skill_keys,
-    agent_type_capabilities,
     agent_type_permission_names,
     build_agent_type_specs,
     derive_agent_type_spec,
@@ -27,7 +26,6 @@ from lean_constellation.agents.testing import build_controlled_test_agent_type_s
 __all__ = [
     "AGENT_TYPE_SPECS",
     "AgentHomeBootstrapSpec",
-    "AgentCapabilityKey",
     "AgentResourceIssue",
     "AgentResourceValidationReport",
     "AgentSurfaceReport",
@@ -38,7 +36,6 @@ __all__ = [
     "ProductionAgentTypeKey",
     "SkillKey",
     "agent_skill_keys",
-    "agent_type_capabilities",
     "agent_type_permission_names",
     "build_agent_home_bootstrap_spec",
     "build_all_agent_home_bootstrap_specs",

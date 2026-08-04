@@ -115,7 +115,6 @@ def _tool_service(
     *,
     agent_skill_keys: Mapping[str, Sequence[str]] | None = None,
     agent_type_permission_names: Callable[[str], set[str]] | None = None,
-    agent_type_capabilities: Callable[[str], set[str]] | None = None,
 ) -> tuple[ToolFacadeService, list[str], FakeSubmissionGateway]:
     runtime = make_runtime(
         external_overrides={"lean_mcp_toolkit": LeanMcpToolkitClient(dispatcher=FakeToolkitDispatcher())}
@@ -151,7 +150,6 @@ def _tool_service(
         submission_gateway=gateway,
         agent_skill_keys=agent_skill_keys,
         agent_type_permission_names=agent_type_permission_names,
-        agent_type_capabilities=agent_type_capabilities or (lambda _agent_type: {"repo_semantic_write"}),
     )
     registered = service.register_application_tools(
         [
@@ -166,7 +164,6 @@ def _tool_service(
                 required_context={"repo"},
                 tool_groups={"worker_write"},
                 allowed_roles={"worker"},
-                required_agent_capabilities={"repo_semantic_write"},
                 backing_handler=echo_handler,
             ),
             ToolSpec(
@@ -348,36 +345,6 @@ def test_permission_guard_blocks_wrong_roles_and_object_mutations(tmp_path: Path
     assert role_rejected.issues[0].kind == "role_not_allowed"
     assert service.permission_guard.assert_review_only(reviewer_ctx).ok
     assert not service.permission_guard.assert_admin(reviewer_ctx).ok
-
-
-def test_permission_guard_enforces_agent_type_capability_before_handler(tmp_path: Path) -> None:
-    denied_service, denied_calls, _ = _tool_service(
-        tmp_path,
-        agent_type_capabilities=lambda _agent_type: set(),
-    )
-    raw = RawToolCallContext(endpoint_view_key="worker_view", runtime_context=_runtime(tmp_path))
-
-    denied = denied_service.invoke_agent_tool(
-        raw,
-        tool_name="echo_write",
-        flat_args={"message": "must-not-run"},
-    )
-
-    assert denied.ok and denied.value is not None
-    assert denied.value.ok is False
-    assert denied.value.issues[0].kind == "agent_capability_required"
-    assert denied_calls == []
-
-    allowed_service, allowed_calls, _ = _tool_service(tmp_path)
-    allowed = allowed_service.invoke_agent_tool(
-        raw,
-        tool_name="echo_write",
-        flat_args={"message": "allowed"},
-    )
-
-    assert allowed.ok and allowed.value is not None
-    assert allowed.value.ok is True
-    assert allowed_calls == ["worker:allowed"]
 
 
 def test_mcp_wrapper_invokes_handlers_and_records_submit(tmp_path: Path) -> None:

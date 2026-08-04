@@ -14,7 +14,11 @@ import pytest
 from lean_constellation.agents import build_agent_type_specs, build_controlled_test_agent_type_specs
 from lean_constellation.app import materialize_agent_home
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixWorkspace
-from tests.real.runtime_matrix.transport import ensure_runtime_mcp_http_server, requested_mcp_transport_mode
+from tests.real.runtime_matrix.transport import (
+    codex_force_full_access_enabled,
+    ensure_runtime_mcp_http_server,
+    requested_mcp_transport_mode,
+)
 
 
 def require_real_codex() -> Path:
@@ -87,6 +91,7 @@ def materialize_strict_codex_home(
     transport: str | None = None,
 ) -> Path:
     transport = transport or requested_mcp_transport_mode()
+    force_full_access = codex_force_full_access_enabled()
     if transport not in {"http", "stdio"}:
         raise ValueError("materialize_strict_codex_home only supports a concrete 'http' or 'stdio' transport")
     http_server = ensure_runtime_mcp_http_server(ws) if transport == "http" else None
@@ -94,6 +99,7 @@ def materialize_strict_codex_home(
     config_lines = [
         f'workspace_root = "{ws.workspace_root}"',
         f'runtime_root = "{ws.runtime_root}"',
+        f"codex_force_full_access = {str(force_full_access).lower()}",
     ]
     if http_server is not None:
         config_lines.append(f'mcp_http_base_url = "{http_server.base_url}"')
@@ -120,6 +126,7 @@ def materialize_strict_codex_home(
         base_config_path=base_config_path,
         auth_json_path=config_home / "auth.json",
         agent_type_specs=list(agent_type_specs),
+        codex_force_full_access=force_full_access,
     )
     assert materialized.ok and materialized.value is not None, materialized.issues
     return Path(materialized.value.home_root)

@@ -17,12 +17,15 @@ from agent_runtime_kit.agent.providers.codex_home import CodexHomeOptions
 
 from lean_constellation.agents import (
     AgentHomeBootstrapSpec,
+    agent_type_permission_names,
     build_agent_home_bootstrap_spec,
     build_agent_type_specs,
     get_agent_type_spec,
 )
 from lean_constellation.app.agent_provider_config import (
+    codex_native_config_defaults,
     model_identity_from_override,
+    opencode_native_tool_defaults,
     provider_options_from_override,
 )
 from lean_constellation.domain.common import StrictModel
@@ -113,12 +116,14 @@ def materialize_agent_home(
     config_overrides: dict[str, object] | None = None,
     auth_refs: tuple[str, ...] = (),
     provider_options: object | None = None,
+    codex_force_full_access: bool = False,
 ) -> ServiceResult[AgentHomeMaterializationView]:
     """Materialize one AgentType home through ARK HomeService."""
 
     try:
         resolved_specs = list(agent_type_specs or build_agent_type_specs())
         resolved_agent_spec = get_agent_type_spec(agent_type, specs=resolved_specs)
+        permission_names = agent_type_permission_names(agent_type, specs=resolved_specs)
         resolved_provider_type = provider_type or resolved_agent_spec.home_type
         resolved_provider_options = provider_options
         if resolved_provider_type == "codex":
@@ -137,7 +142,8 @@ def materialize_agent_home(
             )
             config_overrides = _codex_scoped_config_overrides(
                 config_overrides,
-                capabilities=resolved_agent_spec.capabilities,
+                permission_names=permission_names,
+                force_full_access=codex_force_full_access,
             )
         elif resolved_provider_type == "opencode":
             if resolved_provider_options is not None and not isinstance(
@@ -155,7 +161,7 @@ def materialize_agent_home(
             )
             config_overrides = _opencode_scoped_config_overrides(
                 config_overrides,
-                capabilities=resolved_agent_spec.capabilities,
+                permission_names=permission_names,
             )
         spec = build_agent_home_bootstrap_spec(
             agent_type,
@@ -225,7 +231,7 @@ def materialize_agent_home(
 def _opencode_scoped_config_overrides(
     config_overrides: dict[str, object] | None,
     *,
-    capabilities: set[str],
+    permission_names: set[str],
 ) -> dict[str, object]:
     """Enforce the repository filesystem boundary for Lean Constellation OpenCode Homes."""
 
@@ -246,13 +252,7 @@ def _opencode_scoped_config_overrides(
         tools = dict(configured_tools)
     else:
         raise TypeError("OpenCode tools override must be a mapping")
-    tools["bash"] = False
-    direct_file_access = bool(capabilities & _DIRECT_FILE_CAPABILITIES)
-    for tool_name in ("glob", "grep", "read", "edit", "write", "apply_patch"):
-        tools[tool_name] = direct_file_access
-    general_web = "general_web_read" in capabilities
-    tools["webfetch"] = general_web
-    tools["websearch"] = general_web
+    tools.update(opencode_native_tool_defaults(permission_names))
     result["tools"] = tools
     return result
 
@@ -260,25 +260,14 @@ def _opencode_scoped_config_overrides(
 def _codex_scoped_config_overrides(
     config_overrides: dict[str, object] | None,
     *,
-    capabilities: set[str],
+    permission_names: set[str],
+    force_full_access: bool,
 ) -> dict[str, object]:
-    result = dict(config_overrides or {})
-    result["sandbox_mode"] = (
-        "workspace-write"
-        if capabilities & _DIRECT_FILE_CAPABILITIES
-        else "read-only"
-    )
-    result["web_search"] = (
-        "live" if "general_web_read" in capabilities else "disabled"
-    )
+    result = codex_native_config_defaults(permission_names)
+    result.update(config_overrides or {})
+    if force_full_access:
+        result["sandbox_mode"] = "danger-full-access"
     return result
-
-
-_DIRECT_FILE_CAPABILITIES = {
-    "source_root_file_read_write",
-    "resource_draft_file_read_write",
-    "decl_owned_lean_file_read_write",
-}
 
 
 def materialize_production_agent_homes(
@@ -290,6 +279,7 @@ def materialize_production_agent_homes(
     shared_elan_home: Path | str | None = None,
     agent_type_specs: Sequence["AgentTypeSpec"] | None = None,
     agent_home_overrides: dict[str, object] | None = None,
+    codex_force_full_access: bool = False,
 ) -> ServiceResult[ProductionAgentHomesView]:
     """Materialize all production Agent homes for a long-running runtime."""
 
@@ -355,6 +345,7 @@ def materialize_production_agent_homes(
                 config_overrides=home_config_overrides,
                 auth_refs=tuple(getattr(configured_override, "auth_refs", ()) or ()),
                 provider_options=provider_options_from_override(provider_type, configured_override),
+                codex_force_full_access=codex_force_full_access,
             )
         except Exception as exc:  # noqa: BLE001 - one Home must not hide other failures.
             failed.append({"agent_type": spec.agent_type, "message": str(exc)})
@@ -463,7 +454,6 @@ def _write_agent_home_manifest(
         "mcp_transport": _mcp_transport_summary(spec),
         "mcp_server_specs": [_mcp_server_manifest(server) for server in spec.mcp_servers],
         "skill_keys": sorted(spec.skill_specs),
-        "capabilities": sorted(spec.capabilities),
         "effective_model": effective_model,
         "effective_reasoning_effort": effective_reasoning_effort,
     }

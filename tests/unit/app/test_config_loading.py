@@ -16,6 +16,7 @@ def test_checkpoint_and_trace_report_config_defaults(tmp_path) -> None:
     assert config.automatic_checkpoints.content_task_progress_enabled is False
     assert config.agent_trace_reports.persistence == "latest_only"
     assert config.agent_trace_reports.include_in_snapshots is False
+    assert config.codex_force_full_access is False
 
 
 def test_checkpoint_and_trace_report_config_reject_unknown_fields() -> None:
@@ -125,6 +126,7 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
             [
                 f'workspace_root = "{tmp_path / "workspace"}"',
                 f'codex_config_home = "{config_home}"',
+                "codex_force_full_access = true",
                 "max_concurrent_flow_advances = 2",
                 "max_concurrent_steps = 3",
                 'mcp_http_host = "0.0.0.0"',
@@ -161,6 +163,7 @@ def test_load_app_config_reads_toml_and_derives_codex_paths_without_reading_secr
     assert view.admin_http_base_url == "http://127.0.0.1:8766"
     assert view.server_start_paused is True
     assert view.materialize_agent_homes is True
+    assert view.codex_force_full_access is True
     assert view.scheduler_enabled is True
     assert view.operator_data_api_enabled is False
     assert view.toolkit.mode == "managed"
@@ -189,6 +192,7 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
             "LEAN_CONSTELLATION_SERVER_START_PAUSED": "false",
             "LEAN_CONSTELLATION_OPERATOR_DATA_API_ENABLED": "true",
             "LEAN_CONSTELLATION_MATERIALIZE_AGENT_HOMES": "false",
+            "LEAN_CONSTELLATION_CODEX_FORCE_FULL_ACCESS": "true",
             "LEAN_CONSTELLATION_TOOLKIT_BASE_URL": "http://toolkit.test",
             "LEAN_CONSTELLATION_TOOLKIT_ENABLED_GROUPS": "lean,mathlib",
             "LEAN_CONSTELLATION_TOOLKIT_REQUIRED_TOOLS": "diagnostics.file,lean_explore.semantic_search",
@@ -210,6 +214,7 @@ def test_load_app_config_env_overrides_json(tmp_path) -> None:
     assert config.admin_http_effective_base_url() == "http://127.0.0.1:9998"
     assert config.server_start_paused is False
     assert config.materialize_agent_homes is False
+    assert config.codex_force_full_access is True
     assert config.operator_data_api_enabled is True
     assert config.toolkit.base_url == "http://toolkit.test"
     assert config.toolkit.enabled_groups == ["lean", "mathlib"]

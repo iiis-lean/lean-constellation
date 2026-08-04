@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -1036,6 +1037,7 @@ def test_production_app_server_materializes_repo_local_production_agent_homes_on
         codex_base_config_path=base_config,
         codex_auth_json_path=auth_json,
         shared_elan_home=shared_elan_home,
+        codex_force_full_access=True,
         admin_http_port=9123,
         agent_home_overrides={
             "ContentPlanAgent": {
@@ -1079,6 +1081,19 @@ def test_production_app_server_materializes_repo_local_production_agent_homes_on
     assert content_plan_manifest["effective_model"] == "gpt-5.6-sol"
     assert content_plan_manifest["effective_reasoning_effort"] == "high"
     assert coordinator.effective_model == "gpt-5-codex"
+    for home in homes.materialized:
+        home_config = tomllib.loads(
+            (
+                repo_root
+                / ".agent_runtime"
+                / "homes"
+                / "codex"
+                / home.agent_type
+                / ".codex"
+                / "config.toml"
+            ).read_text(encoding="utf-8")
+        )
+        assert home_config["sandbox_mode"] == "danger-full-access"
 
 
 def test_production_app_server_scheduler_lifespan_runs_loop(tmp_path) -> None:

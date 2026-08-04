@@ -151,6 +151,9 @@ Create a local `lean-constellation.toml`:
 workspace_root = "/path/to/lean-workspace"
 default_agent_provider_type = "codex"
 codex_config_home = "~/.codex"
+# Optional deployment override for environments where restricted Codex
+# sandboxes are unavailable. This affects only newly materialized Codex Homes.
+codex_force_full_access = false
 
 # Inspect the workspace before allowing scheduler advancement.
 server_start_paused = true
@@ -203,6 +206,15 @@ for individual AgentTypes.
 Global selection uses `default_agent_provider_type`; per-AgentType
 `agent_home_overrides` can independently select the Provider, model/backend
 identity, Home projection, credentials, and Provider options.
+
+Codex and OpenCode native web/file access defaults are Provider-specific and
+separate from LC ToolViews. LC MCP tool visibility is determined by each
+AgentType's ToolView. When `codex_force_full_access = true`, LC applies
+`sandbox_mode = "danger-full-access"` after per-Agent Codex overrides without
+changing model, reasoning, web search, MCP, or authentication settings. This is
+an LC application-level policy for newly materialized Homes, not a machine-wide
+Codex or ARK setting; existing sealed/running Homes require controlled
+rematerialization before the change takes effect.
 
 ## Runtime State and Recovery
 

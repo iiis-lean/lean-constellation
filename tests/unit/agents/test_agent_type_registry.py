@@ -4,7 +4,6 @@ import pytest
 
 from lean_constellation.agents import (
     agent_skill_keys,
-    agent_type_capabilities,
     agent_type_permission_names,
     build_agent_type_specs,
     build_controlled_test_agent_type_specs,
@@ -12,7 +11,6 @@ from lean_constellation.agents import (
     derive_agent_type_spec,
     get_agent_type_spec,
     render_agent_instruction,
-    validate_agent_resources,
 )
 from lean_constellation.agents.surface import build_agent_surface_reports
 from lean_constellation.agents.ark import build_ark_agent_type
@@ -73,49 +71,6 @@ def test_all_designed_agent_types_are_registered() -> None:
 
     assert {spec.agent_type for spec in specs} == EXPECTED_AGENT_TYPES
     assert len(specs) == len({spec.agent_type for spec in specs})
-
-
-def test_agent_capability_matrix_is_explicit_and_role_independent() -> None:
-    assert agent_type_capabilities("CoordinatorAgent") >= {
-        "general_web_read",
-        "github_remote_search_read",
-        "requirement_submit",
-    }
-    assert agent_type_capabilities("SourceCorpusPrepareAgent") >= {
-        "source_root_file_read_write",
-        "general_web_read",
-        "resource_acquisition",
-    }
-    assert agent_type_capabilities("ResourceCuratorAgent") >= {
-        "resource_draft_file_read_write",
-        "general_web_read",
-    }
-    assert agent_type_capabilities("ProofFormalWorkerAgent") >= {
-        "decl_owned_lean_file_read_write",
-        "mathlib_search_read",
-    }
-    assert "general_web_read" not in agent_type_capabilities("ContentPlanAgent")
-    assert "decl_owned_lean_file_read_write" not in agent_type_capabilities(
-        "ProofFormalReviewerAgent"
-    )
-
-
-def test_visible_tool_capability_gap_is_rejected_during_resource_validation() -> None:
-    specs = [
-        spec.model_copy(update={"capabilities": set()})
-        if spec.agent_type == "RepoLeanProviderDiscoveryAgent"
-        else spec
-        for spec in build_agent_type_specs()
-    ]
-
-    report = validate_agent_resources(specs)
-
-    assert report.ok is False
-    assert {
-        issue.code
-        for issue in report.issues
-        if issue.agent_type == "RepoLeanProviderDiscoveryAgent"
-    } == {"agent_capability_required_by_visible_tool"}
 
 
 def test_representative_agent_specs_bind_expected_views_and_steps() -> None:

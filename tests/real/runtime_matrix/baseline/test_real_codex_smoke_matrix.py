@@ -12,7 +12,10 @@ from lean_constellation.app import create_app_runtime_services, materialize_agen
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from tests.real.runtime_matrix.fixtures import RuntimeMatrixFakeLakeClient
 from tests.real.runtime_matrix.scripted_provider import schedule_until
-from tests.real.runtime_matrix.transport import start_runtime_mcp_http_server
+from tests.real.runtime_matrix.transport import (
+    codex_force_full_access_enabled,
+    start_runtime_mcp_http_server,
+)
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow, pytest.mark.real_codex]
@@ -37,6 +40,7 @@ def test_real_codex_repo_format_submit_smoke_env_gated(tmp_path: Path, request: 
         mcp_http_base_url=http_server.base_url,
         base_config_path=base_config_path,
         auth_json_path=config_home / "auth.json",
+        codex_force_full_access=codex_force_full_access_enabled(),
     )
     assert materialized.ok and materialized.value is not None, materialized.issues
     flow_id = runtime.ark.flow_service.start_flow(

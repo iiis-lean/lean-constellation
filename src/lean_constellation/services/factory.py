@@ -55,7 +55,6 @@ def create_lean_runtime_services(
     from lean_constellation.services.validation_snapshot import ValidationSnapshotService
     from lean_constellation.agents.registry import (
         agent_skill_keys,
-        agent_type_capabilities,
         agent_type_permission_names,
         build_agent_type_specs,
     )
@@ -112,10 +111,6 @@ def create_lean_runtime_services(
         submission_gateway=providers.submission_gateway,
         agent_skill_keys=agent_skill_keys(specs=resolved_agent_type_specs),
         agent_type_permission_names=lambda agent_type: agent_type_permission_names(
-            agent_type,
-            specs=resolved_agent_type_specs,
-        ),
-        agent_type_capabilities=lambda agent_type: agent_type_capabilities(
             agent_type,
             specs=resolved_agent_type_specs,
         ),

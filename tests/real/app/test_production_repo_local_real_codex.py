@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import threading
 from typing import Any
-import urllib.request
 
 import pytest
 from agent_runtime_kit.flow.models import FlowStatus
@@ -34,7 +33,11 @@ from tests.real.runtime_matrix.strict.test_real_codex_agent_resource_matrix impo
     _start_coordinator,
 )
 from tests.real.runtime_matrix.transport import RuntimeMcpHttpTestServer
-from tests.real.runtime_matrix.transport import _free_local_port, _wait_for_http_health
+from tests.real.runtime_matrix.transport import (
+    _free_local_port,
+    _wait_for_http_health,
+    codex_force_full_access_enabled,
+)
 
 
 pytestmark = [pytest.mark.real, pytest.mark.slow, pytest.mark.real_codex]
@@ -48,6 +51,7 @@ def test_real_codex_coordinator_uses_repo_prefixed_production_mcp(tmp_path: Path
     provider_repo = workspace / "Provider"
     (provider_repo / ".lean_constellation").mkdir(parents=True)
     fake_lake = RuntimeMatrixFakeLakeClient()
+    force_full_access = codex_force_full_access_enabled()
     config = LeanAppConfig(
         workspace_root=workspace,
         admin_http_host="127.0.0.1",
@@ -57,6 +61,7 @@ def test_real_codex_coordinator_uses_repo_prefixed_production_mcp(tmp_path: Path
         server_start_paused=True,
         materialize_agent_homes=False,
         test_control_enabled=True,
+        codex_force_full_access=force_full_access,
     )
     app_result = create_production_app_server(
         config,
@@ -102,6 +107,7 @@ def test_real_codex_coordinator_uses_repo_prefixed_production_mcp(tmp_path: Path
             base_config_path=base_config_path,
             auth_json_path=config_home / "auth.json",
             agent_type_specs=agent_specs,
+            codex_force_full_access=force_full_access,
         )
         assert base_home.ok and base_home.value is not None, base_home.issues
         materialized = materialize_agent_home(
@@ -111,6 +117,7 @@ def test_real_codex_coordinator_uses_repo_prefixed_production_mcp(tmp_path: Path
             base_config_path=base_config_path,
             auth_json_path=config_home / "auth.json",
             agent_type_specs=agent_specs,
+            codex_force_full_access=force_full_access,
         )
         assert materialized.ok and materialized.value is not None, materialized.issues
         home_root = Path(materialized.value.home_root)

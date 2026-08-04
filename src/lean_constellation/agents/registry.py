@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
 
-from lean_constellation.agents.keys import AgentCapabilityKey, ProductionAgentTypeKey, SkillKey
+from lean_constellation.agents.keys import ProductionAgentTypeKey, SkillKey
 from lean_constellation.agents.models import (
     AgentResourceIssue,
     AgentResourceValidationReport,
@@ -71,14 +71,6 @@ def agent_skill_keys(
     specs: Iterable[AgentTypeSpec] | None = None,
 ) -> dict[str, list[str]]:
     return {spec.agent_type: list(spec.skill_keys) for spec in _coerce_agent_type_specs(specs)}
-
-
-def agent_type_capabilities(
-    agent_type: str,
-    *,
-    specs: Iterable[AgentTypeSpec] | None = None,
-) -> set[str]:
-    return set(get_agent_type_spec(agent_type, specs=specs).capabilities)
 
 
 def derive_agent_type_spec(
@@ -147,8 +139,6 @@ def validate_agent_resources(
     sub_views = list(submit_views) if submit_views is not None else build_submit_tool_views(sub_groups)
 
     app_group_keys = {group.key for group in app_groups}
-    app_group_by_key = {group.key: group for group in app_groups}
-    app_tool_by_name = {tool.name: tool for tool in app_tools}
     submit_group_keys = {group.key for group in sub_groups}
     app_view_by_key = {view.key: view for view in app_views}
     submit_view_by_key = {view.key: view for view in sub_views}
@@ -228,13 +218,6 @@ def validate_agent_resources(
             permission_names=permission_names,
             issues=issues,
         )
-        _validate_agent_capability_coverage(
-            spec=spec,
-            view=app_view_by_key.get(spec.application_tool_view_key),
-            group_by_key=app_group_by_key,
-            tool_by_name=app_tool_by_name,
-            issues=issues,
-        )
         _validate_view(
             spec=spec,
             view_key=spec.submit_tool_view_key,
@@ -252,39 +235,6 @@ def validate_agent_resources(
         )
 
     return AgentResourceValidationReport(ok=not issues, issues=issues, warnings=warnings)
-
-
-def _validate_agent_capability_coverage(
-    *,
-    spec: AgentTypeSpec,
-    view: ToolViewSpec | None,
-    group_by_key: dict[str, ToolGroupSpec],
-    tool_by_name: dict[str, object],
-    issues: list[AgentResourceIssue],
-) -> None:
-    if view is None:
-        return
-    tool_names = list(view.extra_tool_names)
-    for group_key in view.group_keys:
-        group = group_by_key.get(group_key)
-        if group is not None:
-            tool_names.extend(group.tool_names)
-    for tool_name in sorted(set(tool_names)):
-        tool = tool_by_name.get(tool_name)
-        required = set(getattr(tool, "required_agent_capabilities", set()))
-        missing = required - spec.capabilities
-        if not missing:
-            continue
-        issues.append(
-            AgentResourceIssue(
-                code="agent_capability_required_by_visible_tool",
-                message="AgentType lacks a capability required by a visible tool.",
-                agent_type=spec.agent_type,
-                resource_type="agent_capability",
-                resource_key=tool_name,
-                details={"missing_capabilities": ",".join(sorted(missing))},
-            )
-        )
 
 
 def _validate_view(
@@ -393,144 +343,11 @@ def _spec(
         instruction_fragment_keys=fragments,
         specific_instruction_key=_value(agent_type),
         skill_keys=_values(skills),
-        capabilities=set(AGENT_CAPABILITY_MATRIX[_value(agent_type)]),
         application_tool_view_key=_value(app_view),
         submit_tool_view_key=_value(submit_view),
         tool_view_agent_aliases=aliases or [],
         stage=stage,
     )
-
-
-Cap = AgentCapabilityKey
-
-AGENT_CAPABILITY_MATRIX: dict[str, tuple[AgentCapabilityKey, ...]] = {
-    ProductionAgentTypeKey.REPO_FORMAT_DISCOVERY.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.GITHUB_REMOTE_SEARCH_READ,
-        Cap.GENERAL_WEB_READ,
-    ),
-    ProductionAgentTypeKey.SOURCE_CORPUS_PREPARE.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.SOURCE_ROOT_FILE_READ_WRITE,
-        Cap.GENERAL_WEB_READ,
-        Cap.RESOURCE_ACQUISITION,
-    ),
-    ProductionAgentTypeKey.SOURCE_INDEX_BUILDER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-    ),
-    ProductionAgentTypeKey.SOURCE_INDEX_REVIEWER.value: (Cap.REPO_SEMANTIC_READ,),
-    ProductionAgentTypeKey.ROOT_INTERFACE_PREPARE.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-    ),
-    ProductionAgentTypeKey.ADAPTER_DECL_CATALOG.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-    ),
-    ProductionAgentTypeKey.RESOURCE_CURATOR.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.RESOURCE_DRAFT_FILE_READ_WRITE,
-        Cap.GENERAL_WEB_READ,
-        Cap.RESOURCE_ACQUISITION,
-        Cap.REQUIREMENT_SUBMIT,
-    ),
-    ProductionAgentTypeKey.REPO_RESOURCE_DISCOVERY.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.GENERAL_WEB_READ,
-        Cap.RESOURCE_ACQUISITION,
-    ),
-    ProductionAgentTypeKey.REPO_LEAN_PROVIDER_DISCOVERY.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.GITHUB_REMOTE_SEARCH_READ,
-        Cap.GENERAL_WEB_READ,
-    ),
-    ProductionAgentTypeKey.REPO_MATHLIB_RECON.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.MATHLIB_SEARCH_READ,
-        Cap.MATHLIB_INDEX_WRITE,
-    ),
-    ProductionAgentTypeKey.COORDINATOR.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.GITHUB_REMOTE_SEARCH_READ,
-        Cap.GENERAL_WEB_READ,
-        Cap.RESOURCE_ACQUISITION,
-        Cap.MATHLIB_SEARCH_READ,
-        Cap.MATHLIB_INDEX_WRITE,
-        Cap.REQUIREMENT_SUBMIT,
-    ),
-    ProductionAgentTypeKey.CONTENT_PLAN.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.RESOURCE_ACQUISITION,
-        Cap.MATHLIB_SEARCH_READ,
-        Cap.MATHLIB_INDEX_WRITE,
-        Cap.REQUIREMENT_SUBMIT,
-    ),
-    ProductionAgentTypeKey.NODE_DIR_DEPENDENCY_RECON.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-    ),
-    ProductionAgentTypeKey.MATHLIB_RECON.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.MATHLIB_SEARCH_READ,
-        Cap.MATHLIB_INDEX_WRITE,
-    ),
-    ProductionAgentTypeKey.RESOURCE_RECON.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.RESOURCE_ACQUISITION,
-        Cap.REQUIREMENT_SUBMIT,
-    ),
-    ProductionAgentTypeKey.STATEMENT_NL_WORKER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.MATHLIB_SEARCH_READ,
-    ),
-    ProductionAgentTypeKey.STATEMENT_NL_REVIEWER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-    ),
-    ProductionAgentTypeKey.STATEMENT_FORMAL_WORKER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.DECL_OWNED_LEAN_FILE_READ_WRITE,
-        Cap.MATHLIB_SEARCH_READ,
-        Cap.MATHLIB_INDEX_WRITE,
-    ),
-    ProductionAgentTypeKey.STATEMENT_FORMAL_REVIEWER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.MATHLIB_SEARCH_READ,
-    ),
-    ProductionAgentTypeKey.PROOF_NL_WORKER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.MATHLIB_SEARCH_READ,
-        Cap.MATHLIB_INDEX_WRITE,
-    ),
-    ProductionAgentTypeKey.PROOF_NL_REVIEWER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-    ),
-    ProductionAgentTypeKey.PROOF_FORMAL_WORKER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.DECL_OWNED_LEAN_FILE_READ_WRITE,
-        Cap.MATHLIB_SEARCH_READ,
-        Cap.MATHLIB_INDEX_WRITE,
-    ),
-    ProductionAgentTypeKey.PROOF_FORMAL_REVIEWER.value: (
-        Cap.REPO_SEMANTIC_READ,
-        Cap.REPO_SEMANTIC_WRITE,
-        Cap.MATHLIB_SEARCH_READ,
-    ),
-}
 
 
 def _coerce_agent_type_specs(specs: Iterable[AgentTypeSpec] | None) -> list[AgentTypeSpec]:
@@ -1125,7 +942,6 @@ AGENT_TYPE_SPECS: tuple[AgentTypeSpec, ...] = (
 __all__ = [
     "AGENT_TYPE_SPECS",
     "agent_skill_keys",
-    "agent_type_capabilities",
     "agent_type_permission_names",
     "build_agent_type_specs",
     "derive_agent_type_spec",

@@ -22,7 +22,6 @@ from lean_constellation.tools import (
 class AgentSurfaceTool(StrictModel):
     name: str
     capability: ToolCapability
-    required_agent_capabilities: list[str]
     required_context: list[str]
     result_view: str
     tool_groups: list[str]
@@ -37,7 +36,6 @@ class AgentSurfaceSkill(StrictModel):
 class AgentSurfaceReport(StrictModel):
     agent_type: str
     role: str
-    capabilities: list[str]
     lifecycle_group: str
     context_scope: str
     application_tool_view_key: str
@@ -99,7 +97,6 @@ def build_agent_surface_reports(
         reports[spec.agent_type] = AgentSurfaceReport(
             agent_type=spec.agent_type,
             role=spec.role,
-            capabilities=sorted(spec.capabilities),
             lifecycle_group=spec.lifecycle_group,
             context_scope=spec.context_scope,
             application_tool_view_key=app_view.key,
@@ -125,7 +122,6 @@ def _surface_tool(tool: ToolSpec) -> AgentSurfaceTool:
     return AgentSurfaceTool(
         name=tool.name,
         capability=tool.capability,
-        required_agent_capabilities=sorted(tool.required_agent_capabilities),
         required_context=sorted(tool.required_context),
         result_view=tool.result_view,
         tool_groups=sorted(tool.tool_groups),

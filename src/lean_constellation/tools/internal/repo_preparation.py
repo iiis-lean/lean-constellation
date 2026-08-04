@@ -628,7 +628,6 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="github_repo_candidate_list",
             groups={AppGroup.UPSTREAM_REPO_SEARCH},
             roles={"worker", "coordinator", "admin"},
-            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
             handler=_search_github_lean_repositories,
         ),
@@ -640,7 +639,6 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="github_repo_candidate_detail",
             groups={AppGroup.UPSTREAM_REPO_SEARCH},
             roles={"worker", "coordinator", "admin"},
-            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
             handler=_inspect_github_lean_repository,
         ),
@@ -655,7 +653,6 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="github_lean_repo_probe",
             groups={AppGroup.UPSTREAM_REPO_SEARCH},
             roles={"worker", "coordinator", "admin"},
-            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
         direct_tool(
@@ -669,7 +666,6 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="github_repository",
             groups={AppGroup.GITHUB_REPOSITORY_READ},
             roles={"worker", "coordinator", "admin"},
-            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
         direct_tool(
@@ -683,7 +679,6 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="github_repository_tree",
             groups={AppGroup.GITHUB_REPOSITORY_READ},
             roles={"worker", "coordinator", "admin"},
-            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
         direct_tool(
@@ -697,7 +692,6 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="github_repository_file",
             groups={AppGroup.GITHUB_REPOSITORY_READ},
             roles={"worker", "coordinator", "admin"},
-            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
         direct_tool(
@@ -711,7 +705,6 @@ def build_tool_specs() -> list[ToolSpec]:
             result_view="github_code_search",
             groups={AppGroup.GITHUB_REPOSITORY_READ},
             roles={"worker", "coordinator", "admin"},
-            required_agent_capabilities={"github_remote_search_read"},
             required_context=set(),
         ),
     ]
