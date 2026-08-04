@@ -54,6 +54,19 @@ from lean_constellation.services.lean_projection.safe_apply import (
     SafeFormalApplyComponent,
     SafeFormalApplyView,
 )
+from lean_constellation.services.lean_projection.source_metrics import (
+    DeclStatisticsView,
+    LeanSourceStatisticsView,
+    NodeEntryStatisticsView,
+    NodeStatisticsView,
+    SourceLineRiskView,
+    SourceMarkerAnalysisView,
+    SourceMetricView,
+    SourceStatisticsError,
+    SourceLayerView,
+    build_source_statistics,
+    render_source_statistics_markdown,
+)
 
 __all__ = [
     "AdapterFacadeComponent",
@@ -84,6 +97,17 @@ __all__ = [
     "FormalApplyStage",
     "SafeFormalApplyComponent",
     "SafeFormalApplyView",
+    "DeclStatisticsView",
+    "LeanSourceStatisticsView",
+    "NodeEntryStatisticsView",
+    "NodeStatisticsView",
+    "SourceLineRiskView",
+    "SourceMarkerAnalysisView",
+    "SourceMetricView",
+    "SourceStatisticsError",
+    "SourceLayerView",
+    "build_source_statistics",
+    "render_source_statistics_markdown",
     "NodeProjectionComponent",
     "ProjectionView",
     "ProjectionAuditView",

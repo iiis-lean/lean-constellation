@@ -18,6 +18,33 @@ if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
 
 
+TARGET_DOCSTRING_RE = re.compile(r"/--(?P<body>.*?)-/", re.DOTALL)
+TARGET_MARKER_LINE_RE = re.compile(
+    r"^\s*#\s+lean-constellation\s+target:\s+`(?P<decl_name>[^`]+)`\s*$"
+)
+DECLARATION_KEYWORDS = (
+    "def",
+    "theorem",
+    "lemma",
+    "instance",
+    "abbrev",
+    "structure",
+    "class",
+    "inductive",
+    "opaque",
+    "axiom",
+)
+DECLARATION_MODIFIERS = (
+    "private",
+    "protected",
+    "noncomputable",
+    "unsafe",
+    "partial",
+    "scoped",
+)
+SOURCE_NAME_PATTERN = r"(?:_root_\.)?[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*"
+
+
 class ResolvedRepoDeclDependencyProjection(StrictModel):
     kind: Literal["repo_decl"] = "repo_decl"
     repo_key: str | None = None
@@ -104,34 +131,68 @@ class PrimaryDeclarationSourceView(StrictModel):
     summary: str
 
 
+def iter_target_marker_views(file_text: str) -> list[TargetMarkerView]:
+    """Return all current-format target markers found inside target-style docstrings."""
+
+    markers: list[TargetMarkerView] = []
+    for match in TARGET_DOCSTRING_RE.finditer(file_text):
+        body = match.group("body")
+        body_start_line = file_text.count("\n", 0, match.start("body")) + 1
+        for offset, line in enumerate(body.splitlines()):
+            marker = TARGET_MARKER_LINE_RE.match(line)
+            if marker is None:
+                continue
+            decl_name = marker.group("decl_name").strip()
+            markers.append(
+                TargetMarkerView(
+                    decl_name=decl_name,
+                    marker_line=body_start_line + offset,
+                    docstring_start_line=file_text.count("\n", 0, match.start()) + 1,
+                    docstring_end_line=file_text.count("\n", 0, match.end()) + 1,
+                    docstring_start_offset=match.start(),
+                    docstring_end_offset=match.end(),
+                    docstring=match.group(0),
+                    summary=f"Found target marker for {decl_name}.",
+                )
+            )
+    return markers
+
+
+def target_marker_line_numbers(file_text: str) -> set[int]:
+    """Return 1-based line numbers of parser-confirmed target markers."""
+
+    return {marker.marker_line for marker in iter_target_marker_views(file_text)}
+
+
+def adjacent_declaration_pattern() -> re.Pattern[str]:
+    """Build the same marker-adjacent declaration pattern used by capture."""
+
+    modifiers = "|".join(DECLARATION_MODIFIERS)
+    kinds = "|".join(DECLARATION_KEYWORDS)
+    return re.compile(
+        rf"\A(?:[ \t]*\n)*(?:[ \t]*@\[[^\n]*\][ \t]*\n)*(?:(?:{modifiers})[ \t]+)*(?P<kind>{kinds})[ \t]+(?P<name>{SOURCE_NAME_PATTERN})(?=$|[ \t\n:({{\[]|\.\{{)",
+        re.MULTILINE,
+    )
+
+
+def top_level_declaration_pattern() -> re.Pattern[str]:
+    """Build the top-level declaration pattern used by the final-declaration gate."""
+
+    modifiers = rf"(?:(?:{'|'.join(DECLARATION_MODIFIERS)})\s+)*"
+    return re.compile(
+        rf"^[ \t]*{modifiers}(?:{'|'.join(DECLARATION_KEYWORDS)})\s+"
+        rf"(?P<name>{SOURCE_NAME_PATTERN})(?=$|\s|[:({{\[]|\.\{{)"
+    )
+
+
 class AnnotationComponent:
     """Render only the controlled docstring and identify its adjacent declaration."""
 
-    _DOCSTRING_RE = re.compile(r"/--(?P<body>.*?)-/", re.DOTALL)
-    _MARKER_RE = re.compile(
-        r"^\s*#\s+lean-constellation\s+target:\s+`(?P<decl_name>[^`]+)`\s*$"
-    )
-    _DECL_KEYWORDS = (
-        "def",
-        "theorem",
-        "lemma",
-        "instance",
-        "abbrev",
-        "structure",
-        "class",
-        "inductive",
-        "opaque",
-        "axiom",
-    )
-    _MODIFIERS = (
-        "private",
-        "protected",
-        "noncomputable",
-        "unsafe",
-        "partial",
-        "scoped",
-    )
-    _SOURCE_NAME = r"(?:_root_\.)?[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*"
+    _DOCSTRING_RE = TARGET_DOCSTRING_RE
+    _MARKER_RE = TARGET_MARKER_LINE_RE
+    _DECL_KEYWORDS = DECLARATION_KEYWORDS
+    _MODIFIERS = DECLARATION_MODIFIERS
+    _SOURCE_NAME = SOURCE_NAME_PATTERN
 
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
@@ -181,27 +242,7 @@ class AnnotationComponent:
         )
 
     def parse_target_marker(self, file_text: str) -> ServiceResult[TargetMarkerView]:
-        markers: list[TargetMarkerView] = []
-        for match in self._DOCSTRING_RE.finditer(file_text):
-            body = match.group("body")
-            body_start_line = self._line_number(file_text, match.start("body"))
-            for offset, line in enumerate(body.splitlines()):
-                marker = self._MARKER_RE.match(line)
-                if marker is None:
-                    continue
-                decl_name = marker.group("decl_name").strip()
-                markers.append(
-                    TargetMarkerView(
-                        decl_name=decl_name,
-                        marker_line=body_start_line + offset,
-                        docstring_start_line=self._line_number(file_text, match.start()),
-                        docstring_end_line=self._line_number(file_text, match.end()),
-                        docstring_start_offset=match.start(),
-                        docstring_end_offset=match.end(),
-                        docstring=match.group(0),
-                        summary=f"Found target marker for {decl_name}.",
-                    )
-                )
+        markers = iter_target_marker_views(file_text)
         if not markers:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -731,18 +772,10 @@ class AnnotationComponent:
         return f"{base}, lines {start}–{end}"
 
     def _adjacent_declaration_re(self) -> re.Pattern[str]:
-        modifiers = "|".join(self._MODIFIERS)
-        kinds = "|".join(self._DECL_KEYWORDS)
-        return re.compile(
-            rf"\A(?:[ \t]*\n)*(?:[ \t]*@\[[^\n]*\][ \t]*\n)*(?:(?:{modifiers})[ \t]+)*(?P<kind>{kinds})[ \t]+(?P<name>{self._SOURCE_NAME})(?=$|[ \t\n:({{\[]|\.\{{)",
-            re.MULTILINE,
-        )
+        return adjacent_declaration_pattern()
 
     def _top_level_declarations_after(self, lines: Sequence[str], start_index: int) -> list[str]:
-        modifiers = rf"(?:(?:{'|'.join(self._MODIFIERS)})\s+)*"
-        pattern = re.compile(
-            rf"^[ \t]*{modifiers}(?:{'|'.join(self._DECL_KEYWORDS)})\s+(?P<name>{self._SOURCE_NAME})(?=$|\s|[:({{\[]|\.\{{)"
-        )
+        pattern = top_level_declaration_pattern()
         names: list[str] = []
         for line in lines[start_index:]:
             match = pattern.match(line)

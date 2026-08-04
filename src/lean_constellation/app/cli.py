@@ -46,6 +46,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Format to export. Repeat to select both; defaults to both.",
     )
+    source_stats = sub.add_parser(
+        "source-stats",
+        help="Read-only Lean source, marker, node, and declaration statistics.",
+    )
+    source_stats.add_argument("repo_root", type=Path)
+    source_stats.add_argument("--format", choices=["json", "markdown"], default="json")
+    source_stats.add_argument("--max-line-length", type=int, default=100)
     sub.add_parser("status", help="Read production server runtime status over Admin HTTP.")
     flow_tree = sub.add_parser("flow-tree", help="Read production flow/step tree over Admin HTTP.")
     flow_tree.add_argument("--repo-key", required=True)
@@ -342,6 +349,25 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
+        return 0
+    if args.command == "source-stats":
+        from lean_constellation.services.lean_projection import (
+            SourceStatisticsError,
+            build_source_statistics,
+            render_source_statistics_markdown,
+        )
+
+        try:
+            report = build_source_statistics(
+                args.repo_root,
+                max_line_length=args.max_line_length,
+            )
+        except SourceStatisticsError as exc:
+            parser.error(str(exc))
+        if args.format == "markdown":
+            print(render_source_statistics_markdown(report), end="")
+        else:
+            print(report.model_dump_json(indent=2))
         return 0
     config = load_app_config(args.config)
     if args.command == "config-view":

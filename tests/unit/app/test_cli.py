@@ -29,6 +29,7 @@ def test_cli_help_mentions_admin_commands() -> None:
     assert "agent-event" in help_text
     assert "agent-trace-report" in help_text
     assert "semantic-watch" in help_text
+    assert "source-stats" in help_text
     assert "repo-run-initial" in help_text
     assert "repo-run-continue" in help_text
     assert "repo-release-preview" in help_text
@@ -52,6 +53,17 @@ def test_cli_config_view_prints_redacted_config(tmp_path, capsys) -> None:
     assert exit_code == 0
     assert "workspace" in output
     assert "secret-token" not in output
+
+
+def test_cli_source_stats_is_standalone_and_read_only(tmp_path, capsys) -> None:
+    (tmp_path / "Main.lean").write_text("theorem result : True := by trivial\n", encoding="utf-8")
+
+    exit_code = main(["source-stats", str(tmp_path)])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["lean_file_count"] == 1
+    assert payload["graph_status"] == "unavailable"
 
 
 def test_cli_serve_prints_redacted_server_payload(tmp_path, capsys, monkeypatch) -> None:
