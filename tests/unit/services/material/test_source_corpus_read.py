@@ -629,25 +629,32 @@ def test_source_corpus_pdf_transcription_retains_structure_and_page_mapping(tmp_
     assert (source_root / "transcription" / "paper.md").read_text(encoding="utf-8") == transcription
 
 
-def test_source_corpus_rejects_generated_summary_solution_and_hidden_formal_target(tmp_path: Path) -> None:
+def test_source_corpus_accepts_supplied_targets_solutions_and_descriptive_titles(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)
     (source_root / "README.md").write_text(_source_entry_text(main_path="summary.md"), encoding="utf-8")
     (source_root / "summary.md").write_text("# Generated summary\nAssumption h was silently removed.\n", encoding="utf-8")
     (source_root / "solution.tex").write_text("% Proposed agent solution\n", encoding="utf-8")
-    (source_root / "formal_target.lean").write_text("theorem expected : True := by trivial\n", encoding="utf-8")
+    (source_root / "formal_target.lean").write_text("theorem expected : True := by\n  sorry\n", encoding="utf-8")
+    (source_root / "expected_answer.md").write_text("# Expected answer\nSupplied answer.\n", encoding="utf-8")
+    (source_root / "expected_proof.md").write_text("# Expected proof\nSupplied proof.\n", encoding="utf-8")
+    (source_root / "expected_node_tree.md").write_text("# Expected node tree\nSupplied structure.\n", encoding="utf-8")
+    (source_root / "audit_hint.md").write_text("# Audit hint\nSupplied operator context.\n", encoding="utf-8")
+    (source_root / "lean_probe.lean").write_text("#check Nat\n", encoding="utf-8")
 
     gate = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
 
-    assert gate.ok and gate.value is not None and not gate.value.passed
-    kinds = {issue.kind for issue in gate.value.issues}
-    assert "source_corpus_artifact_forbidden" in kinds
-
-    (source_root / "formal_target.lean").unlink()
-    contaminated = make_runtime().material.check_source_corpus_draft(tmp_path, entry_path="README.md")
-    assert contaminated.ok and contaminated.value is not None and not contaminated.value.passed
-    assert {"source_corpus_truth_contaminated", "source_corpus_artificial_solution_forbidden"} <= {
-        issue.kind for issue in contaminated.value.issues
+    assert gate.ok and gate.value is not None and gate.value.passed
+    scanned = make_runtime().material.scan_source_corpus(tmp_path)
+    assert scanned.ok and scanned.value is not None
+    assert {item.path for item in scanned.value.files} >= {
+        "formal_target.lean",
+        "solution.tex",
+        "expected_answer.md",
+        "expected_proof.md",
+        "expected_node_tree.md",
+        "audit_hint.md",
+        "lean_probe.lean",
     }
 
 
@@ -689,6 +696,9 @@ def test_source_corpus_rejects_runtime_artifacts_symlinks_and_old_manifest_schem
     (source_root / "notes" / "section.md").write_text("source text\n", encoding="utf-8")
     (source_root / ".cache").mkdir()
     (source_root / ".cache" / "session.json").write_text("{}\n", encoding="utf-8")
+    (source_root / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (source_root / "auth.json").write_text("{}\n", encoding="utf-8")
+    (source_root / "compiled.pyc").write_bytes(b"fixture")
     (source_root / "linked.md").symlink_to(source_root / "notes" / "section.md")
     service = make_runtime().material
 
@@ -697,8 +707,14 @@ def test_source_corpus_rejects_runtime_artifacts_symlinks_and_old_manifest_schem
     assert {"source_corpus_artifact_forbidden", "source_corpus_symlink_forbidden"} <= {
         issue.kind for issue in unsafe.value.issues
     }
+    assert {".cache", ".cache/session.json", ".env", "auth.json", "compiled.pyc"} <= {
+        issue.object_ref for issue in unsafe.value.issues if issue.kind == "source_corpus_artifact_forbidden"
+    }
 
     (source_root / "linked.md").unlink()
+    (source_root / ".env").unlink()
+    (source_root / "auth.json").unlink()
+    (source_root / "compiled.pyc").unlink()
     (source_root / ".cache" / "session.json").unlink()
     (source_root / ".cache").rmdir()
     prepared = service.submit_source_corpus_prepared(

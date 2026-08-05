@@ -706,7 +706,6 @@ class SourceCorpusComponent:
                             object_ref="README.md",
                         )
                     )
-        issues.extend(self._source_contamination_issues(root, manifest))
         if entry and not entry_path and entry_view is not None and not self._is_canonical_entry(entry):
             issues.append(
                 self.runtime.foundation.issue(
@@ -1088,48 +1087,8 @@ class SourceCorpusComponent:
                 issues.append(
                     self.runtime.foundation.issue(
                         "source_corpus_artifact_forbidden",
-                        "SourceCorpus must not contain runtime, cache, credential, or hidden control artifacts.",
+                        "SourceCorpus must not contain runtime, cache, credential, or interpreter artifacts.",
                         object_ref=relative.as_posix(),
-                    )
-                )
-        return issues
-
-    def _source_contamination_issues(
-        self,
-        root: Path,
-        manifest: SourceCorpusManifestView,
-    ) -> list[ServiceIssue]:
-        issues: list[ServiceIssue] = []
-        artificial_solution_roots = {"solution.tex", "solution.lean", "solution.md"}
-        for item in manifest.files:
-            relative = Path(item.path)
-            if relative.name.lower() in artificial_solution_roots and (
-                len(relative.parts) == 1 or relative.parts[0] in {"main", "supplementary", "normalized"}
-            ):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_corpus_artificial_solution_forbidden",
-                        "Agent-authored solution artifacts are not SourceCorpus truth.",
-                        object_ref=item.path,
-                    )
-                )
-            if not item.readable_text:
-                continue
-            text = self._read_source_text(root / item.path)
-            if any(
-                re.search(marker, text)
-                for marker in (
-                    r"(?im)^\s*#{0,3}\s*(?:agent[- ]generated|generated|condensed) summary\b",
-                    r"(?im)^\s*#{0,3}\s*(?:expected )?formal(?:ization)? (?:target|plan)\b",
-                    r"(?im)^\s*#{0,3}\s*(?:proposed|expected|new) (?:solution|proof)\b",
-                    r"(?im)^\s*#{0,3}\s*expected node tree\b",
-                )
-            ):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "source_corpus_truth_contaminated",
-                        "SourceCorpus contains generated summary, expected formalization, solution, proof, or node-tree markers.",
-                        object_ref=item.path,
                     )
                 )
         return issues
@@ -1140,17 +1099,8 @@ class SourceCorpusComponent:
         if any(part in forbidden_parts for part in relative.parts):
             return True
         name = relative.name.lower()
-        forbidden_names = {
-            "formal_target.lean",
-            "expected_answer.md",
-            "expected_proof.md",
-            "expected_node_tree.md",
-            "audit_hint.md",
-            "lean_probe.lean",
-            "auth.json",
-        }
         return (
-            name in forbidden_names
+            name == "auth.json"
             or name == ".env"
             or name.startswith(".env.")
             or relative.suffix.lower() == ".pyc"

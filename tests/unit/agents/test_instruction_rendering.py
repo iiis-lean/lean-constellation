@@ -429,5 +429,16 @@ def test_source_reviewer_routes_corpus_fidelity_blocker_outside_builder_authorit
     text = render_agent_instruction("SourceIndexReviewerAgent")
 
     assert "source_corpus_fidelity_blocker:" in text
+    assert "retained originals, acquisition provenance, or other canonical evidence" in text
+    assert "Do not reject material merely because the supplied source is a Lean specification" in text
     assert "do not modify source files" in text
     assert "separately authorized SourceCorpus repair" in text
+
+
+def test_source_prepare_preserves_supplied_targets_without_inventing_source_truth() -> None:
+    text = render_agent_instruction("SourceCorpusPrepareAgent")
+
+    assert "Treat Lean specifications, formal targets, solutions, proof references" in text
+    assert "preserve their bytes or faithfully extracted meaning" in text
+    assert "Do not invent a target, answer, proof, NodeTree, probe, or audit hint" in text
+    assert "Do not replace source truth with" not in text

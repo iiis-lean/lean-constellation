@@ -1066,7 +1066,7 @@ def build_source_corpus_tool_specs() -> list[ToolSpec]:
         ),
         direct_tool(
             name="check_source_corpus_draft",
-            description="Validate SourceCorpus README/entry, faithful structure, original mapping, partial scope, correction ledger, contamination, and path/runtime safety.",
+            description="Validate SourceCorpus README/entry, faithful structure, original mapping, partial scope, correction ledger, readability, and path/runtime safety.",
             args_model=SourceCorpusCheckArgs,
             capability=ToolCapability.READ,
             backing_service="material",

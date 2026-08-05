@@ -498,7 +498,7 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
     ),
     SkillKey.SOURCE_CORPUS_FAITHFUL_PREPARATION.value: LeanSkillDefinition(
         name="source-corpus-faithful-preparation",
-        description="Guides SourceCorpusPrepare agents preserving author structure, documenting the corpus boundary, and excluding hidden formalization answers.",
+        description="Guides SourceCorpusPrepare agents preserving supplied material and documenting the corpus boundary without inventing formalization answers.",
         group="source",
         required_tool_groups=_groups(
             AppGroup.SOURCE_CORPUS_READ,
@@ -514,10 +514,11 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
                 "Maintain a root README with source/author/version/canonical locator, file inventory, reading order, main material entry, original-to-extracted mapping, extraction/OCR/correction status, missing pages/assets/bibliography, and the included/omitted source boundary.",
                 "Use `article/`, `original/`, `assets/`, and `supplementary/` only when they match the source; do not force a coherent author tree into an artificial `main/` layout.",
                 "Record partial sections or transcripts exactly and add a supplementary correction ledger for any non-mechanical correction.",
+                "Preserve supplied Lean specifications, formal targets, solutions, and proof references as source truth; a supplied file containing `sorry` remains an input constraint rather than a completed project artifact.",
                 "Run `scan_source_corpus` and `check_source_corpus_draft`, repair authorized preparation failures, then submit prepared or blocked exactly once.",
             ),
             (
-                "Do not create generated summaries, tutorials, solution files, formalization plans, formal_target.lean, expected proofs, expected node trees, Lean probes, or audit hints.",
+                "Do not invent targets, answers, proofs, expected node trees, Lean probes, or audit hints, and do not present Agent-authored summaries or commentary as supplied source truth.",
                 "Do not strengthen or weaken statements, drop assumptions, merge separate conclusions, or invent connective proof text.",
                 "Do not build SourceIndex, root interfaces, NodeTree, DeclGraph, Resources, or Lean project files.",
             ),

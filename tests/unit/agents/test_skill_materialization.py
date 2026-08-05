@@ -218,6 +218,14 @@ def test_source_and_resource_acquisition_skills_reference_visible_tools() -> Non
     assert "acquire_source_material" not in specs["resource-material-acquisition"].body
 
 
+def test_source_corpus_preparation_skill_preserves_supplied_formal_material() -> None:
+    body = build_skill_specs()["source-corpus-faithful-preparation"].body
+
+    assert "Preserve supplied Lean specifications, formal targets, solutions, and proof references" in body
+    assert "Do not invent targets, answers, proofs, expected node trees" in body
+    assert "Do not create generated summaries" not in body
+
+
 def test_all_skill_bodies_are_english_and_tool_refs_resolve() -> None:
     for key, spec in build_skill_specs().items():
         assert re.search(r"[\u3400-\u9fff]", spec.body) is None, key
