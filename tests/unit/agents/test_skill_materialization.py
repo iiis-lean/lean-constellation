@@ -226,6 +226,14 @@ def test_source_corpus_preparation_skill_preserves_supplied_formal_material() ->
     assert "Do not create generated summaries" not in body
 
 
+def test_resource_draft_skill_keeps_requested_use_advisory() -> None:
+    body = build_skill_specs()["resource-draft-curation"].body
+
+    assert "formal_dependency as strong provider evidence rather than an irreversible classification" in body
+    assert "record the corrected ownership in the README and submission" in body
+    assert "Do not submit a local Resource when" not in body
+
+
 def test_all_skill_bodies_are_english_and_tool_refs_resolve() -> None:
     for key, spec in build_skill_specs().items():
         assert re.search(r"[\u3400-\u9fff]", spec.body) is None, key

@@ -347,7 +347,7 @@ For a local resource, work in the current active resource draft directory. Read 
 
 Treat the current working directory as the active draft root. Keep direct edits inside it and use logical paths such as `README.md`, `original/`, and `normalized/`; runtime/cache/temporary absolute paths are not part of the resource contract.
 
-Use `submit_external_repo_required` for full papers, reusable theories, formal dependencies, or directory-shaped material that should become a provider repo boundary. A request whose current requested-use value is formal-dependency cannot become a local Resource. Use `submit_resource_rejected` only for invalid, inaccessible, irrelevant, untrustworthy, or unreadable targets.
+Use `submit_external_repo_required` for full papers, reusable theories, formal dependencies, or directory-shaped material that should become a provider repo boundary. Treat a current requested-use value of formal-dependency as strong provider evidence, not an irreversible classification: normally choose external-repo-required, but a local Resource remains valid when direct inspection shows that the actual target is narrow supporting material and the README and submission explicitly record the corrected ownership and remaining consumer formalization responsibility. Use `submit_resource_rejected` only for invalid, inaccessible, irrelevant, untrustworthy, or unreadable targets.
 
 Do not bind the resource to a node contract, create repository requirements directly, or decide how callers should use the resource.""",
     "CoordinatorAgent": """## Native Repository Coordinator

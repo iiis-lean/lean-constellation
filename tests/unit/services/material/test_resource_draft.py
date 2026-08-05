@@ -303,19 +303,18 @@ def test_resource_readme_requires_original_absence_reason_and_correction_ledger(
 
 
 @pytest.mark.parametrize("marker", ["# Generated summary", "# Formalization plan", "# Proposed proof"])
-def test_resource_gate_rejects_normalized_truth_contamination(tmp_path: Path, marker: str) -> None:
+def test_resource_gate_accepts_supplied_normalized_material_regardless_of_heading(tmp_path: Path, marker: str) -> None:
     service = make_runtime().material
     draft = service.allocate_resource_draft(tmp_path, target=f"https://example.com/{marker.split()[-1]}")
     assert draft.ok and draft.value is not None
-    _write_valid_draft_files(Path(draft.value.draft_root), text=f"{marker}\nagent-authored replacement\n")
+    _write_valid_draft_files(Path(draft.value.draft_root), text=f"{marker}\nsupplied canonical material\n")
 
     checked = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
 
-    assert checked.ok and checked.value is not None and not checked.value.passed
-    assert "resource_normalized_truth_contaminated" in {issue.kind for issue in checked.value.issues}
+    assert checked.ok and checked.value is not None and checked.value.passed
 
 
-def test_resource_gate_rejects_formal_dependency_and_forbidden_artifacts(tmp_path: Path) -> None:
+def test_resource_gate_treats_formal_dependency_as_advisory_but_rejects_forbidden_artifacts(tmp_path: Path) -> None:
     service = make_runtime().material
     draft = service.allocate_resource_draft(
         tmp_path,
@@ -333,8 +332,20 @@ def test_resource_gate_rejects_formal_dependency_and_forbidden_artifacts(tmp_pat
 
     assert checked.ok and checked.value is not None and not checked.value.passed
     issue_kinds = {issue.kind for issue in checked.value.issues}
-    assert "resource_local_ownership_mismatch" in issue_kinds
     assert "resource_draft_artifact_forbidden" in issue_kinds
+    assert "resource_local_ownership_mismatch" not in issue_kinds
+
+    (root / ".cache" / "session.json").unlink()
+    (root / ".cache").rmdir()
+    accepted = service.check_resource_draft(tmp_path, draft_id=draft.value.draft.draft_id)
+    finalized = service.finalize_resource_draft(
+        tmp_path,
+        draft_id=draft.value.draft.draft_id,
+        summary="Inspected target is narrow supporting material despite the initial requested-use hint.",
+    )
+
+    assert accepted.ok and accepted.value is not None and accepted.value.passed
+    assert finalized.ok and finalized.value is not None
 
 
 def test_resource_draft_current_schema_rejects_missing_version(tmp_path: Path) -> None:

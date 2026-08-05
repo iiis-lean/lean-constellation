@@ -973,15 +973,6 @@ class ResourceLibraryComponent:
                         object_ref=relative.as_posix(),
                     )
                 )
-        if draft.requested_use == "formal_dependency":
-            issues.append(
-                self.runtime.foundation.issue(
-                    "resource_local_ownership_mismatch",
-                    "A formal dependency must use an external provider repository rather than a local Resource.",
-                    object_ref=draft.draft_id,
-                    field="requested_use",
-                )
-            )
         if not (draft_root / "README.md").is_file():
             issues.append(
                 self.runtime.foundation.issue(
@@ -1015,16 +1006,6 @@ class ResourceLibraryComponent:
                     object_ref=manifest.value.canonical_normalized_entry,
                 )
             )
-        else:
-            canonical_text = canonical.read_text(encoding="utf-8")
-            if self._normalized_truth_is_contaminated(canonical_text):
-                issues.append(
-                    self.runtime.foundation.issue(
-                        "resource_normalized_truth_contaminated",
-                        "Canonical normalized material contains an agent-generated summary, formalization plan, or newly proposed proof marker.",
-                        object_ref=manifest.value.canonical_normalized_entry,
-                    )
-                )
         for item in manifest.value.files:
             path = draft_root / item.path
             if not path.is_file() or self._hash_file(path) != item.sha256:
@@ -1151,15 +1132,6 @@ class ResourceLibraryComponent:
             return True
         name = relative.name.lower()
         return name == "auth.json" or name == ".env" or name.startswith(".env.") or relative.suffix.lower() == ".pyc"
-
-    @staticmethod
-    def _normalized_truth_is_contaminated(text: str) -> bool:
-        markers = (
-            r"(?im)^\s*#{0,3}\s*(?:agent[- ]generated|generated|condensed) summary\b",
-            r"(?im)^\s*#{0,3}\s*formalization plan\b",
-            r"(?im)^\s*#{0,3}\s*(?:proposed|new) proof\b",
-        )
-        return any(re.search(marker, text) for marker in markers)
 
     def _as_schema_error(self, issue: ServiceIssue) -> ServiceIssue:
         return self.runtime.foundation.issue(

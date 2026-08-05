@@ -670,7 +670,7 @@ Then stop using this Skill and return to the caller's next-action loop in the sa
             ),
             (
                 "Do not use this skill for duplicate, external-repo-required, or rejected outcomes.",
-                "Do not submit a local Resource when the request context says formal_dependency; choose external_repo_required.",
+                "Treat formal_dependency as strong provider evidence rather than an irreversible classification; choose a local Resource only when inspected truth shows narrow supporting material and record the corrected ownership in the README and submission.",
                 "Do not attach the resource to a content node from the curator role.",
             ),
         ),

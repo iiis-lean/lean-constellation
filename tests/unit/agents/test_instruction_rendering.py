@@ -442,3 +442,11 @@ def test_source_prepare_preserves_supplied_targets_without_inventing_source_trut
     assert "preserve their bytes or faithfully extracted meaning" in text
     assert "Do not invent a target, answer, proof, NodeTree, probe, or audit hint" in text
     assert "Do not replace source truth with" not in text
+
+
+def test_resource_curator_treats_requested_use_as_advisory_evidence() -> None:
+    text = render_agent_instruction("ResourceCuratorAgent")
+
+    assert "formal-dependency as strong provider evidence, not an irreversible classification" in text
+    assert "direct inspection shows that the actual target is narrow supporting material" in text
+    assert "cannot become a local Resource" not in text
