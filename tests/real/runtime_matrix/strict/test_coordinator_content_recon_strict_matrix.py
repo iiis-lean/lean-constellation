@@ -7,7 +7,7 @@ from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
 
 from lean_constellation.app import AutomaticCheckpointAppConfig, RequirementResumeInput
 from tests.unit_services_helpers import publish_adapter_provider_ready
-from tests.real.runtime_matrix.admin_helpers import unwrap
+from tests.real.runtime_matrix.admin_helpers import run_scripted_flow_until, unwrap
 from tests.real.runtime_matrix.evidence import EvidenceRecorder
 from tests.real.runtime_matrix.fixtures import CONTENT_NODE_PATH, RuntimeMatrixWorkspace, create_runtime_matrix_workspace
 from tests.real.runtime_matrix.scripted_provider import (
@@ -256,12 +256,22 @@ def test_strict_coordinator_callback_waiting_and_ready_evidence(
     )
     unwrap(ready_ws.admin.resume_runtime())
     ready_flow_id = _start_coordinator(ready_ws)
-    schedule_until(ready_ws.runtime, lambda: ready_ws.runtime.ark.flow_service.get_flow(ready_flow_id).status is FlowStatus.COMPLETED, limit=80)
-    ready_flow = ready_ws.runtime.ark.flow_service.get_flow(ready_flow_id)
+    ready_flow = run_scripted_flow_until(
+        ready_ws.runtime,
+        ready_flow_id,
+        lambda flow: flow.status is FlowStatus.COMPLETED,
+        limit=80,
+    )
     assert ready_flow.result.outcome == "candidate_prepared"
     assert ready_flow.result.prepared_release is not None
     assert ready_flow.result.provider_ready_marked is False
     evidence_recorder.record_runtime_state(ready_ws.runtime)
+
+    assert {
+        "repo_resource_discovery",
+        "repo_lean_provider_discovery",
+        "repo_mathlib_recon",
+    }.issubset(evidence_recorder.evidence.flow_types)
 
     assert {
         "native_repo_coordinator",

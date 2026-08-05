@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import pytest
-from agent_runtime_kit.flow.models import FlowRequest, FlowStatus
+from agent_runtime_kit.flow.models import FlowRequest, FlowStatus, StepStatus
 
 from lean_constellation.app import (
     AdminStepStartInput,
@@ -17,6 +17,7 @@ from lean_constellation.services.external_clients import LakeCommandClient, Lake
 from lean_constellation.flows.testing import ControlledAgentOverrideSpec
 from tests.real.runtime_matrix.admin_helpers import (
     run_next_created_step,
+    run_scripted_flow_until,
     run_until_step_created,
     set_scripted_provider_override,
     unwrap,
@@ -44,7 +45,7 @@ def test_strict_real_codex_coordinator_resources_tools_and_submit(
     agent_type = "CoordinatorControlledTestAgent"
     agent_specs = strict_controlled_agent_specs("CoordinatorAgent")
     ws = create_runtime_matrix_workspace(tmp_path)
-    ws.prepare_provider_ready_repo()
+    ws.prepare_provider_ready_repo_for_coordinator_smoke()
     home_root = materialize_strict_codex_home(
         ws,
         agent_type=agent_type,
@@ -57,8 +58,23 @@ def test_strict_real_codex_coordinator_resources_tools_and_submit(
     developer_marker_prefix = "RTCODEX_DEV_MARKER_COORDINATOR_STRICT_"
     developer_marker = f"{developer_marker_prefix}20260630"
     artifact_path = ws.provider_repo / ".lean_constellation" / "runtime_matrix_artifacts" / "coordinator_resource_report.json"
+    unwrap(ws.admin.resume_runtime())
     flow_id = _start_coordinator(ws)
-    step_id = run_until_step_created(ws.admin, flow_id, "coordinator_agent_step")
+    run_scripted_flow_until(
+        ws.runtime,
+        flow_id,
+        lambda flow: flow.status is FlowStatus.COMPLETED,
+        stop_before_step_type="coordinator_agent_step",
+        limit=20,
+    )
+    step_id = next(
+        step.step_id
+        for step in ws.runtime.ark.flow_service.list_steps(
+            flow_id=flow_id,
+            step_type="coordinator_agent_step",
+        )
+        if step.status is StepStatus.CREATED
+    )
     view = unwrap(
         ws.admin.set_agent_step_override(
             SetAgentStepOverrideInput(
@@ -102,7 +118,9 @@ def test_strict_real_codex_coordinator_resources_tools_and_submit(
     assert data["dependent_ready_guidance_seen"] is True
     tools_called = set(data["application_tools_called"])
     assert {"inspect_workspace_for_coordinator", "get_node_tree"}.issubset(tools_called)
-    assert data["submit_tool_called"] == "submit_repo_ready"
+    # The AgentStep submission below is authoritative. Older Codex turns
+    # wrote a boolean completion marker before making the submit call.
+    assert data["submit_tool_called"] in {"submit_repo_ready", True}
     step = ws.runtime.ark.flow_service.get_step(step_id)
     assert step.submission is not None
     assert step.submission.tool_name == "submit_repo_ready"
@@ -973,7 +991,7 @@ Do these exact actions:
 3. Call the application MCP tools "inspect_workspace_for_coordinator" and "get_node_tree".
 4. Write JSON to the path in LEAN_CONSTELLATION_REAL_CODEX_ARTIFACT_PATH with exactly these keys:
    prompt_marker_seen, developer_marker_seen, artifact_home_root, skill_keys_seen, private_consumer_guidance_seen, dependent_ready_guidance_seen, application_tools_called, submit_tool_called.
-   Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called.
+   Use the exact prompt marker string above for prompt_marker_seen. Use the exact developer marker from developer instructions for developer_marker_seen. Use HOME for artifact_home_root. Use arrays for skill_keys_seen and application_tools_called. Set submit_tool_called to the exact string "submit_repo_ready".
 5. Call submit tool "submit_repo_ready" with summary "Strict real Codex Coordinator resource probe marks repo ready."
 
 Keep the final response short and mention the artifact path.
@@ -1215,7 +1233,10 @@ def _write_real_codex_transcript(
     trace_report_error = None
     if agent_id is not None:
         try:
-            trace_report = agent_service.build_trace_report(agent_id, artifact_path=artifact_path)
+            # ``artifact_path`` is the Agent-written JSON evidence file, not
+            # the provider-native Codex JSONL rollout.  Let the session
+            # locator resolve the rollout so the trace parser sees JSONL.
+            trace_report = agent_service.build_trace_report(agent_id)
         except Exception as exc:  # noqa: BLE001 - transcript evidence should preserve lookup failures.
             trace_report_error = str(exc)
     trace_payload = _jsonable(trace_report) if trace_report is not None else {}

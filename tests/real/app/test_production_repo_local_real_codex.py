@@ -174,7 +174,7 @@ def test_real_codex_coordinator_uses_repo_prefixed_production_mcp(tmp_path: Path
         assert {"inspect_workspace_for_coordinator", "get_node_tree"}.issubset(set(data["application_tools_called"]))
         agent_id = _agent_id_for_step(step)
         assert agent_id is not None
-        report = runtime.ark.agent_service.build_trace_report(agent_id, artifact_path=artifact_path)
+        report = runtime.ark.agent_service.build_trace_report(agent_id)
         assert report.latest_turn is not None
         report_index = admin.get_agent_report_index(agent_id)
         assert report_index.ok and report_index.value is not None

@@ -244,6 +244,28 @@ class RuntimeMatrixWorkspace:
         refreshed = self.runtime.lean_projection.refresh_node_projection(self.provider_repo, node_path="Main")
         assert refreshed.ok, refreshed.issues
 
+    def prepare_provider_ready_repo_for_coordinator_smoke(self) -> None:
+        """Prepare a completed child scope so the smoke starts at CoordinatorAgentStep."""
+        self.prepare_provider_ready_repo()
+        created = self.runtime.node.create_scope_node(
+            self.provider_repo,
+            path="Main.Smoke",
+            goal="Run a short Coordinator resource smoke.",
+            boundary="A completed child scope keeps the smoke focused on Coordinator resources.",
+        )
+        assert created.ok, created.issues
+        committed = self.runtime.node.commit_scope_contract(
+            self.provider_repo,
+            scope_path="Main.Smoke",
+            summary="Coordinator smoke scope complete.",
+        )
+        assert committed.ok, committed.issues
+        refreshed = self.runtime.lean_projection.refresh_node_projection(
+            self.provider_repo,
+            node_path="Main.Smoke",
+        )
+        assert refreshed.ok, refreshed.issues
+
     def prepare_adapter_truth(self) -> None:
         self.adapter_repo.mkdir(parents=True, exist_ok=True)
         assert self.runtime.repo_workspace.metadata.ensure_repo_model(self.adapter_repo).ok

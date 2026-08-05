@@ -85,6 +85,21 @@ def test_test_control_advance_flow_once_works_while_runtime_paused(tmp_path) -> 
     assert result.value.created_step_id in queues.value.candidate_queues.queued_step_ids
 
 
+def test_test_control_requires_current_step_to_finish_before_next_advance(tmp_path) -> None:
+    runtime = create_test_control_runtime_services(runtime_root=tmp_path / ".agent_runtime")
+    admin = LeanAdminApi(runtime)
+    flow_id = _start_resource_flow(admin)
+
+    first = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id))
+    assert first.ok and first.value is not None
+    assert first.value.created_step_id is not None
+
+    second = admin.advance_flow_once(AdminFlowAdvanceInput(flow_id=flow_id))
+    assert not second.ok
+    assert second.issues[0].kind == "advance_flow_once_failed"
+    assert "flow cannot advance" in second.issues[0].message
+
+
 def test_run_until_step_created_stops_at_requested_step_type(tmp_path) -> None:
     runtime = create_test_control_runtime_services(runtime_root=tmp_path / ".agent_runtime")
     admin = LeanAdminApi(runtime)
