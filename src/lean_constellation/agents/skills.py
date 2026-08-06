@@ -129,19 +129,24 @@ completion mode defines *how far* that scope must be completed. Preserve every
 released state floor and release-protected statement. Use scope nodes for broad
 mathematical regions, content nodes for coherent declaration work, explicit
 exports for sibling reuse, and contracts that state the completion expected for
-their declarations. A public root is incomplete when a current-repository
+their declarations. A Content contract version may explicitly select a shallower
+task completion mode for theorem-statement staging. That task target does not
+change this repository target: a partial result remains ineligible as a node
+dependency, Scope export source, or Scope-close child until a later contract
+version reaches the repository mode. Definitions, types, instances, and canonical
+constructions still require strict bottom-up ownership and readiness; only theorem
+proof order may be staged. A public root is incomplete when a current-repository
 declaration required by its formal Statement remains private or is missing from
 the enclosing Scope export chain. Proof-only dependencies remain implementation
-detail unless independently selected as stable API. A Content result is terminal
-only when its owned contract reaches the depth required by this mode; a declared
-intermediate round in graph_proved mode is progress, not Content completion.
+detail unless independently selected as stable API.
 """
 
 
 _CONTENT_PLAN_COMPLETION_POLICY_BODY = """# content-plan-completion-policy
 
-Read `get_current_repo_completion_policy`, then plan rounds for the current
-contract and source ownership:
+Read `get_current_node_contract` and `get_current_repo_completion_policy`. Treat
+the contract's task completion mode as this task's terminal depth and the
+repository completion mode as the node's eventual provider depth:
 
 - interface_declared: declare the contract-required public interfaces and
   the formal Statement foundations needed to state and compile them. Those
@@ -157,14 +162,19 @@ contract and source ownership:
   terminal Content result while owned theorem-like work remains unproved.
 
 The contract and source references determine which mathematical material this
-node owns. Completion mode determines the required state of that material.
+node owns. The task target determines the required state for this contract
+version. Definitions, types, instances, and canonical constructions must still be
+declared bottom-up before any theorem statement that uses them; a shallower task
+target changes theorem proof scheduling, not definition ownership or visibility.
 Never lower a released state floor or rewrite a release-protected statement.
 Before targeting `proved`, verify source proof stages and accepted dependency
 closure; do not turn missing helpers into repeated unbounded parent retries.
 Before Content completion, inspect the current-node public Statement closure and
-use add-only visibility promotion for already-ready local prerequisites. Never
-raise interface_declared or graph_declared to proof completion merely because a
-stronger state is possible.
+use add-only visibility promotion for already-ready local prerequisites. Report
+the task target, repository target, and remaining repository gap honestly in the
+terminal result. A partial task is progress, not provider-ready truth, and cannot
+justify another node's dispatch. Never raise interface_declared or graph_declared
+to proof completion merely because a stronger state is possible.
 """
 
 
@@ -354,6 +364,7 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
         required_tool_groups=_groups(
             AppGroup.NODE_CONTRACT_READ_BY_NODE,
             AppGroup.NODE_CONTRACT_TEXT_WRITE_BY_NODE,
+            AppGroup.NODE_CONTRACT_TASK_TARGET_WRITE_BY_NODE,
             AppGroup.NODE_CONTRACT_DEPENDENCY_WRITE_BY_NODE,
             AppGroup.NODE_CONTRACT_MATERIAL_WRITE_BY_NODE,
             AppGroup.SOURCE_MATERIAL_TEXT_READ,
@@ -371,12 +382,16 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
                 "Make sibling boundaries explicit and avoid duplicate ownership.",
                 "Record expected important declarations, major SourceIndex/source stages, and a rough Lean declaration range in the existing goal/boundary/objective text; this is guidance, not a hard count gate.",
                 "Use `create_scope_node`, `create_content_node`, and `update_node_contract_text` for durable contract changes.",
+                "A new Content contract version defaults its task completion mode to the repository mode. Use `set_node_contract_task_completion_mode` only on an open Content contract when a deliberate theorem-statement staging boundary is justified.",
+                "Do not lower a task target to defer definitions, types, instances, or canonical constructions. Before choosing interface_declared or graph_declared under a deeper repo target, verify that every definition used by the staged statements already comes from a repo-ready visible boundary or is fully declared in this task's bottom-up layers.",
+                "Record that a shallower task target is partial progress: it cannot become another node's dependency, feed a Scope export, or close its parent Scope until a later contract version reaches the repo target.",
                 "Before adding or changing a source ref, call `validate_source_range` and `preview_source_ref`, read the excerpt, and confirm that it supports the ref reason, target interface, and node boundary; a structurally valid range is not semantic evidence.",
                 "Treat SourceCorpus locators such as `article/sections/...` as semantic-tool identities, not paths relative to the current workdir.",
                 "Attach durable source or resource context to a target node with `add_node_material_ref` or remove stale entries with `remove_node_material_ref`.",
                 "Record visible same-repo or provider node dependencies with `add_node_dep`, and remove stale dependency entries with `remove_node_dep`.",
                 "Record target-node Mathlib module or declaration hints with `add_node_mathlib_module_hint` and `add_node_mathlib_decl_hint` after the candidates are verified or recorded in the repo MathlibIndex.",
                 "Prepare content tasks with enough objective, material, dependency, and interface context for node-local work.",
+                "Name canonical owners for shared domain types, indices, instances, equivalences, dependent families, and constructions. Provider contracts expose capability shapes translated from consumer needs, never consumer-private implementation details.",
                 "For an interface intended to satisfy an existing consumer, write a statement hint that identifies the consumer declaration or revision, expected input/output shape, lower public declaration refs, assumptions or indices that must not be strengthened or replaced, conclusion direction that must not be weakened, relevant Source stage, and a minimal consumer-side Lean snippet when useful.",
                 "Treat a statement hint as semantic guidance rather than an exact Lean header: the ContentPlan may choose a natural public declaration decomposition, but it must preserve the required capability.",
                 "Check previews such as `preview_delete_node` before destructive node changes.",
@@ -703,6 +718,16 @@ Use this Skill when the current repository needs a new mathematical boundary, an
 5. Choose Scope nodes for broad mathematical regions and Content nodes for coherent declaration work.
 6. Make sibling ownership disjoint and preserve protected root interfaces.
 
+Before assigning theorem work, enumerate the definition frontier visible in Source,
+the current graph, and known consumers: domain types and subtypes, indices,
+structures/classes, instances, canonical equivalences, and dependent constructions.
+Assign each shared object to its lowest coherent semantic owner rather than the first
+consumer that happens to need it. Statement-level definitions must be repo-ready and
+visible before an upper Content task can depend on them; proof-only theorem support
+may follow the selected theorem-proof schedule. If an upper consumer already owns a
+duplicate representation, repair ownership instead of preserving both definitions
+with casts or one-off bridges.
+
 ## Decide Where Missing Work Belongs
 
 A blocked Content result does not by itself justify a new node. After recovering the authoritative consumer and dependency frontier, choose the smallest coherent action:
@@ -712,7 +737,7 @@ A blocked Content result does not by itself justify a new node. After recovering
 3. create a new ordinary Content node only when the work is an independently meaningful mathematical package with a stable boundary;
 4. repair an existing interface, declaration route, or contract when the mismatch comes from semantic drift and a new node would only preserve the drift behind a one-off wrapper.
 
-Treat missing work as a coherent package when it has layered definitions or lemmas, multiple consumers, a new Source/Resource/provider responsibility, a boundary outside the current contract, a change to core representation/index/typeclass/proof architecture, or unknown dependency depth. One signal may be decisive when it changes ownership; a large declaration count alone is not. A few ordered local helpers with a clear semantic boundary remain current-node work when they need no new material/provider, create no stable cross-node API, and do not change the node's core architecture.
+Treat missing work as a coherent package when it has layered definitions or lemmas, multiple consumers, a new Source/Resource/provider responsibility, a boundary outside the current contract, a change to core representation/index/typeclass/proof architecture, or unknown dependency depth. Shared type, index, instance, equivalence, or dependent-family architecture normally belongs to a lower foundation/provider package rather than a consumer-local repair. One signal may be decisive when it changes ownership; a large declaration count alone is not. A few ordered local helpers with a clear semantic boundary remain current-node work when they need no new material/provider, create no stable cross-node API, and do not change the node's core architecture.
 
 Describe every Content node by its mathematical boundary. Do not introduce node categories based on why another task currently depends on it.
 
@@ -792,8 +817,9 @@ calling the history tools merely to repeat it. Use `list_recent_content_task_res
 callback or when the current callback receipt is unavailable; `inspect_content_task_result` is the same historical
 projection for one selected node, not a source of additional declaration evidence.
 
-For each current result, identify the node path, ready/blocked/failed outcome, returned contract version, summary,
-reason, and any current state that must be inspected before commitment.
+For each current result, identify the node path, ready/blocked/failed outcome, returned contract version, task target,
+repository target, remaining repository gap, summary, reason, and any current state that must be inspected before
+commitment. A ready partial-task result establishes progress only; do not treat it as a provider-ready boundary.
 
 ## Inspect Current State Selectively
 
@@ -801,9 +827,9 @@ Read the current node contract. When a result is suspicious or incomplete, use `
 
 When a blocked result says that missing mathematical work may cross the current Content boundary, or before assigning that work to a different Content node, private consumer inspection is mandatory. Use `inspect_node_decl` for the affected revision and recover its accepted statement, Proof NL route, change/round summary, and declaration dependencies. If the primary projection is insufficient, use `read_visible_decl_lean_file` for the smallest necessary declaration-owned range. Inspect the actual signatures of existing declarations named in the blocker. The blocked reason is an index into authoritative truth, not sufficient contract authority by itself.
 
-For blocked or failed results, classify the concrete consequence without solving it inside closeout: a Source-visible stage that should already have been planned, missing source or Resource, missing Mathlib support, current-node Lean-emergent work, work owned by another existing node, a coherent new mathematical boundary, provider need, incorrect contract, or Scope/interface work. Record the evidence and a candidate ownership branch, but make the structural choice only in the Coordinator next-action loop.
+For blocked or failed results, classify the concrete consequence without solving it inside closeout: a Source-visible stage that should already have been planned, missing source or Resource, missing Mathlib support, current-node Lean-emergent work, work owned by another existing node, a coherent new mathematical boundary, provider need, incorrect contract, or Scope/interface work. Record the evidence and a candidate ownership branch, but make the structural choice only in the Coordinator next-action loop. If the same consumer must not be retried until a dependency package is repaired, route to `coordinator-blocked-consumer-replan` after closeout.
 
-For a ready result that is intended to discharge another Content node's dependency, inspect the actual bound public declaration and re-read the original private consumer. Compare the relevant objects, indices, parameters, assumptions, and conclusion direction. The ready result establishes its own contract; it does not establish consumer applicability merely by name, summary, or dependency reason.
+For a ready result, audit contract coverage before accepting its consequences: selected source stages and success criteria, required interface bindings, task-target declaration depth, public Statement closure, and an honest remaining repo gap. When the result is intended to discharge another Content node's dependency, inspect every actual bound public declaration needed by known consumers and re-read the original private consumer. Compare exact objects/types, indices, parameters, assumptions, conclusion direction, equivalence orientation, coercions, dependent-family/instance convention, and whether several low-level facts compose directly. The ready result establishes its own task contract; it does not establish consumer applicability merely by name, summary, or dependency reason, and a remaining repo gap also prevents provider readiness.
 
 ## Commit Every Reviewed Result
 
@@ -818,6 +844,86 @@ Collect consequences as candidates, not a persisted or immutable action list.
 Every terminal result in the callback batch has been reviewed, every reviewable result is finalized and committed, and every deterministic inconsistency is explicit. Stop using this Skill and return to the Coordinator next-action loop in the same AgentStep.
 
 Do not call a normal Coordinator submit from inside this closeout.
+""",
+    ),
+    SkillKey.COORDINATOR_BLOCKED_CONSUMER_REPLAN.value: LeanSkillDefinition(
+        name="coordinator-blocked-consumer-replan",
+        description="Use after closeout when a blocked consumer may require dependency-closure repair across a Content boundary.",
+        group="coordinator",
+        required_tool_groups=_groups(
+            AppGroup.DECL_GRAPH_READ_BY_NODE,
+            AppGroup.NODE_TREE_READ,
+            AppGroup.NODE_CONTRACT_READ_BY_NODE,
+            AppGroup.VISIBLE_DECL_LEAN_FILE_READ,
+            AppGroup.VISIBLE_NODE_PUBLIC_DECL_READ,
+            AppGroup.IMPORTED_REPO_PUBLIC_DECL_READ,
+            AppGroup.SOURCE_INDEX_NAVIGATION_READ,
+            AppGroup.MATHLIB_INDEX_READ,
+            AppGroup.LAKE_DEPENDENCY_READ,
+            AppGroup.WORKSPACE_PROVIDER_CATALOG_READ,
+        ),
+        source_design_doc="dev_docs/implementation/bottom_up_provider_contract_and_canonical_decl_optimization/03_Coordinator与ContentPlan工作流设计.md",
+        body="""# Coordinator Blocked Consumer Replan
+
+Use this Skill only after the terminal Content result has been reviewed and
+committed. It rebuilds the complete dependency frontier before any retry or new
+provider contract; it does not itself mutate the node tree or dispatch work.
+
+## Freeze The Consumer Retry
+
+Do not immediately rerun the affected consumer or add only the helper named by
+the last error. Identify the exact consumer node, declaration, revision, sibling
+consumers already known to need the same capability, and the retry condition that
+must be satisfied first.
+
+## Rebuild From Authoritative Truth
+
+1. Inspect the private consumer's exact accepted Statement, Proof NL route, typed
+   dependencies, round/change history, and current blocker. Read the smallest
+   declaration-owned Lean range only when the structured record is insufficient.
+2. Enumerate the complete known frontier: Source-visible mathematical stages;
+   domain types and indices; representation and equivalence orientation;
+   instances, coercions, and dependent families; Mathlib facts; existing same-repo
+   and attached-provider APIs; and the current consumer plus known siblings.
+3. Inspect exact provider signatures. Distinguish truly missing work from a
+   visibility gap, stale revision, incompatible assumptions/indices/conclusion,
+   duplicated canonical construction, or low-level APIs that cannot compose in
+   the consumer's fixed context.
+4. Classify the gap as a proof-local helper, a current-node shared tracked Decl,
+   an existing provider repair, a coherent lower provider/foundation package, a
+   source/statement correction, or an external provider requirement.
+
+## Define A Complete Provider Package Once
+
+When a package boundary is justified, define its canonical ownership, stable
+public interfaces, expected internal definition/theorem layers, exact consumer
+use shape, relevant sibling uses, rough declaration scale, task/repo completion
+boundary, and stopping condition. Translate private consumer evidence into a
+capability contract using visible canonical lower refs; never expose the private
+consumer implementation to the provider Agent. Definitions, types, instances,
+and canonical constructions must be completed bottom-up before theorem consumers.
+
+Return to `coordinator-node-decomposition`, `node-contract-design`, dependency
+readiness, and Content dispatch for actual mutations. Resume the consumer only
+after the provider is committed at the repository target and closeout coverage
+confirms its public interface and exact consumer shape. If provider work exposes
+another gap, rebuild this full frontier again instead of appending one new helper
+and retrying immediately.
+
+## Postcondition
+
+The complete known frontier and one ownership branch are explicit, and the
+consumer remains paused until provider coverage succeeds. Return to the
+Coordinator next-action loop and use the existing decomposition, contract,
+dependency, or provider workflow for the selected mutation.
+
+## Boundaries
+
+- Do not turn proof difficulty alone into a new node or repository.
+- Do not infer a provider theorem from only the blocker summary.
+- Do not give provider work direct access to consumer-private declarations.
+- Do not preserve duplicate core representations with accumulating casts,
+  `HEq`, instance transport, or one-off wrappers when ownership should be repaired.
 """,
     ),
     SkillKey.COORDINATOR_REQUIREMENT_RESULT_CLOSEOUT.value: LeanSkillDefinition(
@@ -882,11 +988,11 @@ Use this Skill before dispatching a mathematical region when its evidence or dep
 5. Call `list_current_lake_dependencies` and check already attached public APIs.
 6. Call `list_ready_provider_repos` and current requirement reads only if an external Lean boundary may be needed.
 
-For graph_proved work, derive the Source-visible dependency frontier from Source and current graph truth. Before dispatching an upper theorem toward proved, require each known lower stage to have an owner and a usable declaration that is ready to the required state, visible through the consumer boundary, and signature-compatible. Plan an unresolved lower stage first. For graph_declared and interface_declared, require only the depth selected by the mode; do not over-raise the target to proved.
+For each candidate, derive the Source-visible dependency frontier from Source, current graph truth, and known consumer shapes. Enumerate definitions, types, indices, structures/classes, instances, canonical equivalences/constructions, and theorem stages separately. Definitions needed by an upper Statement must already have a lowest coherent owner and be repo-ready and visible; a shallower theorem task target does not relax that definition frontier. For graph_proved theorem work, require each known lower theorem stage to have an owner and a usable declaration that is ready to the required state, visible through the consumer boundary, and signature-compatible. Plan an unresolved lower stage first. For graph_declared and interface_declared theorem work, require only the depth selected by the task contract; do not over-raise the target to proved.
 
 Distinguish Source-visible gaps from Lean-emergent gaps. A dependency already evident in Source, the contract, or current graph belongs in the frontier and must not be deferred as implementation discovery. A representation or elaboration helper first exposed by formalization may return as a precise Content blocker; it does not retroactively make an upper dispatch ready.
 
-Visibility and proof state are not enough for a consumer-facing dependency. Compare the available declaration's assumptions, parameter and index representation, and conclusion direction with the upcoming consumer shape. Treat a proved public declaration with an incompatible shape as unresolved rather than as readiness evidence.
+Visibility and proof state are not enough for a consumer-facing dependency. Compare the available declaration's assumptions, parameter and index representation, and conclusion direction with the upcoming consumer shape; also check equivalence orientation, coercions, and dependent-family/instance convention. Verify that several intended low-level declarations can actually compose under the same canonical objects. Treat a proved public declaration with an incompatible shape as unresolved rather than as readiness evidence.
 
 Classify the smallest unresolved need:
 
@@ -924,15 +1030,17 @@ Use this Skill only after candidate Content nodes have clear mathematical bounda
 ## Admission And Batch
 
 1. Re-read each candidate contract and current tree position immediately before dispatch.
-2. Preview every owned source ref with `preview_source_ref`; confirm each excerpt agrees with the current goal, boundary, interfaces, and recorded reason. Source locators are semantic-tool identities, not workdir-relative file paths.
-3. Confirm that context refs have not been used as owned contract evidence.
-4. Confirm the contract names its expected important declarations or source stages, a rough scale, and the boundary that prevents unbounded helper expansion.
-5. When work originated from another Content node's blocker, confirm that the contract was rebuilt from the authoritative private consumer rather than only from the blocker summary. Its interface summary and statement hint must identify the consumer anchor, expected input/output shape, lower public refs, and conditions that must not drift. A vague request such as "provide the missing theorem" is not dispatch-ready.
-6. Confirm that declared node dependencies expose public declarations whose actual assumptions, indices, and conclusions fit the planned work.
-7. Call `check_content_task_admission` for each candidate.
-8. Use `list_runnable_content_nodes` for orientation when several nodes may run.
-9. Call `check_content_node_batch` for the exact proposed batch.
-10. If a ref is misplaced or admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
+2. Read its task target, repository target, and remaining gap. A partial committed task is never a runnable dependency provider; dispatch its next contract version or a different lower provider before any consumer that depends on it.
+3. Preview every owned source ref with `preview_source_ref`; confirm each excerpt agrees with the current goal, boundary, interfaces, and recorded reason. Source locators are semantic-tool identities, not workdir-relative file paths.
+4. Confirm that context refs have not been used as owned contract evidence.
+5. Confirm the contract names its expected important declarations or source stages, a rough scale, and the boundary that prevents unbounded helper expansion.
+6. Confirm every definition, type, instance, and canonical construction used by planned Statements is already repo-ready in a lower visible provider or is owned by earlier bottom-up layers of this task. Do not use graph_declared staging to forward-reference an unfinished definition node.
+7. When work originated from another Content node's blocker, confirm that the contract was rebuilt through `coordinator-blocked-consumer-replan` from the authoritative private consumer and known siblings rather than only from the blocker summary. Its interface summary and statement hint must identify the consumer anchor, expected input/output shape, canonical lower refs, and conditions that must not drift. A vague request such as "provide the missing theorem" is not dispatch-ready.
+8. Confirm that declared node dependencies expose public declarations whose actual assumptions, indices, conclusions, representations, and composed use fit the planned work.
+9. Call `check_content_task_admission` for each candidate.
+10. Use `list_runnable_content_nodes` for orientation when several nodes may run.
+11. Call `check_content_node_batch` for the exact proposed batch.
+12. If a ref is misplaced or admission fails, repair Coordinator-owned structure or contracts and return to the next-action loop. Do not submit a partially invalid batch.
 
 ## Submit
 
@@ -1204,7 +1312,10 @@ After a preparation child flow returns:
         name="content-plan-completion-policy",
         description="Use when applying the current repository completion mode to ContentPlan round strategy.",
         group="content_plan",
-        required_tool_groups=_groups(AppGroup.REPO_COMPLETION_POLICY_READ),
+        required_tool_groups=_groups(
+            AppGroup.NODE_CONTRACT_READ_CURRENT,
+            AppGroup.REPO_COMPLETION_POLICY_READ,
+        ),
         source_design_doc="dev_docs/implementation/repo_completion_mode_and_checkpoint_migration/03_Agent输入与自然语言说明设计.md",
         body=_CONTENT_PLAN_COMPLETION_POLICY_BODY,
     ),
@@ -1249,6 +1360,18 @@ Analyze:
 - whether the current route should be bottom-up, top-down, helper-decomposition based, declared skeleton, declared interface, or a small repair route;
 - whether missing support should first be handled through node dependencies, Mathlib, resources, or Coordinator escalation.
 - whether an interface statement hint supplies a consumer-side shape that the strategy must serve without strengthening its assumptions, replacing its objects or indices, or weakening its conclusion.
+- the definition frontier and canonical owner for every shared type, index, instance, equivalence, dependent family, matrix/object construction, or coercion convention used by planned Statements;
+- whether a staged theorem-statement task is justified and how a later contract version will close the reported repository gap.
+
+For each construction, first search current active declarations, visible public
+providers, contract/interface refs, and Mathlib. Keep it local only when it serves
+one declaration and disappears entirely inside that proof. Use a tracked private
+Decl when two or more current-node declarations must share its exact term or when
+it fixes dependent indices, equivalence orientation, instance choice, or
+representation architecture. Make it public only when another node's Statement
+must reference it or the contract selects it as stable API. Prefer one canonical
+lowest coherent owner plus exact dependencies over several mathematically equal local
+reconstructions.
 
 ## Classify A Lean-Emergent Gap
 
@@ -1265,7 +1388,7 @@ No declaration-count cutoff decides between a helper and a package. Record the c
 
 Re-read this Skill after every preparation callback, every round terminal callback, and before creating each new round. Reassessment is mandatory; replacing the strategy is not. Reassess when the source route changed, a blocker exposed a missing dependency stage, the declaration graph materially outgrew the strategy's scale assumptions, an interface or public boundary changed, repeated parent retries did not close known blockers, or current graph truth contains superseded branches the strategy no longer explains.
 
-The strategy objective and rationale should record the selected Source route, bottom-up/top-down choice and reason, known major dependency stages, intended public/interface output and consumer shape, scope and scale assumptions, and any explicit state-only intermediate closure plan. If the required lower work forms a package outside the current Content boundary, close out current truth and report the boundary decision to the Coordinator instead of expanding the strategy without limit.
+The strategy objective and rationale should record the selected Source route, bottom-up/top-down choice and reason, known major dependency stages, canonical construction owners and exact consumers, intended public/interface output and consumer shape, scope and scale assumptions, and any explicit state-only intermediate closure plan. Top-down staging may freeze theorem Statements only after their definitions are available; it cannot move a definition out of its lower provider or allow a forward reference. If the required lower work forms a package outside the current Content boundary, close out current truth and report the boundary decision to the Coordinator instead of expanding the strategy without limit.
 
 ## Creating Or Continuing A Strategy
 
@@ -1348,6 +1471,26 @@ Before choosing `target_state=proved`, check whether the source proof stages and
 
 If satisfying the target now requires a coherent package outside the current Content boundary, follow the strategy's Lean-emergent gap classification. Do not grow the round or strategy indefinitely. Close out the current round when necessary and submit a precise Content blocker for Coordinator ownership review.
 
+## Canonical Constructions And Local Helpers
+
+Before creating a definition, instance, equivalence, embedding, dependent family,
+matrix block, inverse/reindex object, or reusable helper, search current active
+Decls, visible public providers, contract refs, and Mathlib for an existing
+canonical owner. Keep a helper local only when one declaration uses it, it appears
+in no other Statement, and it leaves no reusable dependent term or representation
+choice. Track it as a private Decl when multiple declarations must share the exact
+term, it fixes indices/instances/equivalence orientation, or it has independent
+mathematical meaning; make it public only for a real cross-node Statement/API need.
+
+Use a named instance Decl only for a unique, stable, non-overlapping construction.
+When typeclass search could be ambiguous or cyclic, use a named definition and
+install it explicitly with `letI` in each consumer, or encapsulate the complete
+dependent mathematical object behind a canonical definition. If a canonical
+provider and its consumer are both planned, preserve the anticipated edge and
+split them into provider-before-consumer rounds. Do not omit the edge or replace
+the shared object with `HEq`, accumulating casts, repeated `Subsingleton.elim`, or
+another locally regenerated representation merely to pass validation.
+
 ## Create Changes
 
 Use `plan_create_decl` for new declarations. Each create change should have:
@@ -1365,7 +1508,7 @@ Choose visibility from the intended stable API rather than proof implementation 
 
 For a native repository, do not plan or guess `Decl.module` or the Lean full declaration name. The system derives the module from repo/node/kind/name and formal capture discovers the full name.
 
-Helper lemmas that matter to later work should be tracked as their own declarations. Do not hide important helper lemmas as untracked local Lean code.
+Helper lemmas and constructions that matter to later work should be tracked as their own declarations. Do not hide important helpers as untracked local Lean code. Same-node reusable canonical declarations are private by default; cross-node Statement dependencies require a public provider boundary.
 
 ## Update Changes
 
@@ -1527,7 +1670,7 @@ A natural-language claim is not enough. Use the content completion gate and subm
 
 Before interface binding or terminal submission, inspect active consumers and historical private branches. If the node contains safely deletable superseded private declarations, obsolete route artifacts, or retry-version names, plan a small cleanup round first. If the remaining graph contains an independent mathematical package or has expanded far beyond the contract's expected source stages and reasonable helper allowance, submit blocked with a concrete split/contract-review recommendation instead of growing the node without bound.
 
-Read `content-plan-completion-policy` before choosing ready. The current contract is terminal only when its owned declarations reach the mode-required depth. In graph_proved mode, a declared parent or other state-only intermediate round is progress and must not be submitted as ready while owned theorem-like work remains unproved. Do not raise graph_declared or interface_declared to proof completion.
+Read `content-plan-completion-policy` before choosing ready. Audit the current contract's task target separately from the repository target. The current task is terminal only when its owned declarations reach the task-required depth; report any remaining repository gap and never describe a staged result as provider-ready. Before terminal submit, confirm required interfaces and public/private choices, unresolved provider frontier, and whether multiple active declarations reconstruct a shared type, instance, equivalence, dependent family, or representation that should instead have one canonical tracked owner. In graph_proved task mode, a declared parent or other state-only intermediate round is progress and must not be submitted as ready while owned theorem-like work remains unproved. Do not raise graph_declared or interface_declared to proof completion.
 
 ## Current-Node Interface Binding
 
@@ -1688,6 +1831,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Search dependencies in visible project context and Mathlib before adding imports, dependencies, or hints.",
                 "Prepare the declaration-owned file with `prepare_statement_formal_file` only to recover missing or damaged scaffold, marker, docstring, or file structure. Do not call it casually after valid uncaptured edits because it rewrites the working file.",
                 "Preserve managed imports/docstring; place small local helpers before the target docstring and the primary declaration immediately after it. Keep reusable helpers as separate tracked Decls.",
+                "Reuse the exact tracked dependency for any canonical type, index, instance, equivalence, dependent family, or construction named by the plan. Do not regenerate a mathematically equal local version; block for planning when the required canonical Decl is missing or incompatible.",
                 "If target metadata identifies a qualified contract interface, place the declaration in the namespace required by that interface; capture must discover that exact Lean full name.",
                 "Use `run_lean_file_diagnostics` while iterating. Do not guess or report the Lean full name: `capture_statement_formal_file` builds the exact module and discovers/compiler-confirms it.",
                 "Read the exact set with `list_statement_dependencies`; add project dependencies with `add_statement_repo_dependency` or its plural form, and Mathlib dependencies with `add_statement_mathlib_dependency` or its plural form. Use remove/clear only for repair. If a mutation refreshes the file, re-read it before editing and do not duplicate derived imports.",
@@ -1732,6 +1876,7 @@ The revision/reason remains structured truth and is not copied into the docstrin
                 "Start from the accepted formal statement, reviewed proof route, proof origins/deps, current decl history, and prior feedback.",
                 "Inspect the prepared proof formal file first. Use `prepare_proof_formal_file` only to repair missing or damaged scaffold, marker, docstring, theorem header, or file structure; it rewrites from accepted statement formal capture and discards uncaptured proof edits.",
                 "Preserve the registered Lean full name and theorem header. Put small proof-local helpers before the target docstring; block for planning when a helper is major, reusable, or mathematically meaningful enough to be tracked as a declaration.",
+                "Reuse exact canonical project dependencies for shared types, indices, instances, equivalences, dependent families, and constructed objects. A proof-local `letI` may install a named canonical instance definition, but must not rebuild a competing construction when later declarations need the same term.",
                 "Use `run_lean_file_diagnostics` and `check_proof_formal_policy` while iterating; proof formal completed work must satisfy strict proof policy.",
                 "Capture at the durable boundary with `capture_proof_formal_file`; if any edit happens after capture, capture again.",
                 "Before submit, require `check_formal_stage_consistency` to pass.",

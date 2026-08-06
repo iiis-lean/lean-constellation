@@ -17,7 +17,7 @@ EXPECTED_SURFACE_COUNTS = {
     "RepoResourceDiscoveryAgent": (9, 22, 1, 1, 2),
     "RepoLeanProviderDiscoveryAgent": (11, 26, 1, 1, 1),
     "RepoMathlibReconAgent": (9, 27, 1, 1, 4),
-    "CoordinatorAgent": (40, 92, 2, 7, 19),
+    "CoordinatorAgent": (41, 93, 2, 7, 20),
     "ContentPlanAgent": (34, 86, 3, 6, 17),
     "NodeDirDependencyReconAgent": (7, 14, 1, 1, 2),
     "MathlibReconAgent": (7, 22, 1, 1, 5),
@@ -43,7 +43,7 @@ EXPECTED_APPLICATION_SURFACE_HASHES = {
     "RepoResourceDiscoveryAgent": "584c9be44a4d3a2961e637051397256a5981b852ff6d040a275492f01bdd7b2b",
     "RepoLeanProviderDiscoveryAgent": "6b96a0a54252dbf0b96206840c36ae53d949bddc773de6d41213d90c7bce86ef",
     "RepoMathlibReconAgent": "a1d340246bf1f84b698a235569af62f913d3f2229f81f09859dab90151515e39",
-    "CoordinatorAgent": "eaeb814ee0d2180de452e8b0783d6c3437556714a2d3f930341d891c839d004c",
+    "CoordinatorAgent": "0b5e0a89faaf3c86d8a43ee478add6c6635d926cf2df956290b8fc498b8082d3",
     "ContentPlanAgent": "64d118d8cea0a9e90e1fc970d028510f5ebd8409ff02f59f8b2ac600ca04af4b",
     "NodeDirDependencyReconAgent": "78424e9c83a6d31e464f5bcfaa583279a967ed718f7783ed820bd5ea5419709c",
     "MathlibReconAgent": "2106d09b06fa7140322909262cdb5a533b4ba881b13bb74ee1932e714a000220",
@@ -257,9 +257,9 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
 
     assert report.application_tool_view_key == "native_repo_coordinator"
     assert report.submit_tool_view_key == "native_repo_coordinator_submit"
-    assert len(report.skills) == 19
-    assert len(report.application_group_keys) == 40
-    assert len(report.application_tools) == 92
+    assert len(report.skills) == 20
+    assert len(report.application_group_keys) == 41
+    assert len(report.application_tools) == 93
     assert "read_visible_decl_lean_file" in tools
     assert len(report.submit_group_keys) == 2
     assert len(report.submit_tools) == 7
@@ -279,6 +279,7 @@ def test_coordinator_surface_matches_specific_agent_refactor() -> None:
         "attach_ready_workspace_repo_dependency",
         "get_node_tree",
         "get_node_decl_graph_index",
+        "set_node_contract_task_completion_mode",
     } <= tools
     assert {
         "allocate_release_id",

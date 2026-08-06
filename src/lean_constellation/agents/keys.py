@@ -24,6 +24,7 @@ class SkillKey(StrEnum):
     REPO_LEAN_PROVIDER_DISCOVERY = "repo-lean-provider-discovery"
     REPO_MATHLIB_RECON = "repo-mathlib-recon"
     COORDINATOR_CONTENT_RESULT_CLOSEOUT = "coordinator-content-result-closeout"
+    COORDINATOR_BLOCKED_CONSUMER_REPLAN = "coordinator-blocked-consumer-replan"
     COORDINATOR_REQUIREMENT_RESULT_CLOSEOUT = "coordinator-requirement-result-closeout"
     COORDINATOR_DEPENDENCY_READINESS = "coordinator-dependency-readiness"
     COORDINATOR_NODE_DECOMPOSITION = "coordinator-node-decomposition"

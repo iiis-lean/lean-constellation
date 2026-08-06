@@ -127,7 +127,7 @@ def test_coordinator_skill_inventory_and_workflow_boundaries() -> None:
     coordinator = get_agent_type_spec("CoordinatorAgent")
     specs = build_skill_specs()
 
-    assert len(coordinator.skill_keys) == 19
+    assert len(coordinator.skill_keys) == 20
     for removed in (
         "coordinator-content-task-lifecycle",
         "coordinator-repo-requirement-lifecycle",
@@ -138,6 +138,7 @@ def test_coordinator_skill_inventory_and_workflow_boundaries() -> None:
 
     for key in (
         "coordinator-content-result-closeout",
+        "coordinator-blocked-consumer-replan",
         "resource-result-closeout",
         "coordinator-requirement-result-closeout",
     ):
@@ -381,6 +382,13 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
     assert "actual bound public declaration" in result_closeout
     assert "does not establish consumer applicability merely by name" in result_closeout
 
+    replan = specs["coordinator-blocked-consumer-replan"].body
+    assert "Do not immediately rerun the affected consumer" in replan
+    assert "private consumer's exact accepted Statement" in replan
+    assert "known siblings" in replan
+    assert "Define A Complete Provider Package Once" in replan
+    assert "provider is committed at the repository target" in replan
+
     decomposition = specs["coordinator-node-decomposition"].body
     for expected in (
         "continue the current Content node",
@@ -404,6 +412,14 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
     assert "consumer-side Lean shape" in round_planning
     assert "Do not grow the round or strategy indefinitely" in round_planning
 
+    assert "set_node_contract_task_completion_mode" in contract_design
+    assert "cannot become another node's dependency" in contract_design
+    assert "lowest coherent semantic owner" in decomposition
+    assert "partial committed task is never a runnable dependency provider" in dispatch
+    assert "Canonical Constructions And Local Helpers" in round_planning
+    assert "named instance Decl" in round_planning
+    assert "split them into provider-before-consumer rounds" in round_planning
+
     native_text = "\n".join(
         specs[key].body
         for key in (
@@ -411,6 +427,7 @@ def test_content_blocker_and_dependency_planning_skills_preserve_consumer_semant
             "node-contract-design",
             "coordinator-node-decomposition",
             "coordinator-content-result-closeout",
+            "coordinator-blocked-consumer-replan",
             "coordinator-dependency-readiness",
             "coordinator-content-task-dispatch",
             "decl-strategy-planning",
@@ -441,6 +458,26 @@ def test_coordinator_completion_policy_spells_out_node_tree_policy() -> None:
     assert "smallest stable node subtree" in completion_policy
     assert "complete declaration\n  graph" in completion_policy
     assert "complete proof graph" in completion_policy
+    assert "partial result remains ineligible as a node" in completion_policy
+
+
+def test_content_task_target_and_canonical_decl_policy_are_explicit() -> None:
+    specs = build_skill_specs()
+
+    content_policy = specs["content-plan-completion-policy"].body
+    strategy = specs["decl-strategy-planning"].body
+    completion = specs["content-node-completion-decision"].body
+    statement = specs["lean-statement-formalization"].body
+    proof = specs["lean-proof-formalization"].body
+
+    assert "contract's task completion mode" in content_policy
+    assert "repository completion mode" in content_policy
+    assert "remaining repository gap" in content_policy
+    assert "tracked private" in strategy
+    assert "lowest coherent owner" in strategy
+    assert "shared type, instance, equivalence, dependent family" in completion
+    assert "Reuse the exact tracked dependency" in statement
+    assert "proof-local `letI` may install a named canonical instance definition" in proof
 
 
 def test_bottom_up_completion_and_lean_gap_policy_has_single_owned_decisions() -> None:

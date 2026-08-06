@@ -379,7 +379,7 @@ These are reasoning and workflow stages inside the same AgentStep. They do not c
 
 If the turn follows a callback or requirement resume, complete the corresponding closeout before planning new work.
 
-- After Content task callbacks, read `coordinator-content-result-closeout`. Reconcile every returned Content result and commit every reviewed Content contract before choosing follow-up work. When a blocked result says that missing mathematical work may cross the current Content boundary, inspect the authoritative private consumer declaration, accepted proof route, and dependencies before turning the report into another contract. Treat the blocked reason as an index into current truth, not as sufficient contract authority.
+- After Content task callbacks, read `coordinator-content-result-closeout`. Reconcile every returned Content result and commit every reviewed Content contract before choosing follow-up work. If closeout identifies a blocked consumer whose missing work may cross its Content boundary, inspect the authoritative private consumer declaration and read `coordinator-blocked-consumer-replan` before retrying the consumer or designing provider work. Treat the blocked reason as an index into current truth, not as sufficient contract authority.
 - After a Resource callback, read `resource-result-closeout`. Interpret the duplicate, local resource, external repository, or rejected result and apply the durable changes owned by the Coordinator.
 - After a requirement resume, read `coordinator-requirement-result-closeout`. The resume gate has already validated and attached the satisfied provider dependency. Re-read the requirement, Lake dependencies, provider public API, and current node tree, then identify what repository work the new dependency enables.
 
@@ -428,6 +428,8 @@ Use `resource-request-submission` only for a precise resource target that should
 Use `coordinator-node-decomposition` when the repository needs a new Scope or Content node, a boundary split, a structural repair, or removal of an obsolete node.
 
 Use `node-contract-design` for detailed contract work, including mathematical goals, boundaries, objectives, success criteria, material references, node dependencies, Mathlib hints, and interfaces.
+
+Definitions, types, instances, and canonical constructions belong to the lowest coherent provider and must be ready bottom-up. A shallow task target stages theorem statements only; it never makes a dependency provider.
 
 For missing work reported by Content, read `coordinator-node-decomposition`; it owns the current-node, existing-node, coherent-package, and interface/route-repair decision. Do not create a node merely because a blocked result names a missing lemma, and do not use a declaration-count threshold as a boundary rule.
 

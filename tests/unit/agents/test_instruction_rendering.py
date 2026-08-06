@@ -45,6 +45,7 @@ def test_coordinator_instruction_routes_closeout_then_repeated_next_actions() ->
 
     assert "### Stage One: Reconcile The Wake Result" in text
     assert "coordinator-content-result-closeout" in text
+    assert "coordinator-blocked-consumer-replan" in text
     assert "resource-result-closeout" in text
     assert "coordinator-requirement-result-closeout" in text
     assert "### Stage Two: Next-Action Loop" in text

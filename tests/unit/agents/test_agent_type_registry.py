@@ -48,6 +48,7 @@ EXPECTED_COORDINATOR_SKILLS = [
     "coordinator-repo-exploration",
     "material-boundary-classification",
     "coordinator-content-result-closeout",
+    "coordinator-blocked-consumer-replan",
     "resource-result-closeout",
     "coordinator-requirement-result-closeout",
     "coordinator-dependency-readiness",
