@@ -1,5 +1,6 @@
 from tests.unit_services_helpers import make_runtime
 
+from lean_constellation.domain.repo import DocstringProjectionConfig
 from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.lean_projection.annotation import (
     ResolvedMathlibDependencyProjection,
@@ -72,6 +73,19 @@ def test_render_current_markdown_docstring_and_dependency_grammar() -> None:
     assert statement.ok and statement.value is not None
     text = statement.value
     assert "# lean-constellation target: `foo_bar`" in text
+    assert "For every natural number n" in text
+    assert "## Sources" not in text
+    assert "## Statement dependencies" not in text
+    assert "revision" not in text
+    assert "None" not in text
+
+    full = component.render_statement_docstring(
+        _revision(),
+        dependencies=_statement_dependencies(),
+        projection_policy=DocstringProjectionConfig.full(),
+    )
+    assert full.ok and full.value is not None
+    text = full.value
     assert "## Sources" in text
     assert "Source `chapter.md`, lines 10–12" in text
     assert "Resource `paper`, `§2`–`Theorem 1`" in text
@@ -86,11 +100,20 @@ def test_render_current_markdown_docstring_and_dependency_grammar() -> None:
         _revision(),
         statement_dependencies=_statement_dependencies(),
         proof_dependencies=[],
+        projection_policy=DocstringProjectionConfig.full(),
     )
     assert proof.ok and proof.value is not None
     assert "## Proof outline\n\nUse reflexivity." in proof.value
     assert "## Proof sources\n\n- Reference `Lean core`" in proof.value
     assert "## Proof dependencies" not in proof.value
+
+
+def test_default_projection_fingerprint_changes_with_policy() -> None:
+    component = make_runtime().lean_projection.annotation
+    default = component.projection_fingerprint()
+    full = component.projection_fingerprint(DocstringProjectionConfig.full())
+    assert default != full
+    assert default == component.projection_policy().fingerprint()
 
 
 def test_render_docstring_wraps_generated_prose_to_style_limit() -> None:
@@ -128,7 +151,10 @@ def test_compare_unmanaged_expected_header_with_managed_statement() -> None:
 
 def test_render_requires_one_resolved_projection_per_structured_dependency() -> None:
     component = make_runtime().lean_projection.annotation
-    missing = component.render_statement_docstring(_revision())
+    missing = component.render_statement_docstring(
+        _revision(),
+        projection_policy=DocstringProjectionConfig.full(),
+    )
     assert not missing.ok
     assert missing.issues[0].kind == "dependency_projection_missing"
 

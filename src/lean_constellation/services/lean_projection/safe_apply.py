@@ -105,7 +105,7 @@ class SafeFormalApplyComponent:
         )
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
-        return self.runtime.foundation.ok(self._digest(current.value.model_dump(mode="json")))
+        return self.runtime.foundation.ok(self._revision_digest(current.value))
 
     def recapture_reviewer_dependency_mutation(
         self,
@@ -313,7 +313,7 @@ class SafeFormalApplyComponent:
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
         revision = current.value
-        actual_digest = self._digest(revision.model_dump(mode="json"))
+        actual_digest = self._revision_digest(revision)
         stale = (
             revision.revision != expected_revision
             or revision.state != DeclState(expected_state)
@@ -375,7 +375,7 @@ class SafeFormalApplyComponent:
             )
             if not after.ok or after.value is None:
                 return self._rollback(snapshot, after.issues)
-            after_digest = self._digest(after.value.model_dump(mode="json"))
+            after_digest = self._revision_digest(after.value)
             return self.runtime.foundation.ok(
                 SafeFormalApplyView(
                     node_path=node_path,
@@ -481,6 +481,19 @@ class SafeFormalApplyComponent:
     def _digest(value: object) -> str:
         payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+    def _revision_digest(self, revision: object) -> str:
+        """Include projection policy/version in the optimistic revision fingerprint."""
+
+        model_dump = getattr(revision, "model_dump", None)
+        if model_dump is None:
+            raise TypeError("revision must provide model_dump(mode='json')")
+        return self._digest(
+            {
+                "revision": model_dump(mode="json"),
+                "docstring_projection": self.decl_file.annotation.projection_fingerprint(),
+            }
+        )
 
 
 __all__ = ["FormalApplyStage", "SafeFormalApplyComponent", "SafeFormalApplyView"]

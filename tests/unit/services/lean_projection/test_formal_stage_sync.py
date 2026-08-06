@@ -5,6 +5,7 @@ from typing import Any
 
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
+from lean_constellation.domain.repo import DocstringProjectionConfig, WorkspaceConfig
 from lean_constellation.services.decl_graph import DeclState
 from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView, LeanDiagnosticsResult
 from lean_constellation.services.runtime import LeanRuntimeServices
@@ -59,7 +60,10 @@ class FakeLake:
 
 
 def _runtime() -> LeanRuntimeServices:
-    return make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()})
+    return make_runtime(
+        external_overrides={"lean_mcp_toolkit": FakeToolkit(), "lake": FakeLake()},
+        workspace_config=WorkspaceConfig(docstring_projection=DocstringProjectionConfig.full()),
+    )
 
 
 def _setup_theorem_round(repo_root: Path, runtime: LeanRuntimeServices) -> str:
@@ -104,7 +108,7 @@ def _setup_theorem_round(repo_root: Path, runtime: LeanRuntimeServices) -> str:
         round_id=round_record.value.round_id,
         decl_name=DECL_NAME,
         nl="The main result states True.",
-        origin=[{"kind": "unit_test"}],
+        origin=[{"kind": "source", "source_path": "fixture.md", "start_line": 1, "end_line": 1}],
         deps=[],
     )
     assert statement.ok, statement.issues
@@ -170,6 +174,32 @@ def test_statement_capture_writes_decl_graph_snapshot_and_sync_gate(tmp_path: Pa
     assert stale.ok and stale.value is not None
     assert not stale.value.passed
     assert stale.value.issues[0].kind == "decl_file_capture_stale"
+
+
+def test_snapshot_sync_rejects_projection_policy_drift(tmp_path: Path) -> None:
+    runtime = _runtime()
+    _setup_theorem_round(tmp_path, runtime)
+    prepared = runtime.lean_projection.prepare_statement_formal_stage_file(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+    )
+    assert prepared.ok and prepared.value is not None
+    _write_statement_target(Path(prepared.value.path))
+    captured = runtime.lean_projection.capture_statement_formal(tmp_path, node_path=NODE_PATH, decl_name=DECL_NAME)
+    assert captured.ok, captured.issues
+
+    runtime.repo_workspace.workspace_config.docstring_projection = DocstringProjectionConfig()
+    stale = runtime.lean_projection.check_decl_file_snapshot_sync(
+        tmp_path,
+        node_path=NODE_PATH,
+        decl_name=DECL_NAME,
+        stage="statement",
+    )
+
+    assert stale.ok and stale.value is not None
+    assert not stale.value.passed
+    assert stale.value.issues[0].kind == "decl_file_projection_stale"
 
 
 def test_proof_restore_capture_and_strict_sync_use_decl_graph_snapshot(tmp_path: Path) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
 from pydantic import Field, model_validator
 
@@ -65,6 +67,42 @@ class RepoPublicationStatus(StrEnum):
     STABLE = "stable"
 
 
+class DocstringProjectionConfig(StrictModel):
+    """Workspace policy for the managed declaration docstring projection."""
+
+    include_statement_nl: bool = True
+    include_proof_nl: bool = False
+    include_sources: bool = False
+    include_dependencies: bool = False
+
+    @model_validator(mode="after")
+    def _statement_is_required(self) -> "DocstringProjectionConfig":
+        if not self.include_statement_nl:
+            raise ValueError("managed docstrings must include the NL statement")
+        return self
+
+    @classmethod
+    def full(cls) -> "DocstringProjectionConfig":
+        """Return the explicit publication/diagnostic projection policy."""
+
+        return cls(
+            include_statement_nl=True,
+            include_proof_nl=True,
+            include_sources=True,
+            include_dependencies=True,
+        )
+
+    def fingerprint(self, *, format_version: int = 1) -> str:
+        """Return a stable fingerprint for managed-file freshness checks."""
+
+        payload = {
+            "format_version": format_version,
+            "policy": self.model_dump(mode="json"),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
 class RepoModel(StrictModel):
     main_node: str = "Main"
     summary: str | None = None
@@ -108,6 +146,9 @@ class WorkspaceConfig(StrictModel):
     )
     publication: WorkspacePublicationPolicy = Field(
         default_factory=WorkspacePublicationPolicy
+    )
+    docstring_projection: DocstringProjectionConfig = Field(
+        default_factory=DocstringProjectionConfig
     )
 
     @model_validator(mode="after")

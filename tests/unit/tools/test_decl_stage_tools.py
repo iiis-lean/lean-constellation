@@ -638,9 +638,17 @@ def test_statement_nl_typed_tools_write_text_origins_and_deps(tmp_path: Path) ->
     )
     assert refreshed.ok and refreshed.value is not None
     refreshed_text = prepared_path.read_text(encoding="utf-8")
-    assert "notes.md" in refreshed_text
-    assert "supporting_statement" in refreshed_text
-    assert "Nat.succ" in refreshed_text
+    # The workspace default is the compact NL-statement-only projection.  The
+    # structured origin/dependency truth remains in DeclGraph and is not
+    # materialized into the ordinary managed file unless a full policy is
+    # explicitly selected.
+    marker = runtime.lean_projection.annotation.parse_target_marker(refreshed_text)
+    assert marker.ok and marker.value is not None
+    projected_docstring = marker.value.docstring
+    assert "The main result states True." in projected_docstring
+    assert "notes.md" not in projected_docstring
+    assert "supporting_statement" not in projected_docstring
+    assert "Nat.succ" not in projected_docstring
 
 
 def test_statement_nl_reviewer_can_add_only_a_verified_mathlib_dependency(tmp_path: Path) -> None:

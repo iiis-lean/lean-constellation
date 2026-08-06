@@ -3,6 +3,7 @@ from typing import Any
 
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime
 
+from lean_constellation.domain.repo import DocstringProjectionConfig, WorkspaceConfig
 from lean_constellation.services.decl_graph import DeclFileRevisionView
 from lean_constellation.services.external_clients import (
     ExternalCommandResult,
@@ -91,7 +92,10 @@ def _revision(kind: str = "theorem", *, name: str = "main_result", module: str |
 
 
 def _component(revisions: dict[tuple[str, str], dict[str, Any]], diagnostics: list[dict[str, Any]] | None = None, *, failing_save: bool = False) -> DeclFileComponent:
-    runtime = make_runtime(external_overrides={"lean_mcp_toolkit": FakeToolkit(diagnostics), "lake": FakeLake()})
+    runtime = make_runtime(
+        external_overrides={"lean_mcp_toolkit": FakeToolkit(diagnostics), "lake": FakeLake()},
+        workspace_config=WorkspaceConfig(docstring_projection=DocstringProjectionConfig.full()),
+    )
     provider = FailingSaveRevisionProvider(runtime.foundation, revisions) if failing_save else FakeRevisionProvider(runtime.foundation, revisions)
     return DeclFileComponent(runtime, lean_check=runtime.lean_projection.lean_check, revision_provider=provider)
 

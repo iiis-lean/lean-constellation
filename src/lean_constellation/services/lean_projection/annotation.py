@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import field_validator
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo import DocstringProjectionConfig
 from lean_constellation.services.foundation import GateReport, ServiceResult
 
 if TYPE_CHECKING:
@@ -197,21 +198,47 @@ class AnnotationComponent:
     def __init__(self, runtime: LeanRuntimeServices) -> None:
         self.runtime = runtime
 
+    def projection_policy(self) -> DocstringProjectionConfig:
+        """Return the current workspace policy without coupling callers to config storage."""
+
+        workspace = getattr(getattr(self.runtime, "app", None), "repo_workspace", None)
+        configured = getattr(getattr(workspace, "workspace_config", None), "docstring_projection", None)
+        return configured if isinstance(configured, DocstringProjectionConfig) else DocstringProjectionConfig()
+
+    def projection_fingerprint(
+        self,
+        policy: DocstringProjectionConfig | None = None,
+        *,
+        format_version: int = 1,
+    ) -> str:
+        """Return the policy/version fingerprint used by managed-file freshness checks."""
+
+        return (policy or self.projection_policy()).fingerprint(format_version=format_version)
+
     def render_statement_docstring(
         self,
         revision: DeclFileRevisionView,
         *,
         dependencies: Sequence[ResolvedDependencyProjection] | None = None,
+        projection_policy: DocstringProjectionConfig | None = None,
     ) -> ServiceResult[str]:
-        resolved = self._require_resolved_dependencies(revision.statement.deps, dependencies)
-        if not resolved.ok or resolved.value is None:
-            return self.runtime.foundation.fail(resolved.issues)
+        policy = projection_policy or self.projection_policy()
+        if policy.include_dependencies:
+            resolved = self._require_resolved_dependencies(revision.statement.deps, dependencies)
+            if not resolved.ok or resolved.value is None:
+                return self.runtime.foundation.fail(resolved.issues)
+            statement_dependencies = resolved.value
+        else:
+            # Hidden dependency metadata remains structured truth, but it does
+            # not need to be resolved merely to render the compact projection.
+            statement_dependencies = []
         return self.runtime.foundation.ok(
             self._render_docstring(
                 decl_name=revision.decl_name,
                 statement_text=revision.statement.nl.text,
                 statement_origins=revision.statement.nl.origin,
-                statement_dependencies=resolved.value,
+                statement_dependencies=statement_dependencies,
+                projection_policy=policy,
             )
         )
 
@@ -221,23 +248,32 @@ class AnnotationComponent:
         *,
         statement_dependencies: Sequence[ResolvedDependencyProjection] | None = None,
         proof_dependencies: Sequence[ResolvedDependencyProjection] | None = None,
+        projection_policy: DocstringProjectionConfig | None = None,
     ) -> ServiceResult[str]:
-        statement = self._require_resolved_dependencies(revision.statement.deps, statement_dependencies)
-        if not statement.ok or statement.value is None:
-            return self.runtime.foundation.fail(statement.issues)
-        proof_refs = revision.proof.deps if revision.proof is not None else []
-        proof = self._require_resolved_dependencies(proof_refs, proof_dependencies)
-        if not proof.ok or proof.value is None:
-            return self.runtime.foundation.fail(proof.issues)
+        policy = projection_policy or self.projection_policy()
+        if policy.include_dependencies:
+            statement = self._require_resolved_dependencies(revision.statement.deps, statement_dependencies)
+            if not statement.ok or statement.value is None:
+                return self.runtime.foundation.fail(statement.issues)
+            proof_refs = revision.proof.deps if revision.proof is not None else []
+            proof = self._require_resolved_dependencies(proof_refs, proof_dependencies)
+            if not proof.ok or proof.value is None:
+                return self.runtime.foundation.fail(proof.issues)
+            statement_projection_dependencies = statement.value
+            proof_projection_dependencies = proof.value
+        else:
+            statement_projection_dependencies = []
+            proof_projection_dependencies = []
         return self.runtime.foundation.ok(
             self._render_docstring(
                 decl_name=revision.decl_name,
                 statement_text=revision.statement.nl.text,
                 statement_origins=revision.statement.nl.origin,
-                statement_dependencies=statement.value,
+                statement_dependencies=statement_projection_dependencies,
                 proof_text=revision.proof.nl.text if revision.proof is not None else None,
                 proof_origins=revision.proof.nl.origin if revision.proof is not None else [],
-                proof_dependencies=proof.value,
+                proof_dependencies=proof_projection_dependencies,
+                projection_policy=policy,
             )
         )
 
@@ -663,15 +699,22 @@ class AnnotationComponent:
         proof_text: str | None = None,
         proof_origins: Sequence[DeclOriginRef] = (),
         proof_dependencies: Sequence[ResolvedDependencyProjection] = (),
+        projection_policy: DocstringProjectionConfig | None = None,
     ) -> str:
+        policy = projection_policy or self.projection_policy()
         body: list[str] = [f"# lean-constellation target: `{decl_name}`"]
-        self._append_text(body, statement_text)
-        self._append_section(body, "Sources", [self._format_origin(item) for item in statement_origins])
-        self._append_section(body, "Statement dependencies", [self._format_dependency(item) for item in statement_dependencies])
-        if proof_text and proof_text.strip():
+        if policy.include_statement_nl:
+            self._append_text(body, statement_text)
+        if policy.include_sources:
+            self._append_section(body, "Sources", [self._format_origin(item) for item in statement_origins])
+        if policy.include_dependencies:
+            self._append_section(body, "Statement dependencies", [self._format_dependency(item) for item in statement_dependencies])
+        if policy.include_proof_nl and proof_text and proof_text.strip():
             self._append_section(body, "Proof outline", [self._sanitize_doc_text(proof_text)])
-        self._append_section(body, "Proof sources", [self._format_origin(item) for item in proof_origins])
-        self._append_section(body, "Proof dependencies", [self._format_dependency(item) for item in proof_dependencies])
+        if policy.include_sources:
+            self._append_section(body, "Proof sources", [self._format_origin(item) for item in proof_origins])
+        if policy.include_dependencies:
+            self._append_section(body, "Proof dependencies", [self._format_dependency(item) for item in proof_dependencies])
         return "/--\n" + "\n".join(body).rstrip() + "\n-/"
 
     def _require_resolved_dependencies(

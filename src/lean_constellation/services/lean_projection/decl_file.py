@@ -74,6 +74,7 @@ class DeclManagedProjectionRefreshView(StrictModel):
     changed: bool = False
     changed_files: list[str] = Field(default_factory=list)
     reread_required: bool = False
+    projection_fingerprint: str | None = None
     summary: str
 
 
@@ -87,6 +88,7 @@ class FormalCaptureView(StrictModel):
     build: ModuleBuildView
     line_count: int
     check: LeanCheckView
+    projection_fingerprint: str | None = None
     summary: str
 
 
@@ -522,6 +524,7 @@ class DeclFileComponent:
                     node_path=node_path,
                     decl_name=decl_name,
                     effective_stage=effective_stage,
+                    projection_fingerprint=self.annotation.projection_fingerprint(),
                     summary="Truth was updated; no Decl-owned Lean file exists yet, so prepare will use the latest projection.",
                 )
             )
@@ -593,6 +596,7 @@ class DeclFileComponent:
                 changed=changed,
                 changed_files=[str(path)] if changed else [],
                 reread_required=changed,
+                projection_fingerprint=self.annotation.projection_fingerprint(),
                 summary=(
                     "Truth was updated successfully and the managed Lean projection changed. "
                     "Reread the file in this same AgentStep before any further edit or submission, then continue; "
@@ -688,6 +692,7 @@ class DeclFileComponent:
                 build=built.value,
                 line_count=len(file_text.value.splitlines()),
                 check=check.value,
+                projection_fingerprint=self.annotation.projection_fingerprint(),
                 summary="Captured statement formal file.",
             )
         )
@@ -828,6 +833,7 @@ class DeclFileComponent:
                 build=built.value,
                 line_count=len(file_text.value.splitlines()),
                 check=check.value,
+                projection_fingerprint=self.annotation.projection_fingerprint(),
                 summary="Captured proof formal file.",
             )
         )
@@ -883,6 +889,73 @@ class DeclFileComponent:
         file_text = self._read_lean_file(path, object_ref=f"{node_path}:{decl_name}")
         if not file_text.ok or file_text.value is None:
             return self.runtime.foundation.fail(file_text.issues)
+        # Snapshot sync predates the managed-region contract and is also used by
+        # small DeclGraph fixtures that intentionally store a raw Lean fragment.
+        # Only a file that actually has managed regions has a projection whose
+        # policy can be checked.  A managed file still gets the strict
+        # policy/freshness validation below; raw fragments retain the historical
+        # captured-code comparison and are not treated as a projection.
+        managed_regions = self.managed_file.validate(file_text.value)
+        if managed_regions.ok:
+            policy = self.annotation.projection_policy()
+            statement_dependencies_value: list[ResolvedDependencyProjection] = []
+            if policy.include_dependencies:
+                statement_dependencies = self._resolve_dependencies(
+                    repo_root,
+                    consumer_node_path=node_path,
+                    dependencies=revision.value.statement.deps,
+                    require_complete=True,
+                )
+                if not statement_dependencies.ok or statement_dependencies.value is None:
+                    return self.runtime.foundation.fail(statement_dependencies.issues)
+                statement_dependencies_value = statement_dependencies.value
+            if normalized_stage == "proof":
+                proof_dependencies_value: list[ResolvedDependencyProjection] = []
+                if policy.include_dependencies:
+                    proof_dependencies = self._resolve_dependencies(
+                        repo_root,
+                        consumer_node_path=node_path,
+                        dependencies=revision.value.proof.deps if revision.value.proof is not None else [],
+                        require_complete=True,
+                    )
+                    if not proof_dependencies.ok or proof_dependencies.value is None:
+                        return self.runtime.foundation.fail(proof_dependencies.issues)
+                    proof_dependencies_value = proof_dependencies.value
+                expected_docstring = self.annotation.render_proof_docstring(
+                    revision.value,
+                    statement_dependencies=statement_dependencies_value,
+                    proof_dependencies=proof_dependencies_value,
+                    projection_policy=policy,
+                )
+            else:
+                expected_docstring = self.annotation.render_statement_docstring(
+                    revision.value,
+                    dependencies=statement_dependencies_value,
+                    projection_policy=policy,
+                )
+            if not expected_docstring.ok or expected_docstring.value is None:
+                return self.runtime.foundation.fail(expected_docstring.issues)
+            projection_gate = self.annotation.validate_docstring(
+                file_text.value,
+                decl_name=decl_name,
+                stage=normalized_stage,
+                expected_docstring=expected_docstring.value,
+            )
+            if not projection_gate.ok or projection_gate.value is None:
+                return self.runtime.foundation.fail(projection_gate.issues)
+            if not projection_gate.value.passed:
+                return self.runtime.foundation.ok(
+                    self.runtime.foundation.gate_failed(
+                        "decl_file_capture_sync",
+                        self.runtime.foundation.issue(
+                            "decl_file_projection_stale",
+                            "Decl-owned Lean file uses an outdated docstring projection policy or truth revision.",
+                            object_ref=f"{node_path}:{decl_name}",
+                            details={"projection_fingerprint": self.annotation.projection_fingerprint()},
+                        ),
+                        summary="Managed docstring projection is stale; reproject before using the captured file.",
+                    )
+                )
         if file_text.value != captured_code:
             return self.runtime.foundation.ok(
                 self.runtime.foundation.gate_failed(
