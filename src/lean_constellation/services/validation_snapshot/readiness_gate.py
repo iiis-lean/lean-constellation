@@ -11,7 +11,9 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.preparation import RepoDependencyRequirementStatus
 from lean_constellation.domain.repo import (
     ProofAvailability,
+    RepoCompletionMode,
     RepoPublicationStatus,
+    completion_mode_satisfies,
     proof_availability_for_completion_mode,
 )
 from lean_constellation.domain.refs import DeclRef
@@ -71,6 +73,9 @@ class ContentNodeCompletionGateView(StrictModel):
     """Submit-oriented view for Content node completion checks."""
 
     node_path: str
+    task_completion_mode: RepoCompletionMode
+    repo_completion_mode: RepoCompletionMode
+    remaining_repo_gap: bool
     target_proof_availability: ProofAvailability
     contract_version: int | None = None
     contract_version_status: ContractVersionStatus | None = None
@@ -258,21 +263,57 @@ class ReadinessGateComponent:
         reports.append(projection.value)
         return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports("content_node_ready", reports))
 
-    def check_content_node_completion(self, repo_root: Path, *, node_path: str) -> ServiceResult[ContentNodeCompletionGateView]:
+    def check_content_node_completion(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract_version: int | None = None,
+    ) -> ServiceResult[ContentNodeCompletionGateView]:
         repo_root = Path(repo_root)
         contract = self.node.contract.get_current_contract(repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
+        if contract_version is not None and contract.value.version != contract_version:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "content_task_contract_version_mismatch",
+                    "Content completion audit contract version does not match current contract truth.",
+                    object_ref=node_path,
+                    field="contract_version",
+                    current=str(contract_version),
+                    expected=str(contract.value.version),
+                )
+            )
 
         config = self.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
+        task_mode = contract.value.contract.task_completion_mode
+        repo_mode = config.value.config.completion_mode
+        if not completion_mode_satisfies(repo_mode, task_mode):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "contract_task_completion_mode_exceeds_repo",
+                    "Content contract task completion mode exceeds the repository completion mode.",
+                    object_ref=node_path,
+                    field="task_completion_mode",
+                    current=task_mode.value,
+                    expected=f"at most {repo_mode.value}",
+                )
+            )
         target = proof_availability_for_completion_mode(
-            config.value.config.completion_mode
+            task_mode
         )
+        provider_target = proof_availability_for_completion_mode(repo_mode)
+        remaining_repo_gap = not completion_mode_satisfies(task_mode, repo_mode)
 
         reports: list[GateReport] = []
-        refreshed_boundary, interfaces_ready = self._refresh_node_boundary(repo_root, node_path=node_path)
+        refreshed_boundary, interfaces_ready = self._refresh_node_boundary(
+            repo_root,
+            node_path=node_path,
+            include_interfaces=not remaining_repo_gap,
+        )
         reports.extend(refreshed_boundary)
         node_deps = self.node.dependency.validate_node_deps(repo_root, node_path=node_path)
         if not node_deps.ok or node_deps.value is None:
@@ -319,7 +360,7 @@ class ReadinessGateComponent:
                         f"Declaration does not satisfy current proof availability policy: {ref.name}",
                         object_ref=f"{ref.repo + ':' if ref.repo else ''}{ref.node}:{ref.name}",
                         details={
-                            "target_proof_availability": target.value,
+                            "target_proof_availability": provider_target.value,
                             "summary": checked.value.summary,
                         },
                     )
@@ -411,7 +452,14 @@ class ReadinessGateComponent:
         if interfaces_ready:
             reports.append(self._build_node_interfaces_gate(repo_root, node_path=node_path))
 
-        projection = self.consistency.check_projection_sync(repo_root, scope=node_path)
+        projection = (
+            self.lean_projection.node_projection.check_prelude_sync(
+                repo_root,
+                node_path=node_path,
+            )
+            if remaining_repo_gap
+            else self.consistency.check_projection_sync(repo_root, scope=node_path)
+        )
         if not projection.ok or projection.value is None:
             return self.runtime.foundation.fail(projection.issues)
         reports.append(projection.value)
@@ -421,6 +469,9 @@ class ReadinessGateComponent:
         return self.runtime.foundation.ok(
             ContentNodeCompletionGateView(
                 node_path=node_path,
+                task_completion_mode=task_mode,
+                repo_completion_mode=repo_mode,
+                remaining_repo_gap=remaining_repo_gap,
                 target_proof_availability=target,
                 contract_version=contract.value.version,
                 contract_version_status=contract.value.version_status,
@@ -430,7 +481,15 @@ class ReadinessGateComponent:
                     [ref for ref in decl_refs.values() if ref.repo is not None or ref.node != node_path]
                 ),
                 blocking_issue_kinds=blocking_issue_kinds,
-                summary=("Content node is complete." if gate.passed else "Content node completion gate has blocking issues."),
+                summary=(
+                    (
+                        "Content task target is complete; repository-level provider readiness remains pending."
+                        if remaining_repo_gap
+                        else "Content node is complete at the repository completion mode."
+                    )
+                    if gate.passed
+                    else "Content node completion gate has blocking issues."
+                ),
             ),
             warnings=[*contract.issues, *public_decls.issues],
         )
@@ -700,13 +759,21 @@ class ReadinessGateComponent:
         reports.append(projection.value)
         return self.runtime.foundation.ok(self.runtime.foundation.merge_gate_reports("repo_ready", reports))
 
-    def _refresh_node_boundary(self, repo_root: Path, *, node_path: str) -> tuple[list[GateReport], bool]:
+    def _refresh_node_boundary(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        include_interfaces: bool = True,
+    ) -> tuple[list[GateReport], bool]:
         reports: list[GateReport] = []
-        interfaces_ready = True
-        for projection_kind, refresh in [
-            ("prelude", self.lean_projection.node_projection.refresh_prelude),
-            ("interfaces", self.lean_projection.node_projection.refresh_interfaces),
-        ]:
+        interfaces_ready = include_interfaces
+        refreshes = [("prelude", self.lean_projection.node_projection.refresh_prelude)]
+        if include_interfaces:
+            refreshes.append(
+                ("interfaces", self.lean_projection.node_projection.refresh_interfaces)
+            )
+        for projection_kind, refresh in refreshes:
             refreshed = refresh(Path(repo_root), node_path=node_path)
             if not refreshed.ok or refreshed.value is None:
                 reports.append(

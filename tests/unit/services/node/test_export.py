@@ -4,6 +4,7 @@ from pathlib import Path
 
 from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationContext, FoundationService, ServiceResult, WriteMode
 from lean_constellation.services.node import (
@@ -217,6 +218,37 @@ def test_list_scope_export_candidates_marks_already_exported(tmp_path: Path) -> 
     assert candidates.ok
     assert candidates.value is not None
     assert candidates.value.candidates[0].already_exported is True
+
+
+def test_scope_export_rejects_content_with_partial_task_target(tmp_path: Path) -> None:
+    _create_tree(tmp_path)
+    runtime = make_runtime()
+    lowered = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+    )
+    assert lowered.ok, lowered.issues
+    component = _component_with_provider(tmp_path)
+
+    candidates = component.list_scope_export_candidates(
+        tmp_path,
+        scope_path="Main.Topic",
+    )
+    added = component.add_scope_export(
+        tmp_path,
+        scope_path="Main.Topic",
+        decl_node="Main.Topic.Core",
+        decl_name="main_result",
+    )
+
+    assert candidates.ok and candidates.value is not None
+    assert all(
+        item.source_child != "Main.Topic.Core"
+        for item in candidates.value.candidates
+    )
+    assert not added.ok
+    assert added.issues[0].kind == "node_provider_completion_target_unsatisfied"
 
 
 def test_add_scope_export_with_optional_interface_bind_and_duplicate_warning(tmp_path: Path) -> None:

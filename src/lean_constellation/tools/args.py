@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo import RepoCompletionMode
 
 
 class NoArgs(StrictModel):
@@ -398,6 +399,14 @@ class ContractCoreUpdateArgs(NodePathArgs):
     objective: str | None = Field(default=None, description="Updated current contract objective, if changing it.")
     success_criteria: str | None = Field(default=None, description="Updated success criteria, if changing it.")
     constraints: str | None = Field(default=None, description="Updated constraints, if changing them.")
+
+
+class ContractTaskCompletionModeArgs(NodePathArgs):
+    task_completion_mode: RepoCompletionMode = Field(
+        description=(
+            "Frozen completion target for this Content contract version. It must not exceed the current repository completion mode."
+        )
+    )
 
 
 class NodeDeleteArgs(NodePathArgs):

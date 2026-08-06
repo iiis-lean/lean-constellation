@@ -21,6 +21,7 @@ from lean_constellation.domain.repo import (
     RepoPublicationStatus,
     RepoPublicationView,
     RepoStateView,
+    completion_mode_satisfies,
     proof_availability_for_completion_mode,
 )
 from lean_constellation.domain.publication import RepoPublicationOverride
@@ -242,10 +243,26 @@ class RepoMetadataComponent:
         current = self.get_repo_config(repo_root)
         if not current.ok or current.value is None:
             return self.runtime.foundation.fail(current.issues)
+        if completion_mode is not None:
+            try:
+                requested_completion_mode = RepoCompletionMode(completion_mode)
+            except ValueError as exc:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "repo_config_invalid",
+                        f"Invalid repo config: {exc}",
+                    )
+                )
+            compatible = self._check_completion_mode_contract_targets(
+                repo_root,
+                requested_completion_mode=requested_completion_mode,
+            )
+            if not compatible.ok:
+                return self.runtime.foundation.fail(compatible.issues)
         config = current.value.config.model_copy(deep=True)
         try:
             if completion_mode is not None:
-                config.completion_mode = RepoCompletionMode(completion_mode)
+                config.completion_mode = requested_completion_mode
             if default_requirement_proof_availability is not None:
                 config.default_requirement_proof_availability = ProofAvailability(default_requirement_proof_availability)
             if publication is not None:
@@ -257,6 +274,46 @@ class RepoMetadataComponent:
         if not written.ok:
             return self.runtime.foundation.fail(written.issues)
         return self.runtime.foundation.ok(RepoConfigView(repo_root=str(Path(repo_root)), config=config))
+
+    def _check_completion_mode_contract_targets(
+        self,
+        repo_root: Path,
+        *,
+        requested_completion_mode: RepoCompletionMode,
+    ) -> ServiceResult[None]:
+        tree = self.runtime.node.node_tree.get_node_tree(Path(repo_root))
+        if not tree.ok or tree.value is None:
+            return self.runtime.foundation.fail(tree.issues)
+        issues = []
+        for node in tree.value.nodes:
+            if node.kind.value != "content":
+                continue
+            contract = self.runtime.node.contract.get_current_contract(
+                Path(repo_root),
+                node_path=node.path,
+            )
+            if not contract.ok or contract.value is None:
+                return self.runtime.foundation.fail(contract.issues)
+            task_mode = contract.value.contract.task_completion_mode
+            if completion_mode_satisfies(requested_completion_mode, task_mode):
+                continue
+            issues.append(
+                self.runtime.foundation.issue(
+                    "repo_completion_mode_conflicts_with_contract_target",
+                    "Requested repository completion mode is shallower than a current Content contract task target.",
+                    object_ref=node.path,
+                    field="completion_mode",
+                    current=requested_completion_mode.value,
+                    expected=f"at least {task_mode.value}",
+                    details={
+                        "contract_version": contract.value.version,
+                        "contract_status": contract.value.version_status.value,
+                    },
+                )
+            )
+        if issues:
+            return self.runtime.foundation.fail(issues)
+        return self.runtime.foundation.ok(None)
 
     def get_repo_completion_policy(
         self, repo_root: Path

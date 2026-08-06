@@ -254,7 +254,11 @@ class ContentTaskAdmissionStep(BaseStep):
                     summary="Content node task admission cannot run without repo_path.",
                 )
             )
-        gate = _node(ctx).prepare_content_task_admission(repo_root, node_path=input_model.node_path)
+        gate = _node(ctx).prepare_content_task_admission(
+            repo_root,
+            node_path=input_model.node_path,
+            contract_version=input_model.contract_version,
+        )
         if not gate.ok or gate.value is None:
             reason = _first_issue_message(gate.issues, "Content node task admission failed.")
             return ctx.complete_step(
@@ -348,6 +352,7 @@ class ContentCompletionAuditStep(BaseStep):
         audited = _validation_snapshot(ctx).check_content_node_completion(
             repo_root,
             node_path=input_model.node_path,
+            contract_version=input_model.contract_version,
         )
         if not audited.ok or audited.value is None:
             reason = _first_issue_message(audited.issues, "Content completion audit failed.")

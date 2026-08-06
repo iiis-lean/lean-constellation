@@ -8,6 +8,7 @@ import lean_constellation.services.foundation.store as store_module
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef, NodeRef
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services.foundation import FoundationContext, WriteMode
 from lean_constellation.services.node import (
     ContractVersionStatus,
@@ -99,6 +100,7 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     assert current.value is not None
     assert current.value.version == 1
     assert current.value.status == ContractVersionStatus.OPEN
+    assert current.value.contract.task_completion_mode == RepoCompletionMode.GRAPH_PROVED
 
     committed = make_runtime().node.commit_content_contract(
         tmp_path, node_path="Main.Topic.Core", summary="Initial core contract complete."
@@ -133,6 +135,7 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     assert opened.value.contract.status == ContractVersionStatus.OPEN
     assert opened.value.contract.status == ContractVersionStatus.OPEN
     assert opened.value.contract.summary is None
+    assert opened.value.contract.task_completion_mode == RepoCompletionMode.GRAPH_PROVED
 
     latest = component.get_current_contract(tmp_path, node_path="Main.Topic.Core")
     assert latest.ok
@@ -160,6 +163,95 @@ def test_get_current_and_ensure_open_contract_copies_committed_version(tmp_path:
     persisted = _contract_path(tmp_path, "Main.Topic.Core", 2).read_text(encoding="utf-8")
     assert '"status"' in persisted
     assert '"version_status"' not in persisted
+
+
+def test_content_contract_task_target_defaults_to_repo_and_new_version_resets_to_repo(
+    tmp_path: Path,
+) -> None:
+    runtime = make_runtime()
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
+    ).ok
+    _create_topic_content(tmp_path)
+
+    lowered = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+    )
+    assert lowered.ok and lowered.value is not None
+    assert lowered.value.changed is True
+    assert lowered.value.created_new_open is False
+    assert lowered.value.remaining_repo_gap is True
+    assert runtime.node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        summary="Declared task target complete.",
+    ).ok
+
+    opened = runtime.node.contract.ensure_open_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+
+    assert opened.ok and opened.value is not None
+    assert opened.value.created_new_open is True
+    assert opened.value.version == 2
+    assert opened.value.contract.task_completion_mode == RepoCompletionMode.GRAPH_PROVED
+    visible = runtime.node.contract.get_visible_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+    assert visible.ok and visible.value is not None
+    assert visible.value.contract.task_completion_mode == RepoCompletionMode.GRAPH_DECLARED
+
+
+def test_task_target_rejects_scope_and_mode_deeper_than_repo(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    assert runtime.repo_workspace.metadata.update_repo_config(
+        tmp_path,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+    ).ok
+    _create_topic_content(tmp_path)
+
+    scope = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path="Main.Topic",
+        task_completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
+    too_deep = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+    )
+
+    assert not scope.ok
+    assert scope.issues[0].kind == "contract_task_completion_mode_content_only"
+    assert not too_deep.ok
+    assert too_deep.issues[0].kind == "contract_task_completion_mode_exceeds_repo"
+    current = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+    assert current.ok and current.value is not None
+    assert current.value.version == 1
+    assert current.value.contract.task_completion_mode == RepoCompletionMode.GRAPH_DECLARED
+
+
+def test_node_contract_current_schema_rejects_missing_task_target(tmp_path: Path) -> None:
+    _create_topic_content(tmp_path)
+    path = _contract_path(tmp_path, "Main.Topic.Core")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("task_completion_mode")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = make_runtime().node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+    )
+
+    assert not loaded.ok
 
 
 def test_commit_content_contract_rolls_back_contract_and_node_pointer_on_replace_failure(
@@ -537,6 +629,27 @@ def test_content_task_admission_reports_missing_local_dependency(tmp_path: Path)
     assert admission.value is not None
     assert admission.value.passed is False
     assert admission.value.issues[0].kind == "contract_dep_node_missing"
+
+
+def test_content_task_admission_rejects_stale_contract_version(tmp_path: Path) -> None:
+    _create_topic_content(tmp_path)
+
+    admission = make_runtime().node.contract.check_content_task_admission(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        contract_version=99,
+    )
+
+    assert admission.ok
+    assert admission.value is not None
+    assert admission.value.passed is False
+    issue = next(
+        issue
+        for issue in admission.value.issues
+        if issue.kind == "content_task_contract_version_mismatch"
+    )
+    assert issue.current == "99"
+    assert issue.expected == "1"
 
 
 def test_content_task_admission_reports_invalid_dep_shapes(tmp_path: Path) -> None:

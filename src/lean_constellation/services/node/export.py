@@ -153,6 +153,26 @@ class ExportComponent:
         warnings: list[ServiceIssue] = []
         for child in children.value:
             if child.kind == NodeKind.CONTENT:
+                child_contract = self.contract.get_current_contract(
+                    repo_root,
+                    node_path=child.path,
+                )
+                if not child_contract.ok or child_contract.value is None:
+                    continue
+                provider_target = self.contract.check_provider_completion_target(
+                    repo_root,
+                    node_path=child.path,
+                    contract=child_contract.value,
+                    require_committed=False,
+                )
+                if not provider_target.ok or provider_target.value is None:
+                    return self.runtime.foundation.fail(provider_target.issues)
+                if not provider_target.value.passed:
+                    warnings.extend(
+                        issue.model_copy(update={"severity": IssueSeverity.WARNING})
+                        for issue in provider_target.value.issues
+                    )
+                    continue
                 public = self.list_content_public_decls(repo_root, node_path=child.path)
                 if not public.ok or public.value is None:
                     return self.runtime.foundation.fail(public.issues)
@@ -420,6 +440,28 @@ class ExportComponent:
                 )
             )
         if child.value.kind == NodeKind.CONTENT:
+            child_contract = self.contract.get_current_contract(
+                repo_root,
+                node_path=direct_child,
+            )
+            if not child_contract.ok or child_contract.value is None:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "scope_export_child_content_unavailable",
+                        f"Content child boundary is unavailable: {direct_child}",
+                        object_ref=scope_path,
+                    )
+                )
+            provider_target = self.contract.check_provider_completion_target(
+                repo_root,
+                node_path=direct_child,
+                contract=child_contract.value,
+                require_committed=False,
+            )
+            if not provider_target.ok or provider_target.value is None:
+                return self.runtime.foundation.fail(provider_target.issues)
+            if not provider_target.value.passed:
+                return self.runtime.foundation.fail(provider_target.value.issues)
             public = self.list_content_public_decls(repo_root, node_path=direct_child)
             if not public.ok or public.value is None:
                 return self.runtime.foundation.fail(public.issues)

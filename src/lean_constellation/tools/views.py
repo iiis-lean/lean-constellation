@@ -206,6 +206,7 @@ def build_application_tool_views(group_specs: Iterable[ToolGroupSpec] | None = N
                 AppGroup.REPO_PUBLIC_CLOSURE_READ,
                 AppGroup.REPO_PUBLIC_VISIBILITY_WRITE,
                 AppGroup.NODE_CONTRACT_TEXT_WRITE_BY_NODE,
+                AppGroup.NODE_CONTRACT_TASK_TARGET_WRITE_BY_NODE,
                 AppGroup.NODE_CONTRACT_DEPENDENCY_WRITE_BY_NODE,
                 AppGroup.NODE_CONTRACT_MATERIAL_WRITE_BY_NODE,
                 AppGroup.NODE_CONTRACT_MATHLIB_WRITE_BY_NODE,

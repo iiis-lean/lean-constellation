@@ -6,6 +6,7 @@ from tests.unit_services_helpers import make_runtime, publish_native_provider_re
 
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.refs import NodeRef
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services.foundation import FoundationContext, WriteMode
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.foundation import FoundationService, ServiceResult
@@ -189,6 +190,44 @@ def test_visible_content_boundary_includes_ready_public_declarations(tmp_path: P
     assert validated.ok, validated.issues
     assert validated.value is not None
     assert validated.value.passed is True
+
+
+def test_partial_content_contract_is_not_a_visible_dependency_provider(
+    tmp_path: Path,
+) -> None:
+    _create_base_tree(tmp_path)
+    runtime = make_runtime()
+    lowered = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path="Main.Topic.A",
+        task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+    )
+    assert lowered.ok, lowered.issues
+    committed = runtime.node.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.A",
+        summary="Declared-only task complete.",
+    )
+    assert committed.ok, committed.issues
+
+    visible = runtime.node.dependency.list_visible_node_boundaries(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+    )
+    rejected = runtime.node.dependency.add_node_dep(
+        tmp_path,
+        node_path="Main.Topic.Consumer",
+        target_node="Main.Topic.A",
+        reason="A partial task must not become a provider.",
+        actor="coordinator",
+    )
+
+    assert visible.ok and visible.value is not None
+    assert "Main.Topic.A" not in {
+        item.node_path for item in visible.value.boundaries
+    }
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "node_dep_target_not_visible"
 
 
 def test_visible_node_boundaries_use_active_committed_contract_not_open_draft(tmp_path: Path) -> None:

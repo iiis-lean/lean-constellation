@@ -232,7 +232,14 @@ def _seed_declared_public_theorem(
     repo_root: Path,
     *,
     statement_lean_code: str = "theorem main_result : True := by\n  sorry",
+    completion_mode: RepoCompletionMode | None = None,
 ) -> None:
+    if completion_mode is not None:
+        configured = runtime.repo_workspace.metadata.update_repo_config(
+            repo_root,
+            completion_mode=completion_mode,
+        )
+        assert configured.ok, configured.issues
     _create_content_node(runtime, repo_root)
     round_id = _create_round(runtime, repo_root)
     _create_decl(runtime, repo_root, round_id=round_id, name="main_result", public=True, target_state=DeclState.DECLARED)
@@ -364,12 +371,17 @@ def test_content_ready_gate_uses_default_decl_graph_provider_pass(tmp_path: Path
 
 def test_content_completion_accepts_declared_theorem_under_declared_target(tmp_path: Path) -> None:
     runtime = _runtime()
-    _seed_declared_public_theorem(runtime, tmp_path)
-    configured = runtime.repo_workspace.metadata.update_repo_config(
+    _seed_declared_public_theorem(
+        runtime,
         tmp_path,
         completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
     )
-    assert configured.ok
+    target = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path=NODE_PATH,
+        task_completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
+    assert target.ok, target.issues
     gate = ReadinessGateComponent(
         runtime,
         consistency=ProjectionPassConsistency(runtime),
@@ -387,13 +399,47 @@ def test_content_completion_accepts_declared_theorem_under_declared_target(tmp_p
     assert "+TestProject.Main.Topic.Core.Interfaces" in lake.build_targets
 
 
-def test_content_completion_rejects_stale_capture_even_when_interfaces_builds(tmp_path: Path) -> None:
+def test_content_completion_accepts_partial_declared_task_but_reports_repo_gap(
+    tmp_path: Path,
+) -> None:
     runtime = _runtime()
     _seed_declared_public_theorem(runtime, tmp_path)
-    assert runtime.repo_workspace.metadata.update_repo_config(
+    target = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path=NODE_PATH,
+        task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+    )
+    assert target.ok, target.issues
+    gate = ReadinessGateComponent(
+        runtime,
+        consistency=ProjectionPassConsistency(runtime),
+        content_readiness_provider=runtime.decl_graph,
+    )
+
+    completion = gate.check_content_node_completion(tmp_path, node_path=NODE_PATH)
+
+    assert completion.ok and completion.value is not None
+    assert completion.value.ready_to_submit is True
+    assert completion.value.task_completion_mode == RepoCompletionMode.GRAPH_DECLARED
+    assert completion.value.repo_completion_mode == RepoCompletionMode.GRAPH_PROVED
+    assert completion.value.remaining_repo_gap is True
+    assert completion.value.target_proof_availability == ProofAvailability.DECLARED
+    assert "provider readiness remains pending" in completion.value.summary
+
+
+def test_content_completion_rejects_stale_capture_even_when_interfaces_builds(tmp_path: Path) -> None:
+    runtime = _runtime()
+    _seed_declared_public_theorem(
+        runtime,
         tmp_path,
         completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
-    ).ok
+    )
+    target = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path=NODE_PATH,
+        task_completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
+    assert target.ok, target.issues
     path_view = runtime.lean_projection.decl_file.derive_decl_file_path(
         tmp_path,
         node_path=NODE_PATH,
@@ -453,11 +499,17 @@ def test_content_completion_rejects_missing_compiler_confirmed_decl_identity(tmp
 
 def test_content_completion_reports_interfaces_build_failure_as_blocking_issue(tmp_path: Path) -> None:
     runtime = _runtime()
-    _seed_declared_public_theorem(runtime, tmp_path)
-    assert runtime.repo_workspace.metadata.update_repo_config(
+    _seed_declared_public_theorem(
+        runtime,
         tmp_path,
         completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
-    ).ok
+    )
+    target = runtime.node.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path=NODE_PATH,
+        task_completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
+    assert target.ok, target.issues
     runtime.external.lean_toolchain.lake.fail_build = True
     gate = ReadinessGateComponent(
         runtime,

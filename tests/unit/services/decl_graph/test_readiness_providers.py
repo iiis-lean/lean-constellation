@@ -20,9 +20,18 @@ from lean_constellation.services.lean_projection.lean_check import (
 NODE_PATH = "Main.Topic.Core"
 
 
-def _create_content_node(tmp_path: Path) -> None:
+def _create_content_node(
+    tmp_path: Path,
+    *,
+    completion_mode: RepoCompletionMode | None = None,
+) -> None:
     initialize_native_test_repo(tmp_path)
     runtime = make_runtime()
+    if completion_mode is not None:
+        assert runtime.repo_workspace.metadata.update_repo_config(
+            tmp_path,
+            completion_mode=completion_mode,
+        ).ok
     assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
     assert runtime.node.create_scope_node(
         tmp_path,
@@ -328,7 +337,10 @@ def test_definition_declared_with_statement_check_is_ready(tmp_path: Path) -> No
 
 
 def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(tmp_path: Path) -> None:
-    _create_content_node(tmp_path)
+    _create_content_node(
+        tmp_path,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
     round_id = _create_round_draft(tmp_path)
     _create_decl(
         tmp_path,
@@ -345,11 +357,6 @@ def test_declared_policy_accepts_declared_theorem_with_satisfied_statement_deps(
     _publish_committed_heads(tmp_path, ["supporting_def", "main_result"])
 
     runtime = make_runtime()
-    configured = runtime.repo_workspace.metadata.update_repo_config(
-        tmp_path,
-        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
-    )
-    assert configured.ok
     declared = runtime.decl_graph.check_decl_proof_policy_satisfied(
         tmp_path,
         node_path=NODE_PATH,
@@ -402,18 +409,16 @@ def test_proved_policy_checks_proof_deps_but_declared_policy_ignores_them(tmp_pa
 
 
 def test_strict_proved_audit_rejects_declared_only_public_theorem(tmp_path: Path) -> None:
-    _create_content_node(tmp_path)
+    _create_content_node(
+        tmp_path,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
     round_id = _create_round_draft(tmp_path)
     _create_decl(tmp_path, round_id=round_id, name="public_result", public=True, target_state=DeclState.DECLARED)
     _start_round(tmp_path, round_id)
     _declare_theorem(tmp_path, round_id=round_id, name="public_result")
 
     runtime = make_runtime()
-    configured = runtime.repo_workspace.metadata.update_repo_config(
-        tmp_path,
-        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
-    )
-    assert configured.ok
     policy = runtime.decl_graph.check_decl_proof_policy_satisfied(tmp_path, node_path=NODE_PATH, decl_name="public_result")
     audit = runtime.decl_graph.run_strict_proved_audit(tmp_path, node_path=NODE_PATH)
 

@@ -8,7 +8,7 @@ from agent_runtime_kit.flow.models import BaseFlowError, FlowStatus
 from pydantic import ValidationError
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.app.config import AutomaticCheckpointAppConfig
 from lean_constellation.flows.common.flow_requests import build_decl_round_request, build_preparation_recon_request, build_resource_curation_request
 from lean_constellation.flows.common.submissions import new_submission_id
@@ -637,8 +637,13 @@ def test_content_ready_intent_completes_only_after_deterministic_audit(tmp_path:
     repo_root = tmp_path / "workspace" / "Repo"
     _prepare_content_repo(lean_runtime, repo_root)
 
-    def passed_completion(repo_root_arg: Path, *, node_path: str):
-        del repo_root_arg
+    def passed_completion(
+        repo_root_arg: Path,
+        *,
+        node_path: str,
+        contract_version: int | None = None,
+    ):
+        del repo_root_arg, contract_version
         gate = lean_runtime.foundation.gate_passed(
             "content_node_completion",
             summary="Deterministic completion audit passed.",
@@ -646,6 +651,9 @@ def test_content_ready_intent_completes_only_after_deterministic_audit(tmp_path:
         return lean_runtime.foundation.ok(
             ContentNodeCompletionGateView(
                 node_path=node_path,
+                task_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                repo_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                remaining_repo_gap=False,
                 target_proof_availability=ProofAvailability.PROVED,
                 gate=gate,
                 ready_to_submit=True,
@@ -677,6 +685,9 @@ def test_content_ready_intent_completes_only_after_deterministic_audit(tmp_path:
     assert completed.status is FlowStatus.COMPLETED
     assert completed.result.outcome == "ready"
     assert completed.result.summary == "Content ready intent."
+    assert completed.result.task_completion_mode == RepoCompletionMode.GRAPH_PROVED
+    assert completed.result.repo_completion_mode == RepoCompletionMode.GRAPH_PROVED
+    assert completed.result.remaining_repo_gap is False
 
 
 def test_content_progress_checkpoints_run_before_callback_and_narrow_later_scope(tmp_path: Path) -> None:

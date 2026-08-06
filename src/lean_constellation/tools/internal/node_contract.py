@@ -5,6 +5,7 @@ from __future__ import annotations
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
     ContractCoreUpdateArgs,
+    ContractTaskCompletionModeArgs,
     ContentNodeBatchArgs,
     ContentTaskResultInspectArgs,
     ContentTaskResultListArgs,
@@ -36,6 +37,7 @@ from lean_constellation.tools.args import (
 from lean_constellation.tools.keys import ApplicationToolGroupKey as AppGroup
 from lean_constellation.tools.specs import actor_for_write, current_node_path, direct_tool, handler_tool
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.flows.common.flow_requests import node_scope_id
 from lean_constellation.services.foundation import GateReport, ServiceIssue
@@ -54,6 +56,9 @@ class ContentTaskResultItemView(StrictModel):
     repo_key: str
     outcome: str
     contract_version: int | None = None
+    task_completion_mode: RepoCompletionMode | None = None
+    repo_completion_mode: RepoCompletionMode | None = None
+    remaining_repo_gap: bool | None = None
     reason: str | None = None
     summary: str | None = None
 
@@ -199,6 +204,18 @@ def _update_node_contract_text(runtime, ctx, args: ContractCoreUpdateArgs):
         objective=args.objective,
         success_criteria=args.success_criteria,
         constraints=args.constraints,
+    )
+
+
+def _set_node_contract_task_completion_mode(
+    runtime,
+    ctx,
+    args: ContractTaskCompletionModeArgs,
+):
+    return runtime.node.contract.set_task_completion_mode_receipt(
+        ctx.repo_root,
+        node_path=args.node_path,
+        task_completion_mode=args.task_completion_mode,
     )
 
 
@@ -679,6 +696,9 @@ def _commit_content_contract(runtime, ctx, args: NodeContractCommitArgs):
         task_result=ContentTaskResultView(
             outcome=selected.value.outcome,
             contract_version=selected.value.contract_version,
+            task_completion_mode=selected.value.task_completion_mode,
+            repo_completion_mode=selected.value.repo_completion_mode,
+            remaining_repo_gap=selected.value.remaining_repo_gap,
             summary=selected.value.summary,
             reason=selected.value.reason,
         ),
@@ -827,6 +847,9 @@ def _content_task_result_item(result: ContentNodeTaskResult) -> ContentTaskResul
         repo_key=result.repo_key,
         outcome=result.outcome,
         contract_version=result.contract_version,
+        task_completion_mode=result.task_completion_mode,
+        repo_completion_mode=result.repo_completion_mode,
+        remaining_repo_gap=result.remaining_repo_gap,
         reason=result.reason,
         summary=result.summary,
     )
@@ -921,6 +944,18 @@ def build_tool_specs() -> list[ToolSpec]:
             groups={AppGroup.NODE_CONTRACT_TEXT_WRITE_BY_NODE},
             roles=coordinator_roles,
             handler=_update_node_contract_text,
+        ),
+        handler_tool(
+            name="set_node_contract_task_completion_mode",
+            description=(
+                "Set the frozen completion target for one Content contract version without changing the repository-level provider readiness target."
+            ),
+            args_model=ContractTaskCompletionModeArgs,
+            capability=ToolCapability.WRITE,
+            result_view="contract_task_completion_mutation",
+            groups={AppGroup.NODE_CONTRACT_TASK_TARGET_WRITE_BY_NODE},
+            roles=coordinator_roles,
+            handler=_set_node_contract_task_completion_mode,
         ),
         handler_tool(
             name="preview_delete_node",

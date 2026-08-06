@@ -5,6 +5,7 @@ from tests.unit_services_helpers import initialize_native_test_repo, lean_check_
 from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.lean_check import LeanCheck
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclState
 from lean_constellation.services.decl_graph.models import DeclFormalSection, DeclStatement
@@ -198,6 +199,34 @@ def test_scope_close_view_reports_uncommitted_content_child(tmp_path: Path) -> N
     assert view.value.ready_to_commit is False
     assert view.value.children[0].ready_for_scope_close is False
     assert view.value.child_readiness_gate.passed is False
+    assert view.value.child_readiness_gate.issues[0].kind == "content_child_not_ready"
+
+
+def test_scope_close_view_rejects_committed_partial_content_child(
+    tmp_path: Path,
+) -> None:
+    provider = MutablePublicDeclProvider()
+    runtime = _runtime_with_provider(provider)
+    service = runtime.node
+    _create_scope_and_content(service, tmp_path)
+    lowered = service.contract.set_task_completion_mode_receipt(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+    )
+    assert lowered.ok, lowered.issues
+    assert service.commit_content_contract(
+        tmp_path,
+        node_path="Main.Topic.Core",
+        summary="Declared-only task complete.",
+    ).ok
+
+    view = service.get_scope_close_view(tmp_path, scope_path="Main.Topic")
+
+    assert view.ok and view.value is not None
+    assert view.value.ready_to_commit is False
+    assert view.value.children[0].contract_version_status.value == "committed"
+    assert view.value.children[0].ready_for_scope_close is False
     assert view.value.child_readiness_gate.issues[0].kind == "content_child_not_ready"
 
 

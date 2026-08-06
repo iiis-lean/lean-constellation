@@ -14,6 +14,7 @@ def test_node_contract_tools_are_registered() -> None:
         "create_scope_node",
         "create_content_node",
         "update_node_contract_text",
+        "set_node_contract_task_completion_mode",
         "preview_delete_node",
         "delete_node",
         "list_current_node_deps",
@@ -63,6 +64,10 @@ def test_node_contract_groups_expose_expected_tools() -> None:
     assert_group_contains("node_tree_read", {"get_node_tree", "get_node"})
     assert_group_contains("node_tree_write", {"create_scope_node", "create_content_node", "preview_delete_node", "delete_node"})
     assert_group_contains("node_contract_text_write_by_node", {"update_node_contract_text"})
+    assert_group_contains(
+        "node_contract_task_target_write_by_node",
+        {"set_node_contract_task_completion_mode"},
+    )
     assert_group_contains("node_contract_dependency_current_write", {"add_current_node_dep", "remove_current_node_dep"})
     assert_group_contains("node_contract_material_current_write", {"add_current_material_ref", "remove_current_material_ref"})
     assert_group_contains("node_contract_dependency_write_by_node", {"add_node_dep", "remove_node_dep"})
@@ -87,6 +92,10 @@ def test_current_content_interface_binding_is_plan_or_admin_only() -> None:
     specs = {spec.name: spec for spec in build_application_tool_specs()}
 
     assert specs["bind_current_node_interface"].allowed_roles == {"plan", "admin"}
+    assert specs["set_node_contract_task_completion_mode"].allowed_roles == {
+        "coordinator",
+        "admin",
+    }
 
 
 def test_node_contract_mutation_result_views_match_receipts() -> None:

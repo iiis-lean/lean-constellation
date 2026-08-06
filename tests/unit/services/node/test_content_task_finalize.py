@@ -3,7 +3,7 @@ from pathlib import Path
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
-from lean_constellation.domain.repo import ProofAvailability
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.services.foundation import FoundationContext, GateReport, ServiceIssue, ServiceResult
 from lean_constellation.services.node import ContentTaskOutcome, ContentTaskResultView, NodeService
 from lean_constellation.services.validation_snapshot.readiness_gate import ContentNodeCompletionGateView
@@ -42,6 +42,9 @@ class FakeContentReadyGate:
                 ok=True,
                 value=ContentNodeCompletionGateView(
                     node_path=node_path,
+                    task_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                    repo_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                    remaining_repo_gap=False,
                     target_proof_availability=ProofAvailability.PROVED,
                     gate=gate,
                     ready_to_submit=True,
@@ -52,6 +55,9 @@ class FakeContentReadyGate:
             ok=True,
             value=ContentNodeCompletionGateView(
                 node_path=node_path,
+                task_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                repo_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                remaining_repo_gap=False,
                 target_proof_availability=ProofAvailability.PROVED,
                 gate=gate,
                 ready_to_submit=False,
@@ -102,7 +108,13 @@ def test_finalize_ready_content_task_commits_contract(tmp_path: Path) -> None:
     finalized = service.finalize_content_task_result(
         tmp_path,
         node_path="Main.Topic.Core",
-        task_result=ContentTaskResultView(outcome=ContentTaskOutcome.READY, summary="Task submitted ready."),
+        task_result=ContentTaskResultView(
+            outcome=ContentTaskOutcome.READY,
+            task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+            repo_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+            remaining_repo_gap=True,
+            summary="Task submitted ready.",
+        ),
         coordinator_summary="Coordinator verified the ready content task.",
     )
 
@@ -112,6 +124,9 @@ def test_finalize_ready_content_task_commits_contract(tmp_path: Path) -> None:
     assert finalized.value.contract_summary_written is True
     assert finalized.value.contract_committed is True
     assert finalized.value.contract_version_status == "committed"
+    assert finalized.value.task_completion_mode == RepoCompletionMode.GRAPH_DECLARED
+    assert finalized.value.repo_completion_mode == RepoCompletionMode.GRAPH_PROVED
+    assert finalized.value.remaining_repo_gap is True
     assert ready_gate.calls == [(tmp_path, "Main.Topic.Core")]
 
     current = service.contract.get_current_contract(tmp_path, node_path="Main.Topic.Core")

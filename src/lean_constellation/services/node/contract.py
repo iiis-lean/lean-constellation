@@ -12,6 +12,8 @@ from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.preparation import RepoPreparationInput
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo import RepoCompletionMode
+from lean_constellation.domain.repo import completion_mode_satisfies
 from lean_constellation.services.foundation import (
     FoundationContext,
     GateReport,
@@ -49,6 +51,7 @@ class NodeContractSummaryView(StrictModel):
     node_id: str
     version: int
     status: NodeContractStatus
+    task_completion_mode: RepoCompletionMode
     is_open: bool
     is_active: bool
     created_at: str
@@ -90,6 +93,21 @@ class NodeContractTextMutationReceipt(StrictModel):
     changed_fields: list[
         Literal["goal", "boundary", "objective", "success_criteria", "constraints"]
     ] = Field(default_factory=list)
+    summary: str
+
+
+class NodeContractTaskCompletionMutationReceipt(StrictModel):
+    """Compact receipt for one Content contract task-target update."""
+
+    node_path: str
+    operation: Literal["set"] = "set"
+    changed: bool
+    created_new_open: bool = False
+    contract_version: int
+    previous_task_completion_mode: RepoCompletionMode
+    task_completion_mode: RepoCompletionMode
+    repo_completion_mode: RepoCompletionMode
+    remaining_repo_gap: bool
     summary: str
 
 
@@ -135,6 +153,73 @@ class ContractComponent:
             return self.runtime.foundation.fail(contract.issues)
         return self.runtime.foundation.ok(self._contract_view(node.value, contract.value))
 
+    def check_provider_completion_target(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract: NodeContractView | None = None,
+        require_committed: bool = True,
+    ) -> ServiceResult[GateReport]:
+        """Check whether a committed node contract reached the repo-level target."""
+
+        visible = (
+            self.runtime.foundation.ok(contract)
+            if contract is not None
+            else self.get_visible_contract(repo_root, node_path=node_path)
+        )
+        if not visible.ok or visible.value is None:
+            return self.runtime.foundation.fail(visible.issues)
+        if require_committed and visible.value.version_status != ContractVersionStatus.COMMITTED:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "node_provider_completion_target",
+                    [
+                        self.runtime.foundation.issue(
+                            "node_provider_contract_not_committed",
+                            "Node provider boundary requires a committed contract version.",
+                            object_ref=node_path,
+                        )
+                    ],
+                    summary="Node provider contract is not committed.",
+                )
+            )
+        config = self.runtime.repo_workspace.metadata.get_repo_config(Path(repo_root))
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        task_mode = visible.value.contract.task_completion_mode
+        repo_mode = config.value.config.completion_mode
+        if visible.value.node_kind == NodeKind.CONTENT and not completion_mode_satisfies(
+            task_mode,
+            repo_mode,
+        ):
+            issue = self.runtime.foundation.issue(
+                "node_provider_completion_target_unsatisfied",
+                "Content contract completed only its task target and is not a repository-ready provider boundary.",
+                object_ref=node_path,
+                field="task_completion_mode",
+                current=task_mode.value,
+                expected=repo_mode.value,
+            )
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "node_provider_completion_target",
+                    [issue],
+                    summary=(
+                        f"Content contract target {task_mode.value} does not satisfy repository target {repo_mode.value}."
+                    ),
+                )
+            )
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
+                "node_provider_completion_target",
+                summary=(
+                    f"Node contract satisfies repository completion target {repo_mode.value}."
+                ),
+            ),
+            warnings=visible.issues,
+        )
+
     def list_contract_versions(self, repo_root: Path, *, node_path: str) -> ServiceResult[list[NodeContractSummaryView]]:
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
@@ -149,6 +234,7 @@ class ContractComponent:
                     node_id=node.value.node_id,
                     version=contract.version,
                     status=contract.status,
+                    task_completion_mode=contract.task_completion_mode,
                     is_open=contract.status == NodeContractStatus.OPEN,
                     is_active=node.value.active_contract_version == contract.version,
                     created_at=contract.created_at,
@@ -166,9 +252,15 @@ class ContractComponent:
         latest = self._select_edit_contract(repo_root, node.value)
         if not latest.ok or latest.value is None:
             return self.runtime.foundation.fail(latest.issues)
+        config = self.runtime.repo_workspace.metadata.get_repo_config(Path(repo_root))
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
         ensured = self.runtime.foundation.store.ensure_open_version(
             load_latest=lambda: latest.value,
-            copy_committed=self._copy_committed_contract,
+            copy_committed=lambda value: self._copy_committed_contract(
+                value,
+                task_completion_mode=config.value.config.completion_mode,
+            ),
             path_for_version=lambda version: self._contract_file(repo_root, node.value.path, version),
         )
         if not ensured.ok or ensured.value is None:
@@ -422,6 +514,86 @@ class ContractComponent:
             warnings=updated.issues,
         )
 
+    def set_task_completion_mode_receipt(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        task_completion_mode: RepoCompletionMode,
+    ) -> ServiceResult[NodeContractTaskCompletionMutationReceipt]:
+        """Set the frozen task target on an editable Content contract version."""
+
+        current = self.get_edit_contract(repo_root, node_path=node_path)
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        if current.value.node_kind != NodeKind.CONTENT:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "contract_task_completion_mode_content_only",
+                    "Only Content contracts can override their task completion mode.",
+                    object_ref=node_path,
+                    field="task_completion_mode",
+                )
+            )
+        config = self.runtime.repo_workspace.metadata.get_repo_config(Path(repo_root))
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        repo_mode = config.value.config.completion_mode
+        if not completion_mode_satisfies(repo_mode, task_completion_mode):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "contract_task_completion_mode_exceeds_repo",
+                    "Content task completion mode cannot exceed the repository completion mode.",
+                    object_ref=node_path,
+                    field="task_completion_mode",
+                    current=task_completion_mode.value,
+                    expected=f"at most {repo_mode.value}",
+                )
+            )
+        previous = current.value.contract.task_completion_mode
+        if previous == task_completion_mode:
+            return self.runtime.foundation.ok(
+                NodeContractTaskCompletionMutationReceipt(
+                    node_path=node_path,
+                    changed=False,
+                    contract_version=current.value.version,
+                    previous_task_completion_mode=previous,
+                    task_completion_mode=previous,
+                    repo_completion_mode=repo_mode,
+                    remaining_repo_gap=not completion_mode_satisfies(previous, repo_mode),
+                    summary="Content contract task completion mode already matched the requested value.",
+                ),
+                warnings=current.issues,
+            )
+        opened = self.ensure_open_contract(repo_root, node_path=node_path)
+        if not opened.ok or opened.value is None:
+            return self.runtime.foundation.fail(opened.issues)
+        opened.value.contract.task_completion_mode = task_completion_mode
+        saved = self.runtime.foundation.store.write_json_atomic(
+            self._contract_file(repo_root, node_path, opened.value.version),
+            opened.value.contract,
+            mode=WriteMode.UPDATE_EXISTING,
+        )
+        if not saved.ok:
+            return self.runtime.foundation.fail(saved.issues)
+        return self.runtime.foundation.ok(
+            NodeContractTaskCompletionMutationReceipt(
+                node_path=node_path,
+                changed=True,
+                created_new_open=opened.value.created_new_open,
+                contract_version=opened.value.version,
+                previous_task_completion_mode=previous,
+                task_completion_mode=task_completion_mode,
+                repo_completion_mode=repo_mode,
+                remaining_repo_gap=not completion_mode_satisfies(task_completion_mode, repo_mode),
+                summary=(
+                    f"Set Content contract task completion mode to {task_completion_mode.value}; "
+                    f"repository completion mode remains {repo_mode.value}."
+                ),
+            ),
+            warnings=[*current.issues, *opened.issues],
+        )
+
     def _commit_content_contract_with_head(
         self,
         repo_root: Path,
@@ -497,7 +669,13 @@ class ContractComponent:
     def check_scope_contract_commit(self, repo_root: Path, *, scope_path: str, summary: str) -> ServiceResult[GateReport]:
         return self._check_scope_commit(repo_root, scope_path=scope_path, summary=summary)
 
-    def check_content_task_admission(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
+    def check_content_task_admission(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract_version: int | None = None,
+    ) -> ServiceResult[GateReport]:
         node = self._load_active_node(repo_root, node_path)
         if not node.ok or node.value is None:
             return self.runtime.foundation.fail(node.issues)
@@ -508,6 +686,17 @@ class ContractComponent:
         contract = self._load_current_contract(repo_root, node.value)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
+        if contract_version is not None and contract.value.version != contract_version:
+            issues.append(
+                self.runtime.foundation.issue(
+                    "content_task_contract_version_mismatch",
+                    "Content task admission contract version does not match the current node contract version.",
+                    object_ref=node_path,
+                    field="contract_version",
+                    current=str(contract_version),
+                    expected=str(contract.value.version),
+                )
+            )
         self._collect_contract_required_field_issues(contract.value, issues)
         if contract.value.status != ContractVersionStatus.OPEN:
             issues.append(
@@ -637,10 +826,16 @@ class ContractComponent:
             return self.runtime.foundation.fail(self.runtime.foundation.issue("contract_summary_required", "Contract summary is required.", field="summary"))
         return self.runtime.foundation.ok(None)
 
-    def _copy_committed_contract(self, latest: NodeContract) -> NodeContract:
+    def _copy_committed_contract(
+        self,
+        latest: NodeContract,
+        *,
+        task_completion_mode: RepoCompletionMode,
+    ) -> NodeContract:
         new_contract = deepcopy(latest)
         new_contract.version = latest.version + 1
         new_contract.status = ContractVersionStatus.OPEN
+        new_contract.task_completion_mode = task_completion_mode
         new_contract.summary = None
         new_contract.committed_at = None
         new_contract.created_at = utc_now_iso()

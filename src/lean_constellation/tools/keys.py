@@ -59,6 +59,7 @@ class ApplicationToolGroupKey(StrEnum):
     MATHLIB_SEMANTIC_SEARCH = "mathlib_semantic_search"
     NODE_VISIBILITY_READ_CURRENT = "node_visibility_read_current"
     NODE_CONTRACT_TEXT_WRITE_BY_NODE = "node_contract_text_write_by_node"
+    NODE_CONTRACT_TASK_TARGET_WRITE_BY_NODE = "node_contract_task_target_write_by_node"
     NODE_CONTRACT_DEPENDENCY_WRITE_BY_NODE = "node_contract_dependency_write_by_node"
     NODE_CONTRACT_DEPENDENCY_CURRENT_WRITE = "node_contract_dependency_current_write"
     NODE_CONTRACT_MATERIAL_WRITE_BY_NODE = "node_contract_material_write_by_node"

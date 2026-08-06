@@ -13,6 +13,7 @@ from pydantic import Field, field_validator
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services.foundation import (
     FoundationContext,
     MutationSummaryView,
@@ -61,6 +62,7 @@ class NodeContract(StrictModel):
     contract_kind: NodeKind
     version: int = 1
     status: NodeContractStatus = NodeContractStatus.OPEN
+    task_completion_mode: RepoCompletionMode
     goal: str
     boundary: str
     objective: str | None = None
@@ -400,10 +402,14 @@ class NodeTreeComponent:
             active_contract_version=None,
             open_contract_version=1,
         )
+        config = self.runtime.repo_workspace.metadata.get_repo_config(Path(repo_root))
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
         contract = NodeContract(
             contract_kind=kind,
             version=1,
             status=NodeContractStatus.OPEN,
+            task_completion_mode=config.value.config.completion_mode,
             goal=goal,
             boundary=boundary,
             objective=objective.strip() if objective else None,

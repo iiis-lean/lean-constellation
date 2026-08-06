@@ -9,6 +9,7 @@ from agent_runtime_kit.flow.models import BaseFlowError, BaseFlowInput, BaseFlow
 from agent_runtime_kit.flow.standard_steps import AgentStepIncompleteResult, AgentStepState, DispatchStep, DispatchStepResult, DispatchStepState
 from pydantic import Field
 
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.flows.common.business_flows import LeanBusinessFlow, LeanFlowParams
 from lean_constellation.flows.common.checkpoint_policy import content_task_progress_checkpoints_enabled
 from lean_constellation.flows.common.flow_requests import repo_scope_id
@@ -88,6 +89,9 @@ class ContentNodeTaskResult(LeanRenderableFlowResult):
     repo_key: str
     node_path: str
     contract_version: int | None = None
+    task_completion_mode: RepoCompletionMode | None = None
+    repo_completion_mode: RepoCompletionMode | None = None
+    remaining_repo_gap: bool | None = None
     reason: str | None = None
 
     def agent_fields(self) -> dict[str, object]:
@@ -96,6 +100,9 @@ class ContentNodeTaskResult(LeanRenderableFlowResult):
             "repo_key": self.repo_key,
             "node_path": self.node_path,
             "contract_version": self.contract_version,
+            "task_completion_mode": self.task_completion_mode,
+            "repo_completion_mode": self.repo_completion_mode,
+            "remaining_repo_gap": self.remaining_repo_gap,
             "reason": self.reason,
         }
 
@@ -396,7 +403,22 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
         if result.outcome == "passed":
             summary = state.pending_completion_summary or result.summary
             state.pending_completion_summary = None
-            self._finish_content_task(input_model, "ready", None, summary)
+            completion = result.completion
+            self._finish_content_task(
+                input_model,
+                "ready",
+                None,
+                summary,
+                task_completion_mode=(
+                    completion.task_completion_mode if completion is not None else None
+                ),
+                repo_completion_mode=(
+                    completion.repo_completion_mode if completion is not None else None
+                ),
+                remaining_repo_gap=(
+                    completion.remaining_repo_gap if completion is not None else None
+                ),
+            )
             return
         state.latest_callback_summary = result.summary or result.reason or "Content completion audit failed."
         state.pending_completion_summary = None
@@ -438,6 +460,10 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
         outcome: Literal["ready", "blocked", "failed"],
         reason: str | None,
         summary: str | None,
+        *,
+        task_completion_mode: RepoCompletionMode | None = None,
+        repo_completion_mode: RepoCompletionMode | None = None,
+        remaining_repo_gap: bool | None = None,
     ) -> None:
         state = _require_content_task_state(self.state)
         state.position = FlowPosition(phase="completed")
@@ -446,6 +472,9 @@ class ContentNodeTaskFlow(LeanBusinessFlow):
             repo_key=input_model.repo_key,
             node_path=input_model.node_path,
             contract_version=input_model.contract_version,
+            task_completion_mode=task_completion_mode,
+            repo_completion_mode=repo_completion_mode,
+            remaining_repo_gap=remaining_repo_gap,
             reason=reason,
             summary=summary or reason or outcome,
         )

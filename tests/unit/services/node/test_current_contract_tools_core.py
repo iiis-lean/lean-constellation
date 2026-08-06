@@ -3,6 +3,7 @@ from pathlib import Path
 from tests.unit_services_helpers import make_runtime
 
 from lean_constellation.domain.refs import DeclRef
+from lean_constellation.domain.repo import RepoCompletionMode
 from lean_constellation.services.foundation import FoundationContext, WriteMode
 from lean_constellation.services.node import NodeContractSnapshot, NodeService
 
@@ -72,6 +73,9 @@ def test_current_contract_view_aggregates_deps_material_and_mathlib(tmp_path: Pa
     assert view.ok
     assert view.value is not None
     assert view.value.node_path == "Main.Topic.Consumer"
+    assert view.value.task_completion_mode == RepoCompletionMode.GRAPH_PROVED
+    assert view.value.repo_completion_mode == RepoCompletionMode.GRAPH_PROVED
+    assert view.value.remaining_repo_gap is False
     assert view.value.dependencies == []
     assert view.value.materials == []
     assert view.value.mathlib_modules == ["Mathlib.Data.Nat.Basic"]

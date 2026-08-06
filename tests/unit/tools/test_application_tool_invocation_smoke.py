@@ -438,6 +438,9 @@ Consumer-side formal context
                 repo_key="Repo",
                 node_path="Main.Core",
                 contract_version=2,
+                task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+                repo_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                remaining_repo_gap=True,
                 summary="Core ready.",
             ),
             ContentNodeTaskResult(
@@ -471,6 +474,9 @@ Consumer-side formal context
     assert list_value["items"][0]["reason"] == blocked_reason
     assert inspect_value["result"]["node_path"] == "Main.Core"
     assert inspect_value["result"]["contract_version"] == 2
+    assert inspect_value["result"]["task_completion_mode"] == "graph_declared"
+    assert inspect_value["result"]["repo_completion_mode"] == "graph_proved"
+    assert inspect_value["result"]["remaining_repo_gap"] is True
 
 
 def test_coordinator_content_task_result_tools_require_callback_context(tmp_path: Path) -> None:
@@ -535,6 +541,9 @@ def test_commit_content_contract_tool_binds_latest_callback_result(tmp_path: Pat
                 repo_key="Repo",
                 node_path="Main.Core",
                 contract_version=3,
+                task_completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+                repo_completion_mode=RepoCompletionMode.GRAPH_PROVED,
+                remaining_repo_gap=True,
                 summary="Core ready.",
             )
         ],
@@ -569,6 +578,9 @@ def test_commit_content_contract_tool_binds_latest_callback_result(tmp_path: Pat
     assert captured["task_result"] == {
         "outcome": "ready",
         "contract_version": 3,
+        "task_completion_mode": "graph_declared",
+        "repo_completion_mode": "graph_proved",
+        "remaining_repo_gap": True,
         "summary": "Core ready.",
         "reason": None,
     }

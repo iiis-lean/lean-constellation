@@ -128,6 +128,15 @@ class DependencyComponent:
             contract = self.contract.get_visible_contract(repo_root, node_path=node.path)
             if not contract.ok or contract.value is None:
                 continue
+            provider_target = self.contract.check_provider_completion_target(
+                repo_root,
+                node_path=node.path,
+                contract=contract.value,
+            )
+            if not provider_target.ok or provider_target.value is None:
+                return self.runtime.foundation.fail(provider_target.issues)
+            if not provider_target.value.passed:
+                continue
             identity = self._check_boundary_interface_identities(
                 repo_root,
                 node_path=node.path,
@@ -441,6 +450,17 @@ class DependencyComponent:
                         expected=ContractVersionStatus.COMMITTED.value,
                     )
                 )
+                continue
+            provider_target = self.contract.check_provider_completion_target(
+                repo_root,
+                node_path=dep.target.node,
+                contract=target_contract.value,
+            )
+            if not provider_target.ok or provider_target.value is None:
+                issues.extend(provider_target.issues)
+                continue
+            if not provider_target.value.passed:
+                issues.extend(provider_target.value.issues)
                 continue
             target_public_refs = self._public_decl_refs(target_contract.value.contract)
             if target_node.value.kind == NodeKind.CONTENT and self.public_decl_provider is not None:

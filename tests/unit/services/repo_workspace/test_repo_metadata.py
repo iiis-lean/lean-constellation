@@ -132,6 +132,50 @@ def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> Non
     assert reopened.value.publication.stable_at is None
 
 
+def test_repo_completion_mode_change_preserves_and_guards_contract_targets(
+    tmp_path: Path,
+) -> None:
+    runtime = make_runtime()
+    component = runtime.repo_workspace.metadata
+    assert component.ensure_repo_model(tmp_path).ok
+    assert component.update_repo_config(
+        tmp_path,
+        completion_mode=RepoCompletionMode.GRAPH_DECLARED,
+    ).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(tmp_path).ok
+    assert runtime.node.create_content_node(
+        tmp_path,
+        path="Main.Core",
+        goal="Core goal.",
+        boundary="Core boundary.",
+        objective="Build core.",
+        success_criteria="Core is ready.",
+    ).ok
+
+    upgraded = component.update_repo_config(
+        tmp_path,
+        completion_mode=RepoCompletionMode.GRAPH_PROVED,
+    )
+    assert upgraded.ok and upgraded.value is not None
+    current = runtime.node.contract.get_current_contract(
+        tmp_path,
+        node_path="Main.Core",
+    )
+    assert current.ok and current.value is not None
+    assert current.value.contract.task_completion_mode == RepoCompletionMode.GRAPH_DECLARED
+
+    rejected = component.update_repo_config(
+        tmp_path,
+        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
+    )
+    assert not rejected.ok
+    assert rejected.issues[0].kind == "repo_completion_mode_conflicts_with_contract_target"
+    assert rejected.issues[0].object_ref == "Main.Core"
+    unchanged = component.get_repo_config(tmp_path)
+    assert unchanged.ok and unchanged.value is not None
+    assert unchanged.value.config.completion_mode == RepoCompletionMode.GRAPH_PROVED
+
+
 def test_get_repo_model_missing_returns_structured_failure(tmp_path: Path) -> None:
     component = make_runtime().repo_workspace.metadata
 

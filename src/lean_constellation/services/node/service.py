@@ -10,6 +10,7 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.refs import DeclRef, SourceRef
+from lean_constellation.domain.repo import RepoCompletionMode, completion_mode_satisfies
 from lean_constellation.services.foundation import FoundationContext, GateReport, MutationSummaryView, ServiceResult
 from lean_constellation.services.foundation.module_layout import local_projection_path
 from lean_constellation.services.node.contract import ContractComponent, ContractVersionStatus, NodeContractView
@@ -54,6 +55,9 @@ class ContentTaskResultView(StrictModel):
 
     outcome: ContentTaskOutcome
     contract_version: int | None = None
+    task_completion_mode: RepoCompletionMode | None = None
+    repo_completion_mode: RepoCompletionMode | None = None
+    remaining_repo_gap: bool | None = None
     summary: str | None = None
     reason: str | None = None
 
@@ -71,6 +75,9 @@ class ContentTaskFinalizeView(StrictModel):
     task_reason: str | None = None
     coordinator_summary: str
     contract_version: int | None = None
+    task_completion_mode: RepoCompletionMode | None = None
+    repo_completion_mode: RepoCompletionMode | None = None
+    remaining_repo_gap: bool | None = None
     contract_version_status: ContractVersionStatus | None = None
     contract_summary_written: bool = False
     contract_committed: bool = False
@@ -107,6 +114,9 @@ class CurrentNodeContractView(StrictModel):
     node_path: str
     node_kind: NodeKind
     contract_status: ContractVersionStatus
+    task_completion_mode: RepoCompletionMode
+    repo_completion_mode: RepoCompletionMode
+    remaining_repo_gap: bool
     goal: str
     boundary: str
     objective: str | None = None
@@ -339,8 +349,18 @@ class NodeService:
     def check_root_interface_statement_contracts(self, repo_root: Path) -> ServiceResult[GateReport]:
         return self.interface.check_root_interface_statement_contracts(repo_root, node_path="Main")
 
-    def prepare_content_task_admission(self, repo_root: Path, *, node_path: str) -> ServiceResult[GateReport]:
-        admission = self.contract.check_content_task_admission(repo_root, node_path=node_path)
+    def prepare_content_task_admission(
+        self,
+        repo_root: Path,
+        *,
+        node_path: str,
+        contract_version: int | None = None,
+    ) -> ServiceResult[GateReport]:
+        admission = self.contract.check_content_task_admission(
+            repo_root,
+            node_path=node_path,
+            contract_version=contract_version,
+        )
         if not admission.ok or admission.value is None or not admission.value.passed:
             return admission
         logical_path = self.runtime.foundation.layout.node_projection_dir(
@@ -460,12 +480,21 @@ class NodeService:
         contract = self.contract.get_current_contract(repo_root, node_path=node_path)
         if not contract.ok or contract.value is None:
             return self.runtime.foundation.fail(contract.issues)
+        config = self.runtime.repo_workspace.metadata.get_repo_config(Path(repo_root))
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
         truth = contract.value.contract
         return self.runtime.foundation.ok(
             CurrentNodeContractView(
                 node_path=node_path,
                 node_kind=contract.value.node_kind,
                 contract_status=contract.value.status,
+                task_completion_mode=truth.task_completion_mode,
+                repo_completion_mode=config.value.config.completion_mode,
+                remaining_repo_gap=not completion_mode_satisfies(
+                    truth.task_completion_mode,
+                    config.value.config.completion_mode,
+                ),
                 goal=truth.goal,
                 boundary=truth.boundary,
                 objective=truth.objective,
@@ -1013,6 +1042,15 @@ class NodeService:
             contract = self.contract.get_visible_contract(repo_root, node_path=child.path)
             if contract.ok and contract.value is not None:
                 ready = True
+                if child.kind == NodeKind.CONTENT:
+                    provider_target = self.contract.check_provider_completion_target(
+                        repo_root,
+                        node_path=child.path,
+                        contract=contract.value,
+                    )
+                    if not provider_target.ok or provider_target.value is None:
+                        return self.runtime.foundation.fail(provider_target.issues)
+                    ready = provider_target.value.passed
                 contract_version = contract.value.version
                 contract_status = contract.value.version_status
             else:
@@ -1030,9 +1068,9 @@ class NodeService:
                     contract_version_status=contract_status,
                     ready_for_scope_close=ready,
                     summary=(
-                        f"{child.kind.value} child {child.path} is committed."
+                        f"{child.kind.value} child {child.path} is committed and provider-ready."
                         if ready
-                        else f"{child.kind.value} child {child.path} is not committed."
+                        else f"{child.kind.value} child {child.path} is not ready for Scope close."
                     ),
                 )
             )
@@ -1152,6 +1190,9 @@ class NodeService:
             task_reason=task_result.reason,
             coordinator_summary=coordinator_summary,
             contract_version=contract.version,
+            task_completion_mode=task_result.task_completion_mode,
+            repo_completion_mode=task_result.repo_completion_mode,
+            remaining_repo_gap=task_result.remaining_repo_gap,
             contract_version_status=contract.version_status,
             contract_summary_written=contract_summary_written,
             contract_committed=contract_committed,
