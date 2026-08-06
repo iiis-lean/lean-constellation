@@ -89,7 +89,7 @@ def test_admin_verifies_direct_adapter_route_before_creating_provider_shell(
             has_lean_toolchain=True,
             package_name=route.package_name,
             likely_import_modules=[route.likely_import_module],
-            lean_toolchain="leanprover/lean4:v4.32.0",
+            lean_toolchain=runtime.repo_workspace.lake_dependency.config.lean_toolchain,
             evidence_summary="Exact remote route verified.",
             summary="Exact remote route verified.",
         ),

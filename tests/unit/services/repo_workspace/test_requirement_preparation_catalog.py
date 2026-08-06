@@ -118,6 +118,7 @@ def test_requirement_group_route_resolution_merges_confirmed_routes() -> None:
     route, summary = resolved.value
     assert isinstance(route, AdapterProviderRoute)
     assert route.git_url == "https://github.com/example/provider"
+    assert route.revision == revision
     assert route.package_name == "Provider"
     assert route.likely_import_module == "Provider"
     assert route.known_risks == [
@@ -125,6 +126,35 @@ def test_requirement_group_route_resolution_merges_confirmed_routes() -> None:
         "Needs interface audit.",
     ]
     assert "confirmed adapter" in summary
+
+
+def test_requirement_group_route_resolution_keeps_optional_revision_unpinned() -> None:
+    _, _, _, preparation = _components()
+    requirements = [
+        RepoDependencyRequirement(
+            name="need_a",
+            target_repo="Provider",
+            provider_route=AdapterProviderRoute(
+                git_url="https://github.com/example/provider",
+                evidence_summary="Resolve a compatible revision during bootstrap.",
+            ),
+        ),
+        RepoDependencyRequirement(
+            name="need_b",
+            target_repo="Provider",
+            provider_route=AdapterProviderRoute(
+                git_url="git@github.com:example/provider.git",
+                evidence_summary="Same unpinned upstream.",
+            ),
+        ),
+    ]
+
+    resolved = preparation.resolve_requirement_group_provider_route(requirements)
+
+    assert resolved.ok and resolved.value is not None
+    route, _summary = resolved.value
+    assert isinstance(route, AdapterProviderRoute)
+    assert route.revision is None
 
 
 def test_requirement_group_route_resolution_rejects_conflicts_and_merges_native() -> None:

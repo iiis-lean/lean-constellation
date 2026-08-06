@@ -14,10 +14,14 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     AdapterCatalogBlockedSubmission,
     AdapterCatalogReadySubmission,
 )
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
+from lean_constellation.services.external_clients import (
+    ExternalCommandResult,
+    LeanCheckSummaryView,
+    LeanMcpToolkitClient,
+)
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind, ValidationSnapshotService
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import CleanDeclarationSoundnessDispatcher, make_runtime
 
 
 class AlwaysStableRuntimeProvider:
@@ -92,7 +96,14 @@ class FakeLakeClient:
 
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
     lake = FakeLakeClient()
-    lean_runtime = make_runtime(external_overrides={"lake": lake})
+    lean_runtime = make_runtime(
+        external_overrides={
+            "lake": lake,
+            "lean_mcp_toolkit": LeanMcpToolkitClient(
+                dispatcher=CleanDeclarationSoundnessDispatcher()
+            ),
+        }
+    )
     lean_runtime.app.validation_snapshot = ValidationSnapshotService(lean_runtime)
     lean_runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
         lean_runtime,

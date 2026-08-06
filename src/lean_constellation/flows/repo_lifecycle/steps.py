@@ -263,13 +263,6 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                             "Adapter choice must include git_url.",
                         )
                     )
-                if not submission.revision:
-                    return ctx.complete_step(
-                        _repair_result(
-                            "adapter_choice_revision_missing",
-                            "Adapter choice must resolve an immutable Git commit before apply.",
-                        )
-                    )
                 try:
                     route = AdapterProviderRoute(
                         git_url=submission.git_url,
@@ -312,6 +305,18 @@ class ApplyRepoFormatChoiceStep(BaseStep):
         repo_workspace = _repo_workspace(ctx)
         repo_root = Path(input_model.repo_root)
         if isinstance(route, AdapterProviderRoute):
+            verified_route = input_model.verified_adapter_route
+            if verified_route is None:
+                verified = repo_workspace.verify_adapter_provider_route(route)
+                if not verified.ok or verified.value is None:
+                    return ctx.complete_step(
+                        _repair_result_from_issues(
+                            verified.issues,
+                            fallback_code="adapter_upstream_compatibility_failed",
+                            fallback_message="Adapter upstream compatibility verification failed.",
+                        )
+                    )
+                verified_route = verified.value
             prepared_input = repo_workspace.preparation.get_preparation_input(repo_root)
             if not prepared_input.ok or prepared_input.value is None:
                 return ctx.complete_step(
@@ -337,12 +342,12 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                     )
                 )
             upstream = UpstreamDependencyInput(
-                git_url=route.git_url,
-                revision=route.revision,
-                subdir=route.subdir,
-                package_name=route.package_name,
-                module_name=route.likely_import_module,
-                evidence_summary=route.evidence_summary,
+                git_url=verified_route.git_url,
+                revision=verified_route.revision,
+                subdir=verified_route.subdir,
+                package_name=verified_route.package_name,
+                module_name=verified_route.likely_import_module,
+                evidence_summary=verified_route.evidence_summary,
                 known_risks=route.known_risks,
             )
             initialized = repo_workspace.initialize_repo_as_adapter(

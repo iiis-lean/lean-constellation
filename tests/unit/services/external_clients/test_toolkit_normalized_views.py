@@ -4,11 +4,16 @@ import io
 import json
 import socket
 import tarfile
+from pathlib import Path
 
 import pytest
 from urllib.error import URLError
 
-from lean_constellation.services.external_clients import LeanMcpToolkitClient, LeanMcpToolkitClientConfig
+from lean_constellation.services.external_clients import (
+    LeanMcpToolkitClient,
+    LeanMcpToolkitClientConfig,
+    ToolkitDeclarationSoundnessTarget,
+)
 from lean_constellation.services.external_clients import lean_mcp_toolkit as toolkit_module
 
 
@@ -200,3 +205,118 @@ def test_search_mathlib_warns_on_missing_optional_candidate_fields() -> None:
     assert [warning.code for warning in result.warnings] == ["toolkit_candidate_missing_optional_field"]
     assert result.warnings[0].field == "module"
     assert result.warnings[0].item_index == 0
+
+
+def test_declaration_soundness_batch_preserves_partial_typed_evidence() -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "lsp.declaration_soundness_batch"
+        assert payload["declarations"] == [
+            {
+                "module": "Upstream.Basic",
+                "declaration_name": "Upstream.clean",
+                "source_file_path": None,
+            },
+            {
+                "module": "Upstream.Basic",
+                "declaration_name": "Upstream.pending",
+                "source_file_path": None,
+            },
+        ]
+        return {
+            "success": False,
+            "error_message": "one item failed",
+            "items": [
+                {
+                    "module": "Upstream.Basic",
+                    "declaration_name": "Upstream.clean",
+                    "success": True,
+                    "source_file_path": None,
+                    "error_message": None,
+                    "axioms": ["propext"],
+                    "warnings": [],
+                    "axiom_count": 1,
+                    "warning_count": 0,
+                },
+                {
+                    "module": "Upstream.Basic",
+                    "declaration_name": "Upstream.pending",
+                    "success": False,
+                    "source_file_path": None,
+                    "error_message": "report not found",
+                    "axioms": [],
+                    "warnings": [],
+                    "axiom_count": 0,
+                    "warning_count": 0,
+                },
+            ],
+            "count": 2,
+            "success_count": 1,
+            "failure_count": 1,
+        }
+
+    targets = [
+        ToolkitDeclarationSoundnessTarget(
+            module="Upstream.Basic",
+            declaration_name="Upstream.clean",
+        ),
+        ToolkitDeclarationSoundnessTarget(
+            module="Upstream.Basic",
+            declaration_name="Upstream.pending",
+        ),
+    ]
+    result = LeanMcpToolkitClient(dispatcher=dispatch).check_declaration_soundness_batch(
+        Path("/repo"),
+        targets,
+    )
+
+    assert result.protocol_ok is True
+    assert result.batch_success is False
+    assert result.success_count == 1
+    assert result.items[0].axioms == ["propext"]
+    assert result.items[1].error_message == "report not found"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"module": "Wrong.Module"},
+        {"declaration_name": "Wrong.name"},
+        {"axiom_count": 2},
+    ],
+)
+def test_declaration_soundness_batch_fails_closed_on_malformed_item(
+    mutation: dict[str, object],
+) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "lsp.declaration_soundness_batch"
+        item = {
+            "module": "Upstream.Basic",
+            "declaration_name": "Upstream.clean",
+            "success": True,
+            "source_file_path": None,
+            "error_message": None,
+            "axioms": [],
+            "warnings": [],
+            "axiom_count": 0,
+            "warning_count": 0,
+        }
+        item.update(mutation)
+        return {
+            "success": True,
+            "error_message": None,
+            "items": [item],
+            "count": 1,
+            "success_count": 1,
+            "failure_count": 0,
+        }
+
+    result = LeanMcpToolkitClient(dispatcher=dispatch).check_declaration_soundness(
+        Path("/repo"),
+        ToolkitDeclarationSoundnessTarget(
+            module="Upstream.Basic",
+            declaration_name="Upstream.clean",
+        ),
+    )
+
+    assert result.protocol_ok is False
+    assert result.issue_code == "declaration_soundness_invalid_response"

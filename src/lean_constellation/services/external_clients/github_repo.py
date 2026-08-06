@@ -82,6 +82,14 @@ class GitHubRepositoryFileView(StrictModel):
     issue_code: str | None = None
 
 
+class GitHubCommitHistoryView(StrictModel):
+    git_url: str
+    path: str | None = None
+    commits: list[str] = Field(default_factory=list)
+    summary: str | None = None
+    issue_code: str | None = None
+
+
 class GitHubCodeSearchMatch(StrictModel):
     repository: str | None = None
     path: str
@@ -123,6 +131,8 @@ class GitHubLeanRepoProbeView(StrictModel):
     package_name: str | None = None
     likely_import_modules: list[str] = Field(default_factory=list)
     lakefile_excerpt: str | None = None
+    lakefile_truncated: bool = False
+    lakefile_issue_code: str | None = None
     lean_toolchain: str | None = None
     readme_evidence: str | None = None
     evidence_summary: str
@@ -472,6 +482,76 @@ class GitHubRepoClient:
             summary=f"Read remote file {safe_path} from {owner_repo}.",
         )
 
+    def list_repository_commits(
+        self,
+        git_url: str,
+        *,
+        path: str | None = None,
+        limit: int = 12,
+    ) -> GitHubCommitHistoryView:
+        if limit < 1 or limit > 100:
+            raise ValueError("limit must be between 1 and 100")
+        html_url = self.normalize_github_url(git_url)
+        owner_repo = self._owner_repo_from_url(html_url)
+        try:
+            safe_path = self._normalize_optional_repo_path(path)
+        except ValueError as exc:
+            return GitHubCommitHistoryView(
+                git_url=html_url,
+                path=path,
+                summary=str(exc),
+                issue_code="invalid_github_path",
+            )
+        command = [
+            self.config.gh_bin,
+            "api",
+            f"repos/{owner_repo}/commits",
+            "--method",
+            "GET",
+            "-f",
+            f"per_page={limit}",
+        ]
+        if safe_path:
+            command.extend(["-f", f"path={safe_path}"])
+        result = self.runner.run(
+            command,
+            cwd=Path.cwd(),
+            timeout_seconds=self.config.timeout_seconds,
+            stdout_excerpt_chars=max(self.config.stdout_excerpt_chars, limit * 100),
+            stderr_excerpt_chars=self.config.stderr_excerpt_chars,
+        )
+        if not result.ok:
+            return GitHubCommitHistoryView(
+                git_url=html_url,
+                path=safe_path,
+                summary=result.summary,
+                issue_code=result.issue_code or "github_commit_history_failed",
+            )
+        try:
+            payload = json.loads(result.stdout_excerpt or "[]")
+        except json.JSONDecodeError:
+            return GitHubCommitHistoryView(
+                git_url=html_url,
+                path=safe_path,
+                summary="GitHub commit history returned invalid JSON.",
+                issue_code="invalid_json",
+            )
+        commits: list[str] = []
+        if isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                sha = str(item.get("sha") or "")
+                if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", sha):
+                    commits.append(sha.lower())
+        commits = list(dict.fromkeys(commits))[:limit]
+        return GitHubCommitHistoryView(
+            git_url=html_url,
+            path=safe_path,
+            commits=commits,
+            summary=f"Read {len(commits)} immutable commit candidate(s).",
+        )
+
     def search_code(self, query: str, repo: str | None = None, limit: int = 10) -> GitHubCodeSearchResult:
         if limit < 1:
             raise ValueError("limit must be >= 1")
@@ -696,6 +776,8 @@ class GitHubRepoClient:
             package_name=package_name,
             likely_import_modules=likely_modules,
             lakefile_excerpt=lakefile_text,
+            lakefile_truncated=bool(lakefile_view and lakefile_view.truncated),
+            lakefile_issue_code=(lakefile_view.issue_code if lakefile_view else None),
             lean_toolchain=(toolchain_view.content_excerpt.strip() if toolchain_view and toolchain_view.content_excerpt else None),
             readme_evidence=readme,
             evidence_summary=evidence_summary,

@@ -44,7 +44,7 @@ class AutoProviderRoute(StrictModel):
 class AdapterProviderRoute(StrictModel):
     kind: Literal["adapter"] = "adapter"
     git_url: str
-    revision: str
+    revision: str | None = None
     subdir: str | None = None
     package_name: str | None = None
     likely_import_module: str | None = None
@@ -53,7 +53,6 @@ class AdapterProviderRoute(StrictModel):
 
     @field_validator(
         "git_url",
-        "revision",
         "package_name",
         "likely_import_module",
         "evidence_summary",
@@ -70,9 +69,14 @@ class AdapterProviderRoute(StrictModel):
             raise ValueError("value must be non-empty")
         return value
 
-    @field_validator("revision")
+    @field_validator("revision", mode="before")
     @classmethod
-    def _immutable_revision(cls, value: str) -> str:
+    def _immutable_revision(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        value = str(value).strip()
+        if not value:
+            return None
         if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value):
             raise ValueError("revision must be an immutable 40- or 64-character Git commit identity")
         return value.lower()
@@ -174,8 +178,22 @@ class VerifiedAdapterRouteReceipt(StrictModel):
     subdir: str | None = None
     package_name: str | None = None
     likely_import_module: str | None = None
-    lean_toolchain: str | None = None
+    lean_toolchain: str
+    mathlib_source: str | None = None
+    mathlib_revision: str | None = None
+    expected_lean_toolchain: str
+    expected_mathlib_revision: str | None = None
+    revision_resolution: Literal["explicit", "latest", "history"]
+    candidates_checked: list[str] = Field(default_factory=list)
     evidence_summary: str
+
+    @field_validator("revision")
+    @classmethod
+    def _verified_immutable_revision(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", normalized):
+            raise ValueError("verified revision must be an immutable 40- or 64-character Git commit identity")
+        return normalized
 
 
 class RepoDependencyRequirement(StrictModel):

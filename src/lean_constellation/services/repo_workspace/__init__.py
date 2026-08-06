@@ -1,5 +1,10 @@
 """Repo and workspace service components."""
 
+from lean_constellation.services.repo_workspace.adapter_compatibility import (
+    AdapterCompatibilityComponent,
+    AdapterMathlibPin,
+)
+
 from lean_constellation.services.repo_workspace.lake_dependency import (
     AdapterSetupView,
     LakeDependencyAttachView,
@@ -77,6 +82,8 @@ from lean_constellation.services.repo_workspace.workspace_publication import (
 )
 
 __all__ = [
+    "AdapterCompatibilityComponent",
+    "AdapterMathlibPin",
     "AdapterSetupView",
     "LakeDependencyAttachView",
     "LakeDependencyComponent",

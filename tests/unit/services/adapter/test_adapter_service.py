@@ -40,6 +40,7 @@ def test_adapter_service_public_wrappers_have_explicit_signatures() -> None:
         "check_adapter_decl_completeness",
         "find_adapter_decl_by_upstream",
         "finalize_adapter_decl",
+        "finalize_adapter_decls",
         "bind_adapter_interface",
         "unbind_adapter_interface",
         "check_adapter_catalog_ready_preflight",
@@ -115,6 +116,29 @@ class FakeToolkitDispatcher:
                     }
                 ],
             }
+        if tool_name == "lsp.declaration_soundness_batch":
+            items = [
+                {
+                    "module": target["module"],
+                    "declaration_name": target["declaration_name"],
+                    "success": True,
+                    "source_file_path": target.get("source_file_path"),
+                    "error_message": None,
+                    "axioms": [],
+                    "warnings": [],
+                    "axiom_count": 0,
+                    "warning_count": 0,
+                }
+                for target in payload["declarations"]
+            ]
+            return {
+                "success": True,
+                "error_message": None,
+                "items": items,
+                "count": len(items),
+                "success_count": len(items),
+                "failure_count": 0,
+            }
         # Legacy aliases remain supported only to keep this fake useful for
         # external client fallback tests.
         if tool_name == "extract_declaration":
@@ -127,6 +151,54 @@ class FakeToolkitDispatcher:
                 ],
             }
         raise KeyError(tool_name)
+
+
+class SoundnessToolkitDispatcher(FakeToolkitDispatcher):
+    def __init__(
+        self,
+        *,
+        axioms_by_name: dict[str, list[str]] | None = None,
+        unresolved_names: set[str] | None = None,
+        malformed: bool = False,
+    ) -> None:
+        super().__init__()
+        self.axioms_by_name = axioms_by_name or {}
+        self.unresolved_names = unresolved_names or set()
+        self.malformed = malformed
+
+    def __call__(self, tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if tool_name != "lsp.declaration_soundness_batch":
+            return super().__call__(tool_name, payload)
+        self.calls.append((tool_name, payload))
+        if self.malformed:
+            return {"success": True, "items": []}
+        items = []
+        for target in payload["declarations"]:
+            declaration_name = target["declaration_name"]
+            success = declaration_name not in self.unresolved_names
+            axioms = self.axioms_by_name.get(declaration_name, []) if success else []
+            items.append(
+                {
+                    "module": target["module"],
+                    "declaration_name": declaration_name,
+                    "success": success,
+                    "source_file_path": target.get("source_file_path"),
+                    "error_message": None if success else "report not found",
+                    "axioms": axioms,
+                    "warnings": [],
+                    "axiom_count": len(axioms),
+                    "warning_count": 0,
+                }
+            )
+        success_count = sum(item["success"] for item in items)
+        return {
+            "success": success_count == len(items),
+            "error_message": None if success_count == len(items) else "one item failed",
+            "items": items,
+            "count": len(items),
+            "success_count": success_count,
+            "failure_count": len(items) - success_count,
+        }
 
 
 class FakeSemanticLake:
@@ -259,6 +331,44 @@ def _finalize_theorem(
     ).ok
     assert service.set_adapter_proof_nl(repo_root, name=name, text=f"Proof for {name}.").ok
     assert service.finalize_adapter_decl(repo_root, name=name).ok
+
+
+def _prepare_theorem(
+    service: AdapterService,
+    repo_root: Path,
+    *,
+    name: str,
+    proof_code: str,
+    module: str = "Upstream.Basic",
+) -> None:
+    assert service.create_adapter_decl(
+        repo_root,
+        name=name,
+        kind="theorem",
+        module=module,
+        lean_decl_name=f"{module}.{name}",
+        summary=f"Expose theorem {name}.",
+    ).ok
+    assert service.set_adapter_statement_formal(
+        repo_root,
+        name=name,
+        code=f"theorem {name} : True := by\n  sorry",
+    ).ok
+    assert service.set_adapter_statement_nl(
+        repo_root,
+        name=name,
+        text=f"Statement for {name}.",
+    ).ok
+    assert service.set_adapter_proof_formal(
+        repo_root,
+        name=name,
+        code=proof_code,
+    ).ok
+    assert service.set_adapter_proof_nl(
+        repo_root,
+        name=name,
+        text=f"Proof evidence for {name}.",
+    ).ok
 
 
 def _finalize_definition(
@@ -525,13 +635,12 @@ def test_adapter_decl_catalog_finalize_and_completeness(tmp_path: Path) -> None:
         code="theorem main_result : True := by\n  sorry",
     ).ok
     assert service.set_adapter_statement_nl(tmp_path, name="main_result", text="The upstream main theorem.").ok
-    bad_proof = service.set_adapter_proof_formal(
+    incomplete_upstream_proof = service.set_adapter_proof_formal(
         tmp_path,
         name="main_result",
         code="theorem main_result : True := by\n  sorry",
     )
-    assert not bad_proof.ok
-    assert bad_proof.issues[0].kind == "adapter_proof_forbidden_construct"
+    assert incomplete_upstream_proof.ok
 
     assert service.set_adapter_proof_formal(
         tmp_path,
@@ -552,6 +661,156 @@ def test_adapter_decl_catalog_finalize_and_completeness(tmp_path: Path) -> None:
     assert modules.ok
     assert modules.value is not None
     assert [item.module for item in modules.value.modules] == ["Upstream.Basic"]
+
+
+def test_adapter_batch_finalize_classifies_declared_and_proved_once(
+    tmp_path: Path,
+) -> None:
+    dispatcher = SoundnessToolkitDispatcher(
+        axioms_by_name={"Upstream.Basic.pending": ["sorryAx"]}
+    )
+    service = _service(tmp_path, dispatcher=dispatcher)
+    _prepare_theorem(
+        service,
+        tmp_path,
+        name="pending",
+        proof_code="theorem pending : True := by\n  sorry",
+    )
+    _prepare_theorem(
+        service,
+        tmp_path,
+        name="clean",
+        proof_code="theorem clean : True := by\n  trivial",
+    )
+
+    finalized = service.finalize_adapter_decls(
+        tmp_path,
+        names=["pending", "clean"],
+    )
+
+    assert finalized.ok and finalized.value is not None
+    assert [(item.name, item.outcome, item.state) for item in finalized.value.items] == [
+        ("pending", "finalized", "declared"),
+        ("clean", "finalized", "proved"),
+    ]
+    soundness_calls = [
+        payload
+        for tool, payload in dispatcher.calls
+        if tool == "lsp.declaration_soundness_batch"
+    ]
+    assert len(soundness_calls) == 1
+    assert len(soundness_calls[0]["declarations"]) == 2
+
+    pending = service.inspect_adapter_decl(tmp_path, name="pending")
+    clean = service.inspect_adapter_decl(tmp_path, name="clean")
+    assert pending.ok and pending.value is not None
+    assert clean.ok and clean.value is not None
+    assert pending.value.revision.statement.formal is not None
+    assert pending.value.revision.statement.formal.check is not None
+    assert pending.value.revision.statement.formal.check.declaration_soundness is not None
+    assert pending.value.revision.statement.formal.check.declaration_soundness.axioms == [
+        "sorryAx"
+    ]
+    assert pending.value.revision.proof is not None
+    assert pending.value.revision.proof.formal is not None
+    assert pending.value.revision.proof.formal.check is None
+    assert clean.value.revision.statement.formal is not None
+    assert clean.value.revision.statement.formal.check is not None
+    assert clean.value.revision.proof is not None
+    assert clean.value.revision.proof.formal is not None
+    assert clean.value.revision.proof.formal.check is not None
+
+
+def test_adapter_batch_finalize_keeps_partial_success_and_rejects_custom_axiom(
+    tmp_path: Path,
+) -> None:
+    dispatcher = SoundnessToolkitDispatcher(
+        axioms_by_name={"Upstream.Basic.unsafe_result": ["Upstream.customAxiom"]},
+        unresolved_names={"Upstream.Basic.missing_report"},
+    )
+    service = _service(tmp_path, dispatcher=dispatcher)
+    for name in ("clean", "unsafe_result", "missing_report"):
+        _prepare_theorem(
+            service,
+            tmp_path,
+            name=name,
+            proof_code=f"theorem {name} : True := by\n  trivial",
+        )
+
+    finalized = service.finalize_adapter_decls(
+        tmp_path,
+        names=["clean", "unsafe_result", "missing_report"],
+    )
+
+    assert finalized.ok and finalized.value is not None
+    assert [(item.name, item.outcome) for item in finalized.value.items] == [
+        ("clean", "finalized"),
+        ("unsafe_result", "rejected"),
+        ("missing_report", "unresolved"),
+    ]
+    assert finalized.value.items[1].issue_code == "forbidden_recursive_axioms"
+    for name in ("unsafe_result", "missing_report"):
+        inspected = service.inspect_adapter_decl(tmp_path, name=name)
+        assert inspected.ok and inspected.value is not None
+        assert inspected.value.finalized is False
+        assert inspected.value.revision.statement.formal is not None
+        assert inspected.value.revision.statement.formal.check is None
+
+
+def test_adapter_committed_soundness_evidence_becomes_stale_when_environment_changes(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    _finalize_theorem(service, tmp_path)
+
+    current = service.check_adapter_decl_completeness(tmp_path, name="main_result")
+    assert current.ok and current.value is not None and current.value.complete
+
+    lakefile = tmp_path / "lakefile.toml"
+    lakefile.write_text(
+        lakefile.read_text(encoding="utf-8") + "\n# changed dependency environment\n",
+        encoding="utf-8",
+    )
+    stale = service.check_adapter_decl_completeness(tmp_path, name="main_result")
+    assert stale.ok and stale.value is not None
+    assert stale.value.complete is False
+    assert [issue.kind for issue in stale.value.issues] == [
+        "adapter_declaration_soundness_stale"
+    ]
+
+    refreshed = service.finalize_adapter_decl(tmp_path, name="main_result")
+    assert refreshed.ok, refreshed.issues
+    current_again = service.check_adapter_decl_completeness(
+        tmp_path,
+        name="main_result",
+    )
+    assert current_again.ok and current_again.value is not None
+    assert current_again.value.complete is True
+
+
+def test_adapter_batch_protocol_failure_writes_no_finalization(
+    tmp_path: Path,
+) -> None:
+    service = _service(
+        tmp_path,
+        dispatcher=SoundnessToolkitDispatcher(malformed=True),
+    )
+    _prepare_theorem(
+        service,
+        tmp_path,
+        name="clean",
+        proof_code="theorem clean : True := by\n  trivial",
+    )
+
+    finalized = service.finalize_adapter_decls(tmp_path, names=["clean"])
+
+    assert not finalized.ok
+    assert finalized.issues[0].kind == "declaration_soundness_invalid_response"
+    inspected = service.inspect_adapter_decl(tmp_path, name="clean")
+    assert inspected.ok and inspected.value is not None
+    assert inspected.value.finalized is False
+    assert inspected.value.revision.statement.formal is not None
+    assert inspected.value.revision.statement.formal.check is None
 
 
 def test_adapter_decl_catalog_create_and_field_failures(tmp_path: Path) -> None:
@@ -1020,7 +1279,8 @@ def test_adapter_exact_interface_statement_contract_rejects_binding_and_later_dr
     assert drifted.ok and drifted.value is not None
     assert drifted.value.passed is False
     assert {issue.kind for issue in drifted.value.issues} == {
-        "adapter_interface_statement_contract_mismatch"
+        "adapter_interface_statement_contract_mismatch",
+        "adapter_interface_target_not_finalized",
     }
 
     mismatch_root = tmp_path / "mismatch"

@@ -5,8 +5,12 @@ from pydantic import ValidationError
 
 from tests.unit_services_helpers import make_runtime
 
-from lean_constellation.domain.lean_check import LeanDiagnostics
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanDiagnosticsResult
+from lean_constellation.domain.lean_check import LeanCheck, LeanDiagnostics
+from lean_constellation.services.external_clients import (
+    ExternalCommandResult,
+    LeanDiagnosticsResult,
+    ToolchainDeclarationSoundnessItem,
+)
 from lean_constellation.services.lean_projection import LeanCheckComponent
 
 
@@ -68,6 +72,39 @@ def test_lean_diagnostics_reject_legacy_absolute_path_schema() -> None:
                 "file_path": "/legacy/Repo/Main.lean",
                 "passed": True,
                 "summary": "Legacy diagnostics.",
+            }
+        )
+
+
+def test_lean_check_rejects_pre_evidence_schema() -> None:
+    with pytest.raises(ValidationError):
+        LeanCheck.model_validate(
+            {
+                "status": "passed",
+                "policy": "legacy",
+                "allow_sorry": False,
+                "contains_sorry": False,
+                "contains_axiom": False,
+                "message": "Legacy check.",
+                "diagnostics": {
+                    "schema_version": 2,
+                    "passed": True,
+                    "summary": "Legacy diagnostics.",
+                },
+                "scan": {
+                    "contains_sorry": False,
+                    "contains_admit": False,
+                    "contains_axiom": False,
+                    "contains_opaque": False,
+                    "contains_unsafe": False,
+                    "sorry_count": 0,
+                    "admit_count": 0,
+                    "axiom_count": 0,
+                    "opaque_count": 0,
+                    "unsafe_count": 0,
+                    "summary": "Legacy scan.",
+                    "limitation": "Legacy scan.",
+                },
             }
         )
 
@@ -191,6 +228,102 @@ def test_statement_policy_allows_theorem_sorry_but_not_def_sorry(tmp_path: Path)
     assert def_check.value is not None
     assert def_check.value.status == "failed"
     assert "contains_sorry" in def_check.value.message
+
+
+def test_native_managed_import_gate_rejects_imports_after_source_marker(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text(
+        "-- lean-constellation: managed-imports-begin\n"
+        "import Mathlib\n"
+        "-- lean-constellation: managed-imports-end\n\n"
+        "-- lean-constellation: declaration-source-begin\n"
+        "public import Mathlib.Data.Nat.Prime\n"
+        "theorem foo : True := by trivial\n",
+        encoding="utf-8",
+    )
+    component = _component(tmp_path)
+
+    result = component.build_proof_lean_check(tmp_path, file_path=lean_file)
+
+    assert result.ok and result.value is not None
+    assert result.value.status == "failed"
+    assert result.value.managed_import_check is not None
+    assert result.value.managed_import_check.checked is True
+    assert result.value.managed_import_check.passed is False
+    assert result.value.managed_import_check.unmanaged_imports[0].command == "public import"
+    assert result.value.managed_import_check.unmanaged_imports[0].line == 6
+    finding = next(
+        finding
+        for finding in result.value.findings
+        if finding.code == "decl_unmanaged_import_forbidden" and finding.line is not None
+    )
+    assert (finding.line, finding.column) == (6, 1)
+
+
+def test_native_managed_import_gate_ignores_comments_and_strings(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text(
+        "-- lean-constellation: managed-imports-begin\n"
+        "import Mathlib\n"
+        "-- lean-constellation: managed-imports-end\n\n"
+        "-- lean-constellation: declaration-source-begin\n"
+        "-- import Forbidden.Comment\n"
+        '#eval "public import Forbidden.String"\n'
+        "theorem foo : True := by trivial\n",
+        encoding="utf-8",
+    )
+    component = _component(tmp_path)
+
+    result = component.build_proof_lean_check(tmp_path, file_path=lean_file)
+
+    assert result.ok and result.value is not None
+    assert result.value.status == "passed"
+    assert result.value.managed_import_check is not None
+    assert result.value.managed_import_check.passed is True
+
+
+def test_native_source_escape_rejects_sorry_ax_despite_statement_sorry_allowance(
+    tmp_path: Path,
+) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text(
+        "theorem foo : True := by\n  exact _root_.sorryAx True true\n",
+        encoding="utf-8",
+    )
+    component = _component(tmp_path)
+
+    result = component.build_statement_lean_check(
+        tmp_path,
+        file_path=lean_file,
+        decl_kind="theorem",
+    )
+
+    assert result.ok and result.value is not None
+    assert result.value.allow_sorry is True
+    assert result.value.contains_sorry is False
+    assert result.value.status == "failed"
+    finding = next(
+        finding for finding in result.value.findings if finding.code == "decl_sorry_ax_forbidden"
+    )
+    assert (finding.line, finding.column) == (2, 9)
+
+
+def test_native_source_metaprogramming_warning_does_not_fail_check(tmp_path: Path) -> None:
+    lean_file = tmp_path / "Main.lean"
+    lean_file.write_text(
+        'run_cmd Lean.logInfo "review"\ntheorem foo : True := by trivial\n',
+        encoding="utf-8",
+    )
+    component = _component(tmp_path)
+
+    result = component.build_proof_lean_check(tmp_path, file_path=lean_file)
+
+    assert result.ok and result.value is not None
+    assert result.value.status == "passed"
+    finding = next(
+        finding for finding in result.value.findings if finding.code == "decl_run_cmd_review_required"
+    )
+    assert finding.severity == "warning"
 
 
 def test_formal_policies_reject_long_line_linter_warning(tmp_path: Path) -> None:
@@ -440,3 +573,51 @@ def test_proof_policy_and_adapter_trusted_check_are_strict(tmp_path: Path) -> No
     assert adapter_non_theorem_fail.value is not None
     assert adapter_non_theorem_fail.value.status == "failed"
     assert adapter_non_theorem_fail.value.allow_sorry is False
+
+
+@pytest.mark.parametrize(
+    ("axioms", "theorem_like", "expected_status", "expected_code"),
+    [
+        (["Classical.choice", "propext", "Quot.sound"], True, "passed", "allowed_foundational_axioms"),
+        (["sorryAx"], True, "passed", "recursive_sorry_axiom"),
+        (["sorryAx"], False, "failed", "recursive_sorry_axiom"),
+        (["Upstream.customAxiom"], True, "failed", "forbidden_recursive_axioms"),
+    ],
+)
+def test_adapter_declaration_check_classifies_recursive_axioms(
+    tmp_path: Path,
+    axioms: list[str],
+    theorem_like: bool,
+    expected_status: str,
+    expected_code: str,
+) -> None:
+    component = _component(tmp_path)
+    result = component.build_adapter_declaration_check(
+        tmp_path,
+        module="Upstream.Basic",
+        declaration_name="Upstream.result",
+        code=(
+            "theorem result : True := by sorry"
+            if theorem_like and "sorryAx" in axioms
+            else "theorem result : True := by trivial"
+            if theorem_like
+            else "def result : Nat := 1"
+        ),
+        theorem_like=theorem_like,
+        soundness=ToolchainDeclarationSoundnessItem(
+            module="Upstream.Basic",
+            declaration_name="Upstream.result",
+            success=True,
+            axioms=axioms,
+        ),
+        raw_excerpt="raw report",
+        upstream_revision="abc123",
+    )
+
+    assert result.ok and result.value is not None
+    assert result.value.status == expected_status
+    assert result.value.subject.declaration_name == "Upstream.result"
+    assert result.value.fingerprint.upstream_revision == "abc123"
+    assert result.value.declaration_soundness is not None
+    assert result.value.declaration_soundness.axioms == axioms
+    assert expected_code in {finding.code for finding in result.value.findings}

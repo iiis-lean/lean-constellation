@@ -987,6 +987,20 @@ class DeclReadinessComponent:
             if not compatible.ok or compatible.value is None:
                 return self.runtime.foundation.fail(compatible.issues)
             if not compatible.value.compatible:
+                if compatible.value.reason == "state_too_low":
+                    current_state = compatible.value.current_state or "missing"
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "dependency_provider_availability_insufficient",
+                            (
+                                f"{provider_key}:{ref.node}:{ref.name} is {current_state}; "
+                                f"{effective_target.value} is required."
+                            ),
+                            object_ref=f"{provider_key}:{ref.node}:{ref.name}@{ref.revision}",
+                            current=current_state,
+                            expected=effective_target.value,
+                        )
+                    )
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
                         "dependency_decl_ref_incompatible",

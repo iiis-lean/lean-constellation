@@ -12,6 +12,7 @@ from lean_constellation.domain.preparation import SourceCorpusMode
 from lean_constellation.domain.repo import RepoFormat
 from lean_constellation.services.adapter.adapter_decl_catalog import (
     AdapterCatalogInitView,
+    AdapterDeclBatchFinalizeView,
     AdapterDeclCatalogComponent,
     AdapterDeclCompletenessView,
     AdapterDeclMatchView,
@@ -479,6 +480,17 @@ class AdapterService:
 
     def finalize_adapter_decl(self, repo_root: Path, *, name: str) -> ServiceResult[AdapterDeclView]:
         return self.adapter_decl_catalog.finalize_adapter_decl(repo_root, name=name)
+
+    def finalize_adapter_decls(
+        self,
+        repo_root: Path,
+        *,
+        names: list[str],
+    ) -> ServiceResult[AdapterDeclBatchFinalizeView]:
+        return self.adapter_decl_catalog.finalize_adapter_decls(
+            repo_root,
+            names=names,
+        )
 
     def bind_adapter_interface(
         self,

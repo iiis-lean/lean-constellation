@@ -9,6 +9,7 @@ from lean_constellation.services.external_clients import (
     LeanToolchainClient,
     LeanToolchainClientConfig,
     LeanToolchainProviderPolicy,
+    ToolchainDeclarationSoundnessTarget,
 )
 
 
@@ -246,6 +247,101 @@ def test_declaration_repo_nav_mathlib_and_policy_wrappers(tmp_path: Path) -> Non
     assert scan.admit_count == 1
     assert scan.sorry_count == 0
     assert [tool for tool, _ in calls] == ["declarations.extract", "repo_nav.file_outline", "lean_explore.find"]
+
+
+def test_policy_scan_classifies_common_native_escapes_and_review_warnings() -> None:
+    client = LeanToolchainClient(lake=RecordingLake(), toolkit=LeanMcpToolkitClient())
+    scan = client.scan_sorry_axiom(
+        "example : True := by exact _root_.sorryAx True true\n"
+        "example : True := by native_decide\n"
+        "example : True := by bv_decide\n"
+        "def reduced := Lean.ofReduceBool true rfl\n"
+        "def casted : Nat := unsafeCast true\n"
+        "partial def loop : Nat := loop\n"
+        "set_option linter.style.nativeDecide false\n"
+        "run_cmd Lean.logInfo \"review\"\n"
+        "elab \"custom\" : command => pure ()\n"
+        "macro \"generated\" : command => `(def generated := 1)\n"
+        "def inject := Declaration.axiomDecl {}\n"
+        "#eval addDecl inject\n"
+    )
+
+    kinds = {occurrence.kind for occurrence in scan.occurrences}
+    assert scan.ok is False
+    assert {
+        "sorry_ax",
+        "native_decide",
+        "bv_decide",
+        "reduce_bool",
+        "unsafe_cast",
+        "partial_def",
+        "native_decide_linter_disabled",
+        "axiom_declaration_injection",
+        "run_cmd",
+        "command_elaborator",
+        "command_macro",
+        "environment_mutation",
+    } <= kinds
+
+
+def test_policy_scan_ignores_escape_names_in_comments_and_strings() -> None:
+    client = LeanToolchainClient(lake=RecordingLake(), toolkit=LeanMcpToolkitClient())
+    scan = client.scan_sorry_axiom(
+        '-- exact sorryAx; native_decide; addDecl\n#eval "unsafeCast bv_decide"\n'
+    )
+
+    assert scan.ok is True
+    assert scan.occurrences == []
+
+    enabled_linter = client.scan_sorry_axiom(
+        "set_option linter.style.nativeDecide true\ntheorem ok : True := by trivial\n"
+    )
+    assert enabled_linter.ok is True
+    assert enabled_linter.occurrences == []
+
+
+def test_declaration_soundness_toolchain_view_preserves_raw_axioms(
+    tmp_path: Path,
+) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "lsp.declaration_soundness_batch"
+        assert payload["project_root"] == str(tmp_path)
+        return {
+            "success": True,
+            "error_message": None,
+            "items": [
+                {
+                    "module": "Upstream.Basic",
+                    "declaration_name": "Upstream.pending",
+                    "success": True,
+                    "source_file_path": None,
+                    "error_message": None,
+                    "axioms": ["sorryAx", "Classical.choice"],
+                    "warnings": [],
+                    "axiom_count": 2,
+                    "warning_count": 0,
+                }
+            ],
+            "count": 1,
+            "success_count": 1,
+            "failure_count": 0,
+        }
+
+    client = LeanToolchainClient(
+        lake=RecordingLake(),
+        toolkit=LeanMcpToolkitClient(dispatcher=dispatch),
+    )
+    result = client.check_declaration_soundness(
+        tmp_path,
+        ToolchainDeclarationSoundnessTarget(
+            module="Upstream.Basic",
+            declaration_name="Upstream.pending",
+        ),
+    )
+
+    assert result.protocol_ok is True
+    assert result.batch_success is True
+    assert result.items[0].axioms == ["sorryAx", "Classical.choice"]
 
 
 def test_repo_navigation_falls_back_to_local_lean_files_when_toolkit_unavailable(tmp_path: Path) -> None:

@@ -12,9 +12,11 @@ from lean_constellation.flows.content_node_task.decl_round.submissions import (
     DeclStageWorkerCompletedSubmission,
 )
 from lean_constellation.services.decl_graph import DeclRoundResultKind, DeclStage, DeclState
+from lean_constellation.services.external_clients import LeanMcpToolkitClient
 from lean_constellation.services.foundation import WriteMode
 from lean_constellation.services.runtime import LeanRuntimeServices
 from tests.unit_services_helpers import (
+    CleanDeclarationSoundnessDispatcher,
     initialize_native_test_repo,
     lean_check_payload,
     make_runtime,
@@ -28,7 +30,13 @@ NODE_PATH = "Main.Topic.Core"
 
 
 def make_decl_round_runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, LeanRuntimeServices, Path]:
-    lean_runtime = make_runtime()
+    lean_runtime = make_runtime(
+        external_overrides={
+            "lean_mcp_toolkit": LeanMcpToolkitClient(
+                dispatcher=CleanDeclarationSoundnessDispatcher()
+            )
+        }
+    )
     repo_root = tmp_path / "Repo"
     repo_root.mkdir(parents=True)
     setup_content_node(lean_runtime, repo_root)

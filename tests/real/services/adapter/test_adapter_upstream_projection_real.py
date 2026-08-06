@@ -39,6 +39,10 @@ def _write_minimal_upstream_repo(repo_root: Path) -> tuple[Path, str, str, DeclK
     (repo_root / "Upstream.lean").write_text(
         "theorem upstreamSmoke : True := by\n"
         "  trivial\n\n"
+        "theorem declaredSmoke : True := by\n"
+        "  sorry\n\n"
+        "axiom externalAxiom : True\n\n"
+        "theorem unsafeSmoke : True := externalAxiom\n\n"
         "def upstreamDefinition : Prop := True\n\n"
         "namespace Upstream.Basic\n\n"
         "def LocalType := Nat\n\n"
@@ -61,7 +65,13 @@ def _write_minimal_upstream_repo(repo_root: Path) -> tuple[Path, str, str, DeclK
 
 
 @pytest.mark.real
+@pytest.mark.real_toolkit
 def test_adapter_finalize_compiler_confirms_registered_upstream_identity(tmp_path: Path) -> None:
+    toolkit_base_url = _env("LEAN_CONSTELLATION_REAL_TOOLKIT_BASE_URL")
+    if not toolkit_base_url:
+        pytest.skip(
+            "Set LEAN_CONSTELLATION_REAL_TOOLKIT_BASE_URL to run the real Adapter soundness test."
+        )
     upstream_path, module, lean_decl_name, decl_kind = _write_minimal_upstream_repo(tmp_path / "upstream")
     repo_root = tmp_path / "adapter"
     repo_root.mkdir()
@@ -76,7 +86,13 @@ def test_adapter_finalize_compiler_confirms_registered_upstream_identity(tmp_pat
         encoding="utf-8",
     )
 
-    runtime = make_runtime()
+    runtime = make_runtime(
+        external_overrides={
+            "lean_mcp_toolkit": LeanMcpToolkitClient.from_config(
+                LeanMcpToolkitClientConfig(base_url=toolkit_base_url)
+            )
+        }
+    )
     assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
     assert runtime.repo_workspace.metadata.set_repo_format(
         repo_root,
@@ -156,12 +172,54 @@ def test_adapter_finalize_compiler_confirms_registered_upstream_identity(tmp_pat
         name="upstreamSmoke",
         code="theorem upstreamSmoke : True := by\n  trivial",
     ).ok
-    finalized = runtime.adapter.finalize_adapter_decl(repo_root, name="upstreamSmoke")
+    for name, proof_code in (
+        ("declaredSmoke", "theorem declaredSmoke : True := by\n  sorry"),
+        ("unsafeSmoke", "theorem unsafeSmoke : True := externalAxiom"),
+    ):
+        assert runtime.adapter.create_adapter_decl(
+            repo_root,
+            name=name,
+            kind=DeclKind.THEOREM,
+            module=module,
+            lean_decl_name=name,
+            summary=f"Expose the real upstream {name} theorem.",
+        ).ok
+        assert runtime.adapter.set_adapter_statement_formal(
+            repo_root,
+            name=name,
+            code=f"theorem {name} : True := by\n  sorry",
+        ).ok
+        assert runtime.adapter.set_adapter_statement_nl(
+            repo_root,
+            name=name,
+            text=f"The upstream {name} theorem states True.",
+        ).ok
+        assert runtime.adapter.set_adapter_proof_formal(
+            repo_root,
+            name=name,
+            code=proof_code,
+        ).ok
+        assert runtime.adapter.set_adapter_proof_nl(
+            repo_root,
+            name=name,
+            text=f"Captured proof for {name}.",
+        ).ok
 
-    assert finalized.ok, finalized.issues
-    assert finalized.value is not None
-    assert finalized.value.lean_decl_name == lean_decl_name
-    assert finalized.value.module == module
+    finalized = runtime.adapter.finalize_adapter_decls(
+        repo_root,
+        names=["upstreamSmoke", "declaredSmoke", "unsafeSmoke"],
+    )
+    assert finalized.ok and finalized.value is not None, finalized.issues
+    assert [(item.name, item.outcome, item.state) for item in finalized.value.items] == [
+        ("upstreamSmoke", "finalized", "proved"),
+        ("declaredSmoke", "finalized", "declared"),
+        ("unsafeSmoke", "rejected", None),
+    ]
+    assert finalized.value.items[2].issue_code == "forbidden_recursive_axioms"
+    inspected = runtime.adapter.inspect_adapter_decl(repo_root, name="upstreamSmoke")
+    assert inspected.ok and inspected.value is not None
+    assert inspected.value.lean_decl_name == lean_decl_name
+    assert inspected.value.module == module
 
     assert runtime.adapter.create_adapter_decl(
         repo_root,

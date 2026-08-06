@@ -14,10 +14,14 @@ from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_
 from lean_constellation.flows.content_node_task.flows import ContentNodeTaskResult
 from lean_constellation.flows.coordinator.submissions import CoordinatorContentTasksSubmission, CoordinatorRepoRequirementSubmission
 from lean_constellation.flows.repo_lifecycle.submissions import AdapterCatalogReadySubmission, RepoFormatNativeChoiceSubmission
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
+from lean_constellation.services.external_clients import (
+    ExternalCommandResult,
+    LeanCheckSummaryView,
+    LeanMcpToolkitClient,
+)
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind, ValidationSnapshotService
-from tests.unit_services_helpers import make_runtime
+from tests.unit_services_helpers import CleanDeclarationSoundnessDispatcher, make_runtime
 
 
 class FakeLakeClient:
@@ -278,7 +282,14 @@ def test_after_child_batch_snapshot(tmp_path: Path) -> None:
 
 
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, Path, FakeRuntimeStabilityProvider, FakeArkSnapshotProvider]:
-    lean_runtime = make_runtime(external_overrides={"lake": FakeLakeClient()})
+    lean_runtime = make_runtime(
+        external_overrides={
+            "lake": FakeLakeClient(),
+            "lean_mcp_toolkit": LeanMcpToolkitClient(
+                dispatcher=CleanDeclarationSoundnessDispatcher()
+            ),
+        }
+    )
     stability = FakeRuntimeStabilityProvider(lean_runtime.foundation)
     ark_snapshot = FakeArkSnapshotProvider(lean_runtime.foundation)
     lean_runtime.app.validation_snapshot = ValidationSnapshotService(lean_runtime)

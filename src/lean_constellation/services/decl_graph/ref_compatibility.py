@@ -220,7 +220,12 @@ class DeclRefCompatibilityComponent:
             or not requested.value.compatible
             or boundary.value.resolved_revision != requested.value.resolved_revision
         ):
-            reason = requested.value.reason if not requested.value.compatible else boundary.value.reason
+            failed = requested.value if not requested.value.compatible else boundary.value
+            if failed.reason == "state_too_low":
+                return self.runtime.foundation.ok(
+                    failed.model_copy(update={"anchor": ref})
+                )
+            reason = failed.reason
             return self.runtime.foundation.ok(self._unresolved(ref, reason or "provider_public_ref_incompatible"))
         return self.runtime.foundation.ok(
             requested.value.model_copy(update={"anchor": ref})

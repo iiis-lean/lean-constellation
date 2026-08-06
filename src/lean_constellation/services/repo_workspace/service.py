@@ -11,6 +11,7 @@ from lean_constellation.domain.lake_project import NativeLakeProjectConfig
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import (
+    AdapterProviderRoute,
     AutoProviderRoute,
     ProviderRoute,
     BootstrapInputValidationView,
@@ -24,6 +25,7 @@ from lean_constellation.domain.preparation import (
     RequirementWaitingView,
     SourceCorpusMode,
     UpstreamDependencyInput,
+    VerifiedAdapterRouteReceipt,
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
@@ -37,6 +39,9 @@ from lean_constellation.domain.repo import (
 )
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.repo_workspace.git_release import GitReleaseComponent
+from lean_constellation.services.repo_workspace.adapter_compatibility import (
+    AdapterCompatibilityComponent,
+)
 from lean_constellation.services.repo_workspace.github_topics import (
     RepoGitHubTopicsComponent,
 )
@@ -115,6 +120,7 @@ class RepoWorkspaceService:
         remote_publication: RepoRemotePublicationComponent | None = None,
         workspace_publication: WorkspacePublicationComponent | None = None,
         provider_availability: ProviderAvailabilityComponent | None = None,
+        adapter_compatibility: AdapterCompatibilityComponent | None = None,
         native_lake_project_config: NativeLakeProjectConfig | None = None,
         workspace_config: WorkspaceConfig | None = None,
     ) -> None:
@@ -143,6 +149,10 @@ class RepoWorkspaceService:
             runtime,
             self.metadata,
             config=native_lake_project_config,
+        )
+        self.adapter_compatibility = adapter_compatibility or AdapterCompatibilityComponent(
+            runtime,
+            config=self.lake_dependency.config,
         )
         self.preparation = preparation or RepoPreparationComponent(
             runtime,
@@ -640,6 +650,12 @@ class RepoWorkspaceService:
         if not configured.ok:
             return self.runtime.foundation.fail(configured.issues)
         return initialized
+
+    def verify_adapter_provider_route(
+        self,
+        route: AdapterProviderRoute,
+    ) -> ServiceResult[VerifiedAdapterRouteReceipt]:
+        return self.adapter_compatibility.verify_adapter_provider_route(route)
 
     def initialize_repo_as_native(
         self,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from agent_runtime_kit.runtime import ARKServices
@@ -21,6 +21,41 @@ from lean_constellation.services.decl_graph.models import DeclFormalSection  # n
 
 if TYPE_CHECKING:
     from lean_constellation.domain.repo_release import RepoRelease
+
+
+class CleanDeclarationSoundnessDispatcher:
+    """Return exact clean recursive-soundness evidence for unit fixtures."""
+
+    def __init__(self, *, axioms_by_name: dict[str, list[str]] | None = None) -> None:
+        self.axioms_by_name = axioms_by_name or {}
+
+    def __call__(self, tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if tool_name != "lsp.declaration_soundness_batch":
+            raise KeyError(tool_name)
+        items = [
+            {
+                "module": target["module"],
+                "declaration_name": target["declaration_name"],
+                "success": True,
+                "source_file_path": target.get("source_file_path"),
+                "error_message": None,
+                "axioms": self.axioms_by_name.get(target["declaration_name"], []),
+                "warnings": [],
+                "axiom_count": len(
+                    self.axioms_by_name.get(target["declaration_name"], [])
+                ),
+                "warning_count": 0,
+            }
+            for target in payload["declarations"]
+        ]
+        return {
+            "success": True,
+            "error_message": None,
+            "items": items,
+            "count": len(items),
+            "success_count": len(items),
+            "failure_count": 0,
+        }
 
 
 def initialize_native_test_repo(repo_root: Path, *, project_name: str = "TestProject") -> None:
@@ -50,12 +85,25 @@ def lean_check_payload(
     allow = contains_sorry if allow_sorry is None else allow_sorry
     status = "passed" if passed else "failed"
     return {
+        "schema_version": 1,
         "status": status,
         "policy": "test",
         "allow_sorry": allow,
         "contains_sorry": contains_sorry,
         "contains_axiom": contains_axiom,
         "message": f"Lean check {status}.",
+        "subject": {
+            "repo_kind": "native",
+            "stage": "proof",
+            "repo_file_path": "TestProject/Main/Basic.lean",
+            "module": "TestProject.Main.Basic",
+            "declaration_name": None,
+        },
+        "fingerprint": {
+            "source_sha256": "0" * 64,
+            "environment_sha256": None,
+            "upstream_revision": None,
+        },
         "diagnostics": {
             "schema_version": 2,
             "repo_file_path": None,
@@ -79,6 +127,9 @@ def lean_check_payload(
             "summary": "Test source scan.",
             "limitation": "Test fixture.",
         },
+        "managed_import_check": None,
+        "declaration_soundness": None,
+        "findings": [],
     }
 
 

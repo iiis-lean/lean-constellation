@@ -15,6 +15,7 @@ from lean_constellation.services.decl_graph.models import (
 )
 from lean_constellation.services.tool_facade import ToolCapability, ToolSpec
 from lean_constellation.tools.args import (
+    AdapterDeclBatchArgs,
     AdapterDeclCreateArgs,
     AdapterDeclListArgs,
     AdapterDeclNameArgs,
@@ -557,13 +558,24 @@ def build_tool_specs() -> list[ToolSpec]:
         ),
         handler_tool(
             name="finalize_adapter_decl",
-            description="Finalize one complete adapter declaration entry.",
+            description="Finalize one complete adapter declaration through batch-of-one soundness checking.",
             args_model=AdapterDeclNameArgs,
             capability=ToolCapability.WRITE,
             result_view="adapter_decl_finalize_receipt",
             groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
             roles=write_roles,
             handler=_finalize_adapter_decl,
+        ),
+        direct_tool(
+            name="finalize_adapter_decls",
+            description="Finalize complete Adapter declarations through one recursive soundness batch.",
+            args_model=AdapterDeclBatchArgs,
+            capability=ToolCapability.WRITE,
+            backing_service="adapter",
+            backing_method="finalize_adapter_decls",
+            result_view="adapter_decl_batch_finalize",
+            groups={AppGroup.ADAPTER_DECL_CATALOG_WRITE},
+            roles=write_roles,
         ),
         direct_tool(
             name="bind_adapter_interface",

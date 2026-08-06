@@ -1219,6 +1219,13 @@ class AdapterDeclNameArgs(StrictModel):
     name: str = Field(description="Adapter declaration name.")
 
 
+class AdapterDeclBatchArgs(StrictModel):
+    names: list[str] = Field(
+        min_length=1,
+        description="Unique complete Adapter declaration names to finalize in one soundness batch.",
+    )
+
+
 class AdapterDeclListArgs(StrictModel):
     module_filter: str | None = Field(default=None, description="Optional upstream module filter.")
     kind_filter: str | None = Field(default=None, description="Optional declaration kind filter.")

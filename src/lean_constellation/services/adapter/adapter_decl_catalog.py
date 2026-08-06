@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel, utc_now_iso
 from lean_constellation.domain.interface import DeclKind
@@ -30,6 +31,9 @@ from lean_constellation.services.decl_graph.models import (
 from lean_constellation.services.foundation import IssueSeverity, ServiceIssue, ServiceResult, WriteMode
 from lean_constellation.services.foundation.module_layout import NativeModuleLayoutError, validate_module_segment
 from lean_constellation.services.lean_projection.lean_check import LeanCheckComponent
+from lean_constellation.services.external_clients.lean_toolchain import (
+    ToolchainDeclarationSoundnessTarget,
+)
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -119,6 +123,30 @@ class AdapterCatalogInitView(StrictModel):
     active_decl_count: int = 0
     summary: str
     issue_code: str | None = None
+
+
+class AdapterDeclFinalizeItem(StrictModel):
+    name: str
+    outcome: Literal["finalized", "rejected", "unresolved"]
+    state: str | None = None
+    issue_code: str | None = None
+    message: str
+
+
+class AdapterDeclBatchFinalizeView(StrictModel):
+    items: list[AdapterDeclFinalizeItem] = Field(default_factory=list)
+    finalized_count: int
+    rejected_count: int
+    unresolved_count: int
+    summary: str
+
+
+@dataclass(slots=True)
+class _AdapterFinalizeCandidate:
+    decl: Decl
+    revision: DeclRevision
+    decl_kind: DeclKind
+    code: str
 
 
 class AdapterDeclCatalogComponent:
@@ -264,8 +292,12 @@ class AdapterDeclCatalogComponent:
         forbidden = self._forbidden_statement_occurrences(decl, scan.value)
         if forbidden:
             return self.runtime.foundation.fail(forbidden)
-        check = revision.statement.formal.check if revision.statement.formal is not None else None
+        prior = revision.statement.formal
+        changed = prior is None or prior.code != code
+        check = prior.check if prior is not None and not changed else None
         revision.statement.formal = DeclFormalSection(code=code, check=check)
+        if changed:
+            self._invalidate_adapter_finalization(revision)
         revision.updated_at = utc_now_iso()
         return self._save_and_view(repo_root, decl, revision)
 
@@ -343,8 +375,12 @@ class AdapterDeclCatalogComponent:
         if forbidden:
             return self.runtime.foundation.fail(forbidden)
         proof = self._ensure_proof(revision)
-        check = proof.formal.check if proof.formal is not None else None
+        prior = proof.formal
+        changed = prior is None or prior.code != code
+        check = prior.check if prior is not None and not changed else None
         proof.formal = DeclFormalSection(code=code, check=check)
+        if changed:
+            self._invalidate_adapter_finalization(revision)
         revision.updated_at = utc_now_iso()
         return self._save_and_view(repo_root, decl, revision)
 
@@ -415,15 +451,205 @@ class AdapterDeclCatalogComponent:
         return self._remove_dep(repo_root, decl, revision, "proof", dep_name)
 
     def finalize_adapter_decl(self, repo_root: Path, *, name: str) -> ServiceResult[AdapterDeclView]:
+        finalized = self.finalize_adapter_decls(repo_root, names=[name])
+        if not finalized.ok or finalized.value is None:
+            return self.runtime.foundation.fail(finalized.issues)
+        item = finalized.value.items[0]
+        if item.outcome != "finalized":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    item.issue_code or "adapter_decl_finalize_failed",
+                    item.message,
+                    object_ref=name,
+                )
+            )
+        return self.inspect_adapter_decl(repo_root, name=name)
+
+    def finalize_adapter_decls(
+        self,
+        repo_root: Path,
+        *,
+        names: list[str],
+    ) -> ServiceResult[AdapterDeclBatchFinalizeView]:
+        normalized_names = [name.strip() for name in names if name and name.strip()]
+        if not normalized_names:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_finalize_names_required",
+                    "Batch finalize requires at least one Adapter declaration name.",
+                    field="names",
+                )
+            )
+        if len(set(normalized_names)) != len(normalized_names):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_finalize_names_duplicate",
+                    "Batch finalize declaration names must be unique.",
+                    field="names",
+                )
+            )
+        candidates: list[_AdapterFinalizeCandidate] = []
+        items_by_name: dict[str, AdapterDeclFinalizeItem] = {}
+        for name in normalized_names:
+            prepared = self._prepare_adapter_finalize_candidate(repo_root, name=name)
+            if not prepared.ok or prepared.value is None:
+                issue = prepared.issues[0] if prepared.issues else None
+                items_by_name[name] = AdapterDeclFinalizeItem(
+                    name=name,
+                    outcome="rejected",
+                    issue_code=issue.kind if issue is not None else "adapter_decl_prepare_failed",
+                    message=issue.message if issue is not None else "Adapter declaration preparation failed.",
+                )
+                continue
+            candidates.append(prepared.value)
+        if candidates:
+            targets = [
+                ToolchainDeclarationSoundnessTarget(
+                    module=candidate.decl.module or "",
+                    declaration_name=candidate.revision.lean_decl_name or "",
+                )
+                for candidate in candidates
+            ]
+            soundness = self.runtime.external.lean_toolchain.check_declaration_soundness_batch(
+                repo_root,
+                targets,
+                scan_source=False,
+            )
+            if not soundness.protocol_ok:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        soundness.issue_code or "adapter_soundness_protocol_failed",
+                        soundness.summary,
+                        details={"error_message": soundness.error_message or ""},
+                    )
+                )
+            upstream_revision = self._upstream_revision(repo_root)
+            for candidate, evidence in zip(candidates, soundness.items, strict=True):
+                name = candidate.decl.name
+                if not evidence.success:
+                    items_by_name[name] = AdapterDeclFinalizeItem(
+                        name=name,
+                        outcome="unresolved",
+                        issue_code="adapter_soundness_report_unresolved",
+                        message=evidence.error_message or "Declaration soundness report was unresolved.",
+                    )
+                    continue
+                lean_check = self.lean_check.build_adapter_declaration_check(
+                    repo_root,
+                    module=candidate.decl.module or "",
+                    declaration_name=candidate.revision.lean_decl_name or "",
+                    code=candidate.code,
+                    theorem_like=candidate.decl_kind in _THEOREM_LIKE,
+                    soundness=evidence,
+                    raw_excerpt=soundness.raw_excerpt,
+                    upstream_revision=upstream_revision,
+                )
+                if not lean_check.ok or lean_check.value is None:
+                    issue = lean_check.issues[0] if lean_check.issues else None
+                    items_by_name[name] = AdapterDeclFinalizeItem(
+                        name=name,
+                        outcome="rejected",
+                        issue_code=issue.kind if issue is not None else "adapter_lean_check_failed",
+                        message=issue.message if issue is not None else "Adapter Lean check failed.",
+                    )
+                    continue
+                if lean_check.value.status != "passed":
+                    error_finding = next(
+                        (
+                            finding
+                            for finding in lean_check.value.findings
+                            if finding.severity == "error"
+                        ),
+                        None,
+                    )
+                    items_by_name[name] = AdapterDeclFinalizeItem(
+                        name=name,
+                        outcome="rejected",
+                        issue_code=(
+                            error_finding.code
+                            if error_finding is not None
+                            else "adapter_declaration_soundness_rejected"
+                        ),
+                        message=(
+                            error_finding.message
+                            if error_finding is not None
+                            else lean_check.value.message
+                        ),
+                    )
+                    continue
+                recursive_sorry = any(
+                    self.lean_check.is_sorry_axiom(axiom)
+                    for axiom in evidence.axioms
+                )
+                revision = candidate.revision
+                assert revision.statement.formal is not None
+                revision.statement.formal = revision.statement.formal.model_copy(
+                    update={"check": lean_check.value}
+                )
+                if candidate.decl_kind in _THEOREM_LIKE:
+                    proof = self._ensure_proof(revision)
+                    assert proof.formal is not None
+                    proof.formal = proof.formal.model_copy(
+                        update={"check": None if recursive_sorry else lean_check.value}
+                    )
+                    revision.state = (
+                        DeclState.DECLARED if recursive_sorry else DeclState.PROVED
+                    )
+                else:
+                    revision.state = DeclState.DECLARED
+                revision.status = DeclRevisionStatus.COMMITTED
+                candidate.decl.current_revision = revision.revision
+                saved = self._save_and_view(repo_root, candidate.decl, revision)
+                if not saved.ok or saved.value is None:
+                    issue = saved.issues[0] if saved.issues else None
+                    items_by_name[name] = AdapterDeclFinalizeItem(
+                        name=name,
+                        outcome="unresolved",
+                        issue_code=issue.kind if issue is not None else "adapter_decl_save_failed",
+                        message=issue.message if issue is not None else "Adapter declaration save failed.",
+                    )
+                    continue
+                items_by_name[name] = AdapterDeclFinalizeItem(
+                    name=name,
+                    outcome="finalized",
+                    state=revision.state.value,
+                    message=f"Adapter declaration finalized as {revision.state.value}.",
+                )
+        ordered_items = [items_by_name[name] for name in normalized_names]
+        finalized_count = sum(item.outcome == "finalized" for item in ordered_items)
+        rejected_count = sum(item.outcome == "rejected" for item in ordered_items)
+        unresolved_count = sum(item.outcome == "unresolved" for item in ordered_items)
+        return self.runtime.foundation.ok(
+            AdapterDeclBatchFinalizeView(
+                items=ordered_items,
+                finalized_count=finalized_count,
+                rejected_count=rejected_count,
+                unresolved_count=unresolved_count,
+                summary=(
+                    f"Finalized {finalized_count} Adapter declarations; "
+                    f"rejected {rejected_count}; unresolved {unresolved_count}."
+                ),
+            )
+        )
+
+    def _prepare_adapter_finalize_candidate(
+        self,
+        repo_root: Path,
+        *,
+        name: str,
+    ) -> ServiceResult[_AdapterFinalizeCandidate]:
         loaded = self._load(repo_root, name)
         if not loaded.ok or loaded.value is None:
             return self.runtime.foundation.fail(loaded.issues)
         decl, revision = loaded.value
-        completeness = self.check_adapter_decl_completeness(repo_root, name=decl.name)
-        if not completeness.ok or completeness.value is None:
-            return self.runtime.foundation.fail(completeness.issues)
-        if not completeness.value.complete:
-            return self.runtime.foundation.fail(completeness.value.issues)
+        completeness_issues = self._record_issues(
+            repo_root,
+            decl,
+            revision,
+            require_current_evidence=False,
+        )
+        if completeness_issues:
+            return self.runtime.foundation.fail(completeness_issues)
         decl_kind = self._decl_kind(decl)
         assert decl.module is not None
         assert revision.lean_decl_name is not None
@@ -507,36 +733,14 @@ class AdapterDeclCatalogComponent:
             )
             if not proof_semantics.ok:
                 return self.runtime.foundation.fail(proof_semantics.issues)
-        lean_check = self.lean_check.build_trusted_adapter_check(
-            repo_root,
-            module=decl.module,
-            code=code,
-            theorem_like=decl_kind in _THEOREM_LIKE,
-        )
-        if not lean_check.ok or lean_check.value is None:
-            return self.runtime.foundation.fail(lean_check.issues)
-        if lean_check.value.status != "passed":
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "adapter_trusted_check_failed",
-                    lean_check.value.message,
-                    object_ref=decl.name,
-                )
+        return self.runtime.foundation.ok(
+            _AdapterFinalizeCandidate(
+                decl=decl,
+                revision=revision,
+                decl_kind=decl_kind,
+                code=code,
             )
-        if decl_kind in _THEOREM_LIKE:
-            proof = self._ensure_proof(revision)
-            assert proof.formal is not None
-            proof.formal = proof.formal.model_copy(update={"check": lean_check.value})
-            revision.state = DeclState.PROVED
-        else:
-            assert revision.statement.formal is not None
-            revision.statement.formal = revision.statement.formal.model_copy(update={"check": lean_check.value})
-            revision.state = DeclState.DECLARED
-        revision.status = DeclRevisionStatus.COMMITTED
-        revision.updated_at = utc_now_iso()
-        decl.current_revision = revision.revision
-        decl.updated_at = utc_now_iso()
-        return self._save_and_view(repo_root, decl, revision)
+        )
 
     def list_adapter_decls(
         self,
@@ -622,7 +826,14 @@ class AdapterDeclCatalogComponent:
             records = [(decl, revision) for decl, revision in loaded.value if decl.lifecycle == DeclLifecycle.ACTIVE]
         issues: list[ServiceIssue] = []
         for decl, revision in records:
-            issues.extend(self._record_issues(decl, revision))
+            issues.extend(
+                self._record_issues(
+                    repo_root,
+                    decl,
+                    revision,
+                    require_current_evidence=True,
+                )
+            )
         return self.runtime.foundation.ok(
             AdapterDeclCompletenessView(
                 checked_names=[decl.name for decl, _revision in records],
@@ -740,7 +951,14 @@ class AdapterDeclCatalogComponent:
         revision.updated_at = utc_now_iso()
         return self._save_and_view(repo_root, decl, revision)
 
-    def _record_issues(self, decl: Decl, revision: DeclRevision) -> list[ServiceIssue]:
+    def _record_issues(
+        self,
+        repo_root: Path,
+        decl: Decl,
+        revision: DeclRevision,
+        *,
+        require_current_evidence: bool,
+    ) -> list[ServiceIssue]:
         issues: list[ServiceIssue] = []
         if not self._module(decl, revision):
             issues.append(self._issue(decl, "adapter_decl_module_missing", "module", "Adapter decl module is missing."))
@@ -763,6 +981,28 @@ class AdapterDeclCatalogComponent:
                 scan = self._scan(revision.proof.formal.code)
                 if scan.ok and scan.value is not None:
                     issues.extend(self._forbidden_proof_occurrences(scan.value, decl=decl))
+        if require_current_evidence and self._finalized(decl, revision):
+            assert revision.statement.formal is not None
+            code = revision.statement.formal.code
+            if self._decl_kind(decl) in _THEOREM_LIKE:
+                assert revision.proof is not None and revision.proof.formal is not None
+                code = revision.proof.formal.code
+            if not self.lean_check.adapter_declaration_check_is_current(
+                repo_root,
+                check=revision.statement.formal.check,
+                module=decl.module or "",
+                declaration_name=revision.lean_decl_name or "",
+                code=code,
+                upstream_revision=self._upstream_revision(repo_root),
+            ):
+                issues.append(
+                    self._issue(
+                        decl,
+                        "adapter_declaration_soundness_stale",
+                        "statement.formal.check",
+                        "The committed Adapter declaration soundness evidence no longer matches its source or upstream environment.",
+                    )
+                )
         return issues
 
     def _forbidden_statement_occurrences(self, decl: Decl, scan: object) -> list[ServiceIssue]:
@@ -781,14 +1021,14 @@ class AdapterDeclCatalogComponent:
     def _forbidden_proof_occurrences(self, scan: object, *, decl: Decl | None = None) -> list[ServiceIssue]:
         forbidden = any(
             bool(getattr(scan, field, False))
-            for field in ["contains_sorry", "contains_admit", "contains_axiom", "contains_opaque", "contains_unsafe"]
+            for field in ["contains_axiom", "contains_opaque", "contains_unsafe"]
         )
         if not forbidden:
             return []
         return [
             self.runtime.foundation.issue(
                 "adapter_proof_forbidden_construct",
-                "Proof formal code contains sorry/admit/axiom/opaque/unsafe.",
+                "Proof formal code contains axiom/opaque/unsafe.",
                 object_ref=decl.name if decl is not None else None,
                 field="proof.formal",
             )
@@ -796,6 +1036,25 @@ class AdapterDeclCatalogComponent:
 
     def _scan(self, code: str) -> ServiceResult[object]:
         return self.lean_check.detect_sorry_axiom(code)
+
+    def _invalidate_adapter_finalization(self, revision: DeclRevision) -> None:
+        if revision.statement.formal is not None:
+            revision.statement.formal = revision.statement.formal.model_copy(
+                update={"check": None}
+            )
+        if revision.proof is not None and revision.proof.formal is not None:
+            revision.proof.formal = revision.proof.formal.model_copy(
+                update={"check": None}
+            )
+        revision.state = DeclState.PLANNED
+        revision.status = DeclRevisionStatus.OPEN
+
+    def _upstream_revision(self, repo_root: Path) -> str | None:
+        adapter = self.runtime.require_app_service("adapter")
+        upstream = adapter.get_adapter_upstream_metadata(repo_root)
+        if not upstream.ok or upstream.value is None:
+            return None
+        return upstream.value.revision
 
     def _issue(self, decl: Decl, kind: str, field: str, message: str) -> ServiceIssue:
         return self.runtime.foundation.issue(kind, message, object_ref=decl.name, field=field)

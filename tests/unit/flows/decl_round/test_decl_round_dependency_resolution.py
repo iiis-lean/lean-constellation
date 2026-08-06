@@ -8,7 +8,7 @@ from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.repo import ProofAvailability, RepoFormat
 from lean_constellation.services.decl_graph import DeclState, RepoDeclDep
-from lean_constellation.services.external_clients import LeanCheckSummaryView
+from lean_constellation.services.external_clients import LeanCheckSummaryView, LeanMcpToolkitClient
 from tests.unit.flows.decl_round._helpers import (
     NODE_PATH,
     commit_content_contract_head,
@@ -17,6 +17,7 @@ from tests.unit.flows.decl_round._helpers import (
     seed_committed_theorem,
 )
 from tests.unit_services_helpers import (
+    CleanDeclarationSoundnessDispatcher,
     lean_check_payload,
     set_current_decl_lean_name_for_test,
     write_proof_formal_for_test,
@@ -202,6 +203,47 @@ def test_ready_adapter_bound_decl_is_accepted_as_external_dependency(tmp_path: P
     assert reason is None
 
 
+def test_declared_adapter_entrypoint_satisfies_declared_but_not_proved_dependency(
+    tmp_path: Path,
+) -> None:
+    _flow_runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
+    _prepare_ready_adapter_provider(
+        lean_runtime,
+        tmp_path / "Provider",
+        bind_interface=True,
+        recursive_axioms=["sorryAx"],
+    )
+    ref = DeclRef(repo="Provider", node="Main", name="main_result", revision=1)
+
+    declared = lean_runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+        repo_root,
+        ref=ref,
+        required_availability=ProofAvailability.DECLARED,
+    )
+    proved = lean_runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+        repo_root,
+        ref=ref,
+        required_availability=ProofAvailability.PROVED,
+    )
+
+    assert declared.ok and declared.value is not None
+    assert declared.value.compatible is True
+    assert declared.value.current_state == "declared"
+    assert proved.ok and proved.value is not None
+    assert proved.value.compatible is False
+    assert proved.value.reason == "state_too_low"
+
+    round_id = _create_external_dependency_round(lean_runtime, repo_root)
+    satisfied, reason = _check_round_decl(
+        lean_runtime,
+        repo_root,
+        round_id=round_id,
+        decl_name="A",
+    )
+    assert satisfied is False
+    assert reason == "Provider:Main:main_result is declared; proved is required."
+
+
 def test_ready_adapter_unbound_decl_is_rejected_as_external_dependency(tmp_path: Path) -> None:
     _flow_runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
     _prepare_ready_adapter_provider(lean_runtime, tmp_path / "Provider", bind_interface=False)
@@ -278,8 +320,22 @@ def _create_external_dependency_round(lean_runtime, repo_root: Path) -> str:
     return round_id
 
 
-def _prepare_ready_adapter_provider(lean_runtime, provider_root: Path, *, bind_interface: bool) -> None:
+def _prepare_ready_adapter_provider(
+    lean_runtime,
+    provider_root: Path,
+    *,
+    bind_interface: bool,
+    recursive_axioms: list[str] | None = None,
+) -> None:
     lean_runtime.external.lean_toolchain.lake = _AdapterIdentityLake(lean_runtime.external.lean_toolchain.lake)
+    toolkit = LeanMcpToolkitClient(
+        dispatcher=CleanDeclarationSoundnessDispatcher(
+            axioms_by_name={"Upstream.Basic.main_result": recursive_axioms or []}
+        )
+    )
+    lean_runtime.external.lean_mcp_toolkit = toolkit
+    lean_runtime.external.lean_toolkit = toolkit
+    lean_runtime.external.lean_toolchain.toolkit = toolkit
     interface = DeclInterface(name="main_result", kind=DeclKind.THEOREM, summary="Expose the adapter theorem.")
     assert lean_runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
     assert lean_runtime.repo_workspace.metadata.set_repo_format(

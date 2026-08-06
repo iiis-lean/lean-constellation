@@ -124,6 +124,43 @@ class ToolkitModuleView(StrictModel):
     issue_code: str | None = None
 
 
+class ToolkitDeclarationSoundnessTarget(StrictModel):
+    module: str
+    declaration_name: str
+    source_file_path: str | None = None
+
+
+class ToolkitDeclarationSoundnessWarning(StrictModel):
+    line: int
+    pattern: str
+
+
+class ToolkitDeclarationSoundnessItem(StrictModel):
+    module: str
+    declaration_name: str
+    success: bool
+    source_file_path: str | None = None
+    error_message: str | None = None
+    axioms: list[str] = Field(default_factory=list)
+    warnings: list[ToolkitDeclarationSoundnessWarning] = Field(default_factory=list)
+    axiom_count: int = 0
+    warning_count: int = 0
+
+
+class ToolkitDeclarationSoundnessBatchResult(StrictModel):
+    protocol_ok: bool
+    batch_success: bool
+    items: list[ToolkitDeclarationSoundnessItem] = Field(default_factory=list)
+    count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    error_message: str | None = None
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
+    raw_excerpt: str | None = None
+    summary: str
+    issue_code: str | None = None
+
+
 class SorryAxiomScanResult(StrictModel):
     ok: bool
     contains_sorry: bool
@@ -638,6 +675,59 @@ class LeanMcpToolkitClient:
             raw_excerpt=result.raw_excerpt,
         )
 
+    def check_declaration_soundness_batch(
+        self,
+        repo_root: Path,
+        declarations: list[ToolkitDeclarationSoundnessTarget],
+        *,
+        scan_source: bool = False,
+    ) -> ToolkitDeclarationSoundnessBatchResult:
+        payload = {
+            "project_root": str(repo_root),
+            "declarations": [item.model_dump(mode="json") for item in declarations],
+            "scan_source": scan_source,
+        }
+        result = self.call_tool("lsp.declaration_soundness_batch", payload)
+        raw = result.value
+        if not isinstance(raw, dict):
+            return ToolkitDeclarationSoundnessBatchResult(
+                protocol_ok=False,
+                batch_success=False,
+                warnings=list(result.warnings),
+                raw_excerpt=result.raw_excerpt,
+                summary=result.summary or "Declaration soundness batch did not return an object.",
+                issue_code=result.issue_code or "declaration_soundness_invalid_response",
+            )
+        parsed = self._parse_declaration_soundness_batch(raw, declarations)
+        if isinstance(parsed, str):
+            return ToolkitDeclarationSoundnessBatchResult(
+                protocol_ok=False,
+                batch_success=False,
+                warnings=list(result.warnings),
+                raw_excerpt=result.raw_excerpt,
+                summary=parsed,
+                issue_code="declaration_soundness_invalid_response",
+            )
+        return parsed.model_copy(
+            update={
+                "warnings": list(result.warnings),
+                "raw_excerpt": result.raw_excerpt,
+            }
+        )
+
+    def check_declaration_soundness(
+        self,
+        repo_root: Path,
+        declaration: ToolkitDeclarationSoundnessTarget,
+        *,
+        scan_source: bool = False,
+    ) -> ToolkitDeclarationSoundnessBatchResult:
+        return self.check_declaration_soundness_batch(
+            repo_root,
+            [declaration],
+            scan_source=scan_source,
+        )
+
     def extract_declaration(self, repo_root: Path, module_or_file: str, decl_name: str) -> ToolkitDeclarationView:
         result = self._call_tool_with_fallback(
             "declarations.extract",
@@ -664,6 +754,85 @@ class LeanMcpToolkitClient:
             admit_count=admit_count,
             axiom_count=axiom_count,
             summary=f"sorry={sorry_count}, admit={admit_count}, axiom={axiom_count}",
+        )
+
+    def _parse_declaration_soundness_batch(
+        self,
+        raw: dict[str, Any],
+        requested: list[ToolkitDeclarationSoundnessTarget],
+    ) -> ToolkitDeclarationSoundnessBatchResult | str:
+        batch_success = raw.get("success")
+        raw_items = raw.get("items")
+        if not isinstance(batch_success, bool) or not isinstance(raw_items, list):
+            return "Declaration soundness response is missing typed success/items fields."
+        if len(raw_items) != len(requested):
+            return (
+                "Declaration soundness response item count does not match the request: "
+                f"expected {len(requested)}, received {len(raw_items)}."
+            )
+        items: list[ToolkitDeclarationSoundnessItem] = []
+        for index, (raw_item, target) in enumerate(zip(raw_items, requested, strict=True)):
+            if not isinstance(raw_item, dict):
+                return f"Declaration soundness item {index} is not an object."
+            module = raw_item.get("module")
+            declaration_name = raw_item.get("declaration_name")
+            item_success = raw_item.get("success")
+            axioms = raw_item.get("axioms")
+            warnings = raw_item.get("warnings")
+            if module != target.module or declaration_name != target.declaration_name:
+                return (
+                    f"Declaration soundness item {index} identity mismatch: expected "
+                    f"{target.module}::{target.declaration_name}."
+                )
+            if raw_item.get("source_file_path") != target.source_file_path:
+                return f"Declaration soundness item {index} source_file_path mismatch."
+            if not isinstance(item_success, bool):
+                return f"Declaration soundness item {index} is missing boolean success."
+            if not isinstance(axioms, list) or any(not isinstance(item, str) for item in axioms):
+                return f"Declaration soundness item {index} has invalid axioms."
+            if not isinstance(warnings, list) or any(not isinstance(item, dict) for item in warnings):
+                return f"Declaration soundness item {index} has invalid warnings."
+            if (
+                type(raw_item.get("axiom_count")) is not int
+                or type(raw_item.get("warning_count")) is not int
+            ):
+                return f"Declaration soundness item {index} is missing integer count fields."
+            try:
+                item = ToolkitDeclarationSoundnessItem.model_validate(raw_item)
+            except Exception as exc:  # noqa: BLE001 - external response validation boundary.
+                return f"Declaration soundness item {index} is invalid: {exc}"
+            if item.axiom_count != len(item.axioms) or item.warning_count != len(item.warnings):
+                return f"Declaration soundness item {index} count fields are inconsistent."
+            items.append(item)
+        count = raw.get("count")
+        success_count = raw.get("success_count")
+        failure_count = raw.get("failure_count")
+        if any(type(value) is not int for value in (count, success_count, failure_count)):
+            return "Declaration soundness batch is missing integer count fields."
+        expected_success = sum(item.success for item in items)
+        expected_failure = len(items) - expected_success
+        if (count, success_count, failure_count) != (
+            len(items),
+            expected_success,
+            expected_failure,
+        ):
+            return "Declaration soundness batch count fields are inconsistent."
+        if batch_success != (expected_failure == 0):
+            return "Declaration soundness batch success is inconsistent with item results."
+        error_message = raw.get("error_message")
+        if error_message is not None and not isinstance(error_message, str):
+            return "Declaration soundness batch error_message must be a string or null."
+        return ToolkitDeclarationSoundnessBatchResult(
+            protocol_ok=True,
+            batch_success=batch_success,
+            items=items,
+            count=len(items),
+            success_count=expected_success,
+            failure_count=expected_failure,
+            error_message=error_message,
+            summary=(
+                f"Resolved {expected_success} of {len(items)} declaration soundness reports."
+            ),
         )
 
     def _call_tool_with_fallback(

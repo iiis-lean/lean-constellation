@@ -216,8 +216,9 @@ class SubmitAdapterRepoRequirementArgs(SubmitRepoRequirementArgs):
     git_url: str = Field(
         description="GitHub URL or owner/name slug for the confirmed Lean provider repository."
     )
-    revision: str = Field(
-        description="Immutable 40- or 64-character Git commit identity verified for the provider."
+    revision: str | None = Field(
+        default=None,
+        description="Optional explicit immutable 40- or 64-character Git commit; when omitted the system resolves bounded latest-first exact-compatible candidates."
     )
     subdir: str | None = Field(
         default=None,

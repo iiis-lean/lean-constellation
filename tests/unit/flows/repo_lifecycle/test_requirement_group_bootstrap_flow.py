@@ -20,7 +20,11 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     RepoFormatAdapterChoiceSubmission,
     RepoFormatNativeChoiceSubmission,
 )
-from lean_constellation.services.external_clients import ExternalCommandResult, LeanCheckSummaryView
+from lean_constellation.services.external_clients import (
+    ExternalCommandResult,
+    GitHubLeanRepoProbeView,
+    LeanCheckSummaryView,
+)
 from lean_constellation.services.foundation import FoundationService
 from lean_constellation.services.validation_snapshot import RepoCheckpointKind, ValidationSnapshotService
 from tests.unit_services_helpers import make_runtime
@@ -108,9 +112,35 @@ class FakeLakeClient:
         )
 
 
+class FakeGitHubRepo:
+    def probe_github_lean_repo_candidate(
+        self,
+        git_url: str,
+        revision: str | None = None,
+        subdir: str | None = None,
+    ) -> GitHubLeanRepoProbeView:
+        return GitHubLeanRepoProbeView(
+            git_url=git_url,
+            normalized_git_url=git_url.removesuffix(".git"),
+            requested_revision=revision,
+            resolved_revision=revision,
+            requested_subdir=subdir,
+            selected_subdir=subdir,
+            is_lean_project=True,
+            has_lakefile=True,
+            has_lean_toolchain=True,
+            package_name="upstream",
+            likely_import_modules=["upstream"],
+            lean_toolchain="leanprover/lean4:v4.28.0",
+            evidence_summary="Exact compatible upstream fixture.",
+        )
+
+
 def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object, FakeLakeClient]:
     lake = FakeLakeClient()
-    lean_runtime = make_runtime(external_overrides={"lake": lake})
+    lean_runtime = make_runtime(
+        external_overrides={"lake": lake, "github_repo": FakeGitHubRepo()}
+    )
     lean_runtime.app.validation_snapshot = ValidationSnapshotService(lean_runtime)
     lean_runtime.app.snapshot_runtime = ApplicationSnapshotRuntime(
         lean_runtime,
@@ -262,6 +292,62 @@ def test_requirement_bootstrap_adapter_choice_initializes_adapter_skeleton(tmp_p
     assert "Coverage not verified." in apply_step.result.upstream_summary
 
 
+def test_requirement_bootstrap_rejects_incompatible_upstream_before_lake_update(
+    tmp_path: Path,
+) -> None:
+    runtime, lean_runtime, lake = _runtime(tmp_path)
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "AdapterProvider"
+    _write_preparation_input(lean_runtime, repo_root)
+    flow_id = _start_bootstrap(runtime, workspace, repo_root)
+    lean_runtime.external.github_repo.probe_github_lean_repo_candidate = (
+        lambda git_url, revision=None, subdir=None: GitHubLeanRepoProbeView(
+            git_url=git_url,
+            normalized_git_url=git_url.removesuffix(".git"),
+            requested_revision=revision,
+            resolved_revision=revision,
+            requested_subdir=subdir,
+            selected_subdir=subdir,
+            is_lean_project=True,
+            has_lakefile=True,
+            has_lean_toolchain=True,
+            package_name="upstream",
+            likely_import_modules=["upstream"],
+            lean_toolchain="leanprover/lean4:v4.32.0",
+            evidence_summary="Incompatible upstream fixture.",
+        )
+    )
+
+    _advance_and_run(runtime, flow_id)
+    agent_step_id = runtime.flow_service.advance_flow(flow_id)
+    assert agent_step_id is not None
+    runtime.agent_service.queue_submission(
+        RepoFormatAdapterChoiceSubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="repo_format_adapter_choice",
+            tool_name="submit_adapter_repo_choice",
+            git_url="https://github.com/example/upstream.git",
+            revision="a" * 40,
+            package_name="upstream",
+            likely_import_module="upstream",
+            evidence_summary="Remote Lean project found.",
+            summary="Adapter route.",
+        )
+    )
+    runtime.run_step(agent_step_id)
+    apply_step_id = _advance_and_run(runtime, flow_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    assert flow.status is FlowStatus.COMPLETED
+    assert flow.result is not None
+    assert flow.result.outcome == "needs_admin_repair"
+    apply_result = runtime.flow_service.get_step(apply_step_id).result
+    assert apply_result is not None and apply_result.error is not None
+    assert apply_result.error.code == "adapter_upstream_toolchain_mismatch"
+    assert lake.updated == []
+    assert lake.built == []
+
+
 def test_requirement_bootstrap_direct_routes_skip_format_discovery_agent(
     tmp_path: Path,
 ) -> None:
@@ -306,7 +392,11 @@ def test_requirement_bootstrap_direct_routes_skip_format_discovery_agent(
         subdir=route.subdir,
         package_name=route.package_name,
         likely_import_module=route.likely_import_module,
-        lean_toolchain="leanprover/lean4:v4.32.0",
+        lean_toolchain="leanprover/lean4:v4.28.0",
+        expected_lean_toolchain="leanprover/lean4:v4.28.0",
+        expected_mathlib_revision="v4.28.0",
+        revision_resolution="explicit",
+        candidates_checked=[route.revision],
         evidence_summary="Remote probe matched the exact route.",
     )
     adapter_flow_id = _start_bootstrap(

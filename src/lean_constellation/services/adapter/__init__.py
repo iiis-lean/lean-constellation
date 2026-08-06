@@ -2,6 +2,7 @@
 
 from lean_constellation.services.adapter.adapter_decl_catalog import (
     AdapterCatalogInitView,
+    AdapterDeclBatchFinalizeView,
     AdapterDeclCatalogComponent,
     AdapterDeclCompletenessView,
     AdapterDeclMatchView,
@@ -42,6 +43,7 @@ from lean_constellation.services.adapter.upstream_navigation import (
 
 __all__ = [
     "AdapterCatalogInitView",
+    "AdapterDeclBatchFinalizeView",
     "AdapterCatalogBlockedResultView",
     "AdapterCatalogReadyGateView",
     "AdapterDeclCatalogComponent",

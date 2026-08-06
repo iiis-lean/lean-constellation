@@ -1352,86 +1352,10 @@ class LeanAdminApi:
     ) -> ServiceResult[VerifiedAdapterRouteReceipt | None]:
         if not isinstance(route, AdapterProviderRoute):
             return self.runtime.foundation.ok(None)
-        probe = self.runtime.external.github_repo.probe_github_lean_repo_candidate(
-            route.git_url,
-            revision=route.revision,
-            subdir=route.subdir,
-        )
-        if probe.is_mathlib_repository:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "adapter_provider_route_mathlib_forbidden",
-                    "Official Mathlib is the platform dependency and cannot be prepared as an adapter provider.",
-                    object_ref=route.git_url,
-                    field="provider_route",
-                )
-            )
-        if not probe.is_lean_project or not probe.has_lakefile:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "adapter_provider_route_probe_failed",
-                    probe.summary
-                    or "The confirmed adapter route did not probe as a Lean Lake project.",
-                    object_ref=route.git_url,
-                    field="provider_route",
-                    details={
-                        "known_risks": "; ".join(probe.known_risks)
-                        or "not_a_lean_project"
-                    },
-                )
-            )
-        if (probe.resolved_revision or "").lower() != route.revision.lower():
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "adapter_provider_route_revision_mismatch",
-                    "The remote probe did not resolve to the requirement's immutable commit.",
-                    current=probe.resolved_revision,
-                    expected=route.revision,
-                    field="provider_route.revision",
-                )
-            )
-        selected_subdir = probe.selected_subdir or None
-        if selected_subdir != route.subdir:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "adapter_provider_route_subdir_mismatch",
-                    "The remote probe selected a different Lean project subdirectory.",
-                    current=selected_subdir,
-                    expected=route.subdir,
-                    field="provider_route.subdir",
-                )
-            )
-        if route.package_name and probe.package_name != route.package_name:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "adapter_provider_route_package_mismatch",
-                    "The remote Lake package does not match the confirmed route.",
-                    current=probe.package_name,
-                    expected=route.package_name,
-                    field="provider_route.package_name",
-                )
-            )
-        if route.likely_import_module and route.likely_import_module not in probe.likely_import_modules:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "adapter_provider_route_module_mismatch",
-                    "The confirmed import module was not found by the exact remote probe.",
-                    current=", ".join(probe.likely_import_modules),
-                    expected=route.likely_import_module,
-                    field="provider_route.likely_import_module",
-                )
-            )
-        return self.runtime.foundation.ok(
-            VerifiedAdapterRouteReceipt(
-                git_url=route.git_url,
-                revision=route.revision,
-                subdir=route.subdir,
-                package_name=route.package_name,
-                likely_import_module=route.likely_import_module,
-                lean_toolchain=probe.lean_toolchain,
-                evidence_summary=probe.evidence_summary,
-            )
-        )
+        verified = self.runtime.repo_workspace.verify_adapter_provider_route(route)
+        if not verified.ok or verified.value is None:
+            return self.runtime.foundation.fail(verified.issues)
+        return self.runtime.foundation.ok(verified.value)
 
     def start_native_preparation(self, input_model: StartPreparationInput) -> ServiceResult[AdminFlowStartView]:
         try:

@@ -18,6 +18,7 @@ from lean_constellation.services.external_clients.lean_mcp_toolkit import (
     LeanMcpToolkitClient,
     MathlibSearchResult,
     ToolkitCallResult,
+    ToolkitDeclarationSoundnessTarget,
     ToolkitDeclarationView,
     ToolkitModuleView,
     ToolkitResponseWarning,
@@ -120,6 +121,43 @@ class ToolchainDeclarationView(StrictModel):
     issue_code: str | None = None
 
 
+class ToolchainDeclarationSoundnessTarget(StrictModel):
+    module: str
+    declaration_name: str
+    source_file_path: str | None = None
+
+
+class ToolchainDeclarationSoundnessWarning(StrictModel):
+    line: int
+    pattern: str
+
+
+class ToolchainDeclarationSoundnessItem(StrictModel):
+    module: str
+    declaration_name: str
+    success: bool
+    source_file_path: str | None = None
+    error_message: str | None = None
+    axioms: list[str] = Field(default_factory=list)
+    warnings: list[ToolchainDeclarationSoundnessWarning] = Field(default_factory=list)
+
+
+class ToolchainDeclarationSoundnessBatchView(StrictModel):
+    protocol_ok: bool
+    batch_success: bool
+    provider: str = "lean_mcp_toolkit"
+    toolkit_tool: str = "lsp.declaration_soundness_batch"
+    items: list[ToolchainDeclarationSoundnessItem] = Field(default_factory=list)
+    count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    error_message: str | None = None
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
+    raw_excerpt: str | None = None
+    summary: str
+    issue_code: str | None = None
+
+
 class ToolchainModuleView(StrictModel):
     ok: bool
     provider: str
@@ -162,7 +200,25 @@ class ToolchainToolCallView(StrictModel):
 
 
 class ToolchainPolicyOccurrenceView(StrictModel):
-    kind: Literal["sorry", "admit", "axiom", "opaque", "unsafe"]
+    kind: Literal[
+        "sorry",
+        "admit",
+        "axiom",
+        "opaque",
+        "unsafe",
+        "sorry_ax",
+        "native_decide",
+        "bv_decide",
+        "reduce_bool",
+        "unsafe_cast",
+        "partial_def",
+        "native_decide_linter_disabled",
+        "axiom_declaration_injection",
+        "run_cmd",
+        "command_elaborator",
+        "command_macro",
+        "environment_mutation",
+    ]
     line: int
     column: int
     excerpt: str
@@ -195,6 +251,40 @@ class LeanToolchainClient:
     """Semantic facade over Lake commands and Lean MCP Toolkit tools."""
 
     _FORBIDDEN_WORD_RE = re.compile(r"(?<![A-Za-z0-9_'])(sorry|admit|axiom|opaque|unsafe)(?![A-Za-z0-9_'])")
+    _SOURCE_POLICY_PATTERNS = (
+        ("sorry_ax", re.compile(r"(?<![A-Za-z0-9_'])(?:_root_\.)?sorryAx(?![A-Za-z0-9_'])")),
+        (
+            "native_decide",
+            re.compile(r"(?<![A-Za-z0-9_'.])(?:native_decide|nativeDecide)(?![A-Za-z0-9_'])"),
+        ),
+        ("bv_decide", re.compile(r"(?<![A-Za-z0-9_'])bv_decide(?![A-Za-z0-9_'])")),
+        ("reduce_bool", re.compile(r"(?<![A-Za-z0-9_'])Lean\.ofReduceBool(?![A-Za-z0-9_'])")),
+        ("unsafe_cast", re.compile(r"(?<![A-Za-z0-9_'])unsafeCast(?![A-Za-z0-9_'])")),
+        ("partial_def", re.compile(r"(?<![A-Za-z0-9_'])partial\s+def(?![A-Za-z0-9_'])")),
+        (
+            "native_decide_linter_disabled",
+            re.compile(r"\bset_option\s+linter\.style\.nativeDecide\s+false\b"),
+        ),
+        ("run_cmd", re.compile(r"(?<![A-Za-z0-9_'])run_cmd(?![A-Za-z0-9_'])")),
+        ("command_elaborator", re.compile(r"(?m)^\s*elab(?:_rules)?\b[^\n]*:\s*command\b")),
+        ("command_macro", re.compile(r"(?m)^\s*macro(?:_rules)?\b[^\n]*:\s*command\b")),
+        (
+            "environment_mutation",
+            re.compile(r"(?<![A-Za-z0-9_'])(?:addDecl|modifyEnv|setEnv)(?![A-Za-z0-9_'])"),
+        ),
+    )
+    _AXIOM_DECL_RE = re.compile(r"(?<![A-Za-z0-9_'])Declaration\.axiomDecl(?![A-Za-z0-9_'])")
+    _ADD_DECL_RE = re.compile(r"(?<![A-Za-z0-9_'])addDecl(?![A-Za-z0-9_'])")
+    _SOURCE_POLICY_ERROR_KINDS = {
+        "sorry_ax",
+        "native_decide",
+        "bv_decide",
+        "reduce_bool",
+        "unsafe_cast",
+        "partial_def",
+        "native_decide_linter_disabled",
+        "axiom_declaration_injection",
+    }
 
     def __init__(
         self,
@@ -365,6 +455,69 @@ class LeanToolchainClient:
             summary=fallback.summary or ("Lean diagnostics passed." if fallback.ok else "Lean diagnostics failed."),
             raw_excerpt=fallback.stderr_excerpt or fallback.stdout_excerpt,
             issue_code=None if fallback.ok or diagnostics else fallback.issue_code,
+        )
+
+    def check_declaration_soundness_batch(
+        self,
+        repo_root: Path,
+        declarations: list[ToolchainDeclarationSoundnessTarget],
+        *,
+        scan_source: bool = False,
+    ) -> ToolchainDeclarationSoundnessBatchView:
+        result = self.toolkit.check_declaration_soundness_batch(
+            Path(repo_root),
+            [
+                ToolkitDeclarationSoundnessTarget(
+                    module=item.module,
+                    declaration_name=item.declaration_name,
+                    source_file_path=item.source_file_path,
+                )
+                for item in declarations
+            ],
+            scan_source=scan_source,
+        )
+        return ToolchainDeclarationSoundnessBatchView(
+            protocol_ok=result.protocol_ok,
+            batch_success=result.batch_success,
+            items=[
+                ToolchainDeclarationSoundnessItem(
+                    module=item.module,
+                    declaration_name=item.declaration_name,
+                    success=item.success,
+                    source_file_path=item.source_file_path,
+                    error_message=item.error_message,
+                    axioms=list(item.axioms),
+                    warnings=[
+                        ToolchainDeclarationSoundnessWarning(
+                            line=warning.line,
+                            pattern=warning.pattern,
+                        )
+                        for warning in item.warnings
+                    ],
+                )
+                for item in result.items
+            ],
+            count=result.count,
+            success_count=result.success_count,
+            failure_count=result.failure_count,
+            error_message=result.error_message,
+            warnings=list(result.warnings),
+            raw_excerpt=result.raw_excerpt,
+            summary=result.summary,
+            issue_code=result.issue_code,
+        )
+
+    def check_declaration_soundness(
+        self,
+        repo_root: Path,
+        declaration: ToolchainDeclarationSoundnessTarget,
+        *,
+        scan_source: bool = False,
+    ) -> ToolchainDeclarationSoundnessBatchView:
+        return self.check_declaration_soundness_batch(
+            repo_root,
+            [declaration],
+            scan_source=scan_source,
         )
 
     def extract_declaration(self, repo_root: Path, target: str, decl_name: str) -> ToolchainDeclarationView:
@@ -816,10 +969,49 @@ class LeanToolchainClient:
                     excerpt=source_line.strip()[:240],
                 )
             )
+        for kind, pattern in self._SOURCE_POLICY_PATTERNS:
+            for match in pattern.finditer(sanitized):
+                line, column = self._line_col(sanitized, match.start())
+                source_line = lines[line - 1] if line - 1 < len(lines) else ""
+                occurrences.append(
+                    ToolchainPolicyOccurrenceView(
+                        kind=kind,  # type: ignore[arg-type]
+                        line=line,
+                        column=column,
+                        excerpt=source_line.strip()[:240],
+                    )
+                )
+        axiom_decl = self._AXIOM_DECL_RE.search(sanitized)
+        if axiom_decl is not None and self._ADD_DECL_RE.search(sanitized) is not None:
+            line, column = self._line_col(sanitized, axiom_decl.start())
+            source_line = lines[line - 1] if line - 1 < len(lines) else ""
+            occurrences.append(
+                ToolchainPolicyOccurrenceView(
+                    kind="axiom_declaration_injection",
+                    line=line,
+                    column=column,
+                    excerpt=source_line.strip()[:240],
+                )
+            )
+        occurrences.sort(key=lambda occurrence: (occurrence.line, occurrence.column, occurrence.kind))
         counts = {kind: sum(1 for occurrence in occurrences if occurrence.kind == kind) for kind in ["sorry", "admit", "axiom", "opaque", "unsafe"]}
-        summary = ", ".join(f"{kind}={counts[kind]}" for kind in ["sorry", "admit", "axiom", "opaque", "unsafe"])
+        extra_counts = {
+            kind: sum(1 for occurrence in occurrences if occurrence.kind == kind)
+            for kind, _pattern in self._SOURCE_POLICY_PATTERNS
+        }
+        extra_counts["axiom_declaration_injection"] = sum(
+            1 for occurrence in occurrences if occurrence.kind == "axiom_declaration_injection"
+        )
+        summary = ", ".join(
+            [*(f"{kind}={counts[kind]}" for kind in ["sorry", "admit", "axiom", "opaque", "unsafe"])]
+            + [f"{kind}={count}" for kind, count in extra_counts.items() if count]
+        )
         return ToolchainPolicyScanView(
-            ok=not any(counts.values()),
+            ok=not any(counts.values())
+            and not any(
+                occurrence.kind in self._SOURCE_POLICY_ERROR_KINDS
+                for occurrence in occurrences
+            ),
             contains_sorry=counts["sorry"] > 0,
             contains_admit=counts["admit"] > 0,
             contains_axiom=counts["axiom"] > 0,
@@ -832,7 +1024,7 @@ class LeanToolchainClient:
             unsafe_count=counts["unsafe"],
             occurrences=occurrences,
             summary=summary,
-            limitation="Text scan ignores Lean comments and string literals with a conservative first-round lexer; it is not a full Lean parser.",
+            limitation="Text scan ignores Lean comments and string literals with a conservative first-round lexer; finite escape checks are not a full Lean parser or a defense against malicious metaprogramming.",
         )
 
     def _command_view(self, result: ExternalCommandResult) -> ToolchainCommandView:

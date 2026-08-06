@@ -106,7 +106,6 @@ def resolve_requirement_routes(
         identities = {
             (
                 _canonical_git_url(route.git_url),
-                route.revision.lower(),
                 route.subdir,
             )
             for route in adapter_routes
@@ -115,7 +114,16 @@ def resolve_requirement_routes(
             return (
                 None,
                 "Provider route resolution failed.",
-                ["adapter routes disagree on Git URL, immutable revision, or subdirectory"],
+                ["adapter routes disagree on Git URL or subdirectory"],
+            )
+        explicit_revisions = {
+            route.revision for route in adapter_routes if route.revision is not None
+        }
+        if len(explicit_revisions) > 1:
+            return (
+                None,
+                "Provider route resolution failed.",
+                ["adapter routes disagree on explicit immutable revision"],
             )
         package_name, package_conflict = _merge_optional_adapter_field(
             adapter_routes, "package_name"
@@ -130,7 +138,8 @@ def resolve_requirement_routes(
         ]
         if conflicts:
             return None, "Provider route resolution failed.", conflicts
-        git_url, revision, subdir = next(iter(identities))
+        git_url, subdir = next(iter(identities))
+        revision = next(iter(explicit_revisions), None)
         risks: list[str] = []
         seen_risks: set[str] = set()
         evidence: list[str] = []

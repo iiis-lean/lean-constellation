@@ -84,22 +84,14 @@ class RequirementGroupRepoBootstrapParams(LeanFlowParams):
         if isinstance(route, AdapterProviderRoute):
             if receipt is None:
                 raise ValueError("direct adapter route requires a verified adapter receipt")
-            expected = (
-                route.git_url,
-                route.revision,
-                route.subdir,
-                route.package_name,
-                route.likely_import_module,
-            )
-            current = (
-                receipt.git_url,
-                receipt.revision,
-                receipt.subdir,
-                receipt.package_name,
-                receipt.likely_import_module,
-            )
-            if current != expected:
+            if receipt.git_url != route.git_url:
                 raise ValueError("verified adapter receipt does not match the resolved provider route")
+            for field_name in ("subdir", "package_name", "likely_import_module"):
+                expected = getattr(route, field_name)
+                if expected is not None and getattr(receipt, field_name) != expected:
+                    raise ValueError("verified adapter receipt does not match the resolved provider route")
+            if route.revision is not None and receipt.revision != route.revision:
+                raise ValueError("verified adapter receipt changed the explicit route revision")
         elif receipt is not None:
             raise ValueError("verified adapter receipt is only valid for an adapter route")
         return self

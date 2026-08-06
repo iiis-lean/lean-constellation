@@ -55,6 +55,14 @@ class FakeRunner:
                     }
                 ),
             )
+        if command[:2] == ["gh", "api"] and command[2].endswith("/commits"):
+            return ExternalCommandResult(
+                ok=True,
+                command=command,
+                cwd=str(cwd),
+                exit_code=0,
+                stdout_excerpt=json.dumps([{"sha": "a" * 40}, {"sha": "b" * 40}]),
+            )
         if command[:2] == ["gh", "api"] and "/commits/" in command[2]:
             return ExternalCommandResult(
                 ok=True,
@@ -266,6 +274,27 @@ def test_remote_file_reports_path_traversal_issue() -> None:
 
     assert result.issue_code == "invalid_github_path"
     assert "cannot contain" in (result.summary or "")
+
+
+def test_remote_commit_history_returns_ordered_immutable_candidates() -> None:
+    runner = FakeRunner()
+    client = GitHubRepoClient(runner=runner)
+
+    result = client.list_repository_commits(
+        "owner/repo",
+        path="lean/lean-toolchain",
+        limit=2,
+    )
+
+    assert result.issue_code is None
+    assert result.commits == ["a" * 40, "b" * 40]
+    assert result.path == "lean/lean-toolchain"
+    assert any(
+        call[:3] == ["gh", "api", "repos/owner/repo/commits"]
+        and "path=lean/lean-toolchain" in call
+        and "per_page=2" in call
+        for call in runner.calls
+    )
 
 
 def test_remote_lean_probe_extracts_lake_evidence_without_checkout() -> None:

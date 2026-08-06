@@ -12,8 +12,6 @@ from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.services.decl_graph import DeclReadinessReason, DeclState
 from lean_constellation.services.lean_projection.lean_check import (
     LeanCheckView,
-    LeanDiagnosticsView,
-    SorryAxiomScanView,
 )
 
 
@@ -218,36 +216,7 @@ def _publish_committed_heads(tmp_path: Path, names: list[str]) -> None:
 
 
 def _passed_check() -> LeanCheckView:
-    return LeanCheckView(
-        status="passed",
-        policy="test",
-        allow_sorry=False,
-        contains_sorry=False,
-        contains_axiom=False,
-        message="Lean check passed.",
-        diagnostics=LeanDiagnosticsView(
-            schema_version=2,
-            repo_file_path=None,
-            passed=True,
-            diagnostics=[],
-            summary="Diagnostics passed.",
-        ),
-        scan=SorryAxiomScanView(
-            contains_sorry=False,
-            contains_admit=False,
-            contains_axiom=False,
-            contains_opaque=False,
-            contains_unsafe=False,
-            sorry_count=0,
-            admit_count=0,
-            axiom_count=0,
-            opaque_count=0,
-            unsafe_count=0,
-            occurrences=[],
-            summary="sorry=0, admit=0, axiom=0, opaque=0, unsafe=0",
-            limitation="unit test fixture",
-        ),
-    )
+    return LeanCheckView.model_validate(lean_check_payload())
 
 
 def test_theorem_ready_recurses_through_ready_dependencies(tmp_path: Path) -> None:
