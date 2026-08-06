@@ -380,3 +380,119 @@ def test_mathlib_accessibility_can_force_lake_project_first(tmp_path: Path) -> N
     assert result.provider == "lake_command"
     assert result.diagnostics_excerpt == "unknown constant"
     assert lake.snippets == [(tmp_path, ["Init"], "#check Nat.nope")]
+
+
+def test_mathlib_global_lookup_cache_is_process_local_and_bounded(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def dispatch(tool_name: str, payload: dict):
+        calls.append(tool_name)
+        if tool_name == "lean_explore.find":
+            if payload.get("exact_name"):
+                return {"results": [{"name": payload["exact_name"], "module": "Init", "source_text": "theorem x : True := by trivial"}]}
+            return {"results": [{"name": payload["query"], "module": "Init"}]}
+        if tool_name == "mathlib_nav.file_outline":
+            return {"imports": ["Init"], "declarations": [{"name": payload["target"]}]}
+        raise KeyError(tool_name)
+
+    client = LeanToolchainClient(
+        lake=RecordingLake(),
+        toolkit=LeanMcpToolkitClient(dispatcher=dispatch),
+        config=LeanToolchainClientConfig(mathlib_revision="test-revision", mathlib_cache_max_entries=2),
+    )
+
+    assert client.search_mathlib_declarations("Nat.add", limit=3).ok
+    assert client.search_mathlib_declarations("Nat.add", limit=3).ok
+    assert client.inspect_mathlib_declaration("Nat.add_assoc").ok
+    assert client.inspect_mathlib_declaration("Nat.add_assoc").ok
+    assert client.inspect_mathlib_module("Mathlib.Data.Nat.Basic").ok
+    assert client.inspect_mathlib_module("Mathlib.Data.Nat.Basic").ok
+
+    assert calls == ["lean_explore.find", "lean_explore.find", "mathlib_nav.file_outline"]
+    stats = client.mathlib_cache_stats()
+    assert stats.hits == 3
+    assert stats.entries == 2
+    assert stats.evictions == 1
+
+
+def test_mathlib_check_cache_invalidates_on_repo_environment_change(tmp_path: Path) -> None:
+    (tmp_path / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
+    (tmp_path / "lake-manifest.json").write_text('{"revision":"one"}\n', encoding="utf-8")
+    calls: list[str] = []
+
+    def dispatch(tool_name: str, payload: dict):
+        calls.append(tool_name)
+        assert tool_name == "check_mathlib_name"
+        return {"passed": True, "diagnostics": []}
+
+    client = LeanToolchainClient(
+        lake=RecordingLake(),
+        toolkit=LeanMcpToolkitClient(dispatcher=dispatch),
+        config=LeanToolchainClientConfig(mathlib_revision="test-revision"),
+    )
+    assert client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.add_assoc").passed
+    assert client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.add_assoc").passed
+    (tmp_path / "lake-manifest.json").write_text('{"revision":"two"}\n', encoding="utf-8")
+    assert client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.add_assoc").passed
+    assert calls == ["check_mathlib_name", "check_mathlib_name"]
+
+
+def test_mathlib_failed_results_are_not_cached_without_revision() -> None:
+    calls: list[str] = []
+
+    def dispatch(tool_name: str, payload: dict):
+        calls.append(tool_name)
+        raise KeyError(tool_name)
+
+    client = LeanToolchainClient(
+        lake=RecordingLake(),
+        toolkit=LeanMcpToolkitClient(dispatcher=dispatch),
+        config=LeanToolchainClientConfig(mathlib_revision="test-revision"),
+    )
+    first = client.inspect_mathlib_declaration("Nat.missing")
+    second = client.inspect_mathlib_declaration("Nat.missing")
+    assert not first.ok and not second.ok
+    assert calls == [
+        "lean_explore.find",
+        "inspect_mathlib_decl",
+        "lean_explore.find",
+        "inspect_mathlib_decl",
+    ]
+
+
+def test_mathlib_cache_bypasses_when_revision_is_unknown() -> None:
+    calls: list[str] = []
+
+    def dispatch(tool_name: str, payload: dict):
+        calls.append(tool_name)
+        return {"results": [{"name": payload["query"], "module": "Init"}]}
+
+    client = LeanToolchainClient(
+        lake=RecordingLake(),
+        toolkit=LeanMcpToolkitClient(dispatcher=dispatch),
+    )
+    assert client.search_mathlib_declarations("Nat.add", limit=1).ok
+    assert client.search_mathlib_declarations("Nat.add", limit=1).ok
+    assert calls == ["lean_explore.find", "lean_explore.find"]
+    assert client.mathlib_cache_stats().bypasses == 2
+
+
+def test_mathlib_semantic_check_failures_are_not_cached(tmp_path: Path) -> None:
+    (tmp_path / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
+    lake = RecordingLake()
+    lake.snippet_ok = False
+    client = LeanToolchainClient(
+        lake=lake,
+        toolkit=LeanMcpToolkitClient(dispatcher=lambda tool_name, payload: {"passed": True, "diagnostics": []}),
+        config=LeanToolchainClientConfig(
+            mathlib_revision="test-revision",
+            provider_policy=LeanToolchainProviderPolicy(mathlib_check_prefer_lake_project=True),
+        ),
+    )
+
+    first = client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.nope")
+    second = client.check_mathlib_name(tmp_path, module="Init", decl_name="Nat.nope")
+
+    assert first.ok and first.passed is False
+    assert second.ok and second.passed is False
+    assert len(lake.snippets) == 2

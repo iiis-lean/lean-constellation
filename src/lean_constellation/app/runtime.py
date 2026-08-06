@@ -34,7 +34,11 @@ from lean_constellation.flows.registry import register_lean_flow_step_types
 from lean_constellation.flows.testing import CONTROLLED_BUSINESS_AGENT_STEP_OVERRIDES
 from lean_constellation.services.foundation import GateReport, MutationSummaryView, ServiceResult
 from lean_constellation.services import LeanProviderOverrides, LeanRuntimeServices, create_lean_runtime_services
-from lean_constellation.services.external_clients import ExternalClientConfig, LeanMcpToolkitClientConfig
+from lean_constellation.services.external_clients import (
+    ExternalClientConfig,
+    LeanMcpToolkitClientConfig,
+    LeanToolchainClientConfig,
+)
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.services.validation_snapshot.snapshot_restore import (
     RepoCheckpointKind,
@@ -253,7 +257,10 @@ def external_client_config_from_app_config(config: LeanAppConfig) -> ExternalCli
             timeout_seconds=toolkit.timeout_seconds,
             enabled_groups=toolkit.enabled_groups,
             response_excerpt_chars=toolkit.response_excerpt_chars,
-        )
+        ),
+        lean_toolchain=LeanToolchainClientConfig(
+            mathlib_revision=config.native_lake_project.mathlib_rev,
+        ),
     )
 
 

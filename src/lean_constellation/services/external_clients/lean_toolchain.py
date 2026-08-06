@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -9,10 +10,9 @@ import shlex
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.services.external_clients.lake_command import LakeCommandClient, LeanCheckSummaryView
 from lean_constellation.services.external_clients.lean_mcp_toolkit import (
     LeanDiagnosticsResult,
     LeanMcpToolkitClient,
@@ -22,6 +22,8 @@ from lean_constellation.services.external_clients.lean_mcp_toolkit import (
     ToolkitModuleView,
     ToolkitResponseWarning,
 )
+from lean_constellation.services.external_clients.lake_command import LakeCommandClient, LeanCheckSummaryView
+from lean_constellation.services.external_clients.mathlib_cache import MathlibCacheStats, MathlibLookupCache
 from lean_constellation.services.external_clients.process import ExternalCommandResult
 
 
@@ -36,6 +38,23 @@ class LeanToolchainProviderPolicy(StrictModel):
 class LeanToolchainClientConfig(StrictModel):
     provider_policy: LeanToolchainProviderPolicy = Field(default_factory=LeanToolchainProviderPolicy)
     raw_excerpt_chars: int = 12000
+    mathlib_revision: str | None = None
+    mathlib_cache_max_entries: int = 256
+
+    @field_validator("mathlib_revision")
+    @classmethod
+    def _normalize_mathlib_revision(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("mathlib_cache_max_entries")
+    @classmethod
+    def _valid_mathlib_cache_max_entries(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("mathlib_cache_max_entries must be >= 1")
+        return value
 
 
 class ToolchainCommandView(StrictModel):
@@ -187,6 +206,17 @@ class LeanToolchainClient:
         self.lake = lake
         self.toolkit = toolkit
         self.config = config or LeanToolchainClientConfig()
+        self._mathlib_cache = MathlibLookupCache(max_entries=self.config.mathlib_cache_max_entries)
+
+    def mathlib_cache_stats(self) -> MathlibCacheStats:
+        """Return process-local Mathlib cache counters for diagnostics/tests."""
+
+        return self._mathlib_cache.stats()
+
+    def clear_mathlib_cache(self) -> None:
+        """Clear only the process-local lookup cache."""
+
+        self._mathlib_cache.clear()
 
     def run_lake_update(
         self,
@@ -533,18 +563,74 @@ class LeanToolchainClient:
         return self.find_repo_declarations(repo_root, query=decl_name, match_mode="exact", module_filter=module, limit=5)
 
     def search_mathlib_declarations(self, query: str, *, kinds: list[str] | None = None, limit: int = 20) -> ToolchainMathlibSearchView:
-        result = self.toolkit.search_mathlib(query, kinds, limit)
-        return self._mathlib_search_view(result, provider="lean_mcp_toolkit")
+        normalized_query = query.strip()
+        normalized_kinds = tuple(sorted({kind.strip() for kind in kinds or [] if kind.strip()}))
+        key = self._mathlib_cache_key(
+            "search",
+            query=normalized_query,
+            kinds=normalized_kinds,
+            limit=limit,
+        )
+        cached = self._cache_get(key, ToolchainMathlibSearchView)
+        if cached is not None:
+            return cached
+        result = self.toolkit.search_mathlib(normalized_query, list(normalized_kinds), limit)
+        view = self._mathlib_search_view(result, provider="lean_mcp_toolkit")
+        self._cache_put(key, view)
+        return view
 
     def inspect_mathlib_declaration(self, decl_name: str) -> ToolchainDeclarationView:
-        result = self.toolkit.inspect_mathlib_decl(decl_name)
-        return self._declaration_view(result, provider="lean_mcp_toolkit")
+        normalized_name = decl_name.strip()
+        key = self._mathlib_cache_key("inspect_declaration", decl_name=normalized_name)
+        cached = self._cache_get(key, ToolchainDeclarationView)
+        if cached is not None:
+            return cached
+        result = self.toolkit.inspect_mathlib_decl(normalized_name)
+        view = self._declaration_view(result, provider="lean_mcp_toolkit")
+        self._cache_put(key, view)
+        return view
 
     def inspect_mathlib_module(self, module: str) -> ToolchainModuleView:
-        result = self.toolkit.inspect_mathlib_module(module)
-        return self._module_view(result, provider="lean_mcp_toolkit")
+        normalized_module = module.strip()
+        key = self._mathlib_cache_key("inspect_module", module=normalized_module)
+        cached = self._cache_get(key, ToolchainModuleView)
+        if cached is not None:
+            return cached
+        result = self.toolkit.inspect_mathlib_module(normalized_module)
+        view = self._module_view(result, provider="lean_mcp_toolkit")
+        self._cache_put(key, view)
+        return view
 
     def check_mathlib_name(
+        self,
+        repo_root: Path,
+        *,
+        module: str | None,
+        decl_name: str,
+        timeout_seconds: int | None = None,
+    ) -> ToolchainLeanCheckView:
+        normalized_module = module.strip() if module else None
+        normalized_decl = decl_name.strip()
+        key = self._mathlib_cache_key(
+            "check_name",
+            repo_root=Path(repo_root),
+            module=normalized_module,
+            decl_name=normalized_decl,
+            timeout_seconds=timeout_seconds,
+        )
+        cached = self._cache_get(key, ToolchainLeanCheckView)
+        if cached is not None:
+            return cached
+        view = self._check_mathlib_name_uncached(
+            Path(repo_root),
+            module=normalized_module,
+            decl_name=normalized_decl,
+            timeout_seconds=timeout_seconds,
+        )
+        self._cache_put(key, view)
+        return view
+
+    def _check_mathlib_name_uncached(
         self,
         repo_root: Path,
         *,
@@ -584,6 +670,23 @@ class LeanToolchainClient:
         )
 
     def check_mathlib_module(self, repo_root: Path, *, module: str, timeout_seconds: int | None = None) -> ToolchainLeanCheckView:
+        normalized_module = module.strip()
+        key = self._mathlib_cache_key(
+            "check_module",
+            repo_root=Path(repo_root),
+            module=normalized_module,
+            timeout_seconds=timeout_seconds,
+        )
+        cached = self._cache_get(key, ToolchainLeanCheckView)
+        if cached is not None:
+            return cached
+        view = self._check_mathlib_module_uncached(
+            Path(repo_root), module=normalized_module, timeout_seconds=timeout_seconds
+        )
+        self._cache_put(key, view)
+        return view
+
+    def _check_mathlib_module_uncached(self, repo_root: Path, *, module: str, timeout_seconds: int | None = None) -> ToolchainLeanCheckView:
         repo_path = Path(repo_root)
         code = "#check True"
         if self.config.provider_policy.mathlib_check_prefer_lake_project and self._looks_like_lake_project(repo_path):
@@ -607,6 +710,35 @@ class LeanToolchainClient:
         )
 
     def check_mathlib_batch(
+        self,
+        repo_root: Path,
+        *,
+        imports: list[str],
+        decl_names: list[str],
+        timeout_seconds: int | None = None,
+    ) -> ToolchainLeanCheckView:
+        normalized_imports = tuple(dict.fromkeys(item.strip() for item in imports if item.strip()))
+        normalized_decls = tuple(dict.fromkeys(item.strip() for item in decl_names if item.strip()))
+        key = self._mathlib_cache_key(
+            "check_batch",
+            repo_root=Path(repo_root),
+            imports=normalized_imports,
+            decl_names=normalized_decls,
+            timeout_seconds=timeout_seconds,
+        )
+        cached = self._cache_get(key, ToolchainLeanCheckView)
+        if cached is not None:
+            return cached
+        view = self._check_mathlib_batch_uncached(
+            Path(repo_root),
+            imports=list(normalized_imports),
+            decl_names=list(normalized_decls),
+            timeout_seconds=timeout_seconds,
+        )
+        self._cache_put(key, view)
+        return view
+
+    def _check_mathlib_batch_uncached(
         self,
         repo_root: Path,
         *,
@@ -714,6 +846,65 @@ class LeanToolchainClient:
             raw_excerpt=getattr(result, "stderr_excerpt", None) or getattr(result, "stdout_excerpt", None),
             issue_code=getattr(result, "issue_code", None),
         )
+
+    def _cache_get(self, key: str | None, model_type: type[Any]) -> Any | None:
+        cached = self._mathlib_cache.get(key)
+        if cached is None or not isinstance(cached, model_type):
+            return None
+        return cached.model_copy(deep=True)
+
+    def _cache_put(self, key: str | None, value: Any) -> None:
+        if key is None or not getattr(value, "ok", False):
+            return
+        # A provider may be reachable while the Lean check itself fails
+        # (`ok=True, passed=False`).  That is a negative/possibly transient
+        # receipt, not a successful stable result, so do not retain it.
+        if hasattr(value, "passed") and getattr(value, "passed") is not True:
+            return
+        warnings = getattr(value, "warnings", []) or []
+        if any(
+            any(token in warning.code.lower() for token in ("missing", "invalid", "incomplete"))
+            for warning in warnings
+        ):
+            return
+        self._mathlib_cache.put(key, value.model_copy(deep=True))
+
+    def _mathlib_cache_key(self, operation: str, **fields: Any) -> str | None:
+        revision = self.config.mathlib_revision or os.environ.get("LEAN_CONSTELLATION_MATHLIB_REV")
+        if not revision:
+            return None
+        normalized: dict[str, Any] = {
+            "cache_version": 1,
+            "operation": operation,
+            "mathlib_revision": revision.strip(),
+            "provider_policy": self.config.provider_policy.model_dump(mode="json"),
+            "toolkit": {
+                "base_url": getattr(self.toolkit.config, "base_url", None),
+                "api_prefix": getattr(self.toolkit.config, "api_prefix", None),
+                "enabled_groups": sorted(getattr(self.toolkit.config, "enabled_groups", []) or []),
+            },
+        }
+        for name, value in fields.items():
+            if name == "repo_root" and value is not None:
+                root = Path(value).expanduser().resolve(strict=False)
+                normalized["repo_root"] = str(root)
+                normalized["repo_environment"] = self._repo_environment_fingerprint(root)
+            else:
+                normalized[name] = value
+        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _repo_environment_fingerprint(self, repo_root: Path) -> dict[str, str | None]:
+        """Hash only stable project identity files; do not cache arbitrary source reads."""
+
+        values: dict[str, str | None] = {}
+        for name in ("lean-toolchain", "lake-manifest.json", "lakefile.toml", "lakefile.lean"):
+            path = repo_root / name
+            try:
+                values[name] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+            except OSError:
+                values[name] = None
+        return values
 
     def _lean_check_view(self, result: LeanCheckSummaryView, *, provider: str) -> ToolchainLeanCheckView:
         return ToolchainLeanCheckView(

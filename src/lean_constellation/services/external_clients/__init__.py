@@ -19,6 +19,7 @@ from lean_constellation.services.external_clients.lake_command import (
     LakeCommandSummaryView,
     LeanCheckSummaryView,
 )
+from lean_constellation.services.external_clients.mathlib_cache import MathlibCacheStats
 from lean_constellation.services.external_clients.lean_mcp_toolkit import (
     LeanDiagnosticsResult,
     LeanMcpToolkitClient,
@@ -90,6 +91,7 @@ __all__ = [
     "LakeCommandClientConfig",
     "LakeCommandSummaryView",
     "LeanCheckSummaryView",
+    "MathlibCacheStats",
     "LeanDiagnosticsResult",
     "LeanMcpToolkitClient",
     "LeanMcpToolkitClientConfig",
