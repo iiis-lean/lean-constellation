@@ -174,7 +174,7 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
     assert "Generated with <strong>Lean Constellation</strong>" in readme_text
     assert "Formalizes a public result." in readme_text
     assert "Internal release migration summary." not in readme_text
-    assert "This repository exports **1 public declarations**" in readme_text
+    assert "This repository exports **1 public declaration** across **1 node**" in readme_text
     assert (
         "[Public API index](docs/lean-constellation/PUBLIC_API.md)"
         in readme_text

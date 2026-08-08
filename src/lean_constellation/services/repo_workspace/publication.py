@@ -1177,14 +1177,17 @@ class RepoPublicationComponent:
     @classmethod
     def _render_public_api_markdown(cls, value: PublicApiDocument) -> str:
         declarations = cls._ordered_public_api_declarations(value.declarations)
+        declaration_count = len(declarations)
         node_count = len({item.node_path for item in declarations})
+        declaration_noun = "declaration" if declaration_count == 1 else "declarations"
+        node_noun = "node" if node_count == 1 else "nodes"
         lines = [
             "# Public API",
             "",
             f"- Repository format: `{value.repo_format}`",
             f"- Repository completion: `{value.completion_mode}`",
             f"- Proof availability: `{value.proof_availability}`",
-            f"- Public declarations: `{len(declarations)}` across `{node_count}` nodes",
+            f"- Public {declaration_noun}: `{declaration_count}` across `{node_count}` {node_noun}",
         ]
         if value.adapter_upstream is not None:
             upstream = value.adapter_upstream
@@ -1869,6 +1872,10 @@ class RepoPublicationComponent:
         description = presentation.description or (
             "A Lean 4 formalization project generated with Lean Constellation."
         )
+        declaration_count = len(api.declarations)
+        node_count = len({item.node_path for item in api.declarations})
+        declaration_noun = "declaration" if declaration_count == 1 else "declarations"
+        node_noun = "node" if node_count == 1 else "nodes"
         lines = [
             _README_BEGIN,
             (
@@ -1956,9 +1963,8 @@ class RepoPublicationComponent:
                 "## Public API",
                 "",
                 (
-                    f"This repository exports **{len(api.declarations)} public "
-                    "declarations** across "
-                    f"**{len({item.node_path for item in api.declarations})} nodes**."
+                    f"This repository exports **{declaration_count} public "
+                    f"{declaration_noun}** across **{node_count} {node_noun}**."
                 ),
                 "",
                 "Browse the [Public API index](docs/lean-constellation/PUBLIC_API.md) "
