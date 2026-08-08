@@ -422,6 +422,11 @@ def test_adapter_manual_policy_stops_at_committed_release_candidate(tmp_path: Pa
     main = lean_runtime.node.contract.get_committed_contract(repo_root, node_path="Main")
     assert main.ok and main.value is not None
     assert lean_runtime.repo_workspace.release.get_latest_release(repo_root).value is None
+    ready_view = lean_runtime.validation_snapshot.get_repo_ready_view(repo_root)
+    assert ready_view.ok and ready_view.value is not None
+    assert ready_view.value.ready_to_submit
+    assert ready_view.value.gate.gate_name == "adapter_repo_ready"
+    assert ready_view.value.blocking_issue_kinds == []
 
 
 def test_adapter_preparation_blocked_submit_finishes_blocked(tmp_path: Path) -> None:

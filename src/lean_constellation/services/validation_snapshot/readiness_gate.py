@@ -12,6 +12,7 @@ from lean_constellation.domain.preparation import RepoDependencyRequirementStatu
 from lean_constellation.domain.repo import (
     ProofAvailability,
     RepoCompletionMode,
+    RepoFormat,
     RepoPublicationStatus,
     completion_mode_satisfies,
     proof_availability_for_completion_mode,
@@ -839,7 +840,43 @@ class ReadinessGateComponent:
         publication = self.repo_workspace.metadata.get_repo_publication(repo_root)
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
-        gate = self.check_repo_ready(repo_root, summary="Repo ready preflight.")
+        repo_format = self.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format is RepoFormat.ADAPTER:
+            contract_gate = (
+                self.runtime.foundation.gate_passed(
+                    "adapter_main_committed",
+                    summary="Adapter Main contract is committed.",
+                )
+                if main.value.version_status is ContractVersionStatus.COMMITTED
+                else self.runtime.foundation.gate_failed(
+                    "adapter_main_committed",
+                    self.runtime.foundation.issue(
+                        "adapter_main_contract_not_committed",
+                        "Adapter release readiness requires a committed Main contract.",
+                        object_ref="Main",
+                        current=main.value.version_status.value,
+                        expected=ContractVersionStatus.COMMITTED.value,
+                    ),
+                    summary="Adapter Main contract is not committed.",
+                )
+            )
+            adapter_gate = self.adapter.check_adapter_ready(repo_root)
+            if not adapter_gate.ok or adapter_gate.value is None:
+                return self.runtime.foundation.fail(adapter_gate.issues)
+            gate = self.runtime.foundation.ok(
+                self.runtime.foundation.merge_gate_reports(
+                    "adapter_repo_ready",
+                    [contract_gate, adapter_gate.value],
+                )
+            )
+            success_summary = "Adapter repo is ready for Release preview."
+            blocked_summary = "Adapter release-ready gate has blocking issues."
+        else:
+            gate = self.check_repo_ready(repo_root, summary="Repo ready preflight.")
+            success_summary = "Repo is ready to submit."
+            blocked_summary = "Repo ready gate has blocking issues."
         if not gate.ok or gate.value is None:
             return self.runtime.foundation.fail(gate.issues)
         return self.runtime.foundation.ok(
@@ -853,7 +890,7 @@ class ReadinessGateComponent:
                 gate=gate.value,
                 ready_to_submit=gate.value.passed,
                 blocking_issue_kinds=sorted({issue.kind for issue in gate.value.issues}),
-                summary=("Repo is ready to submit." if gate.value.passed else "Repo ready gate has blocking issues."),
+                summary=(success_summary if gate.value.passed else blocked_summary),
             ),
             warnings=main.issues,
         )
