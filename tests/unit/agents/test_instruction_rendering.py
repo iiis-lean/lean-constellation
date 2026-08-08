@@ -327,12 +327,16 @@ def test_adapter_decl_catalog_instruction_matches_catalog_boundary() -> None:
     assert "list_root_interfaces" in text
     assert "find_adapter_decl_by_upstream" in text
     assert "check_adapter_catalog_ready_preflight" in text
+    assert "sole submission gate" in text
+    assert "Pre-finalize projection state" in text
     assert "submit_adapter_catalog_ready" in text
     assert "submit_adapter_catalog_blocked" in text
     assert "After an accepted submit, stop" in text
     assert "selected upstream as fixed" in text
     assert "write_adapter_upstream_metadata" not in text
     assert "refresh_adapter_projection" not in text
+    assert "check_adapter_projection" not in text
+    assert "check_adapter_ready" not in text
     assert "deterministic preparation responsibilities" in text
     assert "root interface edits" in text
 

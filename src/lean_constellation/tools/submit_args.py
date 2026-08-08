@@ -86,9 +86,12 @@ class SubmitAdapterCatalogReadyArgs(SummarySubmitArgs):
 
 
 class SubmitAdapterCatalogBlockedArgs(ReasonSubmitArgs):
-    missing_interfaces: list[str] = Field(default_factory=list, description="Required interfaces that could not be bound.")
-    evidence_summary: str | None = Field(default=None, description="Evidence gathered before blocking.")
-    suggested_next_action: str | None = Field(default=None, description="Suggested follow-up action.")
+    missing_interfaces: list[str] = Field(
+        default_factory=list,
+        description="Exact current unbound required interfaces; leave empty only for a non-interface catalog preflight failure.",
+    )
+    evidence_summary: str | None = Field(default=None, description="Concrete evidence for the current catalog preflight failure; required when submitting blocked.")
+    suggested_next_action: str | None = Field(default=None, description="Higher-level action needed to resolve the blocker; required when submitting blocked.")
 
 
 class SubmitResourceRequestArgs(SummarySubmitArgs):

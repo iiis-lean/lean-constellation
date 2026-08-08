@@ -231,6 +231,15 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
 
     _run_to_agent_catalog(runtime, flow_id)
     _complete_adapter_catalog(lean_runtime, repo_root)
+    transient_block = lean_runtime.adapter.submit_adapter_catalog_blocked(
+        repo_root,
+        reason="Visible modules have not yet been materialized.",
+        missing_interfaces=[],
+        evidence_summary="Catalog preflight passes but the Flow-owned projection has not run.",
+        suggested_next_action="Run the deterministic adapter finalization step.",
+    )
+    assert not transient_block.ok
+    assert transient_block.issues[0].kind == "adapter_catalog_preflight_already_passed"
     runtime.agent_service.queue_submission(
         AdapterCatalogReadySubmission(
             submission_id=new_submission_id("sub"),

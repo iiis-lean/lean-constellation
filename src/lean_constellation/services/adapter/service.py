@@ -560,23 +560,62 @@ class AdapterService:
         evidence_summary: str | None = None,
         suggested_next_action: str | None = None,
     ) -> ServiceResult[AdapterCatalogBlockedResultView]:
-        del repo_root
         if not reason or not reason.strip():
             return self.runtime.foundation.fail(self.runtime.foundation.issue("adapter_blocked_reason_required", "Blocked submit reason is required.", field="reason"))
-        if missing_interfaces and not (evidence_summary and evidence_summary.strip()):
+        preflight = self.check_adapter_catalog_ready_preflight(repo_root)
+        if not preflight.ok or preflight.value is None:
+            return self.runtime.foundation.fail(preflight.issues)
+        if preflight.value.passed:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_catalog_preflight_already_passed",
+                    "Adapter catalog preflight already passes; submit catalog ready and let deterministic Flow steps finalize projection and provider readiness.",
+                    suggested_action="Call submit_adapter_catalog_ready.",
+                )
+            )
+        if not evidence_summary or not evidence_summary.strip():
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "adapter_blocked_evidence_required",
-                    "Blocked submit with missing interfaces requires an evidence_summary.",
+                    "Blocked submit requires a concrete evidence_summary.",
                     field="evidence_summary",
+                )
+            )
+        if not suggested_next_action or not suggested_next_action.strip():
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_blocked_next_action_required",
+                    "Blocked submit requires a suggested higher-level next action.",
+                    field="suggested_next_action",
+                )
+            )
+        unbound = self.list_unbound_adapter_interfaces(repo_root)
+        if not unbound.ok or unbound.value is None:
+            return self.runtime.foundation.fail(unbound.issues)
+        current_unbound = sorted(set(unbound.value.interfaces))
+        submitted_missing = sorted(
+            {
+                item.strip()
+                for item in (missing_interfaces or [])
+                if item and item.strip()
+            }
+        )
+        if submitted_missing != current_unbound:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_blocked_interfaces_mismatch",
+                    "Blocked submit must report the exact current unbound interface set.",
+                    field="missing_interfaces",
+                    current=", ".join(submitted_missing),
+                    expected=", ".join(current_unbound),
                 )
             )
         return self.runtime.foundation.ok(
             AdapterCatalogBlockedResultView(
                 reason=reason.strip(),
-                missing_interfaces=missing_interfaces or [],
-                evidence_summary=evidence_summary,
-                suggested_next_action=suggested_next_action,
+                missing_interfaces=submitted_missing,
+                evidence_summary=evidence_summary.strip(),
+                suggested_next_action=suggested_next_action.strip(),
                 summary=f"Adapter catalog blocked: {reason.strip()}",
             )
         )

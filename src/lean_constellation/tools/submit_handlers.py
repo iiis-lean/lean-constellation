@@ -505,10 +505,10 @@ def submit_adapter_catalog_blocked(runtime: Any, ctx: ToolExecutionContext, args
         runtime,
         AdapterCatalogBlockedSubmission(
             **_base_kwargs(ctx, tool_name="submit_adapter_catalog_blocked", summary=gate.value.summary),
-            reason=args.reason,
-            missing_interfaces=args.missing_interfaces,
-            evidence_summary=args.evidence_summary,
-            suggested_next_action=args.suggested_next_action,
+            reason=gate.value.reason,
+            missing_interfaces=gate.value.missing_interfaces,
+            evidence_summary=gate.value.evidence_summary,
+            suggested_next_action=gate.value.suggested_next_action,
         ),
         agent_view=gate.value.model_dump(mode="json"),
     )

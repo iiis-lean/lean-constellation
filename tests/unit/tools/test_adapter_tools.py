@@ -38,8 +38,6 @@ def test_adapter_tools_are_registered() -> None:
         "list_unbound_adapter_interfaces",
         "validate_adapter_interface_bindings",
         "preview_adapter_import_modules",
-        "check_adapter_projection",
-        "check_adapter_ready",
         "check_adapter_catalog_ready_preflight",
     }
 
@@ -57,5 +55,5 @@ def test_adapter_groups_expose_expected_tools() -> None:
     assert_group_contains("adapter_decl_catalog_read", {"list_adapter_decls", "inspect_adapter_decl", "find_adapter_decl_by_upstream"})
     assert_group_contains("adapter_interface_binding_write", {"bind_adapter_interface", "unbind_adapter_interface"})
     assert_group_contains("adapter_interface_binding_read", {"list_unbound_adapter_interfaces", "validate_adapter_interface_bindings"})
-    assert_group_contains("adapter_projection_check", {"preview_adapter_import_modules", "check_adapter_projection"})
-    assert_group_contains("adapter_ready_read", {"check_adapter_ready", "check_adapter_catalog_ready_preflight"})
+    assert_group_contains("adapter_import_preview_read", {"preview_adapter_import_modules"})
+    assert_group_contains("adapter_catalog_ready_read", {"check_adapter_catalog_ready_preflight"})

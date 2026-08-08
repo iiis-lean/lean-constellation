@@ -8,11 +8,11 @@ from enum import StrEnum
 class ApplicationToolGroupKey(StrEnum):
     ADAPTER_DECL_CATALOG_READ = "adapter_decl_catalog_read"
     ADAPTER_DECL_CATALOG_WRITE = "adapter_decl_catalog_write"
+    ADAPTER_CATALOG_READY_READ = "adapter_catalog_ready_read"
+    ADAPTER_IMPORT_PREVIEW_READ = "adapter_import_preview_read"
     ADAPTER_INPUT_READ = "adapter_input_read"
     ADAPTER_INTERFACE_BINDING_READ = "adapter_interface_binding_read"
     ADAPTER_INTERFACE_BINDING_WRITE = "adapter_interface_binding_write"
-    ADAPTER_PROJECTION_CHECK = "adapter_projection_check"
-    ADAPTER_READY_READ = "adapter_ready_read"
     CONTENT_TASK_ADMISSION_READ = "content_task_admission_read"
     CONTENT_TASK_RESULT_FINALIZE = "content_task_result_finalize"
     CONTENT_COMPLETION_GATE_READ = "content_completion_gate_read"

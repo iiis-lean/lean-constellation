@@ -12,7 +12,7 @@ EXPECTED_SURFACE_COUNTS = {
     "SourceIndexBuilderAgent": (6, 25, 1, 1, 0),
     "SourceIndexReviewerAgent": (5, 14, 1, 1, 0),
     "RootInterfacePrepareAgent": (7, 15, 1, 1, 0),
-    "AdapterDeclCatalogAgent": (12, 40, 1, 2, 0),
+    "AdapterDeclCatalogAgent": (12, 38, 1, 2, 0),
     "ResourceCuratorAgent": (8, 25, 1, 4, 4),
     "RepoResourceDiscoveryAgent": (9, 22, 1, 1, 2),
     "RepoLeanProviderDiscoveryAgent": (11, 26, 1, 1, 1),
@@ -38,7 +38,7 @@ EXPECTED_APPLICATION_SURFACE_HASHES = {
     "SourceIndexBuilderAgent": "83c7d2aa3b835727f89779c44b92f708371a1b3e7c085b9b1b8787f4fc1e5876",
     "SourceIndexReviewerAgent": "71ed43ad69003736a91fbb5146983683c80cc23eb821ee5abf464d546a32641f",
     "RootInterfacePrepareAgent": "744c85a080bb7ec6ecf1e2923beee4fb683ce68347599ab76c2eee9b3e905cd9",
-    "AdapterDeclCatalogAgent": "7bb76686a93ba754b2ff9a01019a5c94ef5eccec9a780f7c9171c8de5cb055d0",
+    "AdapterDeclCatalogAgent": "b911cb02f5dad09dd5411b0b5e340aef9a985b7fd60eac799fd76b753642eb23",
     "ResourceCuratorAgent": "6e7e48de881b79dd1ce0d1c6e843d8308a933345c5ea96575c611073b380ded1",
     "RepoResourceDiscoveryAgent": "584c9be44a4d3a2961e637051397256a5981b852ff6d040a275492f01bdd7b2b",
     "RepoLeanProviderDiscoveryAgent": "6b96a0a54252dbf0b96206840c36ae53d949bddc773de6d41213d90c7bce86ef",
@@ -410,7 +410,6 @@ def test_adapter_decl_catalog_surface_matches_catalog_only_boundary() -> None:
         "validate_adapter_interface_bindings",
         "preview_adapter_import_modules",
         "check_adapter_catalog_ready_preflight",
-        "check_adapter_ready",
     } <= tools
     assert {
         "get_preparation_start_preflight",
@@ -421,6 +420,8 @@ def test_adapter_decl_catalog_surface_matches_catalog_only_boundary() -> None:
         "record_visible_upstream_modules",
         "ensure_adapter_decl_catalog",
         "refresh_adapter_projection",
+        "check_adapter_projection",
+        "check_adapter_ready",
         "add_root_interface",
         "update_root_interface",
         "remove_root_interface",
@@ -436,8 +437,8 @@ def test_adapter_decl_catalog_surface_matches_catalog_only_boundary() -> None:
         "adapter_decl_catalog_write",
         "adapter_interface_binding_read",
         "adapter_interface_binding_write",
-        "adapter_projection_check",
-        "adapter_ready_read",
+        "adapter_import_preview_read",
+        "adapter_catalog_ready_read",
     } == set(report.application_group_keys)
 
 

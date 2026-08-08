@@ -1374,7 +1374,9 @@ def _adapter_decl_catalog_prompt(input_model: AdapterRepoPreparationInput) -> st
         [
             f"Prepare the adapter declaration catalog for adapter repo {input_model.repo_key}.",
             "Read preparation input, upstream metadata, root interfaces, and current adapter catalog through tools.",
-            "Register finalized adapter declarations, bind required interfaces, then submit ready or blocked.",
+            "Register finalized adapter declarations and bind required interfaces.",
+            "Use the catalog-ready preflight as the sole submission gate; later deterministic steps own visible modules, projection refresh, and final provider readiness.",
+            "Submit blocked only for a current catalog-preflight failure that cannot be repaired within this Agent's permissions.",
         ]
     )
 

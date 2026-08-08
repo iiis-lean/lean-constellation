@@ -1596,6 +1596,25 @@ def test_adapter_ready_gate_aggregates_service_issues_and_submit_failures(tmp_pa
     assert not blocked_without_evidence.ok
     assert blocked_without_evidence.issues[0].kind == "adapter_blocked_evidence_required"
 
+    blocked_without_next_action = service.submit_adapter_catalog_blocked(
+        tmp_path,
+        reason="Need upstream theorem not present in catalog.",
+        missing_interfaces=["main_result"],
+        evidence_summary="No matching declaration found.",
+    )
+    assert not blocked_without_next_action.ok
+    assert blocked_without_next_action.issues[0].kind == "adapter_blocked_next_action_required"
+
+    blocked_with_wrong_interfaces = service.submit_adapter_catalog_blocked(
+        tmp_path,
+        reason="Need upstream theorem not present in catalog.",
+        missing_interfaces=[],
+        evidence_summary="No matching declaration found.",
+        suggested_next_action="Request a different upstream repo.",
+    )
+    assert not blocked_with_wrong_interfaces.ok
+    assert blocked_with_wrong_interfaces.issues[0].kind == "adapter_blocked_interfaces_mismatch"
+
     blocked = service.submit_adapter_catalog_blocked(
         tmp_path,
         reason="Need upstream theorem not present in catalog.",

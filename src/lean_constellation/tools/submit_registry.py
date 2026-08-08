@@ -146,7 +146,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
         ),
         _submit_tool(
             name="submit_adapter_catalog_blocked",
-            description="Submit that adapter declaration catalog work is blocked.",
+            description="Submit a genuine current catalog-preflight blocker with exact unbound interfaces and evidence.",
             args_model=SubmitAdapterCatalogBlockedArgs,
             groups={SubmitGroup.ADAPTER_READY_SUBMIT},
             roles={"worker", "admin"},
