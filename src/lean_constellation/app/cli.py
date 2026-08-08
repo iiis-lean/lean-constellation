@@ -91,6 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_watch.add_argument("--content-task-flow-id", default=None)
     semantic_watch.add_argument("--output", choices=["ndjson", "summary"], default="ndjson")
     semantic_watch.add_argument("--activity", choices=["quiet", "heartbeat", "verbose"], default="quiet")
+    semantic_watch.add_argument(
+        "--exit-policy",
+        choices=["observer", "strict"],
+        default="observer",
+        help="Return success after observing terminal truth, or fail when terminal truth requires review.",
+    )
     semantic_watch.add_argument("--wait-s", type=float, default=30.0)
     semantic_watch.add_argument("--timeout-s", type=float, default=None)
     semantic_watch.add_argument("--soft-stall-s", type=float, default=300.0)
@@ -489,6 +495,7 @@ def main(argv: list[str] | None = None) -> int:
                     content_task_flow_id=args.content_task_flow_id,
                     output=args.output,
                     activity=args.activity,
+                    exit_policy=args.exit_policy,
                     wait_s=args.wait_s,
                     timeout_s=args.timeout_s,
                     soft_stall_s=args.soft_stall_s,

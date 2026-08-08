@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from agent_runtime_kit.agent.provider_contracts import ProviderHomeSpec
-from agent_runtime_kit.flow import AgentStep, StepStatus
+from agent_runtime_kit.flow import AgentStep, FlowStatus, StepStatus
 from agent_runtime_kit.flow.standard_steps import AgentStepState
 from pydantic import ValidationError
 
@@ -70,6 +70,86 @@ def test_production_step_logic_runs_to_agent_boundary_and_auto_pauses(tmp_path: 
     assert step.status is StepStatus.CREATED
     assert tick.run_control is not None
     assert tick.run_control.pause_reason == f"agent_step_created:{step.step_id}"
+
+
+def test_production_step_logic_reports_flow_terminal_before_idle_fallback(tmp_path: Path) -> None:
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+    flow_id = _start_coordinator(admin, repo_root)
+    assert admin.pause_runtime().ok
+
+    started = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(granularity="step", action="logic", scope_id="repo:Repo")
+    )
+    assert started.ok and started.value is not None
+    policy = runtime.ark.schedule_service._semantic_policy  # noqa: SLF001 - semantic policy fixture.
+    assert policy is not None
+    with runtime.ark.flow_service.store.edit_session("repo:Repo") as tx:
+        flow = tx.load_flow_for_update(flow_id)
+        flow.status = FlowStatus.COMPLETED
+        flow.current_step_id = None
+
+    decision = policy.decide(runtime.ark.schedule_service)
+
+    assert decision.action == "pause"
+    assert decision.reason == f"flow_terminal:{flow_id}"
+
+
+def test_runtime_lease_monitor_classifies_no_runnable_completed_flow_as_handoff(tmp_path: Path) -> None:
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+    flow_id = _start_coordinator(admin, repo_root)
+    assert admin.pause_runtime().ok
+    started = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(granularity="step", action="logic", scope_id="repo:Repo")
+    )
+    assert started.ok and started.value is not None and started.value.lease_id is not None
+    with runtime.ark.flow_service.store.edit_session("repo:Repo") as tx:
+        flow = tx.load_flow_for_update(flow_id)
+        flow.status = FlowStatus.COMPLETED
+        flow.current_step_id = None
+    with runtime.ark.schedule_service.lock:
+        runtime.ark.schedule_service._update_semantic_lease_locked(  # noqa: SLF001 - scheduler lease fixture.
+            status="terminal",
+            terminal_reason="no_runnable_candidate",
+            advanced_flow_ids=[flow_id],
+        )
+
+    view = admin.get_runtime_lease(started.value.lease_id)
+
+    assert view.ok and view.value is not None
+    assert view.value.terminal_disposition == "cross_flow_handoff"
+    assert view.value.requires_review is False
+    assert view.value.suggested_next_action == "inspect_flow_result_and_start_next_lifecycle_entry"
+
+
+def test_runtime_lease_monitor_keeps_unexplained_no_runnable_reviewable(tmp_path: Path) -> None:
+    repo_root = tmp_path / "Repo"
+    repo_root.mkdir()
+    runtime = create_app_runtime_services(runtime_root=tmp_path / ".runtime")
+    admin = LeanAdminApi(runtime)
+    _start_coordinator(admin, repo_root)
+    assert admin.pause_runtime().ok
+    started = admin.semantic_advance(
+        RuntimeSemanticAdvanceInput(granularity="step", action="logic", scope_id="repo:Repo")
+    )
+    assert started.ok and started.value is not None and started.value.lease_id is not None
+    with runtime.ark.schedule_service.lock:
+        runtime.ark.schedule_service._update_semantic_lease_locked(  # noqa: SLF001 - scheduler lease fixture.
+            status="terminal",
+            terminal_reason="no_runnable_candidate",
+        )
+
+    view = admin.get_runtime_lease(started.value.lease_id)
+
+    assert view.ok and view.value is not None
+    assert view.value.terminal_disposition == "review_required"
+    assert view.value.requires_review is True
+    assert view.value.suggested_next_action == "audit_candidates_before_next_admission"
 
 
 def test_semantic_advance_requires_global_pause_and_valid_target(tmp_path: Path) -> None:

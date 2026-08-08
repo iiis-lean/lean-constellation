@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -15,21 +16,36 @@ def _lease_payload(
     content_flow_id: str | None = "flow-1",
     current_agent_id: str | None = None,
     running_step_ids: list[str] | None = None,
+    terminal_reason: str | None = None,
+    terminal_disposition: str | None = None,
+    requires_review: bool | None = None,
+    suggested_next_action: str | None = None,
 ) -> dict:
+    value = {
+        "lease": {
+            "lease_id": "lease-1",
+            "version": version,
+            "status": status,
+            "terminal_reason": (
+                terminal_reason
+                if terminal_reason is not None
+                else ("content_child_closed:flow-1" if status == "terminal" else None)
+            ),
+        },
+        "started_steps": steps,
+        "current_content_task_flow_id": content_flow_id,
+        "current_agent_id": current_agent_id,
+        "runtime": {"running_step_ids": running_step_ids or []},
+    }
+    if terminal_disposition is not None:
+        value["terminal_disposition"] = terminal_disposition
+    if requires_review is not None:
+        value["requires_review"] = requires_review
+    if suggested_next_action is not None:
+        value["suggested_next_action"] = suggested_next_action
     return {
         "ok": True,
-        "value": {
-            "lease": {
-                "lease_id": "lease-1",
-                "version": version,
-                "status": status,
-                "terminal_reason": "content_child_closed:flow-1" if status == "terminal" else None,
-            },
-            "started_steps": steps,
-            "current_content_task_flow_id": content_flow_id,
-            "current_agent_id": current_agent_id,
-            "runtime": {"running_step_ids": running_step_ids or []},
-        },
+        "value": value,
         "issues": [],
     }
 
@@ -433,6 +449,68 @@ def test_semantic_watcher_summary_mode_only_emits_final_record() -> None:
 
     assert watcher.run() == 0
     assert [event["event"] for event in events] == ["watch_completed"]
+
+
+@pytest.mark.parametrize(("exit_policy", "expected_exit"), [("observer", 0), ("strict", 1)])
+def test_semantic_watcher_separates_observation_exit_from_reviewable_terminal_truth(
+    exit_policy: Literal["observer", "strict"],
+    expected_exit: int,
+) -> None:
+    events: list[dict] = []
+    watcher = SemanticWatcher(
+        SemanticWatchOptions(
+            admin_base_url="http://admin.test",
+            repo_key="Repo",
+            lease_id="lease-1",
+            output="summary",
+            exit_policy=exit_policy,
+        ),
+        request_json=lambda *_args: _lease_payload(
+            status="terminal",
+            version=2,
+            steps=[],
+            content_flow_id=None,
+            terminal_reason="no_runnable_candidate",
+            terminal_disposition="review_required",
+            requires_review=True,
+            suggested_next_action="audit_candidates_before_next_admission",
+        ),
+        emit=events.append,
+    )
+
+    assert watcher.run() == expected_exit
+    assert events[-1]["observer_status"] == "completed"
+    assert events[-1]["terminal_disposition"] == "review_required"
+    assert events[-1]["requires_review"] is True
+    assert events[-1]["suggested_next_action"] == "audit_candidates_before_next_admission"
+
+
+def test_semantic_watcher_strict_mode_accepts_classified_cross_flow_handoff() -> None:
+    events: list[dict] = []
+    watcher = SemanticWatcher(
+        SemanticWatchOptions(
+            admin_base_url="http://admin.test",
+            repo_key="Repo",
+            lease_id="lease-1",
+            output="summary",
+            exit_policy="strict",
+        ),
+        request_json=lambda *_args: _lease_payload(
+            status="terminal",
+            version=2,
+            steps=[],
+            content_flow_id=None,
+            terminal_reason="no_runnable_candidate",
+            terminal_disposition="cross_flow_handoff",
+            requires_review=False,
+            suggested_next_action="inspect_flow_result_and_start_next_lifecycle_entry",
+        ),
+        emit=events.append,
+    )
+
+    assert watcher.run() == 0
+    assert events[-1]["terminal_disposition"] == "cross_flow_handoff"
+    assert events[-1]["requires_review"] is False
 
 
 def test_semantic_watcher_retries_bounded_http_failures() -> None:

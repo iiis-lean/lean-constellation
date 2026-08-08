@@ -388,6 +388,8 @@ def test_cli_semantic_watch_uses_long_poll_timeout_margin(tmp_path, capsys, monk
             "25",
             "--output",
             "summary",
+            "--exit-policy",
+            "strict",
         ]
     )
 

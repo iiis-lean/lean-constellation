@@ -123,7 +123,11 @@ def build_semantic_run_policy(runtime, request: RuntimeSemanticAdvanceInput) -> 
 def _build_logic_policy(runtime, request: RuntimeSemanticAdvanceInput) -> SchedulerSemanticRunPolicy:  # noqa: ANN001
     assert request.scope_id is not None
     scope_id = request.scope_id
+    flow_service = _flow_service(runtime)
     step_service = _step_service(runtime)
+    initial_flow_ids = tuple(
+        sorted(flow.flow_id for flow in flow_service.list_non_terminal_flows(scope_id=scope_id))
+    )
 
     def created_agent_steps() -> list[str]:
         return [
@@ -136,6 +140,13 @@ def _build_logic_policy(runtime, request: RuntimeSemanticAdvanceInput) -> Schedu
         agent_ids = created_agent_steps()
         if agent_ids:
             return SchedulerRunDecision(action="pause", reason=f"agent_step_created:{agent_ids[0]}")
+        terminal_flow_ids = [
+            flow_id
+            for flow_id in initial_flow_ids
+            if flow_service.get_flow(flow_id).status in {FlowStatus.COMPLETED, FlowStatus.FAILED}
+        ]
+        if terminal_flow_ids:
+            return SchedulerRunDecision(action="pause", reason=f"flow_terminal:{terminal_flow_ids[0]}")
         return SchedulerRunDecision()
 
     return SchedulerSemanticRunPolicy(

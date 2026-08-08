@@ -136,6 +136,16 @@ class RuntimeStatusView(StrictModel):
     summary: str
 
 
+RuntimeLeaseTerminalDisposition = Literal[
+    "active",
+    "normal_boundary",
+    "cross_flow_handoff",
+    "review_required",
+    "business_blocked",
+    "runtime_failure",
+]
+
+
 class RuntimeLeaseMonitorView(StrictModel):
     lease: SchedulerRunLeaseView
     runtime: RuntimeStatusView
@@ -148,6 +158,9 @@ class RuntimeLeaseMonitorView(StrictModel):
     truth_version: int
     observed_at: str
     timed_out: bool = False
+    terminal_disposition: RuntimeLeaseTerminalDisposition = "active"
+    requires_review: bool = False
+    suggested_next_action: str = "wait_for_terminal"
     summary: str
 
 
@@ -202,6 +215,51 @@ class FlowMonitorView(StrictModel):
     finished_at: str | None = None
     steps: list[StepMonitorView] = Field(default_factory=list)
     summary: str
+
+
+def _classify_runtime_lease_terminal(
+    lease: SchedulerRunLeaseView,
+    advanced_flows: list[FlowMonitorView],
+) -> tuple[RuntimeLeaseTerminalDisposition, bool, str]:
+    if lease.status != "terminal":
+        return "active", False, "wait_for_terminal"
+
+    reason = lease.terminal_reason
+    failed_flows = [flow for flow in advanced_flows if flow.status == "failed" or flow.error_type is not None]
+    if failed_flows:
+        return "business_blocked", True, "inspect_terminal_flow_error"
+
+    if isinstance(reason, str) and reason.startswith("runtime_failure"):
+        return "runtime_failure", True, "inspect_runtime_failure"
+
+    if isinstance(reason, str) and reason.startswith("flow_terminal:"):
+        return "cross_flow_handoff", False, "inspect_flow_result_and_start_next_lifecycle_entry"
+
+    normal_prefixes = (
+        "agent_step_created:",
+        "agent_step_terminal:",
+        "content_plan_step_terminal:",
+        "content_child_closed:",
+        "waiting_for_parent_callback:",
+        "content_task_terminal:",
+        "content_task_batch_checkpointed:",
+        "coordinator_terminal:",
+    )
+    if reason == "semantic_boundary_reached" or (
+        isinstance(reason, str) and reason.startswith(normal_prefixes)
+    ):
+        return "normal_boundary", False, "inspect_boundary_and_continue"
+
+    if reason == "no_runnable_candidate":
+        completed_flows = [flow for flow in advanced_flows if flow.status == "completed"]
+        if completed_flows:
+            return "cross_flow_handoff", False, "inspect_flow_result_and_start_next_lifecycle_entry"
+        return "review_required", True, "audit_candidates_before_next_admission"
+
+    if reason in {"semantic_safety_cap_exhausted", "run_control_cleared"}:
+        return "review_required", True, "audit_lease_terminal_state"
+
+    return "review_required", True, "audit_unknown_terminal_reason"
 
 
 class FlowTreeMonitorView(StrictModel):
@@ -3888,6 +3946,10 @@ class LeanAdminApi:
             if str(agent.status) == "running":
                 current_agent_id = agent_id
                 break
+        terminal_disposition, requires_review, suggested_next_action = _classify_runtime_lease_terminal(
+            lease,
+            advanced_flows,
+        )
         return RuntimeLeaseMonitorView(
             lease=lease,
             runtime=runtime_result.value,
@@ -3903,8 +3965,11 @@ class LeanAdminApi:
             truth_version=lease.version,
             observed_at=utc_now_iso(),
             timed_out=timed_out,
+            terminal_disposition=terminal_disposition,
+            requires_review=requires_review,
+            suggested_next_action=suggested_next_action,
             summary=(
-                f"Scheduler lease {lease.lease_id} is {lease.status}"
+                f"Scheduler lease {lease.lease_id} is {lease.status} ({terminal_disposition})"
                 + (" after a bounded wait timeout." if timed_out else ".")
             ),
         )

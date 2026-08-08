@@ -22,6 +22,7 @@ class SemanticWatchOptions:
     content_task_flow_id: str | None = None
     output: Literal["ndjson", "summary"] = "ndjson"
     activity: Literal["quiet", "heartbeat", "verbose"] = "quiet"
+    exit_policy: Literal["observer", "strict"] = "observer"
     wait_s: float = 30.0
     timeout_s: float | None = None
     soft_stall_s: float = 300.0
@@ -292,39 +293,71 @@ class SemanticWatcher:
                 summary=progress.get("summary", "Loaded ContentTask progress."),
             )
 
-        normal_boundary_reason = bool(
-            isinstance(reason, str)
-            and any(
-                reason.startswith(prefix)
-                for prefix in (
-                    "agent_step_created:",
-                    "agent_step_terminal:",
-                    "content_plan_step_terminal:",
-                    "content_child_closed:",
-                    "waiting_for_parent_callback:",
-                    "content_task_terminal:",
-                    "content_task_batch_checkpointed:",
-                    "coordinator_terminal:",
-                )
-            )
-        )
-        failed_reason = reason in {
-            "runtime_failure",
-            "semantic_safety_cap_exhausted",
-            "no_runnable_candidate",
-            "run_control_cleared",
-        } or (reason is not None and not normal_boundary_reason and reason.startswith("runtime_failure:"))
         failed_progress = progress is not None and progress.get("task_status") in {"failed", "blocked"}
-        exit_code = 1 if failed_reason or failed_progress else 0
+        terminal_disposition = lease_view.get("terminal_disposition") or self._fallback_terminal_disposition(reason)
+        requires_review = bool(lease_view.get("requires_review", False))
+        if failed_progress:
+            terminal_disposition = "business_blocked"
+            requires_review = True
+        elif terminal_disposition in {"review_required", "business_blocked", "runtime_failure"}:
+            requires_review = True
+        suggested_next_action = lease_view.get("suggested_next_action") or self._fallback_next_action(
+            terminal_disposition
+        )
+        strict_failure = requires_review or terminal_disposition in {
+            "review_required",
+            "business_blocked",
+            "runtime_failure",
+        }
+        exit_code = 1 if self.options.exit_policy == "strict" and strict_failure else 0
         self._emit(
             "watch_completed",
             exit_code=exit_code,
+            observer_status="completed",
             terminal_reason=reason,
+            terminal_disposition=terminal_disposition,
+            requires_review=requires_review,
+            suggested_next_action=suggested_next_action,
             content_task_progress=progress,
-            summary="Semantic lease observation completed." if exit_code == 0 else "Semantic lease requires review.",
+            summary=(
+                "Semantic lease observation completed; terminal state requires review."
+                if requires_review
+                else "Semantic lease observation completed."
+            ),
             force=True,
         )
         return exit_code
+
+    @staticmethod
+    def _fallback_terminal_disposition(reason: object) -> str:
+        if isinstance(reason, str) and reason.startswith("runtime_failure"):
+            return "runtime_failure"
+        if isinstance(reason, str) and reason.startswith("flow_terminal:"):
+            return "cross_flow_handoff"
+        normal_prefixes = (
+            "agent_step_created:",
+            "agent_step_terminal:",
+            "content_plan_step_terminal:",
+            "content_child_closed:",
+            "waiting_for_parent_callback:",
+            "content_task_terminal:",
+            "content_task_batch_checkpointed:",
+            "coordinator_terminal:",
+        )
+        if reason == "semantic_boundary_reached" or (
+            isinstance(reason, str) and reason.startswith(normal_prefixes)
+        ):
+            return "normal_boundary"
+        return "review_required"
+
+    @staticmethod
+    def _fallback_next_action(terminal_disposition: str) -> str:
+        return {
+            "normal_boundary": "inspect_boundary_and_continue",
+            "cross_flow_handoff": "inspect_flow_result_and_start_next_lifecycle_entry",
+            "runtime_failure": "inspect_runtime_failure",
+            "business_blocked": "inspect_terminal_flow_error",
+        }.get(terminal_disposition, "audit_lease_terminal_state")
 
     def _get_lease(self) -> dict:
         return self._request(
