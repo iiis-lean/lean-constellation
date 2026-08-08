@@ -161,6 +161,41 @@ class ToolkitDeclarationSoundnessBatchResult(StrictModel):
     issue_code: str | None = None
 
 
+class ToolkitCompiledDeclarationTarget(StrictModel):
+    module: str
+    declaration_name: str
+
+
+class ToolkitCompiledDeclarationItem(StrictModel):
+    module: str
+    declaration_name: str
+    success: bool
+    error_message: str | None = None
+    owner_module: str | None = None
+    declaration_kind: str | None = None
+    signature: str | None = None
+    universe_count: int = 0
+    representation: str | None = None
+    reference_code: str | None = None
+    generation_kind: str | None = None
+    generator_declaration: str | None = None
+    provenance_error_message: str | None = None
+
+
+class ToolkitCompiledDeclarationBatchResult(StrictModel):
+    protocol_ok: bool
+    batch_success: bool
+    items: list[ToolkitCompiledDeclarationItem] = Field(default_factory=list)
+    count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    error_message: str | None = None
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
+    raw_excerpt: str | None = None
+    summary: str
+    issue_code: str | None = None
+
+
 class SorryAxiomScanResult(StrictModel):
     ok: bool
     contains_sorry: bool
@@ -728,6 +763,48 @@ class LeanMcpToolkitClient:
             scan_source=scan_source,
         )
 
+    def inspect_compiled_declarations(
+        self,
+        repo_root: Path,
+        declarations: list[ToolkitCompiledDeclarationTarget],
+        *,
+        include_to_additive_provenance: bool = False,
+    ) -> ToolkitCompiledDeclarationBatchResult:
+        result = self.call_tool(
+            "lsp.compiled_declaration_batch",
+            {
+                "project_root": str(repo_root),
+                "declarations": [item.model_dump(mode="json") for item in declarations],
+                "include_to_additive_provenance": include_to_additive_provenance,
+            },
+        )
+        raw = result.value
+        if not isinstance(raw, dict):
+            return ToolkitCompiledDeclarationBatchResult(
+                protocol_ok=False,
+                batch_success=False,
+                warnings=list(result.warnings),
+                raw_excerpt=result.raw_excerpt,
+                summary=result.summary or "Compiled declaration batch did not return an object.",
+                issue_code=result.issue_code or "compiled_declaration_invalid_response",
+            )
+        parsed = self._parse_compiled_declaration_batch(raw, declarations)
+        if isinstance(parsed, str):
+            return ToolkitCompiledDeclarationBatchResult(
+                protocol_ok=False,
+                batch_success=False,
+                warnings=list(result.warnings),
+                raw_excerpt=result.raw_excerpt,
+                summary=parsed,
+                issue_code="compiled_declaration_invalid_response",
+            )
+        return parsed.model_copy(
+            update={
+                "warnings": list(result.warnings),
+                "raw_excerpt": result.raw_excerpt,
+            }
+        )
+
     def extract_declaration(self, repo_root: Path, module_or_file: str, decl_name: str) -> ToolkitDeclarationView:
         result = self._call_tool_with_fallback(
             "declarations.extract",
@@ -832,6 +909,77 @@ class LeanMcpToolkitClient:
             error_message=error_message,
             summary=(
                 f"Resolved {expected_success} of {len(items)} declaration soundness reports."
+            ),
+        )
+
+    def _parse_compiled_declaration_batch(
+        self,
+        raw: dict[str, Any],
+        requested: list[ToolkitCompiledDeclarationTarget],
+    ) -> ToolkitCompiledDeclarationBatchResult | str:
+        batch_success = raw.get("success")
+        raw_items = raw.get("items")
+        if not isinstance(batch_success, bool) or not isinstance(raw_items, list):
+            return "Compiled declaration response is missing typed success/items fields."
+        if len(raw_items) != len(requested):
+            return (
+                "Compiled declaration response item count does not match the request: "
+                f"expected {len(requested)}, received {len(raw_items)}."
+            )
+        items: list[ToolkitCompiledDeclarationItem] = []
+        for index, (raw_item, target) in enumerate(zip(raw_items, requested, strict=True)):
+            if not isinstance(raw_item, dict):
+                return f"Compiled declaration item {index} is not an object."
+            if (
+                raw_item.get("module") != target.module
+                or raw_item.get("declaration_name") != target.declaration_name
+            ):
+                return (
+                    f"Compiled declaration item {index} identity mismatch: expected "
+                    f"{target.module}::{target.declaration_name}."
+                )
+            if not isinstance(raw_item.get("success"), bool):
+                return f"Compiled declaration item {index} is missing boolean success."
+            if type(raw_item.get("universe_count")) is not int:
+                return f"Compiled declaration item {index} is missing integer universe_count."
+            try:
+                item = ToolkitCompiledDeclarationItem.model_validate(raw_item)
+            except Exception as exc:  # noqa: BLE001 - external response validation boundary.
+                return f"Compiled declaration item {index} is invalid: {exc}"
+            if item.success:
+                if item.representation != "compiled_reference":
+                    return f"Compiled declaration item {index} has invalid representation."
+                if not item.owner_module or not item.declaration_kind or not item.signature:
+                    return f"Compiled declaration item {index} is missing compiler identity fields."
+            items.append(item)
+        count = raw.get("count")
+        success_count = raw.get("success_count")
+        failure_count = raw.get("failure_count")
+        if any(type(value) is not int for value in (count, success_count, failure_count)):
+            return "Compiled declaration batch is missing integer count fields."
+        expected_success = sum(item.success for item in items)
+        expected_failure = len(items) - expected_success
+        if (count, success_count, failure_count) != (
+            len(items),
+            expected_success,
+            expected_failure,
+        ):
+            return "Compiled declaration batch count fields are inconsistent."
+        if batch_success != (expected_failure == 0):
+            return "Compiled declaration batch success is inconsistent with item results."
+        error_message = raw.get("error_message")
+        if error_message is not None and not isinstance(error_message, str):
+            return "Compiled declaration batch error_message must be a string or null."
+        return ToolkitCompiledDeclarationBatchResult(
+            protocol_ok=True,
+            batch_success=batch_success,
+            items=items,
+            count=len(items),
+            success_count=expected_success,
+            failure_count=expected_failure,
+            error_message=error_message,
+            summary=(
+                f"Resolved {expected_success} of {len(items)} compiled declarations."
             ),
         )
 

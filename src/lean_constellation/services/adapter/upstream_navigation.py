@@ -9,6 +9,7 @@ from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
 from lean_constellation.services.adapter.upstream_metadata import UpstreamMetadataComponent
+from lean_constellation.services.external_clients.lean_toolchain import ToolchainCompiledDeclarationTarget
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.lean_projection.lean_check import LeanCheckComponent, SorryAxiomScanView
 
@@ -73,6 +74,11 @@ class UpstreamCaptureView(StrictModel):
     capture_mode: Literal["statement_only", "full_declaration"]
     code: str
     scan: SorryAxiomScanView
+    representation: Literal["source", "compiled_reference"] = "source"
+    declaration_kind: str | None = None
+    signature: str | None = None
+    generation_kind: str | None = None
+    generator_declaration: str | None = None
     summary: str
 
 
@@ -303,6 +309,13 @@ class UpstreamNavigationComponent:
             return self.runtime.foundation.fail(gate.issues)
         extracted = self.runtime.external.lean_toolchain.extract_declaration(gate.value["upstream_root"], module_result.value, lean_decl_name.strip())
         if not extracted.ok or not extracted.code:
+            if extracted.issue_code == "declaration_not_found":
+                return self._capture_compiled_reference(
+                    repo_root,
+                    module=module_result.value,
+                    lean_decl_name=lean_decl_name.strip(),
+                    capture_mode=capture_mode,
+                )
             return self.runtime.foundation.fail(self.runtime.foundation.issue(extracted.issue_code or "upstream_decl_capture_failed", extracted.summary, object_ref=lean_decl_name))
         code = extracted.code if capture_mode == "full_declaration" else self._statement_only(extracted.code)
         scan = self.lean_check.detect_sorry_axiom(code)
@@ -315,7 +328,112 @@ class UpstreamNavigationComponent:
                 capture_mode=capture_mode,
                 code=code,
                 scan=scan.value,
+                representation="source",
                 summary=f"Captured {capture_mode} code for upstream declaration {lean_decl_name.strip()}.",
+            )
+        )
+
+    def _capture_compiled_reference(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        lean_decl_name: str,
+        capture_mode: Literal["statement_only", "full_declaration"],
+    ) -> ServiceResult[UpstreamCaptureView]:
+        inspected = self.runtime.external.lean_toolchain.inspect_compiled_declarations(
+            repo_root,
+            [
+                ToolchainCompiledDeclarationTarget(
+                    module=module,
+                    declaration_name=lean_decl_name,
+                )
+            ],
+            include_to_additive_provenance=True,
+        )
+        if not inspected.protocol_ok:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    inspected.issue_code or "upstream_compiled_decl_protocol_failed",
+                    inspected.summary,
+                    object_ref=lean_decl_name,
+                )
+            )
+        if len(inspected.items) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "upstream_compiled_decl_result_missing",
+                    "Compiled declaration inspection did not return the exact requested item.",
+                    object_ref=lean_decl_name,
+                )
+            )
+        item = inspected.items[0]
+        if not item.success:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "upstream_compiled_decl_not_found",
+                    item.error_message or "The exact compiled declaration was not found.",
+                    object_ref=lean_decl_name,
+                )
+            )
+        if item.module != module or item.declaration_name != lean_decl_name:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "upstream_compiled_decl_identity_mismatch",
+                    "Compiled declaration response does not match the exact requested identity.",
+                    object_ref=lean_decl_name,
+                    current=f"{item.module}::{item.declaration_name}",
+                    expected=f"{module}::{lean_decl_name}",
+                )
+            )
+        if item.owner_module != module:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "upstream_compiled_decl_owner_mismatch",
+                    "The exact compiled declaration belongs to a different Lean module.",
+                    object_ref=lean_decl_name,
+                    current=item.owner_module,
+                    expected=module,
+                )
+            )
+        if item.declaration_kind != "theorem":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "upstream_compiled_decl_kind_unsupported",
+                    "Compiled-reference Adapter capture currently supports theorem-like declarations.",
+                    object_ref=lean_decl_name,
+                    current=item.declaration_kind,
+                    expected="theorem",
+                )
+            )
+        code = (item.reference_code or "").strip()
+        if not code:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "upstream_compiled_decl_reference_missing",
+                    "Compiled declaration inspection did not return a theorem reference witness.",
+                    object_ref=lean_decl_name,
+                )
+            )
+        scan = self.lean_check.detect_sorry_axiom(code)
+        if not scan.ok or scan.value is None:
+            return self.runtime.foundation.fail(scan.issues)
+        return self.runtime.foundation.ok(
+            UpstreamCaptureView(
+                module=module,
+                lean_decl_name=lean_decl_name,
+                capture_mode=capture_mode,
+                code=code,
+                scan=scan.value,
+                representation="compiled_reference",
+                declaration_kind=item.declaration_kind,
+                signature=item.signature,
+                generation_kind=item.generation_kind,
+                generator_declaration=item.generator_declaration,
+                summary=(
+                    f"Captured {capture_mode} compiled reference for upstream declaration "
+                    f"{lean_decl_name}."
+                ),
             )
         )
 

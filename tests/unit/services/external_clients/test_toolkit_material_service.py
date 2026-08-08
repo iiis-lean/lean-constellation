@@ -17,6 +17,9 @@ from lean_constellation.services.external_clients import (
     MaterialAcquisitionExtractionClient,
 )
 from lean_constellation.services.external_clients import lean_mcp_toolkit as toolkit_module
+from lean_constellation.services.external_clients.lean_mcp_toolkit import (
+    ToolkitCompiledDeclarationTarget,
+)
 
 
 def test_toolkit_dispatch_and_wrappers(tmp_path) -> None:
@@ -201,6 +204,97 @@ def test_toolkit_call_exception_and_extract_missing_are_structured(tmp_path) -> 
     assert failed.issue_code == "toolkit_call_failed"
     assert missing.ok is False
     assert missing.issue_code == "declaration_not_found"
+
+
+def test_toolkit_compiled_declaration_batch_is_strict_and_preserves_provenance(
+    tmp_path: Path,
+) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        assert tool_name == "lsp.compiled_declaration_batch"
+        target = payload["declarations"][0]
+        return {
+            "success": True,
+            "error_message": None,
+            "items": [
+                {
+                    "module": target["module"],
+                    "declaration_name": target["declaration_name"],
+                    "success": True,
+                    "error_message": None,
+                    "owner_module": "Upstream.Basic",
+                    "declaration_kind": "theorem",
+                    "signature": "True",
+                    "universe_count": 0,
+                    "representation": "compiled_reference",
+                    "reference_code": (
+                        "theorem _root_.Upstream.Basic.generated := "
+                        "_root_.Upstream.Basic.generated"
+                    ),
+                    "generation_kind": "to_additive",
+                    "generator_declaration": "Upstream.Basic.generator",
+                    "provenance_error_message": None,
+                }
+            ],
+            "count": 1,
+            "success_count": 1,
+            "failure_count": 0,
+        }
+
+    result = LeanMcpToolkitClient(dispatcher=dispatch).inspect_compiled_declarations(
+        tmp_path,
+        [
+            ToolkitCompiledDeclarationTarget(
+                module="Upstream.Basic",
+                declaration_name="Upstream.Basic.generated",
+            )
+        ],
+        include_to_additive_provenance=True,
+    )
+
+    assert result.protocol_ok is True
+    assert result.batch_success is True
+    assert result.items[0].generation_kind == "to_additive"
+    assert result.items[0].generator_declaration == "Upstream.Basic.generator"
+    assert result.items[0].representation == "compiled_reference"
+
+
+def test_toolkit_compiled_declaration_batch_rejects_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    def dispatch(tool_name: str, payload: dict):
+        del tool_name, payload
+        return {
+            "success": True,
+            "items": [
+                {
+                    "module": "Other.Module",
+                    "declaration_name": "Other.target",
+                    "success": True,
+                    "owner_module": "Other.Module",
+                    "declaration_kind": "theorem",
+                    "signature": "True",
+                    "universe_count": 0,
+                    "representation": "compiled_reference",
+                }
+            ],
+            "count": 1,
+            "success_count": 1,
+            "failure_count": 0,
+        }
+
+    result = LeanMcpToolkitClient(dispatcher=dispatch).inspect_compiled_declarations(
+        tmp_path,
+        [
+            ToolkitCompiledDeclarationTarget(
+                module="Upstream.Basic",
+                declaration_name="Upstream.Basic.generated",
+            )
+        ],
+    )
+
+    assert result.protocol_ok is False
+    assert result.issue_code == "compiled_declaration_invalid_response"
+    assert "identity mismatch" in result.summary
 
 
 def test_toolkit_normalizes_to_dict_response() -> None:

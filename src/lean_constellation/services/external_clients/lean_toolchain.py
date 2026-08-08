@@ -18,6 +18,7 @@ from lean_constellation.services.external_clients.lean_mcp_toolkit import (
     LeanMcpToolkitClient,
     MathlibSearchResult,
     ToolkitCallResult,
+    ToolkitCompiledDeclarationTarget,
     ToolkitDeclarationSoundnessTarget,
     ToolkitDeclarationView,
     ToolkitModuleView,
@@ -148,6 +149,43 @@ class ToolchainDeclarationSoundnessBatchView(StrictModel):
     provider: str = "lean_mcp_toolkit"
     toolkit_tool: str = "lsp.declaration_soundness_batch"
     items: list[ToolchainDeclarationSoundnessItem] = Field(default_factory=list)
+    count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    error_message: str | None = None
+    warnings: list[ToolkitResponseWarning] = Field(default_factory=list)
+    raw_excerpt: str | None = None
+    summary: str
+    issue_code: str | None = None
+
+
+class ToolchainCompiledDeclarationTarget(StrictModel):
+    module: str
+    declaration_name: str
+
+
+class ToolchainCompiledDeclarationItem(StrictModel):
+    module: str
+    declaration_name: str
+    success: bool
+    error_message: str | None = None
+    owner_module: str | None = None
+    declaration_kind: str | None = None
+    signature: str | None = None
+    universe_count: int = 0
+    representation: str | None = None
+    reference_code: str | None = None
+    generation_kind: str | None = None
+    generator_declaration: str | None = None
+    provenance_error_message: str | None = None
+
+
+class ToolchainCompiledDeclarationBatchView(StrictModel):
+    protocol_ok: bool
+    batch_success: bool
+    provider: str = "lean_mcp_toolkit"
+    toolkit_tool: str = "lsp.compiled_declaration_batch"
+    items: list[ToolchainCompiledDeclarationItem] = Field(default_factory=list)
     count: int = 0
     success_count: int = 0
     failure_count: int = 0
@@ -533,6 +571,41 @@ class LeanToolchainClient:
                 }
             )
         return self._declaration_view(result, provider="lean_mcp_toolkit")
+
+    def inspect_compiled_declarations(
+        self,
+        repo_root: Path,
+        declarations: list[ToolchainCompiledDeclarationTarget],
+        *,
+        include_to_additive_provenance: bool = False,
+    ) -> ToolchainCompiledDeclarationBatchView:
+        result = self.toolkit.inspect_compiled_declarations(
+            Path(repo_root),
+            [
+                ToolkitCompiledDeclarationTarget(
+                    module=item.module,
+                    declaration_name=item.declaration_name,
+                )
+                for item in declarations
+            ],
+            include_to_additive_provenance=include_to_additive_provenance,
+        )
+        return ToolchainCompiledDeclarationBatchView(
+            protocol_ok=result.protocol_ok,
+            batch_success=result.batch_success,
+            items=[
+                ToolchainCompiledDeclarationItem(**item.model_dump(mode="python"))
+                for item in result.items
+            ],
+            count=result.count,
+            success_count=result.success_count,
+            failure_count=result.failure_count,
+            error_message=result.error_message,
+            warnings=list(result.warnings),
+            raw_excerpt=result.raw_excerpt,
+            summary=result.summary,
+            issue_code=result.issue_code,
+        )
 
     def list_repo_tree(
         self,

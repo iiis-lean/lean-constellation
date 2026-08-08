@@ -94,7 +94,7 @@ class InterfaceBindingComponent:
         identity = self._validate_lean_identity(interface, view)
         if not identity.ok:
             return self.runtime.foundation.fail(identity.issues)
-        statement = self._validate_statement_contract(interface, view)
+        statement = self._validate_statement_contract(repo_root, interface, view)
         if not statement.ok:
             return self.runtime.foundation.fail(statement.issues)
         new_ref = DeclRef(repo=None, node="Main", name=view.name, revision=view.revision.revision)
@@ -220,7 +220,7 @@ class InterfaceBindingComponent:
             if not identity.ok:
                 issues.extend(identity.issues)
                 continue
-            statement = self._validate_statement_contract(interface, view)
+            statement = self._validate_statement_contract(repo_root, interface, view)
             if not statement.ok:
                 issues.extend(statement.issues)
         if issues:
@@ -273,6 +273,7 @@ class InterfaceBindingComponent:
 
     def _validate_statement_contract(
         self,
+        repo_root: Path,
         interface: DeclInterface,
         decl: AdapterDeclView,
     ) -> ServiceResult[None]:
@@ -319,6 +320,46 @@ class InterfaceBindingComponent:
         )
         if proof_code is not None and proof_code.strip():
             actual_codes.append(("proof", proof_code))
+        if all(
+            self._is_compiled_reference_witness(actual, lean_decl_name=lean_decl_name)
+            for _, actual in actual_codes
+        ):
+            expected_probe = self.runtime.lean_projection.annotation.build_external_declaration_probe(
+                expected,
+                lean_decl_name=lean_decl_name,
+            )
+            if not expected_probe.ok or expected_probe.value is None:
+                return self.runtime.foundation.fail(
+                    [
+                        issue.model_copy(
+                            update={
+                                "kind": "adapter_interface_statement_contract_mismatch",
+                                "object_ref": f"{interface.name}:expected",
+                            }
+                        )
+                        for issue in expected_probe.issues
+                    ]
+                )
+            compared = self.runtime.lean_projection.module_identity.verify_captured_declaration(
+                repo_root,
+                module=decl.module,
+                lean_decl_name=lean_decl_name,
+                probe_code=expected_probe.value.code,
+                probe_lean_decl_name=expected_probe.value.probe_lean_decl_name,
+            )
+            if not compared.ok:
+                return self.runtime.foundation.fail(
+                    [
+                        issue.model_copy(
+                            update={
+                                "kind": "adapter_interface_statement_contract_mismatch",
+                                "object_ref": f"{interface.name}:expected",
+                            }
+                        )
+                        for issue in compared.issues
+                    ]
+                )
+            return self.runtime.foundation.ok(None)
         for stage, actual in actual_codes:
             compared = self.runtime.lean_projection.annotation.compare_external_theorem_header(
                 expected,
@@ -339,3 +380,11 @@ class InterfaceBindingComponent:
                     ]
                 )
         return self.runtime.foundation.ok(None)
+
+    @staticmethod
+    def _is_compiled_reference_witness(code: str, *, lean_decl_name: str) -> bool:
+        rooted_name = lean_decl_name.removeprefix("_root_.")
+        normalized = " ".join(code.split())
+        return normalized == (
+            f"theorem _root_.{rooted_name} := _root_.{rooted_name}"
+        )

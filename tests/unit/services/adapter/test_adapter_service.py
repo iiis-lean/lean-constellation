@@ -201,6 +201,44 @@ class SoundnessToolkitDispatcher(FakeToolkitDispatcher):
         }
 
 
+class GeneratedDeclarationToolkitDispatcher(FakeToolkitDispatcher):
+    def __call__(self, tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if tool_name == "lsp.compiled_declaration_batch":
+            self.calls.append((tool_name, payload))
+            items = []
+            for target in payload["declarations"]:
+                declaration_name = target["declaration_name"]
+                items.append(
+                    {
+                        "module": target["module"],
+                        "declaration_name": declaration_name,
+                        "success": True,
+                        "error_message": None,
+                        "owner_module": target["module"],
+                        "declaration_kind": "theorem",
+                        "signature": "True",
+                        "universe_count": 0,
+                        "representation": "compiled_reference",
+                        "reference_code": (
+                            f"theorem _root_.{declaration_name} := "
+                            f"_root_.{declaration_name}"
+                        ),
+                        "generation_kind": "to_additive",
+                        "generator_declaration": "Upstream.Basic.generator",
+                        "provenance_error_message": None,
+                    }
+                )
+            return {
+                "success": True,
+                "error_message": None,
+                "items": items,
+                "count": len(items),
+                "success_count": len(items),
+                "failure_count": 0,
+            }
+        return super().__call__(tool_name, payload)
+
+
 class FakeSemanticLake:
     def __init__(self, *, snippet_ok: bool = True) -> None:
         self.snippet_ok = snippet_ok
@@ -574,6 +612,90 @@ def test_navigation_requires_upstream_checkout_and_metadata(tmp_path: Path) -> N
     )
     assert not missing_metadata.ok
     assert missing_metadata.issues[0].kind == "adapter_upstream_missing"
+
+
+def test_generated_upstream_theorem_uses_compiled_reference_and_completes_catalog(
+    tmp_path: Path,
+) -> None:
+    interface = DeclInterface(
+        name="Upstream.Basic.generated",
+        kind=DeclKind.THEOREM,
+        summary="Expose the generated theorem.",
+        expected_statement_lean_code="theorem generated : True := by sorry",
+    )
+    dispatcher = GeneratedDeclarationToolkitDispatcher()
+    semantic_lake = FakeSemanticLake()
+    service = _service(
+        tmp_path,
+        interfaces=[interface],
+        dispatcher=dispatcher,
+        semantic_lake=semantic_lake,
+    )
+
+    statement = service.capture_upstream_declaration_code(
+        tmp_path,
+        module="Upstream.Basic",
+        lean_decl_name="Upstream.Basic.generated",
+        capture_mode="statement_only",
+    )
+    proof = service.capture_upstream_declaration_code(
+        tmp_path,
+        module="Upstream.Basic",
+        lean_decl_name="Upstream.Basic.generated",
+        capture_mode="full_declaration",
+    )
+
+    assert statement.ok and statement.value is not None
+    assert proof.ok and proof.value is not None
+    assert statement.value.representation == "compiled_reference"
+    assert statement.value.code == proof.value.code
+    assert statement.value.generation_kind == "to_additive"
+    assert statement.value.generator_declaration == "Upstream.Basic.generator"
+    assert statement.value.scan.contains_sorry is False
+    assert [call[0] for call in dispatcher.calls].count(
+        "lsp.compiled_declaration_batch"
+    ) == 2
+
+    assert service.ensure_flat_main_catalog(tmp_path).ok
+    assert service.create_adapter_decl(
+        tmp_path,
+        name="generated",
+        kind="theorem",
+        module="Upstream.Basic",
+        lean_decl_name="Upstream.Basic.generated",
+        summary="Expose the generated upstream theorem.",
+    ).ok
+    assert service.set_adapter_statement_formal(
+        tmp_path,
+        name="generated",
+        code=statement.value.code,
+    ).ok
+    assert service.set_adapter_statement_nl(
+        tmp_path,
+        name="generated",
+        text="Generated theorem statement.",
+    ).ok
+    assert service.set_adapter_proof_formal(
+        tmp_path,
+        name="generated",
+        code=proof.value.code,
+    ).ok
+    assert service.set_adapter_proof_nl(
+        tmp_path,
+        name="generated",
+        text="Generated theorem proof from the imported Environment.",
+    ).ok
+    finalized = service.finalize_adapter_decl(tmp_path, name="generated")
+    assert finalized.ok, finalized.issues
+
+    bound = service.bind_adapter_interface(
+        tmp_path,
+        interface_name="Upstream.Basic.generated",
+        decl_name="generated",
+        binding_summary="Bind the exact generated upstream theorem.",
+    )
+    assert bound.ok, bound.issues
+    assert any("lc_verify_captured_decl" in code for _, code in semantic_lake.snippet_calls)
 
 
 def test_navigation_module_validation_and_visible_module_fallback(tmp_path: Path) -> None:
