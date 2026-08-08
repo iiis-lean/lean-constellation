@@ -601,43 +601,26 @@ class RepoRequirementComponent:
                 provider_root,
                 required_availability=target,
             )
-            if not public_refs.ok or public_refs.value is None:
-                return self.runtime.foundation.fail(
-                    [
-                        self.runtime.foundation.issue(
-                            "provider_interface_missing",
-                            "Provider repo public interface is missing requested requirement interfaces.",
-                            object_ref=f"{provider_key}:Main",
-                            details={"issues": "; ".join(issue.kind for issue in public_refs.issues)},
-                        )
-                    ]
-                )
-            public_entries = [
-                (item.anchor, item.resolved_revision, item.compatible, item.reason)
-                for item in public_refs.value
-            ]
         else:
-            exports = self.runtime.node.export.list_scope_exports(provider_root, scope_path="Main")
-            if not exports.ok or exports.value is None:
-                return self.runtime.foundation.fail(
-                    [
-                        self.runtime.foundation.issue(
-                            "provider_interface_missing",
-                            "Provider repo public interface is missing requested requirement interfaces.",
-                            object_ref=f"{provider_key}:Main",
-                            details={"issues": "; ".join(issue.kind for issue in exports.issues)},
-                        )
-                    ]
-                )
-            public_entries = [
-                (
-                    item.ref,
-                    item.resolved_revision or item.ref.revision,
-                    item.valid,
-                    None if item.valid else "; ".join(issue.kind for issue in item.issues),
-                )
-                for item in exports.value
-            ]
+            public_refs = self.runtime.decl_graph.ref_compatibility.list_current_public_decl_refs(
+                provider_root,
+                required_availability=target,
+            )
+        if not public_refs.ok or public_refs.value is None:
+            return self.runtime.foundation.fail(
+                [
+                    self.runtime.foundation.issue(
+                        "provider_interface_missing",
+                        "Provider repo public interface is missing requested requirement interfaces.",
+                        object_ref=f"{provider_key}:Main",
+                        details={"issues": "; ".join(issue.kind for issue in public_refs.issues)},
+                    )
+                ]
+            )
+        public_entries = [
+            (item.anchor, item.resolved_revision, item.compatible, item.reason)
+            for item in public_refs.value
+        ]
         issues = []
         for interface in requirement.interfaces:
             matches = [item for item in public_entries if item[0].name == interface.name]

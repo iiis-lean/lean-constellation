@@ -261,11 +261,86 @@ class DeclRefCompatibilityComponent:
         if not context.ok or context.value is None:
             return self.runtime.foundation.fail(context.issues)
         refs, target = context.value
+        return self._resolve_public_boundary_refs(
+            provider_repo_root,
+            repo_format=repo_format.value.repo_format,
+            refs=refs,
+            required_availability=required_availability,
+            target=target,
+        )
+
+    def list_current_public_decl_refs(
+        self,
+        provider_repo_root: Path,
+        *,
+        required_availability: ProofAvailability,
+    ) -> ServiceResult[list[ResolvedDeclRefView]]:
+        """Enumerate the format-aware Main boundary before stable publication."""
+
+        provider_repo_root = Path(provider_repo_root)
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format == RepoFormat.ADAPTER:
+            context = self._public_boundary_context(
+                provider_repo_root,
+                repo_format=repo_format.value.repo_format,
+            )
+            if not context.ok or context.value is None:
+                return self.runtime.foundation.fail(context.issues)
+            refs, target = context.value
+            return self._resolve_public_boundary_refs(
+                provider_repo_root,
+                repo_format=repo_format.value.repo_format,
+                refs=refs,
+                required_availability=required_availability,
+                target=target,
+            )
+        if repo_format.value.repo_format != RepoFormat.NATIVE:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_format_unsupported",
+                    "Only native and adapter repos expose a public declaration boundary.",
+                    object_ref=str(provider_repo_root),
+                    current=repo_format.value.repo_format.value,
+                )
+            )
+        exports = self.runtime.node.export.list_scope_exports(
+            provider_repo_root,
+            scope_path="Main",
+        )
+        if not exports.ok or exports.value is None:
+            return self.runtime.foundation.fail(exports.issues)
+        return self.runtime.foundation.ok(
+            [
+                ResolvedDeclRefView(
+                    anchor=item.ref,
+                    resolved_revision=item.resolved_revision or item.ref.revision,
+                    compatible=item.valid,
+                    reason=(
+                        None
+                        if item.valid
+                        else "; ".join(issue.kind for issue in item.issues)
+                    ),
+                )
+                for item in exports.value
+            ]
+        )
+
+    def _resolve_public_boundary_refs(
+        self,
+        provider_repo_root: Path,
+        *,
+        repo_format: RepoFormat,
+        refs: list[DeclRef],
+        required_availability: ProofAvailability,
+        target: RepoReleaseHeads | None,
+    ) -> ServiceResult[list[ResolvedDeclRefView]]:
         values: list[ResolvedDeclRefView] = []
         for boundary_ref in refs:
             resolved = self._resolve_public_local_ref(
                 provider_repo_root,
-                repo_format=repo_format.value.repo_format,
+                repo_format=repo_format,
                 ref=boundary_ref,
                 required_availability=required_availability,
                 target=target,

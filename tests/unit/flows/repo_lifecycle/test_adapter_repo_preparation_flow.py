@@ -118,7 +118,12 @@ def _runtime(tmp_path: Path) -> tuple[FakeLeanFlowRuntime, object]:
     return flow_runtime, lean_runtime
 
 
-def _prepare_adapter_repo(lean_runtime, repo_root: Path) -> None:
+def _prepare_adapter_repo(
+    lean_runtime,
+    repo_root: Path,
+    *,
+    requirement_refs: list[dict[str, str]] | None = None,
+) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
     lean_runtime.repo_workspace.metadata.ensure_repo_model(repo_root)
     configured_as_requirement_provider = lean_runtime.repo_workspace.metadata.update_repo_config(
@@ -139,6 +144,7 @@ def _prepare_adapter_repo(lean_runtime, repo_root: Path) -> None:
                     summary="Expose the upstream main theorem.",
                 )
             ],
+            requirement_refs=requirement_refs or [],
         ),
     )
     assert written.ok
@@ -223,10 +229,39 @@ def _complete_adapter_catalog(lean_runtime, repo_root: Path) -> None:
     ).ok
 
 
-def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
+def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
     runtime, lean_runtime = _runtime(tmp_path)
-    repo_root = tmp_path / "workspace" / "AdapterProvider"
-    _prepare_adapter_repo(lean_runtime, repo_root)
+    workspace = tmp_path / "workspace"
+    consumer_root = workspace / "Consumer"
+    repo_root = workspace / "AdapterProvider"
+    assert lean_runtime.repo_workspace.metadata.ensure_repo_model(consumer_root).ok
+    assert lean_runtime.repo_workspace.requirement.create_requirement(
+        consumer_root,
+        name="need_adapter_provider",
+        target_repo=repo_root.name,
+        reason="Use the Adapter theorem.",
+    ).ok
+    assert lean_runtime.repo_workspace.requirement.add_requirement_interface(
+        consumer_root,
+        requirement_name="need_adapter_provider",
+        interface_name="main_result",
+        kind=DeclKind.THEOREM,
+        summary="Adapter theorem interface.",
+    ).ok
+    assert lean_runtime.repo_workspace.mark_requirement_waiting_for_provider(
+        consumer_root,
+        requirement_name="need_adapter_provider",
+    ).ok
+    _prepare_adapter_repo(
+        lean_runtime,
+        repo_root,
+        requirement_refs=[
+            {
+                "consumer_repo": consumer_root.name,
+                "requirement_name": "need_adapter_provider",
+            }
+        ],
+    )
     flow_id = _start_adapter(runtime, repo_root)
 
     _run_to_agent_catalog(runtime, flow_id)
@@ -259,6 +294,13 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     assert visible_modules.ok
     assert visible_modules.value is not None
     assert visible_modules.value.modules == ["Upstream.Basic"]
+    monkeypatch.setattr(
+        lean_runtime.node.export,
+        "list_scope_exports",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Adapter provider-ready validation must not read Native scope exports")
+        ),
+    )
     _advance_and_run(runtime, flow_id)
 
     flow = runtime.flow_service.get_flow(flow_id)
@@ -277,6 +319,19 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     assert config.value.config.completion_mode == RepoCompletionMode.GRAPH_PROVED
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.STABLE
+    requirement = lean_runtime.repo_workspace.requirement.get_requirement(
+        consumer_root,
+        name="need_adapter_provider",
+    )
+    assert requirement.ok and requirement.value is not None
+    assert requirement.value.requirement.status.value == "satisfied"
+    stable_truth = lean_runtime.repo_workspace.requirement.validate_requirement_provider_truth(
+        consumer_root,
+        requirement_name="need_adapter_provider",
+        provider_repo=repo_root.name,
+        require_stable=True,
+    )
+    assert stable_truth.ok, stable_truth.issues
 
 
 def test_adapter_preparation_blocked_submit_finishes_blocked(tmp_path: Path) -> None:
