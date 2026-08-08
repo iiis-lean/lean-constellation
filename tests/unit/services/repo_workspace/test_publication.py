@@ -22,6 +22,9 @@ from lean_constellation.services.repo_workspace.publication import (
     RepoPublicationComponent,
 )
 from tests.unit_services_helpers import make_runtime
+from tests.unit.flows.decl_round.test_decl_round_dependency_resolution import (
+    _prepare_ready_adapter_provider,
+)
 from tests.unit.services.repo_workspace.test_repo_release import (
     _prepare_release_repo,
     _release,
@@ -351,6 +354,62 @@ def test_publication_documents_are_portable_and_managed_readme_is_preserved(
         assert "external API" not in svg_text
         assert "solid gray: Statement dependency" not in svg_text
         assert "Repository Public" not in "".join(root.itertext())
+
+
+def test_adapter_publication_exposes_flat_api_and_immutable_upstream(
+    tmp_path: Path,
+) -> None:
+    runtime = make_runtime()
+    _prepare_ready_adapter_provider(runtime, tmp_path, bind_interface=True)
+
+    prepared = runtime.repo_workspace.publication.prepare_publication(
+        tmp_path,
+        presentation=RepoPublicationPresentation(
+            title="Adapter provider",
+            description="A reviewed wrapper over an upstream Lean package.",
+        ),
+    )
+
+    assert prepared.ok and prepared.value is not None, prepared.issues
+    api = json.loads(
+        (tmp_path / "docs/lean-constellation/public-api.json").read_text()
+    )
+    assert api["schema_version"] == 4
+    assert api["repo_format"] == "adapter"
+    assert [item["name"] for item in api["declarations"]] == ["main_result"]
+    assert api["adapter_upstream"] == {
+        "dependency_name": "upstream",
+        "git_url": "https://example.invalid/upstream.git",
+        "package_name": "upstream",
+        "revision": "1" * 40,
+        "source_kind": "git",
+        "subdir": None,
+        "trusted_build": True,
+        "visible_modules": ["Upstream.Basic"],
+    }
+    boundaries = json.loads(
+        (tmp_path / "docs/lean-constellation/public-boundaries.json").read_text()
+    )
+    assert boundaries["repo_format"] == "adapter"
+    assert boundaries["declarations"][0]["exported_scope_paths"] == ["Main"]
+    assert boundaries["declarations"][0]["main_export"] is True
+    boundary_markdown = (
+        tmp_path / "docs/lean-constellation/PUBLIC_BOUNDARIES.md"
+    ).read_text()
+    assert "flat committed `Main` public boundary" in boundary_markdown
+    assert "Content-public declarations" not in boundary_markdown
+    readme = (tmp_path / "README.md").read_text()
+    assert "## Adapter upstream" in readme
+    assert "https://example.invalid/upstream.git" in readme
+    assert "`" + "1" * 40 + "`" in readme
+    assert "flat committed Adapter Main boundary" in readme
+    provenance = json.loads(
+        (tmp_path / "docs/lean-constellation/provenance.json").read_text()
+    )
+    assert provenance["schema_version"] == 2
+    assert provenance["repo_format"] == "adapter"
+    assert provenance["adapter_upstream"] == api["adapter_upstream"]
+    assert str(tmp_path) not in json.dumps(provenance)
 
 
 def test_publication_status_badge_uses_proof_availability_and_flat_square(

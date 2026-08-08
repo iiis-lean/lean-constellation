@@ -25,8 +25,10 @@ from lean_constellation.domain.publication import (
 )
 from lean_constellation.domain.repo import (
     ProofAvailability,
+    RepoFormat,
     proof_availability_for_completion_mode,
 )
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.foundation import (
     FoundationContext,
     ServiceResult,
@@ -150,13 +152,26 @@ class RepoPublicationDependency(StrictModel):
     status: str
 
 
+class AdapterUpstreamPublication(StrictModel):
+    source_kind: Literal["git", "local_path"]
+    git_url: str | None = None
+    revision: str | None = None
+    subdir: str | None = None
+    package_name: str
+    dependency_name: str
+    visible_modules: list[str] = Field(default_factory=list)
+    trusted_build: bool
+
+
 class PublicApiDocument(StrictModel):
-    schema_version: int = 3
+    schema_version: int = 4
     repo_key: str
+    repo_format: Literal["native", "adapter"] = "native"
     release_id: str | None = None
     completion_mode: str
     proof_availability: str
     dependencies: list[RepoPublicationDependency] = Field(default_factory=list)
+    adapter_upstream: AdapterUpstreamPublication | None = None
     declarations: list[PublicApiDeclaration] = Field(default_factory=list)
     summary: str
 
@@ -168,8 +183,9 @@ class PublicBoundaryDeclaration(StrictModel):
 
 
 class PublicBoundariesDocument(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     repo_key: str
+    repo_format: Literal["native", "adapter"] = "native"
     release_id: str | None = None
     completion_mode: str
     proof_availability: str
@@ -179,13 +195,15 @@ class PublicBoundariesDocument(StrictModel):
 
 
 class RepoProvenanceDocument(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     repo_key: str
+    repo_format: Literal["native", "adapter"] = "native"
     release_id: str | None = None
     semantic_manifest_digest: str | None = None
     lean_toolchain: str | None = None
     source_manifest_digest: str | None = None
     source_files: dict[str, str] = Field(default_factory=dict)
+    adapter_upstream: AdapterUpstreamPublication | None = None
     build_command: str = "lake build"
     generated_at: str | None = None
     summary: str
@@ -504,29 +522,49 @@ class RepoPublicationComponent:
         config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
         if not config.ok or config.value is None:
             return self.runtime.foundation.fail(config.issues)
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
         dependencies = self._publication_dependencies(repo_root)
         if not dependencies.ok or dependencies.value is None:
             return self.runtime.foundation.fail(dependencies.issues)
+        adapter_upstream = self._adapter_upstream_publication(repo_root)
+        if not adapter_upstream.ok:
+            return self.runtime.foundation.fail(adapter_upstream.issues)
         tree = self.runtime.node.node_tree.get_node_tree(repo_root)
         if not tree.ok or tree.value is None:
             return self.runtime.foundation.fail(tree.issues)
         declarations: list[PublicApiDeclaration] = []
         seen: set[tuple[str, str, int]] = set()
-        public_values = []
-        for node in tree.value.nodes:
-            if node.kind.value != "content":
-                continue
-            public = self.runtime.decl_graph.list_content_public_decls(
-                repo_root, node_path=node.path
+        public_refs: list[tuple[DeclRef, int]] = []
+        if repo_format.value.repo_format == RepoFormat.ADAPTER:
+            main = self.runtime.node.contract.get_visible_contract(
+                repo_root,
+                node_path="Main",
             )
-            if not public.ok or public.value is None:
-                return self.runtime.foundation.fail(public.issues)
-            public_values.extend(public.value)
-        for public in public_values:
-            if not public.ready:
-                continue
-            ref = public.ref
-            resolved_revision = public.resolved_revision or ref.revision
+            if not main.ok or main.value is None:
+                return self.runtime.foundation.fail(main.issues)
+            public_refs = [
+                (ref, ref.revision)
+                for ref in main.value.contract.exports
+            ]
+        else:
+            public_values = []
+            for node in tree.value.nodes:
+                if node.kind.value != "content":
+                    continue
+                public = self.runtime.decl_graph.list_content_public_decls(
+                    repo_root, node_path=node.path
+                )
+                if not public.ok or public.value is None:
+                    return self.runtime.foundation.fail(public.issues)
+                public_values.extend(public.value)
+            public_refs = [
+                (public.ref, public.resolved_revision or public.ref.revision)
+                for public in public_values
+                if public.ready
+            ]
+        for ref, resolved_revision in public_refs:
             key = (ref.node, ref.name, resolved_revision)
             if key in seen:
                 continue
@@ -619,7 +657,7 @@ class RepoPublicationComponent:
                     return self.runtime.foundation.fail(
                         self.runtime.foundation.issue(
                             "publication_scope_export_not_public",
-                            "Scope export is not an exact ready Content public declaration.",
+                            "Scope export is not an exact ready public declaration.",
                             object_ref=f"{node.path}:{ref.node}.{ref.name}@{ref.revision}",
                         )
                     )
@@ -645,15 +683,18 @@ class RepoPublicationComponent:
         ).value
         api = PublicApiDocument(
             repo_key=repo_root.name,
+            repo_format=repo_format.value.repo_format.value,
             release_id=resolved_release_id,
             completion_mode=completion_mode,
             proof_availability=proof_availability,
             dependencies=dependencies.value,
+            adapter_upstream=adapter_upstream.value,
             declarations=api_declarations,
             summary=f"Exported {len(api_declarations)} Main declarations.",
         )
         boundaries = PublicBoundariesDocument(
             repo_key=repo_root.name,
+            repo_format=repo_format.value.repo_format.value,
             release_id=resolved_release_id,
             completion_mode=completion_mode,
             proof_availability=proof_availability,
@@ -683,7 +724,7 @@ class RepoPublicationComponent:
                 for declaration in declarations
             ],
             summary=(
-                f"Catalogued {len(declarations)} Content public declarations; "
+                f"Catalogued {len(declarations)} public declarations; "
                 f"{len(api_declarations)} are exported through Main."
             ),
         )
@@ -930,6 +971,12 @@ class RepoPublicationComponent:
         publication = self.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        adapter_upstream = self._adapter_upstream_publication(repo_root)
+        if not adapter_upstream.ok:
+            return self.runtime.foundation.fail(adapter_upstream.issues)
         release = self.runtime.repo_workspace.release.get_latest_release(repo_root)
         release_value = release.value.release if release.ok and release.value else None
         source_manifest = self.runtime.material.source_corpus.get_source_corpus_manifest(
@@ -955,6 +1002,7 @@ class RepoPublicationComponent:
         return self.runtime.foundation.ok(
             RepoProvenanceDocument(
                 repo_key=repo_root.name,
+                repo_format=repo_format.value.repo_format.value,
                 release_id=(
                     release_id
                     if release_id is not None
@@ -973,7 +1021,36 @@ class RepoPublicationComponent:
                 lean_toolchain=toolchain,
                 source_manifest_digest=source_digest,
                 source_files=source_files,
+                adapter_upstream=adapter_upstream.value,
                 summary="Portable Lean Constellation provenance.",
+            )
+        )
+
+    def _adapter_upstream_publication(
+        self,
+        repo_root: Path,
+    ) -> ServiceResult[AdapterUpstreamPublication | None]:
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format != RepoFormat.ADAPTER:
+            return self.runtime.foundation.ok(None)
+        upstream = self.runtime.adapter.get_adapter_upstream_metadata(repo_root)
+        modules = self.runtime.adapter.list_visible_upstream_modules(repo_root)
+        if not upstream.ok or upstream.value is None:
+            return self.runtime.foundation.fail(upstream.issues)
+        if not modules.ok or modules.value is None:
+            return self.runtime.foundation.fail(modules.issues)
+        return self.runtime.foundation.ok(
+            AdapterUpstreamPublication(
+                source_kind=upstream.value.source_kind,
+                git_url=upstream.value.git_url,
+                revision=upstream.value.revision,
+                subdir=upstream.value.subdir,
+                package_name=upstream.value.package_name,
+                dependency_name=upstream.value.dependency_name,
+                visible_modules=list(modules.value.modules),
+                trusted_build=upstream.value.trusted_build,
             )
         )
 
@@ -1104,9 +1181,26 @@ class RepoPublicationComponent:
         lines = [
             "# Public API",
             "",
+            f"- Repository format: `{value.repo_format}`",
             f"- Repository completion: `{value.completion_mode}`",
             f"- Proof availability: `{value.proof_availability}`",
             f"- Public declarations: `{len(declarations)}` across `{node_count}` nodes",
+        ]
+        if value.adapter_upstream is not None:
+            upstream = value.adapter_upstream
+            locator = upstream.git_url or upstream.source_kind
+            lines.extend(
+                [
+                    "",
+                    "## Adapter upstream",
+                    "",
+                    f"- Source: {cls._markdown_cell(locator)}",
+                    f"- Revision: `{upstream.revision or 'unversioned'}`",
+                    f"- Package: `{upstream.package_name}`",
+                    f"- Visible modules: `{len(upstream.visible_modules)}`",
+                ]
+            )
+        lines.extend([
             "",
             "## Dependency graph",
             "",
@@ -1123,7 +1217,7 @@ class RepoPublicationComponent:
             "",
             "| Node | Declaration | Kind | Status |",
             "| --- | --- | --- | --- |",
-        ]
+        ])
         lines.extend(
             "| "
             + " | ".join(
@@ -1157,21 +1251,31 @@ class RepoPublicationComponent:
             (item.declaration.node_path, item.declaration.name): item
             for item in value.declarations
         }
+        adapter = value.repo_format == RepoFormat.ADAPTER.value
         lines = [
             "# Public Boundaries",
             "",
-            "This catalog shows every Content-public declaration and how it is "
-            "selectively propagated through Scope boundaries. Only declarations "
-            "exported through `Main` belong to the repository Public API.",
+            (
+                "This Adapter catalog records the flat committed `Main` public boundary. "
+                "Every listed declaration is an exact wrapper reference to the pinned upstream package."
+                if adapter
+                else "This catalog shows every Content-public declaration and how it is "
+                "selectively propagated through Scope boundaries. Only declarations "
+                "exported through `Main` belong to the repository Public API."
+            ),
             "",
-            f"- Content-public declarations: `{len(declarations)}`",
+            f"- {'Adapter public' if adapter else 'Content-public'} declarations: `{len(declarations)}`",
             f"- Main exports: `{sum(item.main_export for item in value.declarations)}`",
             "",
             "## Boundary graph",
             "",
-            "Solid gray arrows are Statement dependencies; dashed amber arrows "
-            "are Proof dependencies. A thick teal declaration frame marks a Main "
-            "export; compact upward labels record intermediate Scope exports.",
+            (
+                "The flat graph shows Adapter declaration dependencies and the committed Main API."
+                if adapter
+                else "Solid gray arrows are Statement dependencies; dashed amber arrows "
+                "are Proof dependencies. A thick teal declaration frame marks a Main "
+                "export; compact upward labels record intermediate Scope exports."
+            ),
             "",
             "[![Repository public boundary graph](assets/public-boundaries.svg)]"
             "(assets/public-boundaries.svg)",
@@ -1783,6 +1887,7 @@ class RepoPublicationComponent:
             "| --- | --- |",
             f"| Completion | `{api.completion_mode}` |",
             f"| Proof availability | `{api.proof_availability}` |",
+            f"| Repository format | `{api.repo_format}` |",
             "",
             "## Build",
             "",
@@ -1790,6 +1895,29 @@ class RepoPublicationComponent:
             "lake build",
             "```",
         ]
+        if api.adapter_upstream is not None:
+            upstream = api.adapter_upstream
+            source = (
+                f"[{upstream.git_url}]({upstream.git_url})"
+                if upstream.git_url is not None
+                else f"`{upstream.source_kind}`"
+            )
+            lines.extend(
+                [
+                    "",
+                    "## Adapter upstream",
+                    "",
+                    "This repository is a reviewed Lean adapter over an immutable upstream package.",
+                    "",
+                    "| Property | Value |",
+                    "| --- | --- |",
+                    f"| Source | {source} |",
+                    f"| Revision | `{upstream.revision or 'unversioned'}` |",
+                    f"| Package | `{upstream.package_name}` |",
+                    f"| Lake dependency | `{upstream.dependency_name}` |",
+                    f"| Visible modules | {', '.join(f'`{item}`' for item in upstream.visible_modules) or '—'} |",
+                ]
+            )
         if api.dependencies:
             lines.extend(
                 [
@@ -1837,7 +1965,11 @@ class RepoPublicationComponent:
                 "for the dependency graph, declaration index, final Lean code, "
                 "dependencies, and sources. The "
                 "[public boundary catalog](docs/lean-constellation/PUBLIC_BOUNDARIES.md) "
-                "documents internal Content-public declarations and Scope propagation.",
+                + (
+                    "documents the flat committed Adapter Main boundary."
+                    if api.repo_format == RepoFormat.ADAPTER.value
+                    else "documents internal Content-public declarations and Scope propagation."
+                ),
             ]
         )
         lines.extend(
@@ -2025,6 +2157,7 @@ class RepoPublicationComponent:
 
 
 __all__ = [
+    "AdapterUpstreamPublication",
     "PublicApiDeclaration",
     "PublicApiDocument",
     "PublicBoundariesDocument",
