@@ -1,4 +1,8 @@
-from tests.unit_services_helpers import make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import (
+    make_runtime,
+    publish_adapter_provider_ready,
+    publish_native_provider_release,
+)
 
 from pathlib import Path
 
@@ -89,6 +93,11 @@ def test_repo_format_config_and_state_view(tmp_path: Path) -> None:
 def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> None:
     component = make_runtime().repo_workspace.metadata
     assert component.ensure_repo_model(tmp_path).ok
+    assert component.set_repo_format(
+        tmp_path,
+        repo_format=RepoFormat.NATIVE,
+        reason="repo publication fixture",
+    ).ok
 
     default_config = component.get_repo_config(tmp_path)
     assert default_config.ok and default_config.value is not None
@@ -114,7 +123,15 @@ def test_repo_config_and_publication_are_repo_local_truth(tmp_path: Path) -> Non
     assert developing.value.publication.status == RepoPublicationStatus.DEVELOPING
     assert developing.value.publication.stable_at is None
 
-    stable = component.mark_repo_stable(tmp_path, summary="Stable declared provider.")
+    direct = component.mark_repo_stable(tmp_path, summary="Stable declared provider.")
+    assert not direct.ok
+    assert direct.issues[0].kind == "native_release_finalizer_required"
+    publish_native_provider_release(
+        component.runtime,
+        tmp_path,
+        summary="Stable declared provider.",
+    )
+    stable = component.get_repo_publication(tmp_path)
     assert stable.ok and stable.value is not None
     assert stable.value.publication.status == RepoPublicationStatus.STABLE
     assert stable.value.publication.stable_at is not None
@@ -231,7 +248,13 @@ def test_set_repo_format_allows_admin_overwrite_before_ready_but_locks_after_rea
     assert overwritten.value.changed is True
 
     ready = component.mark_repo_stable(tmp_path, summary="provider committed")
-    assert ready.ok
+    assert not ready.ok
+    assert ready.issues[0].kind == "adapter_release_finalizer_required"
+    publish_adapter_provider_ready(
+        component.runtime,
+        tmp_path,
+        summary="provider committed",
+    )
 
     locked = component.set_repo_format(
         tmp_path,

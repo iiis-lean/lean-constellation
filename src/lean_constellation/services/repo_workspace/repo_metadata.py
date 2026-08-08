@@ -421,28 +421,20 @@ class RepoMetadataComponent:
         repo_format = self.get_repo_format(repo_root)
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)
-        if repo_format.value.repo_format == RepoFormat.NATIVE:
-            return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                "native_release_finalizer_required",
-                "Native repositories become stable only through the RepoRelease finalizer transaction.",
-            ))
-        summary = summary.strip()
-        if not summary:
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_summary", "Repo summary is required."))
-        updated_summary = self.set_repo_summary(repo_root, summary=summary)
-        if not updated_summary.ok:
-            return self.runtime.foundation.fail(updated_summary.issues)
-        current = self.get_repo_publication(repo_root)
-        if not current.ok or current.value is None:
-            return self.runtime.foundation.fail(current.issues)
-        state = RepoPublicationState(
-            status=RepoPublicationStatus.STABLE,
-            latest_release_id=current.value.publication.latest_release_id,
+        if repo_format.value.repo_format not in {RepoFormat.NATIVE, RepoFormat.ADAPTER}:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "provider_format_unknown",
+                    "Provider repository format must be Native or Adapter before release.",
+                )
+            )
+        format_name = repo_format.value.repo_format.value
+        return self.runtime.foundation.fail(
+            self.runtime.foundation.issue(
+                f"{format_name}_release_finalizer_required",
+                f"{format_name.title()} repositories become stable only through the RepoRelease finalizer transaction.",
+            )
         )
-        written = self.runtime.foundation.store.write_json_atomic(self._repo_publication_path(repo_root), state)
-        if not written.ok:
-            return self.runtime.foundation.fail(written.issues)
-        return self.runtime.foundation.ok(RepoPublicationView(repo_root=str(Path(repo_root)), publication=state))
 
     def _ctx(self, repo_root: Path) -> FoundationContext:
         return FoundationContext(repo_root=Path(repo_root))
