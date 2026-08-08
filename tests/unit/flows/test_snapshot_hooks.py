@@ -151,7 +151,7 @@ def test_adapter_preparation_terminal_snapshot(tmp_path: Path) -> None:
     mark_ready_step = runtime.flow_service.get_step(mark_ready_step_id)
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
-    assert flow.result.outcome == "adapter_ready"
+    assert flow.result.outcome == "adapter_release_prepared"
     assert mark_ready_step.result.snapshot_id is not None
     assert stability.calls == [(RepoCheckpointKind.ADAPTER_PREPARATION_TERMINAL, [])]
     assert ark_snapshot.created == [(["repo:AdapterProvider"], "adapter preparation terminal for AdapterProvider")]
@@ -395,6 +395,7 @@ def _prepare_adapter_repo(lean_runtime, repo_root: Path) -> None:
     upstream = lean_runtime.adapter.write_adapter_upstream_metadata(
         repo_root,
         git_url="https://github.com/example/upstream.git",
+        revision="1" * 40,
         package_name="upstream",
         dependency_name="upstream",
         evidence_summary="Existing upstream Lean repo.",

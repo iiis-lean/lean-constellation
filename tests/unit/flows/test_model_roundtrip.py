@@ -108,7 +108,11 @@ FLOW_RESULTS = {
     "native_repo_continuation": NativeRepoContinuationResult(
         outcome="handoff_dispatched", repo_key="Provider", run_objective="Continue Provider.", summary="handoff"
     ),
-    "adapter_repo_preparation": AdapterRepoPreparationResult(outcome="adapter_ready", repo_key="Adapter", summary="ready"),
+    "adapter_repo_preparation": AdapterRepoPreparationResult(
+        outcome="adapter_ready_for_release",
+        repo_key="Adapter",
+        summary="ready for release",
+    ),
     "resource_curation": ResourceCurationResult(
         outcome="local_resource_created",
         repo_key="Repo",

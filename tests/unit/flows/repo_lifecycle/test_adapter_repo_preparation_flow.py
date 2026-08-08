@@ -7,6 +7,7 @@ from lean_constellation.app.runtime import ApplicationSnapshotRuntime
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode, UpstreamDependencyInput
+from lean_constellation.domain.publication import ReleasePolicy, RepoPublicationOverride
 from lean_constellation.domain.repo import RepoCompletionMode, RepoPublicationStatus
 from lean_constellation.flows.common.submissions import new_submission_id
 from lean_constellation.flows.common.testing import FakeLeanFlowRuntime, create_fake_lean_flow_runtime
@@ -162,6 +163,7 @@ def _prepare_adapter_repo(
     upstream = lean_runtime.adapter.write_adapter_upstream_metadata(
         repo_root,
         git_url="https://github.com/example/upstream.git",
+        revision="1" * 40,
         package_name="upstream",
         dependency_name="upstream",
         evidence_summary="Existing upstream Lean repo.",
@@ -258,7 +260,7 @@ def _complete_adapter_catalog(lean_runtime, repo_root: Path) -> None:
     assert adapter.finalize_adapter_decl(repo_root, name="supporting_result").ok
 
 
-def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
+def test_adapter_preparation_commits_release_and_satisfies_requirement(tmp_path: Path) -> None:
     runtime, lean_runtime = _runtime(tmp_path)
     workspace = tmp_path / "workspace"
     consumer_root = workspace / "Consumer"
@@ -340,7 +342,8 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result is not None
-    assert flow.result.outcome == "adapter_ready"
+    assert flow.result.outcome == "adapter_release_prepared"
+    assert flow.result.prepared_release is not None
     assert flow.result.catalog_decl_count == 2
     assert flow.result.bound_interface_count == 1
     assert flow.result.imported_modules_count == 1
@@ -353,12 +356,23 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     assert config.value.config.completion_mode == RepoCompletionMode.GRAPH_PROVED
     assert publication.ok and publication.value is not None
     assert publication.value.publication.status == RepoPublicationStatus.STABLE
+    assert publication.value.publication.latest_release_id == flow.result.prepared_release.release.release_id
+    released = lean_runtime.repo_workspace.release.get_latest_release(repo_root)
+    assert released.ok and released.value is not None
+    assert released.value.release.release_id == publication.value.publication.latest_release_id
+    git_release = lean_runtime.repo_workspace.git_release.validate_release(
+        repo_root,
+        release=released.value.release,
+    )
+    assert git_release.ok and git_release.value is not None
     requirement = lean_runtime.repo_workspace.requirement.get_requirement(
         consumer_root,
         name="need_adapter_provider",
     )
     assert requirement.ok and requirement.value is not None
     assert requirement.value.requirement.status.value == "satisfied"
+    assert requirement.value.requirement.provider_release_id == released.value.release.release_id
+    assert requirement.value.requirement.provider_commit == git_release.value.commit
     stable_truth = lean_runtime.repo_workspace.requirement.validate_requirement_provider_truth(
         consumer_root,
         requirement_name="need_adapter_provider",
@@ -369,6 +383,45 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     ready_view = lean_runtime.validation_snapshot.get_repo_ready_view(repo_root)
     assert ready_view.ok, ready_view.issues
     assert ready_view.value is not None
+
+
+def test_adapter_manual_policy_stops_at_committed_release_candidate(tmp_path: Path) -> None:
+    runtime, lean_runtime = _runtime(tmp_path)
+    repo_root = tmp_path / "workspace" / "AdapterProvider"
+    _prepare_adapter_repo(lean_runtime, repo_root)
+    assert lean_runtime.repo_workspace.metadata.update_repo_config(
+        repo_root,
+        publication=RepoPublicationOverride(release_policy=ReleasePolicy.MANUAL),
+    ).ok
+    flow_id = _start_adapter(runtime, repo_root)
+
+    _run_to_agent_catalog(runtime, flow_id)
+    _complete_adapter_catalog(lean_runtime, repo_root)
+    runtime.agent_service.queue_submission(
+        AdapterCatalogReadySubmission(
+            submission_id=new_submission_id("sub"),
+            submission_type="adapter_catalog_ready",
+            tool_name="submit_adapter_catalog_ready",
+            summary="Adapter catalog is ready.",
+        )
+    )
+    _advance_and_run(runtime, flow_id)
+    _advance_and_run(runtime, flow_id)
+    ready_step_id = _advance_and_run(runtime, flow_id)
+
+    flow = runtime.flow_service.get_flow(flow_id)
+    ready_step = runtime.flow_service.get_step(ready_step_id)
+    assert flow.status is FlowStatus.COMPLETED
+    assert flow.result.outcome == "adapter_ready_for_release"
+    assert flow.result.prepared_release is None
+    assert ready_step.result.outcome == "ready_for_release"
+    publication = lean_runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+    assert publication.ok and publication.value is not None
+    assert publication.value.publication.status == RepoPublicationStatus.DEVELOPING
+    assert publication.value.publication.latest_release_id is None
+    main = lean_runtime.node.contract.get_committed_contract(repo_root, node_path="Main")
+    assert main.ok and main.value is not None
+    assert lean_runtime.repo_workspace.release.get_latest_release(repo_root).value is None
 
 
 def test_adapter_preparation_blocked_submit_finishes_blocked(tmp_path: Path) -> None:

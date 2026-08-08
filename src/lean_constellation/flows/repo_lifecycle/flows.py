@@ -64,6 +64,9 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     SourceCorpusBlockedSubmission,
     SourceCorpusPreparedSubmission,
 )
+from lean_constellation.services.validation_snapshot.release_finalizer import (
+    PreparedRepoReleaseView,
+)
 
 
 class RequirementGroupRepoBootstrapParams(LeanFlowParams):
@@ -924,7 +927,7 @@ class AdapterRepoPreparationState(BaseFlowState):
     main_catalog_ready: bool = False
     projection_refreshed: bool = False
     ready_gate_passed: bool = False
-    provider_ready_marked: bool = False
+    release_candidate_ready: bool = False
     catalog_decl_count: int = 0
     bound_interface_count: int = 0
     imported_modules_count: int = 0
@@ -932,7 +935,7 @@ class AdapterRepoPreparationState(BaseFlowState):
 
 class AdapterRepoPreparationResult(LeanRenderableFlowResult):
     result_type: Literal["adapter_repo_preparation"] = "adapter_repo_preparation"
-    outcome: Literal["adapter_ready", "blocked", "invalid_input"]
+    outcome: Literal["adapter_ready_for_release", "adapter_release_prepared", "blocked", "invalid_input"]
     repo_key: str
     catalog_decl_count: int = 0
     bound_interface_count: int = 0
@@ -940,6 +943,7 @@ class AdapterRepoPreparationResult(LeanRenderableFlowResult):
     blocked_reason: str | None = None
     missing_interfaces: list[str] = Field(default_factory=list)
     suggested_next_action: str | None = None
+    prepared_release: PreparedRepoReleaseView | None = None
 
     def agent_fields(self) -> dict[str, object]:
         return {
@@ -951,6 +955,7 @@ class AdapterRepoPreparationResult(LeanRenderableFlowResult):
             "blocked_reason": self.blocked_reason,
             "missing_interfaces": list(self.missing_interfaces),
             "suggested_next_action": self.suggested_next_action,
+            "release_id": self.prepared_release.release.release_id if self.prepared_release else None,
         }
 
 
@@ -1062,15 +1067,67 @@ class AdapterRepoPreparationFlow(LeanBusinessFlow):
         if ctx.step.step_type != "mark_adapter_provider_ready_step":
             return
         result = ctx.step.result
-        if not isinstance(result, MarkAdapterProviderReadyStepResult) or result.outcome != "marked_ready":
+        if not isinstance(result, MarkAdapterProviderReadyStepResult) or result.outcome not in {
+            "ready_for_release",
+            "candidate_prepared",
+        }:
             return
         flow_result = self.result
-        if not isinstance(flow_result, AdapterRepoPreparationResult) or flow_result.outcome != "adapter_ready":
+        if not isinstance(flow_result, AdapterRepoPreparationResult) or flow_result.outcome not in {
+            "adapter_ready_for_release",
+            "adapter_release_prepared",
+        }:
             return
         input_model = _require_adapter_preparation_input(self.input)
+        repo_root = _adapter_repo_root(input_model)
+        if result.outcome == "candidate_prepared":
+            if result.prepared_release is None:
+                _mark_flow_failed_from_stable_snapshot(
+                    ctx,
+                    "adapter_release_finalize_failed",
+                    [ValueError("Prepared Adapter release payload is missing.")],
+                )
+                return
+            validation_snapshot = getattr(ctx.app, "validation_snapshot", None)
+            if validation_snapshot is None:
+                _mark_flow_failed_from_stable_snapshot(
+                    ctx,
+                    "adapter_release_finalize_failed",
+                    [ValueError("Release finalizer service is missing.")],
+                )
+                return
+            from lean_constellation.flows.coordinator.release_runtime import (
+                check_repo_release_runtime_closeout,
+            )
+
+            runtime_closeout = check_repo_release_runtime_closeout(
+                validation_snapshot.runtime,
+                repo_root,
+                owner_flow_id=self.flow_id,
+                phase="commit",
+            )
+            if not runtime_closeout.ok or runtime_closeout.value is None or not runtime_closeout.value.passed:
+                issues = runtime_closeout.issues if not runtime_closeout.ok else runtime_closeout.value.issues
+                _mark_flow_failed_from_stable_snapshot(
+                    ctx,
+                    "repo_release_runtime_not_closed",
+                    list(issues),
+                )
+                return
+            committed = validation_snapshot.commit_prepared_release(
+                repo_root,
+                prepared=result.prepared_release,
+            )
+            if not committed.ok:
+                _mark_flow_failed_from_stable_snapshot(
+                    ctx,
+                    "adapter_release_finalize_failed",
+                    list(committed.issues),
+                )
+                return
         _record_stable_repo_snapshot(
             ctx,
-            _adapter_repo_root(input_model),
+            repo_root,
             checkpoint_kind="adapter_preparation_terminal",
             label=f"adapter preparation terminal for {input_model.repo_key}",
             failure_type="adapter_preparation_stable_snapshot_failed",
@@ -1155,15 +1212,20 @@ class AdapterRepoPreparationFlow(LeanBusinessFlow):
         input_model: AdapterRepoPreparationInput,
         result: MarkAdapterProviderReadyStepResult,
     ) -> None:
-        if result.outcome == "marked_ready":
-            state.provider_ready_marked = True
+        if result.outcome in {"ready_for_release", "candidate_prepared"}:
+            state.release_candidate_ready = True
             state.position = FlowPosition(phase="completed")
             self.result = AdapterRepoPreparationResult(
-                outcome="adapter_ready",
+                outcome=(
+                    "adapter_release_prepared"
+                    if result.outcome == "candidate_prepared"
+                    else "adapter_ready_for_release"
+                ),
                 repo_key=input_model.repo_key,
                 catalog_decl_count=state.catalog_decl_count,
                 bound_interface_count=state.bound_interface_count,
                 imported_modules_count=state.imported_modules_count,
+                prepared_release=result.prepared_release,
                 summary=result.repo_summary or result.summary or "Adapter provider repo is ready.",
             )
             return

@@ -19,6 +19,7 @@ from agent_runtime_kit.flow.models import (
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
+from lean_constellation.domain.publication import ReleasePolicy
 from lean_constellation.domain.preparation import (
     AdapterProviderRoute,
     AutoProviderRoute,
@@ -35,6 +36,9 @@ from lean_constellation.flows.repo_lifecycle.submissions import (
     NativeCoordinatorHandoffSubmission,
     RepoFormatAdapterChoiceSubmission,
     RepoFormatNativeChoiceSubmission,
+)
+from lean_constellation.services.validation_snapshot.release_finalizer import (
+    PreparedRepoReleaseView,
 )
 
 if TYPE_CHECKING:
@@ -1006,9 +1010,9 @@ class FinalizeAdapterReadyStepResult(LeanRenderableStepResult):
 
 class MarkAdapterProviderReadyStepResult(LeanRenderableStepResult):
     result_type: Literal["mark_adapter_provider_ready"] = "mark_adapter_provider_ready"
-    outcome: Literal["marked_ready", "blocked"]
-    provider_ready_marked: bool = False
-    satisfied_requirement_count: int = 0
+    outcome: Literal["ready_for_release", "candidate_prepared", "blocked"]
+    prepared_release: PreparedRepoReleaseView | None = None
+    blocking_issue_kinds: list[str] = Field(default_factory=list)
     repo_summary: str | None = None
     snapshot_id: str | None = None
     error: AdapterPreparationStepError | None = None
@@ -1016,8 +1020,8 @@ class MarkAdapterProviderReadyStepResult(LeanRenderableStepResult):
     def agent_fields(self) -> dict[str, object]:
         return {
             "outcome": self.outcome,
-            "provider_ready_marked": self.provider_ready_marked,
-            "satisfied_requirement_count": self.satisfied_requirement_count,
+            "release_id": self.prepared_release.release.release_id if self.prepared_release else None,
+            "blocking_issue_kinds": list(self.blocking_issue_kinds),
             "repo_summary": self.repo_summary,
             "snapshot_id": self.snapshot_id,
             "error_code": self.error.code if self.error else None,
@@ -1245,26 +1249,165 @@ class MarkAdapterProviderReadyStep(BaseStep):
         input_model = _require_adapter_preparation_input(flow.input)
         repo_root = _adapter_repo_root(input_model)
         summary = f"Adapter provider repo {input_model.repo_key} is ready."
-        marked = _repo_workspace(ctx).mark_provider_repo_ready(repo_root, summary=summary)
-        if not marked.ok or marked.value is None:
+        node = _node(ctx)
+        main = node.contract.get_current_contract(repo_root, node_path="Main")
+        if not main.ok or main.value is None:
             return ctx.complete_step(
                 MarkAdapterProviderReadyStepResult(
                     outcome="blocked",
-                    summary=_issue_summary(marked.issues) or "Adapter provider ready mark failed.",
+                    summary=_issue_summary(main.issues) or "Adapter Main contract could not be loaded.",
                     error=_adapter_error_from_issues(
-                        marked.issues,
-                        fallback_code="provider_ready_mark_failed",
-                        fallback_message="Adapter provider ready mark failed.",
+                        main.issues,
+                        fallback_code="adapter_main_contract_missing",
+                        fallback_message="Adapter Main contract could not be loaded.",
+                    ),
+                )
+            )
+        if main.value.contract.status.value != "committed":
+            committed = node.commit_scope_contract(
+                repo_root,
+                scope_path="Main",
+                summary="Commit the finalized Adapter public boundary for release.",
+            )
+            if not committed.ok or committed.value is None:
+                return ctx.complete_step(
+                    MarkAdapterProviderReadyStepResult(
+                        outcome="blocked",
+                        summary=_issue_summary(committed.issues) or "Adapter Main contract commit failed.",
+                        error=_adapter_error_from_issues(
+                            committed.issues,
+                            fallback_code="adapter_main_contract_commit_failed",
+                            fallback_message="Adapter Main contract commit failed.",
+                        ),
+                    )
+                )
+        validation_snapshot = _validation_snapshot(ctx)
+        publication_policy = validation_snapshot.runtime.repo_workspace.publication.resolve_policy(
+            repo_root
+        )
+        if not publication_policy.ok or publication_policy.value is None:
+            return ctx.complete_step(
+                MarkAdapterProviderReadyStepResult(
+                    outcome="blocked",
+                    summary=_issue_summary(publication_policy.issues) or "Adapter publication policy is invalid.",
+                    error=_adapter_error_from_issues(
+                        publication_policy.issues,
+                        fallback_code="repo_publication_policy_invalid",
+                        fallback_message="Adapter publication policy is invalid.",
+                    ),
+                )
+            )
+        publication = validation_snapshot.runtime.repo_workspace.metadata.get_repo_publication(repo_root)
+        if not publication.ok or publication.value is None:
+            return ctx.complete_step(
+                MarkAdapterProviderReadyStepResult(
+                    outcome="blocked",
+                    summary=_issue_summary(publication.issues) or "Adapter publication state is unavailable.",
+                    error=_adapter_error_from_issues(
+                        publication.issues,
+                        fallback_code="repo_publication_state_invalid",
+                        fallback_message="Adapter publication state is unavailable.",
+                    ),
+                )
+            )
+        from lean_constellation.flows.coordinator.release_runtime import (
+            check_repo_release_runtime_closeout,
+        )
+
+        runtime_closeout = check_repo_release_runtime_closeout(
+            validation_snapshot.runtime,
+            repo_root,
+            owner_flow_id=flow.flow_id,
+            phase="prepare",
+        )
+        if not runtime_closeout.ok or runtime_closeout.value is None or not runtime_closeout.value.passed:
+            issues = runtime_closeout.issues if not runtime_closeout.ok else runtime_closeout.value.issues
+            return ctx.complete_step(
+                MarkAdapterProviderReadyStepResult(
+                    outcome="blocked",
+                    summary=_issue_summary(issues) or "Adapter release runtime is not closed.",
+                    error=_adapter_error_from_issues(
+                        issues,
+                        fallback_code="repo_release_runtime_not_closed",
+                        fallback_message="Adapter release runtime is not closed.",
+                    ),
+                )
+            )
+        base_release_id = publication.value.publication.latest_release_id
+        audited = validation_snapshot.preview_candidate_release(
+            repo_root,
+            base_release_id=base_release_id,
+            summary=summary,
+        )
+        if not audited.ok or audited.value is None:
+            return ctx.complete_step(
+                MarkAdapterProviderReadyStepResult(
+                    outcome="blocked",
+                    summary=_issue_summary(audited.issues) or "Adapter release audit failed.",
+                    error=_adapter_error_from_issues(
+                        audited.issues,
+                        fallback_code="repo_release_audit_failed",
+                        fallback_message="Adapter release audit failed.",
+                    ),
+                )
+            )
+        if not audited.value.gate.passed:
+            return ctx.complete_step(
+                MarkAdapterProviderReadyStepResult(
+                    outcome="blocked",
+                    blocking_issue_kinds=list(audited.value.blocking_issue_kinds),
+                    summary=audited.value.summary,
+                    error=_adapter_error_from_issues(
+                        audited.value.gate.issues,
+                        fallback_code="repo_release_candidate_blocked",
+                        fallback_message="Adapter release candidate is blocked.",
+                    ),
+                )
+            )
+        if publication_policy.value.policy.release_policy == ReleasePolicy.MANUAL:
+            return ctx.complete_step(
+                MarkAdapterProviderReadyStepResult(
+                    outcome="ready_for_release",
+                    repo_summary=summary,
+                    summary=(
+                        "Adapter passed the authoritative release audit; publication policy defers "
+                        "the RepoRelease transaction to an explicit operator action."
+                    ),
+                )
+            )
+        prepared = validation_snapshot.prepare_candidate_release(
+            repo_root,
+            base_release_id=base_release_id,
+            summary=summary,
+            audited=audited.value,
+        )
+        if (
+            not prepared.ok
+            or prepared.value is None
+            or prepared.value.outcome != "prepared"
+            or prepared.value.prepared_release is None
+        ):
+            issues = prepared.issues if not prepared.ok else prepared.value.gate.issues
+            return ctx.complete_step(
+                MarkAdapterProviderReadyStepResult(
+                    outcome="blocked",
+                    blocking_issue_kinds=(
+                        [] if prepared.value is None else list(prepared.value.blocking_issue_kinds)
+                    ),
+                    summary=_issue_summary(issues) or "Adapter release preparation failed.",
+                    error=_adapter_error_from_issues(
+                        issues,
+                        fallback_code="repo_release_prepare_failed",
+                        fallback_message="Adapter release preparation failed.",
                     ),
                 )
             )
         return ctx.complete_step(
             MarkAdapterProviderReadyStepResult(
-                outcome="marked_ready",
-                provider_ready_marked=True,
-                satisfied_requirement_count=marked.value.satisfied_requirement_count,
-                repo_summary=marked.value.repo_summary,
-                summary=marked.value.summary,
+                outcome="candidate_prepared",
+                prepared_release=prepared.value.prepared_release,
+                repo_summary=summary,
+                summary=prepared.value.summary,
             )
         )
 

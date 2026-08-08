@@ -1,4 +1,4 @@
-"""ARK runtime preflight for Coordinator release operations."""
+"""ARK runtime preflight for repository release operations."""
 
 from __future__ import annotations
 
@@ -55,26 +55,37 @@ def check_repo_release_runtime_closeout(
             "Candidate release owner Flow is missing.",
             object_ref=owner_flow_id,
         ))
-    elif getattr(owner, "flow_type", None) != "native_repo_coordinator" or getattr(owner, "scope_id", None) != repo_scope:
+    elif getattr(owner, "flow_type", None) not in {
+        "native_repo_coordinator",
+        "adapter_repo_preparation",
+    } or getattr(owner, "scope_id", None) != repo_scope:
         issues.append(runtime.foundation.issue(
             "release_workflow_owner_invalid",
-            "Candidate release owner must be a native Coordinator Flow in the repository scope.",
+            "Candidate release owner must be a supported repository Flow in the repository scope.",
             object_ref=owner_flow_id,
         ))
     else:
+        flow_type = getattr(owner, "flow_type", None)
         position_model = getattr(getattr(owner, "state", None), "position", "")
         position = str(position_model)
         position_phase = str(getattr(position_model, "phase", position_model))
-        allowed = {
-            "submission_preview": position_phase
-            in {"coordinator_agent", "coordinator_callback", "coordinator_requirement_resume"},
-            "prepare": position_phase == "mark_repo_ready",
-            "commit": position_phase == "completed",
-        }[phase]
+        if flow_type == "native_repo_coordinator":
+            allowed = {
+                "submission_preview": position_phase
+                in {"coordinator_agent", "coordinator_callback", "coordinator_requirement_resume"},
+                "prepare": position_phase == "mark_repo_ready",
+                "commit": position_phase == "completed",
+            }[phase]
+        else:
+            allowed = {
+                "submission_preview": False,
+                "prepare": position_phase == "provider_ready",
+                "commit": position_phase == "completed",
+            }[phase]
         if not allowed:
             issues.append(runtime.foundation.issue(
                 "release_workflow_owner_invalid",
-                "Coordinator owner is not at the required release phase.",
+                "Release owner is not at the required release phase.",
                 object_ref=owner_flow_id,
                 current=position,
                 expected=phase,
@@ -93,11 +104,12 @@ def check_repo_release_runtime_closeout(
                 object_ref=getattr(flow, "flow_id", None),
             ))
 
+    owner_type = getattr(owner, "flow_type", None) if owner is not None else None
     allowed_step_type = {
-        "submission_preview": "coordinator_agent_step",
-        "prepare": "mark_coordinator_repo_ready_step",
-        "commit": None,
-    }[phase]
+        ("native_repo_coordinator", "submission_preview"): "coordinator_agent_step",
+        ("native_repo_coordinator", "prepare"): "mark_coordinator_repo_ready_step",
+        ("adapter_repo_preparation", "prepare"): "mark_adapter_provider_ready_step",
+    }.get((owner_type, phase))
     for step in steps:
         scope_id = str(getattr(step, "scope_id", ""))
         status = str(getattr(getattr(step, "status", None), "value", getattr(step, "status", "")))
