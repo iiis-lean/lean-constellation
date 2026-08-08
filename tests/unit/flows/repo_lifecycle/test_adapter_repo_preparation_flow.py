@@ -202,7 +202,7 @@ def _complete_adapter_catalog(lean_runtime, repo_root: Path) -> None:
     adapter = lean_runtime.adapter
     assert adapter.create_adapter_decl(
         repo_root,
-        name="main_result",
+        name="catalog_main_result",
         kind="theorem",
         module="Upstream.Basic",
         lean_decl_name="Upstream.Basic.main_result",
@@ -210,26 +210,55 @@ def _complete_adapter_catalog(lean_runtime, repo_root: Path) -> None:
     ).ok
     assert adapter.set_adapter_statement_formal(
         repo_root,
-        name="main_result",
+        name="catalog_main_result",
         code="theorem main_result : True := by\n  sorry",
     ).ok
-    assert adapter.set_adapter_statement_nl(repo_root, name="main_result", text="Main theorem.").ok
+    assert adapter.set_adapter_statement_nl(repo_root, name="catalog_main_result", text="Main theorem.").ok
     assert adapter.set_adapter_proof_formal(
         repo_root,
-        name="main_result",
+        name="catalog_main_result",
         code="theorem main_result : True := by\n  trivial",
     ).ok
-    assert adapter.set_adapter_proof_nl(repo_root, name="main_result", text="Trivial proof.").ok
-    assert adapter.finalize_adapter_decl(repo_root, name="main_result").ok
+    assert adapter.set_adapter_proof_nl(repo_root, name="catalog_main_result", text="Trivial proof.").ok
+    assert adapter.finalize_adapter_decl(repo_root, name="catalog_main_result").ok
     assert adapter.bind_adapter_interface(
         repo_root,
         interface_name="main_result",
-        decl_name="main_result",
+        decl_name="catalog_main_result",
         binding_summary="The adapter decl satisfies the required theorem interface.",
     ).ok
+    assert adapter.create_adapter_decl(
+        repo_root,
+        name="supporting_result",
+        kind="theorem",
+        module="Upstream.Basic",
+        lean_decl_name="Upstream.Basic.supporting_result",
+        summary="Expose an additional public upstream theorem.",
+    ).ok
+    assert adapter.set_adapter_statement_formal(
+        repo_root,
+        name="supporting_result",
+        code="theorem supporting_result : True := by\n  sorry",
+    ).ok
+    assert adapter.set_adapter_statement_nl(
+        repo_root,
+        name="supporting_result",
+        text="Supporting theorem.",
+    ).ok
+    assert adapter.set_adapter_proof_formal(
+        repo_root,
+        name="supporting_result",
+        code="theorem supporting_result : True := by\n  trivial",
+    ).ok
+    assert adapter.set_adapter_proof_nl(
+        repo_root,
+        name="supporting_result",
+        text="Trivial supporting proof.",
+    ).ok
+    assert adapter.finalize_adapter_decl(repo_root, name="supporting_result").ok
 
 
-def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     runtime, lean_runtime = _runtime(tmp_path)
     workspace = tmp_path / "workspace"
     consumer_root = workspace / "Consumer"
@@ -294,20 +323,25 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path, monkeypa
     assert visible_modules.ok
     assert visible_modules.value is not None
     assert visible_modules.value.modules == ["Upstream.Basic"]
-    monkeypatch.setattr(
-        lean_runtime.node.export,
-        "list_scope_exports",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("Adapter provider-ready validation must not read Native scope exports")
-        ),
-    )
+    exports = lean_runtime.node.export.list_scope_exports(repo_root, scope_path="Main")
+    assert exports.ok and exports.value is not None
+    assert [item.ref.name for item in exports.value] == [
+        "catalog_main_result",
+        "supporting_result",
+    ]
+    assert all(item.valid for item in exports.value)
+    main_contract = lean_runtime.node.contract.get_current_contract(repo_root, node_path="Main")
+    assert main_contract.ok and main_contract.value is not None
+    bindings = {item.name: item.bound_decl for item in main_contract.value.contract.interfaces}
+    assert bindings["main_result"] is not None
+    assert bindings["main_result"].name == "catalog_main_result"
     _advance_and_run(runtime, flow_id)
 
     flow = runtime.flow_service.get_flow(flow_id)
     assert flow.status is FlowStatus.COMPLETED
     assert flow.result is not None
     assert flow.result.outcome == "adapter_ready"
-    assert flow.result.catalog_decl_count == 1
+    assert flow.result.catalog_decl_count == 2
     assert flow.result.bound_interface_count == 1
     assert flow.result.imported_modules_count == 1
     assert lean_runtime.repo_workspace.metadata.get_repo_publication(

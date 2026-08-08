@@ -7,6 +7,7 @@ from typing import Any
 
 from tests.unit_services_helpers import initialize_native_test_repo, make_runtime, publish_native_provider_release
 
+from lean_constellation.domain.interface import DeclKind
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo_release import DeclAvailabilityEntry
@@ -264,6 +265,12 @@ def _seed_declared_public_theorem(
 
 
 def _export_main_result_from_provider_main(runtime: LeanRuntimeServices, repo_root: Path) -> None:
+    preparation = runtime.repo_workspace.preparation.get_preparation_input(repo_root)
+    if preparation.ok and preparation.value is not None:
+        synchronized = runtime.node.interface.sync_protected_root_interfaces_from_preparation_input(
+            repo_root
+        )
+        assert synchronized.ok, synchronized.issues
     topic_export = runtime.node.export.add_scope_export(
         repo_root,
         scope_path="Main.Topic",
@@ -286,6 +293,20 @@ def _export_main_result_from_provider_main(runtime: LeanRuntimeServices, repo_ro
         revision=1,
     )
     assert main_export.ok, main_export.issues
+    main_contract = runtime.node.contract.get_current_contract(repo_root, node_path="Main")
+    assert main_contract.ok and main_contract.value is not None, main_contract.issues
+    if any(
+        interface.name == "main_result"
+        for interface in main_contract.value.contract.interfaces
+    ):
+        bound = runtime.node.interface.bind_interface_to_decl(
+            repo_root,
+            node_path="Main",
+            interface_name="main_result",
+            decl_name="main_result",
+            decl_node=NODE_PATH,
+        )
+        assert bound.ok, bound.issues
 
 
 def _seed_proved_public_theorem_with_provider_dep(runtime: LeanRuntimeServices, repo_root: Path, *, provider_repo: str):  # noqa: ANN201
@@ -742,7 +763,6 @@ def test_provider_requirement_rejects_exact_statement_drift(tmp_path: Path) -> N
                 "name": "main_result",
                 "kind": "theorem",
                 "summary": "Exact provider theorem interface.",
-                "expected_statement_lean_code": "theorem main_result : False := by sorry",
             }
         ],
     )
@@ -757,6 +777,19 @@ def test_provider_requirement_rejects_exact_statement_drift(tmp_path: Path) -> N
     assert shell.ok, shell.issues
     _seed_declared_public_theorem(runtime, provider)
     _export_main_result_from_provider_main(runtime, provider)
+    assert runtime.repo_workspace.requirement.remove_requirement_interface(
+        consumer,
+        requirement_name="need_provider_result",
+        interface_name="main_result",
+    ).ok
+    assert runtime.repo_workspace.requirement.add_requirement_interface(
+        consumer,
+        requirement_name="need_provider_result",
+        interface_name="main_result",
+        kind=DeclKind.THEOREM,
+        summary="Drifted exact provider theorem interface.",
+        expected_statement_lean_code="theorem main_result : False := by sorry",
+    ).ok
 
     validated = runtime.repo_workspace.requirement.validate_requirement_provider_truth(
         consumer,

@@ -21,6 +21,7 @@ from lean_constellation.services.adapter.adapter_decl_catalog import (
     AdapterModuleSummaryView,
 )
 from lean_constellation.services.adapter.interface_binding import (
+    AdapterPublicExportsView,
     AdapterUnboundInterfaceView,
     InterfaceBindingComponent,
     InterfaceBindingView,
@@ -515,6 +516,12 @@ class AdapterService:
 
     def validate_adapter_interface_bindings(self, repo_root: Path) -> ServiceResult[GateReport]:
         return self.interface_binding.validate_adapter_interface_bindings(repo_root)
+
+    def sync_adapter_public_exports(self, repo_root: Path) -> ServiceResult[AdapterPublicExportsView]:
+        return self.interface_binding.sync_adapter_public_exports(repo_root)
+
+    def validate_adapter_public_exports(self, repo_root: Path) -> ServiceResult[GateReport]:
+        return self.interface_binding.validate_adapter_public_exports(repo_root)
 
     def preview_adapter_import_modules(self, repo_root: Path) -> ServiceResult[AdapterImportPreviewView]:
         return self.projection.preview_adapter_import_modules(repo_root)

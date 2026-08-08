@@ -244,15 +244,15 @@ def test_declared_adapter_entrypoint_satisfies_declared_but_not_proved_dependenc
     assert reason == "Provider:Main:main_result is declared; proved is required."
 
 
-def test_ready_adapter_unbound_decl_is_rejected_as_external_dependency(tmp_path: Path) -> None:
+def test_ready_adapter_exported_decl_does_not_require_interface_binding(tmp_path: Path) -> None:
     _flow_runtime, lean_runtime, repo_root = make_decl_round_runtime(tmp_path)
     _prepare_ready_adapter_provider(lean_runtime, tmp_path / "Provider", bind_interface=False)
     round_id = _create_external_dependency_round(lean_runtime, repo_root)
 
     satisfied, reason = _check_round_decl(lean_runtime, repo_root, round_id=round_id, decl_name="A")
 
-    assert satisfied is False
-    assert reason == "Dependency Provider:Main:main_result could not be resolved or its provider is not stable."
+    assert satisfied is True, reason
+    assert reason is None
 
 
 def test_external_provider_read_failure_is_preserved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -410,6 +410,8 @@ def _prepare_ready_adapter_provider(
             binding_summary="The adapter theorem satisfies the public interface.",
         )
         assert bound.ok, bound.issues
+    synchronized = lean_runtime.adapter.sync_adapter_public_exports(provider_root)
+    assert synchronized.ok, synchronized.issues
     projection = lean_runtime.adapter.refresh_adapter_projection(provider_root)
     assert projection.ok, projection.issues
     ready = lean_runtime.adapter.check_adapter_ready(provider_root)

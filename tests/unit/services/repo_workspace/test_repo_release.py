@@ -611,6 +611,7 @@ def test_release_external_statement_dep_accepts_adapter_public_interface(tmp_pat
         decl_name="main_result",
         binding_summary="Expose the public theorem.",
     ).ok
+    assert service.sync_adapter_public_exports(provider_root).ok
     assert service.refresh_adapter_projection(provider_root).ok
     assert service.runtime.repo_workspace.metadata.mark_repo_stable(
         provider_root, summary="Stable adapter provider."

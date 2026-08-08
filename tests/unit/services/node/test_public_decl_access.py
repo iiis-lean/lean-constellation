@@ -2,6 +2,8 @@ from pathlib import Path
 
 from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, make_runtime, publish_native_provider_release
 
+from lean_constellation.domain.interface import DeclInterface
+from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services import LeanProviderOverrides
 from lean_constellation.services.decl_graph.models import (
@@ -53,11 +55,36 @@ def _create_consumer_tree(repo_root: Path) -> None:
     ).ok
 
 
-def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider") -> None:
+def _create_provider_repo(
+    provider_root: Path,
+    *,
+    provider_name: str = "Provider",
+    interface_name: str | None = None,
+) -> None:
     initialize_native_test_repo(provider_root, project_name=provider_name)
     runtime = make_runtime()
     service = runtime.node
+    if interface_name is not None:
+        assert runtime.repo_workspace.metadata.ensure_repo_model(provider_root).ok
+        assert runtime.repo_workspace.preparation.write_preparation_input(
+            provider_root,
+            input=RepoPreparationInput(
+                goal="Provide a released theorem interface.",
+                source_corpus_mode=SourceCorpusMode.PREPARE,
+                interface_inputs=[
+                    DeclInterface(
+                        name=interface_name,
+                        kind="theorem",
+                        summary="Provider theorem interface.",
+                    )
+                ],
+            ),
+        ).ok
     assert service.node_tree.ensure_root_scope_node(provider_root).ok
+    if interface_name is not None:
+        assert runtime.node.interface.sync_protected_root_interfaces_from_preparation_input(
+            provider_root
+        ).ok
     assert service.create_content_node(
         provider_root,
         path="Main.Core",
@@ -114,6 +141,14 @@ def _create_provider_repo(provider_root: Path, *, provider_name: str = "Provider
         mode=WriteMode.OVERWRITE,
     ).ok
     assert runtime.node.export.add_scope_export(provider_root, scope_path="Main", decl_node="Main.Core", decl_name="provider_result").ok
+    if interface_name is not None:
+        assert runtime.node.interface.bind_interface_to_decl(
+            provider_root,
+            node_path="Main",
+            interface_name=interface_name,
+            decl_name="provider_result",
+            decl_node="Main.Core",
+        ).ok
     publish_native_provider_release(runtime, provider_root, summary=f"{provider_name} stable.")
 
 
@@ -294,7 +329,7 @@ def test_node_scoped_actor_only_sees_attached_available_provider_boundary(tmp_pa
     assert [(item.ref.repo, item.ref.name) for item in public.value] == [("Provider", "provider_result")]
 
 
-def test_coordinator_reads_ready_adapter_bound_main_interface(tmp_path: Path) -> None:
+def test_coordinator_reads_all_ready_adapter_main_exports(tmp_path: Path) -> None:
     from lean_constellation.domain.interface import DeclInterface, DeclKind
     from tests.unit.services.adapter.test_adapter_service import _finalize_theorem, _service
 
@@ -308,12 +343,19 @@ def test_coordinator_reads_ready_adapter_bound_main_interface(tmp_path: Path) ->
     )
     assert service.runtime.node.interface.sync_protected_root_interfaces_from_preparation_input(provider).ok
     _finalize_theorem(service, provider)
+    _finalize_theorem(
+        service,
+        provider,
+        name="supporting_result",
+        module="Upstream.Basic",
+    )
     assert service.bind_adapter_interface(
         provider,
         interface_name="main_result",
         decl_name="main_result",
         binding_summary="Expose the public theorem.",
     ).ok
+    assert service.sync_adapter_public_exports(provider).ok
     assert service.refresh_adapter_projection(provider).ok
     assert service.runtime.repo_workspace.metadata.mark_repo_stable(
         provider, summary="Stable adapter provider."
@@ -326,9 +368,9 @@ def test_coordinator_reads_ready_adapter_bound_main_interface(tmp_path: Path) ->
     )
 
     assert public.ok and public.value is not None
-    assert len(public.value) == 1
-    assert public.value[0].ref == DeclRef(
-        repo="AdapterProvider", node="Main", name="main_result", revision=1
-    )
-    assert public.value[0].resolved_revision == 1
-    assert public.value[0].ready is True
+    assert [item.ref for item in public.value] == [
+        DeclRef(repo="AdapterProvider", node="Main", name="main_result", revision=1),
+        DeclRef(repo="AdapterProvider", node="Main", name="supporting_result", revision=1),
+    ]
+    assert all(item.resolved_revision == 1 for item in public.value)
+    assert all(item.ready for item in public.value)

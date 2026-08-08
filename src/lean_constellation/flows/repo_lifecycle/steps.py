@@ -1119,6 +1119,19 @@ class FinalizeAdapterReadyStep(BaseStep):
         input_model = _require_adapter_preparation_input(flow.input)
         repo_root = _adapter_repo_root(input_model)
         adapter = _adapter(ctx)
+        public_exports = adapter.sync_adapter_public_exports(repo_root)
+        if not public_exports.ok:
+            return ctx.complete_step(
+                FinalizeAdapterReadyStepResult(
+                    outcome="blocked",
+                    summary=_issue_summary(public_exports.issues) or "Adapter public export synchronization failed.",
+                    error=_adapter_error_from_issues(
+                        public_exports.issues,
+                        fallback_code="adapter_public_export_sync_failed",
+                        fallback_message="Adapter public export synchronization failed.",
+                    ),
+                )
+            )
         modules = adapter.preview_adapter_import_modules(repo_root)
         if not modules.ok or modules.value is None:
             return ctx.complete_step(

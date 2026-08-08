@@ -13,7 +13,7 @@ from lean_constellation.services.decl_graph.declared_api import DeclaredApiFinge
 from lean_constellation.services.decl_graph.availability_policy import required_state_for_availability
 from lean_constellation.services.decl_graph.models import DeclLifecycle, DeclRevisionStatus, DeclState
 from lean_constellation.services.foundation import IssueSeverity, ServiceResult
-from lean_constellation.services.node.node_tree import NodeKind
+from lean_constellation.services.node.node_tree import NodeContract, NodeKind
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -350,6 +350,35 @@ class DeclRefCompatibilityComponent:
             values.append(resolved.value)
         return self.runtime.foundation.ok(values)
 
+    def list_public_interface_bindings(
+        self,
+        provider_repo_root: Path,
+        *,
+        require_stable: bool,
+    ) -> ServiceResult[dict[str, DeclRef | None]]:
+        """Read Main interface bindings from the same current or released public boundary."""
+
+        provider_repo_root = Path(provider_repo_root)
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if require_stable and repo_format.value.repo_format == RepoFormat.NATIVE:
+            released = self._native_released_main_contract(provider_repo_root)
+            if not released.ok or released.value is None:
+                return self.runtime.foundation.fail(released.issues)
+            contract = released.value[0]
+        else:
+            current = self.runtime.node.contract.get_current_contract(
+                provider_repo_root,
+                node_path="Main",
+            )
+            if not current.ok or current.value is None:
+                return self.runtime.foundation.fail(current.issues)
+            contract = current.value.contract
+        return self.runtime.foundation.ok(
+            {interface.name: interface.bound_decl for interface in contract.interfaces}
+        )
+
     def _public_boundary_context(
         self,
         provider_repo_root: Path,
@@ -360,9 +389,7 @@ class DeclRefCompatibilityComponent:
             main = self.runtime.node.contract.get_current_contract(provider_repo_root, node_path="Main")
             if not main.ok or main.value is None:
                 return self.runtime.foundation.fail(main.issues)
-            return self.runtime.foundation.ok(
-                ([item.bound_decl for item in main.value.contract.interfaces if item.bound_decl is not None], None)
-            )
+            return self.runtime.foundation.ok((list(main.value.contract.exports), None))
         if repo_format != RepoFormat.NATIVE:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
@@ -372,6 +399,16 @@ class DeclRefCompatibilityComponent:
                     current=repo_format.value,
                 )
             )
+        released = self._native_released_main_contract(provider_repo_root)
+        if not released.ok or released.value is None:
+            return self.runtime.foundation.fail(released.issues)
+        contract, target = released.value
+        return self.runtime.foundation.ok((list(contract.exports), target))
+
+    def _native_released_main_contract(
+        self,
+        provider_repo_root: Path,
+    ) -> ServiceResult[tuple[NodeContract, RepoReleaseHeads]]:
         publication = self.runtime.repo_workspace.metadata.get_repo_publication(provider_repo_root)
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
@@ -399,7 +436,7 @@ class DeclRefCompatibilityComponent:
             if not loaded.ok or loaded.value is None:
                 return self.runtime.foundation.fail(loaded.issues)
             return self.runtime.foundation.ok(
-                (list(loaded.value.exports), RepoReleaseHeads(release_id=release_id))
+                (loaded.value, RepoReleaseHeads(release_id=release_id))
             )
         return self.runtime.foundation.fail(
             self.runtime.foundation.issue(

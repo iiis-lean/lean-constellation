@@ -175,7 +175,11 @@ def test_stable_requirement_truth_uses_semantic_provider_public_boundary(
     provider = tmp_path / "provider"
     runtime = make_runtime()
     assert runtime.repo_workspace.metadata.ensure_repo_model(consumer).ok
-    _create_provider_repo(provider, provider_name="provider")
+    _create_provider_repo(
+        provider,
+        provider_name="provider",
+        interface_name="provider_result",
+    )
     assert runtime.repo_workspace.requirement.create_requirement(
         consumer,
         name="need_provider_result",

@@ -1293,6 +1293,20 @@ def test_adapter_interface_binding_projection_and_ready_gate(tmp_path: Path) -> 
     assert bound.value.bound_decl is not None
     assert bound.value.bound_decl.name == "main_result"
 
+    unsynchronized_exports = service.validate_adapter_public_exports(tmp_path)
+    assert unsynchronized_exports.ok
+    assert unsynchronized_exports.value is not None
+    assert unsynchronized_exports.value.passed is False
+    assert any(
+        issue.kind == "adapter_public_export_missing"
+        for issue in unsynchronized_exports.value.issues
+    )
+    synchronized_exports = service.sync_adapter_public_exports(tmp_path)
+    assert synchronized_exports.ok
+    assert synchronized_exports.value is not None
+    assert synchronized_exports.value.changed is True
+    assert [ref.name for ref in synchronized_exports.value.exports] == ["main_result"]
+
     preview = service.preview_adapter_import_modules(tmp_path)
     assert preview.ok
     assert preview.value is not None

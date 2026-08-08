@@ -102,6 +102,11 @@ class ReadyGateComponent:
         reports.append(protected_interfaces.value)
 
         if include_projection:
+            public_exports = self.interface_binding.validate_adapter_public_exports(repo_root)
+            if not public_exports.ok or public_exports.value is None:
+                return self.runtime.foundation.fail(public_exports.issues)
+            reports.append(public_exports.value)
+
             projection = self.projection.check_adapter_projection(repo_root)
             if not projection.ok or projection.value is None:
                 return self.runtime.foundation.fail(projection.issues)

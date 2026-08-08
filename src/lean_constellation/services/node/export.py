@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
-from lean_constellation.domain.repo import proof_availability_for_completion_mode
+from lean_constellation.domain.repo import RepoFormat, proof_availability_for_completion_mode
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.foundation import GateReport, IssueSeverity, ServiceIssue, ServiceResult
 from lean_constellation.services.node.contract import ContractComponent
@@ -425,6 +425,35 @@ class ExportComponent:
                     object_ref=scope_path,
                 )
             )
+        if ref.node == scope_path and scope_path == "Main":
+            repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+            if not repo_format.ok or repo_format.value is None:
+                return self.runtime.foundation.fail(repo_format.issues)
+            if repo_format.value.repo_format == RepoFormat.ADAPTER:
+                inspected = self.runtime.adapter.inspect_adapter_decl(repo_root, name=ref.name)
+                if not inspected.ok or inspected.value is None:
+                    return self.runtime.foundation.fail(inspected.issues)
+                decl = inspected.value
+                if decl.revision.revision != ref.revision or not decl.public:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "scope_export_not_public",
+                            f"Adapter declaration is not a public exact revision: {ref.name}",
+                            object_ref=scope_path,
+                        )
+                    )
+                return self.runtime.foundation.ok(
+                    ScopeExportCandidate(
+                        ref=ref,
+                        source_child=scope_path,
+                        source_kind="adapter_catalog",
+                        kind=decl.kind.value,
+                        module=decl.module,
+                        summary=decl.summary,
+                        ready=decl.finalized,
+                        stale=False,
+                    )
+                )
         direct_child = self._direct_child_path(scope_path, ref.node)
         if direct_child is None:
             return self.runtime.foundation.fail(
@@ -554,17 +583,26 @@ class ExportComponent:
 
     def _decl_ref_view(self, repo_root: Path, scope_path: str, ref: DeclRef, *, index: int) -> DeclRefView:
         candidate = self._find_visible_candidate(repo_root, scope_path=scope_path, ref=ref)
-        resolution = self._resolve_semantic_ref(repo_root, ref)
-        resolved_revision = (
-            resolution.value.resolved_revision
-            if resolution.ok and resolution.value is not None
-            else None
+        adapter_candidate = (
+            candidate.ok
+            and candidate.value is not None
+            and candidate.value.source_kind == "adapter_catalog"
         )
-        resolution_reason = (
-            resolution.value.reason
-            if resolution.ok and resolution.value is not None
-            else None
-        )
+        if adapter_candidate:
+            resolved_revision = ref.revision
+            resolution_reason = "exact_revision"
+        else:
+            resolution = self._resolve_semantic_ref(repo_root, ref)
+            resolved_revision = (
+                resolution.value.resolved_revision
+                if resolution.ok and resolution.value is not None
+                else None
+            )
+            resolution_reason = (
+                resolution.value.reason
+                if resolution.ok and resolution.value is not None
+                else None
+            )
         if candidate.ok and candidate.value is not None:
             valid = candidate.value.ready and not candidate.value.stale
             return DeclRefView(

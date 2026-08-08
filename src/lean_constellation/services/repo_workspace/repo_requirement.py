@@ -621,16 +621,58 @@ class RepoRequirementComponent:
             (item.anchor, item.resolved_revision, item.compatible, item.reason)
             for item in public_refs.value
         ]
+        bindings = self.runtime.decl_graph.ref_compatibility.list_public_interface_bindings(
+            provider_root,
+            require_stable=require_stable,
+        )
+        if not bindings.ok or bindings.value is None:
+            return self.runtime.foundation.fail(
+                [
+                    self.runtime.foundation.issue(
+                        "provider_interface_missing",
+                        "Provider repo public interface bindings could not be read.",
+                        object_ref=f"{provider_key}:Main",
+                        details={"issues": "; ".join(issue.kind for issue in bindings.issues)},
+                    )
+                ]
+            )
         issues = []
         for interface in requirement.interfaces:
-            matches = [item for item in public_entries if item[0].name == interface.name]
-            if not matches:
+            bound_ref = bindings.value.get(interface.name)
+            if bound_ref is None:
                 issues.append(
                     self.runtime.foundation.issue(
                         "provider_interface_missing",
-                        "Provider repo public interface is missing a requested requirement interface.",
+                        "Provider repo is missing a bound requested requirement interface.",
                         object_ref=f"{provider_key}:Main:{interface.name}",
                         field=interface.name,
+                    )
+                )
+                continue
+            matches = [
+                item
+                for item in public_entries
+                if (
+                    item[0].repo,
+                    item[0].node,
+                    item[0].name,
+                    item[0].revision,
+                )
+                == (
+                    bound_ref.repo,
+                    bound_ref.node,
+                    bound_ref.name,
+                    bound_ref.revision,
+                )
+            ]
+            if not matches:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "provider_interface_not_exported",
+                        "Provider interface binding is not present in the public Main exports.",
+                        object_ref=f"{provider_key}:Main:{interface.name}",
+                        field=interface.name,
+                        expected=f"{bound_ref.node}:{bound_ref.name}@{bound_ref.revision}",
                     )
                 )
                 continue

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,12 @@ class AdapterInterfaceBindingIssue(StrictModel):
 
 class AdapterUnboundInterfaceView(StrictModel):
     interfaces: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class AdapterPublicExportsView(StrictModel):
+    exports: list[DeclRef] = Field(default_factory=list)
+    changed: bool = False
     summary: str
 
 
@@ -238,6 +245,133 @@ class InterfaceBindingComponent:
                 summary=f"{len(current.value.contract.interfaces)} adapter interfaces are bound.",
             )
         )
+
+    def sync_adapter_public_exports(self, repo_root: Path) -> ServiceResult[AdapterPublicExportsView]:
+        expected = self._expected_public_exports(repo_root)
+        if not expected.ok or expected.value is None:
+            return self.runtime.foundation.fail(expected.issues)
+        opened = self.contract.ensure_scope_contract(repo_root, scope_path="Main")
+        if not opened.ok or opened.value is None:
+            return self.runtime.foundation.fail(opened.issues)
+        candidate = deepcopy(opened.value.contract)
+        candidate.exports = list(expected.value)
+        export_keys = {self._decl_ref_key(ref) for ref in candidate.exports}
+        missing_bindings = [
+            interface.name
+            for interface in candidate.interfaces
+            if interface.bound_decl is not None
+            and self._decl_ref_key(interface.bound_decl) not in export_keys
+        ]
+        if missing_bindings:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_interface_binding_not_exported",
+                    "Adapter interface bindings must target finalized public catalog declarations.",
+                    object_ref="Main",
+                    details={"interfaces": ", ".join(sorted(missing_bindings))},
+                )
+            )
+        changed = candidate.exports != opened.value.contract.exports
+        if changed:
+            guarded = self.runtime.node.release_guard.check_scope_contract_candidate(
+                repo_root,
+                scope_path="Main",
+                candidate=candidate,
+            )
+            if not guarded.ok:
+                return self.runtime.foundation.fail(guarded.issues)
+            written = self.runtime.foundation.store.write_json_atomic(
+                self._contract_path(repo_root, opened.value.version),
+                candidate,
+                mode=WriteMode.UPDATE_EXISTING,
+            )
+            if not written.ok:
+                return self.runtime.foundation.fail(written.issues)
+        return self.runtime.foundation.ok(
+            AdapterPublicExportsView(
+                exports=list(expected.value),
+                changed=changed,
+                summary=(
+                    f"Synchronized {len(expected.value)} Adapter public exports."
+                    if changed
+                    else f"Adapter public exports already contain {len(expected.value)} declarations."
+                ),
+            )
+        )
+
+    def validate_adapter_public_exports(self, repo_root: Path) -> ServiceResult[GateReport]:
+        expected = self._expected_public_exports(repo_root)
+        if not expected.ok or expected.value is None:
+            return self.runtime.foundation.fail(expected.issues)
+        current = self.contract.get_current_contract(repo_root, node_path="Main")
+        if not current.ok or current.value is None:
+            return self.runtime.foundation.fail(current.issues)
+        expected_keys = {self._decl_ref_key(ref) for ref in expected.value}
+        actual_keys = [self._decl_ref_key(ref) for ref in current.value.contract.exports]
+        actual_key_set = set(actual_keys)
+        issues = []
+        for duplicate in sorted({key for key in actual_keys if actual_keys.count(key) > 1}):
+            issues.append(
+                self.runtime.foundation.issue(
+                    "adapter_public_export_duplicate",
+                    "Adapter public exports contain a duplicate declaration reference.",
+                    object_ref=f"{duplicate[1]}:{duplicate[2]}@{duplicate[3]}",
+                )
+            )
+        for missing in sorted(expected_keys - actual_key_set):
+            issues.append(
+                self.runtime.foundation.issue(
+                    "adapter_public_export_missing",
+                    "A finalized public Adapter declaration is missing from Main exports.",
+                    object_ref=f"{missing[1]}:{missing[2]}@{missing[3]}",
+                )
+            )
+        for extra in sorted(actual_key_set - expected_keys):
+            issues.append(
+                self.runtime.foundation.issue(
+                    "adapter_public_export_extra",
+                    "Main exports contain a declaration outside the finalized public Adapter catalog.",
+                    object_ref=f"{extra[1]}:{extra[2]}@{extra[3]}",
+                )
+            )
+        for interface in current.value.contract.interfaces:
+            if interface.bound_decl is not None and self._decl_ref_key(interface.bound_decl) not in actual_key_set:
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "adapter_interface_binding_not_exported",
+                        "Adapter interface binding is not present in Main exports.",
+                        object_ref=interface.name,
+                    )
+                )
+        if issues:
+            return self.runtime.foundation.ok(
+                self.runtime.foundation.gate_failed(
+                    "adapter_public_exports",
+                    issues,
+                    summary=f"{len(issues)} Adapter public export checks failed.",
+                )
+            )
+        return self.runtime.foundation.ok(
+            self.runtime.foundation.gate_passed(
+                "adapter_public_exports",
+                summary=f"Checked {len(expected.value)} Adapter public exports.",
+            )
+        )
+
+    def _expected_public_exports(self, repo_root: Path) -> ServiceResult[list[DeclRef]]:
+        listed = self.adapter_decl_catalog.list_adapter_decls(repo_root)
+        if not listed.ok or listed.value is None:
+            return self.runtime.foundation.fail(listed.issues)
+        refs = [
+            DeclRef(repo=None, node="Main", name=item.name, revision=1)
+            for item in listed.value
+            if item.finalized and item.public
+        ]
+        refs.sort(key=lambda ref: (ref.node, ref.name, ref.revision))
+        return self.runtime.foundation.ok(refs)
+
+    def _decl_ref_key(self, ref: DeclRef) -> tuple[str | None, str, str, int]:
+        return (ref.repo, ref.node, ref.name, ref.revision)
 
     def _contract_path(self, repo_root: Path, version: int) -> Path:
         node = self.runtime.node.node_tree.node_store.resolve_active_node(repo_root, path="Main")
