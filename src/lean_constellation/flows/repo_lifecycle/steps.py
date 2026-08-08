@@ -364,6 +364,45 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                     )
                 )
             value = initialized.value
+            package_name = verified_route.package_name or route.package_name
+            if package_name is None:
+                return ctx.complete_step(
+                    _repair_result(
+                        "adapter_upstream_package_missing",
+                        "Verified Adapter upstream package metadata is missing.",
+                    )
+                )
+            setup_summary = value.lake_check_summary or value.summary
+            upstream_metadata = _adapter(ctx).write_adapter_upstream_metadata(
+                repo_root,
+                git_url=verified_route.git_url,
+                revision=verified_route.revision,
+                subdir=verified_route.subdir,
+                package_name=package_name,
+                dependency_name=package_name,
+                evidence_summary=value.upstream_summary,
+                setup_summary=setup_summary,
+            )
+            if not upstream_metadata.ok:
+                return ctx.complete_step(
+                    _repair_result_from_issues(
+                        upstream_metadata.issues,
+                        fallback_code="adapter_upstream_metadata_write_failed",
+                        fallback_message="Adapter upstream metadata could not be persisted.",
+                    )
+                )
+            trusted_upstream = _adapter(ctx).mark_upstream_build_trusted(
+                repo_root,
+                summary=setup_summary,
+            )
+            if not trusted_upstream.ok:
+                return ctx.complete_step(
+                    _repair_result_from_issues(
+                        trusted_upstream.issues,
+                        fallback_code="adapter_upstream_trust_failed",
+                        fallback_message="Adapter upstream build trust could not be persisted.",
+                    )
+                )
             return ctx.complete_step(
                 ApplyRepoFormatChoiceStepResult(
                     outcome="adapter_initialized",

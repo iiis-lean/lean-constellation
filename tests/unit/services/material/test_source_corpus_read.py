@@ -629,6 +629,25 @@ def test_source_corpus_pdf_transcription_retains_structure_and_page_mapping(tmp_
     assert (source_root / "transcription" / "paper.md").read_text(encoding="utf-8") == transcription
 
 
+def test_source_corpus_complete_transcription_filename_does_not_require_partial_scope(tmp_path: Path) -> None:
+    source_root = tmp_path / ".lean_constellation" / "source"
+    source_root.mkdir(parents=True)
+    filename = "fan-yu-wang-2012-transcription.txt"
+    readme = _source_entry_text(main_path=filename).replace(
+        "Source boundary: complete fixture; omitted: none.\n",
+        "Coverage: complete page-preserving transcription of all eight pages.\n",
+    )
+    (source_root / "README.md").write_text(readme, encoding="utf-8")
+    (source_root / filename).write_text("Complete article transcription.\n", encoding="utf-8")
+
+    gate = make_runtime().material.check_source_corpus_draft(
+        tmp_path,
+        entry_path="README.md",
+    )
+
+    assert gate.ok and gate.value is not None and gate.value.passed
+
+
 def test_source_corpus_accepts_supplied_targets_solutions_and_descriptive_titles(tmp_path: Path) -> None:
     source_root = tmp_path / ".lean_constellation" / "source"
     source_root.mkdir(parents=True)

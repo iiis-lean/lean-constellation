@@ -290,6 +290,19 @@ def test_requirement_bootstrap_adapter_choice_initializes_adapter_skeleton(tmp_p
     assert lake.checked == [(repo_root, "upstream")]
     assert apply_step.result is not None
     assert "Coverage not verified." in apply_step.result.upstream_summary
+    upstream_metadata = lean_runtime.adapter.get_adapter_upstream_metadata(repo_root)
+    assert upstream_metadata.ok and upstream_metadata.value is not None
+    assert upstream_metadata.value.git_url == "https://github.com/example/upstream"
+    assert upstream_metadata.value.revision == "a" * 40
+    assert upstream_metadata.value.package_name == "upstream"
+    assert upstream_metadata.value.dependency_name == "upstream"
+    assert upstream_metadata.value.trusted_build is True
+    preflight = lean_runtime.repo_workspace.get_preparation_start_preflight(
+        repo_root,
+        expected_format="adapter",
+    )
+    assert preflight.ok and preflight.value is not None
+    assert preflight.value.passed is True
 
 
 def test_requirement_bootstrap_rejects_incompatible_upstream_before_lake_update(

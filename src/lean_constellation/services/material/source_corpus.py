@@ -672,7 +672,7 @@ class SourceCorpusComponent:
             partial_files = [
                 item.path
                 for item in manifest.files
-                if re.search(r"(?:partial|excerpt|selected|transcript)", Path(item.path).stem, flags=re.IGNORECASE)
+                if re.search(r"(?:partial|excerpt|selected)", Path(item.path).stem, flags=re.IGNORECASE)
             ]
             if partial_files and not re.search(
                 r"\b(?:selected scope|included scope|source boundary|omitted)\b",
