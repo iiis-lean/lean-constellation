@@ -368,6 +368,104 @@ def publish_native_provider_release(
     return release
 
 
+def publish_adapter_provider_release(
+    runtime: LeanRuntimeServices,
+    repo_root: Path,
+    *,
+    summary: str = "Adapter provider test release.",
+    release_id: str | None = None,
+) -> RepoRelease:
+    """Materialize a real flat-Main Adapter RepoRelease for unit fixtures."""
+
+    from lean_constellation.domain.repo import (
+        RepoFormat,
+        RepoPublicationState,
+        RepoPublicationStatus,
+    )
+    from lean_constellation.domain.repo_release import RepoRelease
+    from lean_constellation.services.foundation import WriteMode
+    from lean_constellation.services.node import NodeContractStatus, NodeKind
+
+    repo_root = Path(repo_root)
+    repo_format = runtime.repo_workspace.metadata.get_repo_format(repo_root)
+    assert repo_format.ok and repo_format.value is not None
+    assert repo_format.value.repo_format is RepoFormat.ADAPTER
+    main = runtime.node.node_tree.get_node(repo_root, path="Main")
+    assert main.ok and main.value is not None
+    assert main.value.kind is NodeKind.SCOPE
+    loaded = runtime.node.contract.get_current_contract(repo_root, node_path="Main")
+    assert loaded.ok and loaded.value is not None
+    contract = loaded.value.contract.model_copy(deep=True)
+    if contract.status is not NodeContractStatus.COMMITTED:
+        contract.status = NodeContractStatus.COMMITTED
+        contract.committed_at = "2026-08-08T00:00:00Z"
+        assert runtime.foundation.store.write_json_atomic(
+            runtime.node.node_tree.node_store.contract_path(
+                repo_root,
+                node_id=main.value.node_id,
+                version=contract.version,
+            ),
+            contract,
+            mode=WriteMode.UPDATE_EXISTING,
+        ).ok
+        metadata = runtime.node.node_tree.node_store.load_node_by_id(
+            repo_root,
+            node_id=main.value.node_id,
+        )
+        assert metadata.ok and metadata.value is not None
+        metadata.value.current_contract_version = contract.version
+        metadata.value.active_contract_version = contract.version
+        metadata.value.open_contract_version = None
+        assert runtime.node.node_tree.node_store.save_node(
+            repo_root,
+            metadata.value,
+            mode=WriteMode.UPDATE_EXISTING,
+        ).ok
+
+    release_id = release_id or f"release_{uuid4().hex}"
+    assert runtime.repo_workspace.metadata.set_repo_summary(repo_root, summary=summary).ok
+    release = RepoRelease(
+        release_id=release_id,
+        node_contract_versions={main.value.node_id: contract.version},
+        completion_mode=contract.task_completion_mode,
+        semantic_manifest_digest=runtime.validation_snapshot.release_finalizer.compute_semantic_manifest_digest(
+            repo_root
+        ),
+        dependency_lock_digest=runtime.validation_snapshot.release_finalizer.compute_dependency_lock_digest(
+            repo_root
+        ),
+        summary=summary,
+    )
+    assert runtime.repo_workspace.publication.refresh_managed_gitignore(repo_root).ok
+    git_state = runtime.repo_workspace.git_release.ensure_independent_repo(repo_root)
+    assert git_state.ok and git_state.value is not None
+    assert runtime.repo_workspace.release.create_release(repo_root, release=release).ok
+    publication = RepoPublicationState(
+        status=RepoPublicationStatus.STABLE,
+        latest_release_id=release_id,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.repo_workspace.metadata._repo_publication_path(repo_root),
+        publication,
+        mode=WriteMode.OVERWRITE,
+    ).ok
+    candidate_files = [
+        path.relative_to(repo_root).as_posix()
+        for path in runtime.validation_snapshot.release_finalizer._candidate_files(repo_root)
+    ]
+    committed = runtime.repo_workspace.git_release.commit_release(
+        repo_root,
+        release=release,
+        candidate_files=candidate_files,
+        expected_head=git_state.value.head_commit,
+        commit_message=f"release(test): {summary}",
+    )
+    assert committed.ok and committed.value is not None
+    available = runtime.repo_workspace.provider_availability.check_provider_available(repo_root)
+    assert available.ok and available.value is not None and available.value.passed
+    return release
+
+
 def publish_adapter_provider_ready(
     runtime: LeanRuntimeServices,
     repo_root: Path,
@@ -409,8 +507,8 @@ def publish_adapter_provider_ready(
     (upstream / "Upstream" / "Basic.lean").write_text("import Mathlib\n", encoding="utf-8")
     assert runtime.adapter.write_adapter_upstream_metadata(
         repo_root,
-        source_kind="local_path",
-        local_path=str(upstream),
+        git_url="https://example.invalid/upstream.git",
+        revision="1" * 40,
         package_name="upstream",
         dependency_name="upstream",
         evidence_summary="Unit fixture upstream checkout.",
@@ -425,9 +523,7 @@ def publish_adapter_provider_ready(
     assert projection.ok, projection.issues
     gate = runtime.adapter.check_adapter_ready(repo_root)
     assert gate.ok and gate.value is not None and gate.value.passed, gate.issues
-    ready = runtime.repo_workspace.metadata.mark_repo_stable(repo_root, summary=summary)
-    assert ready.ok and ready.value is not None
-    assert ready.value.publication.status.value == "stable"
+    publish_adapter_provider_release(runtime, repo_root, summary=summary)
 
 
 def make_runtime(

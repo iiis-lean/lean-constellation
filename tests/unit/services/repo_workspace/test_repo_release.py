@@ -17,7 +17,13 @@ from lean_constellation.services.decl_graph.models import (
 )
 from lean_constellation.services.foundation import FoundationContext, WriteMode
 from lean_constellation.services.node import NodeContractStatus
-from tests.unit_services_helpers import lean_check_payload, make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    make_runtime,
+    publish_adapter_provider_release,
+    publish_native_provider_release,
+)
 
 
 def test_release_decl_availability_reader_is_optional_and_lru_cached(
@@ -181,6 +187,13 @@ def _write_decl(
 
 def _prepare_release_repo(repo_root: Path):
     runtime = make_runtime()
+    initialize_native_test_repo(repo_root, project_name=repo_root.name or "TestProject")
+    assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    assert runtime.repo_workspace.metadata.set_repo_format(
+        repo_root,
+        repo_format="native",
+        reason="native release fixture",
+    ).ok
     assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
     assert runtime.node.node_tree.create_scope_node(repo_root, path="Main.Foundation", goal="Foundation", boundary="Foundation").ok
     assert runtime.node.node_tree.create_content_node(
@@ -235,6 +248,54 @@ def _prepare_release_repo(repo_root: Path):
         assert runtime.node.node_tree.node_store.save_node(repo_root, metadata, mode=WriteMode.UPDATE_EXISTING).ok
         versions[node.node_id] = contract.version
     return runtime, versions
+
+
+def _prepare_adapter_release_repo(repo_root: Path):
+    runtime = make_runtime()
+    assert runtime.repo_workspace.metadata.ensure_repo_model(repo_root).ok
+    assert runtime.repo_workspace.metadata.set_repo_format(
+        repo_root,
+        repo_format="adapter",
+        reason="adapter release fixture",
+    ).ok
+    assert runtime.node.node_tree.ensure_root_scope_node(repo_root).ok
+    support_ref = DeclRef(node="Main", name="Support", revision=1)
+    _write_decl(repo_root, node_path="Main", name="Support")
+    _write_decl(
+        repo_root,
+        node_path="Main",
+        name="PublicResult",
+        statement_deps=(support_ref,),
+    )
+    main = runtime.node.node_tree.get_node(repo_root, path="Main").value
+    loaded = runtime.node.contract.get_current_contract(repo_root, node_path="Main")
+    assert loaded.ok and loaded.value is not None
+    contract = loaded.value.contract
+    contract.status = NodeContractStatus.COMMITTED
+    contract.committed_at = "2026-08-08T00:00:00Z"
+    contract.exports = [DeclRef(node="Main", name="PublicResult", revision=1)]
+    assert runtime.foundation.store.write_json_atomic(
+        runtime.node.node_tree.node_store.contract_path(
+            repo_root,
+            node_id=main.node_id,
+            version=contract.version,
+        ),
+        contract,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    metadata = runtime.node.node_tree.node_store.load_node_by_id(
+        repo_root,
+        node_id=main.node_id,
+    ).value
+    metadata.active_contract_version = contract.version
+    metadata.current_contract_version = contract.version
+    metadata.open_contract_version = None
+    assert runtime.node.node_tree.node_store.save_node(
+        repo_root,
+        metadata,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    return runtime, {main.node_id: contract.version}
 
 
 def _release(
@@ -297,6 +358,46 @@ def test_release_baseline_protects_cross_node_statement_closure_but_not_proof_de
     assert protected_status.value.released_state == "proved"
     assert private_status.ok and private_status.value.release_protected is False
     assert private_status.value.released_state == "proved"
+
+
+def test_adapter_release_baseline_uses_flat_main_exports_and_statement_closure(
+    tmp_path: Path,
+) -> None:
+    runtime, versions = _prepare_adapter_release_repo(tmp_path)
+    assert runtime.repo_workspace.release.create_release(
+        tmp_path,
+        release=_release("adapter_r1", versions),
+    ).ok
+
+    baseline = runtime.repo_workspace.release.resolve_release_baseline(
+        tmp_path,
+        release_id="adapter_r1",
+    )
+
+    assert baseline.ok and baseline.value is not None
+    assert {
+        (item.node_path, item.decl_name)
+        for item in baseline.value.protected_decl_views
+    } == {("Main", "PublicResult"), ("Main", "Support")}
+    assert baseline.value.protected_scope_paths == ["Main"]
+    assert baseline.value.protected_node_ids == list(versions)
+
+
+def test_adapter_release_availability_index_reads_flat_main_catalog(
+    tmp_path: Path,
+) -> None:
+    runtime, _versions = _prepare_adapter_release_repo(tmp_path)
+
+    built = runtime.decl_graph.build_release_decl_availability_index(tmp_path)
+
+    assert built.ok and built.value is not None
+    assert [
+        (entry.node, entry.name, entry.main_export)
+        for entry in built.value.entries
+    ] == [
+        ("Main", "PublicResult", True),
+        ("Main", "Support", False),
+    ]
 
 
 def test_release_lineage_cycle_is_rejected_on_read(tmp_path: Path) -> None:
@@ -613,9 +714,11 @@ def test_release_external_statement_dep_accepts_adapter_public_interface(tmp_pat
     ).ok
     assert service.sync_adapter_public_exports(provider_root).ok
     assert service.refresh_adapter_projection(provider_root).ok
-    assert service.runtime.repo_workspace.metadata.mark_repo_stable(
-        provider_root, summary="Stable adapter provider."
-    ).ok
+    publish_adapter_provider_release(
+        service.runtime,
+        provider_root,
+        summary="Stable adapter provider.",
+    )
 
     consumer_root = tmp_path / "Consumer"
     runtime, versions = _prepare_release_repo(consumer_root)

@@ -46,6 +46,43 @@ class ProviderAvailabilityComponent:
             )
         if repo_format.value.repo_format == RepoFormat.UNKNOWN:
             return self._blocked("provider_format_unknown", "Unknown-format repos cannot be providers.", repo_root)
+        if repo_format.value.repo_format not in {RepoFormat.NATIVE, RepoFormat.ADAPTER}:
+            return self._blocked("provider_format_unknown", "Unsupported-format repos cannot be providers.", repo_root)
+        issue_prefix = (
+            "provider_native"
+            if repo_format.value.repo_format == RepoFormat.NATIVE
+            else "provider_adapter"
+        )
+        if state.latest_release_id is None:
+            return self._blocked(
+                f"{issue_prefix}_stable_release_missing",
+                "Stable providers require a current repository release baseline.",
+                repo_root,
+            )
+        release = self.release.get_release(repo_root, release_id=state.latest_release_id)
+        if not release.ok or release.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    f"{issue_prefix}_release_missing",
+                    "Provider publication points to a missing or unreadable release.",
+                    object_ref=state.latest_release_id,
+                )
+            )
+        git_release = self.runtime.repo_workspace.git_release.validate_release(
+            repo_root,
+            release=release.value.release,
+        )
+        if not git_release.ok or git_release.value is None:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    f"{issue_prefix}_git_release_invalid",
+                    "Provider Git Release ref, commit, or manifest is missing or unreadable.",
+                    object_ref=state.latest_release_id,
+                    details={
+                        "issues": "; ".join(issue.kind for issue in git_release.issues)
+                    },
+                )
+            )
         if repo_format.value.repo_format == RepoFormat.ADAPTER:
             ready = self.runtime.adapter.check_adapter_ready(repo_root)
             if not ready.ok or ready.value is None:
@@ -71,38 +108,9 @@ class ProviderAvailabilityComponent:
                     self.runtime.foundation.gate_failed("provider_availability", [issue, *ready.value.issues])
                 )
             return self.runtime.foundation.ok(
-                self.runtime.foundation.gate_passed("provider_availability", summary="Adapter provider is available.")
-            )
-        if repo_format.value.repo_format != RepoFormat.NATIVE:
-            return self._blocked("provider_format_unknown", "Unsupported-format repos cannot be providers.", repo_root)
-        if state.latest_release_id is None:
-            return self._blocked(
-                "provider_native_stable_release_missing",
-                "Stable native provider has no current release baseline.",
-                repo_root,
-            )
-        release = self.release.get_release(repo_root, release_id=state.latest_release_id)
-        if not release.ok or release.value is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "provider_native_release_missing",
-                    "Native provider publication points to a missing or unreadable release.",
-                    object_ref=state.latest_release_id,
-                )
-            )
-        git_release = self.runtime.repo_workspace.git_release.validate_release(
-            repo_root,
-            release=release.value.release,
-        )
-        if not git_release.ok or git_release.value is None:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "provider_native_git_release_invalid",
-                    "Native provider Git Release ref, commit, or manifest is missing or unreadable.",
-                    object_ref=state.latest_release_id,
-                    details={
-                        "issues": "; ".join(issue.kind for issue in git_release.issues)
-                    },
+                self.runtime.foundation.gate_passed(
+                    "provider_availability",
+                    summary=f"Adapter provider release {state.latest_release_id} is available.",
                 )
             )
         return self.runtime.foundation.ok(

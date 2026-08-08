@@ -170,16 +170,28 @@ class DeclReadinessComponent:
         nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
         if not nodes.ok or nodes.value is None:
             return self.runtime.foundation.fail(nodes.issues)
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        adapter = repo_format.value.repo_format == RepoFormat.ADAPTER
         declarations: list[Decl] = []
         revisions: dict[tuple[str, str], DeclRevision] = {}
         for node in sorted(nodes.value, key=lambda item: item.path):
-            if node.kind.value != "content" or node.lifecycle.value != "active":
+            eligible_node = (
+                node.path == "Main" and node.kind.value == "scope"
+                if adapter
+                else node.kind.value == "content"
+            )
+            if not eligible_node or node.lifecycle.value != "active":
                 continue
             listed = self.decl_catalog.list_decls(repo_root, node_path=node.path)
             if not listed.ok or listed.value is None:
                 return self.runtime.foundation.fail(listed.issues)
             for decl in listed.value:
-                if decl.lifecycle != DeclLifecycle.ACTIVE:
+                if (
+                    decl.lifecycle != DeclLifecycle.ACTIVE
+                    or (adapter and not decl.public)
+                ):
                     continue
                 revision = self.decl_catalog.get_decl_revision(
                     repo_root,

@@ -19,6 +19,7 @@ from tests.unit.flows.decl_round._helpers import (
 from tests.unit_services_helpers import (
     CleanDeclarationSoundnessDispatcher,
     lean_check_payload,
+    publish_adapter_provider_release,
     set_current_decl_lean_name_for_test,
     write_proof_formal_for_test,
     write_statement_formal_for_test,
@@ -361,8 +362,8 @@ def _prepare_ready_adapter_provider(
     (upstream / "Upstream" / "Basic.lean").write_text("import Mathlib\n", encoding="utf-8")
     assert lean_runtime.adapter.write_adapter_upstream_metadata(
         provider_root,
-        source_kind="local_path",
-        local_path=str(upstream),
+        git_url="https://example.invalid/upstream.git",
+        revision="1" * 40,
         package_name="upstream",
         dependency_name="upstream",
         evidence_summary="Decl round fixture upstream checkout.",
@@ -416,11 +417,11 @@ def _prepare_ready_adapter_provider(
     assert projection.ok, projection.issues
     ready = lean_runtime.adapter.check_adapter_ready(provider_root)
     assert ready.ok and ready.value is not None and ready.value.passed, ready.issues
-    published = lean_runtime.repo_workspace.metadata.mark_repo_stable(
+    publish_adapter_provider_release(
+        lean_runtime,
         provider_root,
         summary="Adapter provider is ready for Decl Round dependency tests.",
     )
-    assert published.ok and published.value is not None
 
 
 def _write_proved_round_theorem(

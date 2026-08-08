@@ -62,7 +62,7 @@ CASES = (
         hard_failure=True,
     ),
     ProviderCase(
-        name="ready_adapter_latest_none",
+        name="ready_adapter_release",
         available=True,
         decl_ref=DeclRef(repo="Provider", node="Main", name="main_result", revision=1),
     ),

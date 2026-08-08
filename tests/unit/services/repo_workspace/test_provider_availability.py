@@ -2,7 +2,11 @@ from pathlib import Path
 
 from lean_constellation.domain.repo import RepoFormat, RepoPublicationState, RepoPublicationStatus
 from lean_constellation.services.foundation import WriteMode
-from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo, _release
+from tests.unit.services.repo_workspace.test_repo_release import (
+    _prepare_adapter_release_repo,
+    _prepare_release_repo,
+    _release,
+)
 from tests.unit_services_helpers import make_runtime
 
 
@@ -65,10 +69,8 @@ def test_native_without_stable_release_and_unknown_are_rejected(tmp_path: Path) 
     assert unknown.value.issues[0].kind == "provider_format_unknown"
 
 
-def test_adapter_does_not_require_native_release(monkeypatch, tmp_path: Path) -> None:
-    runtime = make_runtime()
-    assert runtime.repo_workspace.metadata.ensure_repo_model(tmp_path).ok
-    assert runtime.repo_workspace.metadata.set_repo_format(tmp_path, repo_format=RepoFormat.ADAPTER, reason="adapter").ok
+def test_adapter_provider_requires_git_backed_release_and_ready_gate(monkeypatch, tmp_path: Path) -> None:
+    runtime, versions = _prepare_adapter_release_repo(tmp_path)
     _write_publication(runtime, tmp_path, latest_release_id=None)
     monkeypatch.setattr(
         runtime.adapter,
@@ -78,8 +80,19 @@ def test_adapter_does_not_require_native_release(monkeypatch, tmp_path: Path) ->
         ),
     )
 
-    available = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
+    missing_release = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
+    assert missing_release.ok and missing_release.value.passed is False
+    assert missing_release.value.issues[0].kind == "provider_adapter_stable_release_missing"
 
+    release = _release("adapter_r1", versions)
+    assert runtime.repo_workspace.release.create_release(tmp_path, release=release).ok
+    _write_publication(runtime, tmp_path, latest_release_id=release.release_id)
+    missing_git = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
+    assert not missing_git.ok
+    assert missing_git.issues[0].kind == "provider_adapter_git_release_invalid"
+
+    _publish_git_release(runtime, tmp_path, release)
+    available = runtime.repo_workspace.provider_availability.check_provider_available(tmp_path)
     assert available.ok and available.value.passed is True
 
     monkeypatch.setattr(

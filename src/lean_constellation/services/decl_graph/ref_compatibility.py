@@ -82,8 +82,6 @@ class DeclRefCompatibilityComponent:
             repo_format = self.runtime.repo_workspace.metadata.get_repo_format(target_repo)
             if not repo_format.ok or repo_format.value is None:
                 return self.runtime.foundation.fail(repo_format.issues)
-            if repo_format.value.repo_format == RepoFormat.ADAPTER:
-                return self._resolve_adapter_anchor(target_repo, ref=ref, required_availability=required_availability)
             if isinstance(target, CurrentContractHeads):
                 publication = self.runtime.repo_workspace.metadata.get_repo_publication(target_repo)
                 if not publication.ok or publication.value is None:
@@ -282,19 +280,18 @@ class DeclRefCompatibilityComponent:
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)
         if repo_format.value.repo_format == RepoFormat.ADAPTER:
-            context = self._public_boundary_context(
+            current = self.runtime.node.contract.get_current_contract(
                 provider_repo_root,
-                repo_format=repo_format.value.repo_format,
+                node_path="Main",
             )
-            if not context.ok or context.value is None:
-                return self.runtime.foundation.fail(context.issues)
-            refs, target = context.value
+            if not current.ok or current.value is None:
+                return self.runtime.foundation.fail(current.issues)
             return self._resolve_public_boundary_refs(
                 provider_repo_root,
                 repo_format=repo_format.value.repo_format,
-                refs=refs,
+                refs=list(current.value.contract.exports),
                 required_availability=required_availability,
-                target=target,
+                target=None,
             )
         if repo_format.value.repo_format != RepoFormat.NATIVE:
             return self.runtime.foundation.fail(
@@ -362,8 +359,11 @@ class DeclRefCompatibilityComponent:
         repo_format = self.runtime.repo_workspace.metadata.get_repo_format(provider_repo_root)
         if not repo_format.ok or repo_format.value is None:
             return self.runtime.foundation.fail(repo_format.issues)
-        if require_stable and repo_format.value.repo_format == RepoFormat.NATIVE:
-            released = self._native_released_main_contract(provider_repo_root)
+        if require_stable and repo_format.value.repo_format in {
+            RepoFormat.NATIVE,
+            RepoFormat.ADAPTER,
+        }:
+            released = self._released_main_contract(provider_repo_root)
             if not released.ok or released.value is None:
                 return self.runtime.foundation.fail(released.issues)
             contract = released.value[0]
@@ -385,12 +385,7 @@ class DeclRefCompatibilityComponent:
         *,
         repo_format: RepoFormat,
     ) -> ServiceResult[tuple[list[DeclRef], RepoReleaseHeads | None]]:
-        if repo_format == RepoFormat.ADAPTER:
-            main = self.runtime.node.contract.get_current_contract(provider_repo_root, node_path="Main")
-            if not main.ok or main.value is None:
-                return self.runtime.foundation.fail(main.issues)
-            return self.runtime.foundation.ok((list(main.value.contract.exports), None))
-        if repo_format != RepoFormat.NATIVE:
+        if repo_format not in {RepoFormat.NATIVE, RepoFormat.ADAPTER}:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "provider_format_unsupported",
@@ -399,13 +394,13 @@ class DeclRefCompatibilityComponent:
                     current=repo_format.value,
                 )
             )
-        released = self._native_released_main_contract(provider_repo_root)
+        released = self._released_main_contract(provider_repo_root)
         if not released.ok or released.value is None:
             return self.runtime.foundation.fail(released.issues)
         contract, target = released.value
         return self.runtime.foundation.ok((list(contract.exports), target))
 
-    def _native_released_main_contract(
+    def _released_main_contract(
         self,
         provider_repo_root: Path,
     ) -> ServiceResult[tuple[NodeContract, RepoReleaseHeads]]:
@@ -417,7 +412,7 @@ class DeclRefCompatibilityComponent:
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
                     "provider_release_missing",
-                    "Native provider public boundary requires a published release.",
+                    "Stable provider public boundary requires a published release.",
                     object_ref=str(provider_repo_root),
                 )
             )
@@ -455,7 +450,7 @@ class DeclRefCompatibilityComponent:
         required_availability: ProofAvailability,
         target: RepoReleaseHeads | None,
     ) -> ServiceResult[ResolvedDeclRefView]:
-        if repo_format == RepoFormat.ADAPTER:
+        if repo_format == RepoFormat.ADAPTER and target is None:
             return self._resolve_adapter_anchor(
                 provider_repo_root,
                 ref=ref,
@@ -476,7 +471,28 @@ class DeclRefCompatibilityComponent:
         ref: DeclRef,
         target: DeclRefTarget,
     ) -> ServiceResult[int | None]:
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
         if isinstance(target, CurrentContractHeads):
+            if repo_format.value.repo_format == RepoFormat.ADAPTER:
+                main = self.runtime.node.contract.get_current_contract(
+                    repo_root,
+                    node_path="Main",
+                )
+                if not main.ok or main.value is None:
+                    return self.runtime.foundation.fail(main.issues)
+                match = next(
+                    (
+                        item.revision
+                        for item in main.value.contract.exports
+                        if item.repo is None
+                        and item.node == ref.node
+                        and item.name == ref.name
+                    ),
+                    None,
+                )
+                return self.runtime.foundation.ok(match)
             node = self.runtime.node.node_tree.get_node(repo_root, path=ref.node)
             if not node.ok or node.value is None or node.value.kind != NodeKind.CONTENT:
                 return self.runtime.foundation.ok(None)
@@ -491,11 +507,26 @@ class DeclRefCompatibilityComponent:
             node = self.runtime.node.node_tree.node_store.load_node_by_id(repo_root, node_id=node_id)
             if not node.ok or node.value is None:
                 return self.runtime.foundation.fail(node.issues)
-            if node.value.path != ref.node or node.value.kind != NodeKind.CONTENT:
-                continue
             contract = self.runtime.repo_workspace.release._load_contract(repo_root, node_id=node_id, version=version)
             if not contract.ok or contract.value is None:
                 return self.runtime.foundation.fail(contract.issues)
+            if repo_format.value.repo_format == RepoFormat.ADAPTER:
+                if node.value.path != "Main" or node.value.kind != NodeKind.SCOPE:
+                    continue
+                return self.runtime.foundation.ok(
+                    next(
+                        (
+                            item.revision
+                            for item in contract.value.exports
+                            if item.repo is None
+                            and item.node == ref.node
+                            and item.name == ref.name
+                        ),
+                        None,
+                    )
+                )
+            if node.value.path != ref.node or node.value.kind != NodeKind.CONTENT:
+                continue
             return self.runtime.foundation.ok(contract.value.decl_graph_head.get(ref.name))
         return self.runtime.foundation.ok(None)
 

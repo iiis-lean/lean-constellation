@@ -419,7 +419,7 @@ def test_workspace_catalog_lists_repos_and_current_repo_first(tmp_path: Path) ->
     assert provider_state.ok and provider_state.value is not None
     assert provider_state.value.repo_format is RepoFormat.ADAPTER
     assert provider_state.value.publication_status is RepoPublicationStatus.STABLE
-    assert provider_state.value.latest_release_id is None
+    assert provider_state.value.latest_release_id is not None
     assert provider_state.value.provider_ready is True
     requirement.create_requirement(current, name="need_provider", target_repo="provider", reason="use provider")
 
@@ -434,7 +434,7 @@ def test_workspace_catalog_lists_repos_and_current_repo_first(tmp_path: Path) ->
     assert repos.value[0].open_requirement_count == 1
     assert repos.value[1].provider_ready is True
     assert repos.value[1].repo_summary == "Provider exposes the required public interface."
-    assert repos.value[1].latest_release_id is None
+    assert repos.value[1].latest_release_id == provider_state.value.latest_release_id
 
     view = catalog.get_workspace_catalog(workspace, current_repo="provider")
     assert view.ok

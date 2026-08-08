@@ -8,7 +8,11 @@ from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoPublicationState, RepoPublicationStatus
 from lean_constellation.services.decl_graph.models import DeclLifecycle, DeclState
 from lean_constellation.services.foundation import WriteMode
-from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo, _release
+from tests.unit.services.repo_workspace.test_repo_release import (
+    _prepare_adapter_release_repo,
+    _prepare_release_repo,
+    _release,
+)
 
 
 def _publish_latest(runtime, repo_root: Path, versions: dict[str, int]) -> None:
@@ -138,6 +142,59 @@ def test_released_scope_rejects_removing_historical_unbound_interface(tmp_path: 
 
     assert not guarded.ok
     assert guarded.issues[0].kind == "released_scope_interface_changed"
+
+
+def test_released_adapter_main_public_boundary_cannot_shrink_or_rebind(
+    tmp_path: Path,
+) -> None:
+    runtime, versions = _prepare_adapter_release_repo(tmp_path)
+    current = runtime.node.contract.get_visible_contract(tmp_path, node_path="Main")
+    assert current.ok and current.value is not None
+    historical = deepcopy(current.value.contract)
+    public_ref = historical.exports[0]
+    historical.interfaces = [
+        DeclInterface(
+            name="public_result",
+            kind=DeclKind.THEOREM,
+            summary="Released Adapter interface alias.",
+            bound_decl=public_ref,
+        )
+    ]
+    contract_path = runtime.node.node_tree.node_store.contract_path(
+        tmp_path,
+        node_id=current.value.node_id,
+        version=current.value.version,
+    )
+    assert runtime.foundation.store.write_json_atomic(
+        contract_path,
+        historical,
+        mode=WriteMode.UPDATE_EXISTING,
+    ).ok
+    _publish_latest(runtime, tmp_path, versions)
+
+    removed = deepcopy(historical)
+    removed.exports = []
+    removed_result = runtime.node.release_guard.check_scope_contract_candidate(
+        tmp_path,
+        scope_path="Main",
+        candidate=removed,
+    )
+    assert not removed_result.ok
+    assert removed_result.issues[0].kind == "released_scope_export_removed"
+
+    rebound = deepcopy(historical)
+    rebound.interfaces[0].bound_decl = DeclRef(
+        node="Main",
+        name="Support",
+        revision=1,
+    )
+    rebound_result = runtime.node.release_guard.check_scope_contract_candidate(
+        tmp_path,
+        scope_path="Main",
+        candidate=rebound,
+    )
+    assert not rebound_result.ok
+    assert rebound_result.issues[0].kind == "released_scope_interface_changed"
 
 
 def test_content_head_rejects_deleted_proof_dependency(tmp_path: Path) -> None:

@@ -22,7 +22,10 @@ from lean_constellation.services.validation_snapshot import (
     RepoCheckpointSnapshotManifest,
     ValidationSnapshotService,
 )
-from tests.unit.services.repo_workspace.test_repo_release import _prepare_release_repo
+from tests.unit.services.repo_workspace.test_repo_release import (
+    _prepare_adapter_release_repo,
+    _prepare_release_repo,
+)
 
 
 def _prepared_repo(repo_root: Path):
@@ -484,6 +487,109 @@ def test_candidate_gate_aggregates_non_main_contract_tree_and_material_findings(
         "scope_export_decl_not_ready", "decl_not_found", "interfaces_projection_stale",
         "scope_export_candidate_missing", "interface_binding_not_exported", "scope_export_not_public",
     }, kinds
+
+
+def test_adapter_candidate_gate_uses_committed_main_and_adapter_ready(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, versions = _prepare_adapter_release_repo(tmp_path)
+    runtime.app.validation_snapshot = ValidationSnapshotService(runtime)
+    assert runtime.adapter.write_adapter_upstream_metadata(
+        tmp_path,
+        git_url="https://example.invalid/upstream.git",
+        revision="1" * 40,
+        package_name="upstream",
+        dependency_name="upstream",
+        evidence_summary="Immutable Adapter release fixture.",
+        visible_modules=["Upstream.Basic"],
+    ).ok
+    monkeypatch.setattr(
+        runtime.adapter,
+        "check_adapter_ready",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            runtime.foundation.gate_passed(
+                "adapter_ready",
+                summary="Adapter ready gate passed.",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.external.lean_toolchain,
+        "run_lake_build",
+        lambda *_args, **_kwargs: ToolchainCommandView(
+            ok=True,
+            command=["lake", "build"],
+            exit_code=0,
+            summary="Adapter build passed.",
+        ),
+    )
+
+    preview = runtime.validation_snapshot.release_finalizer.preview_candidate_release(
+        tmp_path,
+        base_release_id=None,
+        summary="Adapter release candidate.",
+    )
+
+    assert preview.ok and preview.value is not None
+    assert preview.value.gate.passed
+    assert preview.value.candidate_node_contract_versions == versions
+    assert {
+        (entry.node, entry.name, entry.main_export)
+        for entry in preview.value.decl_availability_index.entries
+    } == {
+        ("Main", "PublicResult", True),
+        ("Main", "Support", False),
+    }
+
+
+def test_adapter_candidate_rejects_unversioned_local_upstream(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, _versions = _prepare_adapter_release_repo(tmp_path)
+    runtime.app.validation_snapshot = ValidationSnapshotService(runtime)
+    upstream = tmp_path / "local-upstream"
+    upstream.mkdir()
+    assert runtime.adapter.write_adapter_upstream_metadata(
+        tmp_path,
+        source_kind="local_path",
+        local_path=str(upstream),
+        package_name="upstream",
+        dependency_name="upstream",
+        evidence_summary="Unversioned local Adapter fixture.",
+        visible_modules=["Upstream.Basic"],
+    ).ok
+    monkeypatch.setattr(
+        runtime.adapter,
+        "check_adapter_ready",
+        lambda *_args, **_kwargs: runtime.foundation.ok(
+            runtime.foundation.gate_passed(
+                "adapter_ready",
+                summary="Adapter ready gate passed.",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.external.lean_toolchain,
+        "run_lake_build",
+        lambda *_args, **_kwargs: ToolchainCommandView(
+            ok=True,
+            command=["lake", "build"],
+            exit_code=0,
+            summary="Adapter build passed.",
+        ),
+    )
+
+    preview = runtime.validation_snapshot.release_finalizer.preview_candidate_release(
+        tmp_path,
+        base_release_id=None,
+        summary="Invalid local Adapter release candidate.",
+    )
+
+    assert preview.ok and preview.value is not None
+    assert not preview.value.gate.passed
+    assert "adapter_release_upstream_not_immutable" in preview.value.blocking_issue_kinds
 
 
 def test_release_business_closeout_does_not_inspect_runtime(

@@ -1,4 +1,4 @@
-"""Native repo candidate release gates and publication transaction."""
+"""Format-aware repo candidate release gates and publication transaction."""
 
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ class RepoReleaseStorageAuditView(StrictModel):
 
 
 class RepoReleaseFinalizerComponent:
-    """Prepare and publish native releases without exposing partial latest truth."""
+    """Prepare and publish repository releases without exposing partial latest truth."""
 
     _EXCLUDED_TOP_LEVEL = {
         ".agent_runtime",
@@ -160,6 +160,15 @@ class RepoReleaseFinalizerComponent:
         summary: str,
     ) -> ServiceResult[CandidateReleaseGateView]:
         repo_root = Path(repo_root)
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format == RepoFormat.ADAPTER:
+            return self._preview_adapter_release(
+                repo_root,
+                base_release_id=base_release_id,
+                summary=summary,
+            )
         reports: list[GateReport] = []
         node_versions: dict[str, int] = {}
 
@@ -500,6 +509,189 @@ class RepoReleaseFinalizerComponent:
             summary="Candidate release gate passed." if gate.passed else "Candidate release has blocking findings.",
         ))
 
+    def _preview_adapter_release(
+        self,
+        repo_root: Path,
+        *,
+        base_release_id: str | None,
+        summary: str,
+    ) -> ServiceResult[CandidateReleaseGateView]:
+        reports: list[GateReport] = []
+        base = self._check_base(
+            repo_root,
+            base_release_id=base_release_id,
+            summary=summary,
+        )
+        if not base.ok or base.value is None:
+            return self.runtime.foundation.fail(base.issues)
+        reports.append(base.value)
+
+        requirement_closeout = self._check_requirement_closeout(repo_root)
+        if not requirement_closeout.ok or requirement_closeout.value is None:
+            return self.runtime.foundation.fail(requirement_closeout.issues)
+        reports.append(requirement_closeout.value)
+
+        nodes = self.runtime.node.node_tree.node_store.list_nodes(repo_root)
+        if not nodes.ok or nodes.value is None:
+            return self.runtime.foundation.fail(nodes.issues)
+        active_nodes = [
+            node
+            for node in nodes.value
+            if node.lifecycle == NodeLifecycle.ACTIVE
+        ]
+        node_issues = []
+        if (
+            len(active_nodes) != 1
+            or active_nodes[0].path != "Main"
+            or active_nodes[0].kind != NodeKind.SCOPE
+        ):
+            node_issues.append(
+                self.runtime.foundation.issue(
+                    "adapter_release_node_tree_invalid",
+                    "Adapter release candidates require exactly one active Main Scope node.",
+                    object_ref=str(repo_root),
+                )
+            )
+        node_versions: dict[str, int] = {}
+        if not node_issues:
+            main = active_nodes[0]
+            if (
+                main.active_contract_version is None
+                or main.open_contract_version is not None
+            ):
+                node_issues.append(
+                    self.runtime.foundation.issue(
+                        "adapter_release_main_contract_uncommitted",
+                        "Adapter release candidates require a closed committed Main contract.",
+                        object_ref="Main",
+                    )
+                )
+            else:
+                contract = self.runtime.node.contract.get_committed_contract(
+                    repo_root,
+                    node_path="Main",
+                )
+                if not contract.ok or contract.value is None:
+                    node_issues.extend(contract.issues)
+                elif contract.value.contract.status != ContractVersionStatus.COMMITTED:
+                    node_issues.append(
+                        self.runtime.foundation.issue(
+                            "adapter_release_main_contract_uncommitted",
+                            "Adapter release Main contract is not committed.",
+                            object_ref="Main",
+                        )
+                    )
+                else:
+                    node_versions[main.node_id] = contract.value.contract.version
+        reports.append(
+            self.runtime.foundation.gate_failed(
+                "adapter_release_main_contract",
+                node_issues,
+            )
+            if node_issues
+            else self.runtime.foundation.gate_passed(
+                "adapter_release_main_contract",
+                summary="Adapter Main contract is committed and is the only release head.",
+            )
+        )
+
+        ready = self.runtime.adapter.check_adapter_ready(repo_root)
+        if not ready.ok or ready.value is None:
+            return self.runtime.foundation.fail(ready.issues)
+        reports.append(
+            ready.value.model_copy(update={"gate_name": "candidate_adapter_ready"})
+        )
+        upstream = self.runtime.adapter.get_adapter_upstream_metadata(repo_root)
+        if not upstream.ok or upstream.value is None:
+            return self.runtime.foundation.fail(upstream.issues)
+        upstream_issues = []
+        if (
+            upstream.value.source_kind != "git"
+            or not upstream.value.git_url
+            or not upstream.value.revision
+        ):
+            upstream_issues.append(
+                self.runtime.foundation.issue(
+                    "adapter_release_upstream_not_immutable",
+                    "Adapter RepoRelease requires an exact Git upstream URL and revision.",
+                    object_ref=str(repo_root),
+                )
+            )
+        reports.append(
+            self.runtime.foundation.gate_failed(
+                "adapter_release_upstream_identity",
+                upstream_issues,
+            )
+            if upstream_issues
+            else self.runtime.foundation.gate_passed(
+                "adapter_release_upstream_identity",
+                summary="Adapter upstream Git identity and revision are immutable.",
+            )
+        )
+
+        availability_index = self.runtime.decl_graph.build_release_decl_availability_index(
+            repo_root
+        )
+        if not availability_index.ok or availability_index.value is None:
+            return self.runtime.foundation.fail(availability_index.issues)
+
+        build = self.runtime.external.lean_toolchain.run_lake_build(repo_root)
+        if build.ok:
+            reports.append(
+                self.runtime.foundation.gate_passed(
+                    "candidate_repo_lake_build",
+                    summary=build.summary,
+                )
+            )
+        else:
+            reports.append(
+                self.runtime.foundation.gate_failed(
+                    "candidate_repo_lake_build",
+                    self.runtime.foundation.issue(
+                        "release_lake_build_failed",
+                        "The Adapter candidate repository failed the required Lake build.",
+                        object_ref=str(repo_root),
+                        details={
+                            "command": " ".join(build.command),
+                            "exit_code": str(build.exit_code),
+                            "timed_out": str(build.timed_out),
+                            "stderr": build.stderr_excerpt or build.raw_excerpt or "",
+                        },
+                    ),
+                    summary="Adapter candidate Lake build failed.",
+                )
+            )
+        gate = self.runtime.foundation.merge_gate_reports(
+            "candidate_repo_release",
+            reports,
+        )
+        config = self.runtime.repo_workspace.metadata.get_repo_config(repo_root)
+        if not config.ok or config.value is None:
+            return self.runtime.foundation.fail(config.issues)
+        blocking = sorted(
+            {
+                issue.kind
+                for issue in gate.issues
+                if self.runtime.foundation.result_error.is_error_issue(issue)
+            }
+        )
+        return self.runtime.foundation.ok(
+            CandidateReleaseGateView(
+                base_release_id=base_release_id,
+                candidate_node_contract_versions=dict(sorted(node_versions.items())),
+                completion_mode=config.value.config.completion_mode,
+                decl_availability_index=availability_index.value,
+                build=build,
+                gate=gate,
+                blocking_issue_kinds=blocking,
+                summary=(
+                    "Adapter candidate release gate passed."
+                    if gate.passed
+                    else "Adapter candidate release has blocking findings."
+                ),
+            )
+        )
+
     def prepare_candidate_release(
         self,
         repo_root: Path,
@@ -839,7 +1031,7 @@ class RepoReleaseFinalizerComponent:
                         summary="Post-commit reconciliation is pending.",
                     ),
                     notification_pending=True,
-                    summary=f"Committed native repo release {prepared.release.release_id}; follow-up pending.",
+                    summary=f"Committed repository release {prepared.release.release_id}; follow-up pending.",
                 ), warnings=[warning])
             self._rollback_release_worktree(
                 repo_root,
@@ -981,7 +1173,7 @@ class RepoReleaseFinalizerComponent:
             publication=RepoPublicationView(repo_root=str(repo_root), publication=prepared.publication),
             reconciliation=reconciliation_view,
             notification_pending=bool(reconciliation_view.pending or reconciliation_view.conflicts),
-            summary=f"Committed native repo release {prepared.release.release_id}.",
+            summary=f"Committed repository release {prepared.release.release_id}.",
         )
         return self.runtime.foundation.ok(result, warnings=warnings)
 
@@ -1093,9 +1285,10 @@ class RepoReleaseFinalizerComponent:
             return self.runtime.foundation.fail(repo_format.issues)
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
-        if repo_format.value.repo_format != RepoFormat.NATIVE:
+        if repo_format.value.repo_format not in {RepoFormat.NATIVE, RepoFormat.ADAPTER}:
             return self.runtime.foundation.fail(self.runtime.foundation.issue(
-                "native_release_reconciliation_required", "Release reconciliation only accepts native providers."
+                "release_reconciliation_format_unsupported",
+                "Release reconciliation accepts only native and adapter providers.",
             ))
         if (
             publication.value.publication.status != RepoPublicationStatus.STABLE
@@ -1722,9 +1915,10 @@ class RepoReleaseFinalizerComponent:
             return self.runtime.foundation.fail(repo_format.issues)
         if not publication.ok or publication.value is None:
             return self.runtime.foundation.fail(publication.issues)
-        if repo_format.value.repo_format != RepoFormat.NATIVE:
+        if repo_format.value.repo_format not in {RepoFormat.NATIVE, RepoFormat.ADAPTER}:
             issues.append(self.runtime.foundation.issue(
-                "release_repo_format_not_native", "Only native repositories create RepoRelease truth."
+                "release_repo_format_unsupported",
+                "Only native and adapter repositories create RepoRelease truth.",
             ))
         if publication.value.publication.status != RepoPublicationStatus.DEVELOPING:
             issues.append(self.runtime.foundation.issue(

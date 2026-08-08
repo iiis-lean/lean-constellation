@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
 from lean_constellation.domain.interface import DeclKind
-from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
+from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode, RepoFormat
 from tests.unit_services_helpers import make_runtime, publish_native_provider_release
 
 
@@ -209,140 +208,31 @@ def test_stable_requirement_truth_uses_semantic_provider_public_boundary(
     assert valid.ok
 
 
-def test_mark_provider_ready_rejects_stale_requirement_ref_without_ready_marker(tmp_path: Path) -> None:
-    runtime, _, _, provider = _setup_consumer_provider(tmp_path)
-    written = runtime.repo_workspace.write_preparation_input(
-        provider,
-        input=RepoPreparationInput(
-            goal="Provide missing dependency.",
-            source_corpus_mode=SourceCorpusMode.PREPARE,
-            requirement_refs=[{"consumer_repo": "consumer", "requirement_name": "missing_need"}],
-        ),
-    )
+def test_direct_provider_ready_mark_is_rejected_for_release_managed_formats(tmp_path: Path) -> None:
+    runtime = make_runtime()
+    for repo_format, issue_kind in (
+        (RepoFormat.NATIVE, "native_release_finalizer_required"),
+        (RepoFormat.ADAPTER, "adapter_release_finalizer_required"),
+    ):
+        provider = tmp_path / repo_format.value
+        assert runtime.repo_workspace.metadata.ensure_repo_model(provider).ok
+        assert runtime.repo_workspace.metadata.set_repo_format(
+            provider,
+            repo_format=repo_format,
+            reason="Release-managed provider fixture.",
+        ).ok
 
-    result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider ready.")
-    ready = runtime.repo_workspace.metadata.get_repo_publication(provider)
+        result = runtime.repo_workspace.mark_provider_repo_ready(
+            provider,
+            summary="Bypass the Release finalizer.",
+        )
+        publication = runtime.repo_workspace.metadata.get_repo_publication(provider)
 
-    assert written.ok
-    assert not result.ok
-    assert result.issues[0].kind == "requirement_not_found"
-    assert ready.ok
-    assert ready.value is not None
-    assert ready.value.publication.status.value == "developing"
-
-
-def test_mark_provider_ready_rejects_provider_mismatch_without_ready_marker(tmp_path: Path) -> None:
-    runtime, _, consumer, provider = _setup_consumer_provider(tmp_path)
-    waiting = runtime.repo_workspace.mark_requirement_waiting_for_provider(
-        consumer,
-        requirement_name="need_provider",
-        provider_repo="other_provider",
-    )
-    written = runtime.repo_workspace.write_preparation_input(
-        provider,
-        input=RepoPreparationInput(
-            goal="Provide dependency.",
-            source_corpus_mode=SourceCorpusMode.PREPARE,
-            requirement_refs=[{"consumer_repo": "consumer", "requirement_name": "need_provider"}],
-        ),
-    )
-
-    result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider ready.")
-    ready = runtime.repo_workspace.metadata.get_repo_publication(provider)
-
-    assert waiting.ok
-    assert written.ok
-    assert not result.ok
-    assert result.issues[0].kind == "requirement_provider_mismatch"
-    assert ready.ok
-    assert ready.value is not None
-    assert ready.value.publication.status.value == "developing"
-
-
-def test_mark_provider_ready_rejects_insufficient_provider_proof_availability(tmp_path: Path) -> None:
-    runtime, _, consumer, provider = _setup_consumer_provider(tmp_path)
-    runtime.repo_workspace.requirement.create_requirement(
-        consumer,
-        name="need_proved_provider",
-        target_repo="provider",
-        required_proof_availability=ProofAvailability.PROVED,
-        reason="Need proved provider.",
-    )
-    waiting = runtime.repo_workspace.mark_requirement_waiting_for_provider(
-        consumer,
-        requirement_name="need_proved_provider",
-    )
-    written = runtime.repo_workspace.write_preparation_input(
-        provider,
-        input=RepoPreparationInput(
-            goal="Provide dependency.",
-            source_corpus_mode=SourceCorpusMode.PREPARE,
-            requirement_refs=[{"consumer_repo": "consumer", "requirement_name": "need_proved_provider"}],
-        ),
-    )
-    configured_provider = runtime.repo_workspace.metadata.update_repo_config(
-        provider,
-        completion_mode=RepoCompletionMode.INTERFACE_DECLARED,
-    )
-
-    result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider declared only.")
-
-    assert waiting.ok
-    assert written.ok
-    assert configured_provider.ok
-    assert not result.ok
-    assert result.issues[0].kind == "provider_proof_availability_insufficient"
-
-
-def test_mark_provider_ready_rejects_missing_requested_public_interface(tmp_path: Path) -> None:
-    runtime, _, consumer, provider = _setup_consumer_provider(tmp_path)
-    added = runtime.repo_workspace.requirement.add_requirement_interface(
-        consumer,
-        requirement_name="need_provider",
-        interface_name="main_result",
-        kind=DeclKind.THEOREM,
-        summary="Provider theorem interface.",
-    )
-    waiting = runtime.repo_workspace.mark_requirement_waiting_for_provider(
-        consumer,
-        requirement_name="need_provider",
-    )
-    written = runtime.repo_workspace.write_preparation_input(
-        provider,
-        input=RepoPreparationInput(
-            goal="Provide dependency.",
-            source_corpus_mode=SourceCorpusMode.PREPARE,
-            requirement_refs=[{"consumer_repo": "consumer", "requirement_name": "need_provider"}],
-        ),
-    )
-
-    result = runtime.repo_workspace.mark_provider_repo_ready(provider, summary="Provider ready without exports.")
-    too_early = runtime.repo_workspace.mark_requirement_result_observed(
-        consumer,
-        requirement_name="need_provider",
-    )
-    satisfied = runtime.repo_workspace.requirement.mark_requirement_satisfied(
-        consumer,
-        requirement_name="need_provider",
-        provider_repo="provider",
-    )
-    stable = publish_native_provider_release(runtime, provider, summary="Provider stable without exports.")
-    observed = runtime.repo_workspace.mark_requirement_result_observed(
-        consumer,
-        requirement_name="need_provider",
-    )
-
-    assert added.ok
-    assert waiting.ok
-    assert written.ok
-    assert not result.ok
-    assert result.issues[0].kind == "provider_interface_missing"
-    assert not too_early.ok
-    assert too_early.issues[0].kind == "requirement_not_resumable"
-    assert satisfied.ok
-    assert stable.release_id
-    assert not observed.ok
-    assert observed.issues[0].kind == "provider_interface_missing"
+        assert not result.ok
+        assert result.issues[0].kind == issue_kind
+        assert publication.ok and publication.value is not None
+        assert publication.value.publication.status.value == "developing"
+        assert publication.value.publication.latest_release_id is None
 
 
 def test_requirement_result_observed_removes_resume_candidate(tmp_path: Path) -> None:

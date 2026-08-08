@@ -620,7 +620,7 @@ def test_attach_ready_workspace_repo_dependency_requires_stable_repo(tmp_path: P
     assert 'name = "provider"' in (consumer / "lakefile.toml").read_text(encoding="utf-8")
 
 
-def test_attach_ready_workspace_repo_dependency_accepts_ready_adapter_without_release(tmp_path: Path) -> None:
+def test_attach_ready_workspace_repo_dependency_accepts_released_adapter(tmp_path: Path) -> None:
     consumer = tmp_path / "consumer"
     provider = tmp_path / "adapter_provider"
     external = FakeExternal()
@@ -634,7 +634,13 @@ def test_attach_ready_workspace_repo_dependency_accepts_ready_adapter_without_re
     )
 
     assert attached.ok and attached.value is not None
-    assert attached.value.provider_repo_key == "adapter_provider"
+    assert attached.value.pin.provider_repo_key == "adapter_provider"
     publication = service.metadata.get_repo_publication(provider)
     assert publication.ok and publication.value is not None
-    assert publication.value.publication.latest_release_id is None
+    release_id = publication.value.publication.latest_release_id
+    assert release_id is not None
+    assert attached.value.pin.provider_release_id == release_id
+    assert attached.value.dependency.source == "git"
+    assert attached.value.dependency.rev == attached.value.pin.provider_commit
+    lakefile = (consumer / "lakefile.toml").read_text(encoding="utf-8")
+    assert f'rev = "{attached.value.pin.provider_commit}"' in lakefile

@@ -1,4 +1,4 @@
-"""Immutable native repository releases and derived release baselines."""
+"""Immutable repository releases and format-aware release baselines."""
 
 from __future__ import annotations
 
@@ -15,7 +15,14 @@ from lean_constellation.domain.repo_release import (
     RepoReleaseBaselineView,
     RepoReleaseView,
 )
-from lean_constellation.domain.repo import ProofAvailability, completion_mode_satisfies
+from lean_constellation.domain.repo import (
+    ProofAvailability,
+    RepoFormat,
+    completion_mode_satisfies,
+)
+from lean_constellation.services.decl_graph.availability_policy import (
+    required_state_for_availability,
+)
 from lean_constellation.services.decl_graph.models import (
     DeclLifecycle,
     DeclRevisionStatus,
@@ -369,6 +376,11 @@ class RepoReleaseComponent:
         )
 
     def _validate_release_heads(self, repo_root: Path, release: RepoRelease) -> ServiceResult[None]:
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        adapter = repo_format.value.repo_format == RepoFormat.ADAPTER
+        adapter_main_count = 0
         for node_id, version in release.node_contract_versions.items():
             node = self.runtime.node.node_tree.node_store.load_node_by_id(repo_root, node_id=node_id)
             if not node.ok or node.value is None:
@@ -394,6 +406,55 @@ class RepoReleaseComponent:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue("release_decl_head_invalid", "Scope contract DeclGraph head must be empty.", object_ref=node_id)
                 )
+            if adapter:
+                if node.value.path != "Main" or node.value.kind != NodeKind.SCOPE:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "adapter_release_head_invalid",
+                            "Adapter releases may contain only the committed Main Scope contract.",
+                            object_ref=f"{node.value.path}@{version}",
+                        )
+                    )
+                adapter_main_count += 1
+                seen_exports: set[tuple[str, str, int]] = set()
+                for ref in contract.value.exports:
+                    key = (ref.node, ref.name, ref.revision)
+                    if ref.repo is not None or ref.node != "Main" or key in seen_exports:
+                        return self.runtime.foundation.fail(
+                            self.runtime.foundation.issue(
+                                "adapter_release_export_invalid",
+                                "Adapter release exports must be unique local Main declaration references.",
+                                object_ref=f"{ref.repo or '<local>'}:{ref.node}:{ref.name}@{ref.revision}",
+                            )
+                        )
+                    seen_exports.add(key)
+                    decl = self.runtime.decl_graph.decl_catalog.get_decl(
+                        repo_root,
+                        node_path="Main",
+                        name=ref.name,
+                    )
+                    revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
+                        repo_root,
+                        node_path="Main",
+                        name=ref.name,
+                        revision=ref.revision,
+                    )
+                    if (
+                        not decl.ok
+                        or decl.value is None
+                        or decl.value.lifecycle != DeclLifecycle.ACTIVE
+                        or not decl.value.public
+                        or not revision.ok
+                        or revision.value is None
+                        or revision.value.status != DeclRevisionStatus.COMMITTED
+                    ):
+                        return self.runtime.foundation.fail(
+                            self.runtime.foundation.issue(
+                                "adapter_release_export_invalid",
+                                "Adapter release exports must reference active public committed Main declarations.",
+                                object_ref=f"Main:{ref.name}@{ref.revision}",
+                            )
+                        )
             if node.value.kind == NodeKind.CONTENT:
                 for name, revision_number in contract.value.decl_graph_head.items():
                     revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
@@ -407,6 +468,14 @@ class RepoReleaseComponent:
                                 object_ref=f"{node.value.path}:{name}@{revision_number}",
                             )
                         )
+        if adapter and adapter_main_count != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_release_main_contract_missing",
+                    "Adapter releases require exactly one committed Main Scope contract.",
+                    object_ref=release.release_id,
+                )
+            )
         return self.runtime.foundation.ok(None)
 
     def _accumulate_release_closure(
@@ -418,6 +487,17 @@ class RepoReleaseComponent:
         protected_node_ids: set[str],
         protected_scope_paths: set[str],
     ) -> ServiceResult[None]:
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format == RepoFormat.ADAPTER:
+            return self._accumulate_adapter_release_closure(
+                repo_root,
+                release=release,
+                protections=protections,
+                protected_node_ids=protected_node_ids,
+                protected_scope_paths=protected_scope_paths,
+            )
         nodes = self._release_nodes(repo_root, release)
         if not nodes.ok or nodes.value is None:
             return self.runtime.foundation.fail(nodes.issues)
@@ -523,6 +603,145 @@ class RepoReleaseComponent:
                 scope_entry = by_path.get(scope)
                 if scope_entry is not None:
                     protected_node_ids.add(scope_entry[0].node_id)
+            for dep in revision.value.statement.deps:
+                if isinstance(dep, RepoDeclDep):
+                    queue.append(dep.ref)
+        return self.runtime.foundation.ok(None)
+
+    def _accumulate_adapter_release_closure(
+        self,
+        repo_root: Path,
+        *,
+        release: RepoRelease,
+        protections: dict[tuple[str, str], ReleasedDeclProtectionView],
+        protected_node_ids: set[str],
+        protected_scope_paths: set[str],
+    ) -> ServiceResult[None]:
+        nodes = self._release_nodes(repo_root, release)
+        if not nodes.ok or nodes.value is None:
+            return self.runtime.foundation.fail(nodes.issues)
+        if len(nodes.value) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_release_main_contract_missing",
+                    "Adapter release closure requires exactly one Main Scope contract.",
+                    object_ref=release.release_id,
+                )
+            )
+        main, contract = nodes.value[0]
+        if main.path != "Main" or main.kind != NodeKind.SCOPE:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_release_main_contract_missing",
+                    "Adapter release closure requires a committed Main Scope contract.",
+                    object_ref=release.release_id,
+                )
+            )
+        queue = list(contract.exports)
+        seen: set[tuple[str, str, int]] = set()
+        while queue:
+            ref = queue.pop(0)
+            if ref.repo is not None:
+                available = self.runtime.decl_graph.ref_compatibility.resolve_public_decl_ref(
+                    repo_root,
+                    ref=ref,
+                    required_availability=ProofAvailability.DECLARED,
+                )
+                if (
+                    not available.ok
+                    or available.value is None
+                    or not available.value.compatible
+                ):
+                    reason = (
+                        available.value.reason
+                        if available.ok and available.value is not None
+                        else "; ".join(issue.kind for issue in available.issues)
+                    )
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "release_external_ref_unavailable",
+                            "Released statement dependency is not available through the provider public boundary.",
+                            object_ref=f"{ref.repo}:{ref.node}:{ref.name}@{ref.revision}",
+                            current=reason,
+                        )
+                    )
+                continue
+            if ref.node != "Main":
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "adapter_release_decl_ref_invalid",
+                        "Adapter release-local declarations must belong to flat Main.",
+                        object_ref=f"{ref.node}:{ref.name}@{ref.revision}",
+                    )
+                )
+            key = (ref.node, ref.name, ref.revision)
+            if key in seen:
+                continue
+            seen.add(key)
+            decl = self.runtime.decl_graph.decl_catalog.get_decl(
+                repo_root,
+                node_path="Main",
+                name=ref.name,
+            )
+            revision = self.runtime.decl_graph.decl_catalog.get_decl_revision(
+                repo_root,
+                node_path="Main",
+                name=ref.name,
+                revision=ref.revision,
+            )
+            if (
+                not decl.ok
+                or decl.value is None
+                or decl.value.lifecycle != DeclLifecycle.ACTIVE
+                or not revision.ok
+                or revision.value is None
+                or revision.value.status != DeclRevisionStatus.COMMITTED
+            ):
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "adapter_release_decl_ref_invalid",
+                        "Adapter release closure references a missing or uncommitted Main declaration.",
+                        object_ref=f"Main:{ref.name}@{ref.revision}",
+                    )
+                )
+            required_state = required_state_for_availability(
+                decl.value.kind,
+                ProofAvailability.DECLARED,
+            )
+            if _STATE_RANK[revision.value.state] < _STATE_RANK[required_state]:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "adapter_release_decl_state_too_low",
+                        "Adapter release closure declaration does not satisfy declared availability.",
+                        object_ref=f"Main:{ref.name}@{ref.revision}",
+                        current=revision.value.state.value,
+                        expected=required_state.value,
+                    )
+                )
+            protection_key = (main.node_id, ref.name)
+            previous = protections.get(protection_key)
+            released_state = revision.value.state.value
+            if (
+                previous is not None
+                and _STATE_RANK[DeclState(previous.released_state)]
+                > _STATE_RANK[revision.value.state]
+            ):
+                released_state = previous.released_state
+            protections[protection_key] = ReleasedDeclProtectionView(
+                node_id=main.node_id,
+                node_path="Main",
+                decl_name=ref.name,
+                released_state=released_state,
+                first_release_id=(
+                    previous.first_release_id
+                    if previous is not None
+                    else release.release_id
+                ),
+                last_release_id=release.release_id,
+                summary=f"Main:{ref.name} is protected by the Adapter release public statement closure.",
+            )
+            protected_node_ids.add(main.node_id)
+            protected_scope_paths.add("Main")
             for dep in revision.value.statement.deps:
                 if isinstance(dep, RepoDeclDep):
                     queue.append(dep.ref)

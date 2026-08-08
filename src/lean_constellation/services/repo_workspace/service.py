@@ -34,8 +34,6 @@ from lean_constellation.domain.repo import (
     RepoConfigView,
     WorkspaceConfig,
     WorkspaceCoordinatorView,
-    proof_availability_for_completion_mode,
-    proof_availability_satisfies,
 )
 from lean_constellation.services.foundation import ServiceResult
 from lean_constellation.services.repo_workspace.git_release import GitReleaseComponent
@@ -52,6 +50,7 @@ from lean_constellation.services.repo_workspace.lake_dependency import (
     AdapterSetupView,
     LakeDependencyAttachView,
     LakeDependencyComponent,
+    LakeGitDependencyAttachView,
     RepoSkeletonView,
 )
 from lean_constellation.services.repo_workspace.native_source_index_recovery import (
@@ -506,7 +505,7 @@ class RepoWorkspaceService:
         consumer_repo_root: Path,
         *,
         provider_repo: str,
-    ) -> ServiceResult[LakeDependencyAttachView]:
+    ) -> ServiceResult[LakeDependencyAttachView | LakeGitDependencyAttachView]:
         provider_repo = self.runtime.foundation.layout.ensure_safe_key(provider_repo)
         consumer_repo_root = Path(consumer_repo_root)
         if provider_repo == consumer_repo_root.name:
@@ -541,33 +540,28 @@ class RepoWorkspaceService:
         provider_format = self.metadata.get_repo_format(provider_root)
         if not provider_format.ok or provider_format.value is None:
             return self.runtime.foundation.fail(provider_format.issues)
-        if provider_format.value.repo_format == RepoFormat.NATIVE:
-            publication = self.metadata.get_repo_publication(provider_root)
-            if (
-                not publication.ok
-                or publication.value is None
-                or publication.value.publication.latest_release_id is None
-            ):
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "provider_native_stable_release_missing",
-                        "Native provider has no current Git Release.",
-                        object_ref=provider_repo,
-                    )
+        publication = self.metadata.get_repo_publication(provider_root)
+        if (
+            not publication.ok
+            or publication.value is None
+            or publication.value.publication.latest_release_id is None
+        ):
+            format_name = provider_format.value.repo_format.value
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    f"provider_{format_name}_stable_release_missing",
+                    f"{format_name.title()} provider has no current Git Release.",
+                    object_ref=provider_repo,
                 )
-            policy = self.publication.resolve_policy(provider_root)
-            if not policy.ok or policy.value is None:
-                return self.runtime.foundation.fail(policy.issues)
-            return self.lake_dependency.attach_released_repo_git_dependency(
-                consumer_repo_root,
-                provider_repo_key=provider_repo,
-                provider_release_id=(
-                    publication.value.publication.latest_release_id
-                ),
-                canonical_git_url=policy.value.policy.canonical_fetch_url,
             )
-        return self.lake_dependency.attach_workspace_repo_dependency(
-            consumer_repo_root, provider_repo_key=provider_repo
+        policy = self.publication.resolve_policy(provider_root)
+        if not policy.ok or policy.value is None:
+            return self.runtime.foundation.fail(policy.issues)
+        return self.lake_dependency.attach_released_repo_git_dependency(
+            consumer_repo_root,
+            provider_repo_key=provider_repo,
+            provider_release_id=publication.value.publication.latest_release_id,
+            canonical_git_url=policy.value.policy.canonical_fetch_url,
         )
 
     def mark_requirement_waiting_for_provider(
@@ -677,6 +671,7 @@ class RepoWorkspaceService:
         return self.preparation.validate_native_handoff(repo_root)
 
     def mark_provider_repo_ready(self, repo_root: Path, *, summary: str) -> ServiceResult[ProviderReadyView]:
+        del summary
         repo_root = Path(repo_root)
         repo_format = self.metadata.get_repo_format(repo_root)
         if not repo_format.ok or repo_format.value is None:
@@ -686,114 +681,12 @@ class RepoWorkspaceService:
                 "native_release_finalizer_required",
                 "Native provider readiness is published by the RepoRelease finalizer transaction.",
             ))
-        summary = summary.strip()
-        if not summary:
-            return self.runtime.foundation.fail(self.runtime.foundation.issue("missing_summary", "Repo summary is required."))
-        prep = self.preparation.get_preparation_input(repo_root)
-        if not prep.ok or prep.value is None:
-            return self.runtime.foundation.fail(prep.issues)
-        provider_repo = self.runtime.foundation.layout.ensure_safe_key(repo_root.name)
-        provider_config = self.metadata.get_repo_config(repo_root)
-        if not provider_config.ok or provider_config.value is None:
-            return self.runtime.foundation.fail(provider_config.issues)
-        requirement_refs: list[tuple[Path, str]] = []
-        for ref in prep.value.input.requirement_refs:
-            try:
-                consumer_repo = self.runtime.foundation.layout.ensure_safe_key(ref.consumer_repo)
-                requirement_name = self.runtime.foundation.layout.ensure_safe_key(ref.requirement_name)
-            except ValueError as exc:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "invalid_requirement_ref",
-                        f"Invalid provider preparation requirement ref: {exc}",
-                        object_ref=str(repo_root),
-                    )
-                )
-            consumer = repo_root.parent / consumer_repo
-            loaded = self.requirement.get_requirement(consumer, name=requirement_name)
-            if not loaded.ok or loaded.value is None:
-                return self.runtime.foundation.fail(loaded.issues)
-            requirement = loaded.value.requirement
-            if requirement.status not in {
-                RepoDependencyRequirementStatus.OPEN,
-                RepoDependencyRequirementStatus.SATISFIED,
-            }:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "requirement_not_open",
-                        "Provider ready can only satisfy open or already satisfied requirements.",
-                        object_ref=requirement.name,
-                        current=requirement.status.value,
-                        expected=f"{RepoDependencyRequirementStatus.OPEN.value}|{RepoDependencyRequirementStatus.SATISFIED.value}",
-                    )
-                )
-            expected_provider = self.requirement.effective_provider_repo(requirement)
-            if expected_provider != provider_repo:
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "requirement_provider_mismatch",
-                        "Provider ready requirement ref points at a different provider repo.",
-                        object_ref=requirement.name,
-                        current=provider_repo,
-                        expected=expected_provider,
-                    )
-                )
-            if requirement.status == RepoDependencyRequirementStatus.SATISFIED and requirement.provider_repo:
-                if requirement.provider_repo != provider_repo:
-                    return self.runtime.foundation.fail(
-                        self.runtime.foundation.issue(
-                            "requirement_provider_mismatch",
-                            "Satisfied requirement is already attached to a different provider repo.",
-                            object_ref=requirement.name,
-                            current=provider_repo,
-                            expected=requirement.provider_repo,
-                        )
-                    )
-            if not proof_availability_satisfies(
-                proof_availability_for_completion_mode(
-                    provider_config.value.config.completion_mode
-                ),
-                requirement.required_proof_availability,
-            ):
-                return self.runtime.foundation.fail(
-                    self.runtime.foundation.issue(
-                        "provider_proof_availability_insufficient",
-                        "Provider repo proof availability does not satisfy the consumer requirement.",
-                        object_ref=requirement.name,
-                        current=proof_availability_for_completion_mode(
-                            provider_config.value.config.completion_mode
-                        ).value,
-                        expected=requirement.required_proof_availability.value,
-                    )
-                )
-            provider_truth = self.requirement.validate_requirement_provider_truth(
-                consumer,
-                requirement_name=requirement_name,
-                provider_repo=provider_repo,
-                require_stable=False,
-            )
-            if not provider_truth.ok:
-                return self.runtime.foundation.fail(provider_truth.issues)
-            requirement_refs.append((consumer, requirement_name))
-
-        ready = self.metadata.mark_repo_stable(repo_root, summary=summary)
-        if not ready.ok:
-            return self.runtime.foundation.fail(ready.issues)
-        for consumer, requirement_name in requirement_refs:
-            result = self.requirement.mark_requirement_satisfied(
-                consumer,
-                requirement_name=requirement_name,
-                provider_repo=provider_repo,
-                note=f"Provider ready: {summary}",
-            )
-            if not result.ok:
-                return self.runtime.foundation.fail(result.issues)
-        satisfied = len(requirement_refs)
-        return self.runtime.foundation.ok(
-            ProviderReadyView(
-                provider_ready_marked=True,
-                satisfied_requirement_count=satisfied,
-                repo_summary=summary.strip(),
-                summary=f"Marked provider repo ready; satisfied {satisfied} requirements.",
-            )
-        )
+        if repo_format.value.repo_format == RepoFormat.ADAPTER:
+            return self.runtime.foundation.fail(self.runtime.foundation.issue(
+                "adapter_release_finalizer_required",
+                "Adapter provider readiness is published by the RepoRelease finalizer transaction.",
+            ))
+        return self.runtime.foundation.fail(self.runtime.foundation.issue(
+            "provider_format_unknown",
+            "Only Native and Adapter repos can become released providers.",
+        ))
