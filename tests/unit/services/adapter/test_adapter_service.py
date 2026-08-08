@@ -8,6 +8,7 @@ import pytest
 
 from lean_constellation.domain.interface import DeclInterface, DeclKind
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
+from lean_constellation.domain.refs import DeclRef
 from lean_constellation.domain.repo import RepoFormat, RepoPublicationStatus
 from lean_constellation.services.adapter import AdapterService, UpstreamMetadataComponent
 from lean_constellation.services.external_clients import LeanCheckSummaryView, LeanMcpToolkitClient
@@ -1306,6 +1307,26 @@ def test_adapter_interface_binding_projection_and_ready_gate(tmp_path: Path) -> 
     assert synchronized_exports.value is not None
     assert synchronized_exports.value.changed is True
     assert [ref.name for ref in synchronized_exports.value.exports] == ["main_result"]
+    export_candidates = service.runtime.node.export.list_scope_export_candidates(
+        tmp_path,
+        scope_path="Main",
+    )
+    assert export_candidates.ok
+    assert export_candidates.value is not None
+    assert len(export_candidates.value.candidates) == 1
+    candidate = export_candidates.value.candidates[0]
+    assert candidate.ref == DeclRef(node="Main", name="main_result", revision=1)
+    assert candidate.source_kind == "adapter_catalog"
+    assert candidate.module == "Upstream.Basic"
+    assert candidate.ready is True
+    assert candidate.already_exported is True
+
+    node_projection = service.runtime.lean_projection.node_projection.refresh_interfaces(
+        tmp_path,
+        node_path="Main",
+    )
+    assert node_projection.ok, node_projection.issues
+    assert "import Upstream.Basic" in Path(node_projection.value.path).read_text(encoding="utf-8")
 
     preview = service.preview_adapter_import_modules(tmp_path)
     assert preview.ok

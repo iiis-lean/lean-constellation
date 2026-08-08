@@ -366,6 +366,9 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
         require_stable=True,
     )
     assert stable_truth.ok, stable_truth.issues
+    ready_view = lean_runtime.validation_snapshot.get_repo_ready_view(repo_root)
+    assert ready_view.ok, ready_view.issues
+    assert ready_view.value is not None
 
 
 def test_adapter_preparation_blocked_submit_finishes_blocked(tmp_path: Path) -> None:

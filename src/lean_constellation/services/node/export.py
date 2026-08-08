@@ -151,6 +151,30 @@ class ExportComponent:
         current_export_keys = {self._decl_ref_key(ref) for ref in current.value.contract.exports}
         candidates: list[ScopeExportCandidate] = []
         warnings: list[ServiceIssue] = []
+        repo_format = self.runtime.repo_workspace.metadata.get_repo_format(repo_root)
+        if not repo_format.ok or repo_format.value is None:
+            return self.runtime.foundation.fail(repo_format.issues)
+        if repo_format.value.repo_format == RepoFormat.ADAPTER and scope_path == "Main":
+            adapter_decls = self.runtime.adapter.list_adapter_decls(repo_root)
+            if not adapter_decls.ok or adapter_decls.value is None:
+                return self.runtime.foundation.fail(adapter_decls.issues)
+            for decl in adapter_decls.value:
+                if not decl.public:
+                    continue
+                ref = DeclRef(repo=None, node="Main", name=decl.name, revision=1)
+                candidates.append(
+                    ScopeExportCandidate(
+                        ref=ref,
+                        source_child="Main",
+                        source_kind="adapter_catalog",
+                        kind=decl.kind.value,
+                        module=decl.module,
+                        summary=decl.summary,
+                        ready=decl.finalized,
+                        stale=False,
+                        already_exported=self._decl_ref_key(ref) in current_export_keys,
+                    )
+                )
         for child in children.value:
             if child.kind == NodeKind.CONTENT:
                 child_contract = self.contract.get_current_contract(
