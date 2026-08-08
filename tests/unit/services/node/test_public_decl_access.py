@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from tests.unit_services_helpers import initialize_native_test_repo, lean_check_payload, make_runtime, publish_native_provider_release
+from tests.unit_services_helpers import (
+    initialize_native_test_repo,
+    lean_check_payload,
+    make_runtime,
+    publish_adapter_provider_release,
+    publish_native_provider_release,
+)
 
 from lean_constellation.domain.interface import DeclInterface
 from lean_constellation.domain.preparation import RepoPreparationInput, SourceCorpusMode
@@ -357,9 +363,11 @@ def test_coordinator_reads_all_ready_adapter_main_exports(tmp_path: Path) -> Non
     ).ok
     assert service.sync_adapter_public_exports(provider).ok
     assert service.refresh_adapter_projection(provider).ok
-    assert service.runtime.repo_workspace.metadata.mark_repo_stable(
-        provider, summary="Stable adapter provider."
-    ).ok
+    publish_adapter_provider_release(
+        service.runtime,
+        provider,
+        summary="Stable adapter provider.",
+    )
 
     public = make_runtime().node.public_decl_access.list_repo_public_decls(
         consumer,
