@@ -159,7 +159,7 @@ def _prepare_adapter_repo(lean_runtime, repo_root: Path) -> None:
         package_name="upstream",
         dependency_name="upstream",
         evidence_summary="Existing upstream Lean repo.",
-        visible_modules=["Upstream.Basic"],
+        visible_modules=[],
     )
     assert upstream.ok
     trusted = lean_runtime.adapter.mark_upstream_build_trusted(repo_root, summary="Lake update, build, and import check passed.")
@@ -246,6 +246,10 @@ def test_adapter_preparation_ready_marks_provider_ready(tmp_path: Path) -> None:
     ).value.publication.status == RepoPublicationStatus.DEVELOPING
     _advance_and_run(runtime, flow_id)
     assert "public import Upstream.Basic" in (repo_root / "Main" / "Interfaces.lean").read_text(encoding="utf-8")
+    visible_modules = lean_runtime.adapter.list_visible_upstream_modules(repo_root)
+    assert visible_modules.ok
+    assert visible_modules.value is not None
+    assert visible_modules.value.modules == ["Upstream.Basic"]
     _advance_and_run(runtime, flow_id)
 
     flow = runtime.flow_service.get_flow(flow_id)

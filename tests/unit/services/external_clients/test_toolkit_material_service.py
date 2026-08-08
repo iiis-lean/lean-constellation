@@ -226,10 +226,7 @@ def test_toolkit_compiled_declaration_batch_is_strict_and_preserves_provenance(
                     "signature": "True",
                     "universe_count": 0,
                     "representation": "compiled_reference",
-                    "reference_code": (
-                        "theorem _root_.Upstream.Basic.generated := "
-                        "_root_.Upstream.Basic.generated"
-                    ),
+                    "reference_code": "#check _root_.Upstream.Basic.generated",
                     "generation_kind": "to_additive",
                     "generator_declaration": "Upstream.Basic.generator",
                     "provenance_error_message": None,

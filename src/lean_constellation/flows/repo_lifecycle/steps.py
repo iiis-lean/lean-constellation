@@ -382,6 +382,11 @@ class ApplyRepoFormatChoiceStep(BaseStep):
                 dependency_name=package_name,
                 evidence_summary=value.upstream_summary,
                 setup_summary=setup_summary,
+                visible_modules=(
+                    [verified_route.likely_import_module]
+                    if verified_route.likely_import_module is not None
+                    else []
+                ),
             )
             if not upstream_metadata.ok:
                 return ctx.complete_step(
@@ -1114,6 +1119,36 @@ class FinalizeAdapterReadyStep(BaseStep):
         input_model = _require_adapter_preparation_input(flow.input)
         repo_root = _adapter_repo_root(input_model)
         adapter = _adapter(ctx)
+        modules = adapter.preview_adapter_import_modules(repo_root)
+        if not modules.ok or modules.value is None:
+            return ctx.complete_step(
+                FinalizeAdapterReadyStepResult(
+                    outcome="blocked",
+                    summary=_issue_summary(modules.issues) or "Adapter import module preview failed.",
+                    error=_adapter_error_from_issues(
+                        modules.issues,
+                        fallback_code="adapter_import_module_preview_failed",
+                        fallback_message="Adapter import module preview failed.",
+                    ),
+                )
+            )
+        visible = adapter.record_visible_upstream_modules(
+            repo_root,
+            modules=[item.module for item in modules.value.modules],
+        )
+        if not visible.ok:
+            return ctx.complete_step(
+                FinalizeAdapterReadyStepResult(
+                    outcome="blocked",
+                    imported_modules_count=modules.value.module_count,
+                    summary=_issue_summary(visible.issues) or "Adapter visible module persistence failed.",
+                    error=_adapter_error_from_issues(
+                        visible.issues,
+                        fallback_code="adapter_visible_module_persist_failed",
+                        fallback_message="Adapter visible module persistence failed.",
+                    ),
+                )
+            )
         refreshed = adapter.refresh_adapter_projection(repo_root)
         if not refreshed.ok or refreshed.value is None:
             return ctx.complete_step(
@@ -1128,7 +1163,6 @@ class FinalizeAdapterReadyStep(BaseStep):
                 )
             )
         gate = adapter.check_adapter_ready(repo_root)
-        modules = adapter.preview_adapter_import_modules(repo_root)
         decls = adapter.list_adapter_decls(repo_root)
         bindings = adapter.validate_adapter_interface_bindings(repo_root)
         bound_count = 0

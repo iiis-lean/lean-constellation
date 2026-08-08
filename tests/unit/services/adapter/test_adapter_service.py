@@ -219,10 +219,7 @@ class GeneratedDeclarationToolkitDispatcher(FakeToolkitDispatcher):
                         "signature": "True",
                         "universe_count": 0,
                         "representation": "compiled_reference",
-                        "reference_code": (
-                            f"theorem _root_.{declaration_name} := "
-                            f"_root_.{declaration_name}"
-                        ),
+                        "reference_code": f"#check _root_.{declaration_name}",
                         "generation_kind": "to_additive",
                         "generator_declaration": "Upstream.Basic.generator",
                         "provenance_error_message": None,
@@ -687,6 +684,10 @@ def test_generated_upstream_theorem_uses_compiled_reference_and_completes_catalo
     ).ok
     finalized = service.finalize_adapter_decl(tmp_path, name="generated")
     assert finalized.ok, finalized.issues
+    assert [call[0] for call in dispatcher.calls].count(
+        "lsp.compiled_declaration_batch"
+    ) == 3
+    assert semantic_lake.snippet_calls == []
 
     bound = service.bind_adapter_interface(
         tmp_path,

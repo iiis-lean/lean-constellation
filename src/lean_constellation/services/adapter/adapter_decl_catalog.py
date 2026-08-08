@@ -32,8 +32,10 @@ from lean_constellation.services.foundation import IssueSeverity, ServiceIssue, 
 from lean_constellation.services.foundation.module_layout import NativeModuleLayoutError, validate_module_segment
 from lean_constellation.services.lean_projection.lean_check import LeanCheckComponent
 from lean_constellation.services.external_clients.lean_toolchain import (
+    ToolchainCompiledDeclarationTarget,
     ToolchainDeclarationSoundnessTarget,
 )
+from lean_constellation.services.adapter.upstream_navigation import is_compiled_reference_witness
 
 if TYPE_CHECKING:
     from lean_constellation.services.runtime import LeanRuntimeServices
@@ -655,84 +657,111 @@ class AdapterDeclCatalogComponent:
         assert revision.lean_decl_name is not None
         assert revision.statement.formal is not None
         statement_code = revision.statement.formal.code
-        statement_source = self.runtime.lean_projection.annotation.locate_external_declaration(
-            statement_code,
-            lean_decl_name=revision.lean_decl_name,
-        )
-        if not statement_source.ok or statement_source.value is None:
-            return self.runtime.foundation.fail(statement_source.issues)
         expected_kinds = _ADAPTER_SOURCE_KINDS.get(decl_kind)
-        if expected_kinds is not None and statement_source.value.kind not in expected_kinds:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "adapter_source_decl_kind_mismatch",
-                    "The captured statement declaration kind does not match the registered Adapter Decl kind.",
-                    object_ref=decl.name,
-                    current=statement_source.value.kind,
-                    expected=" | ".join(sorted(expected_kinds)),
-                )
-            )
-        statement_probe = self.runtime.lean_projection.annotation.build_external_declaration_probe(
+        compiled_reference = is_compiled_reference_witness(
             statement_code,
             lean_decl_name=revision.lean_decl_name,
         )
-        if not statement_probe.ok or statement_probe.value is None:
-            return self.runtime.foundation.fail(statement_probe.issues)
-        statement_semantics = self.runtime.lean_projection.module_identity.verify_captured_declaration(
-            repo_root,
-            module=decl.module,
-            lean_decl_name=revision.lean_decl_name,
-            probe_code=statement_probe.value.code,
-            probe_lean_decl_name=statement_probe.value.probe_lean_decl_name,
-        )
-        if not statement_semantics.ok:
-            return self.runtime.foundation.fail(statement_semantics.issues)
+        if compiled_reference:
+            identity = self._validate_compiled_reference_identity(
+                repo_root,
+                module=decl.module,
+                lean_decl_name=revision.lean_decl_name,
+                decl_kind=decl_kind,
+            )
+            if not identity.ok:
+                return self.runtime.foundation.fail(identity.issues)
+        else:
+            statement_source = self.runtime.lean_projection.annotation.locate_external_declaration(
+                statement_code,
+                lean_decl_name=revision.lean_decl_name,
+            )
+            if not statement_source.ok or statement_source.value is None:
+                return self.runtime.foundation.fail(statement_source.issues)
+            if expected_kinds is not None and statement_source.value.kind not in expected_kinds:
+                return self.runtime.foundation.fail(
+                    self.runtime.foundation.issue(
+                        "adapter_source_decl_kind_mismatch",
+                        "The captured statement declaration kind does not match the registered Adapter Decl kind.",
+                        object_ref=decl.name,
+                        current=statement_source.value.kind,
+                        expected=" | ".join(sorted(expected_kinds)),
+                    )
+                )
+            statement_probe = self.runtime.lean_projection.annotation.build_external_declaration_probe(
+                statement_code,
+                lean_decl_name=revision.lean_decl_name,
+            )
+            if not statement_probe.ok or statement_probe.value is None:
+                return self.runtime.foundation.fail(statement_probe.issues)
+            statement_semantics = self.runtime.lean_projection.module_identity.verify_captured_declaration(
+                repo_root,
+                module=decl.module,
+                lean_decl_name=revision.lean_decl_name,
+                probe_code=statement_probe.value.code,
+                probe_lean_decl_name=statement_probe.value.probe_lean_decl_name,
+            )
+            if not statement_semantics.ok:
+                return self.runtime.foundation.fail(statement_semantics.issues)
 
         code = statement_code
         if decl_kind in _THEOREM_LIKE:
             proof = self._ensure_proof(revision)
             assert proof.formal is not None
             code = proof.formal.code
-            proof_source = self.runtime.lean_projection.annotation.locate_external_declaration(
+            proof_compiled_reference = is_compiled_reference_witness(
                 code,
                 lean_decl_name=revision.lean_decl_name,
             )
-            if not proof_source.ok or proof_source.value is None:
-                return self.runtime.foundation.fail(proof_source.issues)
-            if expected_kinds is not None and proof_source.value.kind not in expected_kinds:
+            if proof_compiled_reference != compiled_reference:
                 return self.runtime.foundation.fail(
                     self.runtime.foundation.issue(
-                        "adapter_source_decl_kind_mismatch",
-                        "The captured proof declaration kind does not match the registered Adapter Decl kind.",
+                        "adapter_compiled_reference_stage_mismatch",
+                        "Adapter statement and proof must use the same source or compiled-reference representation.",
                         object_ref=decl.name,
-                        current=proof_source.value.kind,
-                        expected=" | ".join(sorted(expected_kinds)),
                     )
                 )
-            header = self.runtime.lean_projection.annotation.compare_external_theorem_header(
-                statement_code,
-                code,
-                lean_decl_name=revision.lean_decl_name,
-            )
-            if not header.ok or header.value is None:
-                return self.runtime.foundation.fail(header.issues)
-            if not header.value.passed:
-                return self.runtime.foundation.fail(header.value.issues)
-            proof_probe = self.runtime.lean_projection.annotation.build_external_declaration_probe(
-                code,
-                lean_decl_name=revision.lean_decl_name,
-            )
-            if not proof_probe.ok or proof_probe.value is None:
-                return self.runtime.foundation.fail(proof_probe.issues)
-            proof_semantics = self.runtime.lean_projection.module_identity.verify_captured_declaration(
-                repo_root,
-                module=decl.module,
-                lean_decl_name=revision.lean_decl_name,
-                probe_code=proof_probe.value.code,
-                probe_lean_decl_name=proof_probe.value.probe_lean_decl_name,
-            )
-            if not proof_semantics.ok:
-                return self.runtime.foundation.fail(proof_semantics.issues)
+            if not compiled_reference:
+                proof_source = self.runtime.lean_projection.annotation.locate_external_declaration(
+                    code,
+                    lean_decl_name=revision.lean_decl_name,
+                )
+                if not proof_source.ok or proof_source.value is None:
+                    return self.runtime.foundation.fail(proof_source.issues)
+                if expected_kinds is not None and proof_source.value.kind not in expected_kinds:
+                    return self.runtime.foundation.fail(
+                        self.runtime.foundation.issue(
+                            "adapter_source_decl_kind_mismatch",
+                            "The captured proof declaration kind does not match the registered Adapter Decl kind.",
+                            object_ref=decl.name,
+                            current=proof_source.value.kind,
+                            expected=" | ".join(sorted(expected_kinds)),
+                        )
+                    )
+                header = self.runtime.lean_projection.annotation.compare_external_theorem_header(
+                    statement_code,
+                    code,
+                    lean_decl_name=revision.lean_decl_name,
+                )
+                if not header.ok or header.value is None:
+                    return self.runtime.foundation.fail(header.issues)
+                if not header.value.passed:
+                    return self.runtime.foundation.fail(header.value.issues)
+                proof_probe = self.runtime.lean_projection.annotation.build_external_declaration_probe(
+                    code,
+                    lean_decl_name=revision.lean_decl_name,
+                )
+                if not proof_probe.ok or proof_probe.value is None:
+                    return self.runtime.foundation.fail(proof_probe.issues)
+                proof_semantics = self.runtime.lean_projection.module_identity.verify_captured_declaration(
+                    repo_root,
+                    module=decl.module,
+                    lean_decl_name=revision.lean_decl_name,
+                    probe_code=proof_probe.value.code,
+                    probe_lean_decl_name=proof_probe.value.probe_lean_decl_name,
+                )
+                if not proof_semantics.ok:
+                    return self.runtime.foundation.fail(proof_semantics.issues)
         return self.runtime.foundation.ok(
             _AdapterFinalizeCandidate(
                 decl=decl,
@@ -741,6 +770,92 @@ class AdapterDeclCatalogComponent:
                 code=code,
             )
         )
+
+    def _validate_compiled_reference_identity(
+        self,
+        repo_root: Path,
+        *,
+        module: str,
+        lean_decl_name: str,
+        decl_kind: DeclKind,
+    ) -> ServiceResult[None]:
+        inspected = self.runtime.external.lean_toolchain.inspect_compiled_declarations(
+            repo_root,
+            [
+                ToolchainCompiledDeclarationTarget(
+                    module=module,
+                    declaration_name=lean_decl_name,
+                )
+            ],
+            include_to_additive_provenance=False,
+        )
+        if not inspected.protocol_ok or not inspected.batch_success:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    inspected.issue_code or "adapter_compiled_reference_validation_failed",
+                    inspected.error_message or inspected.summary,
+                    object_ref=lean_decl_name,
+                )
+            )
+        if len(inspected.items) != 1:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_compiled_reference_result_invalid",
+                    "Compiled reference validation did not return exactly one result.",
+                    object_ref=lean_decl_name,
+                )
+            )
+        item = inspected.items[0]
+        if not item.success:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_compiled_reference_not_found",
+                    item.error_message or "The exact compiled declaration was not found.",
+                    object_ref=lean_decl_name,
+                )
+            )
+        if item.module != module or item.declaration_name != lean_decl_name:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_compiled_reference_identity_mismatch",
+                    "Compiled reference validation returned a different declaration identity.",
+                    object_ref=lean_decl_name,
+                    current=f"{item.module}::{item.declaration_name}",
+                    expected=f"{module}::{lean_decl_name}",
+                )
+            )
+        if item.owner_module != module:
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_compiled_reference_owner_mismatch",
+                    "Compiled reference validation returned a different owner module.",
+                    object_ref=lean_decl_name,
+                    current=item.owner_module,
+                    expected=module,
+                )
+            )
+        if decl_kind not in _THEOREM_LIKE or item.declaration_kind != "theorem":
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_compiled_reference_kind_mismatch",
+                    "Compiled-reference Adapter declarations must resolve to a theorem-like compiler constant.",
+                    object_ref=lean_decl_name,
+                    current=item.declaration_kind,
+                    expected="theorem",
+                )
+            )
+        if not is_compiled_reference_witness(
+            item.reference_code or "",
+            lean_decl_name=lean_decl_name,
+        ):
+            return self.runtime.foundation.fail(
+                self.runtime.foundation.issue(
+                    "adapter_compiled_reference_witness_invalid",
+                    "Compiled reference validation returned a non-canonical witness.",
+                    object_ref=lean_decl_name,
+                )
+            )
+        return self.runtime.foundation.ok(None)
 
     def list_adapter_decls(
         self,

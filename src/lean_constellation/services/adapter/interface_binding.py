@@ -11,6 +11,7 @@ from lean_constellation.domain.common import StrictModel
 from lean_constellation.domain.interface import DeclInterface, DeclKind, exact_interface_lean_decl_name
 from lean_constellation.domain.refs import DeclRef
 from lean_constellation.services.adapter.adapter_decl_catalog import AdapterDeclCatalogComponent, AdapterDeclView
+from lean_constellation.services.adapter.upstream_navigation import is_compiled_reference_witness
 from lean_constellation.services.foundation import GateReport, ServiceResult, WriteMode
 from lean_constellation.services.node.contract import ContractComponent
 
@@ -321,7 +322,7 @@ class InterfaceBindingComponent:
         if proof_code is not None and proof_code.strip():
             actual_codes.append(("proof", proof_code))
         if all(
-            self._is_compiled_reference_witness(actual, lean_decl_name=lean_decl_name)
+            is_compiled_reference_witness(actual, lean_decl_name=lean_decl_name)
             for _, actual in actual_codes
         ):
             expected_probe = self.runtime.lean_projection.annotation.build_external_declaration_probe(
@@ -380,11 +381,3 @@ class InterfaceBindingComponent:
                     ]
                 )
         return self.runtime.foundation.ok(None)
-
-    @staticmethod
-    def _is_compiled_reference_witness(code: str, *, lean_decl_name: str) -> bool:
-        rooted_name = lean_decl_name.removeprefix("_root_.")
-        normalized = " ".join(code.split())
-        return normalized == (
-            f"theorem _root_.{rooted_name} := _root_.{rooted_name}"
-        )

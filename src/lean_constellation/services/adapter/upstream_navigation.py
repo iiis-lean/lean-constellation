@@ -90,6 +90,12 @@ class UpstreamModuleImportsView(StrictModel):
     summary: str
 
 
+def is_compiled_reference_witness(code: str, *, lean_decl_name: str) -> bool:
+    """Return whether code is the canonical exact compiled-reference command."""
+    rooted_name = lean_decl_name.removeprefix("_root_.")
+    return " ".join(code.split()) == f"#check _root_.{rooted_name}"
+
+
 class UpstreamNavigationComponent:
     """Adapter read-only upstream navigation through Lean MCP Toolkit."""
 
@@ -407,11 +413,11 @@ class UpstreamNavigationComponent:
                 )
             )
         code = (item.reference_code or "").strip()
-        if not code:
+        if not is_compiled_reference_witness(code, lean_decl_name=lean_decl_name):
             return self.runtime.foundation.fail(
                 self.runtime.foundation.issue(
-                    "upstream_compiled_decl_reference_missing",
-                    "Compiled declaration inspection did not return a theorem reference witness.",
+                    "upstream_compiled_decl_reference_invalid",
+                    "Compiled declaration inspection did not return the canonical exact reference witness.",
                     object_ref=lean_decl_name,
                 )
             )

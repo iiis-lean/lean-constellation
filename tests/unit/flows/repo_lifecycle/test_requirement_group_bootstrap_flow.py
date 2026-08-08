@@ -429,6 +429,9 @@ def test_requirement_bootstrap_direct_routes_skip_format_discovery_agent(
         runtime.flow_service.get_flow(adapter_flow_id).result.outcome
         == "adapter_bootstrap_ready"
     )
+    visible_modules = lean_runtime.adapter.list_visible_upstream_modules(adapter_root)
+    assert visible_modules.ok and visible_modules.value is not None
+    assert visible_modules.value.modules == ["upstream"]
     assert lake.built[-1] == (adapter_root, "upstream")
 
 
