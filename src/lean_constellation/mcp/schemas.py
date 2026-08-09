@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_runtime_kit.agent.provider_contracts.tool_schema import materialize_tool_input_schema
 from pydantic import Field
 
 from lean_constellation.domain.common import StrictModel
@@ -29,7 +30,7 @@ def mcp_tool_registration_from_view(tool: ToolSpecView) -> McpToolRegistration:
     return McpToolRegistration(
         name=tool.name,
         description=tool.description,
-        input_schema=dict(tool.args_schema),
+        input_schema=materialize_tool_input_schema(tool.args_schema),
         capability=str(tool.capability.value),
         submit_behavior=str(tool.submit_behavior.value),
         result_view=tool.result_view,

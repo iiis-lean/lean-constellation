@@ -316,13 +316,19 @@ class MCPWrapperComponent:
         try:
             args = spec.args_model.model_validate(flat_args)
         except ValidationError as exc:
-            return self.runtime.foundation.fail(
-                self.runtime.foundation.issue(
-                    "tool_arguments_invalid",
-                    f"Tool arguments do not match schema: {exc.errors()}",
-                    object_ref=spec.name,
+            issues = []
+            for error in exc.errors(include_url=False, include_context=False, include_input=False):
+                field = _format_validation_path(error.get("loc", ()))
+                issues.append(
+                    self.runtime.foundation.issue(
+                        "tool_arguments_invalid",
+                        str(error.get("msg", "Tool argument does not match schema.")),
+                        object_ref=spec.name,
+                        field=field or None,
+                        details={"error_type": str(error.get("type", "validation_error"))},
+                    )
                 )
-            )
+            return self.runtime.foundation.fail(issues)
         return self.runtime.foundation.ok(args)
 
     def _call_backing_api(self, ctx: ToolExecutionContext, spec: ToolSpec, args: BaseModel) -> ServiceResult[Any]:
@@ -404,3 +410,13 @@ class MCPWrapperComponent:
             return str(summary) if summary else None
         summary = getattr(value, "summary", None)
         return str(summary) if summary else None
+
+
+def _format_validation_path(path: tuple[object, ...]) -> str:
+    formatted = ""
+    for part in path:
+        if isinstance(part, int):
+            formatted += f"[{part}]"
+        else:
+            formatted += ("." if formatted else "") + str(part)
+    return formatted

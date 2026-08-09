@@ -29,6 +29,37 @@ def test_stdio_bridge_exposes_tools_with_tool_spec_schema(tmp_path) -> None:
     assert "native_repo_name" not in native.inputSchema["properties"]
 
 
+def test_stdio_bridge_reports_nested_argument_errors_with_field_paths(tmp_path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = make_mcp_runtime(gateway)
+    server = create_mcp_server(runtime, view_keys=["repo_resource_discovery_submit"])
+    endpoint = server.value.endpoint("repo_resource_discovery_submit").value
+    env = runtime_env(
+        tmp_path,
+        view="repo_resource_discovery_submit",
+        agent_type="RepoResourceDiscoveryAgent",
+        role="worker",
+    )
+
+    rejected = mcp_protocol_call_tool(
+        endpoint,
+        "submit_repo_resource_discovery_result",
+        {
+            "summary": "Incomplete nested candidate.",
+            "outcome": "completed",
+            "candidates": [{"title": "Only a title"}],
+        },
+        env=env,
+    )
+
+    assert rejected.isError is True
+    fields = {issue["field"] for issue in rejected.structuredContent["issues"]}
+    assert "candidates[0].resource_kind" in fields
+    assert "candidates[0].canonical_locator" in fields
+    assert all(issue["kind"] == "tool_arguments_invalid" for issue in rejected.structuredContent["issues"])
+    assert gateway.accepted == []
+
+
 def test_stdio_bridge_converts_tool_result_for_success_and_gate_failure(tmp_path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = make_mcp_runtime(gateway)
