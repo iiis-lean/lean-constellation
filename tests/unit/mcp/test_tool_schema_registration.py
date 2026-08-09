@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lean_constellation.agents import build_agent_surface_reports
 from lean_constellation.mcp import build_mcp_tool_registrations
 from lean_constellation.services.tool_facade import FastMcpViewApp, SubmitBehavior, ToolCapability, ToolSpecView
 from tests.unit.mcp._helpers import make_mcp_runtime
@@ -89,6 +90,31 @@ def test_nested_tool_input_schemas_are_materialized_for_all_discovery_surfaces()
         "usage_notes",
         "summary",
     }
+
+
+def test_every_tool_in_repo_discovery_agent_views_has_self_contained_schema() -> None:
+    runtime = make_mcp_runtime()
+    reports = build_agent_surface_reports()
+    view_keys = {
+        key
+        for agent_type in (
+            "RepoFormatDiscoveryAgent",
+            "RepoResourceDiscoveryAgent",
+            "RepoLeanProviderDiscoveryAgent",
+            "RepoMathlibReconAgent",
+            "CoordinatorAgent",
+        )
+        for key in (
+            reports[agent_type].application_tool_view_key,
+            reports[agent_type].submit_tool_view_key,
+        )
+    }
+
+    for view_key in sorted(view_keys):
+        registered = build_mcp_tool_registrations(runtime, view_key=view_key)
+        assert registered.ok and registered.value is not None, view_key
+        for tool in registered.value:
+            _assert_self_contained(tool.input_schema)
 
 
 def test_malformed_tool_schema_fails_registration_with_tool_identity(monkeypatch) -> None:

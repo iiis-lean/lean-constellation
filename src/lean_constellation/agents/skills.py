@@ -378,10 +378,9 @@ Deterministic manifests and checks verify paths, bytes, readability, and require
             "repo-mathlib-recon",
             "Find and record checked Mathlib modules and declarations that are reusable across the current repository.",
             (
-                "Read the current MathlibIndex before searching.",
-                "Search semantically only for unresolved objective terms, then inspect exact declarations, modules, names, and signatures.",
-                "Record only verified entries. Prefer record_mathlib_module, record_mathlib_decl, or candidate ingest for one understood entry. Use record_mathlib_batch only when several understood names genuinely share one accessibility probe; split a failed batch to diagnose it.",
-                "For declaration recording, provide only the exact declaration name and optional summary/source. Exact navigation and the accessibility check derive module, kind, signature, and snippet; do not guess those fields.",
+                "Read the preparation objective and relevant SourceCorpus/SourceIndex context without copying their contents into the result.",
+                "Use `$mathlib-index-first-recon` to reuse current repository knowledge before any broader search.",
+                "For an actual index gap, use `$mathlib-semantic-search-navigation`; for each verified reusable entry, use `$mathlib-index-entry-curation`.",
                 "Re-read every objective-relevant module or declaration from the current MathlibIndex after recording. Terminal submit references only canonical indexed names plus unresolved questions and usage notes; it does not report created/reused operation history.",
                 "If terminal validation reports an unindexed name, record or correct it and retry in the same AgentStep. After an accepted submit, stop.",
             ),

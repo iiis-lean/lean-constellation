@@ -251,6 +251,46 @@ def test_repo_lean_provider_discovery_surface_is_worker_callable() -> None:
     _assert_surface_tools_allow_role("RepoLeanProviderDiscoveryAgent", "worker")
 
 
+def test_repo_exploration_child_surfaces_preserve_read_and_write_boundaries() -> None:
+    reports = build_agent_surface_reports()
+    expected_submit = {
+        "RepoResourceDiscoveryAgent": "submit_repo_resource_discovery_result",
+        "RepoLeanProviderDiscoveryAgent": "submit_repo_lean_provider_discovery_result",
+        "RepoMathlibReconAgent": "submit_repo_mathlib_recon_result",
+    }
+
+    for agent_type, submit_name in expected_submit.items():
+        report = reports[agent_type]
+        assert report.missing_skill_required_groups == {}
+        assert [tool.name for tool in report.submit_tools] == [submit_name]
+        _assert_surface_tools_allow_role(agent_type, "worker")
+
+    resource_tools = {tool.name for tool in reports["RepoResourceDiscoveryAgent"].application_tools}
+    provider_tools = {tool.name for tool in reports["RepoLeanProviderDiscoveryAgent"].application_tools}
+    mathlib_tools = {tool.name for tool in reports["RepoMathlibReconAgent"].application_tools}
+
+    assert {
+        "acquire_resource_material",
+        "allocate_resource_draft",
+        "submit_repo_requirement",
+    }.isdisjoint(resource_tools)
+    assert {
+        "checkout_repository",
+        "attach_ready_workspace_repo_dependency",
+        "submit_repo_requirement",
+    }.isdisjoint(provider_tools)
+    assert {
+        "record_mathlib_module",
+        "record_mathlib_decl",
+        "record_mathlib_batch",
+    } <= mathlib_tools
+    assert {
+        "add_current_mathlib_hints",
+        "add_node_mathlib_module_hint",
+        "add_node_mathlib_decl_hint",
+    }.isdisjoint(mathlib_tools)
+
+
 def test_coordinator_surface_matches_specific_agent_refactor() -> None:
     report = build_agent_surface_reports()["CoordinatorAgent"]
     tools = {tool.name for tool in report.application_tools}
