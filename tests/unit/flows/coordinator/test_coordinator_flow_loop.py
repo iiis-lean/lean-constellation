@@ -557,11 +557,8 @@ def test_repo_exploration_ensures_agents_dispatches_atomic_batch_and_callbacks(
                     resource_kind="paper",
                     canonical_locator="https://doi.org/10.1000/example",
                     source_urls=["https://doi.org/10.1000/example"],
-                    relevance="Supports the target identity.",
-                    support_expected="The exact combinatorial lemma.",
-                    reliability="Published source.",
+                    support_summary="Supports the target identity with the exact combinatorial lemma.",
                     recommended_handling="local_resource",
-                    classification_reason="This paper is supporting evidence for the consumer proof.",
                     consumer_need="The exact combinatorial lemma.",
                 )
             ],

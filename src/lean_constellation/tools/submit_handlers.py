@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -556,14 +557,62 @@ def submit_repo_resource_discovery_result(
     ctx: ToolExecutionContext,
     args: SubmitRepoResourceDiscoveryResultArgs,
 ) -> ServiceResult[PreparedSubmissionView]:
+    candidates: list[dict[str, Any]] = []
+    seen_locators: set[str] = set()
+    for index, requested in enumerate(args.candidates):
+        inspected = runtime.external.resource_discovery.inspect(requested.target)
+        if not inspected.ok or inspected.candidate is None:
+            return _fail(
+                runtime,
+                inspected.issue_code or "external_resource_inspection_failed",
+                inspected.summary,
+                field=f"candidates[{index}].target",
+            )
+        canonical = inspected.candidate
+        locator_key = canonical.canonical_locator.strip().casefold()
+        if locator_key in seen_locators:
+            return _fail(
+                runtime,
+                "repo_resource_candidate_duplicate",
+                "Resource discovery candidates must resolve to distinct canonical resources.",
+                field=f"candidates[{index}].target",
+            )
+        seen_locators.add(locator_key)
+        source_urls = _unique_non_empty(canonical.source_urls)
+        if requested.recommended_handling == "local_resource" and not source_urls:
+            return _fail(
+                runtime,
+                "repo_resource_source_url_missing",
+                "A local_resource candidate must expose at least one verified source URL.",
+                field=f"candidates[{index}].target",
+            )
+        candidates.append(
+            {
+                "title": canonical.title,
+                "authors": _unique_non_empty(canonical.authors),
+                "resource_kind": canonical.resource_kind,
+                "canonical_locator": canonical.canonical_locator,
+                "version": canonical.version,
+                "source_urls": source_urls,
+                "support_summary": requested.support_summary,
+                "risks_or_gaps": _unique_non_empty(requested.risks_or_gaps),
+                "recommended_handling": requested.recommended_handling,
+                "consumer_need": requested.consumer_need.strip() if requested.consumer_need else None,
+                "provider_scope": requested.provider_scope.strip() if requested.provider_scope else None,
+            }
+        )
     return _prepared(
         runtime,
         RepoResourceDiscoverySubmission(
             **_base_kwargs(ctx, tool_name="submit_repo_resource_discovery_result", summary=args.summary),
             outcome=args.outcome,
-            candidates=[candidate.model_dump() for candidate in args.candidates],
+            candidates=candidates,
         ),
-        agent_view={"outcome": args.outcome, "candidate_count": len(args.candidates)},
+        agent_view={
+            "outcome": args.outcome,
+            "candidate_count": len(candidates),
+            "canonical_locators": [candidate["canonical_locator"] for candidate in candidates],
+        },
     )
 
 
@@ -572,24 +621,107 @@ def submit_repo_lean_provider_discovery_result(
     ctx: ToolExecutionContext,
     args: SubmitRepoLeanProviderDiscoveryResultArgs,
 ) -> ServiceResult[PreparedSubmissionView]:
-    candidates = []
-    for candidate in args.candidates:
-        data = candidate.model_dump()
+    candidates: list[dict[str, Any]] = []
+    seen_targets: set[tuple[str, str | None]] = set()
+    for index, requested in enumerate(args.candidates):
         try:
-            data["git_url"] = runtime.external.github_repo.normalize_github_url(candidate.git_url)
+            probe = runtime.external.github_repo.probe_github_lean_repo_candidate(
+                requested.git_url,
+                revision=requested.revision,
+                subdir=requested.subdir,
+            )
         except ValueError as exc:
-            return _fail(runtime, "git_url_invalid", str(exc), field="git_url")
-        if candidate.recommendation == "direct_adapter_requirement" and data["git_url"].lower() in {
-            "https://github.com/leanprover-community/mathlib",
-            "https://github.com/leanprover-community/mathlib4",
-        }:
+            return _fail(
+                runtime,
+                "github_lean_repo_probe_failed",
+                str(exc),
+                field=f"candidates[{index}].git_url",
+            )
+        if probe.is_mathlib_repository:
             return _fail(
                 runtime,
                 "mathlib_provider_candidate_forbidden",
                 "Mathlib is the platform dependency and must be handled by RepoMathlibRecon.",
-                field="git_url",
+                field=f"candidates[{index}].git_url",
             )
-        candidates.append(data)
+        if not probe.is_lean_project or not probe.has_lean_files:
+            return _fail(
+                runtime,
+                "lean_provider_candidate_unverified",
+                "The exact GitHub probe did not verify a Lean repository with Lean source files.",
+                field=f"candidates[{index}].git_url",
+            )
+        revision = (probe.resolved_revision or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision) is None:
+            return _fail(
+                runtime,
+                "lean_provider_revision_unresolved",
+                "The exact GitHub probe did not resolve an immutable commit.",
+                field=f"candidates[{index}].revision",
+            )
+        if requested.revision is not None and revision != requested.revision:
+            return _fail(
+                runtime,
+                "lean_provider_revision_mismatch",
+                "The exact GitHub probe did not preserve the requested immutable revision.",
+                field=f"candidates[{index}].revision",
+            )
+        target_key = (probe.normalized_git_url.casefold(), probe.selected_subdir)
+        if target_key in seen_targets:
+            return _fail(
+                runtime,
+                "lean_provider_candidate_duplicate",
+                "Lean provider candidates must resolve to distinct repository project roots.",
+                field=f"candidates[{index}].git_url",
+            )
+        seen_targets.add(target_key)
+        relevant_declarations = _unique_non_empty(requested.relevant_declarations)
+        if requested.recommendation == "direct_adapter_requirement":
+            missing_facts: list[str] = []
+            if not probe.has_lakefile:
+                missing_facts.append("Lakefile")
+            if not probe.package_name:
+                missing_facts.append("Lake package")
+            if not probe.likely_import_modules:
+                missing_facts.append("import module")
+            if not relevant_declarations:
+                missing_facts.append("relevant declaration")
+            if requested.gaps:
+                missing_facts.append("gap-free evidence")
+            if missing_facts:
+                return _fail(
+                    runtime,
+                    "direct_adapter_candidate_incomplete",
+                    "Direct Adapter recommendation is missing: " + ", ".join(missing_facts) + ".",
+                    field=f"candidates[{index}].recommendation",
+                )
+        lean_evidence = _unique_non_empty(
+            [
+                *probe.lean_signals,
+                *(f"path:{path}" for path in probe.lakefile_paths),
+                *(f"path:{path}" for path in probe.lean_toolchain_paths),
+                *(f"path:{path}" for path in probe.lean_file_paths[:25]),
+            ]
+        )
+        candidates.append(
+            {
+                "git_url": probe.normalized_git_url,
+                "resolved_revision": revision,
+                "subdir": probe.selected_subdir,
+                "package_name": probe.package_name,
+                "likely_import_modules": _unique_non_empty(probe.likely_import_modules),
+                "lean_toolchain": probe.lean_toolchain,
+                "has_lakefile": probe.has_lakefile,
+                "has_lean_manifest": probe.has_lean_manifest,
+                "has_lean_files": probe.has_lean_files,
+                "capability_summary": requested.capability_summary,
+                "relevant_declarations": relevant_declarations,
+                "lean_evidence": lean_evidence,
+                "gaps": _unique_non_empty(requested.gaps),
+                "risks": _unique_non_empty([*requested.risks, *probe.known_risks]),
+                "recommendation": requested.recommendation,
+            }
+        )
     return _prepared(
         runtime,
         RepoLeanProviderDiscoverySubmission(
@@ -599,6 +731,18 @@ def submit_repo_lean_provider_discovery_result(
         ),
         agent_view={"outcome": args.outcome, "candidate_count": len(candidates)},
     )
+
+
+def _unique_non_empty(values: Iterable[object]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = str(value).strip()
+        key = item.casefold()
+        if item and key not in seen:
+            seen.add(key)
+            normalized.append(item)
+    return normalized
 
 
 def submit_repo_mathlib_recon_result(

@@ -182,6 +182,21 @@ def test_coordinator_exploration_skill_describes_only_current_workflow() -> None
         assert migration_term not in body
 
 
+def test_repo_discovery_skills_assign_external_facts_to_terminal_handlers() -> None:
+    specs = build_skill_specs()
+    resource = specs["repo-resource-discovery"].body
+    provider = specs["repo-lean-provider-discovery"].body
+
+    assert "terminal handler re-inspects" in resource
+    assert "supplies canonical title, authors, kind, version, locator, and source URLs" in resource
+    assert "Omit irrelevant, duplicate, inaccessible, or unreliable hits" in resource
+    assert "placeholder locators" in resource
+    assert "terminal handler repeats the canonical probe" in provider
+    assert "derives normalized URL, exact commit, package, modules, toolchain" in provider
+    assert "Omit unsuitable candidates" in provider
+    assert "placeholder repositories" in provider
+
+
 def test_coordinator_skill_metadata_is_discoverable_and_compact() -> None:
     coordinator = get_agent_type_spec("CoordinatorAgent")
     specs = build_skill_specs()

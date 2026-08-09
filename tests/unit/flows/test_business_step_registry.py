@@ -102,5 +102,11 @@ def test_business_agent_step_shells_register_and_parse_submissions() -> None:
                 else:
                     payload[key] = f"{key}_value"
 
+            if submission_type in {
+                "repo_resource_discovery_result",
+                "repo_lean_provider_discovery_result",
+            }:
+                payload["outcome"] = "no_useful_findings"
+
             parsed = registry.parse_submission(step_cls.step_type, payload)
             assert isinstance(parsed, submission_cls)

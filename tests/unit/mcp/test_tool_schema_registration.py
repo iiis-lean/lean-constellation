@@ -51,17 +51,19 @@ def test_nested_tool_input_schemas_are_materialized_for_all_discovery_surfaces()
 
     resource_item = resource.input_schema["properties"]["candidates"]["items"]
     assert resource_item["type"] == "object"
-    assert resource_item["properties"]["canonical_locator"]["description"]
+    assert resource_item["properties"]["target"]["description"]
+    assert "canonical_locator" not in resource_item["properties"]
     assert resource_item["properties"]["recommended_handling"]["enum"] == [
         "local_resource",
         "provider_requirement",
         "inspect_later",
-        "ignore",
     ]
 
     provider_item = provider.input_schema["properties"]["candidates"]["items"]
     assert provider_item["type"] == "object"
-    assert provider_item["properties"]["resolved_revision"]["description"]
+    assert provider_item["properties"]["revision"]["description"]
+    assert "resolved_revision" not in provider_item["properties"]
+    assert "package_name" not in provider_item["properties"]
 
     exploration_item = coordinator.input_schema["properties"]["explorations"]["items"]
     assert exploration_item["type"] == "object"

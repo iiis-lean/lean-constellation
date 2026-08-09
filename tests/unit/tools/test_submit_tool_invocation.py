@@ -14,7 +14,12 @@ from lean_constellation.domain.preparation import (
 from lean_constellation.domain.repo import ProofAvailability, RepoCompletionMode
 from lean_constellation.domain.repo_run import SourceScope
 from lean_constellation.services import LeanProviderOverrides, create_test_runtime_services
-from lean_constellation.services.external_clients import GitHubCommitHistoryView, GitHubLeanRepoProbeView
+from lean_constellation.services.external_clients import (
+    ExternalResourceCandidate,
+    ExternalResourceInspectResult,
+    GitHubCommitHistoryView,
+    GitHubLeanRepoProbeView,
+)
 from lean_constellation.services.tool_facade import RawToolCallContext, RuntimeToolContext
 from lean_constellation.tools import register_submit_tooling
 from lean_constellation.tools.submit_args import RequirementInterfaceArg, SubmitRepoRequirementArgs
@@ -55,10 +60,41 @@ def _runtime_ctx(
 
 
 def _runtime(gateway: FakeSubmissionGateway):
-    return create_test_runtime_services(
+    runtime = create_test_runtime_services(
         providers=LeanProviderOverrides(submission_gateway=gateway),
         external_overrides={"github_repo": FakeGitHubRepo()},
     )
+    runtime.external.resource_discovery = FakeResourceDiscovery()
+    return runtime
+
+
+class FakeResourceDiscovery:
+    def __init__(self) -> None:
+        self.inspect_calls: list[str] = []
+        self.source_urls = ["https://arxiv.org/abs/2501.12345"]
+
+    def inspect(self, target: str) -> ExternalResourceInspectResult:
+        self.inspect_calls.append(target)
+        if target == "missing":
+            return ExternalResourceInspectResult(
+                ok=False,
+                target=target,
+                summary="No matching resource.",
+                issue_code="external_resource_not_found",
+            )
+        return ExternalResourceInspectResult(
+            ok=True,
+            target=target,
+            candidate=ExternalResourceCandidate(
+                title="Canonical theorem source",
+                resource_kind="paper",
+                canonical_locator="https://doi.org/10.1000/canonical",
+                authors=["Ada Author"],
+                version="v2",
+                source_urls=list(self.source_urls),
+            ),
+            summary="Inspected canonical theorem source.",
+        )
 
 
 class FakeGitHubRepo:
@@ -68,6 +104,10 @@ class FakeGitHubRepo:
         self.probe_calls: list[tuple[str, str | None, str | None]] = []
         self.lean_toolchain = "leanprover/lean4:v4.28.0"
         self.mathlib_revision = "v4.28.0"
+        self.has_lakefile = True
+        self.has_lean_files = True
+        self.package_name: str | None = "Provider"
+        self.likely_import_modules = ["Provider"]
 
     def normalize_github_url(self, value: str) -> str:
         normalized = value.strip().removesuffix(".git").rstrip("/")
@@ -88,6 +128,10 @@ class FakeGitHubRepo:
         self.probe_calls.append((git_url, revision, subdir))
         resolved = revision or self.revision
         normalized = self.normalize_github_url(git_url)
+        is_mathlib = normalized.casefold() in {
+            "https://github.com/leanprover-community/mathlib",
+            "https://github.com/leanprover-community/mathlib4",
+        }
         return GitHubLeanRepoProbeView(
             git_url=git_url,
             normalized_git_url=normalized,
@@ -96,11 +140,17 @@ class FakeGitHubRepo:
             requested_subdir=subdir,
             selected_subdir=subdir,
             is_lean_project=True,
-            has_lakefile=True,
+            has_lakefile=self.has_lakefile,
             has_lean_toolchain=True,
-            package_name="Provider",
-            likely_import_modules=["Provider"],
-            lakefile_paths=["lakefile.toml"],
+            has_lean_manifest=self.has_lakefile,
+            has_lean_files=self.has_lean_files,
+            is_mathlib_repository=is_mathlib,
+            package_name=self.package_name,
+            likely_import_modules=list(self.likely_import_modules),
+            lakefile_paths=["lakefile.toml"] if self.has_lakefile else [],
+            lean_toolchain_paths=["lean-toolchain"],
+            lean_file_paths=["Provider/Main.lean"] if self.has_lean_files else [],
+            lean_signals=["path:lakefile.toml", "tree:lean_files=1"],
             lakefile_excerpt=(
                 'name = "Provider"\n\n'
                 '[[require]]\nname = "mathlib"\n'
@@ -312,7 +362,125 @@ def test_native_repo_choice_rejects_empty_or_legacy_search_evidence(tmp_path: Pa
     assert gateway.accepted == []
 
 
-def test_lean_provider_submit_rejects_mathlib_after_url_normalization(tmp_path: Path) -> None:
+def test_resource_discovery_submit_reinspects_and_canonicalizes_candidates(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="repo_resource_discovery_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="repo_resource_discovery_submit",
+                role="worker",
+                agent_type="RepoResourceDiscoveryAgent",
+            ),
+        ),
+        tool_name="submit_repo_resource_discovery_result",
+        flat_args={
+            "outcome": "completed",
+            "summary": "Found one primary source.",
+            "candidates": [
+                {
+                    "target": "arxiv:2501.12345",
+                    "support_summary": "Supplies the exact finite theorem used by the repo.",
+                    "recommended_handling": "local_resource",
+                    "risks_or_gaps": ["Appendix notation needs reconciliation."],
+                }
+            ],
+        },
+    )
+
+    assert result.ok and result.value is not None and result.value.ok
+    assert runtime.external.resource_discovery.inspect_calls == ["arxiv:2501.12345"]
+    candidate = gateway.accepted[0].candidates[0]
+    assert candidate.title == "Canonical theorem source"
+    assert candidate.canonical_locator == "https://doi.org/10.1000/canonical"
+    assert candidate.authors == ["Ada Author"]
+    assert candidate.support_summary.startswith("Supplies the exact finite theorem")
+    assert candidate.recommended_handling == "local_resource"
+
+
+def test_resource_discovery_submit_rejects_uninspectable_target_without_terminal_submit(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="repo_resource_discovery_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="repo_resource_discovery_submit",
+                role="worker",
+                agent_type="RepoResourceDiscoveryAgent",
+            ),
+        ),
+        tool_name="submit_repo_resource_discovery_result",
+        flat_args={
+            "outcome": "completed",
+            "summary": "Candidate requires inspection.",
+            "candidates": [
+                {
+                    "target": "missing",
+                    "support_summary": "Potential source.",
+                    "recommended_handling": "inspect_later",
+                }
+            ],
+        },
+    )
+
+    assert result.ok and result.value is not None and not result.value.ok
+    assert result.value.issues[0].kind == "external_resource_not_found"
+    assert result.value.issues[0].field == "candidates[0].target"
+    assert gateway.accepted == []
+
+
+def test_lean_provider_submit_probes_and_canonicalizes_backend_facts(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="repo_lean_provider_discovery_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="repo_lean_provider_discovery_submit",
+                role="worker",
+                agent_type="RepoLeanProviderDiscoveryAgent",
+            ),
+        ),
+        tool_name="submit_repo_lean_provider_discovery_result",
+        flat_args={
+            "outcome": "completed",
+            "summary": "Found one exact Lean provider.",
+            "candidates": [
+                {
+                    "git_url": "owner/provider.git",
+                    "capability_summary": "Provides the additive Kneser theorem.",
+                    "relevant_declarations": ["Finset.add_kneser"],
+                    "gaps": [],
+                    "risks": ["License must be retained."],
+                    "recommendation": "direct_adapter_requirement",
+                }
+            ],
+        },
+    )
+
+    assert result.ok and result.value is not None and result.value.ok
+    assert runtime.external.github_repo.probe_calls == [("owner/provider.git", None, None)]
+    candidate = gateway.accepted[0].candidates[0]
+    assert candidate.git_url == "https://github.com/owner/provider"
+    assert candidate.resolved_revision == "a" * 40
+    assert candidate.package_name == "Provider"
+    assert candidate.likely_import_modules == ["Provider"]
+    assert candidate.relevant_declarations == ["Finset.add_kneser"]
+    assert "path:Provider/Main.lean" in candidate.lean_evidence
+
+
+def test_lean_provider_submit_rejects_mathlib_after_probe(tmp_path: Path) -> None:
     gateway = FakeSubmissionGateway()
     runtime = _runtime(gateway)
     assert register_submit_tooling(runtime).ok
@@ -334,12 +502,8 @@ def test_lean_provider_submit_rejects_mathlib_after_url_normalization(tmp_path: 
             "candidates": [
                 {
                     "git_url": "git@github.com:leanprover-community/mathlib4.git",
-                    "resolved_revision": "a" * 40,
-                    "package_name": "mathlib",
-                    "likely_import_modules": ["Mathlib"],
-                    "relevant_interfaces": ["Mathlib.Combinatorics.SimpleGraph"],
-                    "lean_evidence": ["Mathlib/Combinatorics/SimpleGraph/Basic.lean"],
-                    "adapter_feasibility": "ready",
+                    "capability_summary": "Platform graph support.",
+                    "relevant_declarations": ["SimpleGraph"],
                     "gaps": [],
                     "risks": [],
                     "recommendation": "direct_adapter_requirement",
@@ -351,6 +515,43 @@ def test_lean_provider_submit_rejects_mathlib_after_url_normalization(tmp_path: 
     assert result.ok and result.value is not None
     assert result.value.ok is False
     assert result.value.issues[0].kind == "mathlib_provider_candidate_forbidden"
+    assert gateway.accepted == []
+
+
+def test_lean_provider_direct_submit_rejects_missing_probe_facts(tmp_path: Path) -> None:
+    gateway = FakeSubmissionGateway()
+    runtime = _runtime(gateway)
+    runtime.external.github_repo.package_name = None
+    runtime.external.github_repo.likely_import_modules = []
+    assert register_submit_tooling(runtime).ok
+
+    result = runtime.tool_facade.invoke_agent_tool(
+        RawToolCallContext(
+            endpoint_view_key="repo_lean_provider_discovery_submit",
+            runtime_context=_runtime_ctx(
+                tmp_path,
+                view="repo_lean_provider_discovery_submit",
+                role="worker",
+                agent_type="RepoLeanProviderDiscoveryAgent",
+            ),
+        ),
+        tool_name="submit_repo_lean_provider_discovery_result",
+        flat_args={
+            "outcome": "completed",
+            "summary": "Candidate looked relevant.",
+            "candidates": [
+                {
+                    "git_url": "owner/provider",
+                    "capability_summary": "Potential provider.",
+                    "relevant_declarations": ["Provider.target"],
+                    "recommendation": "direct_adapter_requirement",
+                }
+            ],
+        },
+    )
+
+    assert result.ok and result.value is not None and not result.value.ok
+    assert result.value.issues[0].kind == "direct_adapter_candidate_incomplete"
     assert gateway.accepted == []
 
 

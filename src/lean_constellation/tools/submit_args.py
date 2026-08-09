@@ -264,105 +264,89 @@ class SubmitRepoReadyArgs(SummarySubmitArgs):
 
 
 class RepoResourceCandidateArg(StrictModel):
-    title: str = Field(description="Resource title from verified metadata.")
-    authors: list[str] = Field(default_factory=list, description="Verified author names.")
-    resource_kind: str = Field(description="Resource kind such as paper, book, documentation, or web.")
-    canonical_locator: str = Field(description="Canonical DOI, arXiv id/version, or stable URL.")
-    version: str | None = Field(default=None, description="Exact resource version when relevant.")
-    source_urls: list[str] = Field(default_factory=list, description="URLs supporting this metadata and recommendation.")
-    relevance: str = Field(description="Specific relevance to the repository objective.")
-    support_expected: str = Field(description="Mathematical statement, construction, or evidence expected from this resource.")
-    reliability: str = Field(description="Source reliability assessment.")
+    target: str = Field(description="OpenAlex id, DOI, arXiv locator, or other locator accepted by resource inspection.")
+    support_summary: str = Field(description="Concrete mathematical statement, construction, or evidence this resource may supply for the repository objective.")
     risks_or_gaps: list[str] = Field(default_factory=list, description="Known uncertainty, missing access, or scope gaps.")
     recommended_handling: Literal[
         "local_resource",
         "provider_requirement",
         "inspect_later",
-        "ignore",
-    ] = Field(description="Recommended material ownership handling.")
-    classification_reason: str = Field(description="Why this ownership classification fits the candidate.")
-    consumer_need: str = Field(description="Concrete statement, construction, evidence, or API the consumer needs.")
-    suggested_repo_name: str | None = Field(default=None, description="Optional provider repo key suggestion.")
-    provider_scope: str | None = Field(default=None, description="Independent provider responsibility when recommended.")
-    required_interfaces_hint: str | None = Field(default=None, description="Minimal provider API hint when recommended.")
-    existing_lean_repo_signal: str | None = Field(default=None, description="Evidence for an existing Lean implementation.")
-    lean_provider_search_recommended: bool = Field(
-        default=False,
-        description="Whether RepoLeanProviderDiscovery should inspect existing Lean candidates.",
-    )
+    ] = Field(description="Use local_resource for supporting material owned here, provider_requirement for an independent reusable formal boundary, or inspect_later for a real inspected candidate whose usefulness or ownership remains unresolved.")
+    consumer_need: str | None = Field(default=None, description="Concrete consumer need; required for provider_requirement and optional otherwise.")
+    provider_scope: str | None = Field(default=None, description="Independent provider responsibility; required for provider_requirement and optional otherwise.")
+
+    @field_validator("target", "support_summary")
+    @classmethod
+    def _required_text_non_empty(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("resource candidate target and support_summary must be non-empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _handling_fields_consistent(self):
+        if self.recommended_handling == "provider_requirement" and (
+            not self.consumer_need
+            or not self.consumer_need.strip()
+            or not self.provider_scope
+            or not self.provider_scope.strip()
+        ):
+            raise ValueError("provider_requirement candidates require consumer_need and provider_scope")
+        return self
 
 
 class SubmitRepoResourceDiscoveryResultArgs(SummarySubmitArgs):
     outcome: Literal["completed", "no_useful_findings", "incomplete"] = Field(description="Terminal discovery outcome.")
-    candidates: list[RepoResourceCandidateArg] = Field(default_factory=list, max_length=10, description="Bounded verified candidates, recommended first.")
+    candidates: list[RepoResourceCandidateArg] = Field(default_factory=list, max_length=5, description="Up to five promising targets in recommendation order; the backend re-inspects every target and supplies canonical metadata.")
 
     @model_validator(mode="after")
     def _candidate_consistency(self):
         if self.outcome == "no_useful_findings" and self.candidates:
             raise ValueError("no_useful_findings may not include resource candidates")
-        for candidate in self.candidates:
-            if candidate.recommended_handling == "local_resource" and (
-                not candidate.canonical_locator.strip() or not candidate.source_urls
-            ):
-                raise ValueError("local_resource candidates require a canonical locator and source URL")
-            if candidate.recommended_handling == "provider_requirement" and (
-                not candidate.provider_scope or not candidate.provider_scope.strip()
-            ):
-                raise ValueError("provider_requirement candidates require provider_scope")
+        if self.outcome == "completed" and not self.candidates:
+            raise ValueError("completed resource discovery requires at least one candidate; use no_useful_findings otherwise")
         return self
 
 
 class RepoLeanProviderCandidateArg(StrictModel):
-    git_url: str = Field(description="Canonical GitHub repository URL.")
-    resolved_revision: str = Field(description="Resolved immutable commit for direct candidates, or best inspected revision otherwise.")
+    git_url: str = Field(description="GitHub repository URL or owner/name slug to probe.")
+    revision: str | None = Field(default=None, description="Optional immutable 40- or 64-character commit; omit to let the backend resolve the inspected revision.")
     subdir: str | None = Field(default=None, description="Lean project subdirectory when the project is not at repository root.")
-    package_name: str | None = Field(default=None, description="Verified Lake package name when known.")
-    likely_import_modules: list[str] = Field(default_factory=list, description="Likely importable modules supported by repository evidence.")
-    relevant_interfaces: list[str] = Field(default_factory=list, description="Relevant public Lean declarations or interface descriptions.")
-    lean_evidence: list[str] = Field(default_factory=list, description="Concrete Lean file, module, declaration, or build-layout evidence.")
-    adapter_feasibility: Literal["ready", "plausible", "unsuitable"] = Field(description="Evidence-based adapter feasibility.")
+    capability_summary: str = Field(description="Mathematical capability this repository may provide for the current objective.")
+    relevant_declarations: list[str] = Field(default_factory=list, description="Declaration names or precise semantic declaration clues relevant to the objective; required for direct_adapter_requirement.")
     gaps: list[str] = Field(default_factory=list, description="Missing evidence or capability gaps.")
     risks: list[str] = Field(default_factory=list, description="License, version, layout, maintenance, or adaptation risks.")
-    recommendation: Literal["direct_adapter_requirement", "generic_requirement", "ignore"] = Field(description="Recommended Coordinator handling.")
+    recommendation: Literal[
+        "direct_adapter_requirement",
+        "generic_requirement",
+        "inspect_later",
+    ] = Field(description="Use direct_adapter_requirement only for a gap-free exact Lean/Lake candidate, generic_requirement for an independent provider need that still requires route discovery, or inspect_later for a real probed candidate needing more evidence.")
+
+    @field_validator("git_url", "capability_summary")
+    @classmethod
+    def _provider_required_text_non_empty(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("provider candidate git_url and capability_summary must be non-empty")
+        return normalized
+
+    @field_validator("revision")
+    @classmethod
+    def _immutable_revision_if_present(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", normalized) is None:
+            raise ValueError("revision must be an immutable 40- or 64-character Git commit")
+        return normalized
 
     @model_validator(mode="after")
     def _direct_adapter_consistency(self):
-        if self.adapter_feasibility == "unsuitable" and self.recommendation != "ignore":
-            raise ValueError("unsuitable provider candidates must be ignored")
-        if self.adapter_feasibility == "ready":
-            if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", self.resolved_revision) is None:
-                raise ValueError("ready adapter candidates require an immutable commit")
-            if not self.package_name or not self.package_name.strip():
-                raise ValueError("ready adapter candidates require a verified package name")
-            if not any(item.strip() for item in self.likely_import_modules):
-                raise ValueError("ready adapter candidates require a verified import module")
-            if not any(item.strip() for item in self.relevant_interfaces):
-                raise ValueError("ready adapter candidates require relevant Lean interfaces")
-            if not any(item.strip() for item in self.lean_evidence):
-                raise ValueError("ready adapter candidates require Lean file or declaration evidence")
-            if not any(
-                ".lean" in item.casefold()
-                or re.search(
-                    r"\b(module|declaration|theorem|lemma|def|namespace)\b",
-                    item,
-                    re.IGNORECASE,
-                )
-                for item in self.lean_evidence
-            ):
-                raise ValueError("ready adapter evidence must name a Lean path, module, or declaration")
-            if self.gaps:
-                raise ValueError("ready adapter candidates may not retain unresolved evidence gaps")
         if self.recommendation == "direct_adapter_requirement":
-            if self.adapter_feasibility != "ready":
-                raise ValueError("direct adapter candidates must be ready")
-            normalized_url = self.git_url.strip().lower().removesuffix(".git").rstrip("/")
-            if normalized_url in {
-                "leanprover-community/mathlib",
-                "leanprover-community/mathlib4",
-                "https://github.com/leanprover-community/mathlib",
-                "https://github.com/leanprover-community/mathlib4",
-            }:
-                raise ValueError("Mathlib is not a direct adapter/provider candidate")
+            if not any(item.strip() for item in self.relevant_declarations):
+                raise ValueError("direct adapter candidates require at least one relevant declaration")
+            if self.gaps:
+                raise ValueError("direct adapter candidates may not retain unresolved evidence gaps")
         return self
 
 
@@ -374,6 +358,8 @@ class SubmitRepoLeanProviderDiscoveryResultArgs(SummarySubmitArgs):
     def _candidate_consistency(self):
         if self.outcome == "no_useful_findings" and self.candidates:
             raise ValueError("no_useful_findings may not include provider candidates")
+        if self.outcome == "completed" and not self.candidates:
+            raise ValueError("completed provider discovery requires at least one candidate; use no_useful_findings otherwise")
         return self
 
 

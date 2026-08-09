@@ -179,6 +179,18 @@ def test_runtime_instruction_output_is_english() -> None:
     assert "## Proof Formal Worker" in text
 
 
+def test_repo_discovery_instructions_reference_current_skills_and_backend_ownership() -> None:
+    resource = render_agent_instruction("RepoResourceDiscoveryAgent")
+    provider = render_agent_instruction("RepoLeanProviderDiscoveryAgent")
+
+    assert "$repo-resource-discovery" in resource
+    assert "backend re-inspects every target" in resource
+    assert "canonical title, authors, kind, version, locator, and source URLs" in resource
+    assert "$repo-lean-provider-discovery" in provider
+    assert "backend performs the terminal probe" in provider
+    assert "resolved commit, project layout, package, modules, toolchain" in provider
+
+
 def test_content_plan_instruction_spells_out_operational_flow_and_tools() -> None:
     text = render_agent_instruction("ContentPlanAgent")
 

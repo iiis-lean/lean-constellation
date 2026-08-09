@@ -212,7 +212,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
         ),
         _submit_tool(
             name="submit_repo_resource_discovery_result",
-            description="Submit verified supporting-resource candidates from repository-level discovery.",
+            description="Submit up to five inspected resource targets with mathematical-use and ownership judgment; the backend re-inspects and supplies canonical metadata before terminal acceptance.",
             args_model=SubmitRepoResourceDiscoveryResultArgs,
             groups={SubmitGroup.REPO_RESOURCE_DISCOVERY_SUBMIT},
             roles={"worker", "admin"},
@@ -220,7 +220,7 @@ def build_submit_tool_specs() -> list[ToolSpec]:
         ),
         _submit_tool(
             name="submit_repo_lean_provider_discovery_result",
-            description="Submit verified existing Lean repository candidates from repository-level discovery.",
+            description="Submit bounded real GitHub Lean candidates with mathematical capability judgment; the backend probes and supplies canonical repository facts before terminal acceptance.",
             args_model=SubmitRepoLeanProviderDiscoveryResultArgs,
             groups={SubmitGroup.REPO_LEAN_PROVIDER_DISCOVERY_SUBMIT},
             roles={"worker", "admin"},

@@ -54,8 +54,10 @@ def test_stdio_bridge_reports_nested_argument_errors_with_field_paths(tmp_path) 
 
     assert rejected.isError is True
     fields = {issue["field"] for issue in rejected.structuredContent["issues"]}
-    assert "candidates[0].resource_kind" in fields
-    assert "candidates[0].canonical_locator" in fields
+    assert "candidates[0].target" in fields
+    assert "candidates[0].support_summary" in fields
+    assert "candidates[0].recommended_handling" in fields
+    assert "candidates[0].title" in fields
     assert all(issue["kind"] == "tool_arguments_invalid" for issue in rejected.structuredContent["issues"])
     assert gateway.accepted == []
 

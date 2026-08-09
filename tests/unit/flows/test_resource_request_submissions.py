@@ -50,15 +50,9 @@ def test_provider_candidate_requires_explicit_provider_scope() -> None:
             outcome="completed",
             candidates=[
                 RepoResourceCandidateArg(
-                    title="Independent theory",
-                    resource_kind="paper",
-                    canonical_locator="arxiv:2501.12345",
-                    source_urls=["https://arxiv.org/abs/2501.12345"],
-                    relevance="Defines an independent reusable theory.",
-                    support_expected="A stable provider theorem.",
-                    reliability="Primary source.",
+                    target="arxiv:2501.12345",
+                    support_summary="Defines an independent reusable theory with a stable provider theorem.",
                     recommended_handling="provider_requirement",
-                    classification_reason="The consumer should not own the whole theory.",
                     consumer_need="One stable theorem API.",
                 )
             ],
